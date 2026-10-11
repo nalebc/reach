@@ -23,6 +23,14 @@ const SOURCES = {
 };
 const KINDS = ["brew", "node", "go", "uv", "download"];
 const NAME = /^[\w.@:+-]{1,100}$/;
+// The key Reach changes a skill by: its skillKey, or its name when it has
+// none. A skillKey Reach can't pass safely is null: the skill shows, but
+// can't be turned on or off or given a key from here (never its name instead).
+export function skillKeyOf(skill) {
+  if (skill?.skillKey === undefined || skill?.skillKey === null)
+    return typeof skill?.name === "string" && NAME.test(skill.name) ? skill.name : null;
+  return typeof skill.skillKey === "string" && NAME.test(skill.skillKey) ? skill.skillKey : null;
+}
 const INSTALL_ID = /^[\w.@:+-]{1,100}$/;
 const CHECK = /^[a-f0-9]{64}$/;
 const SCRIPT = /\.(sh|bash|zsh|fish|py|js|mjs|cjs|ts|rb|pl|php|ps1|command|applescript|scpt)$/i;
@@ -242,7 +250,7 @@ export function routes(app, client, ctx) {
       .filter((s) => s && typeof s.name === "string" && NAME.test(s.name))
       .map((s) => {
         const missing = s.missing || {};
-        const key = typeof s.skillKey === "string" && NAME.test(s.skillKey) ? s.skillKey : s.name;
+        const key = skillKeyOf(s);
         const install = (Array.isArray(s.install) ? s.install : [])
           .filter((o) => o && KINDS.includes(o.kind) && typeof o.id === "string" && INSTALL_ID.test(o.id))
           .map((o) => ({ id: o.id, kind: o.kind, label: clean(o.label, 80) }));
@@ -270,7 +278,7 @@ export function routes(app, client, ctx) {
             os: names(missing.os),
           },
           install,
-          ...(keyName ? { keyName } : {}),
+          ...(keyName && key ? { keyName } : {}),
           ...(job ? { installing: job } : {}),
         };
       });
@@ -290,7 +298,7 @@ export function routes(app, client, ctx) {
     if (typeof enabled !== "boolean") throw fail(400, "Choose on or off.");
     const data = await status();
     if (!data) throw fail(409, "This OpenClaw can't change skills. Update OpenClaw on this computer.");
-    if (!data.skills.some((s) => (s?.skillKey ?? s?.name) === key)) throw fail(404, "This skill isn't on this Mac anymore.");
+    if (!data.skills.some((s) => skillKeyOf(s) === key)) throw fail(404, "This skill isn't on this Mac anymore.");
     // The answer carries the skill's config (API key, env): never forwarded.
     await client.call("skills.update", { skillKey: key, enabled }, authorize(req));
     res.json({ key, enabled });
@@ -303,7 +311,7 @@ export function routes(app, client, ctx) {
     if (typeof apiKey !== "string" || !KEY_SHAPE.test(apiKey.trim())) throw fail(400, "Paste the API key.");
     const data = await status();
     if (!data || !client.can("skills.update")) throw fail(409, "This OpenClaw can't change skills. Update OpenClaw on this computer.");
-    const skill = data.skills.find((s) => (s?.skillKey ?? s?.name) === key);
+    const skill = data.skills.find((s) => skillKeyOf(s) === key);
     if (!skill) throw fail(404, "This skill isn't on this Mac anymore.");
     if (typeof skill.primaryEnv !== "string" || !skill.primaryEnv) throw fail(409, "This skill doesn't take a key. Set it up on your Mac.");
     authorize(req)();
@@ -391,7 +399,7 @@ export function routes(app, client, ctx) {
       throw fail(400, "Enter the missing skill values.");
     const data = await status();
     if (!data || !client.can("skills.update")) throw fail(409, "This OpenClaw can't change skills.");
-    const skill = data.skills.find((s) => (s?.skillKey ?? s?.name) === key);
+    const skill = data.skills.find((s) => skillKeyOf(s) === key);
     if (!skill) throw fail(404, "This skill isn't available anymore.");
     const allowed = new Set(skill.missing?.env || []);
     const values = Object.create(null);

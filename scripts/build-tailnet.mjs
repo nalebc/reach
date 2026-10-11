@@ -78,6 +78,8 @@ export async function buildTailnet({
   go = "go",
   required = false,
   log = console.log,
+  // Stops the Go build when the first start's setup is paused.
+  signal,
 } = {}) {
   const env = {
     ...process.env,
@@ -87,7 +89,7 @@ export async function buildTailnet({
     CGO_ENABLED: "0",
   };
   try {
-    await exec(go, ["version"], { env, timeout: 15000 });
+    await exec(go, ["version"], { env, timeout: 15000, signal });
   } catch {
     if (required) throw Error("Go is required to build browser sign-in release assets.");
     return null; // No Go: phones need the Tailscale app until it's built.
@@ -98,13 +100,14 @@ export async function buildTailnet({
     await exec(
       go,
       ["build", "-trimpath", "-ldflags", "-s -w", "-o", wasmFile, "."],
-      { cwd: tailnetSource, env, timeout: 15 * 60000, maxBuffer: 16 << 20 },
+      { cwd: tailnetSource, env, timeout: 15 * 60000, maxBuffer: 16 << 20, signal },
     );
     // wasm_exec.js must come from the same Go that built the module.
     const { stdout } = await exec(go, ["env", "GOROOT"], {
       cwd: tailnetSource,
       env,
       timeout: 60000,
+      signal,
     });
     const goroot = stdout.trim();
     const glue = [

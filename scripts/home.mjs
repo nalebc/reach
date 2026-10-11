@@ -19,4 +19,10 @@ export function stateDir(
 
 // The command to show in help and hints.
 // Run as `reach` (the link from ./reach cli): say that.
-export const command = packaged || process.env.REACH_COMMAND === "reach" ? "reach" : "./reach";
+// Windows runs the launcher as .\reach.cmd.
+export const command =
+  packaged || process.env.REACH_COMMAND === "reach"
+    ? "reach"
+    : process.platform === "win32"
+      ? ".\\reach.cmd"
+      : "./reach";

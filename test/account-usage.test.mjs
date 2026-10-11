@@ -27,3 +27,17 @@ test('usage failures are explicit and cached, with no raw credential error text 
   let calls=0;const read=createClaudeAccountUsage({platform:'darwin',env:{USER:'tester'},run:async()=>{calls++;throw new Error('private-token')}});
   const result=await read();await read();assert.equal(calls,1);assert.equal(result.available,false);assert.ok(!JSON.stringify(result).includes('private-token'));
 });
+test('an expired Claude Code sign-in keeps the last reading and says Claude Code renews it, without a request', async () => {
+  let calls = 0, time = 100000;
+  const token = { claudeAiOauth: { accessToken: 'private-test-token', expiresAt: 200000 } };
+  const read = createClaudeAccountUsage({ platform: 'linux', home: '/home/test', env: {}, now: () => time, read: async () => JSON.stringify(token),
+    fetcher: async () => { calls++; return { ok: true, json: async () => ({ limits: [{ kind: 'weekly_all', percent: 100 }, { kind: 'weekly_scoped', percent: 100, scope: { model: { display_name: 'Fable' } } }] }) }; } });
+  const first = await read();
+  assert.deepEqual(first.windows.map(w => !!w.scoped), [false, true]);
+  time = 300000;
+  const stale = await read();
+  assert.equal(calls, 1);
+  assert.equal(stale.available, false);
+  assert.match(stale.error, /renews the next time Claude Code runs/);
+  assert.equal(stale.windows[0].usedPercent, 100);
+});

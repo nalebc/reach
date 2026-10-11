@@ -24,6 +24,7 @@ if (!privateWords.some((w) => w.length >= 4)) console.error("Note: no private id
 const publicIdentities = new Map([
   ["contributors@example.invalid", "Reach Contributors"],
   ["54943684+nalebc@users.noreply.github.com", "nalebc"],
+  ["nassimlbd@gmail.com", "Nassim"], // the owner chose to keep this attribution (Oct 10, 2026)
   ["49699333+dependabot[bot]@users.noreply.github.com", "dependabot[bot]"],
   ["41898282+github-actions[bot]@users.noreply.github.com", "github-actions[bot]"],
 ]);
@@ -56,8 +57,16 @@ for (const file of files) {
   if (body.includes(0) || body.length > 2_000_000) continue;
   const text = body.toString("utf8");
   for (const [reason, pattern] of patterns) if (pattern.test(text)) findings.push([file, reason]);
+  // An identity approved above is public where it is spelled out in full: its
+  // address, and its display name on the same line as that address. Everything
+  // else is scanned as before, so a home path or a nickname built from the same
+  // name is still reported.
+  const outsideIdentities = text.split("\n").map((line) => {
+    for (const [email, name] of publicIdentities) if (line.includes(email)) line = line.split(email).join(" ").split(name).join(" ");
+    return line;
+  }).join("\n").toLowerCase();
   for (const word of privateWords)
-    if (text.toLowerCase().includes(word.toLowerCase())) findings.push([file, "local personal identifier"]);
+    if (outsideIdentities.includes(word.toLowerCase())) findings.push([file, "local personal identifier"]);
 }
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 if (pkg.author !== "Reach Contributors") findings.push(["package.json", "use the project contributor identity"]);

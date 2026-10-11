@@ -66,6 +66,35 @@ test("action shapes are exact", () => {
     assert.throws(() => normalizeAction(bad), (error) => error.status === 400, JSON.stringify(bad));
 });
 
+test("long presses and slow drags: holdMs and durationMs, within limits", () => {
+  assert.deepEqual(normalizeAction({ type: "click", x: 0.5, y: 0.5, holdMs: 3000 }), { type: "click", x: 0.5, y: 0.5, button: "left", count: 1, modifiers: [], holdMs: 3000 });
+  assert.deepEqual(normalizeAction({ type: "element", snapshot: "ab12", n: 4, holdMs: 10000 }), { type: "element", snapshot: "ab12", n: 4, holdMs: 10000 });
+  assert.deepEqual(normalizeAction({ type: "press", name: "Press & Hold", holdMs: 8000 }), { type: "press", name: "Press & Hold", holdMs: 8000 });
+  assert.deepEqual(normalizeAction({ type: "drag", x: 0.1, y: 0.1, toX: 0.9, toY: 0.1, holdMs: 600, durationMs: 1200 }), { type: "drag", x: 0.1, y: 0.1, toX: 0.9, toY: 0.1, holdMs: 600, durationMs: 1200 });
+  assert.deepEqual(normalizeAction({ type: "drag", x: 0.1, y: 0.1, toX: 0.9, toY: 0.1 }), { type: "drag", x: 0.1, y: 0.1, toX: 0.9, toY: 0.1 });
+  // Normalized twice (shortcuts, then the desktop): the same.
+  const held = normalizeAction({ type: "click", x: 0.5, y: 0.5, holdMs: 500 });
+  assert.deepEqual(normalizeAction(held), held);
+  for (const bad of [{ type: "click", x: 0.5, y: 0.5, holdMs: 50 }, { type: "click", x: 0.5, y: 0.5, holdMs: 10001 }, { type: "click", x: 0.5, y: 0.5, holdMs: 1.5 },
+    { type: "click", x: 0.5, y: 0.5, count: 2, holdMs: 500 }, { type: "press", name: "Go", count: 3, holdMs: 500 }, { type: "move", x: 0.5, y: 0.5, holdMs: 500 },
+    { type: "drag", x: 0, y: 0, toX: 1, toY: 1, holdMs: 6000 }, { type: "drag", x: 0, y: 0, toX: 1, toY: 1, durationMs: 10 }, { type: "drag", x: 0, y: 0, toX: 1, toY: 1, durationMs: 9000 }])
+    assert.throws(() => normalizeAction(bad), (error) => error.status === 400, JSON.stringify(bad));
+});
+
+test("the owner's pause stops a hold in flight: the helper lets go at once", async () => {
+  const w = world(), client = w.make("Muse", "apps");
+  let started;
+  const holding = new Promise((resolve) => { started = resolve; });
+  w.setAct(() => { started(); return new Promise(() => {}); });
+  const pending = w.desktop.act(client, { type: "click", x: 0.5, y: 0.5, holdMs: 10000 }, authorize(client)).catch(() => {});
+  await holding;
+  assert.equal(w.helpers[0].stopped, false);
+  w.desktop.setPaused(client.id, true);
+  assert.equal(w.helpers[0].stopped, true, "pausing stops the helper holding the button");
+  void pending;
+  w.desktop.close();
+});
+
 test("saved actions carry their window expectation to the native dispatch", async () => {
   const w = world(), client = w.make("muse", "apps");
   const expected = { bundle: chrome.bundleId, title: "Amazon", layout: "100,60|0,0,100,60" };
@@ -667,4 +696,137 @@ test("helper timeout drains queued work and retains termination until a forced n
   helper.stop();
   t.mock.timers.tick(60000);
   assert.equal(events.length, 4, "stopping again cannot send more signals");
+});
+
+// Faster ways around the Mac (reach_windows, reach_focus_window, reach_menus,
+// reach_find, reach_read_page, reach_open_file, menu and paste actions):
+// each shaped exactly, each through the same lease and rules as a click.
+test("menu and paste actions are exact shapes", () => {
+  assert.deepEqual(normalizeAction({ type: "menu", path: ["File", " Export As… "] }), { type: "menu", path: ["File", "Export As…"] });
+  assert.deepEqual(normalizeAction({ type: "type", text: "long text", paste: true }), { type: "type", text: "long text", paste: true });
+  assert.deepEqual(normalizeAction({ type: "fill", fields: [{ label: "Notes", text: "a" }], paste: true }), { type: "fill", fields: [{ label: "Notes", text: "a" }], paste: true });
+  for (const bad of [{ type: "menu", path: [] }, { type: "menu", path: ["a", "b", "c", "d", "e", "f", "g"] }, { type: "menu", path: ["File"], x: 1 }, { type: "menu", path: [""] },
+    { type: "type", text: "secret", secret: true, paste: true }, { type: "type", text: "x", paste: false }, { type: "fill", fields: [{ label: "a", text: "b" }], paste: "yes" }])
+    assert.throws(() => normalizeAction(bad), (error) => error.status === 400, JSON.stringify(bad));
+});
+
+test("windows, focus, menus, find, read and open-file go through the helper under the preset's rules", async () => {
+  const w = world();
+  const full = w.make("muse", "full", { hidden: [{ id: "/Applications/Messages.app", name: "Messages", bundleId: "com.apple.MobileSMS" }] });
+  const extra = {
+    windows: { ok: true, windows: [
+      { id: "42:0", app: "Google Chrome", bundle: "com.google.Chrome", title: "Inbox", minimized: false, front: true, url: "https://mail.google.com/", tabs: [{ title: "Inbox", selected: true }, { title: "Amazon", selected: false }, { junk: 1 }] },
+      { id: "43:0", app: "Messages", bundle: "com.apple.MobileSMS", title: "Mom", minimized: false, front: false },
+      { id: "bad", app: "X" }, { id: "44:1", app: "Notes", bundle: "com.apple.Notes", title: "x".repeat(300), minimized: true, front: false, dialog: true }] },
+    focus: { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "Amazon", tab: "Amazon", front: true },
+    menus: { ok: true, app: "Google Chrome", title: "Inbox", truncated: false, menus: [{ title: "File", items: [{ title: "New Tab", key: "⌘T" }, { title: "Share", submenu: true }, { title: "Print…", key: "⌘P", enabled: false }, { junk: true }] }] },
+    find: { ok: true, found: true, snapshot: "f1f1f1f1", app: "Google Chrome", title: "Inbox", n: 2, role: "Button", name: "Add to cart", matches: 1, inView: true, scrolled: true, truncated: false,
+      items: [{ n: 1, role: "Link", name: "Home", x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, { n: 2, role: "Button", name: "Add to cart", x: 0.5, y: 0.9, w: 0.1, h: 0.02 }], texts: [{ text: "$12", x: 0.5, y: 0.85, w: 0.05, h: 0.02 }] },
+    read: { ok: true, app: "Google Chrome", title: "Inbox", url: "https://mail.google.com/", text: "Hello\nWorld", truncated: false },
+    "open-file": { ok: true, app: "Preview", bundle: "com.apple.Preview", front: true },
+  };
+  w.helpers.length = 0;
+  const original = w.desktop;
+  // The stand-in helper answers the new operations too.
+  const state = await (async () => { await original.front(full, authorize(full)); return w.helpers[0]; })();
+  const send = state.send.bind(state);
+  state.send = async (request, before) => Object.hasOwn(extra, request.op) ? (before?.(), state.requests.push(request), extra[request.op]) : send(request, before);
+
+  const windows = await original.windows(full, authorize(full));
+  assert.deepEqual(windows.windows.map((item) => item.id), ["42:0", "44:1"], "hidden apps and malformed ids are left out");
+  assert.deepEqual(windows.windows[0].tabs, [{ title: "Inbox", selected: true }, { title: "Amazon", selected: false }]);
+  assert.equal(windows.windows[0].url, "https://mail.google.com/");
+  assert.equal(windows.windows[1].title.length, 200);
+  assert.equal(windows.windows[1].dialog, true);
+
+  const focused = await original.focusWindow(full, { id: "42:0", title: "Inbox", tab: "Amazon" }, authorize(full));
+  assert.deepEqual(focused, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "Amazon", tab: "Amazon" });
+  assert.deepEqual(state.requests.at(-1), { op: "focus", id: "42:0", title: "Inbox", tab: "Amazon" });
+  await rejects(() => original.focusWindow(full, { id: "nope" }, authorize(full)), 400);
+  await rejects(() => original.focusWindow(full, { id: "42:0", tab: "" }, authorize(full)), 400);
+
+  const menus = await original.menus(full, "File", authorize(full));
+  assert.deepEqual(menus.menus, [{ title: "File", items: [{ title: "New Tab", key: "⌘T" }, { title: "Share", submenu: true }, { title: "Print…", enabled: false, key: "⌘P" }] }]);
+  assert.deepEqual(state.requests.at(-1), { op: "menus", menu: "File" });
+  await rejects(() => original.menus(full, "x".repeat(81), authorize(full)), 400);
+
+  const found = await original.find(full, { name: "Add to cart", role: "Button" }, authorize(full));
+  assert.equal(found.found, true);
+  assert.equal(found.n, 2);
+  assert.equal(found.snapshot, "f1f1f1f1");
+  assert.equal(found.scrolled, true);
+  assert.equal(found.items.length, 2);
+  assert.deepEqual(state.requests.at(-1), { op: "find", name: "Add to cart", role: "Button" });
+  await rejects(() => original.find(full, { text: "a", name: "b" }, authorize(full)), 400);
+  await rejects(() => original.find(full, { text: "a", role: "Button" }, authorize(full)), 400);
+  await rejects(() => original.find(full, {}, authorize(full)), 400);
+
+  const page = await original.readPage(full, authorize(full));
+  assert.deepEqual(page, { app: "Google Chrome", bundle: "", title: "Inbox", url: "https://mail.google.com/", text: "Hello\nWorld", truncated: false });
+
+  const opened = await original.openFile(full, "/Users/me/Documents/a.pdf", {}, authorize(full));
+  assert.deepEqual(opened, { ok: true, app: "Preview", bundle: "com.apple.Preview" });
+  assert.deepEqual(state.requests.at(-1), { op: "open-file", path: "/Users/me/Documents/a.pdf" });
+  await original.openFile(full, "/Users/me/Documents", { reveal: true }, authorize(full));
+  assert.deepEqual(state.requests.at(-1), { op: "open-file", path: "/Users/me/Documents", reveal: true });
+  // Reach's own files, keychains and browser profiles never open, whatever the folder.
+  await rejects(() => original.openFile(full, "/Users/me/.reach/data.json", {}, authorize(full)), 403, /Reach's own files/, "blocked");
+  await rejects(() => original.openFile(full, "/Users/me/Library/Keychains/login.keychain-db", {}, authorize(full)), 403, undefined, "blocked");
+  await rejects(() => original.openFile(full, "relative.pdf", {}, authorize(full)), 400);
+
+  // Read only looks: windows yes, the rest no.
+  const reader = w.make("reader", "readonly");
+  await original.front(reader, authorize(reader));
+  const readerHelper = w.helpers.at(-1);
+  readerHelper.send = async (request, before) => { before?.(); if (request.op === "windows") return extra.windows; return { ok: true }; };
+  assert.equal((await original.windows(reader, authorize(reader))).windows.length, 3);
+  await rejects(() => original.menus(reader, undefined, authorize(reader)), 403);
+  await rejects(() => original.find(reader, { text: "a" }, authorize(reader)), 403);
+  await rejects(() => original.readPage(reader, authorize(reader)), 403);
+  await rejects(() => original.focusWindow(reader, { id: "42:0" }, authorize(reader)), 403);
+  await rejects(() => original.openFile(reader, "/Users/me/a.pdf", {}, authorize(reader)), 403);
+});
+
+test("the front answer carries a browser's page and tabs", async () => {
+  const w = world();
+  const full = w.make("muse", "full");
+  w.setFront({ url: "https://www.amazon.ca/", tabs: [{ title: "Amazon", selected: true }, { junk: 1 }, { title: "x".repeat(200), selected: "yes" }] });
+  const front = await w.desktop.front(full, authorize(full));
+  assert.equal(front.url, "https://www.amazon.ca/");
+  assert.deepEqual(front.tabs, [{ title: "Amazon", selected: true }, { title: "x".repeat(120), selected: false }]);
+  assert.deepEqual(w.helpers[0].requests[0], { op: "front", detail: true });
+});
+
+test("every action the Mac does or refuses is logged for the owner, in words", async () => {
+  const logged = [];
+  const w = world();
+  const full = w.make("muse", "full");
+  // The log is a dependency; the world builds its desktop without one, so build another here.
+  const desktop = createAgentDesktop({ screen: true }, {
+    available: () => true, hosts: () => ["mac.tail1.ts.net"], titles: () => ["reach"], protectedPaths: () => ["/Users/me/.reach"], home: "/Users/me",
+    verifyClient: (id) => w.clients.get(id), spawnHelper: async (rules) => ({ rules, stopped: false,
+      async send(request, before) { before?.();
+        if (request.op === "front") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "Amazon", terminalLike: false, secure: false, blocked: "" };
+        if (request.op === "act") return request.action.type === "press" ? { ok: true, app: "Google Chrome", pressed: "Add to cart" } : { ok: true, app: "Google Chrome" };
+        if (request.op === "open") return { ok: true, app: "Numbers", bundle: "com.apple.Numbers" };
+        if (request.op === "open-file") return { ok: true, app: "Preview", bundle: "com.apple.Preview" };
+        return { ok: true }; }, stop() { this.stopped = true; } }),
+    actions: (client, entry) => logged.push([client.id, entry]), now: () => 1_000_000,
+  });
+  await desktop.act(full, { type: "type", text: "diapers" }, authorize(full));
+  await desktop.act(full, { type: "press", name: "Add to cart" }, authorize(full));
+  await desktop.act(full, { type: "type", text: "secret", secret: true }, authorize(full));
+  await desktop.open(full, "/Applications/Numbers.app", authorize(full));
+  await desktop.openFile(full, "/Users/me/Documents/a.pdf", {}, authorize(full));
+  await rejects(() => desktop.openFile(full, "/Users/me/.reach/x.json", {}, authorize(full)), 403, undefined, "blocked");
+  assert.deepEqual(logged.map(([id, entry]) => [id, entry.kind, entry.text, entry.app, entry.ok]), [
+    ["muse", "type", "Typed “diapers”", "Google Chrome", undefined],
+    ["muse", "press", "Pressed “Add to cart”", "Google Chrome", undefined],
+    ["muse", "type", "Typed a value from its vault", "Google Chrome", undefined],
+    ["muse", "open", "Opened Numbers", "Numbers", undefined],
+    ["muse", "open-file", "Opened “a.pdf” in Preview", "Preview", undefined],
+    ["muse", "open-file", "Opened “x.json”", undefined, false],
+  ]);
+  assert.match(logged.at(-1)[1].reason, /Reach's own files/);
+  assert.ok(!JSON.stringify(logged).includes("secret"), "the vault value never reaches the log");
 });

@@ -6,6 +6,10 @@ const exec = promisify(execFile);
 // The Mac App Store and standalone apps carry the CLI inside the app without
 // putting `tailscale` on PATH.
 const MAC_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+// Windows installs it in Program Files. The installer adds it to PATH, but a
+// Reach already running (waiting for the install) keeps its old PATH.
+export const windowsTailscaleDir = (env = process.env) =>
+  path.win32.join(env.ProgramFiles || "C:\\Program Files", "Tailscale");
 export function findTailscaleCli({
   env = process.env,
   platform = process.platform,
@@ -16,6 +20,10 @@ export function findTailscaleCli({
   // matches the running daemon; a Homebrew copy on the PATH often doesn't,
   // and long-lived sessions through a mismatched client drop.
   if (platform === "darwin" && exists(MAC_APP_CLI)) return MAC_APP_CLI;
+  if (platform === "win32") {
+    const exe = path.win32.join(windowsTailscaleDir(env), "tailscale.exe");
+    if (exists(exe)) return exe;
+  }
   return "tailscale";
 }
 let cli;
@@ -70,18 +78,32 @@ export function assertPrivatePort(config, port) {
       );
   }
 }
+// What a route on the port leads to, when it's an earlier Reach's own:
+// its private socket (server/tailscale-auth.mjs serveSocketPath).
+const REACH_SOCKET = /^unix:.*\/(?:r|reach-\d+)-[0-9a-f]{6,12}\/s$/;
 export function assertUnusedPort(config, port) {
   assertPrivatePort(config, port);
-  if (
-    serveConfigs(config).some(
-      (item) =>
-        item.TCP?.[port] ||
-        Object.keys(item.Web || {}).some((host) => host.endsWith(`:${port}`)),
-    )
-  )
+  const taken = serveConfigs(config).filter(
+    (item) =>
+      item.TCP?.[port] ||
+      Object.keys(item.Web || {}).some((host) => host.endsWith(`:${port}`)),
+  );
+  if (!taken.length) return;
+  const proxies = taken.flatMap((item) =>
+    Object.entries(item.Web || {})
+      .filter(([host]) => host.endsWith(`:${port}`))
+      .flatMap(([, web]) => Object.values(web?.Handlers || {}).map((h) => h?.Proxy || "")),
+  );
+  // An earlier Reach's route (another folder, or before its .reach was
+  // deleted): Reach doesn't remove what it didn't record as its own, so the
+  // fix is one command, for you to run.
+  if (proxies.length && proxies.every((p) => REACH_SOCKET.test(p)))
     throw Error(
-      `Tailscale port ${port} is already in use. Choose another with --https-port; Reach will not replace an existing service.`,
+      `Tailscale port ${port} still has the route of an earlier Reach (another folder, or set up before). If that Reach is gone, remove the route with: tailscale serve --https=${port} off\nThen run Reach again. Or choose another port with --https-port.`,
     );
+  throw Error(
+    `Tailscale port ${port} is already in use (see: tailscale serve status). Choose another with --https-port; Reach will not replace an existing service.`,
+  );
 }
 export function ownsServeRoute(config, origin, target) {
   const u = new URL(origin);

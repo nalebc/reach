@@ -166,8 +166,15 @@ export function FolderBrowser({
   picked: PickedFolder[];
   onChange: (next: PickedFolder[]) => void;
 }) {
-  // Where you are: null lists the computer's shared locations.
-  const [at, setAt] = useState<{ root: number; path: string } | null>(null);
+  // Where you are: null lists the computer's shared locations. Opens in Home.
+  const homeRoot = device?.roots?.find((r) => r.name === "Home");
+  const [at, setAt] = useState<{ root: number; path: string } | null>(
+    homeRoot ? { root: homeRoot.id, path: "" } : null,
+  );
+  const [moved, setMoved] = useState(false);
+  useEffect(() => {
+    if (!moved && !at && homeRoot) setAt({ root: homeRoot.id, path: "" });
+  }, [homeRoot?.id]);
   const [items, setItems] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -207,7 +214,7 @@ export function FolderBrowser({
     const full = (windows ? value.replaceAll("\\", "/").toLowerCase() : value).replace(/\/$/, "");
     return full + "/";
   };
-  const visibleRoots = roots.filter((root, index) => !roots.some((other, otherIndex) =>
+  const visibleRoots = roots.filter((root, index) => root.name === "Home" || !roots.some((other, otherIndex) =>
     otherIndex !== index && normalized(root.path).startsWith(normalized(other.path)) &&
     (normalized(root.path) !== normalized(other.path) || otherIndex < index),
   ));
@@ -265,7 +272,10 @@ export function FolderBrowser({
         type="button"
         className="fb-open"
         aria-label={`Open ${label}`}
-        onClick={() => setAt({ root, path })}
+        onClick={() => {
+          setMoved(true);
+          setAt({ root, path });
+        }}
       >
         {icon}
         <span>
@@ -306,7 +316,13 @@ export function FolderBrowser({
         </small>
       )}
       <nav className="fb-crumbs" aria-label="Path">
-        <button type="button" onClick={() => setAt(null)}>
+        <button
+          type="button"
+          onClick={() => {
+            setMoved(true);
+            setAt(null);
+          }}
+        >
           <HardDrive size={14} /> {device?.name || "Computer"}
         </button>
         {crumbs.map((c, i) => (

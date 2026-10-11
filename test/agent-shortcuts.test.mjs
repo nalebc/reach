@@ -281,8 +281,9 @@ test("shortcut tools are scoped, validate inputs and reach the same APIs through
   ])
     assert.ok(names.includes(name));
   assert.ok(
+    // Saved tasks need control; the Mac's own Shortcuts follow the open scope.
     !browserToolsFor({ ...access, control: false }).some((tool) =>
-      tool.name.includes("shortcut"),
+      tool.name.includes("shortcut") && !tool.name.includes("mac_shortcut"),
     ),
   );
   const plan = browserToolRequest(

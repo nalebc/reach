@@ -2,7 +2,8 @@ import path from "node:path";
 import { terminalPrompts } from "./prompts.mjs";
 import { loadJson } from "../server/core.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
-import { stateDir } from "./home.mjs";
+import { stateDir, command } from "./home.mjs";
+import { accountApproval } from "./configure.mjs";
 export const safeLabel = (value) =>
   String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 export function pendingApprovals(dataDir) {
@@ -37,7 +38,9 @@ export async function approveDevice(root, deps = {}) {
   const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.tailscaleApproval || !host.dataDir)
     throw Error(
-      "Start Reach with ./reach configure completed, then request access on your phone.",
+      accountApproval(deps.platform)
+        ? `Start Reach with ${command} configure completed, then request access on your phone.`
+        : `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`,
     );
   const pending = pendingApprovals(host.dataDir);
   if (!pending.length) {
@@ -48,7 +51,7 @@ export async function approveDevice(root, deps = {}) {
   }
   if (!deps.select && !process.stdin.isTTY)
     throw Error(
-      "Run ./reach approve in an interactive terminal on this computer.",
+      `Run ${command} approve in an interactive terminal on this computer.`,
     );
   const ui = terminalPrompts();
   const select = deps.select || ui.select,

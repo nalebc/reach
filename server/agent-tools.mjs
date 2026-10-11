@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { actionWords } from "./agent-actions.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { atomicJson, browserIdleEnded, fail, isPlainRecord } from "./core.mjs";
@@ -14,6 +15,7 @@ import {
   PROTECTED_TITLE_WORDS,
   PROTECTED_APP_NAMES,
 } from "./agent-guard.mjs";
+import { moneySite } from "./money-sites.mjs";
 import {
   TOOL_PROTOCOL,
   TOOL_BROWSERS,
@@ -38,6 +40,32 @@ const safeName = (value) =>
     .replace(/[\u0000-\u001f\u007f/\\]/g, "_")
     .slice(0, 150) || "attachment";
 const privateTitles = [...PROTECTED_TITLE_WORDS, ...PROTECTED_APP_NAMES];
+export const BATCH_ITEMS = 10;
+// Batch tabs open on this Mac at once, all agents together, and how long one
+// kept for its handles (or left to inspect) stays before Reach closes it.
+export const BATCH_TABS = 10;
+export const BATCH_TAB_MS = 5 * 60 * 1000;
+const tabKey = (tab) => `${tab.window}:${tab.tab}`;
+// Each batch item is an ordinary run with a request ID of its own, derived
+// from the batch's: calling the batch again never repeats a finished item.
+export const batchItemId = (requestId, index) => {
+  const h = crypto
+    .createHash("sha256")
+    .update(`reach.batch:${requestId}:${index}`)
+    .digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${(8 | (parseInt(h[16], 16) & 3)).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+};
+// A stop that every later item would meet too.
+const BATCH_STOPS = [
+  "setup_required",
+  "browser_closed",
+  "browser_window_required",
+  "browser_access",
+  "access_changed",
+  "login_required",
+  // Another tool took the Mac between items: the rest would wait for it too.
+  "busy",
+];
 const body = (req, allowed) => {
   if (
     !isPlainRecord(req.body) ||
@@ -54,6 +82,8 @@ export function createAgentTools(
     desktop,
     driver = createToolBrowserDriver(),
     record = () => {},
+    // The owner's log of what each agent did (agent-actions.mjs add).
+    actions = () => {},
     hosts = () => [],
     // A tool that couldn't run until the owner sets its browser up: told,
     // so Reach can show the owner just that (tool-setup.mjs).
@@ -62,6 +92,9 @@ export function createAgentTools(
     wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     waitMs = 8000,
     runMs = TOOL_LIMITS.runMs,
+    // A batch starts no new item after this; the agent calls it again.
+    batchMs = 30000,
+    savings = null,
     pdf = async (value, options) =>
       nativeToolProcess(
         await desktopBinary(config, "tool-receipt", { signal: options.signal }),
@@ -105,6 +138,8 @@ export function createAgentTools(
     handles = new Map(),
     files = new Map();
   let running = null,
+    // The batch running on this Mac, if any: one at a time.
+    batching = null,
     closed = false;
   for (const entry of load(ledgerFile, 1024 * 1024)) {
     if (
@@ -124,6 +159,120 @@ export function createAgentTools(
   }
   const persistLedger = () => atomicJson(ledgerFile, [...ledger.values()]);
   if (ledger.size) persistLedger();
+  // Tabs Reach opened behind for batches, every agent's: the only tabs Reach
+  // ever closes. Never more than BATCH_TABS open; each closes when its batch
+  // ends or, kept, within BATCH_TAB_MS. Saved, so a restart closes them too.
+  const tabsFile = path.join(config.dataDir, "agent-tool-tabs.json"),
+    batchTabs = new Map();
+  try {
+    for (const entry of load(tabsFile, 256 * 1024))
+      if (
+        isPlainRecord(entry) &&
+        Number.isInteger(entry.window) &&
+        Number.isInteger(entry.tab) &&
+        typeof entry.clientId === "string" &&
+        typeof entry.appPath === "string" &&
+        entry.appPath.endsWith(".app") &&
+        typeof entry.url === "string" &&
+        Array.isArray(entry.origins) &&
+        entry.origins.every((origin) => typeof origin === "string") &&
+        batchTabs.size < BATCH_TABS
+      )
+        // From before the restart: closed now, and only on the page it was left on.
+        batchTabs.set(tabKey(entry), { ...entry, until: 0, restored: true, attempts: 0 });
+  } catch {
+    /* unreadable: nothing to close */
+  }
+  const saveTabs = () => {
+    try {
+      atomicJson(
+        tabsFile,
+        [...batchTabs.values()].map(({ attempts, ...entry }) => entry),
+      );
+    } catch {
+      /* the tabs still close while Reach runs */
+    }
+  };
+  // Close Reach's batch tabs: only while still on their tool's sites (before a
+  // restart, on the exact page they were left on), and never the tab the owner
+  // is looking at. A tab that left, or that the owner brought forward, is theirs.
+  const closeTabs = async (entries, appPath, { guard = async () => {}, signal } = {}) => {
+    if (!entries.length) return 0;
+    const native = (request) =>
+      driver.transport("Chrome", request, { appPath, signal, timeoutMs: 12000 });
+    let count = 0;
+    try {
+      await guard();
+      let list;
+      try {
+        list = await native({ op: "tabs" });
+      } catch (error) {
+        if (error.code !== "browser_closed") throw error;
+        list = [];
+      }
+      const open = new Map((Array.isArray(list) ? list : []).map((tab) => [tabKey(tab), tab]));
+      // The pages the tabs that stay are on now, for after a restart.
+      for (const [key, entry] of batchTabs)
+        if (!entry.restored && open.has(key)) entry.url = open.get(key).url;
+      for (const entry of entries) {
+        const tab = open.get(tabKey(entry));
+        let origin = null;
+        try {
+          origin = new URL(tab.url).origin;
+        } catch {}
+        if (
+          !tab ||
+          !entry.origins.includes(origin) ||
+          (entry.restored && tab.url !== entry.url)
+        ) {
+          batchTabs.delete(tabKey(entry));
+          continue;
+        }
+        await guard();
+        try {
+          await native({ op: "close", target: tab, expectedURL: tab.url, behind: true });
+          batchTabs.delete(tabKey(entry));
+          count++;
+        } catch (error) {
+          if (error.code === "owner_tab" || ++entry.attempts >= 3)
+            batchTabs.delete(tabKey(entry));
+        }
+      }
+    } finally {
+      saveTabs();
+    }
+    return count;
+  };
+  // Tabs past their time close on their own, even with no agent around:
+  // Reach tidying its own background tabs touches no input and no page.
+  let sweepTimer = null;
+  const scheduleSweep = () => {
+    clearTimeout(sweepTimer);
+    sweepTimer = null;
+    if (closed || !batchTabs.size) return;
+    const next = Math.min(...[...batchTabs.values()].map((entry) => entry.until));
+    sweepTimer = setTimeout(sweep, Math.min(BATCH_TAB_MS, Math.max(1000, next - now())));
+    sweepTimer.unref?.();
+  };
+  const sweep = async () => {
+    sweepTimer = null;
+    if (closed) return;
+    const due = [...batchTabs.values()].filter((entry) => entry.until <= now());
+    // A tool or batch on the Mac goes first; the sweep comes back after.
+    if (due.length && !running && !batching)
+      for (const appPath of new Set(due.map((entry) => entry.appPath))) {
+        const group = due.filter((entry) => entry.appPath === appPath);
+        try {
+          await closeTabs(group, appPath);
+        } catch {
+          for (const entry of group)
+            if (++entry.attempts >= 3) batchTabs.delete(tabKey(entry));
+          saveTabs();
+        }
+      }
+    scheduleSweep();
+  };
+  scheduleSweep();
   const definitions = () => [
     ...PREBUILT_TOOLS.map((definition) => ({
       definition,
@@ -315,6 +464,14 @@ export function createAgentTools(
         "Tools cannot open Reach's own addresses.",
         403,
       );
+    // Bank sites: an agent reads them itself, on screen, where every click is
+    // checked (money-sites.mjs); a saved tool's steps aren't.
+    if (moneySite(url.href))
+      throw problem(
+        "protected",
+        "Saved tools don't run on bank sites. Read the bank's pages on screen instead.",
+        403,
+      );
     return url.href;
   };
   const resolveTarget = (target, values, context) =>
@@ -364,7 +521,7 @@ export function createAgentTools(
               )
               .map((entry) => copy(entry.definition))
           : [],
-        hint: "Check reach_tools before using the screen. Pick a named tool and execute it once with a requestId. To create one, read reach_tool_protocol and register the same reach.tool.v1 definition with reach_define_tool.",
+        hint: `Check reach_tools before using the screen. Pick a named tool and execute it once with a requestId.${browsers.some((app) => app.name === "Chrome") ? " For the same tool over a list of items, use reach_tool_batch: up to 10 items per call, each in its own Chrome tab." : ""} To create one, read reach_tool_protocol and register the same reach.tool.v1 definition with reach_define_tool.`,
       };
     },
     protocol(authorize) {
@@ -381,6 +538,9 @@ export function createAgentTools(
           "Choose an allowed Chrome or Safari app before defining tools.",
         );
       check(authorize);
+      // reach_tool_<id> must not shadow Reach's own reach_tool_* tools.
+      if (["batch", "operation", "protocol"].includes(definition.id))
+        throw fail(400, "This tool ID is reserved. Choose another.");
       if (saved.some((entry) => entry.definition.id === definition.id))
         throw fail(
           409,
@@ -441,7 +601,9 @@ export function createAgentTools(
         throw fail(403, "Access changed since this tool run.");
       return copy(results.get(key) || summary(entry));
     },
-    async run(authorize, input, { signal } = {}) {
+    // tab and background are Reach's own (batch below), never an agent's:
+    // the run uses that tab and never brings the browser forward.
+    async run(authorize, input, { signal, tab = null, background = false } = {}) {
       signal?.throwIfAborted();
       const client = check(authorize);
       if (
@@ -519,7 +681,7 @@ export function createAgentTools(
         throw fail(400, "Supply one recipient email address.");
       const apps = await browserApps(authorize),
         candidates = apps.filter((app) => app.name === input.browser);
-      if (ledger.has(key)) return api.run(authorize, input, { signal });
+      if (ledger.has(key)) return api.run(authorize, input, { signal, tab, background });
       if (running)
         throw Object.assign(fail(409, "Another tool is running on this Mac."), {
           kind: "busy",
@@ -755,7 +917,36 @@ export function createAgentTools(
             for (const [index, step] of definition.steps.entries()) {
               current();
               const command = `${input.requestId}:${index}`;
-              if (step.op === "navigate") {
+              if (step.op === "navigate" && background) {
+                // A batch item: the tab the batch opened behind for it, or the
+                // one this run is already on. Never another of the owner's tabs.
+                const url = checkURL(
+                  resolveToolValue(step.url, values, context),
+                  definition,
+                );
+                const own = target || tab;
+                if (!own)
+                  throw problem(
+                    "unsupported",
+                    "This batch item has no tab of its own.",
+                  );
+                // The batch checked this window's scripting once for all items.
+                target = copy(own);
+                if (target.url !== url) {
+                  await bind(target.url);
+                  target = await transport(
+                    {
+                      op: "navigate",
+                      target,
+                      expectedURL: target.url,
+                      expectedDocument: document,
+                      url,
+                    },
+                    true,
+                  );
+                }
+                await bind(url);
+              } else if (step.op === "navigate") {
                 const url = checkURL(
                     resolveToolValue(step.url, values, context),
                     definition,
@@ -778,6 +969,9 @@ export function createAgentTools(
                     "The browser tab list is invalid.",
                   );
                 const matches = tabs.filter((tab) => {
+                  // A batch's tabs are Reach's, never the owner's choice of tab.
+                  if (input.browser === "Chrome" && batchTabs.has(tabKey(tab)))
+                    return false;
                   try {
                     const here = new URL(tab.url);
                     return (
@@ -810,7 +1004,7 @@ export function createAgentTools(
                   );
                 }
                 await bind(url);
-                await transport(
+                if (!background) await transport(
                   {
                     op: "focus",
                     target,
@@ -825,7 +1019,7 @@ export function createAgentTools(
                   client,
                   input.browser,
                 );
-                await preflight(handle.target.window);
+                if (!background) await preflight(handle.target.window);
                 target = copy(handle.target);
                 document = handle.document;
                 root = handle.pageRef;
@@ -835,7 +1029,7 @@ export function createAgentTools(
                   fields: handle.fields,
                   expectedFields: handle.context,
                 });
-                await transport(
+                if (!background) await transport(
                   {
                     op: "focus",
                     target,
@@ -1058,6 +1252,7 @@ export function createAgentTools(
         };
         results.set(key, result);
         record("agent", `${client.name} completed tool ${definition.title}`);
+        actions(client, { kind: "tool", text: actionWords("tool", { title: definition.title }), app: input.browser });
       } catch (error) {
         entry.status =
           effectPending || error.uncertain
@@ -1086,6 +1281,7 @@ export function createAgentTools(
           data,
         });
         record("agent", `${client.name}'s tool ${definition.title} stopped`);
+        actions(client, { kind: "tool", text: actionWords("tool", { title: definition.title }), app: input.browser, ok: false, reason: String(error.message).slice(0, 300) });
       } finally {
         clearTimeout(deadline);
         signal?.removeEventListener("abort", cancel);
@@ -1096,7 +1292,57 @@ export function createAgentTools(
       }
       return copy(results.get(key));
     },
+    // One tool over up to ten items, each in a tab of its own. The tabs open
+    // behind, all at once, so their pages load side by side; then each item
+    // runs as an ordinary run, one after another, so clicks on one site's
+    // cart never race each other.
+    async batch(authorize, input, { signal } = {}) {
+      signal?.throwIfAborted();
+      const client = check(authorize);
+      if (
+        !isPlainRecord(input) ||
+        Object.keys(input).some(
+          (key) => !["id", "browser", "requestId", "items", "keepTabs"].includes(key),
+        ) ||
+        typeof input.id !== "string" ||
+        !TOOL_UUID.test(input.requestId || "") ||
+        !Array.isArray(input.items) ||
+        input.items.length < 1 ||
+        input.items.length > BATCH_ITEMS ||
+        input.items.some((values) => !isPlainRecord(values)) ||
+        (input.keepTabs !== undefined && typeof input.keepTabs !== "boolean")
+      )
+        throw fail(
+          400,
+          `Supply a tool ID, a UUID requestId and 1 to ${BATCH_ITEMS} items of its declared values.`,
+        );
+      // Safari names a tab by its position, which opening tabs shifts.
+      if (input.browser !== "Chrome")
+        throw fail(400, "Batches run in Chrome.");
+      const definition = definitions().find(
+        (entry) => entry.definition.id === input.id && entry.enabled,
+      )?.definition;
+      if (!definition) throw fail(404, "This tool is missing or disabled.");
+      // One batch at a time on this Mac: a second one, or a retry while the
+      // first still runs, never opens tabs of its own.
+      if (batching)
+        throw Object.assign(fail(409, "Another batch is running on this Mac."), {
+          kind: "busy",
+        });
+      batching = client.id;
+      try {
+        return await runBatch(authorize, client, input, definition, signal);
+      } finally {
+        batching = null;
+        scheduleSweep();
+      }
+    },
     cancelClient(id) {
+      // Its batch tabs close now, with nobody left to use their handles.
+      for (const entry of batchTabs.values())
+        if (entry.clientId === id) entry.until = 0;
+      saveTabs();
+      scheduleSweep();
       if (running?.clientId === id) {
         running.cancelled = true;
         running.controller.abort();
@@ -1111,6 +1357,8 @@ export function createAgentTools(
     },
     close() {
       closed = true;
+      // Tabs still open stay saved: the next start closes them.
+      clearTimeout(sweepTimer);
       if (running) {
         running.cancelled = true;
         running.controller.abort();
@@ -1121,6 +1369,324 @@ export function createAgentTools(
       files.clear();
     },
   };
+  async function runBatch(authorize, client, input, definition, signal) {
+    const startedAt = now(),
+      ids = input.items.map((_, index) => batchItemId(input.requestId, index)),
+      known = (index) => ledger.has(`${client.id}:${ids[index]}`),
+      outcomes = [],
+      tabs = [];
+    const failed = (error) => ({
+      status: "stopped",
+      code: error.code || error.kind || "stopped",
+      error: String(error.message).slice(0, 500),
+    });
+    let appPath = null;
+    const browser = async () => {
+      if (appPath) return appPath;
+      const candidates = (await browserApps(authorize)).filter(
+        (app) => app.name === input.browser,
+      );
+      if (candidates.length !== 1)
+        throw problem(
+          "browser_access",
+          "Choose exactly one installed, allowed copy of this browser.",
+          403,
+        );
+      return (appPath = candidates[0].id);
+    };
+    // The browser for this batch alone: no tool runs meanwhile, and the
+    // owner removing the agent's access cancels it.
+    const exclusive = async (work) => {
+      const app = await browser();
+      if (running)
+        throw Object.assign(fail(409, "Another tool is running on this Mac."), {
+          kind: "busy",
+        });
+      const controller = new AbortController(),
+        cancel = () => controller.abort();
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) controller.abort();
+      running = { id: definition.id, clientId: client.id, cancelled: false, controller };
+      try {
+        return await desktop.withBrowser(
+          client,
+          app,
+          () => check(authorize),
+          (nativeGuard, launch) =>
+            work({
+              guard: async () => {
+                if (controller.signal.aborted)
+                  throw problem(
+                    "access_changed",
+                    "Tool access changed or the owner cancelled this run.",
+                    403,
+                  );
+                await nativeGuard();
+              },
+              launch,
+              native: (request) =>
+                driver.transport(input.browser, request, {
+                  appPath: app,
+                  signal: controller.signal,
+                  timeoutMs: 12000,
+                }),
+              signal: controller.signal,
+            }),
+        );
+      } finally {
+        running = null;
+        signal?.removeEventListener("abort", cancel);
+      }
+    };
+    // Items not yet run whose tool starts on a page: their tabs first.
+    const opening = [];
+    if (definition.steps[0].op === "navigate")
+      input.items.forEach((values, index) => {
+        if (known(index)) return;
+        try {
+          const url = checkURL(
+            resolveToolValue(
+              definition.steps[0].url,
+              toolInputs(definition, values),
+              {},
+            ),
+            definition,
+          );
+          opening.push({ index, url });
+        } catch (error) {
+          outcomes[index] = failed(error);
+        }
+      });
+    // The windows the items' handles live in, or the front one.
+    const windows = new Set();
+    input.items.forEach((values, index) => {
+      if (known(index)) return;
+      for (const [name, field] of Object.entries(definition.inputs))
+        if (field.type === "handle" && typeof values[name] === "string") {
+          const handle = handles.get(values[name]);
+          if (handle?.clientId === client.id) windows.add(handle.target.window);
+        }
+    });
+    let stop = null;
+    if (opening.length || windows.size)
+      try {
+        await exclusive(async ({ guard, launch, native, signal: abort }) => {
+          const preflight = async (window) => {
+            await guard();
+            const ready = await native({
+              op: "preflight",
+              probeId: crypto.randomUUID(),
+              background: true,
+              ...(window === undefined ? {} : { window }),
+            });
+            if (ready?.ok !== true)
+              throw problem(
+                "setup_required",
+                "The browser’s scripting setup could not be verified.",
+              );
+          };
+          if (opening.length)
+            try {
+              await preflight();
+            } catch (error) {
+              if (error.code !== "browser_closed" || !launch) throw error;
+              await guard();
+              await launch();
+              await preflight();
+            }
+          for (const window of windows) await preflight(window);
+          // Tabs past their time close first, any agent's: room before more open.
+          await closeTabs(
+            [...batchTabs.values()].filter(
+              (entry) => entry.until <= now() && entry.appPath === appPath,
+            ),
+            appPath,
+            { guard, signal: abort },
+          );
+          // A retry's items go back to the tabs an earlier call opened for them.
+          const earlier = (index) =>
+            [...batchTabs.values()].find(
+              (entry) => entry.clientId === client.id && entry.item === ids[index],
+            );
+          let open = new Map();
+          if (opening.some(({ index }) => earlier(index))) {
+            await guard();
+            open = new Map(
+              (await native({ op: "tabs" })).map((tab) => [tabKey(tab), tab]),
+            );
+          }
+          for (const { index, url } of opening) {
+            const entry = earlier(index);
+            if (entry) {
+              const tab = open.get(tabKey(entry));
+              let origin = null;
+              try {
+                origin = new URL(tab.url).origin;
+              } catch {}
+              if (tab && definition.origins.includes(origin)) {
+                tabs[index] = { ...tab };
+                entry.until = now() + BATCH_TAB_MS;
+                continue;
+              }
+              // Gone, or it left the tool's sites: the owner's now.
+              batchTabs.delete(tabKey(entry));
+              saveTabs();
+            }
+            if (batchTabs.size >= BATCH_TABS) {
+              outcomes[index] = {
+                status: "not_started",
+                code: "tab_limit",
+                error: `Reach already has ${BATCH_TABS} agent tabs open. They close when the batch that uses them ends, or within ${BATCH_TAB_MS / 60000} minutes.`,
+              };
+              continue;
+            }
+            await guard();
+            const tab = await native({ op: "create", url, background: true });
+            // The address it was opened with: the item's run waits there
+            // for the page instead of reading a half-started tab.
+            tabs[index] = { ...tab, url };
+            batchTabs.set(tabKey(tab), {
+              clientId: client.id,
+              appPath,
+              origins: definition.origins,
+              window: tab.window,
+              tab: tab.tab,
+              url,
+              item: ids[index],
+              until: now() + BATCH_TAB_MS,
+              attempts: 0,
+            });
+            saveTabs();
+          }
+        });
+      } catch (error) {
+        stop = failed(error);
+        if (error.code === "setup_required")
+          onSetupRequired(input.browser, client.name);
+      }
+    let ran = 0,
+      started = false,
+      loading = 0;
+    for (const [index, values] of input.items.entries()) {
+      if (outcomes[index]) continue;
+      // Every call moves at least one item forward.
+      if (!known(index) && (stop || signal?.aborted || (started && now() - startedAt >= batchMs))) {
+        outcomes[index] = stop
+          ? { ...stop, status: "not_started" }
+          : { status: "not_started" };
+        continue;
+      }
+      const fresh = !known(index);
+      started ||= fresh;
+      try {
+        const result = await api.run(
+          authorize,
+          { id: input.id, browser: input.browser, requestId: ids[index], values },
+          { signal, tab: tabs[index] || null, background: true },
+        );
+        if (fresh) ran++;
+        outcomes[index] = {
+          status: result.status,
+          completedSteps: result.completedSteps,
+          totalSteps: result.totalSteps,
+          ...(result.code ? { code: result.code, error: result.error } : {}),
+          ...(result.data ? { data: result.data } : {}),
+        };
+      } catch (error) {
+        // Refused before it started (busy, access): nothing happened yet.
+        outcomes[index] = known(index)
+          ? failed(error)
+          : { ...failed(error), status: "not_started" };
+      }
+      if (fresh && outcomes[index].code === "loading") loading++;
+      // Two pages that never settled on their address: the site rewrites
+      // it, and each item left would wait out its load the same way.
+      if (fresh && (BATCH_STOPS.includes(outcomes[index].code) || loading >= 2))
+        stop = { status: "not_started", code: outcomes[index].code, error: outcomes[index].error };
+    }
+    // Close the tabs Reach opened for these items, unless the agent keeps
+    // them for the handles they hold. Only Reach's own tabs, only while
+    // they're still on the tool's sites, and only for items that finished
+    // or never started: a stopped or uncertain item's tab is the owner's
+    // and the agent's to inspect.
+    const itemTabs = input.items.map((values, index) => {
+      const used = tabs[index] ? [tabs[index]] : [];
+      for (const [name, field] of Object.entries(definition.inputs))
+        if (field.type === "handle" && typeof values[name] === "string") {
+          const handle = handles.get(values[name]);
+          if (handle?.clientId === client.id) used.push(handle.target);
+        }
+      return used.filter(
+        (tab) => batchTabs.get(tabKey(tab))?.clientId === client.id,
+      );
+    });
+    const settled = (index) => ["completed", "not_started"].includes(outcomes[index].status);
+    const left = outcomes.filter((item) => item.status === "not_started").length;
+    const kept = new Set(),
+      closing = new Map();
+    itemTabs.forEach((used, index) => {
+      if (used.length && (input.keepTabs || !settled(index))) kept.add(index);
+    });
+    // A tab a kept item still uses stays open too.
+    const keep = new Set([...kept].flatMap((index) => itemTabs[index].map(tabKey)));
+    itemTabs.forEach((used, index) => {
+      if (!kept.has(index))
+        for (const tab of used) if (!keep.has(tabKey(tab))) closing.set(tabKey(tab), tab);
+    });
+    // Kept tabs close on their own once their handles have expired.
+    for (const index of kept)
+      for (const tab of itemTabs[index]) {
+        const entry = batchTabs.get(tabKey(tab));
+        if (entry) entry.until = now() + BATCH_TAB_MS;
+      }
+    // The rest are due now: what can't close here, the sweep closes.
+    for (const key of closing.keys()) {
+      const entry = batchTabs.get(key);
+      if (entry) entry.until = now();
+    }
+    saveTabs();
+    let closedTabs = 0;
+    // Closing waits for nothing: past the budget, the sweep closes them.
+    if (closing.size && now() - startedAt < batchMs + 25000)
+      try {
+        closedTabs = await exclusive(({ guard, signal: abort }) =>
+          closeTabs(
+            [...closing.keys()].map((key) => batchTabs.get(key)).filter(Boolean),
+            appPath,
+            { guard, signal: abort },
+          ),
+        );
+      } catch {
+        /* paused or busy: the sweep closes them */
+      }
+    // Round trips the agent didn't make: about one tool call per item.
+    if (ran > 1)
+      savings?.record({ agent: "browser", kind: "tab-batch", tokens: (ran - 1) * 300, count: ran });
+    record(
+      "agent",
+      `${client.name} ran ${definition.title} on ${input.items.length} tabs`,
+    );
+    return {
+      protocol: TOOL_PROTOCOL,
+      id: definition.id,
+      requestId: input.requestId,
+      browser: input.browser,
+      status: outcomes.every((item) => item.status === "completed")
+        ? "completed"
+        : left || outcomes.some((item) => item.status === "completed")
+          ? "partial"
+          : "stopped",
+      items: outcomes.map((item, index) => ({ index, requestId: ids[index], ...item })),
+      tabsClosed: closedTabs,
+      // The items whose tabs are still open, for their handles or to inspect.
+      ...(kept.size ? { tabsKept: [...kept] } : {}),
+      ...(left
+        ? {
+            next: "Call again with the same requestId and items to run the rest; finished items are never repeated.",
+          }
+        : {}),
+    };
+  }
   return api;
 }
 
@@ -1156,6 +1722,19 @@ export function agentToolRoutes(app, { tools }) {
     } catch (error) {
       // A finished run's result must not be lost because access lapsed mid-run.
       if (result?.status !== "completed") throw error;
+    }
+    res.json(result);
+  });
+  app.post("/api/browser/tools/batch", async (req, res) => {
+    const result = await tools.batch(
+      agent(req),
+      body(req, ["id", "browser", "requestId", "items", "keepTabs"]),
+    );
+    try {
+      req.reauthorize();
+    } catch (error) {
+      // Finished items' results must not be lost because access lapsed mid-batch.
+      if (!result?.items?.some((item) => item.status === "completed")) throw error;
     }
     res.json(result);
   });

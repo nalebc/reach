@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { atomicJson, loadJson } from "../server/core.mjs";
+import { atomicJson, loadJson, openPairingWindow } from "../server/core.mjs";
 import { stateDir, command, packaged } from "./home.mjs";
-import { readPreferences, configure, preferencesFile } from "./configure.mjs";
+import { protectedFolder } from "./background-service.mjs";
+import { readPreferences, configure, preferencesFile, accountApproval } from "./configure.mjs";
 
 // First-run setup for `./reach`: one guided flow that gets this computer ready,
 // then starts Reach. Every step saves as it finishes, so stopping (Ctrl+C) and
@@ -29,10 +30,14 @@ export function linkProblem(status) {
 }
 const openPage = (url) =>
   new Promise((resolve) => {
-    if (process.platform !== "darwin" || !process.stdout.isTTY)
+    const platform = process.platform;
+    if (!["darwin", "win32"].includes(platform) || !process.stdout.isTTY)
       return resolve();
-    import("node:child_process").then(({ execFile }) =>
-      execFile("open", [url], () => resolve()),
+    Promise.all([
+      import("node:child_process"),
+      import("./tailscale-connect.mjs"),
+    ]).then(([{ execFile }, { pageOpener }]) =>
+      execFile(...pageOpener(platform, url), () => resolve()),
     );
   });
 const onboardingFile = (root) => path.join(stateDir(root), "onboarding.json");
@@ -90,7 +95,7 @@ function board(print, steps, progress, activeId) {
 function labelFor(id, state) {
   if (id === "invites") return state === "skipped" ? "set up later" : "ready";
   if (id === "background")
-    return state === "background" ? "runs in the background" : "this terminal";
+    return state === "background" ? "runs in the background" : state === "login" ? "opens in Terminal at sign-in" : "this terminal";
   return "done";
 }
 
@@ -113,15 +118,22 @@ function makeSteps(root, deps) {
     deps.dataDir ||
     process.env.REACH_DATA ||
     path.join(stateDir(root), "quick");
+  // Windows approves phones by pairing code (configure.mjs accountApproval):
+  // no account or folders to save, and no start page for invites.
+  const byAccount = accountApproval(platform);
   return [
     {
       id: "account",
-      title: "Tailscale account & sharing",
+      title: byAccount ? "Tailscale account & sharing" : "Tailscale on this computer",
       async run({ print, select, ask, explicit }) {
         const ensureTailscale =
           deps.ensureTailscale ||
           (await import("./tailscale-connect.mjs")).ensureTailscale;
-        await ensureTailscale(deps.tailscale || { select, print });
+        const status = await ensureTailscale(deps.tailscale || { select, print });
+        if (!byAccount)
+          return {
+            note: status?.User?.[status?.Self?.UserID]?.LoginName || "connected",
+          };
         const prefs = await (deps.configure || configure)(root, {
           select,
           ask,
@@ -151,6 +163,10 @@ function makeSteps(root, deps) {
           deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
         const deadline = Date.now() + (deps.waitMs ?? 15 * 60_000);
         let shown = "";
+        // The private socket Tailscale reaches Reach through must fit macOS's
+        // path limit: a long account name is said now, not after setup.
+        if (byAccount)
+          (deps.socketPath || (await import("../server/tailscale-auth.mjs")).serveSocketPath)(root);
         for (;;) {
           const problem = linkProblem(await status());
           if (!problem) return { note: "ready" };
@@ -161,7 +177,7 @@ function makeSteps(root, deps) {
                 ? `  Turn on MagicDNS for your tailnet: one switch on this page (opening it):\n  ${DNS_PAGE}`
                 : `  Turn on HTTPS certificates for your tailnet: one click on this page (opening it):\n  ${DNS_PAGE}`,
             );
-            print("  Waiting… (Ctrl+C to stop; ./reach picks up here)");
+            print(`  Waiting… (Ctrl+C to stop; ${command} picks up here)`);
             await (deps.open || openPage)(DNS_PAGE);
           }
           if (Date.now() > deadline)
@@ -176,6 +192,7 @@ function makeSteps(root, deps) {
       id: "invites",
       title: "Invite people & agents without the Tailscale app",
       optional: true,
+      skip: !byAccount,
       async run({ print, select, ask, explicit }) {
         const choice = explicit
           ? "now"
@@ -199,7 +216,9 @@ function makeSteps(root, deps) {
         ensureDeviceId(dataDir);
         const setupInvites =
           deps.setupInvites || (await import("./invites.mjs")).setupInvites;
-        await setupInvites(root, { select, ask, print, ...deps.invitesDeps });
+        const invites = await setupInvites(root, { select, ask, print, ...deps.invitesDeps });
+        // Declined at the policy change: set up later, setup goes on.
+        if (invites?.ready === false) return { state: "skipped" };
         return { state: "done", note: "ready" };
       },
     },
@@ -209,6 +228,9 @@ function makeSteps(root, deps) {
       optional: true,
       skip: platform !== "darwin",
       async run({ select }) {
+        // In Documents (and the like) a background service never starts:
+        // Reach opens in Terminal at sign-in instead.
+        const folder = (deps.protectedFolder || protectedFolder)(root, { platform });
         const choice = await select({
           message: "Keep Reach running after you close this terminal?",
           choices: [
@@ -217,11 +239,17 @@ function makeSteps(root, deps) {
               label: "No, only while this terminal is open",
               recommended: true,
             },
-            {
-              value: "background",
-              label: "Yes, start it at login and keep it running",
-              description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
-            },
+            folder
+              ? {
+                  value: "login",
+                  label: "Yes, open it in Terminal each time I sign in",
+                  description: `macOS keeps background services out of your ${folder} folder, where Reach is. Terminal can use it, and keeps Reach's live screen and control.`,
+                }
+              : {
+                  value: "background",
+                  label: "Yes, start it at login and keep it running",
+                  description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
+                },
           ],
         });
         return { state: choice, note: labelFor("background", choice) };
@@ -314,7 +342,7 @@ export async function runSetup(root, { only, deps = {} } = {}) {
   return { launch: launchOf(progress), progress, ran };
 }
 const launchOf = (progress) =>
-  progress.steps.background === "background" ? "background" : "foreground";
+  ["background", "login"].includes(progress.steps.background) ? progress.steps.background : "foreground";
 
 // After a first run moves Reach to the background: wait for it to start, show
 // the link (and QR), then approve the phone right here, by the code it shows,
@@ -336,8 +364,22 @@ export async function connectPhone(root, { since = 0, deps = {} } = {}) {
       const host = loadJson(hostFile, null);
       return host?.service ? host : null;
     });
+  // What the service said when it failed to start (its error log, written
+  // since it was installed): shown, rather than waiting minutes in silence.
+  const errorLog = path.join(stateDir(root), "logs", "companion-error.log");
+  const readFailure =
+    deps.readFailure ||
+    (() => {
+      try {
+        if (fs.statSync(errorLog).mtimeMs < since) return "";
+        return fs.readFileSync(errorLog, "utf8").trim().split("\n").filter(Boolean).pop() || "";
+      } catch {
+        return "";
+      }
+    });
   print("\n  Starting Reach in the background…");
   let host = null;
+  const started = Date.now();
   for (
     const until = Date.now() + (deps.startMs ?? 5 * 60_000);
     Date.now() < until;
@@ -345,6 +387,14 @@ export async function connectPhone(root, { since = 0, deps = {} } = {}) {
     host = readHost();
     if (host?.origin?.startsWith("https://") && host.dataDir) break;
     host = null;
+    // Still not up a while later, and it said why: it isn't going to be.
+    const failure = Date.now() - started > (deps.failAfterMs ?? 20_000) ? readFailure() : "";
+    if (failure) {
+      print(
+        `  Reach couldn't start in the background: ${failure.replace(/^Reach:\s*/, "")}\n  Its log: ${errorLog}\n  Run ${command} uninstall, fix that, then ${command} setup background again. Or run ${command} here meanwhile.`,
+      );
+      return false;
+    }
     await sleep(1000);
   }
   if (!host) {
@@ -370,13 +420,19 @@ export async function connectPhone(root, { since = 0, deps = {} } = {}) {
   const link =
     host.link ||
     ((await reachable(`${start}/api/health`)) ? start : host.origin);
+  // At the one address, a phone without the Tailscale app signs in from its
+  // browser: the start page answers while you're here to approve it.
+  const oneAddress = link !== host.origin;
+  if (oneAddress) (deps.openWindow || openPairingWindow)(host.dataDir);
   print(`\n  Open on your phone: ${link}\n`);
   try {
     const qr = deps.qr || (await import("qrcode-terminal")).default;
     qr.generate(link, { small: true });
   } catch {}
   print(
-    `  Then tap Connect. Waiting for your phone… (Ctrl+C to do it later with ${command} approve)`,
+    oneAddress
+      ? `  With the Tailscale app, it opens straight away; without it, sign in to Tailscale in the phone's browser in the next 15 minutes.\n  Then tap Connect. Waiting for your phone… (Ctrl+C to do it later with ${command} pair)`
+      : `  Your phone needs the Tailscale app, on and signed in. Then tap Connect. Waiting for your phone… (Ctrl+C to do it later with ${command} approve)`,
   );
   const approvals = await import("./approve-device.mjs");
   const pending =

@@ -2,6 +2,7 @@ import {
   readPreferences,
   assertSocketSupport,
   preferencesFile,
+  accountApproval,
 } from "./configure.mjs";
 import { serveSocketPath } from "../server/tailscale-auth.mjs";
 import {
@@ -27,7 +28,9 @@ import {
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
 import { createReach } from "../server/index.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
-import { atomicJson, loadJson } from "../server/core.mjs";
+import { atomicJson, loadJson, openPairingWindow } from "../server/core.mjs";
+import { publicNameState } from "../server/public-dns.mjs";
+import { phoneLinkText, UNPUBLISHED } from "./phone-link.mjs";
 import {
   prepareTailscale,
   tailscaleCli,
@@ -35,13 +38,18 @@ import {
   ownsServeRoute,
   tailscaleVersions,
 } from "./tailscale.mjs";
-import { packaged, stateDir } from "./home.mjs";
+import { command, packaged, stateDir } from "./home.mjs";
+import { pageOpener } from "./tailscale-connect.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { setStartInfo } from "../server/delivery.mjs";
 import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 
 export async function launch(options, root) {
+  // Started for you (a restart from the phone, at sign-in): read once, and
+  // not handed on to the terminals and agents Reach starts.
+  const openedForYou = !!process.env.REACH_OPENED_BY;
+  delete process.env.REACH_OPENED_BY;
   // When Reach was first set up here (its settings file), for the one link.
   const setupSince = () => {
     try {
@@ -65,9 +73,7 @@ export async function launch(options, root) {
   const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
   const preferences =
-    !options.local && process.platform !== "win32"
-      ? readPreferences(root)
-      : null;
+    !options.local && accountApproval() ? readPreferences(root) : null;
   const socketPath = preferences ? serveSocketPath(root) : null;
   if (preferences) await assertSocketSupport();
   if (options.service && !options.port)
@@ -282,8 +288,10 @@ export async function launch(options, root) {
         if (!setup || setupOpened.has(setup[0])) return;
         setupOpened.add(setup[0]);
         console.log(`Reach: finish Tailscale setup: ${setup[0]}`);
-        if (process.stdout.isTTY && process.platform === "darwin")
-          spawn("open", [setup[0]], { stdio: "ignore" }).on("error", () => {});
+        if (process.stdout.isTTY && ["darwin", "win32"].includes(process.platform)) {
+          const [file, args] = pageOpener(process.platform, setup[0]);
+          spawn(file, args, { stdio: "ignore", windowsHide: true }).on("error", () => {});
+        }
       };
       // The private route is Tailscale daemon state (a background Serve), in
       // every mode: it survives dropped sessions, sleeps and Reach restarts,
@@ -346,7 +354,9 @@ export async function launch(options, root) {
           file: funnelFile,
           window: reach.funnelWindow,
           log,
-          report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); },
+          // Funnel not allowed for this computer yet: Tailscale's answer
+          // carries the page that allows it, printed and opened like setup's.
+          report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); setupHint(message); },
           changed: (open) => {
             if (open) routes.public.since = Date.now();
             routes.public.open = open;
@@ -386,6 +396,16 @@ export async function launch(options, root) {
       console.log("  Code works once and expires in 10 minutes.");
     };
     if (preferences) {
+      // The one address once Reach holds it (port 443): with the Tailscale
+      // app it's Reach itself; without the app, the start page, while a
+      // pairing window is open. Otherwise the private address.
+      startUrl = publicLink?.live ? publicStart : "";
+      // Someone at this terminal, reading the QR: a phone without the
+      // Tailscale app may sign in from its browser for the next minutes.
+      // Not a window Reach opened by itself (a restart from the phone, at
+      // sign-in: REACH_OPENED_BY, scripts/login-start.mjs).
+      const attended = !options.service && !!process.stdout.isTTY && !openedForYou;
+      if (startUrl && attended) openPairingWindow(dataDir);
       // Linked computers share one link: the one where Reach started first.
       const link = startUrl
         ? reach.fleet?.homeLink({ start: startUrl, since: setupSince() }) ||
@@ -396,13 +416,18 @@ export async function launch(options, root) {
         `\n${heading()}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
       if (!options.service) qr.generate(link, { small: true });
-      if (startUrl && link !== startUrl)
-        console.log(`  This computer's own link works too: ${startUrl}`);
       console.log(
-        startUrl
-          ? "  The same link every time, with the Tailscale app on or off (without it, you sign in to Tailscale in the browser; nothing to install).\n  Approve new devices here, or run ./reach approve in another terminal."
-          : "  The QR contains only your private address. Connect Tailscale on your phone, then tap Connect.\n  Approve new devices here, or run ./reach approve in another terminal.",
+        phoneLinkText({
+          oneAddress: !!startUrl,
+          attended,
+          ownLink: startUrl && link !== startUrl ? startUrl : "",
+          publicProblem: publicStart && !startUrl ? publicLink?.lastError || "the public link is off." : "",
+        }),
       );
+      if (startUrl)
+        void publicNameState(new URL(startUrl).hostname).then((state) => {
+          if (state === "missing" && !stopped) console.log(UNPUBLISHED);
+        });
       if (!options.service) {
         const seen = new Set();
         let unreadable = false;
@@ -463,7 +488,7 @@ export async function launch(options, root) {
       }
     } else if (options.service)
       console.log(
-        `Reach is ready · ${origin}\nRun ./reach pair for a fresh pairing code and QR.`,
+        `Reach is ready · ${origin}\nRun ${command} pair for a fresh pairing code and QR.`,
       );
     else showCode();
     if (fs.existsSync(reach.config.agentPolicyFile))

@@ -51,6 +51,8 @@ export type EditableAccess = {
     terminalIds?: string[];
     screen?: string;
     appAccess?: { id: string; name?: string; mode: "view" | "control" }[];
+    // Always: no end date; it ends when unused for a week.
+    standing?: boolean;
     // Preset sessions.
     preset?: string;
     apps?: { id: string; name?: string; bundleId?: string }[];

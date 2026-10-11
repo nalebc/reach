@@ -1,8 +1,9 @@
 """Compose the README tour from CUA screenshots, without changing their UI.
 
 Requires Pillow. Run: python render.py CAPTURE_DIRECTORY OUTPUT_DIRECTORY
-Captures: home.png, home-000.png…home-031.png, files.png, codex.png,
-chat.png, explore.png, settings.png, agents.png. Optional --frames DIR exports a video timeline.
+Captures (scripts/demo/capture.mjs makes them): home.png, optionally
+home-000.png…home-031.png, screen.png, invite.png, approve.png, chat.png,
+files.png. Optional --frames DIR exports a video timeline.
 """
 from pathlib import Path
 import argparse
@@ -18,6 +19,12 @@ args.output.mkdir(parents=True, exist_ok=True)
 W, H = 1120, 800
 BG, WHITE, MINT, MUTED = "#101511", "#f2f3eb", "#c4ebd3", "#96a69a"
 
+def mono(size):
+    for path in ["/System/Library/Fonts/Menlo.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default(size=size)
+
 def font(size, bold=False):
     names = (["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"] if bold else
              ["/System/Library/Fonts/Supplemental/Arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"])
@@ -27,17 +34,16 @@ def font(size, bold=False):
     return ImageFont.load_default(size=size)
 
 scenes = [
-    ("home", "Your computer.\nStill with you.", "A familiar workspace,\nright on your phone.", "01  /  YOUR WORKSPACE"),
-    ("files", "That file\nyou needed.", "Browse folders. Find your files.\nShare them from your phone.", "02  /  FILES"),
-    ("codex", "Pick up\nthe conversation.", "Codex and Claude conversations,\nin one mobile workspace.", "03  /  CONVERSATIONS"),
-    ("chat", "Keep an\nidea moving.", "Continue a conversation\nwith Codex on your computer.", "04  /  CODEX"),
-    ("explore", "More of\nyour computer.", "Apps, terminals, invitations,\nand agent access in one place.", "05  /  EXPLORE"),
-    ("settings", "Make yourself\nat home.", "Computer preferences\nand access settings, together.", "06  /  SETTINGS"),
-    ("agents", "Invite an\nassistant.", "Choose its access.\nPause or end it when you need.", "07  /  AGENT ACCESS"),
+    ("home", "Your Mac.\nIn your pocket.", "Screen, files, terminals and chats,\nfrom any phone browser.", "01  /  YOUR MAC"),
+    ("screen", "Full control.\nIn real time.", "Hardware H.264, up to 60 fps,\nstraight from your Mac.", "02  /  LIVE SCREEN"),
+    ("invite", "Give an agent\nyour Mac.", "Pick a preset. It joins with\none command, over MCP.", "03  /  AGENTS OVER MCP", "$ claude mcp add reach -- …"),
+    ("approve", "Nothing gets in\nwithout you.", "Match its code, then approve.\nPause or end it any time.", "04  /  APPROVAL"),
+    ("chat", "Your agents,\non the go.", "Codex and Claude Code chats:\nread, reply, approve.", "05  /  CHATS"),
+    ("files", "That file\nyou needed.", "Browse, preview and share\nfrom your phone.", "06  /  FILES"),
 ]
 
 def compose(scene, screenshot, progress=0):
-    _, title, subtitle, label = scenes[scene]
+    _, title, subtitle, label, *code = scenes[scene]
     im = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(im)
     # A restrained dotted connection motif echoes the app's own identity.
@@ -49,9 +55,12 @@ def compose(scene, screenshot, progress=0):
     d.text((72,190),label,font=font(13,True),fill=MINT)
     d.multiline_text((50,249),title,font=font(55,True),fill=WHITE,spacing=8)
     d.multiline_text((54,427),subtitle,font=font(23),fill=MUTED,spacing=9)
+    if code:
+        d.rounded_rectangle((54,494,490,528), radius=9, fill="#0b100d", outline="#2c3a31")
+        d.text((68,503), code[0], font=mono(15), fill=MINT)
     d.line((54,542,490,542), fill="#344139", width=1)
     d.text((54,563),"Private access through Tailscale",font=font(17),fill=MINT)
-    d.text((54,596),"Phone browser + your computer",font=font(15),fill=MUTED)
+    d.text((54,596),"Phone browser + your Mac",font=font(15),fill=MUTED)
     # Actual browser viewport is preserved at a uniform scale.
     shot = Image.open(screenshot).convert("RGB")
     shot.thumbnail((340,736),Image.Resampling.LANCZOS)
@@ -73,8 +82,8 @@ for i,(name,*_) in enumerate(scenes):
     if previous:
         for t in range(1,9):
             frames.append(Image.blend(previous,image,t/8));durations.append(50)
-    if name=="home":
-        moving=sorted(args.captures.glob("home-[0-9][0-9][0-9].png"))
+    moving=sorted(args.captures.glob("home-[0-9][0-9][0-9].png")) if name=="home" else []
+    if moving:
         for p in moving:
             frames.append(compose(i,p));durations.append(70)
         frames.append(image);durations.append(1300)

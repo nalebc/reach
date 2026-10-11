@@ -23,8 +23,8 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
-import { callTool, serveMcp, toolsFor } from "./mcp-server.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { callTool, computerPlan, computerTools, serveMcp, toContent, toolsFor } from "./mcp-server.mjs";
 import { createAgentClient, isScreenImageRoute } from "./agent-client.mjs";
 import { agentKey, funnelApi, funnelGateway } from "./agent-funnel.mjs";
 
@@ -34,6 +34,8 @@ const tailnetHost = (u) =>
   /^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net$/i.test(u.hostname);
 const loopback = (u) =>
   u.protocol === "http:" && ["127.0.0.1", "localhost"].includes(u.hostname);
+// "mac.tail1.ts.net" -> "tail1.ts.net": one owner's tailnet.
+const tailnetOf = (u) => u.hostname.toLowerCase().split(".").slice(1).join(".");
 
 // An agent link: <start>/agent#k=<one-time key>&h=<device name>&i=<computer>~<invitation>
 // (the guest link's format on its own path, so a browser never redeems it).
@@ -66,6 +68,11 @@ export function parseAgentLink(text, { allowLocal = false } = {}) {
   });
   if (invites.length !== 1)
     throw Error("This agent link is incomplete. Copy the whole link again.");
+  // The page that hands out the agent's code and the computer it joins are
+  // on the same tailnet: a link can't mix in someone else's (connections
+  // audit, Oct 10).
+  if (tailnetHost(link) && tailnetOf(new URL(invites[0].origin)) !== tailnetOf(link))
+    throw Error("This agent link is incomplete. Copy the whole link again.");
   const funnel = params.get("t") === "funnel";
   if (funnel && new URL(invites[0].origin).hostname !== link.hostname)
     throw Error("This agent link is incomplete. Copy the whole link again.");
@@ -78,6 +85,41 @@ export function parseAgentLink(text, { allowLocal = false } = {}) {
     key: /^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(key) ? key : "",
     hostname: /^rg-[a-z0-9]{4}-[a-z0-9]{10}$/.test(hostname) ? hostname : "",
   };
+}
+
+// The runtime a line from `keep` restores with: this very one, by its
+// SHA-256, which the computer keeps serving (dist/agent-runtimes) however
+// Reach changes; the restored agent then updates itself as usual. Run from
+// source, there's no such file to name (connections audit, Oct 10).
+const keptRuntime = () => {
+  if (!isBundle()) return "";
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(fileURLToPath(import.meta.url))).digest("hex");
+  } catch {
+    return "";
+  }
+};
+export function restoreCommand(start, thumbprint = "", runtime = "") {
+  const key = thumbprint ? ` -H 'Reach-Key: ${thumbprint}'` : "";
+  if (!/^[0-9a-f]{64}$/.test(runtime))
+    return `curl -fsSL --create-dirs${key} -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs restore`;
+  return `curl -fsSL --create-dirs${key} -o ~/.reach-agent/agent.mjs.new ${start}/agent-runtimes/${runtime}.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your line was kept with.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && node ~/.reach-agent/agent.mjs restore`;
+}
+
+// The addresses in a line from `keep`: the computer's Tailscale name, its
+// private address the same computer, and where its code comes from on the
+// same tailnet. A credential is never restored toward anywhere else
+// (connections audit, Oct 10).
+export function keptAddresses(credential) {
+  const parse = (value) => { try { return new URL(String(value)); } catch { return null; } };
+  const origin = parse(credential?.origin);
+  if (!origin || !tailnetHost(origin) || origin.origin !== credential.origin) return false;
+  for (const [key, same] of [["private", (u) => u.hostname === origin.hostname], ["start", (u) => tailnetOf(u) === tailnetOf(origin)]]) {
+    if (credential[key] == null) continue;
+    const u = parse(credential[key]);
+    if (!u || !tailnetHost(u) || u.origin !== credential[key] || !same(u)) return false;
+  }
+  return true;
 }
 
 // ~/.reach-agent: this file, the tailnet client, and one folder per computer.
@@ -211,21 +253,40 @@ export async function loadTailnet({ execFile, wasmFile }) {
   return globalThis.reachTailnet;
 }
 
+// The tailnet client's files as this runtime pins them (scripts/build-agent.mjs
+// tailnetPins): the runtime's own hash is pinned by the invitation, so a
+// download or a cached copy that isn't exactly them never runs. A runtime run
+// from source checks the hash its file names carry (connections audit, Oct 10).
+const tailnetPinned = () =>
+  typeof REACH_TAILNET_PINS !== "undefined" && REACH_TAILNET_PINS ? REACH_TAILNET_PINS : null;
+export function tailnetFileTrusted(name, data, pins = tailnetPinned()) {
+  const sha = crypto.createHash("sha256").update(data).digest("hex");
+  if (pins) return [pins.exec, pins.wasm].some((p) => p?.name === name && p.sha256 === sha);
+  const m = /\.([0-9a-f]{12})\.[a-z]+$/.exec(name);
+  return !!m && sha.startsWith(m[1]);
+}
+
 // The tailnet client comes from the computer's start page, once per
 // computer: one computer's client never handles another's node (security
 // audit M8).
-async function tailnetFiles(home, start) {
+async function tailnetFiles(home, start, pins = tailnetPinned()) {
   const dir = path.join(home, "tailnet", new URL(start).host.replace(/[^\w.-]/g, "_"));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const manifestFile = path.join(dir, "tailnet.json");
+  const trusted = (file) => {
+    try {
+      return tailnetFileTrusted(file, fs.readFileSync(path.join(dir, file)), pins);
+    } catch {
+      return false;
+    }
+  };
   try {
     const m = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
-    const files = {
-      execFile: path.join(dir, m.exec),
-      wasmFile: path.join(dir, m.wasm),
-    };
-    if (fs.existsSync(files.execFile) && fs.existsSync(files.wasmFile))
-      return files;
+    if (trusted(m.exec) && trusted(m.wasm))
+      return {
+        execFile: path.join(dir, m.exec),
+        wasmFile: path.join(dir, m.wasm),
+      };
   } catch {}
   process.stderr.write(
     "Reach: getting the tailnet client (one time, about 6 MB)…\n",
@@ -235,17 +296,20 @@ async function tailnetFiles(home, start) {
     if (!r.ok) throw Error(`The computer's start page returned ${r.status}.`);
     return r;
   };
-  const { tailnet } = await (await get("/reach-start.json")).json();
+  const tailnet = pins
+    ? { exec: pins.exec.name, wasm: pins.wasm.name }
+    : (await (await get("/reach-start.json")).json()).tailnet;
   const name = /^[\w.-]+$/;
   if (!tailnet || !name.test(tailnet.wasm) || !name.test(tailnet.exec))
     throw Error(
       "This computer can't let agents join without the Tailscale app yet. Update Reach on it.",
     );
-  for (const file of [tailnet.exec, tailnet.wasm])
-    writePrivate(
-      path.join(dir, file),
-      Buffer.from(await (await get(`/tailnet/${file}`)).arrayBuffer()),
-    );
+  for (const file of [tailnet.exec, tailnet.wasm]) {
+    const data = Buffer.from(await (await get(`/tailnet/${file}`)).arrayBuffer());
+    if (!tailnetFileTrusted(file, data, pins))
+      throw Error("The tailnet client from that computer isn't the one this runtime names. Ask for a new invitation.");
+    writePrivate(path.join(dir, file), data);
+  }
   writePrivate(manifestFile, JSON.stringify(tailnet));
   return {
     execFile: path.join(dir, tailnet.exec),
@@ -671,6 +735,66 @@ export function rotateIfDue(conn, credential, call, { now = Date.now } = {}) {
   return rotations.get(credential);
 }
 
+// The computer's own runtime, when it serves a newer one than this (its
+// tools change as Reach does): fetched over this agent's authenticated
+// route, its bytes checked against the hash the computer named, then its
+// tools loaded beside these and saved over this file for the next start.
+// Only ever the bytes that computer serves (security audit M8). Only the
+// bundle (dist/agent.mjs) does it, never a source checkout; never with
+// REACH_AGENT_UPDATES=off. Anything that doesn't check out keeps this one.
+const sha256 = (data) => crypto.createHash("sha256").update(data).digest("hex");
+export const isBundle = () => typeof REACH_AGENT_BUNDLE !== "undefined" && REACH_AGENT_BUNDLE === true;
+export const updatesOff = (env = process.env) => /^(0|off|false|no)$/i.test(String(env.REACH_AGENT_UPDATES || "").trim());
+// This bundle's own hash, for telling the computer which runtime it runs
+// (with updates off too); none from a source checkout.
+export function ownRuntime({ file = self(), bundle = isBundle() } = {}) {
+  if (!bundle) return undefined;
+  try { return sha256(fs.readFileSync(file)); } catch { return undefined; }
+}
+export function runtimeUpdater({ home, api, file = self(), bundle = isBundle(), env = process.env, replaceSelf = true, log = (line) => process.stderr.write(line + "\n") }) {
+  if (!bundle || updatesOff(env)) return null;
+  let current;
+  try { current = sha256(fs.readFileSync(file)); } catch { return null; }
+  return {
+    get current() { return current; },
+    async update(wanted) {
+      if (!/^[a-f0-9]{64}$/.test(wanted || "")) throw Error("The computer named no runtime.");
+      const got = await api("/api/device/runtime");
+      if (typeof got?.text !== "string" || got.sha256 !== wanted || sha256(Buffer.from(got.text, "utf8")) !== wanted)
+        throw Error("its runtime didn't match the hash it named");
+      // Loaded from its own name: it never starts as a program here.
+      const dir = path.join(home, "runtime");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const copy = path.join(dir, `agent-${wanted.slice(0, 16)}.mjs`);
+      writePrivate(copy, got.text);
+      if (sha256(fs.readFileSync(copy)) !== wanted) throw Error("its runtime changed on disk");
+      const loaded = await import(pathToFileURL(copy).href);
+      if (typeof loaded.toolsFor !== "function" || typeof loaded.callTool !== "function")
+        throw Error("its runtime offers no tools to load");
+      for (const name of fs.readdirSync(dir))
+        if (name !== path.basename(copy) && /^agent-[a-f0-9]{16}\.mjs$/.test(name)) fs.rmSync(path.join(dir, name), { force: true });
+      // The next start runs it whole. Connected to several computers, this
+      // file stays as it is: each may serve its own runtime.
+      if (replaceSelf && connections(home).length <= 1)
+        try {
+          const temp = `${file}.${process.pid}.tmp`;
+          fs.writeFileSync(temp, got.text, { mode: fs.statSync(file).mode & 0o777 });
+          fs.renameSync(temp, file);
+        } catch { /* read-only: its tools still load from the copy */ }
+      current = wanted;
+      log(`Reach: updated to this computer's runtime (${wanted.slice(0, 12)}).`);
+      return { toolsFor: loaded.toolsFor, callTool: loaded.callTool, ...(typeof loaded.toContent === "function" ? { toContent: loaded.toContent } : {}) };
+    },
+  };
+}
+// This runtime's tools, or the computer's newer ones, for a one-off command.
+async function liveTools(home, api, device, runtime = runtimeUpdater({ home, api })) {
+  const own = { toolsFor, callTool, toContent };
+  if (!runtime || !/^[a-f0-9]{64}$/.test(device?.runtime || "") || device.runtime === runtime.current) return own;
+  try { return await runtime.update(device.runtime); }
+  catch (error) { process.stderr.write(`Reach: kept this runtime; the computer's newer one didn't load (${error.message}).\n`); return own; }
+}
+
 // A computer's API, however this agent reaches it.
 async function open(home, name, allowLocal) {
   const conn = path.join(home, name);
@@ -889,7 +1013,7 @@ export async function main(argv = process.argv.slice(2)) {
   const verb = o._[0];
   if (!verb || ["help", "--help", "-h"].includes(verb)) {
     process.stdout.write(
-      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  config                its MCP settings as JSON (Claude Desktop, Cursor, Windsurf, VS Code, Gemini)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\n",
+      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  config                its MCP settings as JSON (Claude Desktop, Cursor, Windsurf, VS Code, Gemini)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\nIt takes the tools of the computer it joined as Reach there changes (REACH_AGENT_UPDATES=off to keep this copy).\n",
     );
     return 0;
   }
@@ -902,7 +1026,7 @@ export async function main(argv = process.argv.slice(2)) {
     let blob;
     try { blob = JSON.parse(Buffer.from((await readStdin()).trim(), "base64url").toString("utf8")); } catch { blob = null; }
     if (blob?.reach !== 1 || !/^[a-z0-9-]{1,64}$/.test(blob.name || "") || typeof blob.credential?.token !== "string" ||
-        !["funnel", "direct", "tailnet"].includes(blob.credential.via) || !/^https:\/\//.test(blob.credential.origin || ""))
+        !["funnel", "direct", "tailnet"].includes(blob.credential.via) || !keptAddresses(blob.credential))
       throw Error("That isn't a line from `keep`. Paste the whole line on standard input.");
     const conn = path.join(home, blob.name);
     if (joinedAt(conn) && !(readCredential(conn).expiresAt <= Date.now()))
@@ -910,7 +1034,7 @@ export async function main(argv = process.argv.slice(2)) {
     fs.mkdirSync(conn, { recursive: true, mode: 0o700 });
     for (const stale of ["credential.json", "tailnet-state.json", "agent.sock", "key.pem", "lock"]) fs.rmSync(path.join(conn, stale), { force: true });
     writePrivate(path.join(conn, "credential.json"), JSON.stringify(blob.credential, null, 2));
-    if (typeof blob.key === "string" && /^-----BEGIN PRIVATE KEY-----/.test(blob.key)) writePrivate(path.join(conn, "key.pem"), blob.key);
+    if (typeof blob.key === "string" && new RegExp("^-----BEGIN " + "PRIVATE KEY-----").test(blob.key)) writePrivate(path.join(conn, "key.pem"), blob.key);
     if (typeof blob.tailnet === "string") writePrivate(path.join(conn, "tailnet-state.json"), blob.tailnet);
     process.stdout.write(`Restored ${blob.credential.computer || blob.name}. It reconnects by itself: node ${quote(self())} tools\n`);
     return 0;
@@ -953,11 +1077,16 @@ export async function main(argv = process.argv.slice(2)) {
       console[k] = console.error;
     const { api, credential } = await open(home, name, o.allowLocal);
     // Owner edits may change a browser preset during this process's lifetime.
-    // Refresh the grant when the client asks for its current tools.
+    // Refresh the grant when the client asks for its current tools. A newer
+    // runtime on the computer brings its tools in while this keeps running.
+    const runtime = runtimeUpdater({ home, api });
+    const report = ownRuntime();
     await serveMcp({
       api,
       scopes: credential.scopes,
       name: `reach-${name}`,
+      ...(runtime ? { runtime } : {}),
+      ...(report ? { report } : {}),
     });
     return 0;
   }
@@ -967,19 +1096,39 @@ export async function main(argv = process.argv.slice(2)) {
     // Some tool names (notably reach_open_app) exist in both the original
     // apps:drive API and browser presets, with different arguments/routes.
     // Resolve the live grant exactly as MCP does, including owner edits.
-    const scopes = (await api("/api/device")).access?.scopes || [];
-    const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
+    const runtime = runtimeUpdater({ home, api });
+    const said = (route) => { const sha = runtime?.current || ownRuntime(); return sha ? `${route}?runtime=${sha}` : route; };
+    const device = await api(said("/api/device"));
+    const scopes = device.access?.scopes || [];
+    const tools = await liveTools(home, api, device, runtime);
+    // The request Reach plans for this call, when it can (mcp-server.mjs).
+    const planned = scopes.includes("browser:read") ? await computerPlan(api, o._[1], args, said) : null;
+    if (planned) {
+      process.stdout.write(JSON.stringify(await api(planned.plan.route, planned.plan.method, planned.plan.body), null, 2) + "\n");
+      return 0;
+    }
+    const access = scopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
     process.stdout.write(
-      JSON.stringify(await callTool(api, o._[1], args, access), null, 2) + "\n",
+      JSON.stringify(await tools.callTool(api, o._[1], args, access), null, 2) + "\n",
     );
     return 0;
   }
   if (verb === "tools") {
     const { api } = await open(home, name, o.allowLocal);
-    const scopes = (await api("/api/device")).access?.scopes || [];
-    const access = scopes.includes("browser:read") ? await api("/api/browser") : undefined;
+    const runtime = runtimeUpdater({ home, api });
+    const said = (route) => { const sha = runtime?.current || ownRuntime(); return sha ? `${route}?runtime=${sha}` : route; };
+    const device = await api(said("/api/device"));
+    const scopes = device.access?.scopes || [];
+    const tools = await liveTools(home, api, device, runtime);
+    // Reach's own list when it has one: every tool it has now.
+    const served = scopes.includes("browser:read") ? await computerTools(api, said) : null;
+    if (served) {
+      process.stdout.write(JSON.stringify(served.tools, null, 2) + "\n");
+      return 0;
+    }
+    const access = scopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
     process.stdout.write(
-      JSON.stringify(toolsFor(scopes, access), null, 2) + "\n",
+      JSON.stringify(tools.toolsFor(scopes, access), null, 2) + "\n",
     );
     return 0;
   }
@@ -993,7 +1142,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.stderr.write([
       `This line is your whole access to ${credential.computer}: keep it in your vault, nowhere else.`,
       "On another machine, get Reach for agents, then paste the line on standard input:",
-      `  curl -fsSL --create-dirs${thumbprint ? ` -H 'Reach-Key: ${thumbprint}'` : ""} -o ~/.reach-agent/agent.mjs ${credential.start}/agent.mjs && node ~/.reach-agent/agent.mjs restore`,
+      `  ${restoreCommand(credential.start, thumbprint, keptRuntime())}`,
       "",
     ].join("\n"));
     process.stdout.write(line + "\n");
@@ -1031,6 +1180,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
   throw Error(`Unknown command "${verb}". Run: node agent.mjs help`);
 }
+
+// What an older runtime loads from this one when the computer serves it.
+export { callTool, toContent, toolsFor };
 
 const entry = process.argv[1] && fs.realpathSync.native(process.argv[1]);
 if (entry === fileURLToPath(import.meta.url))

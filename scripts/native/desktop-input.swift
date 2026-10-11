@@ -118,6 +118,10 @@ final class Input: @unchecked Sendable {
   // focused or read: only the kind of element under the finger.
   func probe(_ p: [String: Any]) -> [String: Any] {
     probedField = nil
+    // The whole look is bounded: it runs on the same helper as the tap's
+    // click, so a slow app answering never holds that click up. Out of time,
+    // it says "no field" (not "blind": the keyboard button isn't offered).
+    let until = Date().addingTimeInterval(0.3)
     guard let x = p["x"] as? Double, let y = p["y"] as? Double else { return ["field": false] }
     let bounds = CGDisplayBounds(display)
     let at = CGPoint(
@@ -146,7 +150,7 @@ final class Input: @unchecked Sendable {
       }
     }
     // The field itself, or what's drawn inside it (its text, a placeholder).
-    for _ in 0..<4 {
+    for _ in 0..<4 where Date() < until {
       if let field = editableElement(element) {
         return rememberField(field, at)
       }
@@ -160,11 +164,12 @@ final class Input: @unchecked Sendable {
     // meets the field. Look in the window under the finger for a field whose
     // frame holds the point, skipping branches that don't; bounded in time so
     // the tap's click is never held up.
-    if let window = windowOf(hit ?? element),
-      let field = fieldAt(window, at, until: Date().addingTimeInterval(0.25))
+    if Date() < until, let window = windowOf(hit ?? element, until: until),
+      let field = fieldAt(window, at, until: until)
     {
       return rememberField(field, at)
     }
+    guard Date() < until else { return ["field": false] }
     return ["field": false, "blind": opaque(hit ?? element)]
   }
   func rememberField(_ field: AXUIElement, _ at: CGPoint) -> [String: Any] {
@@ -310,14 +315,14 @@ final class Input: @unchecked Sendable {
     AXValueGetValue(size as! AXValue, .cgSize, &extent)
     return CGRect(origin: origin, size: extent)
   }
-  func windowOf(_ element: AXUIElement) -> AXUIElement? {
+  func windowOf(_ element: AXUIElement, until: Date = .distantFuture) -> AXUIElement? {
     if let window = attribute(element, kAXWindowAttribute),
       CFGetTypeID(window) == AXUIElementGetTypeID()
     {
       return (window as! AXUIElement)
     }
     var current = element
-    for _ in 0..<40 {
+    for _ in 0..<40 where Date() < until {
       if attribute(current, kAXRoleAttribute) as? String == "AXWindow" { return current }
       guard let parent = attribute(current, kAXParentAttribute),
         CFGetTypeID(parent) == AXUIElementGetTypeID()
@@ -599,6 +604,12 @@ final class Input: @unchecked Sendable {
       return ["text": text]
     }
     if type == "clipboard-read" {
+      // A password manager marks what it copies as concealed: only the owner
+      // takes that off the Mac.
+      let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+      if NSPasteboard.general.types?.contains(concealed) == true, p["owner"] as? Bool != true {
+        throw NSError(domain: "That's a hidden password; only the owner can copy it.", code: 1)
+      }
       let text = NSPasteboard.general.string(forType: .string) ?? ""
       guard text.utf8.count <= 16384 else {
         throw NSError(domain: "Clipboard text exceeds 16 KiB.", code: 1)

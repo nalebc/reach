@@ -129,23 +129,32 @@ export function presetRouteAllowed(client, method, route) {
   // Trading its credential for a new one (core.mjs rotateCredential).
   if (method === "POST" && route === "/device/rotate") return true;
   if (read && ["/device", "/browser"].includes(route)) return has("browser:read");
+  // A newer runtime for this agent (its tools), from this computer.
+  if (read && route === "/device/runtime") return true;
+  // Its tools as Reach lists them, and the request each call makes: the
+  // request itself then meets this allowlist like any other.
+  if (read && route === "/browser/mcp/tools") return has("browser:read");
+  if (method === "POST" && route === "/browser/mcp/plan") return has("browser:read");
   // Discovery/requesting is available to every admitted preset. Execution also
   // requires separate, owner-approved service consent in agent-services.mjs.
   if (read && route === "/browser/services") return has("browser:read");
   if (method === "POST" && ["/browser/services/request", "/browser/services/run"].includes(route)) return has("browser:read");
+  // Asking the owner for a Mac permission it lacks (permission-requests.mjs).
+  if (method === "POST" && route === "/browser/permissions/request") return has("browser:read");
   if (read && fileReads.includes(route)) return has("files:read") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/files/change") return has("browser:write") && policy.roots.length > 0;
-  if (read && ["/browser/desktop/screen", "/browser/desktop/front"].includes(route)) return has("browser:screen");
-  if (read && ["/browser/desktop/elements", "/browser/desktop/describe"].includes(route)) return has("browser:control");
-  if (method === "POST" && ["/browser/desktop/input", "/browser/desktop/wait"].includes(route)) return has("browser:control");
-  if (read && route === "/browser/desktop/apps") return has("browser:open");
-  if (method === "POST" && ["/browser/desktop/open", "/browser/desktop/open-url"].includes(route)) return has("browser:open");
+  if (read && ["/browser/desktop/screen", "/browser/desktop/front", "/browser/desktop/windows"].includes(route)) return has("browser:screen");
+  if (read && ["/browser/desktop/elements", "/browser/desktop/describe", "/browser/desktop/menus", "/browser/desktop/read"].includes(route)) return has("browser:control");
+  if (method === "POST" && ["/browser/desktop/input", "/browser/desktop/wait", "/browser/desktop/find"].includes(route)) return has("browser:control");
+  if (read && ["/browser/desktop/apps", "/browser/desktop/mac-shortcuts"].includes(route)) return has("browser:open");
+  if (method === "POST" && ["/browser/desktop/open", "/browser/desktop/open-url", "/browser/desktop/focus", "/browser/desktop/mac-shortcuts/run"].includes(route)) return has("browser:open");
+  if (method === "POST" && route === "/browser/desktop/open-file") return has("browser:open") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/shell") return has("browser:shell");
   if (read && route === "/browser/shell/history") return has("browser:shell");
   if (["full", "apps"].includes(policy.preset) && has("browser:control") && has("browser:open") && has("browser:screen")) {
     if (read && ["/browser/tools", "/browser/tools/protocol"].includes(route)) return true;
     if (read && /^\/browser\/tools\/operations\/[a-f0-9-]{36}$/.test(route)) return true;
-    if (method === "POST" && ["/browser/tools/define", "/browser/tools/run"].includes(route)) return true;
+    if (method === "POST" && ["/browser/tools/define", "/browser/tools/run", "/browser/tools/batch"].includes(route)) return true;
     if (read && route === "/browser/shortcuts") return true;
     if (method === "POST" && ["/browser/shortcuts/record", "/browser/shortcuts/save", "/browser/shortcuts/run"].includes(route)) return true;
     if (method === "DELETE" && route === "/browser/shortcuts/record") return true;

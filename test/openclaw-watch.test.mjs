@@ -82,6 +82,40 @@ test("a schedule's run finishing or failing is told once, by its name, in fixed 
   assert.equal(f.watch.items().length, 1);
 });
 
+// A schedule every 30 minutes sent 48 "finished" pushes a day. Successes
+// now push at most every 6 hours per job; failures, and the first success
+// after one, always do.
+test("a frequent schedule's successes collapse; failures always push", async () => {
+  const f = fixture({ jobs: [{ id: "job-1", name: "Morning brief", status: "running" }, { id: "job-2", name: "Inbox", status: "running" }] });
+  const run = (jobId, status, at) => {
+    f.emit("cron", { jobId, action: "started", runAtMs: at });
+    f.emit("cron", { jobId, action: "finished", status, runAtMs: at });
+    return f.watch.items().find((i) => i.id === `openclaw-watch:cron:${jobId}`)?.signature;
+  };
+  await f.settle();
+  assert.equal(run("job-1", "ok", 1), "1"); // first success
+  f.advance(20 * 60000); // alerts stay 30 minutes
+  assert.equal(run("job-1", "ok", 2), "1", "a second success soon after: not pushed");
+  assert.equal(run("job-2", "ok", 3), "3", "another job is its own");
+  f.advance(20 * 60000); // alerts stay 30 minutes
+  assert.equal(run("job-1", "error", 4), "4"); // a failure always
+  f.advance(20 * 60000); // alerts stay 30 minutes
+  assert.equal(run("job-1", "error", 5), "5"); // and again
+  f.advance(20 * 60000); // alerts stay 30 minutes
+  assert.equal(run("job-1", "ok", 6), "6", "the first success after a failure");
+  f.advance(20 * 60000); // alerts stay 30 minutes
+  assert.equal(run("job-1", "ok", 7), "6");
+  f.advance(6 * 3600000);
+  assert.equal(run("job-1", "ok", 8), "8", "after 6 hours, one again");
+  // A status OpenClaw may add later is never read as done: it pushes, and
+  // the next success is told.
+  f.advance(20 * 60000);
+  assert.equal(run("job-1", "cancelled", 9), "9");
+  assert.match(f.watch.items().find((i) => i.signature === "9").title, /^Schedule (Morning brief )?ended$/);
+  f.advance(20 * 60000);
+  assert.equal(run("job-1", "ok", 10), "10");
+});
+
 test("a sub-agent's end is told; a failure waits out OpenClaw's fallback", async () => {
   const f = fixture();
   f.emit("agent", { runId: "s1", sessionKey: SUB, stream: "lifecycle", data: { phase: "start" } });

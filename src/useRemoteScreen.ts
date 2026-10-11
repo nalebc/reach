@@ -46,6 +46,9 @@ export function useRemoteScreen(
     // to lower the stream for a while. `slow` is what the toolbar says.
     latency: 0,
     slow: false,
+    // The Mac has nothing to show ("asleep", "locked"): the last picture
+    // stays, dimmed like a reconnect, with `cause` saying why; not a stall.
+    idle: "",
   });
   const [selectedDisplay, setSelectedDisplay] = useState("");
   const [fallback, setFallback] = useState(false);
@@ -101,6 +104,7 @@ export function useRemoteScreen(
         ready: false,
         connecting: false,
         cause: "",
+        idle: "",
         fps: 0,
       }));
       return;
@@ -177,8 +181,11 @@ export function useRemoteScreen(
         height: 0,
         latency: 0,
         slow: false,
+        idle: "",
       });
     }
+    // Why the Mac sends no pictures now ("asleep", "locked"), as last told.
+    let idleNow = "";
     // The frame rate the computer aims for on this connection, and how many
     // of its reports in a row found the link struggling or fine: the toolbar
     // says "slow" after two struggling seconds, and drops it after three
@@ -225,6 +232,7 @@ export function useRemoteScreen(
         connecting: retryable,
         error: retryable ? "" : error,
         cause: retryable ? error : "",
+        idle: "",
         fps: 0,
       }));
       if (retryable)
@@ -258,19 +266,40 @@ export function useRemoteScreen(
       // The computer sends a real frame at least every second, even when
       // nothing changed: 10 s of silence means the connection is gone.
       deadline(10000);
-      if (drawnWidth !== width || drawnHeight !== height) {
+      if (drawnWidth !== width || drawnHeight !== height || idleNow) {
         drawnWidth = width;
         drawnHeight = height;
+        idleNow = "";
         setState((s) => ({
           ...s,
           ready: true,
           connecting: false,
           cause: "",
+          idle: "",
           width,
           height,
           updated: last,
         }));
       }
+    };
+    // The Mac answered but has nothing to show: asleep or locked. Not a
+    // stall: no reconnect; the picture stays, dimmed, with the reason, until
+    // pictures come back (draw clears it). Told about once a second.
+    const idleStatus = (value: unknown) => {
+      const idle = value === "asleep" || value === "locked" ? value : "";
+      deadline(10000);
+      if (idle === idleNow) return;
+      idleNow = idle;
+      setState((s) =>
+        idle
+          ? {
+              ...s,
+              idle,
+              connecting: true,
+              cause: idle === "locked" ? "Mac locked" : "Mac asleep",
+            }
+          : { ...s, idle: "", connecting: !s.ready, cause: "" },
+      );
     };
     const painter = latestFramePainter<VideoFrame>((frame) =>
       draw(frame, frame.displayWidth, frame.displayHeight),
@@ -408,6 +437,7 @@ export function useRemoteScreen(
           const message = JSON.parse(event.data);
           if (message.type === "error")
             fail(message.error, screenCanRetry(message));
+          if (message.type === "status") idleStatus(message.idle);
           if (message.type === "ready") {
             wireFormat = message.format;
             targetCap = Number(message.fps) || 0;

@@ -12,7 +12,7 @@ test("pointer actions use the checked target and clicks report that identity", a
   const source = await fs.readFile(sourceUrl, "utf8");
   const click = source.split('case "click":')[1]?.split('case "drag":')[0];
   assert.ok(click);
-  assert.match(click, /let target = try checkPoint\(p, rules, expected\)/);
+  assert.match(click, /let target = try checkPoint\(p, rules, expected, activate: true\)/);
   assert.match(click, /"app": target\.name, "bundle": target\.bundle/);
   assert.doesNotMatch(click, /windowAt\(/, "a compositor queried after dispatch is not the checked app");
   const actions = source.split('case "drag":')[1]?.split('case "scroll":')[0];
@@ -57,6 +57,10 @@ apps.mode = "apps"
 apps.allowedApps = [["id": "/Applications/Safari.app", "bundleId": "com.apple.Safari"]]
 `;
     const stubs = String.raw`
+// Bank sites are judged by moneyAt (test/money-sites.test.mjs).
+func buildWebTree(_ pid: pid_t) {}
+func isBrowser(_ bundle: String) -> Bool { false }
+func moneyAt(_ s: inout Seen, _ point: CGPoint?, _ rules: Rules) throws -> (url: String, title: String)? { nil }
 let kCGNullWindowID: UInt32 = 0
 let kCGWindowBounds = "bounds", kCGWindowAlpha = "alpha", kCGWindowOwnerPID = "pid", kCGWindowOwnerName = "name", kCGWindowName = "title"
 let kAXTitleAttribute = "title", kAXDescriptionAttribute = "description", kAXHelpAttribute = "help", kAXURLAttribute = "url"

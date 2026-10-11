@@ -14,9 +14,15 @@ async function fixture(t, overrides = {}) {
     dataDir,
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {}, close() {} },
     codex: { list: async () => [] },
-    claude: { read: async () => ({ session: { ...native }, items: [] }), list: async () => [], starts: async () => [] },
+    claude: {
+      read: async () => ({ session: { ...native }, items: [] }), list: async () => [], starts: async () => [],
+      appEffort: async (id, effort) => (calls.push({ id, record: effort }), true),
+      health: async () => ({ agent: "claude", installed: true, signedIn: true, usable: true }),
+    },
     claudeHost: {
       drives: () => false, close() {},
+      send: async (id, message) => (calls.push({ id, sent: message }), { ok: true }),
+      running: () => false, view: () => ({}),
       models: async () => [
         { value: "opus", resolvedModel: "claude-opus-5-5" },
         { value: "sonnet", resolvedModel: "claude-sonnet-5-5" },
@@ -55,38 +61,16 @@ test("an unconfirmed native model click never reports applied", async (t) => {
   await assert.rejects(sessions.model("claude", ID, { model: "sonnet" }), (e) => e.status === 409 && /confirm/.test(e.message));
 });
 
-test("an unconfirmed effort click with an unchanged native record never reports applied", async (t) => {
-  const { sessions, native } = await fixture(t, { effort: async () => ({ effort: "high", unconfirmed: true }) });
-  await assert.rejects(sessions.model("claude", ID, { effort: "high" }), (e) => e.status === 409 && /confirm/.test(e.message));
-  assert.equal(native.effort, "medium");
-});
-
-test("the native record can confirm an effort change when the chip has not redrawn", async (t) => {
-  let native;
-  const result = await fixture(t, { effort: async () => { native.effort = "high"; return { effort: "high", unconfirmed: true }; } });
-  native = result.native;
-  assert.deepEqual(await result.sessions.model("claude", ID, { effort: "high" }), { model: undefined, effort: "high", applied: true });
-});
-
-
-test("missing or mismatched native effort acknowledgements fail unless the actual record confirms", async (t) => {
-  for (const response of [undefined, {}, { effort: "low" }]) {
-    const { sessions, native } = await fixture(t, { effort: async () => response });
-    await assert.rejects(sessions.model("claude", ID, { effort: "high" }), (e) => e.status === 409 && /confirm/.test(e.message));
-    assert.equal(native.effort, "medium");
-  }
-});
-
-test("a desktop model switch reapplies the requested effort even when it matched the previous model", async (t) => {
-  let native;
-  const picked = [];
-  const result = await fixture(t, {
-    model: async (id, { model }) => { native.model = "claude-sonnet-5-5"; native.effort = "low"; return { model }; },
-    effort: async (id, { effort }) => { picked.push(effort); native.effort = effort; return { effort }; },
-  });
-  native = result.native;
-  assert.equal(native.effort, "medium");
-  assert.deepEqual(await result.sessions.model("claude", ID, { model: "sonnet", effort: "medium" }), { model: "sonnet", effort: "medium", applied: true });
-  assert.equal(native.effort, "medium", "model selection must not leave the new model's reset effort behind");
-  assert.deepEqual(picked, ["medium"]);
+// Oct 10: never by a click in the Claude app's menu. Kept for the chat and
+// written in the app's record; its next message from the phone goes to
+// Claude Code at that level, never typed into the app's process.
+test("an effort picked on the phone is kept and its next message runs at it, with no click in the app", async (t) => {
+  const { sessions, calls } = await fixture(t, { effort: async () => { throw new Error("clicked the menu"); } });
+  assert.deepEqual(await sessions.model("claude", ID, { effort: "max" }), { model: undefined, effort: "max", applied: true });
+  assert.deepEqual(calls, [{ id: ID, record: "max" }]);
+  assert.equal((await sessions.read("claude", ID, { limit: 1 })).session.effort, "max");
+  await sessions.send("claude", ID, { text: "Go on" });
+  const sent = calls.find((c) => c.sent)?.sent;
+  assert.equal(sent?.effort, "max");
+  assert.equal(sent?.text, "Go on");
 });

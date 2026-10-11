@@ -1,0 +1,22 @@
+/* Reach's own update in Settings (InterfaceUpdates.tsx). */
+.interface-updates .gs-value.update-ready {
+  color: var(--lime, #b9efd4);
+}
+.update-detail .gs-label {
+  white-space: normal;
+  gap: 6px;
+}
+.update-detail .gs-text-button.update-go {
+  color: var(--lime, #b9efd4);
+}
+.update-command {
+  display: block;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.06);
+  color: #eef4ef;
+  font: 12.5px "SFMono-Regular", Consolas, monospace;
+  white-space: pre;
+  user-select: all;
+}

@@ -5,6 +5,7 @@
 // Only cron and sub-agent sessions: chats you started in Reach aren't these.
 // Names are capped and cleaned; OpenClaw's error text never leaves here.
 import { pushLine } from "./notification-items.mjs";
+import { scrubSecrets } from "./openclaw-health.mjs";
 
 const CRON = /^agent:[^:]+:cron:([^:]+)/i;
 const SUB = /^agent:([^:]+):(?:.*:)?subagent:/i;
@@ -45,6 +46,10 @@ export function createOpenClawWatch({
   // No event at all (the Gateway ticks every 30 s) for this long: the
   // connection is down, so silence proves nothing.
   liveMs = 90000,
+  // A job's successful runs push at most this often (a 30-minute job would
+  // send 48 a day); its first success, one after a failure, and every
+  // failure always push.
+  okEveryMs = 6 * 3600000,
   setTimer = setInterval,
   clearTimer = clearInterval,
   later = setTimeout,
@@ -53,6 +58,7 @@ export function createOpenClawWatch({
   const runs = new Map(); // runId -> sub-agent run
   const crons = new Map(); // jobId -> schedule run
   const ended = new Set(); // runIds already told (late events ignored)
+  const toldJobs = new Map(); // jobId -> { failed, at } of its last pushed end
   const alerts = new Map(); // id -> item
   const jobNames = new Map();
   const agentNames = new Map();
@@ -90,8 +96,13 @@ export function createOpenClawWatch({
   };
   const name = (value, limit) => pushLine(String(value || ""), limit);
   const jobName = (jobId, known) => name(known || jobNames.get(jobId), 60);
-  const agentName = (id) =>
-    name(agentNames.get(id), 40) || (AGENT_ID.test(id || "") ? id : "OpenClaw");
+  // A name or id shaped like a key (one pasted as an agent's name) is
+  // never pushed: lock screens show push titles.
+  const agentName = (id) => {
+    const named = name(agentNames.get(id), 40);
+    if (named && scrubSecrets(named) === named) return named;
+    return AGENT_ID.test(id || "") && scrubSecrets(id) === id ? id : "OpenClaw";
+  };
   // Schedule names from cron.list (a one-shot job is removed right after it
   // finishes, so names are learnt when it starts).
   const learnNames = () => {
@@ -230,16 +241,23 @@ export function createOpenClawWatch({
         crons.delete(p.jobId);
         unquiet(`cron:${p.jobId}`);
         // "skipped": it didn't run (disabled, busy…); nothing to tell.
-        if (!["ok", "error"].includes(p.status)) return;
+        if (p.status === "skipped") return;
+        // Anything but ok and error is told as an end that isn't done.
+        const ended = p.status === "ok" ? "finished" : p.status === "error" ? "failed" : "ended";
+        const last = toldJobs.get(p.jobId);
+        if (ended === "finished" && last && !last.failed && now() - last.at < okEveryMs) return;
+        toldJobs.delete(p.jobId);
+        toldJobs.set(p.jobId, { failed: ended !== "finished", at: now() });
+        if (toldJobs.size > 512) toldJobs.delete(toldJobs.keys().next().value);
         const job = jobName(p.jobId, run?.name);
         alert({
           id: `openclaw-watch:cron:${p.jobId}`,
           signature: String(
             Number.isFinite(p.runAtMs) ? p.runAtMs : now(),
           ),
-          title: `Schedule ${job ? `${job} ` : ""}${p.status === "ok" ? "finished" : "failed"}`,
+          title: `Schedule ${job ? `${job} ` : ""}${ended}`,
           detail:
-            p.status === "ok" ? "Its run is done." : "It stopped with an error.",
+            ended === "finished" ? "Its run is done." : ended === "failed" ? "It stopped with an error." : "OpenClaw didn't report it as done.",
           target: target(p.sessionKey),
         }, p.sessionKey);
       }

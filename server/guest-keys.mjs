@@ -2,6 +2,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { atomicJson, loadJson, fail, hash } from "./core.mjs";
 import { addGuestRules, guestPolicyRisks } from "./tailnet-policy.mjs";
+import { command } from "../scripts/home.mjs";
 
 // Invite keys: each invitation carries a one-time Tailscale key, so the guest
 // just opens the link: their browser joins your tailnet as a tag:reach-guest
@@ -93,12 +94,14 @@ export function createGuestKeys({
     if (!creds)
       throw fail(
         409,
-        "Set up invite keys first: run ./reach invites on this computer.",
+        `Set up invite keys first: run ${command} invites on this computer.`,
       );
     if (cached && cached.clientId === creds.clientId && cached.until > now())
       return cached.token;
     const response = await request(`${api}/api/v2/oauth/token`, {
       method: "POST",
+      // A secret is never re-sent to wherever a redirect points.
+      redirect: "error",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         client_id: creds.clientId,
@@ -124,16 +127,18 @@ export function createGuestKeys({
     return cached.token;
   }
 
-  async function call(method, route, body, creds, authorize = () => {}) {
+  async function call(method, route, body, creds, authorize = () => {}, headers = {}) {
     authorize();
     const access = await token(creds);
     // Token refresh is asynchronous; authority may have ended while waiting.
     authorize();
     const response = await request(`${api}/api/v2${route}`, {
       method,
+      redirect: "error",
       headers: {
         Authorization: `Bearer ${access}`,
         ...(body ? { "Content-Type": "application/json" } : {}),
+        ...headers,
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(15000),
@@ -231,6 +236,7 @@ export function createGuestKeys({
     const requestAs = (method, route, { body, type, headers = {} } = {}) =>
       request(`${api}/api/v2${route}`, {
         method,
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${secret}`,
           ...(body !== undefined
@@ -370,7 +376,11 @@ export function createGuestKeys({
       throw fail(409, "This computer's Tailscale address isn't known yet, so Reach can't check that guests reach only Reach. Try again in a moment.");
     let policy;
     try {
-      policy = await call("GET", "/tailnet/-/acl", undefined, undefined, authorize);
+      // Plain JSON: unasked, Tailscale sends the policy as written (HuJSON,
+      // comments and all), which doesn't parse here.
+      policy = await call("GET", "/tailnet/-/acl", undefined, undefined, authorize, {
+        Accept: "application/json",
+      });
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) throw error;
       policy = null;

@@ -97,7 +97,14 @@ export const createWithFaceId = (options: FaceOptions) =>
     .then(asJson);
 
 export const faceIdError = (e: unknown) => {
-  const error = e as { name?: string; message?: string };
+  const error = e as {
+    name?: string;
+    message?: string;
+    body?: { error?: string };
+  };
+  // The computer's own reason: a refused Face ID answer comes back as 401,
+  // which request() would otherwise call "pair again".
+  if (error?.body?.error) return error.body.error;
   if (/NotAllowed|Abort/.test(error?.name || ""))
     return "Face ID was cancelled or took too long.";
   if (error?.name === "InvalidStateError")

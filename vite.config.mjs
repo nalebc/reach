@@ -36,6 +36,9 @@ export default defineConfig({
     // Open phones may still request lazy chunks from the previous build.
     // Full builds must retain them, just like the live interface watcher.
     emptyOutDir: false,
+    // What this build made (dist/.vite/manifest.json): what's current, for
+    // removing earlier builds' files once they're old (scripts/prune-assets.mjs).
+    manifest: true,
     rollupOptions: {
       // start.html: the public start page (server/public-start.mjs).
       input: { index: "index.html", start: "start.html", agent: "agent.html" },

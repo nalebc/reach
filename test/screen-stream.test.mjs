@@ -177,6 +177,8 @@ test(
       assert.equal(res.status, 200);
     };
     try {
+      // The first phone in turned viewing on: off again, as its owner can.
+      await settings(false);
       await t.test("denied viewers never start a native capture", async () => {
         for (const token of ["invalid", files.token, owner.token]) {
           const s = await connect(token);

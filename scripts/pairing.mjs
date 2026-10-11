@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import { atomicJson, loadJson } from "../server/core.mjs";
-import { stateDir } from "./home.mjs";
+import { atomicJson, loadJson, openPairingWindow, PAIRING_WINDOW_MS } from "../server/core.mjs";
+import { stateDir, command } from "./home.mjs";
 
 export async function pairRunningHost(
   root,
@@ -11,7 +11,7 @@ export async function pairRunningHost(
   const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.localUrl || !host.dataDir || !host.instance)
     throw Error(
-      "Reach is not ready. Start ./reach or check ./reach status and its logs.",
+      `Reach is not ready. Start ${command} or check ${command} status and its logs.`,
     );
   const local = new URL(host.localUrl);
   if (
@@ -35,7 +35,7 @@ export async function pairRunningHost(
     health.instance !== host.instance
   )
     throw Error(
-      "Reach is stopped or still connecting. Check ./reach status and retry shortly.",
+      `Reach is stopped or still connecting. Check ${command} status and retry shortly.`,
     );
   const dataDir = path.resolve(host.dataDir);
   if (service?.installed && dataDir !== path.resolve(service.dataDir))
@@ -58,9 +58,24 @@ export async function pairRunningHost(
     expiresAt: Date.now() + 600000,
   };
   atomicJson(path.join(dataDir, "pairing.json"), pairing);
-  const url = `${origin.origin}/#${new URLSearchParams({ pair: pairing.code, name: host.name || "My computer" })}`;
+  // The one address, when Reach holds it (noted in host-status.json): a phone
+  // without the Tailscale app signs in from its browser there, so the start
+  // page answers for the next minutes (a pairing window, server/core.mjs).
+  let one = "";
+  try {
+    const link = new URL(host.link || "");
+    if (link.protocol === "https:" && !link.port && link.pathname === "/" && !link.search && !link.hash && !link.username)
+      one = link.origin;
+  } catch {
+    /* no one address: the private one */
+  }
+  if (one) openPairingWindow(dataDir);
+  const url = `${one || origin.origin}/#${new URLSearchParams({ pair: pairing.code, name: host.name || "My computer" })}`;
   print(
-    `Reach: ${origin.origin}\nPairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\nOne use. Expires in 10 minutes. Previous unused code replaced.`,
+    `Reach: ${one || origin.origin}\nPairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\nOne use. Expires in 10 minutes. Previous unused code replaced.` +
+      (one
+        ? `\nNo Tailscale app on the phone? It can sign in to Tailscale in its browser for the next ${PAIRING_WINDOW_MS / 60000} minutes.`
+        : "\nThe phone needs the Tailscale app, on and signed in to this account."),
   );
   if (!qr) qr = (await import("qrcode-terminal")).default;
   qr.generate(url, { small: true }, print);

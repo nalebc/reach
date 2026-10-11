@@ -85,6 +85,8 @@ async function fixture(t, extra = {}) {
             agent: { runId: req.params.idempotencyKey, status: "accepted" },
             "agent.wait": { runId: req.params.runId, status: "timeout" },
             "chat.abort": { aborted: true },
+            // OpenClaw 2026.9.9's delivery payload (buildGatewayDeliveryPayload).
+            send: { runId: req.params.idempotencyKey, messageId: "wa-1", channel: req.params.channel },
             "exec.approval.resolve": { ok: true },
             "channels.status": {
               channelAccounts: {
@@ -241,6 +243,40 @@ test("history loads only selected known session, filters reasoning, clamps limit
   });
   await assert.rejects(c.history("agent:other:unknown"), /no longer available/);
   await assert.rejects(c.history("bad\nkey"), /Choose/);
+});
+
+// Finished sends are kept only to answer a retry: at the limit the oldest
+// finished go first, as few as needed; only sends in flight fill it.
+test("send limit: settled attempts are evicted oldest first, in-flight ones count", async (t) => {
+  const { c, calls, sockets, handle } = await fixture(t, { maxSends: 3 });
+  // A Reach chat per send: one run per chat at a time.
+  const chats = ["a", "b", "c", "d", "e"].map((n) => ({ key: `agent:main:reach-0000000${n}`, label: n, channel: "webchat", updatedAt: 60 }));
+  let hold = false;
+  handle((req) =>
+    req.method === "sessions.list" ? { payload: { sessions: [...rows, ...chats] } }
+      : req.method === "chat.send" && hold ? { hold: true }
+        : undefined);
+  const sent = () => calls.filter((x) => x.method === "chat.send").map((x) => x.params.idempotencyKey);
+  const send = (requestId, n) => c.send({ key: chats[n].key, text: "Draft", requestId });
+  const end = (requestId, n) => sockets[0].event("chat", { sessionKey: chats[n].key, runId: requestId, state: "final" });
+  await send("settled-a", 0);
+  end("settled-a", 0);
+  await send("settled-b", 1);
+  end("settled-b", 1);
+  hold = true;
+  const held = [send("inflight-c", 2), send("inflight-d", 3)]; // D evicts only A
+  held.forEach((p) => p.catch(() => {}));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent(), ["settled-a", "settled-b", "inflight-c", "inflight-d"]);
+  await send("settled-b", 1); // still kept: answered, not sent again
+  assert.equal(sent().length, 4);
+  // A was evicted: its ID sends anew (and B, the oldest settled, goes).
+  send("settled-a", 0).catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent().slice(4), ["settled-a"]);
+  // Three in flight, none settled: the limit holds, nothing reaches OpenClaw.
+  await assert.rejects(send("one-too-many", 4), (e) => e.status === 503 && /send limit/.test(e.message));
+  assert.equal(sent().length, 5);
 });
 
 test("Reach never asks OpenClaw to post outside Reach; retry uses caller idempotency key", async (t) => {
@@ -407,7 +443,7 @@ test("disconnect reconnects and Gateway errors cannot echo its credentials", asy
   await assert.rejects(c.history(rows[0].key), /authentication problem/);
 });
 
-test("reads JSON5 local config and environment substitutions; remote profiles refused", async (t) => {
+test("reads JSON5 local config and environment substitutions; remote and exposed Gateways refused", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "reach-claw-config-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const file = path.join(home, "profile.json");
@@ -422,12 +458,29 @@ test("reads JSON5 local config and environment substitutions; remote profiles re
     }),
     { url: "ws://127.0.0.1:19999", token: "value", password: undefined },
   );
+  // A Gateway open beyond this Mac, or published through Tailscale: refused.
+  for (const [gateway, why] of [
+    ['{bind:"lan"}', /open beyond this Mac \(bind: lan\)/],
+    ['{bind:"tailnet"}', /bind: tailnet/],
+    ['{bind:"custom", customBindHost:"0.0.0.0"}', /bind: custom/],
+    ['{tailscale:{mode:"funnel"}}', /publishes its Gateway through Tailscale \(funnel\)/],
+    ['{tailscale:{mode:"serve"}}', /\(serve\)/],
+  ]) {
+    await fs.writeFile(file, `{gateway:${gateway}}`);
+    await assert.rejects(localOpenClawConfig({ home, env: { OPENCLAW_CONFIG_PATH: file } }), why, gateway);
+  }
+  await fs.writeFile(file, '{gateway:{bind:"loopback", tailscale:{mode:"off"}, port: 19998}}');
+  assert.equal((await localOpenClawConfig({ home, env: { OPENCLAW_CONFIG_PATH: file } })).url, "ws://127.0.0.1:19998");
   await fs.writeFile(file, '{gateway:{mode:"remote"}}');
   await assert.rejects(
     localOpenClawConfig({ home, env: { OPENCLAW_CONFIG_PATH: file } }),
     /remote Gateway/,
   );
-  await assert.rejects(localOpenClawConfig({ home, env: {} }), /not found/);
+  // No configuration yet: not set up (Chat offers setup), never "not found".
+  await assert.rejects(
+    localOpenClawConfig({ home, env: {} }),
+    (e) => e.notSetUp === true && /isn't set up/.test(e.message),
+  );
 });
 
 test("OpenClaw HTTP routes inherit owner-device authentication before reaching the bridge", async (t) => {
@@ -805,28 +858,61 @@ test("a Gateway that can't add a moved chat's history says so up front; one that
 test("post sends to the chat's own one-to-one destination only", async (t) => {
   const { c, calls } = await fixture(t);
   const sent = () => calls.filter((x) => x.method === "send");
+  // Where it goes is checked when the relay is set up, and kept.
+  const to = await c.postTarget({ key: rows[0].key });
+  assert.deepEqual(to, { channel: "whatsapp", to: "123" });
   assert.deepEqual(
-    await c.post({ key: rows[0].key, text: " Done: login fixed ", requestId: "relay-1-post" }),
+    await c.post({ key: rows[0].key, text: " Done: login fixed ", requestId: "relay-1-post", to }),
     { posted: true, channel: "whatsapp" },
   );
   assert.deepEqual(sent().map((x) => x.params), [
     { to: "123", message: "Done: login fixed", channel: "whatsapp", sessionKey: rows[0].key, idempotencyKey: "relay-1-post" },
   ]);
   // A Discord channel, a Reach chat with no app, bad input: nothing sent.
-  await assert.rejects(c.post({ key: rows[1].key, text: "x", requestId: "relay-2-post" }), (e) => e.status === 403);
-  await assert.rejects(c.post({ key: REACH, text: "x", requestId: "relay-3-post" }), (e) => e.status === 409);
-  await assert.rejects(c.post({ key: rows[0].key, text: " ", requestId: "relay-4-post" }), (e) => e.status === 400);
-  await assert.rejects(c.post({ key: rows[0].key, text: "x".repeat(20001), requestId: "relay-5-post" }), (e) => e.status === 400);
-  await assert.rejects(c.post({ key: rows[0].key, text: "x", requestId: "no" }), (e) => e.status === 400);
+  await assert.rejects(c.post({ key: rows[1].key, text: "x", requestId: "relay-2-post", to }), (e) => e.status === 403);
+  await assert.rejects(c.post({ key: REACH, text: "x", requestId: "relay-3-post", to }), (e) => e.status === 403);
+  await assert.rejects(c.post({ key: rows[0].key, text: " ", requestId: "relay-4-post", to }), (e) => e.status === 400);
+  await assert.rejects(c.post({ key: rows[0].key, text: "x".repeat(20001), requestId: "relay-5-post", to }), (e) => e.status === 400);
+  await assert.rejects(c.post({ key: rows[0].key, text: "x", requestId: "no", to }), (e) => e.status === 400);
   // Access gone after the chat was found: nothing sent.
   let n = 0;
   await assert.rejects(
-    c.post({ key: rows[0].key, text: "x", requestId: "relay-6-post" }, () => {
+    c.post({ key: rows[0].key, text: "x", requestId: "relay-6-post", to }, () => {
       if (++n > 1) throw Object.assign(new Error("Not allowed"), { status: 403 });
     }),
     /Not allowed/,
   );
   assert.equal(sent().length, 1);
+  // No recipient kept, or someone else's: nothing sent.
+  await assert.rejects(c.post({ key: rows[0].key, text: "x", requestId: "relay-9-post" }), (e) => e.status === 409);
+  await assert.rejects(c.post({ key: rows[0].key, text: "x", requestId: "relay-10-post", to: { channel: "whatsapp", to: "999" } }), (e) => e.status === 409);
+  assert.equal(sent().length, 1);
+});
+
+test("post needs a chat that is positively one-to-one, and OpenClaw's confirmation", async (t) => {
+  const row = (key, extra = {}, to = "+33600000000") => ({ key, channel: "whatsapp", updatedAt: 1, deliveryContext: { channel: "whatsapp", to }, ...extra });
+  const refused = [
+    row("agent:main:main"), // every DM shares it (dmScope main): whoever wrote last
+    row("agent:main:whatsapp:direct:+33600000000", { chatType: "group" }),
+    row("agent:main:whatsapp:direct:+33600000000", { kind: "group" }),
+    row("agent:main:whatsapp:direct:+33600000000", {}, "+33699999999"), // goes to someone else
+    row("agent:main:whatsapp:direct:+33600000000", {}, "120@g.us"),
+    row("agent:main:signal:direct:+33600000000", { channel: "signal", deliveryContext: { channel: "signal", to: "+33600000000" } }),
+    row("agent:main:telegram:direct:42", { deliveryContext: { channel: "telegram", to: "-42" } }),
+    row("agent:main:cron:1234"),
+  ];
+  for (const r of refused) {
+    const f = await fixture(t);
+    f.handle((req) => (req.method === "sessions.list" ? { payload: { sessions: [r] } } : undefined));
+    await assert.rejects(f.c.postTarget({ key: r.key }), (e) => e.status === 403 || e.status === 409, r.key);
+    assert.equal(f.calls.filter((x) => x.method === "send").length, 0);
+  }
+  // An answer without a message id isn't taken as delivered.
+  const unsure = await fixture(t);
+  const ok = row("agent:main:whatsapp:direct:+33600000000");
+  unsure.handle((req) => (req.method === "sessions.list" ? { payload: { sessions: [ok] } } : req.method === "send" ? { payload: {} } : undefined));
+  const to = await unsure.c.postTarget({ key: ok.key });
+  await assert.rejects(unsure.c.post({ key: ok.key, text: "x", requestId: "relay-11-post", to }), (e) => e.status === 502);
 });
 
 test("post refuses a WhatsApp group and a channel that isn't connected", async (t) => {
@@ -842,7 +928,7 @@ test("post refuses a WhatsApp group and a channel that isn't connected", async (
   down.handle((req) =>
     req.method === "channels.status" ? { payload: { channelAccounts: { whatsapp: [{ accountId: "default", connected: false }] } } } : undefined,
   );
-  await assert.rejects(down.c.post({ key: rows[0].key, text: "x", requestId: "relay-8-post" }), (e) => e.status === 409);
+  await assert.rejects(down.c.post({ key: rows[0].key, text: "x", requestId: "relay-8-post", to: { channel: "whatsapp", to: "123" } }), (e) => e.status === 409);
   assert.equal(down.calls.filter((x) => x.method === "send").length, 0);
 });
 
@@ -1082,8 +1168,8 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
   assert.equal((await missing.overview()).canStart, undefined);
   // The command is OpenClaw's own service start, with fixed arguments.
   const ran = [];
-  await startOpenClawGateway({ configuration: async () => ({}), env: { SHELL: "/bin/zsh" }, platform: "darwin", run: async (...args) => ran.push(args) });
-  assert.deepEqual(ran.map(([cmd, args]) => [cmd, args]), [["/bin/zsh", ["-lc", "exec openclaw gateway start"]]]);
+  await startOpenClawGateway({ configuration: async () => ({}), env: { SHELL: "/bin/zsh" }, platform: "darwin", runtime: "/brew/opt/node@24/bin/node", run: async (...args) => ran.push(args) });
+  assert.deepEqual(ran.map(([cmd, args]) => [cmd, args]), [["/bin/zsh", ["-lc", `export PATH='/brew/opt/node@24/bin:/brew/bin':"$PATH"; exec openclaw "$@"`, "openclaw", "gateway", "start"]]]);
   await assert.rejects(
     startOpenClawGateway({ configuration: async () => { throw Object.assign(new Error("remote"), { status: 503 }); }, run: async (...args) => ran.push(args) }),
     /remote/,
@@ -1342,9 +1428,14 @@ test("schedules describe common recurrence and retain advanced expressions", () 
 
 test("a schedule made from Reach is a fixed cron job of its own; run now and delete use OpenClaw's own methods", async (t) => {
   const { c, calls, handle } = await fixture(t);
+  const declared = new Set();
   handle((req) =>
     req.method === "cron.add"
-      ? { payload: { id: "job-1", ...req.params } }
+      // OpenClaw 2026.9.9: a known declarationKey updates its job and answers
+      // { created: false, updated: true, job } (cronAddPayloadWithDeliveryPreview).
+      ? declared.has(req.params.declarationKey)
+        ? { payload: { created: false, updated: true, job: { id: "job-1" } } }
+        : (declared.add(req.params.declarationKey), { payload: { id: "job-1", ...req.params } })
       : req.method === "cron.run"
         ? { payload: { ok: true, enqueued: true } }
         : req.method === "cron.remove"
@@ -1355,7 +1446,9 @@ test("a schedule made from Reach is a fixed cron job of its own; run now and del
     await c.addAutomation({ name: " Briefing ", message: "Summarize my day", expr: "0 9 * * 1-5", tz: "America/Los_Angeles" }),
     { id: "job-1" },
   );
-  assert.deepEqual(calls.find((x) => x.method === "cron.add").params, {
+  const { declarationKey, ...added } = calls.find((x) => x.method === "cron.add").params;
+  assert.match(declarationKey, /^reach:[0-9a-f]{32}$/);
+  assert.deepEqual(added, {
     name: "Briefing",
     enabled: true,
     schedule: { kind: "cron", expr: "0 9 * * 1-5", tz: "America/Los_Angeles" },
@@ -1364,8 +1457,16 @@ test("a schedule made from Reach is a fixed cron job of its own; run now and del
     payload: { kind: "agentTurn", message: "Summarize my day" },
     delivery: { mode: "none" },
   });
+  // A retry after a timeout sends the same key (OpenClaw updates that job,
+  // no duplicate); a different schedule, another key.
+  assert.deepEqual(await c.addAutomation({ name: "Briefing", message: " Summarize my day ", expr: "0  9 * * 1-5", tz: "America/Los_Angeles" }), { id: "job-1" });
+  assert.equal(calls.filter((x) => x.method === "cron.add")[1].params.declarationKey, declarationKey);
+  calls.splice(calls.findIndex((x) => x.method === "cron.add"), 1);
+  calls.splice(calls.findIndex((x) => x.method === "cron.add"), 1);
   await c.addAutomation({ name: "Weekly", message: "Report", expr: "0 8 * * 1", announce: true });
-  assert.deepEqual(calls.filter((x) => x.method === "cron.add")[1].params.delivery, { mode: "announce", channel: "last" });
+  const weekly = calls.filter((x) => x.method === "cron.add")[0].params;
+  assert.deepEqual(weekly.delivery, { mode: "announce", channel: "last" });
+  assert.notEqual(weekly.declarationKey, declarationKey);
   // Only the fields Reach knows; a phone can't smuggle a webhook or a command.
   await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * *" }), /five cron fields/);
   await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * 1; rm" }), /five cron fields/);
@@ -1378,6 +1479,20 @@ test("a schedule made from Reach is a fixed cron job of its own; run now and del
   await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * *" }), /did not confirm/);
   handle((req) => (req.method === "cron.run" ? { payload: { ok: false, reason: "already-running" } } : undefined));
   await assert.rejects(c.runAutomation({ id: "job-1" }), /already running/);
+  // A Gateway older than the key refuses it: added once more without it.
+  handle((req) => req.method === "cron.add"
+    ? "declarationKey" in req.params
+      ? { error: { message: "invalid cron.add params: at root: unexpected property 'declarationKey'" } }
+      : { payload: { id: "job-old" } }
+    : undefined);
+  const before = calls.length;
+  assert.deepEqual(await c.addAutomation({ name: "Old", message: "y", expr: "0 9 * * *" }), { id: "job-old" });
+  assert.deepEqual(calls.slice(before).filter((x) => x.method === "cron.add").map((x) => "declarationKey" in x.params), [true, false]);
+  // Any other refusal isn't retried.
+  handle((req) => (req.method === "cron.add" ? { error: { message: "invalid cron.add params: schedule has no upcoming run time" } } : undefined));
+  const again = calls.length;
+  await assert.rejects(c.addAutomation({ name: "Never", message: "y", expr: "0 9 31 2 *" }));
+  assert.equal(calls.slice(again).filter((x) => x.method === "cron.add").length, 1);
 });
 
 test("WhatsApp links by OpenClaw's QR, never over a connected account; linking again logs out first", async (t) => {
@@ -1761,13 +1876,21 @@ test("a send denied at RPC preflight can be explicitly retried with the same ID 
   assert.equal(f.calls.filter((req) => req.method === "chat.send").length, 1);
 });
 
-test("a messaging app is added through OpenClaw's own command, its token an argument and never shell text", async () => {
+test("a messaging app is added through OpenClaw's own command; Telegram's token in a private file, never argv or shell text", async () => {
   const { addOpenClawChannel } = await import("../server/openclaw.mjs");
   const ran = [];
   const run = async (...args) => (ran.push(args), { stdout: "" });
-  assert.deepEqual(await addOpenClawChannel({ channel: "telegram", token: " 123:ABC$(id);`x`|y " }, { run, env: { SHELL: "/bin/zsh" }, platform: "darwin" }), { added: true });
-  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token", "123:ABC$(id);`x`|y"]]);
-  await addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678", appToken: "xapp-12345678", name: "Work" }, { run, platform: "darwin", env: {} });
+  const written = [];
+  const files = { writeFile: async (...a) => written.push(a), mkdir: async (...a) => written.push(["mkdir", ...a]), chmod: async (...a) => written.push(["chmod", ...a]), rm: async (...a) => written.push(["rm", ...a]), stateDir: "/s" };
+  assert.deepEqual(await addOpenClawChannel({ channel: "telegram", token: " 123:ABC$(id);`x`|y " }, { run, env: { SHELL: "/bin/zsh" }, platform: "darwin", ...files, runtime: false }), { added: true });
+  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token-file", "/s/credentials/reach-telegram.token"]]);
+  assert.doesNotMatch(JSON.stringify(ran), /ABC/);
+  assert.deepEqual(written, [["mkdir", "/s/credentials", { recursive: true, mode: 0o700 }], ["/s/credentials/reach-telegram.token", "123:ABC$(id);`x`|y\n", { mode: 0o600 }], ["chmod", "/s/credentials/reach-telegram.token", 0o600]]);
+  // Refused by OpenClaw: the file is removed.
+  written.length = 0;
+  await assert.rejects(addOpenClawChannel({ channel: "telegram", token: "123:ABCDEFGH" }, { run: async () => { throw new Error("no"); }, env: {}, platform: "darwin", ...files, runtime: false }), (e) => e.status === 409);
+  assert.deepEqual(written.at(-1), ["rm", "/s/credentials/reach-telegram.token", { force: true }]);
+  await addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678", appToken: "xapp-12345678", name: "Work" }, { run, platform: "darwin", env: {}, ...files, runtime: false });
   assert.deepEqual(ran[1][1].slice(3), ["channels", "add", "--channel", "slack", "--bot-token", "xoxb-12345678", "--app-token", "xapp-12345678", "--name", "Work"]);
   await assert.rejects(addOpenClawChannel({ channel: "whatsapp", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
   await assert.rejects(addOpenClawChannel({ channel: "__proto__", token: "12345678" }, { run }), /Telegram, Discord or Slack/);

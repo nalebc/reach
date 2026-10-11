@@ -19,6 +19,7 @@ import { CODEX_MODES } from "./codex.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { backMessage, relayMessage, reportMessage, reviewMessage, turnMaterial } from "./chat-context.mjs";
 import { clipMiddle } from "./move.mjs";
+import { scrubSecrets } from "../openclaw-health.mjs";
 
 // Who can receive (new chats, messages); whose chats can be read to send on.
 // OpenClaw joins both when Reach has its Gateway (agentChats below).
@@ -250,7 +251,8 @@ export function createRelays({
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     next: r.next,
-    steps: r.steps.map(({ kind, agent, to, instructions }) => ({ kind, ...(agent ? { agent } : {}), ...(to ? { to } : {}), ...(instructions ? { instructions } : {}) })),
+    // A post's recipient stays on this computer (the phone shows the chat).
+    steps: r.steps.map(({ kind, agent, to, instructions }) => ({ kind, ...(agent ? { agent } : {}), ...(to && kind !== "post" ? { to } : {}), ...(instructions ? { instructions } : {}) })),
     chain: r.chain.map(({ agent, id, title }) => ({ agent, id, title: title || "" })),
     sent: r.sent,
     // Auto-continue with no provider free yet: waiting for the first one back.
@@ -414,7 +416,7 @@ export function createRelays({
       save();
       try {
         const posted = await openClaw.post(
-          { key: origin.id, text: clipMiddle(material.answer, 20000), requestId: `relay-${r.id}-post` },
+          { key: origin.id, text: clipMiddle(scrubSecrets(material.answer), 20000), requestId: `relay-${r.id}-post`, to: step.to },
           allowed(r.owner),
         );
         r.sent.push({ kind: "post", to: { agent: origin.agent, id: origin.id }, at: now() });
@@ -639,13 +641,14 @@ export function createRelays({
           checked[0].kind !== "build" || !RELAY_AGENTS.includes(checked[0].agent) || checked[0].agent === from.agent ||
           atOnce || item || postBack || checked[0].instructions))
         throw bad("Auto-continue needs one other provider: Codex or Claude Code.");
-      if (postBack !== false) {
-        if (postBack !== true || from.agent !== "openclaw" || !openClaw?.post)
-          throw bad("Only a WhatsApp or Telegram chat in OpenClaw can get the result back.");
-        checked.push({ kind: "post" });
-      }
+      if (postBack !== false && (postBack !== true || from.agent !== "openclaw" || !openClaw?.postTarget))
+        throw bad("Only a WhatsApp or Telegram chat in OpenClaw can get the result back.");
       const reason = authorized(owner);
       if (reason) throw bad(reason, 403);
+      // Checked now, not when the answer is ready: a one-to-one chat, and
+      // the person it goes to, kept with the relay (post refuses anyone else).
+      if (postBack === true)
+        checked.push({ kind: "post", to: await openClaw.postTarget({ key: from.id }, allowed(owner)) });
       const dir = from.agent === "openclaw" && cwd ? folder(cwd) : "";
       if (from.agent === "openclaw" && !dir && ["build", "review"].includes(checked[0].kind) && checked[0].agent !== "openclaw")
         throw bad("Pick the folder to work in.");

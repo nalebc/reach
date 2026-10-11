@@ -1,6 +1,7 @@
 import path from "node:path";
 import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
+import { moneyRules } from "./money-sites.mjs";
 
 // What every agent preset keeps off limits, whatever the owner granted. One
 // list, used by the owner's app picker, the server's command and typing
@@ -197,6 +198,16 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
   return null;
 }
 
+/** A file an agent may never open or reveal: Reach's own, the browser profiles, keychains, shell histories. */
+export function protectedPathReason(target, { protectedPaths = [], home = "" } = {}) {
+  if (typeof target !== "string" || !path.isAbsolute(target)) return "Give the file's full path.";
+  const resolved = path.resolve(target), separators = resolved.replace(/\\/g, "/");
+  const roots = protectedPaths.filter((root) => typeof root === "string" && path.isAbsolute(root)).map((root) => path.resolve(root));
+  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(path.sep) ? root : root + path.sep)))
+    return "That path holds your passwords, keys or Reach's own files.";
+  return null;
+}
+
 /** Typed text is checked like a command when a terminal or IDE is in front, and always for protected page addresses. */
 export function typedTextRefusal(text, { terminalLike = false, hosts = [], protectedPaths = [], home = "" } = {}) {
   if (typeof text !== "string" || !text) return "Type something.";
@@ -232,6 +243,8 @@ export function nativeRules({ preset, apps = [], hidden = [] }, { hosts = [], ti
     protectedTitleWords: PROTECTED_TITLE_WORDS,
     protectedPagePatterns: PROTECTED_PAGE_PATTERNS.map((pattern) => pattern.source),
     terminalLike: TERMINAL_LIKE,
+    // Bank sites: sign in, read, download, sign out; nothing else (money-sites.mjs).
+    ...moneyRules(),
     protectedPaths,
     home,
   };

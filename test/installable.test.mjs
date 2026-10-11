@@ -173,6 +173,9 @@ test("the published package ships the app, never sources or private state, and r
       cwd: repo,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      // A checkout's dist/ can hold recent earlier builds too (they go after
+      // a day, scripts/prune-assets.mjs): the listing is long.
+      maxBuffer: 256 << 20,
     }),
   );
   const paths = files.map((f) => f.path);

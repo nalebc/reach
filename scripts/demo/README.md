@@ -19,23 +19,33 @@ each stage are at `/scripts/demo/workflows.html?view=` `draft`, `empty`,
 or `new` (New chat). The demo uses
 Home Mac, My iPhone, My iPad, and Alex as fictional devices and people. This
 fixture is for local screenshots only; do not deploy it as an operational Reach
-frontend. The Screen and terminal transports are not part of this fixture.
+frontend. The Screen and terminal transports are not part of this fixture;
+`capture.mjs` supplies the Screen picture (below).
 
 ## Capture and render
 
-Capture the visible viewport using browser screenshot tools. Save these names
-in a local capture directory:
+`capture.mjs` takes the six screenshots at 390 × 844 from the running demo
+server, in headless Google Chrome. It needs `playwright-core`, a demo authoring
+tool rather than a Reach dependency (`npm i --no-save playwright-core`):
 
-1. `home.png` — Home, before scrolling. Optionally capture a short sequence as
-   `home-000.png` through `home-031.png` for the actual companion motion.
-2. `files.png` — Files.
-3. `codex.png` — Codex conversation inbox.
-4. `chat.png` — Open “Build a better workspace.”
-5. `explore.png` — More.
-6. `settings.png` — More → Settings → General.
-7. `agents.png` — Home → Invite someone → Agent → Browser link (no invitation created).
+```sh
+node scripts/demo/capture.mjs /tmp/reach-captures
+```
 
-The October 7 recording uses the current interface at 390 × 844 and includes agent presets. The refreshed combined-candidate GIF is 22.9 seconds and its 30 fps MP4 is 23.7 seconds. Both are captioned sequences of screenshots; neither is a recording of live screen control, a physical phone, or real model responses.
+1. `home.png`: Home. Optionally add a short sequence, `home-000.png` through
+   `home-031.png`, for the companion's motion.
+2. `screen.png`: Screen, showing `sample-desktop.html`. The capture answers the
+   page's screen socket with that drawn desktop, in the JPEG format the companion
+   falls back to. No real screen is captured.
+3. `invite.png`: Home → Invite, with the agent presets and **Connects: Tools**.
+4. `approve.png`: a Full control agent waiting for approval
+   (`agent-access.html?view=connect-full`).
+5. `chat.png`: the “Build a better workspace” conversation.
+6. `files.png`: Files.
+
+The October 10 tour is 21.2 seconds as a GIF and 21.9 seconds as a 30 fps MP4.
+Both are captioned sequences of screenshots. Neither is a recording of live
+screen control, a physical phone, or real model responses.
 
 Keep capture files outside the repository. Compose the GIF and poster using
 Python 3 and Pillow (a demo authoring dependency, not a Reach runtime dependency):

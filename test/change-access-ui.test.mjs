@@ -2,15 +2,18 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Changing someone's access from their row in "People with access", like the
-// role menus in Claude's and ChatGPT's share dialogs: no new link. Their
+// Changing someone's access from their row in Agents & people (its Access
+// menu, like the role menus in ChatGPT's share settings): no new link. Their
 // folders are kept, or chosen first where they have none; an invitation over
 // several computers changes on each.
-let dom, React, InviteSheet, levelOf;
+let dom, React, PeopleHub, levelOf;
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
-  ({ InviteSheet, levelOf } = await dom.load("/src/InviteSheet.tsx"));
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  ({ levelOf } = await dom.load("/src/InviteSheet.tsx"));
+  ({ default: PeopleHub } = await dom.load("/src/PeopleHub.tsx"));
 });
 after(async () => dom?.close());
 
@@ -56,12 +59,17 @@ const click = async (el) => {
   el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle(60);
 };
-const row = (c, name) => [...c.querySelectorAll(".ivt-person")].find((r) => r.querySelector("strong")?.textContent === name);
-const accessMenu = (c, name) => row(c, name).querySelector(".ivt-access .ivt-menu-button");
+const row = (c, name) => [...c.querySelectorAll(".ppl-row")].find((r) => r.querySelector("strong")?.textContent === name);
+const sheet = (c) => c.querySelector(".ppl-sheet");
+// Their row opens what they may do; the Access menu is in there.
+const accessMenu = async (c, name) => {
+  if (sheet(c)?.getAttribute("aria-label") !== name) await click(row(c, name));
+  return sheet(c).querySelector(".ivt-access .ivt-menu-button");
+};
 const items = (c) => [...c.querySelectorAll(".ivt-access .ivt-item")];
 const item = (c, label) => items(c).find((b) => b.querySelector("strong").textContent === label);
 const changes = (log) => log.filter(([m, , p]) => m === "POST" && /\/access$/.test(p)).map(([, h, p, b]) => [h, p, b]);
-const render = (props) => dom.render(React.createElement(InviteSheet, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
+const render = (props) => dom.render(React.createElement(PeopleHub, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
 
 test("view only → edit files, from their row: one tap, their folders kept, no new link", async () => {
   const log = computers({
@@ -70,13 +78,13 @@ test("view only → edit files, from their row: one tap, their folders kept, no 
   const view = await render();
   const c = view.container;
   await settle(60);
-  assert.equal(accessMenu(c, "Kim").textContent, "Can open files");
-  await click(accessMenu(c, "Kim"));
+  assert.equal((await accessMenu(c, "Kim")).textContent, "Can open files");
+  await click(await accessMenu(c, "Kim"));
   assert.deepEqual(items(c).map((b) => b.querySelector("strong").textContent), ["Can watch", "Can control", "Can open files", "Can edit files", "Can work", "Full access"]);
   assert.equal(item(c, "Can open files").getAttribute("aria-checked"), "true");
   await click(item(c, "Can edit files"));
   assert.deepEqual(changes(log), [["mac-a", "/api/guests/g2/access", { folders: "keep", write: true }]]);
-  assert.match(c.querySelector(".ivt-people [role=status]").textContent, /Kim: can edit files now\. No new link needed\./);
+  assert.match(sheet(c).querySelector("[role=status]").textContent, /Kim: can edit files now\. No new link needed\./);
   assert.ok(!log.some(([m, , p]) => m === "POST" && (p === "/api/guests" || p === "/api/guests/key")), "no new invitation or key");
   await view.unmount();
 });
@@ -88,7 +96,7 @@ test("from watching to files: their folders are chosen first (or not at all)", a
   const view = await render();
   const c = view.container;
   await settle(60);
-  await click(accessMenu(c, "Sam"));
+  await click(await accessMenu(c, "Sam"));
   await click(item(c, "Can edit files"));
   assert.deepEqual(changes(log), [], "nothing changes before the folders are chosen");
   const panel = c.querySelector('[aria-label="Folders for Sam"]');
@@ -101,7 +109,7 @@ test("from watching to files: their folders are chosen first (or not at all)", a
   assert.deepEqual(changes(log), [["mac-a", "/api/guests/g1/access", { folders: [{ root: 0, path: "" }], write: true }]]);
   assert.equal(c.querySelector('[aria-label="Folders for Sam"]'), null);
   // Cancel leaves everything as it was.
-  await click(accessMenu(c, "Sam"));
+  await click(await accessMenu(c, "Sam"));
   await click(item(c, "Can work"));
   await click([...c.querySelectorAll('[aria-label="Folders for Sam"] button')].find((b) => b.textContent === "Cancel"));
   assert.equal(changes(log).length, 1);
@@ -121,7 +129,7 @@ test("one invitation over two computers changes on both; one that says no is nam
   let view = await render({ peers: [macA, macB] });
   let c = view.container;
   await settle(60);
-  await click(accessMenu(c, "Ali"));
+  await click(await accessMenu(c, "Ali"));
   await click(item(c, "Can edit files"));
   assert.deepEqual(changes(log), [
     ["mac-a", "/api/guests/g1/access", { folders: "keep", write: true }],
@@ -134,7 +142,7 @@ test("one invitation over two computers changes on both; one that says no is nam
   view = await render({ peers: [macA, macB] });
   c = view.container;
   await settle(60);
-  await click(accessMenu(c, "Ali"));
+  await click(await accessMenu(c, "Ali"));
   await click(item(c, "Can edit files"));
   const panel = c.querySelector('[aria-label="Folders for Ali"]');
   assert.match(panel.textContent, /Choose the folders Ali may use\./);
@@ -153,7 +161,7 @@ test("one invitation over two computers changes on both; one that says no is nam
   view = await render({ peers: [macA, macB] });
   c = view.container;
   await settle(60);
-  await click(accessMenu(c, "Ali"));
+  await click(await accessMenu(c, "Ali"));
   await click(item(c, "Can edit files"));
   assert.match(c.querySelector(".ivt-error").textContent, /^Mac B: That invitation has ended\./);
   await view.unmount();
@@ -166,8 +174,8 @@ test("an agent: only what agents may do", async () => {
   const view = await render();
   const c = view.container;
   await settle(60);
-  assert.equal(accessMenu(c, "Builder").textContent, "Can read");
-  await click(accessMenu(c, "Builder"));
+  assert.equal((await accessMenu(c, "Builder")).textContent, "Can read");
+  await click(await accessMenu(c, "Builder"));
   assert.deepEqual(items(c).map((b) => b.querySelector("strong").textContent), ["Can read", "Can edit", "Can run commands"]);
   await click(item(c, "Can run commands"));
   assert.deepEqual(changes(log), [["mac-a", "/api/guests/a1/access", { folders: "keep", write: true, exec: true }]]);

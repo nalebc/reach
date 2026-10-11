@@ -2,6 +2,8 @@
 
 CI checks macOS, Linux and Windows with Node 22, builds the browser Tailscale client, stages the downloadable release, and smoke-tests its CLI. These checks do not establish physical-phone onboarding, WebAuthn interoperability or remote-desktop performance.
 
+The [first-run matrix](FIRST_RUN_MATRIX.md) covers what a new person meets before this gate (computer, Tailscale state, agents installed, phone and browser) with the automated test for each case; its manual rows M1–M8 belong with this gate.
+
 ## Physical phone gate
 
 Run on a real iPhone with Safari and an Android phone with Chrome before calling the browser connection release-ready. Record the commit, host OS, Tailscale version, phone/browser version and outcome. Use a test folder and a disposable terminal; do not record credentials, QR payloads or private files in reports.

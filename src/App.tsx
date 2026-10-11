@@ -1,7 +1,5 @@
-import AccessEditor, { appScopedAccess, accessSummary, canEditAccess, type EditableAccess } from "./AccessEditor";
-import { usePageVisible } from "./page-visible";
-import DeviceAccessBadge from "./DeviceAccessBadge";
-import BrowserAgents from "./BrowserAgents";
+// Before anything reads storage: a browser that refuses it still opens Reach.
+import "./storage-fallback";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
@@ -28,16 +26,13 @@ import {
 } from "react";
 import {
   House,
-  UserRoundPlus,
+  UsersRound,
   Command,
   Settings,
   RefreshCw,
   Link2,
   LogOut,
   Check,
-  Shield,
-  KeyRound,
-  Smartphone,
   Info,
   ScanLine,
   Bot,
@@ -91,19 +86,21 @@ import EverythingChat from "./EverythingChat";
 import { openMacSetting, sendMacPassword, useAgentSessions, useChatAgent, type AgentName, type MacPrompt } from "./agent-sessions";
 import { AgentLogo, useAgentLogos } from "./agent-logos";
 import Apps from "./Apps";
-import { InviteSheet } from "./InviteSheet";
+import PeopleHub from "./PeopleHub";
 import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
 import { BrandCourier, ReachScene } from "./ReachIdentity";
 import MascotIntro from "./MascotIntro";
 import MoreSheet from "./MoreSheet";
 import MobileNav from "./MobileNav";
-import { Sparkles as SparklesIcon, MonitorPlay } from "lucide-react";
+import { MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
+import { keepDoorKey } from "./door-key";
+import { connectionName, connectionWay, tailscaleAppLink } from "./connection";
+import PhonePrompts from "./PhonePrompts";
 import { accessChanged } from "./live-access";
 import { useFleetJoin } from "./fleet-join";
-import { groupDevices } from "./device-groups";
 import { FaceIdSettings } from "./FaceIdSettings";
 import "./settings-list.css";
 import { NotificationBell, NotificationCenter } from "./Notifications";
@@ -127,7 +124,7 @@ const pages = [
   { id: "apps", name: "Apps", icon: AppWindow },
   { id: "terminal", name: "Terminals", icon: SquareTerminal },
   { id: "screen", name: "Screen", icon: ScreenShare },
-  { id: "invite", name: "Invite someone", icon: UserRoundPlus },
+  { id: "invite", name: "Agents & people", icon: UsersRound },
 ];
 // Bottom bar on phones; everything else is under More.
 const mobileOrder = ["overview", "sessions", "screen", "terminal"];
@@ -427,6 +424,7 @@ function ReachWorkspace() {
           deviceRetry.current.reset();
           setDevice(value);
           setError("");
+          keepDoorKey(peer);
         })
         .catch((e) => {
           if (
@@ -509,9 +507,12 @@ function ReachWorkspace() {
       clearInterval(capabilitiesTimer);
     };
   }, [peer?.id, peer?.url, peer?.token]);
-  const [inviteKind, setInviteKind] = useState<"person" | "browser">("person");
-  const navigate = (id: string, { opening = false } = {}) => {
-    if (id === "invite") setInviteKind("person");
+  // Agents & people, opened with its invitation ("invite:new", from Home).
+  const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser"; at: number } | null>(null);
+  const navigate = (to: string, { opening = false } = {}) => {
+    const id = to.startsWith("invite") ? "invite" : to;
+    if (id === "invite")
+      setInviteStart(to === "invite:new" ? { kind: "browser", at: Date.now() } : null);
     if (!pageAccessible(id, features)) return;
     // Re-selecting Chat is a shortcut to its root, from any nested view.
     // Keep the chosen provider and shared feed; discard only local navigation.
@@ -836,13 +837,21 @@ function ReachWorkspace() {
             ) : device && peer && pageAccessible(page, features) ? (
               <>
                 {page === "overview" && (
+                  <PhonePrompts owner={features.owner} url={peer.url} />
+                )}
+                {page === "overview" && (
                   <HomeLive
                     features={features}
                     device={device}
                     peer={peer}
                     active={peer.id}
                     connections={connections}
-                    connection={connectionLabel(peer.url)}
+                    connection={connectionName(peer.url)}
+                    appLink={
+                      connectionWay(peer.url) === "browser"
+                        ? tailscaleAppLink()
+                        : undefined
+                    }
                     terminals={terminals}
                     chats={chats}
                     pending={requests.filter((r) => deferred.includes(r.id))}
@@ -1001,16 +1010,7 @@ function ReachWorkspace() {
                   (!device.access ||
                     (device.access.scopes.includes("admin") &&
                       device.access.kind !== "guest")) && (
-                    <>
-                      <InviteSheet peer={peer} device={device} peers={peers} initialKind={inviteKind} />
-                      <button
-                        className="ivt-manage"
-                        onClick={() => navigate("settings")}
-                      >
-                        <Shield size={17} />
-                        Manage existing access
-                      </button>
-                    </>
+                    <PeopleHub key={`${peer.id}:${peer.url}:${peer.token}`} peer={peer} device={device} peers={peers} start={inviteStart} here={(connections[peer.id]?.devices || []).filter((d) => !d.self)} toast={toast} />
                   )}
                 {page === "settings" && (
                   <SettingsPage
@@ -1021,7 +1021,6 @@ function ReachWorkspace() {
                     toast={toast}
                     onChanged={refreshDevice}
                     invite={() => navigate("invite")}
-                    inviteAgent={() => { navigate("invite"); setInviteKind("browser"); }}
                     forget={() => {
                       const next = peers.filter((p) => p.id !== peer.id);
                       savePeers(next);
@@ -1585,28 +1584,9 @@ function SessionModal({
     </Modal>
   );
 }
-// A person or device's access in a few words, for its row in Settings:
-// a red dot when it has ended, green while a guest's or agent's lasts.
-const shortWhen = (at: number) => {
-  const d = new Date(at);
-  return d.toDateString() === new Date().toDateString()
-    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleDateString([], { month: "short", day: "numeric" });
-};
-function accessState(
-  c: { kind?: string; expiresAt?: number; status?: string },
-  self: boolean,
-): { dot?: "on" | "off"; text: string } {
-  const who = c.kind === "guest" ? "Guest" : c.kind === "agent" ? "Agent" : self ? "This device" : "Paired";
-  if (c.expiresAt && c.expiresAt <= Date.now()) return { dot: "off", text: `${who} · Expired` };
-  if (c.kind === "guest" || c.kind === "agent")
-    return { dot: "on", text: c.expiresAt ? `${who} · Until ${shortWhen(c.expiresAt)}` : `${who} · Until you end it` };
-  return { text: who };
-}
 export function SettingsPage({
   features,
   invite,
-  inviteAgent,
   peer,
   device,
   toast,
@@ -1618,12 +1598,9 @@ export function SettingsPage({
   toast: (s: string) => void;
   forget: () => void;
   invite: () => void;
-  inviteAgent?: () => void;
   features: WorkspaceCapabilities;
   onChanged: () => void;
 }) {
-  const [settingsView, setSettingsView] = useState("general");
-  const [editing, setEditing] = useState<EditableAccess | null>(null);
   const toggleScreen = async () => {
     try {
       await post(peer, "/api/settings", {
@@ -1634,92 +1611,9 @@ export function SettingsPage({
       toast((e as Error).message);
     }
   };
-  const [clientsError, setClientsError] = useState("");
-  const [clientsLoading, setClientsLoading] = useState(true);
-  const clientsGeneration = useRef(0);
-  const [clients, setClients] = useState<
-      (EditableAccess & {
-        createdAt: string;
-        scopes?: string[];
-        expiresAt?: number;
-        kind?: string;
-        status?: string;
-        deviceGroup?: string;
-        tailscale?: { userId: string; nodeId: string };
-      })[]
-    >([]),
-    [current, setCurrent] = useState("");
-  const load = () => {
-    const generation = clientsGeneration.current;
-    return request(peer, "/api/clients")
-      .then((r) => {
-        if (generation !== clientsGeneration.current) return;
-        if (!Array.isArray(r?.clients))
-          throw new Error("Device access list couldn’t load. Retrying…");
-        setClients(r.clients);
-        setCurrent(r.current);
-        setClientsError("");
-      })
-      .catch((e) => {
-        if (generation === clientsGeneration.current)
-          setClientsError(e.message);
-      })
-      .finally(() => {
-        if (generation === clientsGeneration.current) setClientsLoading(false);
-      });
-  };
-  const pageVisible = usePageVisible();
-  useEffect(() => {
-    clientsGeneration.current++;
-    // In the background, not asked; back on screen, at once.
-    if (!pageVisible) return;
-    load();
-    const timer = setInterval(load, 5000);
-    return () => {
-      clientsGeneration.current++;
-      clearInterval(timer);
-    };
-  }, [peer.id, peer.url, peer.token, pageVisible]);
-  const peopleAndDevices = clients.filter((client) => !(client.kind === "agent" && client.policy?.browser));
-  const browserAgentCount = clients.filter((client) => client.kind === "agent" && client.policy?.browser && (client.expiresAt || 0) > Date.now()).length;
-  const groups = groupDevices(peopleAndDevices).sort((a, b) => {
-    const rank = (kind?: string) => (kind === "guest" ? 1 : kind === "agent" ? 2 : 0);
-    return rank(a.kind) - rank(b.kind);
-  });
-  // A person or device opened from the list: its access, in a sheet.
-  const [openId, setOpenId] = useState("");
-  const opened = groups.find((g) => g.id === openId);
   const [details, setDetails] = useState(false);
   const online = true;
-  const host = (() => {
-    try {
-      return new URL(peer.url).hostname.endsWith(".ts.net") ? "Tailscale" : "Direct";
-    } catch {
-      return "";
-    }
-  })();
-  const revoke = async (c: (typeof groups)[number]) => {
-    if (!confirm(`Revoke access for ${c.name}?`)) return;
-    try {
-      // Every browser on that device.
-      for (const id of c.ids)
-        await request(peer, `/api/clients/${id}`, { method: "DELETE" });
-      setOpenId("");
-      if (c.ids.includes(current)) forget();
-      else load();
-    } catch (e) {
-      toast((e as Error).message);
-    }
-  };
-  if (settingsView === "agents")
-    return (
-      <div className="settings-workspace gs">
-        <button className="gs-back" onClick={() => setSettingsView("general")}>
-          <ChevronRight size={18} /> Settings
-        </button>
-        <BrowserAgents peer={peer} device={device} invite={inviteAgent || invite} toast={toast} />
-      </div>
-    );
+  const host = connectionName(peer.url);
   return (
     // As ChatGPT lays out its settings: who it is on top, then short
     // grouped lists (a line icon, a name, a value, a chevron). Reach's own
@@ -1760,54 +1654,22 @@ export function SettingsPage({
           <span className="gs-value">{device.roots.length}</span>
           <ChevronRight className="gs-chevron" size={18} />
         </button>
-        <InterfaceUpdates />
+        <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
       </div>
 
-      <h2 className="gs-title">People &amp; devices</h2>
-      <div className="gs-group">
-        <button className="gs-row" onClick={invite}>
-          <UserRoundPlus size={21} />
-          <span className="gs-label">Invite someone</span>
-          <ChevronRight className="gs-chevron" size={18} />
-        </button>
-        {groups.map((c) => (
-          <button className="gs-row" key={c.id} onClick={() => setOpenId(c.id)}>
-            {c.kind === "guest" ? (
-              <KeyRound size={21} />
-            ) : c.kind === "agent" ? (
-              <SparklesIcon size={21} />
-            ) : (
-              <Smartphone size={21} />
-            )}
-            <span className="gs-label">
-              {c.name}
-              <small>
-                {accessState(c, c.ids.includes(current)).dot && (
-                  <i className={`gs-dot ${accessState(c, c.ids.includes(current)).dot}`} />
-                )}
-                {accessState(c, c.ids.includes(current)).text}
-              </small>
-            </span>
-            <ChevronRight className="gs-chevron" size={18} />
-          </button>
-        ))}
-        {clientsLoading && !groups.length && (
-          <div className="gs-row gs-note">
-            <Spinner />
+      {/* Who can use this computer: one place (PeopleHub.tsx), the owner's. */}
+      {(!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")) && (
+        <>
+          <h2 className="gs-title">Access</h2>
+          <div className="gs-group">
+            <button className="gs-row" onClick={invite}>
+              <UsersRound size={21} />
+              <span className="gs-label">Agents &amp; people</span>
+              <ChevronRight className="gs-chevron" size={18} />
+            </button>
           </div>
-        )}
-        {clientsError && (
-          <div className="gs-row gs-note">
-            <ErrorLine error={clientsError} />
-          </div>
-        )}
-        <button className="gs-row" onClick={() => setSettingsView("agents")}>
-          <Bot size={21} />
-          <span className="gs-label">Agents</span>
-          <span className="gs-value">{browserAgentCount || ""}</span>
-          <ChevronRight className="gs-chevron" size={18} />
-        </button>
-      </div>
+        </>
+      )}
 
       <FaceIdSettings peer={peer} />
       {/* Notifications live in the bell's panel only: nothing about them here. */}
@@ -1852,70 +1714,6 @@ export function SettingsPage({
           </p>
         </ScreenPopup>
       )}
-      {opened && (
-        <ScreenPopup title={opened.name} className="gs-sheet" onClose={() => setOpenId("")}>
-          <div className="gs-group">
-            <div className="gs-row">
-              <span className="gs-label">Access</span>
-              <span className="gs-value">
-                <DeviceAccessBadge
-                  access={[
-                    {
-                      kind: opened.kind === "guest" ? "invited" : opened.kind === "agent" ? "agent" : "paired",
-                      expiresAt: opened.expiresAt || 0,
-                    },
-                  ]}
-                />
-              </span>
-            </div>
-            <div className="gs-row gs-wrap">
-              <span className="gs-label">Can</span>
-              <span className="gs-value">{accessSummary(opened)}</span>
-            </div>
-            <div className="gs-row">
-              <span className="gs-label">{opened.kind === "guest" ? "Invited" : "Added"}</span>
-              <span className="gs-value">{new Date(opened.createdAt).toLocaleDateString()}</span>
-            </div>
-            {!!opened.expiresAt && (
-              <div className="gs-row">
-                <span className="gs-label">
-                  {opened.expiresAt <= Date.now()
-                    ? "Expired"
-                    : opened.kind === "guest" || opened.kind === "agent"
-                      ? "Access ends"
-                      : "Sign-in expires"}
-                </span>
-                <span className="gs-value">{new Date(opened.expiresAt).toLocaleString()}</span>
-              </div>
-            )}
-          </div>
-          <div className="gs-group gs-end">
-            {canEditAccess(opened) && (
-              <button
-                className="gs-row"
-                aria-label={appScopedAccess(opened) ? `Manage ${opened.name}’s app requests` : `Edit ${opened.name}’s access`}
-                onClick={() => {
-                  setOpenId("");
-                  setEditing(opened);
-                }}
-              >
-                <span className="gs-label">
-                  {appScopedAccess(opened) ? "Manage app requests" : "Edit access"}
-                </span>
-                <ChevronRight className="gs-chevron" size={18} />
-              </button>
-            )}
-            <button
-              className="gs-row gs-danger"
-              aria-label={`Revoke ${opened.name}`}
-              onClick={() => void revoke(opened)}
-            >
-              <span className="gs-label">Remove access</span>
-            </button>
-          </div>
-        </ScreenPopup>
-      )}
-      {editing && <AccessEditor key={`${peer.id}:${editing.id}`} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); void load(); toast(removed ? "Access removed" : "Access updated"); }} />}
     </div>
   );
 }

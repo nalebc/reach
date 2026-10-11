@@ -54,7 +54,9 @@ export async function appDisplaysBinary(config, { signal } = {}) {
     );
   } catch (e) {
     if (signal?.aborted) throw e;
-    throw fail(503, "Could not prepare the app display helper. Install Apple Command Line Tools.");
+    if (e.developerTools === false)
+      throw fail(503, "This needs Apple's Command Line Tools. Run xcode-select --install on your Mac, then try again.");
+    throw fail(503, "Reach couldn't prepare apps on your phone on this Mac. Check macOS permissions, then try again.");
   }
 }
 
@@ -644,11 +646,16 @@ export class AppScreenHub {
     ]);
     let group = this.groups.get(key);
     if (!group) {
-      group = new RemoteBroadcast(
+      // Frees its key only if it still holds it: a newer group may have
+      // taken its place.
+      const created = new RemoteBroadcast(
         () => this.prepare(options),
         options,
-        () => this.groups.delete(key),
+        () => {
+          if (this.groups.get(key) === created) this.groups.delete(key);
+        },
       );
+      group = created;
       group.thread = t.id;
       this.groups.set(key, group);
     }

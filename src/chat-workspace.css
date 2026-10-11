@@ -96,17 +96,6 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.chat-new-app-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: -4px 0 16px;
-  color: var(--as-muted);
-  font-size: 12px;
-}
-.chat-new-app-row .chat-app-rail {
-  width: 100%;
-}
 /* Conversation controls keep their labels; new chats use an icon toolbar. */
 .chat-redesign .as-tools {
   flex-wrap: nowrap;
@@ -159,50 +148,150 @@
   font-size: 20px;
   font-weight: 550;
 }
+/* Its heading: the app as one pill; tapped, its list drops under it. */
+.chat-create-sheet .chat-sheet-heading h2 {
+  position: relative;
+  min-width: 0;
+}
+.chat-app-switch {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+.chat-app-switch-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 6px 12px 6px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+}
+.chat-app-switch-current:hover,
+.chat-app-switch-current[aria-expanded="true"] {
+  background: var(--panel);
+}
+.chat-app-switch-current > svg {
+  flex: none;
+  color: var(--muted);
+}
+.chat-app-switch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-app-switch-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+}
+.chat-app-switch-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(280px, calc(100vw - 40px));
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px #0009;
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.chat-app-switch-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-strong);
+  font: inherit;
+  text-align: left;
+}
+.chat-app-switch-menu button:hover,
+.chat-app-switch-menu button[aria-checked="true"] {
+  background: color-mix(in srgb, var(--lime) 10%, var(--panel));
+}
+.chat-app-switch-menu button > svg {
+  flex: none;
+}
+.chat-app-switch-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.chat-app-switch-text small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-app-switch-menu button.out small {
+  color: var(--usage-out);
+}
+.chat-app-switch-menu button.upcoming {
+  opacity: 0.6;
+}
 .chat-create-sheet .chat-sheet-close {
   width: 40px;
   height: 40px;
   border-radius: 50%;
   background: var(--panel);
 }
-.chat-new-computer {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 0 10px 3px;
-  margin: 0 0 4px;
+/* The computer, quiet at the end of the folder pill. */
+.chat-new-context > .chat-new-computer {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.chat-new-computer svg,
+.chat-new-context > .chat-new-computer + svg {
+  margin-left: 0;
+}
 .chat-new-context svg {
   flex: none;
 }
-.chat-new-computer span {
-  min-width: 0;
-  overflow-wrap: anywhere;
+/* Browsing: the last choice in the folder list, dashed. */
+.as-picker-row .chat-folder-browse {
+  border-style: dashed;
+  color: var(--muted);
 }
-.chat-new-folder-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 10px;
-}
-.chat-new-folder-controls .chat-folder {
-  flex: 1;
-  margin-bottom: 0;
-}
-.chat-folder-browse {
+/* Team or Workflow picked from "+": one pill in the tools, × to undo. */
+.chat-new-kind {
+  display: inline-flex;
   flex: none;
-  min-height: 44px;
-  padding: 8px 10px;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  margin-left: 4px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lime) 18%, transparent);
   color: var(--text-strong);
   font: inherit;
   font-size: 13px;
+  font-weight: 600;
+}
+.chat-new-kind > svg:last-child {
+  color: var(--muted);
 }
 .chat-new-context {
   display: flex;
@@ -417,6 +506,16 @@ button.chat-new-context:hover,
   padding: 6px 12px;
   font-size: 13px;
 }
+.chat-status.out-of-usage > span {
+  flex: 1;
+  min-width: 0;
+}
+.chat-status.out-of-usage .usage-notify {
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+}
 /* An agent update: the out-of-usage line's look; confirming, the command
    on a line of its own with Cancel and Update under it. */
 .chat-status.agent-update {
@@ -592,6 +691,9 @@ button.chat-new-context:hover,
   font-size: 14px;
   line-height: 1.65;
 }
+.chat-redesign .as-assistant.as-thinking {
+  color: var(--as-muted);
+}
 .chat-redesign .as-composer {
   gap: 7px;
   padding: 10px max(20px, calc((100% - 724px) / 2)) 16px;
@@ -672,8 +774,19 @@ button.chat-new-context:hover,
     padding: 18px 20px max(22px, env(safe-area-inset-bottom));
     border-radius: 18px 18px 0 0;
   }
+  /* New chat on a phone: the whole screen, like a chat (the keyboard takes
+     half of it; a sheet's rounded top and the list behind cost the rest). */
+  .reach-chat-overlay:has(.chat-create-sheet) {
+    align-items: stretch;
+  }
   .reach-chat-sheet.chat-create-sheet {
-    border-radius: 26px 26px 0 0;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    padding-top: max(14px, env(safe-area-inset-top));
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
   .chat-sheet-close {
     width: 38px;
@@ -843,3 +956,22 @@ button.chat-new-context:hover,
 .chat-setup-problem {
   color: #f0a0a0;
 }
+/* New chat's "+" menu: quiet leading icons, the check in the agent's colour. */
+.as-mode-menu.as-add-menu button > svg:first-child {
+  color: var(--as-muted);
+}
+
+/* Add an agent (EverythingChat.tsx AddAgents): a new computer's agents as
+   one list, a row each, its Install pill on the right. */
+.chat-add-agents ul { margin: 12px 0 10px; padding: 0; list-style: none; }
+.chat-add-agents li { border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.chat-add-agents li:last-child { border-bottom: 0; }
+.chat-add-agents li.open { padding-bottom: 12px; }
+.chat-add-row { display: flex; align-items: center; gap: 12px; min-height: 56px; }
+.chat-add-row > span:not(.agent-logo) { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.chat-add-row b { font-weight: 550; font-size: 14px; }
+.chat-add-row small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-add-row .agent-logo { flex: none; border-radius: 8px; }
+.chat-setup .chat-add-row button,
+.chat-setup .chat-add-row a { flex: none; gap: 4px; min-height: 32px; padding: 6px 14px; border-radius: 999px; border-color: transparent; background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--text-strong); font-weight: 550; }
+.chat-setup .chat-add-check { border: 0; padding: 8px 0; color: var(--muted); }

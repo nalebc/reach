@@ -404,7 +404,7 @@ test("network plans are single-host and single-port; joining uses private file s
 });
 
 test(
-  "isolated join verifies tags, propagates the loopback proxy and logs out on child exit",
+  "isolated join verifies tags, propagates its private proxy socket and logs out on child exit",
   { skip: process.platform === "win32" },
   async () => {
     const dir = await fs.mkdtemp(
@@ -442,9 +442,10 @@ test(
     ];
     try {
       const result = await run(args);
+      // A socket in the run's private folder, not a port anyone could use.
       assert.match(
         JSON.parse(result.stdout).proxy,
-        /^http:\/\/127\.0\.0\.1:\d+$/,
+        /^unix:\/.+\/proxy\.sock$/,
       );
       assert(!result.stderr.includes("SYNTHETIC-SECRET"));
       const actions = (await fs.readFile(log, "utf8"))
@@ -550,6 +551,82 @@ test(
       target.closeAllConnections();
       await new Promise((r) => target.close(r));
       await new Promise((r) => proxy.close(r));
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+// The isolated tailnet's proxy is a socket in the run's private folder that
+// dials through tailscaled with `tailscale nc`: no port for another user on
+// the agent's machine, tailnet addresses only, certificates still checked
+// end to end (connections audit, Oct 10).
+test(
+  "the isolated tailnet's private proxy reaches tailnet hosts only, and HTTPS through it checks the certificate",
+  { skip: process.platform === "win32" },
+  async () => {
+    const https = await import("node:https");
+    const { tailnetProxy } = await import("../scripts/agent-network.mjs");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ncproxy-"));
+    await fs.chmod(dir, 0o700);
+    const key = path.join(dir, "key.pem"),
+      cert = path.join(dir, "cert.pem"),
+      conf = path.join(dir, "cert.conf");
+    await fs.writeFile(
+      conf,
+      "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=mac.fixture.ts.net\n[ext]\nsubjectAltName=DNS:mac.fixture.ts.net\nbasicConstraints=CA:TRUE\n",
+    );
+    await exec("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-config", conf]);
+    let receivedToken;
+    const target = https.createServer({ key: await fs.readFile(key), cert: await fs.readFile(cert) }, (req, res) => {
+      receivedToken = req.headers.authorization;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ fixture: true }));
+    });
+    await new Promise((r) => target.listen(0, "127.0.0.1", r));
+    // `tailscale nc <host> <port>` as the isolated daemon would: here, to the fixture.
+    const log = path.join(dir, "nc.log");
+    const cli = path.join(dir, "tailscale");
+    await fs.writeFile(
+      cli,
+      `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))+'\\n');const s=require('node:net').connect(${target.address().port},'127.0.0.1');process.stdin.pipe(s);s.pipe(process.stdout);s.on('close',()=>process.exit(0));`,
+      { mode: 0o700 },
+    );
+    const file = path.join(dir, "proxy.sock");
+    const proxy = await tailnetProxy({ file, cli, socket: path.join(dir, "tailscaled.sock") });
+    try {
+      assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+      const connect = (to) =>
+        new Promise((resolve, reject) => {
+          const req = http.request({ socketPath: file, method: "CONNECT", path: to, headers: { Host: to } });
+          req.on("connect", (res, socket) => { socket.destroy(); resolve(res.statusCode); });
+          req.on("response", (res) => resolve(res.statusCode));
+          req.on("error", reject);
+          req.end();
+        });
+      for (const outside of ["evil.example.com:443", "192.168.1.4:22", "127.0.0.1:22", "100.128.0.1:443"])
+        assert.equal(await connect(outside), 403, outside);
+      const credential = { url: "https://mac.fixture.ts.net:8443", token: "synthetic-secret-1234567890" };
+      const file2 = path.join(dir, "credential.json");
+      await write(file2, credential);
+      const result = await run(["device", "--credential", file2], {
+        env: { ...process.env, REACH_PROXY: `unix:${file}`, NODE_EXTRA_CA_CERTS: cert },
+      });
+      assert.deepEqual(JSON.parse(result.stdout), { fixture: true });
+      assert.equal(receivedToken, `Bearer ${credential.token}`);
+      const dialed = (await fs.readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.deepEqual(dialed.at(-1).slice(1), ["nc", "mac.fixture.ts.net", "8443"]);
+      // Without the fixture's certificate the same route is refused.
+      await assert.rejects(
+        createAgentClient(credential, { proxy: `unix:${file}` })("/api/device"),
+        /self.signed|certificate/i,
+      );
+      // A socket in a folder others can open isn't taken as the proxy.
+      await fs.chmod(dir, 0o755);
+      assert.throws(() => createAgentClient(credential, { proxy: `unix:${file}` }), /private socket/);
+    } finally {
+      proxy.close();
+      target.closeAllConnections();
+      await new Promise((r) => target.close(r));
       await fs.rm(dir, { recursive: true, force: true });
     }
   },

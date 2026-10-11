@@ -7,22 +7,21 @@
 //   wizard, no prompts), only while there's no config: on an existing one it
 //   would rotate the Gateway token and reset Tailscale. Gateway on loopback,
 //   token auth, always.
-// - Add a key: OpenClaw has no prompt-free way (paste-token stores a
-//   "token" profile, and a cancelled prompt as the key). So Reach writes the
-//   api_key profile onboard writes, {type, provider, key} at X:default in
-//   the main agent's auth-profiles.json, under OpenClaw's own lock file, and
-//   `openclaw config set auth.profiles[X:default]` marks it api_key.
+// - Add a key: `openclaw models auth paste-api-key --provider X
+//   --profile-id X:default`, the key on its stdin (it reads a pipe when
+//   there's no terminal). OpenClaw 2026.9 keeps keys in its own database and
+//   ignores the old auth-profiles.json, so Reach never writes a store itself.
+//   Then `openclaw models auth list --json` must show X:default as api_key.
 // - Default model: `openclaw models set <ref>`, OpenClaw's own onboard ref.
 // Keys go to OpenClaw only: its env or its own store, never argv, shell
 // text, a log or a response. Errors are Reach's fixed words.
-import { execFile } from "node:child_process";
-import crypto from "node:crypto";
-import JSON5 from "json5";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { hasCommand } from "./agent-install.mjs";
+import { openClawShell } from "./openclaw-run.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -32,8 +31,9 @@ export const GATEWAY_PORT = 18789;
 // The providers a phone can pick; nothing else reaches OpenClaw.
 export const PROVIDERS = {
   openrouter: { choice: "openrouter-api-key", envVar: "OPENROUTER_API_KEY", model: "openrouter/auto" },
-  anthropic: { choice: "apiKey", envVar: "ANTHROPIC_API_KEY", model: "anthropic/claude-opus-4-6" },
-  openai: { choice: "openai-api-key", envVar: "OPENAI_API_KEY", model: "openai/gpt-5.1-codex" },
+  // OpenClaw 2026.9.9's own defaults for these providers.
+  anthropic: { choice: "apiKey", envVar: "ANTHROPIC_API_KEY", model: "anthropic/claude-opus-5-5" },
+  openai: { choice: "openai-api-key", envVar: "OPENAI_API_KEY", model: "openai/gpt-6-astra" },
   google: { choice: "gemini-api-key", envVar: "GEMINI_API_KEY", model: "google/gemini-3.1-pro-preview" },
 };
 // No Ollama: its non-interactive setup pulls a multi-GB model when none is
@@ -64,7 +64,7 @@ const exists = async (file) => {
 
 // The fixed argv for a first setup. The key is not in it (argv shows in
 // `ps` to everyone): OpenClaw reads it from the provider's env variable
-// (keyedShell). Never --json (its summary has the Gateway token), --reset,
+// (openClawShell's secret). Never --json (its summary has the Gateway token), --reset,
 // or a Gateway token.
 export function onboardArgs(provider) {
   const found = pick(provider);
@@ -82,119 +82,96 @@ export function onboardArgs(provider) {
     "--skip-health",
   ];
 }
-export const profileArgs = (provider) => {
+// --agent: with more than one agent OpenClaw won't pick one itself.
+const AGENT = /^[a-z0-9][\w-]{0,79}$/i;
+export const pasteArgs = (provider, agent = "main") => {
   pick(provider);
-  return ["config", "set", `auth.profiles[${provider}:default]`, JSON.stringify({ provider, mode: "api_key" }), "--strict-json"];
+  return ["models", "auth", "paste-api-key", "--agent", agent, "--provider", provider, "--profile-id", `${provider}:default`];
+};
+export const listArgs = (provider, agent = "main") => {
+  pick(provider);
+  return ["models", "auth", "list", "--agent", agent, "--json", "--provider", provider];
 };
 export const defaultArgs = (provider) => ["models", "set", pick(provider).model];
 
-const shellOf = (env) => env.SHELL || "/bin/sh";
-// "$@": every value is an argument, never shell text.
-const viaShell = (args) => ["-lc", 'exec openclaw "$@"', "openclaw", ...args];
-// The same, the key set as the provider's variable after the login profile
-// (which could set its own), from REACH_PROVIDER_KEY: never in any argv.
-export const keyedShell = (provider, args) => [
-  "-lc",
-  `export ${pick(provider).envVar}="$REACH_PROVIDER_KEY"; unset REACH_PROVIDER_KEY; exec openclaw "$@"`,
-  "openclaw",
-  ...args,
-];
-
-// The main agent's key store, as OpenClaw finds it (resolveOpenClawAgentDir:
-// onboard writes there; other agents fall back to it).
-export function authStoreFile({ env = process.env, home = os.homedir() } = {}) {
-  const user = (p) => (p.startsWith("~") ? path.join(home, p.slice(1)) : path.resolve(p));
-  const override = env.OPENCLAW_AGENT_DIR?.trim() || env.PI_CODING_AGENT_DIR?.trim();
-  const state = env.OPENCLAW_STATE_DIR?.trim() || path.join(home, ".openclaw");
-  return path.join(override ? user(override) : path.join(user(state), "agents", "main", "agent"), "auth-profiles.json");
-}
-
-// OpenClaw's lock: `<file>.lock` made exclusively, stale after 30 s.
-const LOCK_STALE_MS = 30000;
-async function withLock(file, work) {
-  let target;
-  try {
-    target = await fs.realpath(file);
-  } catch {
-    target = path.resolve(file);
-  }
-  const lock = `${target}.lock`;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    let handle;
-    try {
-      handle = await fs.open(lock, "wx");
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      let stale = true;
-      try {
-        const held = JSON.parse(await fs.readFile(lock, "utf8"));
-        const at = Date.parse(held?.createdAt);
-        stale = !Number.isFinite(at) || Date.now() - at > LOCK_STALE_MS;
-      } catch {
-        try {
-          stale = Date.now() - (await fs.stat(lock)).mtimeMs > LOCK_STALE_MS;
-        } catch {}
-      }
-      if (stale) await fs.rm(lock, { force: true });
-      else await new Promise((r) => setTimeout(r, 150));
-      continue;
-    }
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }, null, 2), "utf8");
-      return await work();
-    } finally {
-      await handle.close().catch(() => {});
-      await fs.rm(lock, { force: true }).catch(() => {});
-    }
-  }
-  throw new Error("locked");
-}
-
-// Sets one api_key profile; every other profile, order, lastGood and
-// usageStats stay. Atomic (temp file + rename), 0600, then read back.
-export async function saveApiKey(provider, key, { file = authStoreFile() } = {}) {
-  pick(provider);
-  const id = `${provider}:default`;
-  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  await withLock(file, async () => {
-    let store = { version: 1, profiles: {} };
-    try {
-      store = JSON.parse(await fs.readFile(file, "utf8"));
-    } catch (error) {
-      // Never over a store Reach can't read.
-      if (error.code !== "ENOENT") throw error;
-    }
-    if (!store || typeof store !== "object" || Array.isArray(store)) throw new Error("unreadable");
-    if (!store.profiles || typeof store.profiles !== "object" || Array.isArray(store.profiles)) store.profiles = {};
-    store.version ??= 1;
-    store.profiles[id] = { type: "api_key", provider, key };
-    const temp = `${file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
-    try {
-      await fs.writeFile(temp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-      await fs.rename(temp, file);
-    } finally {
-      await fs.rm(temp, { force: true }).catch(() => {});
-    }
-    await fs.chmod(file, 0o600);
+// One run with something on its stdin (execFile has no input), bounded in
+// time and output; its output is never shown or logged.
+export function pipeRun(file, args, { input = "", timeout = 30000, env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    let done = false, size = 0;
+    const finish = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(() => (child.kill("SIGKILL"), finish(new Error("timeout"))), timeout);
+    const count = (chunk) => {
+      size += chunk.length;
+      if (size > 1024 * 1024) child.kill("SIGKILL");
+    };
+    child.stdout.on("data", count);
+    child.stderr.on("data", count);
+    child.on("error", () => finish(new Error("start")));
+    child.on("close", (code) => finish(code === 0 ? null : new Error("exit")));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
   });
-  // Compared here only; never returned.
-  const saved = JSON.parse(await fs.readFile(file, "utf8"))?.profiles?.[id];
-  if (saved?.type !== "api_key" || saved.provider !== provider || saved.key !== key) throw new Error("mismatch");
 }
 
-// Whether the config already marks X:default as an api_key profile.
-async function profileMarked(file, provider) {
-  try {
-    const p = JSON5.parse(await fs.readFile(file, "utf8"))?.auth?.profiles?.[`${provider}:default`];
-    return p?.provider === provider && p?.mode === "api_key";
-  } catch {
-    return false;
-  }
+// The key in OpenClaw's own store (on stdin), then read back from OpenClaw's
+// list, which shows ids and types only, never keys.
+export async function saveApiKey(provider, key, { pipe = pipeRun, run = promisify(execFile), env = process.env, platform = process.platform, runtime } = {}) {
+  pick(provider);
+  // OpenClaw's default agent (the one onboard set up), by its own list.
+  const [agentsFile, agents] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime });
+  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env })).stdout || "null"));
+  const agent = (Array.isArray(roster) ? roster : roster?.agents)?.find?.((a) => a?.isDefault === true)?.id;
+  if (typeof agent !== "string" || !AGENT.test(agent)) throw new Error("no default agent");
+  const [file, args] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime });
+  await pipe(file, args, { input: `${key}\n`, timeout: 60000, env });
+  const [listFile, list] = await openClawShell(listArgs(provider, agent), { env, platform, runtime });
+  const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env });
+  const profiles = JSON.parse(String(stdout || "null"))?.profiles;
+  const saved = Array.isArray(profiles) && profiles.find((p) => p?.id === `${provider}:default`);
+  if (!saved || saved.provider !== provider || saved.type !== "api_key") throw new Error("not saved");
 }
+
+// The last setup run, for the phone to poll (it outlasts a phone's request):
+// { state: running | done | partial | failed, provider, error? }, the error
+// in Reach's fixed words. Never the key, OpenClaw's output or its env.
+let setup = null;
+let setupRun = null;
+export const onboardSetup = () => (setup ? { ...setup } : null);
+// Resolves once the current run has ended (tests, shutdown).
+export const onboardSettled = () => setupRun || Promise.resolve();
 
 export async function onboardStatus({ has = (name) => hasCommand(name), file = configFile(), platform = process.platform } = {}) {
   const [installed, configured] = await Promise.all([has("openclaw"), exists(file)]);
-  return { installed, configured, supported: platform !== "win32", providers: Object.keys(PROVIDERS) };
+  return { installed, configured, supported: platform !== "win32", providers: Object.keys(PROVIDERS), setup: onboardSetup() };
+}
+
+// Why a setup run failed, in Reach's own words. OpenClaw's output is read
+// only to tell causes apart, never echoed: it can carry the key.
+export const SETUP_ERRORS = {
+  missing: "OpenClaw isn't installed on this computer. Install it, then set it up.",
+  node: "OpenClaw needs Node 24.16 or newer on this computer. Update Node, then set it up again.",
+  partial: "OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: openclaw gateway install",
+  timeout: "OpenClaw's setup took over 3 minutes and was stopped. Try again.",
+  failed: "OpenClaw didn't finish setting up. Check the key and try again.",
+};
+export async function setupFailure(error, file) {
+  const output = `${error?.stderr ?? ""}\n${error?.stdout ?? ""}`.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  // The login shell's "command not found", or no shell at all.
+  if (error?.code === 127 || error?.code === "ENOENT") return { state: "failed", error: SETUP_ERRORS.missing };
+  // OpenClaw's own Node check (node-version.mjs, openclaw.mjs) and the
+  // older "requires Node" wording updateRecovery reads.
+  if (/OpenClaw requires|requires Node|Node [\w.]+ is unsupported|Use Node\.js \d/i.test(output)) return { state: "failed", error: SETUP_ERRORS.node };
+  // Config written, daemon not: a retry would only get "already set up".
+  if (await exists(file)) return { state: "partial", error: SETUP_ERRORS.partial };
+  if (error?.killed === true || error?.signal === "SIGTERM" || error?.signal === "SIGKILL") return { state: "failed", error: SETUP_ERRORS.timeout };
+  return { state: "failed", error: SETUP_ERRORS.failed };
 }
 
 let busy = false;
@@ -210,7 +187,7 @@ const once = async (work) => {
 
 export async function onboardOpenClaw(
   { provider, key, acceptRisk } = {},
-  { run = promisify(execFile), env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {} } = {},
+  { run = promisify(execFile), env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
 ) {
   authorize();
   const args = onboardArgs(provider);
@@ -218,29 +195,35 @@ export async function onboardOpenClaw(
   // --accept-risk is the owner's own yes, never Reach's.
   if (acceptRisk !== true) throw fail(400, "Accept OpenClaw's risk to set it up.");
   if (platform === "win32") throw fail(409, "On Windows, set up OpenClaw on this computer.");
-  return once(async () => {
+  if (busy) throw fail(409, "OpenClaw is being set up. Try again in a moment.");
+  busy = true;
+  let started = false;
+  try {
     // Never over an existing setup (new Gateway token, Tailscale off).
     if (await exists(file)) throw fail(409, "OpenClaw is already set up.");
     authorize();
-    try {
-      await run(shellOf(env), keyedShell(provider, args), {
-        timeout: 180000,
-        maxBuffer: 4 * 1024 * 1024,
-        env: { ...env, REACH_PROVIDER_KEY: value },
-      });
-    } catch {
-      throw fail(409, "OpenClaw didn't finish setting up. Check the key and try again.");
-    }
-    return { done: true, provider };
-  });
+    const [shell, argv] = await openClawShell(args, { env, platform, secret: pick(provider).envVar, runtime });
+    // Up to 3 minutes, past a phone's request: it runs on here and the
+    // phone polls onboard/status. Busy (no Add key) until OpenClaw exits.
+    setup = { state: "running", provider };
+    setupRun = run(shell, argv, { timeout: 180000, maxBuffer: 4 * 1024 * 1024, env: { ...env, REACH_SECRET: value } })
+      .then(() => ({ state: "done" }), (error) => setupFailure(error, file))
+      .catch(() => ({ state: "failed", error: SETUP_ERRORS.failed }))
+      .then((end) => { setup = { ...end, provider }; })
+      .finally(() => { busy = false; });
+    started = true;
+    return { started: true, provider };
+  } finally {
+    if (!started) busy = false;
+  }
 }
 
 export async function addOpenClawProvider(
   { provider, key, setDefault } = {},
-  { run = promisify(execFile), save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), store = authStoreFile({ env }), authorize = () => {} } = {},
+  { run = promisify(execFile), save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
 ) {
   authorize();
-  const args = profileArgs(provider);
+  pick(provider);
   const value = checkKey(key);
   if (setDefault !== undefined && typeof setDefault !== "boolean") throw fail(400, "Choose whether to use it by default.");
   if (platform === "win32") throw fail(409, "On Windows, add keys in OpenClaw on this computer.");
@@ -248,15 +231,15 @@ export async function addOpenClawProvider(
     if (!(await exists(file))) throw fail(409, "Set up OpenClaw first.");
     authorize();
     try {
-      await save(provider, value, { file: store });
-      if (!(await profileMarked(file, provider))) await run(shellOf(env), viaShell(args), { timeout: 30000 });
+      await save(provider, value, { env, platform, run, runtime });
     } catch {
       throw fail(409, "OpenClaw didn't take this key. Try again.");
     }
     if (setDefault) {
       authorize();
       try {
-        await run(shellOf(env), viaShell(defaultArgs(provider)), { timeout: 30000 });
+        const [shell, argv] = await openClawShell(defaultArgs(provider), { env, platform, runtime });
+        await run(shell, argv, { timeout: 30000, env });
       } catch {
         throw fail(409, "The key is saved, but the default model didn't change.");
       }

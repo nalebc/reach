@@ -9,7 +9,7 @@ import {
 import { tailscaleJson } from "./tailscale.mjs";
 import { readPreferences } from "./configure.mjs";
 import { terminalPrompts } from "./prompts.mjs";
-import { stateDir } from "./home.mjs";
+import { stateDir, command } from "./home.mjs";
 
 // `reach invites` (also a step of `reach setup`): one-time setup so
 // invitations carry their own Tailscale key; people and agents just open the
@@ -25,10 +25,10 @@ export async function setupInvites(root, deps = {}) {
   const dataDir = process.env.REACH_DATA || path.join(stateDir(root), "quick");
   const preferences = readPreferences(root);
   if (!preferences)
-    throw Error("Run Reach once first (./reach), then set up invites.");
+    throw Error(`Run Reach once first (${command}), then set up invites.`);
   const device = loadJson(path.join(dataDir, "device.json"), null);
   if (!device?.id)
-    throw Error("Run Reach once first (./reach), then set up invites.");
+    throw Error(`Run Reach once first (${command}), then set up invites.`);
   const status = await (
     deps.status || (() => tailscaleJson(["status", "--json"]))
   )();
@@ -78,35 +78,68 @@ export async function setupInvites(root, deps = {}) {
     await (deps.open || openPage)(KEYS_PAGE);
     const accessToken = (await secret("Access token (hidden):")).trim();
     print("Checking your Tailscale policy…");
-    const result = await keys.setupFromAccessToken({
-      accessToken,
-      addresses,
-      port,
-      confirm: async (plan) => {
+    let declined = false;
+    const attempt = (narrowDefaultWildcard = false) =>
+      keys.setupFromAccessToken({
+        accessToken,
+        addresses,
+        port,
+        narrowDefaultWildcard,
+        confirm: async (plan) => {
+          print(
+            `\nReach will add to your Tailscale policy (nothing else changes):\n${plan.added.map((l) => `  + ${l}`).join("\n")}`,
+          );
+          declined =
+            (await select({
+              message: "Add these?",
+              choices: [
+                { value: "yes", label: "Add them", recommended: true },
+                {
+                  value: "no",
+                  label: "Cancel",
+                  description: "Nothing is changed.",
+                },
+              ],
+            })) !== "yes";
+          return !declined;
+        },
+      });
+    let result;
+    try {
+      try {
+        result = await attempt();
+      } catch (error) {
+        // A new tailnet's policy lets every device reach every other, so a
+        // guest would reach more than Reach. The phone offers to narrow that
+        // one rule to your tailnet's members; so does this.
+        if (!error.canNarrowDefault) throw error;
         print(
-          `\nReach will add to your Tailscale policy (nothing else changes):\n${plan.added.map((l) => `  + ${l}`).join("\n")}`,
+          "\nYour Tailscale policy still has its default rule: every device may reach every other. Guests would then reach more than Reach.\nReach can change that rule to your own devices and people (autogroup:member), so guests reach only Reach.",
         );
-        return (
-          (await select({
-            message: "Add these?",
-            choices: [
-              { value: "yes", label: "Add them", recommended: true },
-              {
-                value: "no",
-                label: "Cancel",
-                description: "Nothing is changed.",
-              },
-            ],
-          })) === "yes"
-        );
-      },
-    });
+        const narrow = await select({
+          message: "Change the default rule?",
+          choices: [
+            { value: "yes", label: "Yes, limit it to my devices and people", recommended: true },
+            { value: "no", label: "No, leave my policy as it is", description: "Invite links stay off; set them up later with ./reach setup invites." },
+          ],
+        });
+        if (narrow !== "yes") declined = true;
+        else result = await attempt(true);
+      }
+    } catch (error) {
+      if (!declined) throw error;
+    }
+    // Declined: nothing changed, and setup goes on without invite links.
+    if (declined || !result) {
+      print("Nothing changed. Set up invite links any time with ./reach setup invites.");
+      return { ready: false };
+    }
     if (!result.added.length) print("Your policy already had Reach's rules.");
     if (result.allowAll.length) print(allowAllWarning);
     print(
       "Invite links are ready. You can delete that access token in Tailscale now, or let it expire.",
     );
-    return;
+    return { ready: true };
   }
   const policy = guestPolicy({ addresses, port });
   print(`
@@ -135,6 +168,7 @@ ${allowAllWarning.replace(/^/gm, "   ")}
   print(
     "Invite keys are ready. New invitations from your phone include a key; a running Reach uses it right away.",
   );
+  return { ready: true };
 }
 
 // Tailscale rules only ever allow: an "everyone reaches everything" rule
@@ -157,7 +191,7 @@ function hiddenAsk(message) {
   return new Promise((resolve, reject) => {
     const { stdin, stdout } = process;
     if (!stdin.isTTY)
-      return reject(Error("Run ./reach invites in an interactive terminal."));
+      return reject(Error(`Run ${command} invites in an interactive terminal.`));
     stdout.write(`${message} `);
     let value = "";
     stdin.setRawMode(true);

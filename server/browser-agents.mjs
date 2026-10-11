@@ -2,7 +2,7 @@ import { browserIdleEnded, fail, isPlainRecord } from './core.mjs';
 
 // Owner controls stay outside the browser agent route allowlist. An agent name
 // is a label; only the server-created invitation ID identifies a session.
-export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null }) {
+export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null, actions = null }) {
   const owner = (req) => {
     const client = req.reauthorize();
     if (client.kind !== 'device' || !client.scopes?.includes('admin'))
@@ -38,6 +38,15 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     });
     owner(req);
     res.json({ agents, at });
+  });
+  // What one agent did on the Mac, newest first (server/agent-actions.mjs):
+  // ?clientId=…&before=<ms>&limit=<n>.
+  app.get('/api/agents/actions', (req, res) => {
+    owner(req);
+    if (!actions) throw fail(503, 'The agent action log is unavailable.');
+    const { clientId, before, limit } = req.query;
+    if (Object.keys(req.query).some((key) => !['clientId', 'before', 'limit'].includes(key))) throw fail(400, 'Choose an agent, a time to read back from, and how many.');
+    res.json(actions.list({ ...(clientId !== undefined ? { clientId } : {}), ...(before !== undefined ? { before: Number(before) } : {}), ...(limit !== undefined ? { limit: Number(limit) } : {}) }));
   });
   // Pause one preset agent: it keeps looking, its actions wait until resumed.
   app.post('/api/browser/agents/pause', (req, res) => {

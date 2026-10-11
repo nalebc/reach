@@ -719,6 +719,10 @@ test("downloads enforce the file limit; protected pages and cross-site controls 
   secret.origins = ["https://passwords.google.com"];
   secret.steps[0].url = "https://passwords.google.com/";
   await assert.rejects(f.tools.define(f.authorize, secret), /Password stores/);
+  const bank = exampleTool("bank_site");
+  bank.origins = ["https://secure.chase.com"];
+  bank.steps[0].url = "https://secure.chase.com/web/auth/dashboard";
+  await assert.rejects(f.tools.define(f.authorize, bank), /bank sites/);
 });
 
 test("a document reload with the same URL invalidates Safari handles, and revocation clears private files", async (t) => {

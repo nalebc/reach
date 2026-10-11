@@ -472,6 +472,7 @@ test("a public request can reach only explicitly granted browser APIs, with no a
     ["/api/browser/desktop/input", "POST", { action: { type: "click", x: 0.5, y: 0.5 } }],
     ["/api/browser/desktop/wait", "POST", { text: "Order placed" }],
     ["/api/device/rotate", "POST", {}],
+    ["/api/device/runtime", "GET", null],
     ["/api/browser/desktop/open", "POST", { app: "/Applications/Safari.app" }],
     ["/api/browser/shell", "POST", { command: "ls", root: 0, cwd: "" }],
     ["/api/browser/files/change", "POST", { op: "write", root: 0, path: "a.txt", content: "x" }],
@@ -492,6 +493,7 @@ test("a public request can reach only explicitly granted browser APIs, with no a
     ["/api/browser/files/change", "GET"],
     ["/api/browser/agents/pause", "POST"],
     ["/api/agents/browser-invitations", "POST"],
+    ["/api/device/runtime", "POST"],
   ]) {
     const before = f.dispatched.length;
     assert.equal((await f.call(f.request(presetToken, deniedRoute, method, method === "POST" ? {} : null))).status, 403, `${method} ${deniedRoute}`);

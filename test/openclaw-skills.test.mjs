@@ -123,6 +123,36 @@ test("turning a skill on or off is authorized, validated and never echoes its co
   await assert.rejects(f.hit("POST", "/skills/enable", { body: { key: "ghost", enabled: true } }), { status: 404 });
 });
 
+// The list fell back to the name when a skillKey failed Reach's check, but
+// enable/key/setup matched skillKey first: one resolver now, and a skill
+// whose skillKey Reach can't pass is shown but never changed (no name stand-in).
+test("a skill whose skillKey Reach can't pass shows, but can't be changed", async () => {
+  const f = fixture({
+    skills: [
+      statusSkill({ name: "odd", skillKey: "odd key; rm", primaryEnv: "MEMO_TOKEN" }),
+      statusSkill({ name: "plain", skillKey: undefined }),
+      statusSkill({ name: "renamed", skillKey: "renamed-key" }),
+    ],
+  });
+  const out = await f.hit("GET", "/skills");
+  assert.deepEqual(out.skills.map((s) => [s.name, s.key]), [["odd", null], ["plain", "plain"], ["renamed", "renamed-key"]]);
+  assert.equal(out.skills[0].keyName, undefined);
+  const before = f.calls.length;
+  for (const [route, body] of [
+    ["/skills/enable", { key: "odd", enabled: false }],
+    ["/skills/key", { key: "odd", apiKey: "sk-1234567890abcdef" }],
+    ["/skills/setup", { key: "odd", env: { MEMO_TOKEN: "x" } }],
+    ["/skills/enable", { key: "renamed", enabled: false }],
+  ])
+    await assert.rejects(f.hit("POST", route, { body }), { status: 404 });
+  assert.equal(f.calls.slice(before).filter((c) => c.method === "skills.update").length, 0);
+  // The keys the list gives are the keys the actions take.
+  await f.hit("POST", "/skills/enable", { body: { key: "plain", enabled: false } });
+  assert.deepEqual(f.calls.at(-1).params, { skillKey: "plain", enabled: false });
+  await f.hit("POST", "/skills/enable", { body: { key: "renamed-key", enabled: false } });
+  assert.deepEqual(f.calls.at(-1).params, { skillKey: "renamed-key", enabled: false });
+});
+
 test("safety check: bundled skill gets a calm look and the exact command", async () => {
   const s = await skillDir("memo", { install: [{ id: "brew", kind: "brew", formula: "antoniorodr/memo/memo", bins: ["memo"], label: "Install memo via Homebrew" }] });
   const f = fixture({ skills: [statusSkill({ filePath: s.file, baseDir: s.folder })] });

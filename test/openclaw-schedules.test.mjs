@@ -174,6 +174,14 @@ test("edit: a system-event job keeps its kind; main-session jobs can't change de
   await assert.rejects(run(`POST ${base}/automations/edit`, { body: { ...edit, delivery: "none" } }), { status: 409 });
 });
 
+test("edit: a command job (or any other kind) is never rebuilt as an agent turn", async () => {
+  for (const payload of [{ kind: "command", argv: ["backup.sh"], cwd: "/srv" }, { kind: "later" }, undefined]) {
+    const { run, calls } = fixture({ jobs: [cronJob({ payload })] });
+    await assert.rejects(run(`POST ${base}/automations/edit`, { body: edit }), { status: 409 });
+    assert.equal(calls.some(([m]) => m === "cron.update"), false);
+  }
+});
+
 test("edit: validated as strictly as a new schedule", async () => {
   const { run, calls } = fixture();
   const bad = [

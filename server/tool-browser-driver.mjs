@@ -32,6 +32,7 @@ const ERRORS = {
   disabled: [409, "The expected control is disabled."],
   invalid: [409, "The browser operation is invalid."],
   download_failed: [409, "The browser could not download this attachment."],
+  owner_tab: [409, "The owner is looking at this tab."],
 };
 const FIXED_DETAILS = [
   "The target browser window is gone.",

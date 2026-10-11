@@ -5,6 +5,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
+import { validateBrowserRoot } from "./browser-private-paths.mjs";
 import { STANDING_SECONDS, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
 
 export const fail = (status, message) =>
@@ -241,6 +242,22 @@ const faceJoined = (client) =>
   client.tailscale?.faceJoin === true &&
   client.tailscale.tagged === true &&
   client.tailscale.userId === "";
+// The pairing window: while it's open the start page answers the internet,
+// so a phone without the Tailscale app can sign in to Tailscale in its browser
+// and ask to join (it still has to be approved at the computer). A file in
+// Reach's private folder, so the terminal that opens it (./reach pair, setup)
+// needn't be the Reach that answers.
+export const PAIRING_WINDOW_MS = 15 * 60 * 1000;
+export const pairingWindowFile = (dataDir) => path.join(dataDir, "pairing-window.json");
+export function openPairingWindow(dataDir, { now = Date.now, ms = PAIRING_WINDOW_MS } = {}) {
+  const until = now() + Math.min(ms, PAIRING_WINDOW_MS);
+  atomicJson(pairingWindowFile(dataDir), { until });
+  return until;
+}
+export function closePairingWindow(dataDir) {
+  fs.rmSync(pairingWindowFile(dataDir), { force: true });
+}
+
 // The credential store's lock names its holder. A change takes milliseconds
 // (all synchronous), so a lock whose holder is gone, or held 10 s, was left by
 // a process that died mid-change (killed, out of memory, power lost); it used
@@ -293,10 +310,15 @@ export function takeCredentialLock(lock, { now = Date.now, isAlive } = {}) {
   throw busy();
 }
 
-export function createAuth(config, { rotatePairing = true } = {}) {
+// `firstDevice`: told when the first of your own devices gets in (index.mjs
+// turns the screen on for it).
+export function createAuth(config, { rotatePairing = true, firstDevice = () => {} } = {}) {
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   config.agentPolicyRequired ||= fs.existsSync(config.agentPolicyFile);
   const file = path.join(config.dataDir, "clients.json");
+  // A pairing window (pairingWindowFile): the start page answers the internet
+  // for a few minutes so a phone without the Tailscale app can join.
+  const pairingFile = pairingWindowFile(config.dataDir);
   let clients = loadJson(file, []);
   let credentialStoreCreated = fs.existsSync(file);
   const listStoredClients = () => {
@@ -824,9 +846,14 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     };
   }
   // Full control and Read only without chosen folders see every folder Reach
-  // shares; Files needs chosen folders; Apps has none.
+  // shares that agents may have (Home, never the whole computer); Files needs
+  // chosen folders; Apps has none.
+  const shareable = (preset) => config.roots.filter((root) => {
+    try { validateBrowserRoot(root, { policy: { browser: true, preset } }); return true; }
+    catch { return false; }
+  });
   const presetRoots = (checked, chosen) =>
-    checked.preset === "apps" ? [] : chosen.length || checked.preset === "files" ? chosen : [...config.roots];
+    checked.preset === "apps" ? [] : chosen.length || checked.preset === "files" ? chosen : shareable(checked.preset);
   // One of four presets. Its apps were matched to this Mac's catalog by the
   // route; its scopes are derived from the preset on every request.
   function invitePresetBrowser(checked, browserAppApprover) {
@@ -1433,6 +1460,39 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     });
     return result;
   }
+  // "New invite link" (Agents & people): an invitation nobody has used yet
+  // gets a fresh secret and the old link stops working. Who, what and until
+  // when stay; a join window starts over at its first length. As when it was
+  // made, the computer keeps only the new link's hash.
+  function renewInvitation(clientId) {
+    let result;
+    changeClients((latest) => {
+      const now = Date.now();
+      const client = latest.find((c) => c.id === clientId);
+      if (!client || !["guest", "agent"].includes(client.kind) || !(client.expiresAt > now))
+        throw fail(404, "That invitation has ended.");
+      const status = admissionStatus(client, now);
+      if (!client.inviteHash || client.redeemedAt || ["pending", "approved", "accepted"].includes(status))
+        throw fail(409, `${client.name} already opened the link. Nothing to send again.`);
+      const token = crypto.randomBytes(32).toString("base64url");
+      client.inviteHash = hash(token);
+      if (typeof client.linkHash === "string") client.linkHash = client.inviteHash;
+      delete client.admission;
+      if (client.inviteExpiresAt) {
+        client.joinMs ??= Math.max(60000, client.inviteExpiresAt - Date.parse(client.createdAt));
+        client.inviteExpiresAt = Math.min(client.expiresAt, now + client.joinMs);
+      }
+      result = {
+        invitation: token,
+        clientId: client.id,
+        expiresAt: client.expiresAt,
+        ...(client.inviteExpiresAt ? { joinBy: client.inviteExpiresAt } : {}),
+        scopes: client.scopes,
+      };
+      return latest;
+    });
+    return result;
+  }
   // Whose unopened invitation this is, without spending it: for telling a
   // person why they can't come in yet (index.mjs, the host guard).
   function unopenedInvitation(invitation) {
@@ -1591,6 +1651,39 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     keysMemo = { mtime, ended: endedVersion, at: now, keys };
     return keys;
   }
+  // Door keys (Oct 10): a browser that came in without the Tailscale app
+  // talks to Reach through the tailnet, but its page and code (a screen
+  // opened later, a reload) come from the public link. Asked for over that
+  // private connection, its own key (a cookie there) lets it through the
+  // door while its access lasts; strangers still get 404 (index.mjs). One per
+  // person or device: asking again replaces it. Only its hash is kept.
+  const DOOR_KEY = /^[A-Za-z0-9_-]{43}$/;
+  const doorKind = (client) => client?.kind === "guest" || client?.kind === "device";
+  function issueDoorKey(clientId) {
+    const key = crypto.randomBytes(32).toString("base64url");
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId);
+      if (!doorKind(client) || client.policy?.browser || !(client.expiresAt > Date.now()))
+        throw fail(403, "Only a person or a device of yours keeps a door key.");
+      client.doorHash = hash(key);
+      result = { key, expiresAt: client.expiresAt };
+      return latest;
+    });
+    return result;
+  }
+  let doorMemo = { mtime: null, at: 0, keys: new Map() };
+  function doorKeyKnown(key) {
+    if (typeof key !== "string" || !DOOR_KEY.test(key)) return false;
+    const now = Date.now();
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
+    if (doorMemo.mtime !== mtime || now - doorMemo.at >= 60_000)
+      doorMemo = { mtime, at: now, keys: new Map(loadJson(file, [])
+        .filter((c) => doorKind(c) && !c.policy?.browser && typeof c.doorHash === "string")
+        .map((c) => [c.doorHash, c.expiresAt])) };
+    return (doorMemo.keys.get(hash(key)) || 0) > now;
+  }
   // The connection ids of hosted agents (hosted-mcp.mjs) with access, or
   // ended lately: the door answers their bearer tokens, and keeps the token
   // and discovery endpoints up for them, when nothing else opens it.
@@ -1673,12 +1766,20 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     const now = Date.now();
     endIdle(now);
     let result = { open: false, until: 0, reason: null };
-    // Whether anyone without a key Reach knows must get in: an invitation
-    // waiting to be claimed, an agent's page (a browser agent, or a Tools
-    // agent in its first hour, before its first credential trade). When only
-    // trading Tools agents hold the window, the door takes known keys alone
-    // (keyed; index.mjs).
+    // Whether anyone without a key Reach knows must get in: a pairing, an
+    // invitation waiting to be claimed, an agent's page (a browser agent, or
+    // a Tools agent in its first hour, before its first credential trade).
+    // When only trading Tools agents hold the window, the door takes known
+    // keys alone (keyed; index.mjs).
     let strangers = false;
+    // Opened at the computer (./reach in a terminal, setup, ./reach pair)
+    // for a phone without the Tailscale app; closed by the first device that
+    // gets in, or by its own deadline.
+    const pairing = loadJson(pairingFile, null);
+    if (Number.isFinite(pairing?.until) && pairing.until > now) {
+      result = { open: true, until: Math.min(pairing.until, now + PAIRING_WINDOW_MS), reason: "pairing" };
+      strangers = true;
+    }
     for (const client of loadJson(file, [])) {
       // A person's or a CLI agent's unopened invitation needs the start page
       // too: to sign in without the Tailscale app, or to fetch agent.mjs. The
@@ -1778,7 +1879,16 @@ export function createAuth(config, { rotatePairing = true } = {}) {
         ? { deviceGroup: options.deviceGroup.slice(0, 64) }
         : {}),
     };
-    changeClients((latest) => [...latest, client]);
+    let first = false;
+    changeClients((latest) => {
+      first = kind === "device" && !latest.some((c) => c.kind === "device");
+      return [...latest, client];
+    });
+    if (first) firstDevice(client);
+    // A new device got in: the pairing window it may have come through is
+    // done. Another browser on a phone already approved (its Home Screen
+    // copy, joined as that same device) isn't the phone it was opened for.
+    if (kind === "device" && !options.deviceGroup) fs.rmSync(pairingFile, { force: true });
     return {
       token,
       clientId: client.id,
@@ -1792,6 +1902,8 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     verifyDigest,
     verifyFunnel,
     funnelKeys,
+    issueDoorKey,
+    doorKeyKnown,
     rotateCredential,
     rotateFunnelCredential,
     claimHostedInvitation,
@@ -1815,6 +1927,7 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     redeemFunnelBrowser,
     reconnectFunnelBrowser,
     reopenBrowserInvitation,
+    renewInvitation,
     listAgentAdmissions,
     decideAgentAdmission,
     pollAgentAdmission,
@@ -1822,9 +1935,9 @@ export function createAuth(config, { rotatePairing = true } = {}) {
     pair,
     issue,
     list: () =>
-      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, ...rest }) => ({
+      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ...rest }) => ({
         ...rest,
-        // The owner may reopen this agent's link (Settings → Agents).
+        // The owner may reopen this agent's link (Agents & people).
         ...(linkHash && rest.expiresAt > Date.now() ? { relink: true } : {}),
         ...(rest.kind === "guest" || rest.policy?.invite
           ? {

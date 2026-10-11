@@ -99,6 +99,9 @@ export function createMacPrompts({
   binary = null,
   spawn = spawnChild,
   retryMs = 5000,
+  // Without Command Line Tools, how soon it looks again: installed later,
+  // Mac prompts come to the phone without restarting Reach.
+  missingMs = 10 * 60 * 1000,
   // Presses a dialog's button or types the Mac's password (mac-answer.swift).
   answer = macAnswerRunner({ dataDir, spawn }),
 }) {
@@ -123,7 +126,12 @@ export function createMacPrompts({
     try {
       file = await prepare({ signal: preparing.signal });
     } catch {
-      return; // no Command Line Tools: no Mac prompts on the phone
+      // No Command Line Tools yet: no Mac prompts on the phone until they are.
+      if (!closed && !preparing.signal.aborted) {
+        timer = setTimeout(run, missingMs);
+        timer.unref?.();
+      }
+      return;
     }
     if (closed) return;
     child = spawn(file, [], { stdio: ["pipe", "pipe", "ignore"] });

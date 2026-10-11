@@ -91,7 +91,7 @@ test("shows the computer, the places as a list, and Settings at the end", async 
   assert.deepEqual(names(root, 'nav[aria-label="Go to"] .more-row-label'), [
     "Files",
     "Apps",
-    "Invite someone",
+    "Agents & people",
   ]);
   assert.equal(
     root.querySelector('.more-row[aria-current="page"] .more-row-label')
@@ -192,7 +192,7 @@ test("a place still being checked keeps its row but can't be opened yet", async 
   const rows = [...root.querySelectorAll('nav[aria-label="Go to"] .more-row')];
   assert.deepEqual(
     rows.map((r) => r.querySelector(".more-row-label").textContent),
-    ["Files", "Apps", "Invite someone"],
+    ["Files", "Apps", "Agents & people"],
   );
   assert.equal(rows[1].getAttribute("aria-disabled"), "true");
   rows[1].click();

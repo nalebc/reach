@@ -99,7 +99,8 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-x86_64) TARGET=darwin-x64; SHA=8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8 ;;
   Linux-aarch64|Linux-arm64) TARGET=linux-arm64; SHA=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
   Linux-x86_64) TARGET=linux-x64; SHA=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
-  *) echo 'Reach supports Mac, Windows x64, and Linux x64/arm64.' >&2; exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*) printf '%s\n' 'On Windows, run .\reach.cmd in PowerShell or Command Prompt.' >&2; exit 1 ;;
+  *) echo "Reach supports Mac, Windows x64, and Linux x64/arm64; this computer is $(uname -s) $(uname -m). With Node.js 22 or newer installed yourself, ./reach uses it." >&2; exit 1 ;;
 esac
 CACHE="$REACH_DIR/.reach/runtime"
 RUNTIME="$CACHE/node-v$VERSION-$TARGET"
@@ -109,8 +110,16 @@ if [ ! -x "$RUNTIME/bin/node" ]; then
   STAGE=$(mktemp -d "$CACHE/download.XXXXXX")
   trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
   echo 'Reach: preparing a private Node.js runtime (first run only)…'
-  curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 20 --max-time 300 \
-    "https://nodejs.org/dist/v$VERSION/node-v$VERSION-$TARGET.tar.gz" -o "$STAGE/node.tar.gz"
+  # Said, rather than curl's own error: what to do instead.
+  if ! command -v curl >/dev/null 2>&1; then
+    echo 'Reach needs curl to download Node.js. Install curl, or Node.js 22 or newer from https://nodejs.org, then run ./reach again.' >&2
+    exit 1
+  fi
+  if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 20 --max-time 300 \
+    "https://nodejs.org/dist/v$VERSION/node-v$VERSION-$TARGET.tar.gz" -o "$STAGE/node.tar.gz"; then
+    echo "Reach couldn't download Node.js (no internet here?). Connect, then run ./reach again; or install Node.js 22 or newer from https://nodejs.org." >&2
+    exit 1
+  fi
   if command -v shasum >/dev/null 2>&1; then
     ACTUAL=$(shasum -a 256 "$STAGE/node.tar.gz" | cut -d ' ' -f 1)
   else

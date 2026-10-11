@@ -4,6 +4,9 @@
 // the private address). Without the app, sign in to Tailscale right here in
 // the browser and run Reach through the page's own tailnet node.
 import "./abort-polyfill";
+import "./storage-fallback";
+// Keeps the browser's install prompt from page load: the app comes later here.
+import "./home-screen";
 import { watchForApp } from "./app-watch";
 import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";

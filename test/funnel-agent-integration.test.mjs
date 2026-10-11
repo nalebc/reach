@@ -798,6 +798,12 @@ test("the public door: shut to strangers, open to known keys, open to all only w
   assert.deepEqual((({ open, keyed }) => [open, keyed])(f.reach.auth.funnelWindow()), [true, true]);
   assert.equal((await f.raw("/agent.mjs")).status, 404, "a stranger: nothing");
   assert.equal((await f.raw("/agent.mjs", { headers: { "Reach-Key": f.thumbprint(agent) } })).status, 200, "the agent's own runtime download");
+  // A kept runtime by its hash: the same rule (connections audit, Oct 10).
+  const kept = `/agent-runtimes/${"ab".repeat(32)}.mjs`;
+  fs.mkdirSync(path.join(f.dist, "agent-runtimes"), { recursive: true });
+  fs.writeFileSync(path.join(f.dist, kept.slice(1)), "// kept\n");
+  assert.equal((await f.raw(kept)).status, 404, "a stranger: nothing");
+  assert.equal((await f.raw(kept, { headers: { "Reach-Key": f.thumbprint(agent) } })).status, 200, "a known key: the runtime it names");
   const shut = await f.gateway({ operation: "claim", invitation: "x".repeat(43) }, {}, stranger);
   assert.equal(shut.status, 404, "a stranger's signed request: nothing");
   assert.equal(shut.headers["reach-not-run"], undefined);

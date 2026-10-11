@@ -51,7 +51,7 @@ function intervals() {
 
 test("Settings → Agents asks nothing while the page is in the background, and at once when it's back", async () => {
   const calls = count();
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
+  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, toast() {} }));
   views.add(view);
   await dom.waitFor(() => calls.includes("/api/browser/agents"));
   await setHidden(true);

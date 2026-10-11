@@ -15,6 +15,7 @@ import * as agentsFeature from "./openclaw-agents.mjs";
 import * as skillsFeature from "./openclaw-skills.mjs";
 import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
+import { openClawShell } from "./openclaw-run.mjs";
 
 // Features in files of their own, each adding its routes.
 export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature, wizardFeature];
@@ -85,10 +86,13 @@ export async function localOpenClawConfig({
   try {
     config = JSON5.parse(await fs.readFile(file, "utf8"));
   } catch (error) {
+    // No configuration yet: installed and never set up (Chat only shows
+    // OpenClaw once its command or its configuration is here), or gone.
+    // The phone offers setup (OpenClawOnboard.tsx) rather than an error.
     if (error.code === "ENOENT")
-      throw fail(
-        503,
-        "OpenClaw was not found on this computer. Install it and start its local Gateway.",
+      throw Object.assign(
+        fail(503, "OpenClaw isn't set up on this computer yet."),
+        { notSetUp: true },
       );
     throw fail(
       503,
@@ -104,6 +108,22 @@ export async function localOpenClawConfig({
     throw fail(
       503,
       "This OpenClaw profile uses a remote Gateway. Connect Reach to the computer running that Gateway.",
+    );
+  // Reach is the private route to this Mac: a Gateway that also listens on
+  // the network, or publishes itself through Tailscale, is refused rather
+  // than shown as healthy (connections audit, Oct 10). OpenClaw's default
+  // is this Mac only.
+  const bind = config.gateway?.bind;
+  if (bind !== undefined && bind !== "loopback")
+    throw fail(
+      503,
+      `OpenClaw's Gateway is open beyond this Mac (bind: ${String(bind).slice(0, 20)}). Set gateway.bind to "loopback" in its configuration; Reach is the private way in.`,
+    );
+  const published = config.gateway?.tailscale?.mode;
+  if (published !== undefined && published !== "off")
+    throw fail(
+      503,
+      `OpenClaw publishes its Gateway through Tailscale (${String(published).slice(0, 20)}). Set gateway.tailscale.mode to "off"; Reach is the private way in.`,
     );
   const port = Number(
     env.OPENCLAW_GATEWAY_PORT || config.gateway?.port || 18789,
@@ -282,6 +302,8 @@ export function createOpenClaw({
   // fallbacks run under the same runId) before the run counts as failed:
   // OpenClaw's own AGENT_RUN_ERROR_RETRY_GRACE_MS.
   retryGraceMs = 15000,
+  // Sends kept to answer a retry of the same request ID (see send).
+  maxSends = 2048,
 } = {}) {
   let socket,
     connecting,
@@ -529,6 +551,12 @@ export function createOpenClaw({
                     invalidInjectParams:
                       waiter.method === "chat.inject" &&
                       /invalid chat\.inject params/i.test(
+                        String(frame.error?.message || ""),
+                      ),
+                    // A Gateway older than cron.add's declarationKey.
+                    unknownDeclarationKey:
+                      waiter.method === "cron.add" &&
+                      /invalid cron\.add params.*declarationKey/is.test(
                         String(frame.error?.message || ""),
                       ),
                     // Any method: it exists here, only the params were wrong.
@@ -960,6 +988,38 @@ export function createOpenClaw({
       threadId: context.threadId ?? s.lastThreadId,
     };
   };
+  // A one-to-one chat, shown positively (OpenClaw itself calls a chat
+  // "direct" unless it's known to be a group): its key is a WhatsApp or
+  // Telegram direct chat (agent:<id>:<channel>[:<account>]:direct:<peer>),
+  // no field says otherwise, and its messages go to that same person.
+  // Anything else is refused: a new channel or key shape isn't guessed at.
+  const DIRECT_KEY = /^agent:[^:]+:(whatsapp|telegram)(?::[^:]+)?:direct:([^:]+)$/i;
+  const ONE_TO_ONE = "Reach posts only to one-to-one WhatsApp or Telegram chats, never groups or channels. Nothing was sent.";
+  const postTarget = (key, row) => {
+    const shape = DIRECT_KEY.exec(String(key || ""));
+    const target = destination(row || {});
+    if (!shape) throw fail(403, ONE_TO_ONE);
+    if (!target) throw fail(409, "This chat has no app to post to. Nothing was sent.");
+    const peer = shape[2].replace(/\D/g, "");
+    const to = String(target.to).replace(/\D/g, "");
+    if (
+      String(target.channel).toLowerCase() !== shape[1].toLowerCase() ||
+      (row.chatType != null && row.chatType !== "direct") ||
+      (row.kind != null && row.kind !== "direct") ||
+      row.spawnedBy ||
+      (target.threadId != null && target.threadId !== "") ||
+      /@g\.us|:group:|:channel:|^\s*-/i.test(String(target.to)) ||
+      !peer ||
+      to !== peer
+    )
+      throw fail(403, ONE_TO_ONE);
+    return target;
+  };
+  const sameTarget = (a, b) =>
+    !!a && !!b &&
+    String(a.channel).toLowerCase() === String(b.channel).toLowerCase() &&
+    String(a.to) === String(b.to) &&
+    String(a.accountId || "") === String(b.accountId || "");
   const checkChannel = async (target) => {
     const result = await rpc("channels.status", { probe: false });
     const accounts = result?.channelAccounts?.[target.channel];
@@ -1054,15 +1114,21 @@ export function createOpenClaw({
       return {
         defaultAgentId:
           typeof agents?.defaultId === "string" ? agents.defaultId : "main",
-        agents: (agents?.agents || []).map((a) => ({
-          id: a.id,
-          name:
+        agents: (agents?.agents || []).map((a) => {
+          const name =
             typeof a.identity?.name === "string"
               ? a.identity.name
               : typeof a.name === "string"
                 ? a.name
-                : a.id,
-        })),
+                : String(a.id);
+          // A key pasted as a name (or id) never reaches a phone.
+          return {
+            id: a.id,
+            name: healthFeature.scrubSecrets(name) === name && healthFeature.scrubSecrets(String(a.id)) === String(a.id)
+              ? name
+              : "Agent named with a key [hidden]",
+          };
+        }),
         models: (models?.models || []).map((m) => ({
           id:
             typeof m.provider === "string" &&
@@ -1267,7 +1333,7 @@ export function createOpenClaw({
       if (agentId !== undefined && (typeof agentId !== "string" || !/^[\w-]{1,80}$/.test(agentId)))
         throw fail(400, "Choose an OpenClaw agent.");
       if (typeof announce !== "boolean") throw fail(400, "Choose where results go.");
-      const result = await rpc("cron.add", {
+      const job = {
         name: name.trim(),
         ...(agentId ? { agentId } : {}),
         enabled: true,
@@ -1276,7 +1342,19 @@ export function createOpenClaw({
         wakeMode: "now",
         payload: { kind: "agentTurn", message: message.trim() },
         delivery: announce ? { mode: "announce", channel: "last" } : { mode: "none" },
-      }, undefined, authorize);
+      };
+      // OpenClaw 2026.9's idempotent declaration key: the same schedule sent
+      // again (a phone retrying after a timeout) updates that job instead of
+      // adding a second. From the job's own fields, so a retry has the same.
+      const declarationKey = `reach:${crypto.createHash("sha256").update(JSON.stringify(job)).digest("hex").slice(0, 32)}`;
+      let result;
+      try {
+        result = await rpc("cron.add", { ...job, declarationKey }, undefined, authorize);
+      } catch (error) {
+        // An older Gateway that doesn't know the key: add it as before.
+        if (error?.unknownDeclarationKey !== true) throw error;
+        result = await rpc("cron.add", job, undefined, authorize);
+      }
       const id = result?.id || result?.job?.id;
       if (typeof id !== "string" || !id)
         throw fail(502, "OpenClaw did not confirm the new schedule. Refresh before trying again.");
@@ -1416,6 +1494,7 @@ export function createOpenClaw({
           error: error.message,
           // Installed here, its Gateway just isn't running (gatewayStart).
           ...(error.gatewayDown ? { canStart: true } : {}),
+          ...(error.notSetUp ? { notSetUp: true } : {}),
           revision,
           version,
         };
@@ -1570,7 +1649,14 @@ export function createOpenClaw({
           );
         return previous.promise;
       }
-      if (attempts.size >= 2048)
+      // Finished sends are kept only to answer a retry of the same ID; the
+      // oldest finished go first, so the limit is on sends still in flight.
+      if (attempts.size >= maxSends)
+        for (const [id, old] of attempts) {
+          if (attempts.size < maxSends) break;
+          if (old.settled) attempts.delete(id);
+        }
+      if (attempts.size >= maxSends)
         throw fail(
           503,
           "Reach’s OpenClaw send limit was reached. Restart Reach after current runs finish.",
@@ -1723,6 +1809,8 @@ export function createOpenClaw({
         )
           attempts.delete(requestId);
         throw error;
+      }).finally(() => {
+        attempt.settled = true;
       });
       attempts.set(requestId, attempt);
       return attempt.promise;
@@ -1823,7 +1911,7 @@ export function createOpenClaw({
     // chose it for that relay (Oct 8). Never a group or channel (Oct 5: a
     // reply reached a friends' WhatsApp group), never another recipient,
     // and no agent runs: OpenClaw's `send` delivers the text as it is.
-    async post({ key, text, requestId }, authorize = () => {}) {
+    async post({ key, text, requestId, to }, authorize = () => {}) {
       authorize();
       validKey(key);
       if (typeof text !== "string" || !text.trim() || text.length > 20000)
@@ -1832,14 +1920,13 @@ export function createOpenClaw({
         throw fail(400, "A post request ID is required.");
       const row = await known(key);
       authorize();
-      const target = destination(row);
-      if (!target)
-        throw fail(409, "This chat has no app to post to. Nothing was sent.");
-      if (
-        /:group:|:channel:|@g\.us/i.test(`${key} ${target.to}`) ||
-        /group|channel/i.test(String(row.chatType || ""))
-      )
-        throw fail(403, "Reach posts only to one-to-one chats, never groups or channels. Nothing was sent.");
+      const target = postTarget(key, row);
+      // The person the relay was set up for: the chat's messages may go
+      // elsewhere by now (a shared session follows whoever wrote last).
+      if (!to)
+        throw fail(409, "This relay was set up before Reach's update. Set it up again. Nothing was sent.");
+      if (!sameTarget(to, target))
+        throw fail(409, "This chat's messages go to someone else now. Nothing was sent.");
       await checkChannel(target);
       authorize();
       const result = await rpc(
@@ -1851,18 +1938,29 @@ export function createOpenClaw({
           ...(typeof target.accountId === "string" && target.accountId
             ? { accountId: target.accountId }
             : {}),
-          ...(target.threadId != null && target.threadId !== ""
-            ? { threadId: String(target.threadId) }
-            : {}),
           sessionKey: key,
           idempotencyKey: requestId,
         },
         undefined,
         authorize,
       );
-      if (result?.ok === false)
+      // Delivered only when OpenClaw says so: its message id, or this run.
+      if (!(result && result.ok !== false && (result.messageId != null || result.runId === requestId)))
         throw fail(502, "OpenClaw didn't confirm the post. Check the chat before posting again.");
       return { posted: true, channel: target.channel };
+    },
+    // Where a relay's result would go, checked when it's set up (kept with
+    // the relay; post refuses anyone else).
+    async postTarget({ key }, authorize = () => {}) {
+      authorize();
+      validKey(key);
+      const target = postTarget(key, await known(key));
+      authorize();
+      return {
+        channel: target.channel,
+        to: target.to,
+        ...(typeof target.accountId === "string" && target.accountId ? { accountId: target.accountId } : {}),
+      };
     },
     async remove(key, authorize = () => {}) {
       authorize();
@@ -2029,6 +2127,7 @@ export async function startOpenClawGateway({
   env = process.env,
   platform = process.platform,
   authorize = () => {},
+  runtime,
 } = {}) {
   authorize();
   await configuration();
@@ -2040,7 +2139,7 @@ export async function startOpenClawGateway({
         windowsHide: true,
       });
     else
-      await run(env.SHELL || "/bin/sh", ["-lc", "exec openclaw gateway start"], {
+      await run(...(await openClawShell(["gateway", "start"], { env, platform, runtime })), {
         timeout: 30000,
       });
   } catch {
@@ -2067,6 +2166,12 @@ export async function addOpenClawChannel(
     env = process.env,
     platform = process.platform,
     authorize = () => {},
+    runtime,
+    stateDir = env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw"),
+    writeFile = fs.writeFile,
+    mkdir = fs.mkdir,
+    chmod = fs.chmod,
+    rm = fs.rm,
   } = {},
 ) {
   authorize();
@@ -2080,18 +2185,32 @@ export async function addOpenClawChannel(
   if (name !== undefined && name !== "" && (typeof name !== "string" || name.length > 80 || /[\u0000-\u001f]/.test(name)))
     throw fail(400, "Choose a shorter account name.");
   if (platform === "win32") throw fail(409, "On Windows, add channels in OpenClaw on this computer.");
-  // OpenClaw copies the token into its own config (a --token-file would be
-  // kept as a path to that file instead).
+  // Telegram: the token in a file only this user can read, in OpenClaw's
+  // credentials folder; OpenClaw keeps its path (tokenFile) and reads it
+  // when it runs, so the file stays. Discord and Slack (2026.9.9) take
+  // theirs only as arguments, briefly visible to `ps` on this computer.
   const args = ["channels", "add", "--channel", channel];
-  if (channel === "slack")
+  let tokenFile = "";
+  if (channel === "telegram") {
+    tokenFile = path.join(stateDir, "credentials", "reach-telegram.token");
+    args.push("--token-file", tokenFile);
+  } else if (channel === "slack")
     args.push("--bot-token", values.botToken.trim(), "--app-token", values.appToken.trim());
   else args.push("--token", values.token.trim());
   if (name) args.push("--name", name.trim());
   authorize();
   try {
-    // "$@": the tokens are arguments, never shell text.
-    await run(env.SHELL || "/bin/sh", ["-lc", 'exec openclaw "$@"', "openclaw", ...args], { timeout: 60000 });
+    if (tokenFile) {
+      await mkdir(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
+      // mode applies only to a new file: an existing one is set too.
+      await writeFile(tokenFile, `${values.token.trim()}\n`, { mode: 0o600 });
+      await chmod(tokenFile, 0o600);
+    }
+    const [shell, argv] = await openClawShell(args, { env, platform, runtime });
+    await run(shell, argv, { timeout: 60000, env });
   } catch {
+    // Not taken: no token left behind.
+    if (tokenFile) await rm(tokenFile, { force: true }).catch(() => {});
     throw fail(409, "OpenClaw didn't accept this channel. Check the token and try again.");
   }
   return { added: true };

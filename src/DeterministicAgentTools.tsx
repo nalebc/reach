@@ -184,7 +184,10 @@ export default function DeterministicAgentTools({
             all.filter(
               (tool) =>
                 !!(tool.inputSchema.properties as Record<string, unknown>)
-                  ?.browser && tool.name.startsWith("reach_tool_"),
+                  ?.browser &&
+                tool.name.startsWith("reach_tool_") &&
+                // A batch runs named tools for agents; it isn't one itself.
+                tool.name !== "reach_tool_batch",
             ),
           );
           setLoaded(true);

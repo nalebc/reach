@@ -42,7 +42,7 @@ function transcript() {
     // Compaction: a new root that continues the old chain logically.
     line({ ...base, type: "system", subtype: "compact_boundary", uuid: "c1", parentUuid: null, logicalParentUuid: "m1", timestamp: at(10) }),
     line({ ...base, type: "user", uuid: "s1", parentUuid: "c1", timestamp: at(11), isCompactSummary: true, message: { content: "summary of earlier work" } }),
-    line({ ...base, type: "assistant", uuid: "a4", parentUuid: "s1", timestamp: at(12), message: { content: [{ type: "thinking", thinking: "hidden" }, { type: "text", text: "Done: login fixed." }] } }),
+    line({ ...base, type: "assistant", uuid: "a4", parentUuid: "s1", timestamp: at(12), message: { content: [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "Signup shares the session check." }, { type: "text", text: "Done: login fixed." }] } }),
     line({ type: "custom-title", customTitle: "Login fix", sessionId: ID }),
     '{"type":"assistant","uuid":"torn"', // a torn final line while writing
   ].join("\n");
@@ -61,6 +61,8 @@ test("Claude transcripts read as the conversation a person saw", () => {
     "tool:file-change:src/login.ts:completed",
     "user:text:also check signup:queued",
     "system:compaction:Context compacted",
+    // The thought the Claude app shows in grey; an empty one (a signature) stays out.
+    "assistant:thinking:Signup shares the session check.",
     "assistant:text:Done: login fixed.",
   ]);
   assert.equal(r.items[2].detail, "1 failing", "parallel result attached by tool_use_id");
@@ -277,6 +279,16 @@ test("Claude out of usage: the limit Claude Code last hit, until it resets or an
     limit: "You've hit your session limit · resets 3:20pm (America/Vancouver)",
   });
   assert.equal(await claude.usage(resets + 1), null, "the limit has reset");
+  // Meters read since that message decide: an upgrade shows at once, and one
+  // model's full week isn't Claude out. Meters older than it, still out.
+  const meters = (updatedAt, windows) => createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records"), run: async () => ({ stdout: '{"loggedIn":true}' }), accountUsage: async () => ({ available: true, updatedAt, windows }) });
+  const upgraded = await meters(now, [{ usedPercent: 0 }, { usedPercent: 100, scoped: true }]).health();
+  assert.equal(upgraded.usable, true);
+  assert.equal(upgraded.limit, undefined);
+  assert.equal((await meters(now - 90000, [{ usedPercent: 0 }]).health()).usable, false);
+  const full = await meters(now, [{ usedPercent: 100, resetsAt: resets + 5 }]).health();
+  assert.equal(full.usable, false);
+  assert.equal(full.resetsAt, resets + 5);
   // An answer since, in any session: usable again.
   await fs.writeFile(path.join(dir, `${B}.jsonl`), `${ask(B, "u2", now - 40000)}\n${reply(B, "r2", "u2", now - 30000)}\n`);
   assert.equal((await claude.health()).usable, true);

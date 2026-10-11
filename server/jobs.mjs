@@ -1,6 +1,10 @@
 import { spawn, execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { id, fail, loadJson, atomicJson } from "./core.mjs";
+import { shellSandboxProfile } from "./agent-shell.mjs";
+
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export class Jobs {
   constructor(config) {
     this.file = path.join(config.dataDir, "jobs.json");
@@ -21,7 +25,13 @@ export class Jobs {
   save() {
     atomicJson(this.file, this.jobs);
   }
-  start({ command, cwd, timeoutMs = 60000 }, clientId) {
+  // `sandbox`: what the macOS sandbox denies (server/browser-private-paths.mjs
+  // agentShellSandbox), for anyone but your own devices: an agent's job can't
+  // read Reach's credentials or reach its private socket (connections audit,
+  // Oct 10). Without sandbox-exec, such a job doesn't run.
+  start({ command, cwd, timeoutMs = 60000 }, clientId, { sandbox = null, sandboxExec = SANDBOX_EXEC } = {}) {
+    if (sandbox && !fs.existsSync(sandboxExec))
+      throw fail(503, "This Mac can't sandbox agent commands, so none run.");
     if (
       typeof command !== "string" ||
       !command.trim() ||
@@ -56,11 +66,17 @@ export class Jobs {
             ["-NoProfile", "-NonInteractive", "-Command", command],
             { cwd, env, windowsHide: true },
           )
-        : spawn(process.env.SHELL || "/bin/sh", ["-lc", command], {
-            cwd,
-            env,
-            detached: true,
-          });
+        : sandbox
+          ? spawn(sandboxExec, ["-p", shellSandboxProfile(sandbox), process.env.SHELL || "/bin/sh", "-lc", command], {
+              cwd,
+              env,
+              detached: true,
+            })
+          : spawn(process.env.SHELL || "/bin/sh", ["-lc", command], {
+              cwd,
+              env,
+              detached: true,
+            });
     // At the deadline: a job still running times out. One already finished
     // (its shell exited) only has whatever it left in the background ended.
     const timer = setTimeout(() => {

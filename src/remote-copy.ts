@@ -1,3 +1,19 @@
+// What the computer's clipboard takes in one go: 16 KB (bytes, not characters).
+export const CLIPBOARD_BYTES = 16384;
+/** Cut text to fit `max` UTF-8 bytes, never through the middle of a character. */
+export function fitBytes(text: string, max = CLIPBOARD_BYTES) {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= max) return text;
+  let bytes = 0,
+    end = 0;
+  for (const char of text) {
+    bytes += encoder.encode(char).length;
+    if (bytes > max) break;
+    end += char.length;
+  }
+  return text.slice(0, end);
+}
+
 /** Start the browser clipboard write inside the original tap, before the network reply. */
 export async function copyRemoteSelection(
   read: () => Promise<string>,

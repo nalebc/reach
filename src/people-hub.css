@@ -1,0 +1,169 @@
+/* Agents & people (PeopleHub.tsx): Settings' grouped lists (settings-list.css)
+   with an avatar per row, a title with "+" on top, Reach's dark green. */
+.ppl,
+.ppl-sheet,
+.ppl-invite,
+.ppl-folders {
+  --ivt-text: #f3f3f3;
+  --ivt-muted: #a5a5a5;
+  --ivt-line: #ffffff1f;
+  --ivt-field: #262626;
+  --ivt-raised: #303030;
+  --ivt-hover: #ffffff0f;
+}
+.ppl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 4px 0;
+}
+.ppl-head h1 {
+  margin: 0;
+  font: 650 26px/1.15 system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.6px;
+  color: #f1f6f2;
+}
+.ppl-head p {
+  margin: 4px 0 0;
+  font-size: 13.5px;
+  color: var(--muted, #93a096);
+}
+.ppl-add {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: #ededed;
+  color: #111;
+}
+.ppl-add:active {
+  background: #fff;
+}
+.ppl-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+/* A row: an avatar where Settings has a line icon. */
+.ppl .gs-row .gs-label strong {
+  font-weight: 450;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ppl .gs-row + .gs-row::before {
+  left: 62px;
+}
+.ppl-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.08);
+  color: #e6ede8;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ppl-avatar.agent {
+  background: color-mix(in srgb, var(--lime, #b9efd4) 16%, transparent);
+  color: var(--lime, #b9efd4);
+}
+.ppl-avatar.new {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.18);
+}
+.ppl-avatar.plain {
+  background: none;
+}
+.ppl-avatar.large {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+.ppl-new .gs-label {
+  color: #eef4ef;
+}
+.ppl-attention {
+  color: #f2c879 !important;
+}
+.ppl-off {
+  color: #f08a7a !important;
+}
+
+/* A row opened: who it is, then its access, then Remove. */
+.ppl-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 18px;
+  font-size: 13px;
+  color: var(--muted, #93a096);
+  text-align: center;
+}
+.ppl-sheet .gs-group {
+  overflow: visible;
+}
+.ppl-sheet .gs-group + .gs-group {
+  margin-top: 14px;
+}
+.ppl-sheet .gs-row + .gs-row::before {
+  left: 16px;
+}
+.ppl-access-row .ivt-menu-button {
+  height: 40px;
+  margin-right: -8px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--muted, #93a096);
+  font-size: 15px;
+}
+.ppl-access-row .ivt-menu-list {
+  left: auto;
+  right: 0;
+  width: min(300px, calc(100vw - 72px));
+}
+.ppl-note,
+.ppl-error {
+  margin: 0 4px 12px;
+  font-size: 13px;
+  text-align: center;
+}
+.ppl-note {
+  color: var(--muted, #93a096);
+}
+
+/* Clear of the phone's bottom bar. */
+.page-invite {
+  padding-bottom: 100px;
+}
+
+/* Here now: their live connection, a green dot; amber while controlling. */
+.ppl-here .ppl-avatar {
+  position: relative;
+}
+.ppl-live {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #161e1a;
+  border-radius: 50%;
+  background: #5fd38d;
+}
+.ppl-here.controlling small {
+  color: #fac775;
+}
+/* A browser agent's live panel inside its sheet (BrowserAgents.tsx). */
+.ppl-sheet .ag-embedded {
+  margin-top: 16px;
+}

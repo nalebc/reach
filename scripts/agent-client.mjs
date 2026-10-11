@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { agentRequestTimeout, agentRequestError } from "../server/agent-transport.mjs";
 import http from "node:http";
 import https from "node:https";
@@ -55,6 +56,22 @@ export class TunnelAgent extends https.Agent {
   constructor(proxy) {
     super({ keepAlive: false });
     this.proxy = new URL(proxy);
+    // The isolated tailnet's proxy (agent-network.mjs): a socket in its run's
+    // private folder, yours alone.
+    if (this.proxy.protocol === "unix:") {
+      const file = this.proxy.pathname;
+      let ok = false;
+      try {
+        const entry = fs.lstatSync(file);
+        const folder = fs.lstatSync(path.dirname(file));
+        ok = path.isAbsolute(file) && entry.isSocket() &&
+          (process.platform === "win32" || (entry.uid === process.getuid() && folder.uid === process.getuid() && !(folder.mode & 0o077)));
+      } catch {}
+      if (!ok || this.proxy.search || this.proxy.hash)
+        throw Error("REACH_PROXY must be the isolated tailnet's private socket.");
+      this.socketPath = file;
+      return;
+    }
     if (
       this.proxy.protocol !== "http:" ||
       !["127.0.0.1", "localhost"].includes(this.proxy.hostname) ||
@@ -67,11 +84,14 @@ export class TunnelAgent extends https.Agent {
       throw Error("REACH_PROXY must be a loopback HTTP proxy.");
   }
   createConnection(options, callback) {
-    const req = http.request(this.proxy, {
+    const connect = {
       method: "CONNECT",
       path: `${options.host}:${options.port}`,
       headers: { Host: `${options.host}:${options.port}` },
-    });
+    };
+    const req = this.socketPath
+      ? http.request({ socketPath: this.socketPath, ...connect })
+      : http.request(this.proxy, connect);
     let finished = false;
     const done = (error, socket) => {
       if (!finished) {

@@ -12,6 +12,7 @@ import {
   GONE,
   lock,
   parseAgentLink,
+  keptAddresses,
   shareNode,
   tailnetApi,
   viaShared,
@@ -44,6 +45,8 @@ test("agent links: only /agent links on a tailnet, one computer each", () => {
     `https://mac.tail1.ts.net/agent#i=https://mac.tail1.ts.net:8443~short`,
     `https://mac.tail1.ts.net/agent#${i}&i=https://b.tail1.ts.net:8443~${SECRET}`,
     `http://127.0.0.1:4317/agent#i=http://127.0.0.1:4317~${SECRET}`,
+    // Another tailnet's computer behind this tailnet's page (or the reverse).
+    `https://mac.tail1.ts.net/agent#i=https://mac.other9.ts.net:8443~${SECRET}`,
     "not a link",
   ])
     assert.throws(() => parseAgentLink(bad), /agent link/, bad);
@@ -554,4 +557,23 @@ test("keep and restore: the access as one line for the vault, back on another ma
   assert.notEqual(junk.code, 0);
   assert.match(junk.stderr, /isn't a line from `keep`/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// A line from `keep` restores toward the computer's own Tailscale addresses
+// only (connections audit, Oct 10).
+test("restore takes back only addresses on the computer's own tailnet", () => {
+  const origin = "https://mac.tail1.ts.net";
+  assert.equal(keptAddresses({ origin, private: "https://mac.tail1.ts.net:8443", start: "https://mini.tail1.ts.net" }), true);
+  assert.equal(keptAddresses({ origin: "https://mac.tail1.ts.net:8443" }), true);
+  for (const bad of [
+    { origin: "https://evil.example.com" },
+    { origin: "http://mac.tail1.ts.net" },
+    { origin: "https://mac.tail1.ts.net/path" },
+    { origin, private: "https://evil.example.com:8443" },
+    { origin, private: "https://other.tail1.ts.net:8443" },
+    { origin, start: "https://mac.other9.ts.net" },
+    { origin, start: "https://evil.example.com" },
+    {},
+  ])
+    assert.equal(keptAddresses(bad), false, JSON.stringify(bad));
 });

@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp,
+  ArrowUpRight,
   Bot,
+  Check,
   ChevronsUpDown,
   ClipboardList,
   FolderOpen,
   Gauge,
-  Laptop,
+  Image as ImageIcon,
   Bell,
   BellRing,
   Loader2,
@@ -14,11 +16,13 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkle,
+  Users,
+  Workflow as WorkflowIcon,
   X,
 } from "lucide-react";
 import { useNotifyBack } from "./notify-back";
 import { post, type Peer } from "./api";
-import AgentSessionView, { ModeMenu, ModelPicker } from "./AgentSession";
+import AgentSessionView, { ComposerMenu, ModeMenu, ModelPicker } from "./AgentSession";
 import { modelDisplayName } from "./ModelSheet";
 import { SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
@@ -26,7 +30,7 @@ import AgentUpdate, { useTerminalRun } from "./AgentUpdate";
 import OpenClawSpace from "./OpenClawSpace";
 import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import ChatList, {
-  ChatAppPicker,
+  ChatAppSwitch,
   ChatComingSoon,
   type ChatAppChoice,
 } from "./ChatList";
@@ -43,6 +47,7 @@ import { TeamPicker } from "./Teams";
 import { WorkflowIntro, WorkflowSheet, WorkflowsPage, planWorkflow, type Workflow } from "./Workflows";
 import { NeedsYouStrip, agentNeeds } from "./NeedsYou";
 import {
+  AgentLogo,
   useAgentLogos,
   type AgentLogos,
 } from "./agent-logos";
@@ -172,7 +177,7 @@ export function NewChat({
   const [effort, setEffort] = useState<string | null>(null);
   const [speed, setSpeed] = useState<string | null>(null);
   const [mode, setMode] = useState(autoMode(agent));
-  const [panel, setPanel] = useState<"" | "folder" | "mode" | "model">("");
+  const [panel, setPanel] = useState<"" | "folder" | "mode" | "model" | "add">("");
   // A team (docs/ACROSS_AGENTS.md): this agent leads, helpers take tasks.
   const teamAgents = relayAgents(health, { openclaw: false });
   const canTeam = (agent === "codex" || agent === "claude") && teamAgents.length > 0;
@@ -281,11 +286,9 @@ export function NewChat({
           ),
         ];
   const uploading = images.some((i) => !i.id && !i.error);
-  // Out of usage (Codex's own word, never a guess): said in the box, and
-  // nothing starts until it's back.
-  const out = health.find((h) => h.agent === agent)?.usable === false ? health.find((h) => h.agent === agent) : undefined;
+  // Out of usage: said above the box, and what you send still starts the
+  // chat; it waits there to be continued once usage is back (Oct 10).
   const ready =
-    !out &&
     !busy &&
     !uploading &&
     !!cwd &&
@@ -404,6 +407,7 @@ export function NewChat({
     chosen: string,
     choose: (id: string) => void,
     label: string,
+    extra?: ReactNode,
   ) => (
     <div className={`as-picker ${agent}`} role="group" aria-label={label}>
       <div className="as-picker-row">
@@ -416,6 +420,7 @@ export function NewChat({
             {item.label}
           </button>
         ))}
+        {extra}
       </div>
     </div>
   );
@@ -424,23 +429,6 @@ export function NewChat({
       className={`chat-new ${agent}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
-      {(canTeam || canFlow) && (
-        <div className="team-mode" role="group" aria-label="Solo or team">
-          <button aria-pressed={!team && !flow} disabled={busy} onClick={() => (setTeamMode(false), setFlowMode(false))}>
-            Solo
-          </button>
-          {canTeam && (
-            <button aria-pressed={team} disabled={busy} onClick={() => (setTeamMode(true), setFlowMode(false))}>
-              Team
-            </button>
-          )}
-          {canFlow && (
-            <button aria-pressed={flow} disabled={busy} onClick={() => (setFlowMode(true), setTeamMode(false))}>
-              Workflow
-            </button>
-          )}
-        </div>
-      )}
       {flow && <WorkflowIntro peer={peer} agent={agent} cwd={cwd} title={text} disabled={busy} onCreated={(w) => onWorkflow?.(w)} />}
       {team && (
         <TeamPicker
@@ -452,38 +440,21 @@ export function NewChat({
           onHelpers={setHelpers}
         />
       )}
-      <div className="chat-new-folder-controls">
-        <button
-          className="chat-new-context chat-folder"
-          aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
-          title={cwd || "Choose a folder"}
-          aria-expanded={panel === "folder"}
-          disabled={busy}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setPanel(panel === "folder" ? "" : "folder")}
-        >
-          <FolderOpen size={18} />
-          <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
-          <ChevronsUpDown size={14} />
-        </button>
-        <button
-          type="button"
-          className="chat-folder-browse"
-          aria-expanded={panel === "folder" && otherFolder}
-          disabled={busy}
-          onClick={() => {
-            // Wait for a folder tap instead of reusing the previous selection.
-            setCwd("");
-            setOtherFolder(true);
-            setPanel("folder");
-          }}
-        >
-          Browse folders…
-        </button>
-      </div>
-      {otherFolder && !cwd && (
-        <p className="as-hint">Tap a folder to choose where this chat works.</p>
-      )}
+      {/* Where it works: one pill, the computer quiet after the folder. */}
+      <button
+        className="chat-new-context chat-folder"
+        aria-label={cwd ? `Folder: ${cwd}` : "Choose a folder"}
+        title={cwd || "Choose a folder"}
+        aria-expanded={panel === "folder"}
+        disabled={busy}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setPanel(panel === "folder" ? "" : "folder")}
+      >
+        <FolderOpen size={18} />
+        <span>{cwd ? folderLabel(cwd, folders) : "Choose a folder"}</span>
+        <small className="chat-new-computer">{peer.name}</small>
+        <ChevronsUpDown size={14} />
+      </button>
       {problem && (
         <p className="as-hint bad" role="alert">
           {problem}
@@ -509,6 +480,20 @@ export function NewChat({
               setPanel("");
             },
             "Folder",
+            // Any other folder, browsed for at the end of the list.
+            <button
+              type="button"
+              className="chat-folder-browse"
+              aria-expanded={otherFolder}
+              disabled={busy}
+              onClick={() => {
+                // Wait for a folder tap instead of reusing the previous selection.
+                setCwd("");
+                setOtherFolder(true);
+              }}
+            >
+              Browse folders…
+            </button>,
           )}
           {otherFolder && (
             <div className={agent}>
@@ -524,6 +509,51 @@ export function NewChat({
             </div>
           )}
         </>
+      )}
+      {/* "+": photos, and a team or a workflow instead of one chat. */}
+      {panel === "add" && (
+        <ComposerMenu anchor={null} inline label="Add" className={`${agent} as-add-menu`} onClose={() => setPanel("")}>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setPanel("");
+              picker.current?.click();
+            }}
+          >
+            <ImageIcon size={18} />
+            <span className="as-mode-menu-text"><span>Photos</span></span>
+          </button>
+          {canTeam && (
+            <button
+              role="menuitemcheckbox"
+              aria-checked={team}
+              onClick={() => {
+                setTeamMode(!team);
+                setFlowMode(false);
+                setPanel("");
+              }}
+            >
+              <Users size={18} />
+              <span className="as-mode-menu-text"><span>Team</span><small>Helpers take tasks from {agentLabel(agent)}</small></span>
+              {team && <Check size={16} />}
+            </button>
+          )}
+          {canFlow && (
+            <button
+              role="menuitemcheckbox"
+              aria-checked={flow}
+              onClick={() => {
+                setFlowMode(!flow);
+                setTeamMode(false);
+                setPanel("");
+              }}
+            >
+              <WorkflowIcon size={18} />
+              <span className="as-mode-menu-text"><span>Workflow</span><small>Planned tasks, reviewed first</small></span>
+              {flow && <Check size={16} />}
+            </button>
+          )}
+        </ComposerMenu>
       )}
       {/* The same menu as in a chat, in its place above the box. */}
       {panel === "mode" && (
@@ -560,7 +590,7 @@ export function NewChat({
         />
       )}
       <div className="as-box">
-        <div className={`as-field${out ? " out-of-usage" : ""}`}>
+        <div className="as-field">
           {images.length > 0 && (
             <div className="as-attachments">
               {images.map((i) => (
@@ -589,9 +619,7 @@ export function NewChat({
             rows={3}
             value={text}
             placeholder={
-              out
-                ? `Out of ${agentLabel(agent)} usage${out.resetsAt ? ` until ${resetTime(out.resetsAt, false)}` : ""}`
-                : flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"
+              flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"
             }
             aria-label={flow ? `Workflow planned by ${agentLabel(agent)}` : team ? `New team led by ${agentLabel(agent)}` : `New ${agentLabel(agent)} chat`}
             disabled={busy}
@@ -605,15 +633,30 @@ export function NewChat({
           />
         </div>
         <div className="as-tools chat-new-tools">
-          <button
-            className="as-icon"
-            aria-label="Add images"
-            title="Add images"
-            disabled={busy}
-            onClick={() => picker.current?.click()}
-          >
-            <Plus size={18} />
-          </button>
+          {canTeam || canFlow ? (
+            <button
+              className="as-icon as-add"
+              aria-label="Add"
+              title="Add"
+              aria-expanded={panel === "add"}
+              aria-haspopup="menu"
+              disabled={busy}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setPanel(panel === "add" ? "" : "add")}
+            >
+              <Plus size={18} />
+            </button>
+          ) : (
+            <button
+              className="as-icon"
+              aria-label="Add images"
+              title="Add images"
+              disabled={busy}
+              onClick={() => picker.current?.click()}
+            >
+              <Plus size={18} />
+            </button>
+          )}
           <input
             ref={picker}
             type="file"
@@ -655,6 +698,18 @@ export function NewChat({
           >
             <Gauge size={21} />
           </button>
+          {(team || flow) && (
+            <button
+              className="chat-new-kind"
+              aria-label={`${team ? "Team" : "Workflow"} on. Tap for one chat.`}
+              disabled={busy}
+              onClick={() => (setTeamMode(false), setFlowMode(false))}
+            >
+              {team ? <Users size={15} /> : <WorkflowIcon size={15} />}
+              <span>{team ? "Team" : "Workflow"}</span>
+              <X size={13} />
+            </button>
+          )}
           <span className="as-spacer" />
           <button
             className={`as-send ${ready ? "ready" : ""}`}
@@ -677,7 +732,7 @@ export function NewChat({
 // "Install on Mac": its maker's own command, shown first and run once
 // confirmed, in a Reach terminal that ends with it (server/agent-install.mjs);
 // then a check again finds it. Its newest output line shows while it runs.
-function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: AgentName; name: string; recheck: () => void }) {
+function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { peer: Peer; agent: string; name: string; recheck: () => void; ask?: boolean }) {
   const [plan, setPlan] = useState<InstallPlan | null>(null);
   const [step, setStep] = useState<"" | "confirm" | "running" | "failed">("");
   const [problem, setProblem] = useState("");
@@ -698,6 +753,10 @@ function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: Agent
       setProblem((e as Error).message);
     }
   };
+  // Opened from Add an agent: its command is shown straight away.
+  useEffect(() => {
+    if (askNow) void ask();
+  }, []);
   const run = async () => {
     setProblem("");
     try {
@@ -742,6 +801,54 @@ function InstallAgent({ peer, agent, name, recheck }: { peer: Peer; agent: Agent
       )}
       {problem && <p className="chat-setup-problem">{problem}</p>}
     </>
+  );
+}
+
+// A computer with no agent yet: the ones Chat works with, each one row with
+// its maker's installer a tap away (server/agent-install.mjs), and Gemini
+// CLI's own page (its chats are read here; Reach doesn't install it).
+const ADDABLE = [
+  { agent: "claude", line: "Anthropic's coding agent" },
+  { agent: "codex", line: "OpenAI's coding agent" },
+  { agent: "openclaw", line: "Your own assistant" },
+];
+function AddAgents({ peer, logos, recheck }: { peer: Peer; logos: AgentLogos; recheck: () => void }) {
+  const [open, setOpen] = useState("");
+  // OpenClaw's installer needs WSL on Windows: not offered there.
+  const addable = ADDABLE.filter((a) => peer.platform !== "win32" || a.agent !== "openclaw");
+  return (
+    <section className="chat-setup chat-add-agents" aria-label="Add an agent">
+      <strong>Add an agent to {peer.name}</strong>
+      <p>Install one on this {computerWord(peer.platform)} to chat with it here.</p>
+      <ul>
+        {addable.map(({ agent, line }) => (
+          <li key={agent} className={open === agent ? "open" : undefined}>
+            <div className="chat-add-row">
+              <AgentLogo agent={agent} logos={logos} size={30} />
+              <span>
+                <b>{agentLabel(agent)}</b>
+                <small>{line}</small>
+              </span>
+              {open !== agent && <button onClick={() => setOpen(agent)}>Install</button>}
+            </div>
+            {open === agent && <InstallAgent peer={peer} agent={agent} name={agentLabel(agent)} recheck={recheck} ask />}
+          </li>
+        ))}
+        <li>
+          <div className="chat-add-row">
+            <AgentLogo agent="gemini" logos={logos} size={30} />
+            <span>
+              <b>Gemini CLI</b>
+              <small>Read its chats here</small>
+            </span>
+            <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener noreferrer">
+              Get <ArrowUpRight size={13} />
+            </a>
+          </div>
+        </li>
+      </ul>
+      <button className="chat-add-check" onClick={recheck}>Check again</button>
+    </section>
   );
 }
 
@@ -795,27 +902,24 @@ function AgentStatus({
   return null;
 }
 
-// Out of usage: one quiet line, Notify me (when it's back) and Upgrade.
+// Out of usage: one short line, a bell (tell me when it's back) and Upgrade.
 function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentName; name: string; health: AgentHealth }) {
   const back = useNotifyBack(peer, agent, undefined, !!health.notifyWhenBack);
   const upgradeUrl = usageLink(agent, { detail: "usageLimitExceeded", text: "usage limit" })?.url;
   return (
-      <div className="chat-status out-of-usage">
+      <div className="chat-status out-of-usage" role="status" aria-label={`${name} is out of usage`}>
         <span>
-          {back.problem || <>
-          You’re out of {name} usage
-          {health.resetsAt ? ` until ${resetTime(health.resetsAt, false)}` : ""}
-          .</>}
+          {back.problem || `Out of usage${health.resetsAt ? ` until ${resetTime(health.resetsAt, false)}` : ""}`}
         </span>
         <button
           className={`as-banner-btn usage-notify${back.on ? " on" : ""}`}
           aria-pressed={back.on}
           aria-label={back.on ? "Notifying when it’s back. Tap to stop." : "Notify me when it’s back"}
+          title={back.on ? "Notifying when it’s back" : "Notify me when it’s back"}
           disabled={back.busy}
           onClick={() => void back.toggle()}
         >
           {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
-          {back.on ? "Notifying" : "Notify me"}
         </button>
         {upgradeUrl && (
           <a
@@ -896,6 +1000,12 @@ export default function EverythingChat({
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
+  // Until the computer says what it has, nothing is offered: neither a new
+  // chat nor an install. A feed without the field (an older caller) has said.
+  const checked = (shared || own).healthChecked ?? true;
+  // A new computer: no agent at all yet.
+  // One that couldn't be checked isn't known to be missing.
+  const nothingHere = checked && health.length > 0 && !health.some((h) => h.installed || h.error);
   // Relays and teams on this computer (Relays.tsx, Teams.tsx), with the chat list.
   const relays = (shared || own).relays || [];
   const teams = (shared || own).teams || [];
@@ -1155,8 +1265,12 @@ export default function EverythingChat({
           agent={app.agent} onAgentChange={setAgent} appPending={appPending}
           onRefresh={() => { recheck(); void reload(); }} health={health}
           onSectionMoved={() => void reload()} onArchived={() => void reload()}
-          canStart={!needsSetup && app.agent !== "gemini"}
-          setup={needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} /> : undefined}
+          canStart={checked && !needsSetup && app.agent !== "gemini"}
+          setup={
+            nothingHere && app.supported ? <AddAgents peer={peer} logos={logos} recheck={recheck} />
+            : needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} />
+            : undefined
+          }
           notice={app.supported && appHealth?.installed && !needsSetup ? <AgentUpdate peer={peer} agent={agent} /> : undefined}
           workflows={flowEntry}
           projects={(shared || own).projects}
@@ -1217,21 +1331,23 @@ export default function EverythingChat({
         </ChatAppPager>
       )}
       {sheet === "new" && (
-        <ChatSheet title="New conversation" className="chat-create-sheet" leading={<BrandCourier active />} onClose={() => (setSheet(""), setNewKind(""))}>
-          <div className="chat-new-app-row">
-            <ChatAppPicker
+        <ChatSheet
+          title="New conversation"
+          className="chat-create-sheet"
+          leading={<BrandCourier active />}
+          heading={
+            <ChatAppSwitch
               apps={startApps}
               value={newApp.agent}
               onChange={pickNew}
               logos={logos}
               pending={appPending}
               health={health}
+              notes={{ gemini: "Read only" }}
             />
-          </div>
-          <div className="chat-new-computer" title={peer.name}>
-            <Laptop size={16} />
-            <span>{peer.name}</span>
-          </div>
+          }
+          onClose={() => (setSheet(""), setNewKind(""))}
+        >
           {newApp.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat

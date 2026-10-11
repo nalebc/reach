@@ -245,6 +245,9 @@ test("helper diagnostics reach HTTP, tailnet and a real MCP desktop tool without
   let calls = 0;
   const api = await local(t, (req, res) => {
     if (req.url === "/api/browser") return json(res, 200, { preset: "full", screen: true, control: true });
+    // Reach plans the MCP call (mcp-server.mjs computerPlan); the call itself goes out once.
+    if (req.url.startsWith("/api/browser/mcp/plan"))
+      return json(res, 200, { plan: { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "key", key: "enter" } }, response: "json" }, list: "f".repeat(16) });
     assert.equal(req.url, "/api/browser/desktop/input");
     calls++;
     json(res, 503, body);

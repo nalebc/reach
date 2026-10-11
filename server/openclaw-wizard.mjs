@@ -46,7 +46,12 @@ export function routes(app, client, { base, authorize }) {
   const accept = (result) => {
     if (result.sessionId) sessionId = result.sessionId;
     step = result.done ? null : result.step || null;
-    status = result.done ? result.status || "done" : "running";
+    // Done only when OpenClaw says so, without an error: an error, or a
+    // status Reach doesn't know, is never shown as success.
+    status = !result.done ? "running"
+      : result.error ? "error"
+        : ["done", "cancelled", "error"].includes(result.status || "done") ? result.status || "done"
+          : "error";
     problem = result.error
       ? "OpenClaw stopped this setup. Earlier changes may already be saved."
       : "";

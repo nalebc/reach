@@ -9,6 +9,7 @@ import {
   publicNotification,
   notificationPush,
 } from "./notification-items.mjs";
+import { updateNotification } from "./reach-updates.mjs";
 
 const HIDDEN =
   /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
@@ -26,6 +27,8 @@ export async function readAttention({
   admissions,
   accessRequests,
   restartRequests = () => [],
+  // A newer Reach to install (reach-updates.mjs offer): one card per version.
+  updateOffers = () => [],
   terminalCount = () => 0,
   // OpenClaw's background work (openclaw-watch.mjs): pushed, not listed.
   background = () => [],
@@ -141,6 +144,9 @@ export async function readAttention({
   for (const r of restartRequests())
     items.push(restartNotification(r, terminalCount()));
   try {
+    for (const offer of updateOffers()) items.push(updateNotification(offer, sealNotification));
+  } catch {}
+  try {
     items.push(...background());
   } catch {}
   return { items, unavailable: [...unavailable] };
@@ -209,7 +215,7 @@ export function createNotifications({
             ...notificationPush(item),
             category:
               item.category ||
-              (["mac", "restart"].includes(item.source) ? "computer" : "chat"),
+              (["mac", "restart", "update"].includes(item.source) ? "computer" : "chat"),
             tag: `need-${key.slice(0, 24)}`,
           });
           if (result?.sent > 0 || result?.suppressed > 0) {

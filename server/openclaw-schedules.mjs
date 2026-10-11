@@ -49,8 +49,9 @@ function publicJob(j) {
     },
     kind: p.kind === "systemEvent" ? "systemEvent" : "agentTurn",
     message: typeof body === "string" && body.length <= 20000 ? body : "",
-    // Past what an edit accepts: edited in OpenClaw, never cut short here.
-    editable: typeof body === "string" && body.length <= 20000 && typeof j.name === "string" && j.name.trim().length <= 120,
+    // Past what an edit accepts, or a kind the edit doesn't keep (a
+    // heartbeat, a command): edited in OpenClaw, never cut short here.
+    editable: ["systemEvent", "agentTurn"].includes(p.kind) && typeof body === "string" && body.length <= 20000 && typeof j.name === "string" && j.name.trim().length <= 120,
     delivery: {
       mode,
       channel: text(d.channel, 80),
@@ -165,7 +166,11 @@ export function routes(app, client, ctx) {
         throw fail(409, "This channel isn't connected in OpenClaw. Refresh and choose another.");
       auth();
     }
-    const kind = job.payload?.kind === "systemEvent" ? "systemEvent" : "agentTurn";
+    // Only the two kinds the phone edits: anything else (a "command" job's
+    // argv, cwd and env, or a kind added later) would be rebuilt as one.
+    const kind = job.payload?.kind;
+    if (kind !== "systemEvent" && kind !== "agentTurn")
+      throw fail(409, "Reach can't edit this kind of schedule. Change it in OpenClaw.");
     const patch = {
       name: name.trim(),
       // Same kind as the job's: another kind would rebuild the payload.

@@ -147,6 +147,9 @@ test("screen HTTP endpoints require viewing plus a separate per-client control g
       body: body ? JSON.stringify(body) : undefined,
     });
   try {
+    // The first phone in turned viewing on; switched off here, as you can.
+    assert.equal(reach.config.screen, true);
+    assert.equal((await call("/api/settings", owner, { screen: false })).status, 200);
     assert.equal((await call("/api/screen", null)).status, 401);
     assert.equal((await call("/api/screen", owner)).status, 403);
     assert.equal(

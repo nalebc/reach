@@ -559,6 +559,12 @@ const accessRows = () =>
   ]);
 const chooseApp = async (name) => {
   const scope = $("[role=dialog]") || dom.document;
+  // New chat: its app is one pill in the heading, with a list to change it.
+  const pill = scope.querySelector(".chat-app-switch-current");
+  if (pill) {
+    if (pill.getAttribute("aria-expanded") !== "true") await click(pill);
+    return click(scope.querySelector(`.chat-app-switch-menu [role=menuitemradio][aria-label="${name}"]`));
+  }
   await click(
     [...scope.querySelectorAll(".chat-app-rail button")].find(
       (b) => b.getAttribute("aria-label") === name,
@@ -1978,7 +1984,7 @@ test("Chat home says Codex is out of usage and where to get more", async () => {
   await dom.waitFor(() => $(".chat-status.out-of-usage"));
   assert.equal(
     $(".chat-status.out-of-usage span").textContent,
-    "You’re out of Codex usage.",
+    "Out of usage",
   );
   const upgrade = $(".chat-status.out-of-usage a");
   assert.equal(upgrade.textContent.trim(), "Upgrade");
@@ -2381,7 +2387,9 @@ test("real app logos appear on conversations and in the app chooser", async () =
   await dom.waitFor(() => $(".chat-card img.agent-logo"));
   assert.equal($(".chat-card img.agent-logo").getAttribute("src"), LOGO);
   await click(button("New chat"));
-  assert.equal($$("[role=dialog] .chat-app-rail img.agent-logo").length, 3);
+  assert.equal($$("[role=dialog] .chat-app-switch-current img.agent-logo").length, 1, "one app shown, the one it starts in");
+  await click($("[role=dialog] .chat-app-switch-current"));
+  assert.equal($$("[role=dialog] .chat-app-switch-menu img.agent-logo").length, 3);
   assert.ok($('[role=dialog] img[alt="OpenClaw"]'), "OpenClaw has its bundled logo");
   assert.deepEqual(dom.errors, []);
 });
@@ -2518,9 +2526,9 @@ test("a new Codex chat starts in the Codex app's own mode, in the most recent fo
   await click($(".chat-folder"));
   assert.deepEqual(
     $$(".as-picker[aria-label=Folder] button").map((b) => b.textContent),
-    ["app", "site"],
+    ["app", "site", "Browse folders…"],
   );
-  assert.ok(button("Browse folders…"), "folder browsing stays directly available beside recent folders");
+  assert.ok(button("Browse folders…"), "folder browsing is the last choice beside recent folders");
   await click(
     $$(".as-picker[aria-label=Folder] button").find(
       (b) => b.textContent === "app",
@@ -3991,16 +3999,27 @@ test("Codex and Claude stay available for setup while absent optional apps are h
     { agent: "openclaw", name: "OpenClaw", installed: false, signedIn: false, supported: true },
   ], { recheck: () => checks++ });
   assert.deepEqual($$(".chat-app-rail button").map(b => b.getAttribute("aria-label")), ["Codex", "Claude Code"]);
-  assert.match($(".chat-setup").textContent, /Set up Codex on Mac/);
-  // Installed from here: its maker's command on the Mac (agent-install-ui).
-  assert.equal($$(".chat-setup button").filter((b) => b.textContent === "Install on Mac").length, 1);
+  // No agent at all yet: one list to add one (first-run matrix A2), each
+  // installed with its maker's command on the Mac (agent-install-ui).
+  assert.match($(".chat-setup").textContent, /Add an agent to Mac/);
+  assert.equal($$(".chat-setup button").filter((b) => b.textContent === "Install").length, 3);
   assert.equal(button("New chat"), undefined);
   assert.equal($(".chat-list-empty"), null);
   await click(button("Check again")); assert.equal(checks, 1);
   await chooseApp("Claude Code");
-  assert.match($(".chat-setup").textContent, /Set up Claude Code/);
-  assert.equal($$(".chat-setup button").filter((b) => b.textContent === "Install on Mac").length, 1);
+  assert.match($(".chat-setup").textContent, /Add an agent to Mac/);
   assert.equal(mac.sent.length, 0);
+});
+
+test("with one agent installed, another missing one gets its own setup", async () => {
+  await home([], [
+    { agent: "codex", installed: true, signedIn: true },
+    { agent: "claude", installed: false, signedIn: false },
+  ]);
+  await chooseApp("Claude Code");
+  assert.match($(".chat-setup").textContent, /Set up Claude Code on Mac/);
+  assert.equal($$(".chat-setup button").filter((b) => b.textContent === "Install on Mac").length, 1);
+  assert.equal($('[aria-label="Add an agent"]'), null);
 });
 
 test("an installed signed-out app offers sign-in directly in its chat space", async () => {
@@ -5122,4 +5141,22 @@ test("a message sent while the agent worked stays while the outbox still holds i
   await dom.waitFor(() => !$(".as-user.pending") && !$(".qm-row"));
   assert.equal(times("zq-idle hello"), 1);
   assert.deepEqual(dom.errors, []);
+});
+
+// First-run matrix A5: the Claude app's chats are listed, but Claude Code
+// (the CLI Reach replies through) isn't installed. The chat says so, never
+// "signed out"; one the open Claude app lists still goes to the app.
+test("without Claude Code, an open Claude chat says it isn't installed, unless the Claude app takes it", async () => {
+  const missing = { agent: "claude", installed: false, signedIn: false };
+  const view = await open(claudeSession({ live: null, inApp: false }), [signedIn[0], missing]);
+  await dom.waitFor(() => $(".as-hint"));
+  assert.equal($(".as-hint").textContent, "Claude Code isn't installed on your Mac. Install it from Chat to reply here.");
+  await view.unmount();
+  views.splice(views.indexOf(view), 1);
+  await open(claudeSession({ live: null, inApp: true }), [
+    signedIn[0],
+    { ...missing, app: { installed: true, signedIn: true, open: true } },
+  ]);
+  await settle(30);
+  assert.equal($(".as-hint"), null);
 });

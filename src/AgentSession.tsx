@@ -701,7 +701,7 @@ export function ModeMenu({
 // A small menu over a composer button, as the apps open theirs: drawn on the
 // chat's page (the composer scrolls its own contents and clipped it out of
 // sight), lined up with its button, closed by a tap outside or Escape.
-function ComposerMenu({
+export function ComposerMenu({
   anchor,
   inline = false,
   label,
@@ -2225,6 +2225,11 @@ export default function AgentSessionView({
   // which signs in on its own: the Claude app's sign-in isn't shared with it.
   const claudeSignedOut =
     !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
+  // No Claude Code at all (only the Claude app, or neither): a message goes
+  // through the Claude app only when it lists this chat and is open.
+  const claudeMissing =
+    !!claudeHealth && !claudeHealth.installed && !claudeHealth.error &&
+    !(info.inApp && claudeHealth.app?.open);
   const blocked =
     agent === "gemini"
       ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
@@ -2233,6 +2238,8 @@ export default function AgentSessionView({
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
           ? `Open in another Claude Code process on your ${word}.`
+          : claudeMissing
+            ? `Claude Code isn't installed on your ${word}. Install it from Chat to reply here.`
           // In the Claude app, working or asking: nothing to say (Oct 9: "it
           // is unnecessary"); what you send goes next in the same session.
           : ""
@@ -2620,6 +2627,9 @@ export default function AgentSessionView({
       archived: false,
     } as AgentSession);
   const lastUser = [...(items || [])].reverse().find((i) => i.role === "user");
+  // The message that started the turn: one sent while it worked joins that
+  // turn, and the Claude app keeps counting from its start.
+  const turnUser = [...(items || [])].reverse().find((i) => i.role === "user" && !i.queued);
   // The turn Codex is on: only its questions can still be answered.
   const lastTurnId = live.turnId || [...(items || [])].reverse().find((i) => i.turnId)?.turnId;
   // A message just sent goes straight into the conversation, as in the
@@ -2689,10 +2699,12 @@ export default function AgentSessionView({
     const timer = setTimeout(() => setHandoverTick((n) => n + 1), Math.min(...left) + 50);
     return () => clearTimeout(timer);
   }, [pending, handoverTick]);
-  // Since the newest message, one still on its way included (the last one in
-  // the transcript could be a day old: it read "1327m"). Its clock (Elapsed)
-  // ticks by itself: ticking here redrew the whole chat every second.
-  const since = Math.max(lastUser?.at || 0, ...pending.map((p) => p.at));
+  // While it works, since the message that started the turn, as the Claude
+  // app counts; otherwise since the newest message, one still on its way
+  // included (it may start a new turn; the last one in the transcript could
+  // be a day old: it read "1327m"). Its clock (Elapsed) ticks by itself:
+  // ticking here redrew the whole chat every second.
+  const since = working && turnUser?.at && !pending.length ? turnUser.at : Math.max(lastUser?.at || 0, ...pending.map((p) => p.at));
   const activity =
     live.activity ||
     "Working";
@@ -3132,6 +3144,11 @@ export default function AgentSessionView({
                 text={b.item.text}
                 detail={b.item.detail}
               />
+            ) : b.item.kind === "thinking" ? (
+              // A thought between steps, in grey, as the Claude app shows it.
+              <div key={b.item.id} className="as-assistant as-thinking">
+                <AgentMarkdown text={b.item.text} />
+              </div>
             ) : b.item.kind === "notice" ? (
               <p key={b.item.id} className="as-divider">
                 {b.item.text}

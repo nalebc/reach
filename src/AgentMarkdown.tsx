@@ -28,8 +28,9 @@ function SessionLink({ id, children }: { id: string; children: ReactNode }) {
 
 // The little markdown agents write: code blocks, inline code, bold, lists,
 // headings and tables. Rendered as React elements only; nothing becomes HTML.
-// Web links open in a new tab, as in both apps; any other link (a file path,
-// a relative address that would land inside Reach) shows only its text.
+// Secure web links open in a new tab, as in both apps; any other link (plain
+// http, a file path, a relative address that would land inside Reach) shows
+// only its text.
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
   const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
@@ -39,7 +40,7 @@ function inline(text: string, key: string): ReactNode[] {
     const k = `${key}-${match.index}`;
     if (match[1] !== undefined) out.push(<code key={k}>{match[1]}</code>);
     else if (match[2] !== undefined) out.push(<strong key={k}>{match[2]}</strong>);
-    else if (/^https?:\/\/[^\s"<>]+$/i.test(match[4]))
+    else if (/^https:\/\/[^\s"<>]+$/i.test(match[4]))
       out.push(
         <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
           {match[3]}

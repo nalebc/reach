@@ -473,7 +473,9 @@ select:focus {
   touch-action: none;
   user-select: none;
   overscroll-behavior: contain;
-  outline-offset: -3px;
+  /* The stage takes focus on every touch so keys reach the Mac; Safari then
+     drew its blue focus ring around the whole screen. */
+  outline: none;
 }
 .remote-canvas {
   position: absolute;

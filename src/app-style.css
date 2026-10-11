@@ -448,8 +448,16 @@
   .app-shell .main-shell {
     position: relative;
   }
+  /* A solid bar pinned under the status bar: with nothing opaque at the top
+     edge, iOS blurs whatever scrolls under the clock, logo included. */
+  .app-shell .main-shell > .topbar {
+    position: sticky;
+    z-index: 5;
+    top: 0;
+    background: var(--bg);
+  }
   .app-shell .main-shell > .fleet-switcher {
-    position: absolute;
+    position: fixed;
     z-index: 6;
     top: 0;
     right: 0;

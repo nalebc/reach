@@ -201,21 +201,6 @@ test("the Claude app's permission mode is never clicked, not even with a message
   assert.equal(calls[0].includes("--mode"), false);
 });
 
-// Oct 6: the phone couldn't change a Claude app chat's effort ("Reach can't
-// change the model or thinking level in Claude desktop yet"). It's picked in
-// the app's own menu, as the permission mode is.
-test("an effort level picked on the phone is picked in the Claude app's menu, by its name there", async () => {
-  const m = mac({ onScreen: A });
-  const c = compose(m, { type: async (v) => (m.typed.push(v), v.effort ? { effort: v.effort } : {}) });
-  assert.deepEqual(await c.effort(A, { title: message.title, effort: "xhigh" }), { effort: "xhigh", unconfirmed: false });
-  assert.deepEqual(m.typed.map((v) => v.effort), ["Extra high"]);
-  await assert.rejects(c.effort(A, { title: message.title, effort: "ultra" }), (e) => e.status === 400);
-  // Another chat on screen: never switched for an effort level.
-  const away = mac({ onScreen: B });
-  await assert.rejects(compose(away).effort(A, { title: message.title, effort: "high" }), /Open this chat in the Claude app/);
-  assert.deepEqual(away.opened, []);
-});
-
 test("the helper is told the effort by the menu's name, and a level the menu lacks changes nothing", async () => {
   const calls = [];
   const run = (stdout) => (file, args) => (calls.push(args), Promise.resolve({ stdout }));
@@ -246,13 +231,6 @@ test("the model helper carries no text or images and rejects a native refusal", 
   await typeIntoClaude({ title: "Audit", session: `local_${A}`, model: "Sonnet 5.5", text: "never send", images: ["/x.png"] }, { binary: async () => "/bin/helper", run: run('{"model":"Sonnet 5.5"}\n') });
   assert.deepEqual(calls, [["--title", "Audit", "--session", `local_${A}`, "--model", "Sonnet 5.5"]]);
   await assert.rejects(typeIntoClaude({ title: "Audit", model: "Sonnet 5.5" }, { binary: async () => "/bin/helper", run: run('{"error":"unexpected model confirmation","unconfirmed":true}\n') }), /unexpected model confirmation/);
-});
-
-test("effort settings follow exact visible session identity when app records lag", async () => {
-  const m = mac({ onScreen: A });
-  const c = compose(m, { onScreen: async () => `local_${B}` });
-  await assert.rejects(c.effort(A, { title: message.title, effort: "high" }), /Open this chat/);
-  assert.deepEqual(m.typed, []);
 });
 
 test("a setting selection that lost its session is uncertain and never automatically retried", async () => {

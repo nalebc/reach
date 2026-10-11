@@ -243,20 +243,6 @@ export function createClaudeCompose({
         return { model };
       });
     },
-    // An effort level picked on the phone, picked in the app's own menu (so
-    // both show the same one) while the chat is on screen there.
-    effort(id, { title, effort }) {
-      return serial(async (guard) => {
-        const label = APP_EFFORTS[effort];
-        if (!label) throw Object.assign(new Error("Reach can't pick that effort level in the Claude app."), { status: 400 });
-        const session = sessionOf(id);
-        if (!session || !(await appRunning()) || await screen() !== session)
-          throw waiting("Open this chat in the Claude app on your Mac to change its effort from here.");
-        guard();
-        const result = await type({ title, session, waitMs: 0, effort: label }, guard);
-        return { effort, unconfirmed: !!result.unconfirmed };
-      });
-    },
     // `now`: sent with Send now from the phone, so it goes in even while
     // someone uses the Mac (the Claude window switches to this chat).
     // `begin`: called just before typing (the outbox marks it on its way).

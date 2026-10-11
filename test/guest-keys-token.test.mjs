@@ -44,7 +44,9 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, eta
       // Reach's own client: the setup check (devices, a short key), and the
       // policy as JSON before each invite key (guests reach only Reach).
       if (route === "/tailnet/-/devices") return reply(200, { devices: [] });
-      if (route === "/tailnet/-/acl" && method === "GET") return reply(200, parsePolicy(api.policy));
+      // As Tailscale does: the policy as written (HuJSON) unless JSON is asked for.
+      if (route === "/tailnet/-/acl" && method === "GET")
+        return reply(200, init.headers?.Accept === "application/json" ? parsePolicy(api.policy) : api.policy);
       if (route === "/tailnet/-/keys" && method === "POST")
         return reply(200, { id: `a${++api.authKeys}`, key: `tskey-auth-a${api.authKeys}-x` });
       if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") { api.deletedAuthKeys.push(route.split("/").pop()); return reply(200, {}); }

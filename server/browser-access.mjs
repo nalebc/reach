@@ -14,8 +14,11 @@ import { parseBrowserMutation, validateBrowserMutation } from "./browser-mutatio
 import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-command-records.mjs";
 import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
 import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
-import { savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
+import { browserToolRequest, savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
+import { toolsFor } from "../scripts/mcp-server.mjs";
+import { fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { describeScreen, normalizeAction } from "./agent-desktop.mjs";
+import { actionWords } from "./agent-actions.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
@@ -38,8 +41,11 @@ export function browserRouteAllowed(client, method, route) {
     return client.scopes.includes("browser:request");
   if ((method === "POST" && route === "/browser/terminal") || (["GET", "HEAD"].includes(method) && route === "/browser/terminal/history"))
     return client.scopes.includes("browser:request") && client.policy.restrictedTerminal === true;
+  // Its tools as Reach lists them, and the request each call makes (below).
+  if (method === "POST" && route === "/browser/mcp/plan") return client.scopes.includes("browser:read");
   if (!["GET", "HEAD"].includes(method)) return false;
-  if (route === "/device") return true;
+  if (route === "/device" || route === "/device/runtime") return true;
+  if (route === "/browser/mcp/tools") return client.scopes.includes("browser:read");
   if (
     route === "/browser" ||
     /^\/browser\/terminals\/[^/]+$/.test(route)
@@ -82,9 +88,17 @@ export function browserAccessRoutes(
     // (server/agent-desktop.mjs, server/agent-shell.mjs); null where this Mac
     // can't offer them.
     desktop = null, shell = null, shortcuts = null, tools = null, services = null,
+    // The Mac's own Shortcuts the owner lets agents run (server/mac-shortcuts.mjs).
+    macShortcuts = null,
+    // The owner's log of what each agent did (server/agent-actions.mjs add).
+    actions = () => {},
     // The SHA-256 of the agent runtime the start page serves, pinned in a
     // Tools agent's command (security audit M8).
     agentRuntime = () => undefined,
+    // What the start page hands out right now: invitations pin it.
+    servedRuntime = agentRuntime,
+    // What runtime an agent says it runs (agent-runtimes.mjs).
+    noteAgentRuntime = () => {},
     // Whether this computer makes invite keys: Always over Tools needs the
     // agent on its own invited device.
     toolsStandingAllowed = () => false,
@@ -196,7 +210,7 @@ export function browserAccessRoutes(
     const name = url && publicName ? await publicName(new URL(url).hostname).catch(() => "unknown") : null;
     record("agent", `Invited ${input.name} through a browser`);
     // Tools agents (over Tailscale or the public link) pin their runtime.
-    const runtime = agentRuntime();
+    const runtime = servedRuntime();
     const { invitation, ...issuedGrant } = grant;
     res.status(201).json({ ...(input.hosted ? issuedGrant : grant), ...(url ? { url, transport: "funnel" } : {}),
       // Its private address too, for a client on the owner's tailnet.
@@ -204,17 +218,25 @@ export function browserAccessRoutes(
       ...(name === "missing" ? { publicName: "missing" } : {}), ...(runtime && !input.hosted ? { runtime } : {}) });
   };
   // Validate the same effective roots used by file operations before issuing
-  // access, including Full/Read only defaults. Only those presets may include
-  // the exact owner Home; system/application roots remain unavailable.
+  // access. Only Full/Read only may include the exact owner Home; their
+  // defaults skip system/application roots instead of refusing.
   const createPresetInvitation = async (req, res, input) => {
     if (input.standing && input.transport !== "funnel" && toolsStandingAllowed() !== true)
       throw fail(409, "Always over Tools needs invite links set up on this computer, so the agent joins with its own key.");
     if (input.preset === "files" && !protectedFilesSupported)
       throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
     const filePolicy = { browser: true, preset: input.preset };
-    const folders = input.folders.length || !["full", "readonly"].includes(input.preset)
-      ? input.folders : config.roots.map((_, root) => ({ root, path: "" }));
-    for (const folder of folders) {
+    const shareable = (folder) => {
+      try { validateBrowserRoot(resolve(folder.root, folder.path || "", { policy: filePolicy }), { policy: filePolicy }); return true; }
+      catch { return false; }
+    };
+    // Without chosen folders, Full and Read only get every shared folder that
+    // can be shared (Home, never the whole computer).
+    if (!input.folders.length && ["full", "readonly"].includes(input.preset)) {
+      input.folders = config.roots.map((_, root) => ({ root, path: "" })).filter(shareable);
+      if (!input.folders.length) validateBrowserRoot(config.roots[0] ?? "", { policy: filePolicy });
+    }
+    for (const folder of input.folders) {
       const chosen = resolve(folder.root, folder.path || "", { policy: filePolicy });
       validateBrowserRoot(chosen, { policy: filePolicy });
     }
@@ -290,16 +312,58 @@ export function browserAccessRoutes(
     } finally { reservation?.(); }
     await issued(req, res, grant, input);
   });
-  app.get("/api/browser", async (req, res) => {
-    const client = browser(req);
+  // "New invite link" for someone who hasn't opened theirs (Agents & people):
+  // a computer never keeps a link, so the owner's phone can't show it again
+  // once its page closes. A fresh one replaces it (auth.renewInvitation), and
+  // comes back in the form it was first made: a person's /guest link, a
+  // browser agent's public link, or the secret a command or key goes with.
+  app.post("/api/guests/:id/link", async (req, res) => {
+    owner(req);
+    const client = auth.list().find((c) => c.id === req.params.id);
+    if (!client || !["guest", "agent"].includes(client.kind)) throw fail(404, "That invitation has ended.");
+    // A hosted agent's address has no secret in it: the same one, again.
+    let origin;
+    if (client.browserTransport === "funnel") {
+      if (!prepareFunnel) throw fail(503, "Temporary browser access is not available.");
+      origin = await prepareFunnel();
+      owner(req);
+    }
+    if (client.hosted)
+      return res.json({ clientId: client.id, url: `${origin}/mcp`, hosted: true, expiresAt: client.expiresAt });
+    const grant = auth.renewInvitation(client.id);
+    record(client.kind === "guest" ? "guest" : "agent", `New invite link for ${client.name}`);
+    const url =
+      client.kind === "guest"
+        ? `${config.publicOrigin || `http://${req.headers.host}`}/guest#invite=${grant.invitation}`
+        : origin && client.policy?.browser
+          ? `${origin}/agent-browser#invite=${grant.invitation}`
+          : undefined;
+    const name = origin && publicName ? await publicName(new URL(url || origin).hostname).catch(() => "unknown") : null;
+    const runtime = client.kind === "agent" ? agentRuntime() : undefined;
+    res.json({
+      ...grant,
+      ...(url ? { url } : {}),
+      ...(origin ? { transport: "funnel" } : {}),
+      ...(name === "missing" ? { publicName: "missing" } : {}),
+      ...(runtime ? { runtime } : {}),
+    });
+  });
+  // What a browser agent may use: /api/browser shows it, and the tools an
+  // agent offers derive from it (scripts/mcp-server.mjs toolsFor), on the
+  // agent's side or here (/api/browser/mcp below).
+  const browserView = async (req, client) => {
     const selected = await terminalOptions(
       () => browser(req),
       client.policy.terminalIds || [],
     );
+    // The runtime this computer serves agents (dist/agent.mjs): one on an
+    // older copy fetches it (/api/device/runtime) and offers the new tools.
+    const runtime = client.kind === "agent" ? agentRuntime() : undefined;
     if (client.policy.preset !== undefined) {
-      return res.json({
+      return {
         name: config.name,
         expiresAt: client.expiresAt,
+        ...(runtime ? { runtime } : {}),
         roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
         terminals: selected,
         ...presetAccess(client),
@@ -309,11 +373,12 @@ export function browserAccessRoutes(
           savedToolHint: SAVED_TOOLS_HINT,
           savedTools: shortcuts.list(() => browser(req)).shortcuts.map(item => ({ ...item, tool: savedToolName(item) })),
         } : {}),
-      });
+      };
     }
-    res.json({
+    return {
       name: config.name,
       expiresAt: client.expiresAt,
+      ...(runtime ? { runtime } : {}),
       roots: client.agentRoots.map((p, index) => ({
         index,
         name: fileRootName(p),
@@ -328,7 +393,52 @@ export function browserAccessRoutes(
       ...(client.policy.restrictedTerminal ? { restrictedTerminal: true } : {}),
       ...(client.policy.terminalApproval ? { terminalApproval: true } : {}),
       ...(client.policy.scriptApproval ? { scriptApproval: true } : {}),
-    });
+    };
+  };
+  // The runtime an agent says it runs (agent-runtimes.mjs). A program that
+  // names none is a copy too old to update itself: told how, once replaced
+  // it keeps up by itself.
+  const publicHost = () => {
+    try { return new URL(config.publicOrigin).hostname; } catch { return ""; }
+  };
+  const runtimeSaid = (req, client) => {
+    noteAgentRuntime(client, req.query.runtime, { program: !fromBrowserPage(req) });
+    return updateNotice({ client, req, served: servedRuntime(), host: publicHost() });
+  };
+  app.get("/api/browser", async (req, res) => {
+    const client = browser(req);
+    const notice = runtimeSaid(req, client);
+    res.json({ ...(await browserView(req, client)), ...notice });
+  });
+  // Reach's own tools for this agent: the list it offers and, per call, the
+  // request to make, from this computer's code, so an agent's copy offers
+  // the tools Reach has now whatever its own version (scripts/mcp-server.mjs).
+  // `list` names the list's version: a call that sees another one tells the
+  // client to read the list again.
+  const mcpTools = async (req, client) => {
+    const view = await browserView(req, client);
+    const offered = toolsFor(client.scopes, view);
+    return { view, offered, list: crypto.createHash("sha256").update(JSON.stringify(offered)).digest("hex").slice(0, 16) };
+  };
+  app.get("/api/browser/mcp/tools", async (req, res) => {
+    const client = browser(req);
+    runtimeSaid(req, client);
+    const { view, offered, list } = await mcpTools(req, client);
+    res.json({ tools: offered, list, ...(view.runtime ? { runtime: view.runtime } : {}) });
+  });
+  app.post("/api/browser/mcp/plan", async (req, res) => {
+    const client = browser(req);
+    if (!isPlainRecord(req.body) || Object.keys(req.body).some((key) => !["name", "arguments"].includes(key)) ||
+        typeof req.body.name !== "string" || req.body.name.length > 128 ||
+        (req.body.arguments !== undefined && !isPlainRecord(req.body.arguments)))
+      throw fail(400, "Name one tool and its arguments.");
+    runtimeSaid(req, client);
+    const { view, offered, list } = await mcpTools(req, client);
+    if (!offered.some((tool) => tool.name === req.body.name)) throw fail(400, "This tool is not available to this agent.");
+    let plan;
+    try { plan = browserToolRequest(req.body.name, req.body.arguments || {}, view); }
+    catch (error) { throw fail(400, String(error?.message || "These arguments don't fit this tool.").slice(0, 500)); }
+    res.json({ plan, list, ...(view.runtime ? { runtime: view.runtime } : {}) });
   });
   app.get("/api/agents/browser-app-access/:clientId", async (req, res) => {
     owner(req);res.json(await appAccess.ownerAccess(req.params.clientId, () => owner(req)));
@@ -654,7 +764,7 @@ export function browserAccessRoutes(
   // exactly as when sent alone; a batch stops at the first one refused and
   // says why. With describe, the screen as text comes back in the same
   // answer: act and see in one round trip, no screenshot.
-  const BATCH = { actions: 10, text: 2000, wait: 2000, waits: 6000, ms: 20000 };
+  const BATCH = { actions: 10, text: 2000, wait: 2000, waits: 6000, holds: 12000, ms: 20000 };
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   app.post("/api/browser/desktop/input", async (req, res) => {
     const client = presetClient(req, "browser:control");
@@ -670,7 +780,7 @@ export function browserAccessRoutes(
     const list = keys.includes("action") ? [body.action] : body.actions;
     if (!Array.isArray(list) || !list.length || list.length > BATCH.actions)
       throw fail(400, "Send one action, or actions: a list of up to 10.");
-    let typed = 0, waited = 0;
+    let typed = 0, waited = 0, held = 0;
     for (const item of list) {
       if (isPlainRecord(item) && item.type === "wait") {
         if (Object.keys(item).some((key) => !["type", "ms"].includes(key)) || !Number.isInteger(item.ms) || item.ms < 50 || item.ms > BATCH.wait)
@@ -679,18 +789,22 @@ export function browserAccessRoutes(
       } else {
         // Every action is checked before any runs: a bad one never leaves
         // half a batch done.
-        normalizeAction(item);
+        const action = normalizeAction(item);
+        held += (action.holdMs || 0) + (action.durationMs || 0);
         if (typeof item.text === "string") typed += item.text.length;
         if (Array.isArray(item.fields)) for (const field of item.fields) typed += String(field?.text || "").length;
       }
     }
     if (waited > BATCH.waits) throw fail(400, "Wait at most 6 seconds in one batch.");
+    if (held > BATCH.holds) throw fail(400, "Hold and drag for at most 12 seconds in one batch.");
     if (typed > BATCH.text) throw fail(400, "Type at most 2000 characters in one batch.");
     await answer(res, async () => {
       const started = Date.now(), results = [];
       let stopped = null;
       for (const [index, item] of list.entries()) {
-        if (Date.now() - started > BATCH.ms) {
+        // A hold or slow drag that would end past the budget doesn't start.
+        const lasts = item?.type === "wait" ? 0 : (item?.holdMs || 0) + (item?.durationMs || 0);
+        if (Date.now() - started + lasts > BATCH.ms) {
           stopped = { index, error: "The rest didn't run in time. Describe the screen, then send what's left.", kind: "retry" };
           break;
         }
@@ -809,6 +923,98 @@ export function browserAccessRoutes(
         : await appByName(client, String(body.browser || ""), authorize);
     await answer(res, () => desktop.openUrl(client, body.url, browser, authorize));
   });
+  // Every window the agent may know of, and bringing one forward (reach_windows,
+  // reach_focus_window): the right window or tab in one step, no guessing.
+  app.get("/api/browser/desktop/windows", async (req, res) => {
+    const client = presetClient(req, "browser:screen");
+    needDesktop();
+    await answer(res, () => desktop.windows(client, () => presetClient(req, "browser:screen")));
+  });
+  app.post("/api/browser/desktop/focus", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["id", "title", "tab"].includes(key))) throw fail(400, "Choose a window by id, with its title, and a tab if you like.");
+    await answer(res, () => desktop.focusWindow(client, body, () => presetClient(req, "browser:open")));
+  });
+  // The front app's menu bar as data (reach_menus); items are pressed with
+  // reach_act {type: "menu", path}.
+  app.get("/api/browser/desktop/menus", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    if (Object.keys(req.query).some((key) => key !== "menu") || (req.query.menu !== undefined && typeof req.query.menu !== "string")) throw fail(400, "Name one menu, or none.");
+    await answer(res, () => desktop.menus(client, req.query.menu, () => presetClient(req, "browser:control")));
+  });
+  // Something in the front window by its words, scrolled into view, with the
+  // screen as text around it (reach_find).
+  app.post("/api/browser/desktop/find", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["text", "name", "role"].includes(key)) || (body.text === undefined) === (body.name === undefined) || (body.role !== undefined && body.name === undefined))
+      throw fail(400, "Find text, or a control by name (and role).");
+    await answer(res, async () => {
+      const found = await desktop.find(client, body, () => presetClient(req, "browser:control"));
+      if (!found.found) return { found: false, app: found.app, title: found.title, truncated: found.truncated,
+        screenText: `Not in this window: ${JSON.stringify(body.text ?? body.name)}.${found.truncated ? " The window was too large to read fully." : ""}` };
+      const { items, texts, fields, ...rest } = found;
+      const what = `[${rest.n ?? "?"}] ${rest.role}${rest.name !== undefined ? ` "${rest.name}"` : ` "${rest.text}"`}`;
+      const where = rest.inView ? (rest.scrolled ? ", scrolled into view" : ", in view") : `, ${rest.direction} the visible part by about ${rest.distance} px: scroll that way, then find again`;
+      const lead = `Found ${what}${rest.matches > 1 ? ` (${rest.matches} matches; the first)` : ""}${where}.\n\n`;
+      return { ...rest, screenText: lead + describeScreen({ ...rest, items, texts }) };
+    });
+  });
+  // The front window's whole text, 12000 characters a call (reach_read_page).
+  // Read once, kept a minute for the following pages.
+  const PAGE = 12000, pages = new Map(); // clientId -> { at, read }
+  app.get("/api/browser/desktop/read", async (req, res) => {
+    const client = presetClient(req, "browser:control");
+    needDesktop();
+    const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
+    if (Object.keys(req.query).some((key) => key !== "offset") || !Number.isInteger(offset) || offset < 0 || offset > 60000) throw fail(400, "Give the offset the last page returned as nextOffset.");
+    await answer(res, async () => {
+      const kept = pages.get(client.id);
+      const read = offset > 0 && kept && Date.now() - kept.at < 60000 ? kept.read : await desktop.readPage(client, () => presetClient(req, "browser:control"));
+      pages.set(client.id, { at: Date.now(), read });
+      if (pages.size > 64) pages.delete(pages.keys().next().value);
+      const text = read.text.slice(offset, offset + PAGE), end = offset + text.length, more = end < read.text.length;
+      return { app: read.app, title: read.title, url: read.url, offset, text, more, ...(more ? { nextOffset: end } : {}), total: read.text.length, truncated: read.truncated };
+    });
+  });
+  // A file from a shared folder, in the app that owns it or shown in the Finder (reach_open_file).
+  app.post("/api/browser/desktop/open-file", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["root", "path", "reveal"].includes(key)) || typeof body.path !== "string" || !body.path.trim() ||
+        (body.reveal !== undefined && body.reveal !== true)) throw fail(400, "Name the file inside a shared folder, and reveal: true to show it in the Finder.");
+    if (!client.policy.roots?.length) throw fail(403, "This invitation shares no folders to open files from.");
+    const target = resolve(body.root ?? 0, body.path, client);
+    await answer(res, () => desktop.openFile(client, target, { reveal: body.reveal === true }, () => presetClient(req, "browser:open")));
+  });
+  // The Mac's own Shortcuts the owner allowed, and running one (reach_mac_shortcuts, reach_run_mac_shortcut).
+  const needShortcuts = () => { if (!macShortcuts) throw fail(503, "Shortcuts for agents are unavailable on this computer."); };
+  app.get("/api/browser/desktop/mac-shortcuts", (req, res) => {
+    presetClient(req, "browser:open");
+    needShortcuts();
+    res.json(macShortcuts.agentList());
+  });
+  app.post("/api/browser/desktop/mac-shortcuts/run", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needShortcuts();
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["name", "input"].includes(key))) throw fail(400, "Name the shortcut, with text input if it takes any.");
+    await answer(res, async () => {
+      try {
+        const result = await macShortcuts.run(client, body, () => presetClient(req, "browser:open"));
+        actions(client, { kind: "mac-shortcut", text: actionWords("mac-shortcut", body), ok: result.ok, ...(result.ok ? {} : { reason: result.timedOut ? "Stopped after 60 seconds." : "The shortcut failed." }) });
+        return result;
+      } catch (error) {
+        if (error?.kind === "blocked") actions(client, { kind: "mac-shortcut", text: actionWords("mac-shortcut", body), ok: false, reason: error.message });
+        throw error;
+      }
+    });
+  });
   // The shell (Full control): one command, as the owner, checked against the
   // deny list and logged. Not confined: Full control is full control.
   app.post("/api/browser/shell", async (req, res) => {
@@ -847,6 +1053,7 @@ export function browserAccessRoutes(
       const result = await browserFiles(body.op, body.root, body.path, () => presetClient(req, "browser:write"),
         { ...(body.to !== undefined ? { to: body.to } : {}), ...(body.op === "write" ? { data: Buffer.from(body.content, "utf8").toString("base64") } : {}) });
       record("agent", `${client.name} changed a file (${body.op})`);
+      actions(client, { kind: "file", text: actionWords("file", body) });
       return res.json({ ok: true, ...(result?.stat ? { stat: result.stat } : {}) });
     }
     // Full control: direct, with the same no-symlink and size rules.
@@ -871,6 +1078,7 @@ export function browserAccessRoutes(
       await fs.copyFile(target, destination);
     }
     record("agent", `${client.name} changed a file (${body.op})`);
+    actions(client, { kind: "file", text: actionWords("file", body) });
     presetClient(req, "browser:write");
     res.json({ ok: true });
   });

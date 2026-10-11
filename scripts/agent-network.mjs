@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -56,15 +58,50 @@ export function joinArguments(options, socket) {
     `--hostname=reach-agent-${process.pid}`,
   ];
 }
-async function freePort() {
-  const server = net.createServer();
+// The agent's way onto the tailnet: a CONNECT proxy on a socket in this
+// run's private folder (0700), dialing through the isolated tailscaled with
+// `tailscale nc`. No port on the machine, so no other user on it can borrow
+// the agent's tailnet node; and it reaches tailnet addresses only
+// (connections audit, Oct 10).
+const tailnetTarget = (host) =>
+  /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net$/i.test(host) ||
+  (net.isIPv4(host) && host.split(".")[0] === "100" && Number(host.split(".")[1]) >= 64 && Number(host.split(".")[1]) <= 127);
+export async function tailnetProxy({ file, cli, socket }) {
+  const server = http.createServer((req, res) => {
+    res.writeHead(405);
+    res.end();
+  });
+  server.on("connect", (req, client, head) => {
+    const m = /^([^:\s]+):(\d{1,5})$/.exec(req.url || "");
+    const port = Number(m?.[2]);
+    if (!m || !tailnetTarget(m[1]) || port < 1 || port > 65535) {
+      client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+      return;
+    }
+    const nc = spawn(cli, [`--socket=${socket}`, "nc", m[1], String(port)], { stdio: ["pipe", "pipe", "ignore"] });
+    const end = () => {
+      client.destroy();
+      nc.kill();
+    };
+    nc.once("error", end);
+    nc.once("exit", () => client.destroy());
+    nc.stdin.on("error", () => {});
+    client.on("error", end);
+    client.on("close", () => nc.kill());
+    client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head?.length) nc.stdin.write(head);
+    client.pipe(nc.stdin);
+    nc.stdout.pipe(client);
+  });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(file, () => {
+      server.off("error", reject);
+      resolve();
+    });
   });
-  const port = server.address().port;
-  await new Promise((r) => server.close(r));
-  return port;
+  chmodSync(file, 0o600);
+  return server;
 }
 export async function withTailnet(options, command) {
   if (process.platform === "win32")
@@ -83,6 +120,7 @@ export async function withTailnet(options, command) {
   const socket = path.join(dir, "tailscaled.sock");
   const joinAbort = new AbortController();
   let daemon,
+    proxy,
     child,
     timer,
     stopped = false,
@@ -109,7 +147,6 @@ export async function withTailnet(options, command) {
   process.once("SIGTERM", stop);
   try {
     const args = joinArguments(options, socket);
-    const port = await freePort();
     daemon = spawn(
       options.tailscaled || "tailscaled",
       [
@@ -118,7 +155,6 @@ export async function withTailnet(options, command) {
         `--statedir=${dir}`,
         `--socket=${socket}`,
         "--port=0",
-        `--outbound-http-proxy-listen=127.0.0.1:${port}`,
       ],
       { stdio: "ignore" },
     );
@@ -176,7 +212,9 @@ export async function withTailnet(options, command) {
       throw Error(
         "The node did not receive exactly the requested restricted tag. Refusing to start the agent.",
       );
-    const env = { ...process.env, REACH_PROXY: `http://127.0.0.1:${port}` };
+    const proxyFile = path.join(dir, "proxy.sock");
+    proxy = await tailnetProxy({ file: proxyFile, cli, socket });
+    const env = { ...process.env, REACH_PROXY: `unix:${proxyFile}` };
     for (const name of ["TS_AUTHKEY", "TS_CLIENT_SECRET", "TS_ID_TOKEN"])
       delete env[name];
     console.error(
@@ -200,6 +238,7 @@ export async function withTailnet(options, command) {
     stopped = true;
     clearTimeout(timer);
     killGroup();
+    proxy?.close();
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
     if (daemon?.pid) {

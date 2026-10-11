@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { normalizeUrl, request, type Peer } from "./api";
+import { normalizeUrl, post, request, type Peer } from "./api";
 
 // Your other Reach computers. The computer you're on lists the ones signed in
-// to your Tailscale account; linked ones approve this device by themselves
-// (it was approved here already), so they join the switcher without a step.
+// to your Tailscale account; linked ones approve this device on a ticket from
+// this one (it was approved here already), so they join without a step.
 
 export type FleetComputer = {
   nodeId: string;
@@ -51,23 +51,26 @@ const call = async (
   return response.json();
 };
 
-// Ask a linked computer for access. It approves at once when this device was
-// approved on a computer it's linked with; otherwise give up quietly (the
-// request then waits on that computer, and expires in five minutes).
+// Ask a linked computer for access, with a one-use ticket from the computer
+// this device is signed in to: it approves at once when that computer issued
+// the ticket to this very device, and refuses otherwise (no request is left
+// waiting). Its Tailscale identity alone proves nothing (server/fleet.mjs).
 export async function joinComputer(
   origin: string,
   name: string,
   {
+    ticket,
     fetcher = fetch,
     waitMs = 8000,
     sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
     now = Date.now,
   }: {
+    ticket: () => Promise<string>;
     fetcher?: Fetcher;
     waitMs?: number;
     sleep?: (ms: number) => Promise<unknown>;
     now?: () => number;
-  } = {},
+  },
 ): Promise<Peer | null> {
   let url: string;
   try {
@@ -78,11 +81,10 @@ export async function joinComputer(
   try {
     const method = await call(fetcher, url, "/api/auth/method");
     if (method?.method !== "tailscale" || !method.eligible) return null;
-    // Only when it would let this device in by itself: never leave a
-    // request waiting in that computer's terminal.
-    const vouched = await call(fetcher, url, "/api/auth/vouched");
-    if (vouched?.approved !== true) return null;
-    const pending = await call(fetcher, url, "/api/auth/requests", { name });
+    const pending = await call(fetcher, url, "/api/auth/requests", {
+      name,
+      ticket: await ticket(),
+    });
     const deadline = now() + waitMs;
     while (now() < deadline) {
       await sleep(700);
@@ -147,7 +149,12 @@ export function useFleetJoin(
         )
           continue;
         tried.add(origin);
-        const joined = await joinComputer(origin, name);
+        const joined = await joinComputer(origin, name, {
+          ticket: () =>
+            post<{ ticket: string }>(peer, "/api/fleet/tickets").then(
+              (r) => r.ticket,
+            ),
+        });
         if (joined && !stopped) latest.current.onJoined(joined);
         // Asleep or unreachable this time: tried again on the next pass.
         else if (!joined) tried.delete(origin);

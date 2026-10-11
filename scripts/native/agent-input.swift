@@ -79,22 +79,73 @@ let modifierFlags: [String: CGEventFlags] = [
   "meta": .maskCommand, "alt": .maskAlternate, "control": .maskControl, "shift": .maskShift,
   "fn": .maskSecondaryFn, "caps": .maskAlphaShift,
 ]
+// BEGIN PURE INPUT TEXT — the same as agent-desktop.swift's (one per binary).
+// Each keyboard event must contain complete UTF-16 surrogate pairs. Splitting
+// an emoji between events can insert two replacement characters in the app.
+// One character (grapheme) per event: some apps (Calculator, SwiftUI
+// fields) read only the first character of a key event, so "7*3" in one
+// event typed "7". A character longer than 16 units splits by scalar.
+func keyboardChunks(_ text: String) -> [[UInt16]] {
+  var result: [[UInt16]] = []
+  for character in text {
+    let units = Array(String(character).utf16)
+    if units.count <= 16 { result.append(units); continue }
+    var chunk: [UInt16] = []
+    for scalar in String(character).unicodeScalars {
+      let part = Array(String(scalar).utf16)
+      if chunk.count + part.count > 16 { result.append(chunk); chunk = [] }
+      chunk.append(contentsOf: part)
+    }
+    if !chunk.isEmpty { result.append(chunk) }
+  }
+  return result
+}
+// END PURE INPUT TEXT
+
+// The key this helper holds down in an app between its down and up. Stopped
+// in between (SIGTERM, main), it lets go first; once stopping, nothing more
+// is posted. One event at a time under `heldLock`.
+let heldLock = NSLock()
+var heldKey: (pid: pid_t, key: CGKeyCode)? = nil
+var stopping = false
+func send(_ e: CGEvent?, _ pid: pid_t, key: CGKeyCode, down: Bool) {
+  heldLock.lock(); defer { heldLock.unlock() }
+  if stopping { return }
+  e?.postToPid(pid)
+  heldKey = down ? (pid, key) : nil
+}
+func letGo() {
+  heldLock.lock(); defer { heldLock.unlock() }
+  stopping = true
+  if let held = heldKey { CGEvent(keyboardEventSource: source, virtualKey: held.key, keyDown: false)?.postToPid(held.pid) }
+  heldKey = nil
+}
 func post(_ pid: pid_t, key: CGKeyCode, flags: CGEventFlags) {
   for down in [true, false] {
     let e = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
     e?.flags = flags
-    e?.postToPid(pid)
+    send(e, pid, key: key, down: down)
   }
 }
 func post(_ pid: pid_t, text: String) {
-  for unit in text.utf16 {
+  for chunk in keyboardChunks(text) {
     for down in [true, false] {
       let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
-      var c = unit
-      e?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &c)
-      e?.postToPid(pid)
+      e?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+      send(e, pid, key: 0, down: down)
     }
   }
+}
+// Whether an Accessibility change surely didn't happen. One the app didn't
+// answer in time (busy, hung), or any error not known to mean "refused", may
+// still land: unknown, so the server neither falls back to the pointer
+// (a second press) nor reports it done.
+let refusedErrors: [AXError] = [.actionUnsupported, .attributeUnsupported, .parameterizedAttributeUnsupported,
+  .illegalArgument, .invalidUIElement, .notImplemented, .apiDisabled, .noValue]
+func outcome(_ error: AXError, _ done: [String: Any], refused why: String) -> [String: Any] {
+  if error == .success { return done }
+  if refusedErrors.contains(error) { return ["done": false, "why": why] }
+  return ["done": false, "unknown": true, "why": "the app didn't answer in time"]
 }
 // Menu titles match as shown, with or without a trailing "…".
 func same(_ a: String, _ b: String) -> Bool {
@@ -130,9 +181,9 @@ func handle(_ r: [String: Any]) -> [String: Any] {
     for _ in 0..<3 {
       guard let x = e else { break }
       if textRoles.contains(role(x)) {
-        let ok = AXUIElementSetAttributeValue(x, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
-        if ok { fields[thread] = x }
-        return ok ? ["done": true, "kind": "focused", "role": role(x)] : ["done": false, "why": "can't focus that field"]
+        let error = AXUIElementSetAttributeValue(x, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if error == .success { fields[thread] = x }
+        return outcome(error, ["done": true, "kind": "focused", "role": role(x)], refused: "can't focus that field")
       }
       e = parent(x)
     }
@@ -140,8 +191,8 @@ func handle(_ r: [String: Any]) -> [String: Any] {
     for _ in 0..<6 {
       guard let x = e else { break }
       if actions(x).contains(kAXPressAction as String) {
-        let ok = AXUIElementPerformAction(x, kAXPressAction as CFString) == .success
-        return ok ? ["done": true, "kind": "pressed", "role": role(x)] : ["done": false, "why": "press refused"]
+        let error = AXUIElementPerformAction(x, kAXPressAction as CFString)
+        return outcome(error, ["done": true, "kind": "pressed", "role": role(x)], refused: "press refused")
       }
       e = parent(x)
     }
@@ -149,10 +200,12 @@ func handle(_ r: [String: Any]) -> [String: Any] {
   case "text":
     guard let text = r["text"] as? String else { return ["done": false, "why": "no text"] }
     // Into the field the agent focused in its own window: no keyboard at all.
-    if let field = fields[thread],
-      AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success
-    {
-      return ["done": true, "kind": "inserted"]
+    // Refused there: typed instead. Unanswered: it may still land, so never
+    // typed a second time.
+    if let field = fields[thread] {
+      let error = AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString)
+      let inserted = outcome(error, ["done": true, "kind": "inserted"], refused: "")
+      if inserted["done"] as? Bool == true || inserted["unknown"] as? Bool == true { return inserted }
     }
     if let why = appLevelSafe(app, ax, agentWindow ?? fields[thread].flatMap(window)) {
       return ["done": false, "why": why]
@@ -184,8 +237,8 @@ func handle(_ r: [String: Any]) -> [String: Any] {
       }
       if i == names.count - 1 {
         if (attr(item, kAXEnabledAttribute) as? Bool) == false { return ["done": false, "why": "\(name) is dimmed"] }
-        let ok = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
-        return ok ? ["done": true, "kind": "menu"] : ["done": false, "why": "menu refused"]
+        let error = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        return outcome(error, ["done": true, "kind": "menu"], refused: "menu refused")
       }
       level = item
     }
@@ -199,6 +252,15 @@ func handle(_ r: [String: Any]) -> [String: Any] {
 struct AgentInput {
   static func main() {
     setvbuf(stdout, nil, _IOLBF, 0)
+    // Every Accessibility call of this process gives up after 1 s (the default
+    // is about 6), well inside the server's 5 s; a change that timed out
+    // answers unknown (outcome). A request makes several calls, so the
+    // server still treats its own timeout as unknown.
+    AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+    signal(SIGTERM, SIG_IGN)
+    let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+    termination.setEventHandler { letGo(); exit(0) }
+    termination.resume()
     while let line = readLine() {
       guard let data = line.data(using: .utf8),
         let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -211,5 +273,6 @@ struct AgentInput {
         print(text)
       }
     }
+    termination.cancel()
   }
 }

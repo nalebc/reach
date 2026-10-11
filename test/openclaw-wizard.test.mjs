@@ -124,3 +124,11 @@ test("a failed start with no session can be started again", async () => {
   await f.hit("start"); await tick();
   assert.equal((await f.hit()).status, "running");
 });
+
+test("a setup that ends with an error, or a status Reach doesn't know, is never shown as done", async () => {
+  for (const [end, status] of [[{ done: true, status: "done", error: "boom" }, "error"], [{ done: true, error: "boom" }, "error"], [{ done: true, status: "exploded" }, "error"], [{ done: true }, "done"]]) {
+    const f = fixture((method) => method === "wizard.start" ? { sessionId: "session", ...end } : end);
+    await f.hit("start"); await tick();
+    assert.equal((await f.hit()).status, status, JSON.stringify(end));
+  }
+});

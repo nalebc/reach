@@ -12,6 +12,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { localOpenClawConfig } from "./openclaw.mjs";
+import { openClawShell } from "./openclaw-run.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -46,13 +47,24 @@ const CHANNELS = {
 };
 const channelLabel = (id) =>
   Object.hasOwn(CHANNELS, id) ? CHANNELS[id] : "Other";
+// What /readyz counts as failing besides channels (OpenClaw 2026.9.9), named
+// for what it is, never as a channel.
+const REASONS = {
+  "gateway-draining": "Gateway (shutting down)",
+  "state-database": "OpenClaw's database",
+  "plugin-reload": "Plugins (reloading)",
+};
+const failingLabel = (id) =>
+  Object.hasOwn(REASONS, id) ? REASONS[id]
+    : /^agent-database:/.test(id) ? "An agent's database"
+      : channelLabel(id);
 
 // --- Scrubbing: log text can carry keys, tokens, people's numbers. ---------
 const hidden = "[hidden]";
-const SCRUBS = [
-  // ANSI colors and control characters.
-  [/\x1b\[[0-9;?]*[A-Za-z]/g, ""],
-  [/[\u0000-\u0008\u000b-\u001f\u007f]/g, " "],
+// Secrets only: what an answer posted to a chat loses (scrubSecrets).
+const SECRET_SCRUBS = [
+  // PEM private keys, whole.
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, hidden],
   // Authorization headers.
   [/\b(Bearer|Basic|Token)\s+[^\s"',;]+/gi, `$1 ${hidden}`],
   // Named secrets: key=value, key: value, "key":"value" (logged objects).
@@ -74,6 +86,14 @@ const SCRUBS = [
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/g, hidden],
   // Telegram bot tokens (also inside its API URLs).
   [/\b\d{6,}:[A-Za-z0-9_-]{30,}/g, hidden],
+  // Credentials inside URLs (https://user:pass@host).
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${hidden}@`],
+];
+const SCRUBS = [
+  // ANSI colors and control characters.
+  [/\x1b\[[0-9;?]*[A-Za-z]/g, ""],
+  [/[\u0000-\u0008\u000b-\u001f\u007f]/g, " "],
+  ...SECRET_SCRUBS,
   // URLs: no credentials, no path or query (both can carry tokens).
   [
     /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]+@)?([^\s/?#"'<>]+)[^\s"'<>]*/gi,
@@ -120,6 +140,15 @@ export function scrubLine(value, max = LINE_MAX) {
   text = text.replace(/[A-Za-z0-9+/_=-]{24,}/g, tokenish);
   text = text.replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+// Text that leaves this computer for someone's chat (a relay's post-back):
+// keys, tokens and passwords hidden; lines, paths and links kept.
+export function scrubSecrets(value) {
+  let text = String(value ?? "");
+  for (const [pattern, replacement] of SECRET_SCRUBS)
+    text = text.replace(pattern, replacement);
+  return text.replace(/[A-Za-z0-9+/_=-]{24,}/g, tokenish);
 }
 
 const LEVELS = ["fatal", "error", "warn", "info", "debug", "trace"];
@@ -220,9 +249,11 @@ export async function readiness({ configuration = localOpenClawConfig, fetch: ge
     });
     const body = await res.json().catch(() => null);
     if (!body || typeof body.ready !== "boolean") return { supported: false };
-    const failing = Array.isArray(body.failing)
-      ? [...new Set(body.failing.filter((id) => typeof id === "string").map(channelLabel))].slice(0, 12)
+    let failing = Array.isArray(body.failing)
+      ? [...new Set(body.failing.filter((id) => typeof id === "string").map(failingLabel))].slice(0, 12)
       : [];
+    // Not ready with nothing named (or an HTTP error): the Gateway itself.
+    if ((body.ready === false || res.ok === false) && !failing.length) failing = ["Gateway"];
     return {
       supported: true,
       ready: body.ready,
@@ -244,6 +275,7 @@ export async function restartOpenClawGateway({
   env = process.env,
   platform = process.platform,
   authorize = () => {},
+  runtime,
 } = {}) {
   authorize();
   // Refuses a remote profile: only this computer's own Gateway.
@@ -256,7 +288,7 @@ export async function restartOpenClawGateway({
         windowsHide: true,
       });
     else
-      await run(env.SHELL || "/bin/sh", ["-lc", "exec openclaw gateway restart"], {
+      await run(...(await openClawShell(["gateway", "restart"], { env, platform, runtime })), {
         timeout: 25000,
       });
   } catch {

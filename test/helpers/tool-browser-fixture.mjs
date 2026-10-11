@@ -181,6 +181,8 @@ export function toolBrowserFixture() {
           });
         if (request.op === "navigate") this.load(tab, request.url);
         result = this.info(tab);
+        if (request.op === "close")
+          browsers.set(browser, browsers.get(browser).filter((item) => item !== tab));
       }
       await this.after?.(browser, request, result);
       return result;

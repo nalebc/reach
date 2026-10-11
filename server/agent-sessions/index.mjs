@@ -93,25 +93,38 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
   return value;
 }
 
+// An agent that isn't on this computer: said so, never shown as an error.
+const notInstalled = (reason) => ["AGENT_NOT_INSTALLED", "ENOENT"].includes(reason?.code);
+
 // The claude executable as the owner's login shell finds it (Reach may run
 // with a shorter PATH than their terminal).
 let claudeAt = null;
 let claudeFound = null;
-export function locateClaude(run = exec) {
+// When it was last not found: a computer without Claude Code asked its login
+// shell twice on every health check. Looked for again after a while, or at
+// once when the phone checks again (forgetClaudeMiss).
+let claudeMissedAt = 0;
+const claudeMissMs = 30000;
+export function locateClaude(run = exec, { now = Date.now } = {}) {
   // Gone from where it was (reinstalled elsewhere, an update that moved
   // it): looked for again rather than sent to a missing file.
   if (claudeFound && !fs.existsSync(claudeFound)) claudeAt = claudeFound = null;
+  if (!claudeAt && now() - claudeMissedAt < claudeMissMs) return Promise.resolve(null);
   claudeAt ??= run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
     .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
     .then((found) => (found?.startsWith("/") ? found : null))
     .catch(() => null)
     .then((found) => {
-      if (!found) claudeAt = null; // look again next time
+      if (!found) claudeAt = null; // look again later
+      claudeMissedAt = found ? 0 : now();
       claudeFound = found;
       return found;
     });
   return claudeAt;
 }
+export const forgetClaudeMiss = () => {
+  claudeMissedAt = 0;
+};
 
 // "claude-opus-5-5" → "Opus 5.5", as the Claude app names models.
 const claudeModelName = (id) => {
@@ -265,6 +278,8 @@ export function createAgentSessions({
   moves = createMoves({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-moves.json") }),
   // The permission mode picked for each Codex chat from Reach (chat-modes.mjs).
   chatModes = createChatModes({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "codex-modes.json") }),
+  // The effort picked on the phone for each Claude app chat (same store).
+  claudeEfforts = createChatModes({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "claude-efforts.json") }),
   // What "/" offers in a chat, from each agent itself (commands.mjs); the
   // installed Codex isn't asked in tests.
   slash = createSlashCommands({
@@ -484,6 +499,12 @@ export function createAgentSessions({
   // A chat Reach runs: what it launched it with, from the first frame (it
   // read "Default · High" through a Haiku · Low turn). Its effort is what
   // the process runs at; its model (an alias, "haiku") only fills a gap.
+  // A Claude app chat's effort picked on the phone: what it goes on at
+  // from here (its messages from the phone carry it), shown as its level.
+  const withPicked = (session) => {
+    const picked = session.inApp && !claudeHost.drives(session.id) && claudeEfforts.get(session.id);
+    if (picked) session.effort = picked;
+  };
   const withHost = (session) => {
     const settings = claudeHost.settingsOf?.(session.id);
     if (!settings) return;
@@ -513,6 +534,9 @@ export function createAgentSessions({
     // Only a definite "signed out" stops it. A status Claude Code was too slow
     // to give (busy Mac, 10 s limit) isn't one: new chats failed with
     // "signed out" while Claude Code was signed in.
+    // Not there at all (only the Claude app, or nothing) is a different fix.
+    if (health && health.installed === false && !health.error)
+      throw blocked(`Claude Code isn't installed on your ${computerWord(platform)}. Install it from Chat to reply from here.`);
     if (health && health.signedIn === false && !health.error)
       throw blocked(`Claude Code is signed out on your ${computerWord(platform)}. Sign in to reply from here.`);
   };
@@ -1149,6 +1173,7 @@ export function createAgentSessions({
       /* Live status is a hint; the list stands without it. */
     }
     for (const s of sessions) if (s.agent === "claude" && claudeHost.drives(s.id)) withHost(s);
+    for (const s of sessions) if (s.agent === "claude") withPicked(s);
     for (const s of sessions) statusOf(s.agent)(s);
     for (const s of sessions) settleWaiting(s);
     // Continued from the other agent: said in the list, with its app.
@@ -1163,10 +1188,12 @@ export function createAgentSessions({
       projects: { codex: p.status === "fulfilled" ? p.value : [] },
       // What the Mac itself is asking right now (answered at the Mac).
       macPrompts: macPrompts.current?.().prompts || [],
+      // An agent that isn't installed has no chats, which isn't an error:
+      // Chat offers to install it instead (as health() says).
       errors: {
-        ...(c.status === "rejected" ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
-        ...(k.status === "rejected" ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
-        ...(g.status === "rejected" ? { gemini: g.reason?.message || "Gemini CLI sessions are unavailable." } : {}),
+        ...(c.status === "rejected" && !notInstalled(c.reason) ? { codex: c.reason?.message || "Codex sessions are unavailable." } : {}),
+        ...(k.status === "rejected" && !notInstalled(k.reason) ? { claude: k.reason?.message || "Claude sessions are unavailable." } : {}),
+        ...(g.status === "rejected" && !notInstalled(g.reason) ? { gemini: g.reason?.message || "Gemini CLI sessions are unavailable." } : {}),
       },
     };
   };
@@ -1298,7 +1325,9 @@ export function createAgentSessions({
       const kept = body.mode || queuedMode || ours || recorded;
       // Its effort too (the app's pick, else what it last ran at): resumed
       // without it, a chat set to Max went on at Claude Code's default.
-      const effort = body.effort || (await keptEffort(id, session, body.model || session.model));
+      // One picked on the phone for a Claude app chat comes before both.
+      const picked = session.inApp && !claudeHost.drives(id) ? claudeEfforts.get(id) : null;
+      const effort = body.effort || picked || (await keptEffort(id, session, body.model || session.model));
       const message = {
         ...body, cwd: session.cwd, ...(kept ? { mode: kept } : {}), ...(effort ? { effort } : {}),
         // The app's Ultracode, on or off as its record has it.
@@ -1308,7 +1337,11 @@ export function createAgentSessions({
       // A chat the Claude app lists, with the app open: typed into the app
       // itself, so its window shows it at once (Reach's own Claude Code
       // process never showed there). The app signs in on its own.
-      if (claudeCompose && session.inApp && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+      // Not one with an effort picked on the phone: the app's process runs
+      // at the level it was started with, and nothing outside it changes
+      // that but a click in its menu (never, Oct 10). Claude Code continues
+      // it at that level instead, as for a locked Mac.
+      if (claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
@@ -1351,12 +1384,13 @@ export function createAgentSessions({
     // runs, Codex) it goes with the next message, as before.
     async model(agent, id, { model, effort, speed }) {
       adapter(agent);
-      if (agent === "claude" && !claudeHost.drives(id) && claudeCompose && await claudeOpen()) {
+      if (agent === "claude" && !claudeHost.drives(id)) {
         const { session } = await claude.read(id, { limit: 1 });
-        if (session.inApp) {
+        const appOpen = !!claudeCompose && (await claudeOpen());
+        if (session.inApp && (appOpen || effort)) {
           // Apply to the app's own visible chat; the CLI host cannot mutate a
           // desktop-owned process. Catalog IDs become exact native menu names.
-          if (model && model !== session.model) {
+          if (model && model !== session.model && appOpen) {
             if (!claudeCompose.model)
               throw Object.assign(new Error("Reach can't change the model in this Claude app. Your current selection is unchanged."), { status: 409 });
             const catalog = await claudeHost.models();
@@ -1369,24 +1403,16 @@ export function createAgentSessions({
             if (result?.model !== name || result.unconfirmed)
               throw Object.assign(new Error("Claude didn't confirm the model change. Check the model in Claude before trying again."), { status: 409 });
           }
-          // Selecting a model may reset its effort. Reapply the requested
-          // level even when it matched the previous model's saved setting.
-          if (effort && (model && model !== session.model || effort !== session.effort)) {
-            if (!claudeCompose.effort)
-              throw Object.assign(new Error("Reach can't change the thinking level in this Claude app. Check its current settings."), { status: 409 });
-            const result = await claudeCompose.effort(id, { title: session.appTitle || "Untitled", effort }).catch(settingNotChanged);
+          // Its effort: never picked in the app's menu (no UI clicks, Oct 10).
+          // Kept for the chat: its next messages from the phone run at it in
+          // Claude Code (--effort), and the app's record says it for when the
+          // app next loads the chat.
+          if (effort) {
+            claudeEfforts.set(id, effort);
+            await claude.appEffort?.(id, effort).catch(() => {});
             listChanged();
-            // A click alone is not acknowledgement. The app's own record can
-            // confirm a chip that has not redrawn (never the level a reply
-            // ran at); otherwise keep uncertainty.
-            const recorded = async () => {
-              const now = (await claude.read(id, { limit: 1 })).session;
-              return now.appEffort !== undefined ? now.appEffort : now.effort;
-            };
-            if ((result?.effort !== effort || result.unconfirmed) && (await recorded()) !== effort)
-              throw Object.assign(new Error("Claude didn't confirm the thinking level. Check it in Claude before trying again."), { status: 409 });
           }
-          return { model, effort, applied: true };
+          return { model, effort, applied: appOpen || !model };
         }
       }
       if (agent !== "codex") return { model, effort, applied: false };
@@ -1931,6 +1957,7 @@ export function createAgentSessions({
           result.session.held = "reach";
           withHost(result.session);
         } else if (running.has(id) && running.get(id).where !== "reach") withLive(result.session, running.get(id));
+        withPicked(result.session);
         // Waiting in Claude Code's queue only while another app's Claude Code
         // holds it: a crashed app's would show for good (Reach's own: view()).
         if (result.session.waiting?.length && (claudeHost.drives(id) || running.get(id)?.where === "reach" || !running.has(id))) result.session.waiting = [];
@@ -2003,6 +2030,8 @@ export function createAgentSessions({
     // The agents on this Mac: the two Reach drives, then others it knows of
     // (installed, not yet supported), so the phone can show where it's going.
     async health({ fresh = false } = {}) {
+      // Check again (an agent just installed): Claude Code is looked for anew.
+      if (fresh) forgetClaudeMiss();
       // open: the Claude app is running, so a chat archived here leaves its
       // sidebar when it next opens (claude.mjs archive); the phone says so.
       const results = await Promise.allSettled([
@@ -2014,7 +2043,7 @@ export function createAgentSessions({
       const driven = results.slice(0, 2).map((r, i) => ({
         ...(r.status === "fulfilled"
           ? r.value
-          : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(["AGENT_NOT_INSTALLED", "ENOENT"].includes(r.reason?.code) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
+          : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(notInstalled(r.reason) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
         compatibility: compatibility[i].status === "fulfilled" ? compatibility[i].value : { status: "unavailable", reason: "Compatibility check failed." },
         name: ["Codex", "Claude Code"][i],
         supported: true,

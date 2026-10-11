@@ -113,6 +113,12 @@ const $ = (selector) => dom.document.querySelector(selector);
 const $$ = (selector) => [...dom.document.querySelectorAll(selector)];
 const button = (label, within = dom.document) =>
   [...within.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent.trim() === label);
+// "+" → Team or Workflow, in a new chat's tools; its pill says which is on.
+const pickKind = async (kind, within) => {
+  await click(button("Add", within));
+  await click([...within.querySelectorAll('[role="menuitemcheckbox"]')].find((b) => b.textContent.startsWith(kind)));
+};
+const kind = (within) => within.querySelector(".chat-new-kind")?.textContent || "";
 const click = async (element) => {
   assert.ok(element, "button exists");
   element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -140,8 +146,8 @@ test("New chat → Workflow: the planner drafts the tasks, you edit one, and Run
   await click(await dom.waitFor(() => button("New chat")));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
   assert.ok(sheet.querySelector(".as-mode-pick"), "a chat picks its permissions");
-  await click(button("Workflow", sheet));
-  assert.equal(button("Workflow", sheet).getAttribute("aria-pressed"), "true");
+  await pickKind("Workflow", sheet);
+  assert.equal(kind(sheet), "Workflow");
   assert.equal(sheet.querySelector(".as-mode-pick"), null, "the planner only reads: no permission to pick");
   assert.match(sheet.querySelector(".wf-intro").textContent, /Codex drafts the tasks · you review first/);
   await typeInto(sheet.querySelector('textarea[aria-label="Workflow planned by Codex"]'), "Add passkey sign-in, with tests");
@@ -194,7 +200,7 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   await home();
   await click(await dom.waitFor(() => button("New chat")));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
-  await click(button("Workflow", sheet));
+  await pickKind("Workflow", sheet);
   await typeInto(sheet.querySelector("textarea"), "Pagination");
   await click(button("Write tasks myself", sheet));
   await dom.waitFor(() => sent("create").length === 1);
@@ -318,11 +324,11 @@ test("the Workflows icon opens them all: Active (waiting on you first), Drafts a
   // New workflow: New chat, on Workflow; once closed, New chat is a chat again.
   await click(button("New workflow", page));
   let newChat = await dom.waitFor(() => $(".chat-create-sheet"));
-  assert.equal(button("Workflow", newChat).getAttribute("aria-pressed"), "true");
+  assert.equal(kind(newChat), "Workflow");
   await click(button("Close new conversation", newChat));
   await click(button("New chat"));
   newChat = await dom.waitFor(() => $(".chat-create-sheet"));
-  assert.equal(button("Solo", newChat).getAttribute("aria-pressed"), "true");
+  assert.equal(kind(newChat), "", "one chat");
   assert.deepEqual(dom.errors, []);
 });
 
@@ -337,14 +343,14 @@ test("every agent's list has the icon too; with none yet, its page says how to s
   assert.match(page.textContent, /Start your first workflow/);
   await click(button("New chat", page));
   const conversation = await dom.waitFor(() => $(".chat-create-sheet"));
-  assert.equal(button("Solo", conversation).getAttribute("aria-pressed"), "true");
+  assert.equal(kind(conversation), "", "one chat");
   assert.equal($(".workflows-page"), null);
   await click(button("Close new conversation", conversation));
   await click(button("Workflows"));
   await dom.waitFor(() => $(".workflows-page"));
   await click(button("New workflow", $(".workflows-page")));
   const newChat = await dom.waitFor(() => $(".chat-create-sheet"));
-  assert.equal(button("Workflow", newChat).getAttribute("aria-pressed"), "true");
+  assert.equal(kind(newChat), "Workflow");
   // Only the icon: the ≡ menu doesn't repeat it.
   await click(button("Close new conversation", newChat));
   await click(button("Chat list menu"));
@@ -358,7 +364,7 @@ test("an empty draft starts from a starting point: the agents placed, what to bu
   await home();
   await click(await dom.waitFor(() => button("New chat")));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
-  await click(button("Workflow", sheet));
+  await pickKind("Workflow", sheet);
   await click(button("Write tasks myself", sheet));
   const page = await dom.waitFor(() => $(".workflow-sheet"));
   await click(button("Build, then reviewCodex builds · Claude Code reviews", page) || [...page.querySelectorAll(".wf-dashed")][0]);

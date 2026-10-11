@@ -3,9 +3,10 @@
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
 import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
-import { browserToolsFor, browserToolRequest, SAVED_TOOLS_HINT } from "../server/browser-tools.mjs";
+import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
 
-const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history"]);
+const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history",
+  "reach_windows", "reach_focus_window", "reach_find", "reach_menus", "reach_read_page", "reach_open_file", "reach_mac_shortcuts", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
 const BROWSER_TOOL_SCOPES = {
   reach_services: "browser:read", reach_service_request: "browser:read",
   reach_tools: "browser:control", reach_tool_protocol: "browser:control", reach_define_tool: "browser:control", reach_tool_operation: "browser:control",
@@ -18,19 +19,23 @@ const BROWSER_TOOL_SCOPES = {
   reach_screenshot: "browser:screen", reach_front: "browser:screen", reach_act: "browser:control",
   reach_elements: "browser:control", reach_describe_screen: "browser:control",
   reach_press: "browser:control", reach_fill: "browser:control", reach_wait_for: "browser:control",
+  reach_find: "browser:control", reach_menus: "browser:control", reach_read_page: "browser:control", reach_windows: "browser:screen",
   reach_desktop_apps: "browser:open", reach_open_app: "browser:open", reach_open_url: "browser:open", reach_change_file: "browser:write",
+  reach_focus_window: "browser:open", reach_open_file: "browser:open", reach_mac_shortcuts: "browser:open", reach_run_mac_shortcut: "browser:open",
+  reach_open_bank: "browser:open", reach_request_permission: "browser:read",
   reach_shell: "browser:shell", reach_shell_history: "browser:shell",
   reach_shortcuts: "browser:control", reach_record_shortcut: "browser:control", reach_save_shortcut: "browser:control", reach_discard_shortcut: "browser:control", reach_run_shortcut: "browser:control",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell"]);
+const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
 const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
 // The protocol revisions Reach speaks: a client's own when it's one of them,
 // else the newest, and the client decides.
 export const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 // What a client is told at initialize when the agent may drive the browser:
 // the same over stdio and at Reach's own /mcp endpoint (server/hosted-mcp.mjs).
-export const serverInstructions = (scopes) => scopes?.includes("browser:control") ? { instructions: `${SAVED_TOOLS_HINT} Chrome and Safari use the same protocol as the built-ins. Definitions contain only fixed steps and result checks. No arbitrary script or passwords. Supply a fresh UUID requestId for a new run; after a lost response use reach_tool_operation or retry the SAME requestId. An uncertain or stopped run reports partial progress: inspect the browser before continuing. Definition creation immediately adds a named tool to the list.` } : {};
+// Kept to a line: the tools' own names and descriptions carry the rest.
+export const serverInstructions = (scopes) => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." } : {};
 
 const location = {
   root: {
@@ -368,6 +373,44 @@ export function toolsFor(scopes, browserAccess) {
   });
 }
 
+// Reach's own list of this agent's tools, and the request each call makes
+// (server/browser-access.mjs /api/browser/mcp): a copy offers the tools Reach
+// has now, whatever its own version, and the request then goes out as any
+// other. A computer from before them, or one that fails to answer: this
+// copy's own tools, as before (an ended access then fails there too). Only
+// the planner's own refusal (400: no such tool, wrong arguments) stands.
+// `route` adds what the computer is told (the runtime).
+export async function computerTools(api, route = (path) => path) {
+  try {
+    const answer = await api(route("/api/browser/mcp/tools"));
+    return Array.isArray(answer?.tools) ? answer : null;
+  } catch {
+    return null;
+  }
+}
+export async function computerPlan(api, name, args, route = (path) => path) {
+  let answer;
+  try {
+    answer = await api(route("/api/browser/mcp/plan"), "POST", { name, arguments: args });
+  } catch (error) {
+    if (error?.status === 400) throw error;
+    return null;
+  }
+  // An answer with no plan in it comes from a computer that doesn't plan.
+  if (!answer || typeof answer !== "object" || !("plan" in answer)) return null;
+  const plan = answer.plan;
+  if (typeof plan?.route !== "string" || !plan.route.startsWith("/api/") || !["GET", "HEAD", "POST", "PUT", "DELETE"].includes(plan.method))
+    throw Error("Reach named no request for this tool.");
+  return answer;
+}
+
+// How long a tools/list waits for a newer runtime before answering with this
+// one's tools (the new ones follow with notifications/tools/list_changed).
+const UPGRADE_WAIT_MS = 8000;
+// A runtime that couldn't be loaded is tried again after this long.
+const UPGRADE_RETRY_MS = 10 * 60_000;
+const SHA256 = /^[a-f0-9]{64}$/;
+
 export function serveMcp({
   api,
   scopes = [],
@@ -376,6 +419,16 @@ export function serveMcp({
   input = process.stdin,
   output = process.stdout,
   name = "reach",
+  // The computer's newer runtime (scripts/agent-remote.mjs runtimeUpdater):
+  // { current: sha256, update(sha256) → { toolsFor, callTool, toContent } }. Its tools
+  // replace these while this server keeps running. Without it, nothing
+  // changes (a source checkout, or updates turned off).
+  runtime = null,
+  // This runtime's own hash, said to the computer even with updates off
+  // (agent-runtimes.mjs): the owner sees which agents run what.
+  report = undefined,
+  upgradeWaitMs = UPGRADE_WAIT_MS,
+  now = Date.now,
 }) {
   const write = (message) =>
     output.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
@@ -383,6 +436,35 @@ export function serveMcp({
   // Answers still on their way when input ends are sent before finishing.
   const pending = new Set();
   let currentScopes = scopes;
+  // The version of Reach's own list the client last read (computerTools).
+  let listed;
+  let impl = { toolsFor, callTool };
+  let current = runtime?.current;
+  const said = (route) => {
+    const sha = current || report;
+    return typeof sha === "string" && SHA256.test(sha) ? `${route}?runtime=${sha}` : route;
+  };
+  const tried = new Map(); // sha256 → when it was last tried
+  // Fails closed: a runtime that can't be fetched, doesn't match its hash or
+  // doesn't load leaves this one's tools as they are.
+  const upgrade = async (sha, waitMs = 0) => {
+    if (!runtime || typeof sha !== "string" || !SHA256.test(sha) || sha === current) return;
+    if (tried.has(sha) && now() - tried.get(sha) < UPGRADE_RETRY_MS) return;
+    tried.set(sha, now());
+    const loaded = Promise.resolve()
+      .then(() => runtime.update(sha))
+      .then((next) => (typeof next?.toolsFor === "function" && typeof next?.callTool === "function"
+        ? { toolsFor: next.toolsFor, callTool: next.callTool, ...(typeof next.toContent === "function" ? { toContent: next.toContent } : {}) } : null))
+      .catch((error) => { console.error(`Reach: kept this runtime; the computer's newer one didn't load (${error?.message || error}).`); return null; });
+    const swap = (next) => { if (!next) return false; impl = next; current = sha; tried.delete(sha); return true; };
+    const later = () => loaded.then((next) => { if (swap(next)) write({ method: "notifications/tools/list_changed" }); });
+    if (!waitMs) return void later();
+    let timer;
+    const first = await Promise.race([loaded, new Promise((resolve) => { timer = setTimeout(resolve, waitMs, later); })]);
+    clearTimeout(timer);
+    if (first === later) return void later();
+    swap(first);
+  };
   lines.on("line", (line) => {
     const answer = handle(line).finally(() => pending.delete(answer));
     pending.add(answer);
@@ -407,18 +489,40 @@ export function serveMcp({
       else if (r.method === "resources/templates/list") result = { resourceTemplates: [] };
       else if (r.method === "prompts/list") result = { prompts: [] };
       else if (r.method === "tools/list") {
-        currentScopes = (liveScopes && (await api("/api/device")).access?.scopes) || scopes || [];
-        const access = currentScopes.includes("browser:read") ? await api("/api/browser") : undefined;
-        result = { tools: toolsFor(currentScopes, access) };
+        const device = liveScopes ? await api(said("/api/device")) : undefined;
+        currentScopes = device?.access?.scopes || scopes || [];
+        // A newer runtime on the computer: its tools, in this answer if it
+        // loads in time.
+        await upgrade(device?.runtime, upgradeWaitMs);
+        // Reach's own list when it has one: every tool it has now.
+        const served = currentScopes.includes("browser:read") ? await computerTools(api, said) : null;
+        listed = served?.list;
+        if (served) result = { tools: served.tools };
+        else {
+          const access = currentScopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
+          result = { tools: impl.toolsFor(currentScopes, access) };
+        }
       } else if (r.method === "tools/call") {
         try {
-          const access = currentScopes.includes("browser:read") ? await api("/api/browser") : undefined;
-          if (access && !toolsFor(currentScopes, access).some((tool) => tool.name === r.params.name)) throw Error("This tool is not available in the current browser session.");
-          result = {
-            content: toContent(
-              await callTool(api, r.params.name, r.params.arguments || {}, access),
-            ),
-          };
+          const planned = currentScopes.includes("browser:read") ? await computerPlan(api, r.params?.name, r.params?.arguments || {}, said) : null;
+          if (planned) {
+            void upgrade(planned.runtime);
+            // Reach's tools changed since the client read them: it reads again.
+            if (listed && typeof planned.list === "string" && planned.list !== listed) {
+              listed = planned.list;
+              write({ method: "notifications/tools/list_changed" });
+            }
+            result = { content: (impl.toContent || toContent)(await api(planned.plan.route, planned.plan.method, planned.plan.body)) };
+          } else {
+            const access = currentScopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
+            void upgrade(access?.runtime);
+            if (access && !impl.toolsFor(currentScopes, access).some((tool) => tool.name === r.params.name)) throw Error("This tool is not available in the current browser session.");
+            result = {
+              content: (impl.toContent || toContent)(
+                await impl.callTool(api, r.params.name, r.params.arguments || {}, access),
+              ),
+            };
+          }
         } catch (e) {
           const details = agentErrorDetails(e);
           result = {

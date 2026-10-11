@@ -294,7 +294,7 @@ test("a one-finger scroll puts the pointer there once, then sends only scroll st
   await view.unmount();
 });
 
-test("on the Mac, a move or scroll that waited too long is let go; a late click ends control", async () => {
+test("on the Mac, a move or scroll that waited too long is let go; control stays on", async () => {
   const ws = Object.assign(new EventEmitter(), {
     readyState: 1,
     sent: [],

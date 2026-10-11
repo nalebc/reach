@@ -1,16 +1,30 @@
 import fs from "node:fs";
+import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { tailscaleCli } from "./tailscale.mjs";
+import { tailscaleCli, windowsTailscaleDir } from "./tailscale.mjs";
 
 // Gets this computer onto Tailscale before Reach needs it: install, open,
 // sign in, switch on. Every step is something the owner does in Tailscale's
 // own app or web page; Reach only opens the right place and waits.
 export const MAC_APP = "/Applications/Tailscale.app";
+// Windows: the app with the taskbar icon, next to its command line.
+export const windowsApp = (env = process.env) =>
+  path.win32.join(windowsTailscaleDir(env), "tailscale-ipn.exe");
 const DOWNLOAD = {
   darwin: "https://tailscale.com/download/mac",
   linux: "https://tailscale.com/download/linux",
+  win32: "https://tailscale.com/download/windows",
 };
+// What opens a page in the default browser. Windows: explorer.exe, as
+// `start` is a cmd.exe built-in (and cmd would split a link at its "&").
+// explorer.exe exits 1 even when the page opened.
+export const pageOpener = (platform, url) =>
+  platform === "darwin"
+    ? ["open", [url]]
+    : platform === "win32"
+      ? ["explorer.exe", [url]]
+      : ["xdg-open", [url]];
 const MACHINES = "https://login.tailscale.com/admin/machines";
 const AUTH_URL = /https:\/\/(?:login|console)\.tailscale\.com\/[^\s"']+/;
 
@@ -34,6 +48,18 @@ export function tailscaleState({ status, error, appInstalled }) {
   }
 }
 
+// Linux: Tailscale answers only root and its "operator" until told
+// otherwise ("Access denied: checkprefs access denied", "use sudo").
+const DENIED = /access denied|use 'sudo tailscale|must be root|operator/i;
+const OPERATOR = "On Linux, let your user manage Tailscale once: sudo tailscale set --operator=$USER\nReach continues as soon as that's done.";
+const WINDOWS_SERVICE =
+  "If it still isn't running, start its service from a terminal opened as administrator: net start Tailscale\nReach continues as soon as it runs.";
+// Switching it on where its own button is.
+const SWITCH_ON = {
+  darwin: "Switch Tailscale on from its menu bar icon. Reach continues once it's on.",
+  win32: "Switch Tailscale on from its icon in the taskbar's notification area. Reach continues once it's on.",
+  linux: "Switch it on with: sudo tailscale up\nReach continues once it's on.",
+};
 const MESSAGES = {
   missing:
     "Tailscale isn't on this computer yet. Reach uses it (free) to keep the link to your phone private.",
@@ -63,14 +89,21 @@ function defaults() {
   const platform = process.platform;
   return {
     platform,
-    appInstalled: () => platform === "darwin" && fs.existsSync(MAC_APP),
+    appInstalled: () =>
+      platform === "darwin"
+        ? fs.existsSync(MAC_APP)
+        : platform === "win32" && fs.existsSync(windowsApp()),
     status: async () =>
       JSON.parse((await run(tailscaleCli(), ["status", "--json"])).stdout),
-    open: (target) =>
-      run(platform === "darwin" ? "open" : "xdg-open", [target]).catch(
-        () => {},
-      ),
-    openApp: () => run("open", ["-a", MAC_APP]).catch(() => {}),
+    open: (target) => run(...pageOpener(platform, target)).catch(() => {}),
+    // The Windows app keeps running after it opens: started on its own.
+    openApp: async () => {
+      if (platform !== "win32")
+        return run("open", ["-a", MAC_APP]).catch(() => {});
+      const child = spawn(windowsApp(), [], { detached: true, stdio: "ignore" });
+      child.on("error", () => {});
+      child.unref();
+    },
     turnOn: () => run(tailscaleCli(), ["up"], 30000),
     // `tailscale login` prints its sign-in link, then waits for it to be used.
     login: (onUrl) => {
@@ -81,6 +114,7 @@ function defaults() {
       const scan = (chunk) => {
         const url = String(chunk).match(AUTH_URL)?.[0];
         if (url) onUrl(url);
+        else if (DENIED.test(String(chunk))) onUrl(null, "denied");
       };
       child.stdout.on("data", scan);
       child.stderr.on("data", scan);
@@ -146,24 +180,41 @@ export async function ensureTailscale(deps = {}) {
             throw Error(
               "Reach needs Tailscale. Rerun Reach once it's installed.",
             );
-          openOnce(DOWNLOAD[d.platform] || "https://tailscale.com/download");
+          const page = DOWNLOAD[d.platform] || "https://tailscale.com/download";
+          openOnce(page);
+          // Said too: a computer without a desktop (a server) opens nothing.
+          d.print(`Reach: get it at ${page}`);
           d.print(
             "Reach: waiting for Tailscale to be installed… (Ctrl+C to stop)",
           );
         } else if (state === "closed") {
-          if (d.platform === "darwin" && d.appInstalled() && !triedApp) {
+          const app =
+            (d.platform === "darwin" || d.platform === "win32") &&
+            d.appInstalled();
+          if (app && !triedApp) {
             triedApp = true;
             d.print("Reach: opening Tailscale…");
             await d.openApp();
+            // Windows: the app doesn't start a stopped Tailscale service.
+            if (d.platform === "win32") d.print(WINDOWS_SERVICE);
           } else
             d.print(
               d.platform === "linux"
                 ? "Start it with: sudo systemctl enable --now tailscaled"
-                : "Open Tailscale on this computer. Reach continues as soon as it runs.",
+                : d.platform === "win32"
+                  ? `Open Tailscale from the Start menu. ${WINDOWS_SERVICE}`
+                  : d.platform === "darwin" && !d.appInstalled()
+                    ? "Start it with: sudo brew services start tailscale (Homebrew), or open the Tailscale app. Reach continues as soon as it runs."
+                    : "Open Tailscale on this computer. Reach continues as soon as it runs.",
             );
         } else if (state === "signed-out") {
           d.print("Reach: opening the Tailscale sign-in page in your browser…");
-          stopLogin ||= d.login((url) => {
+          stopLogin ||= d.login((url, problem) => {
+            if (problem === "denied") {
+              if (!opened.has("operator")) d.print(OPERATOR);
+              opened.add("operator");
+              return;
+            }
             if (opened.has(url)) return;
             d.print(`If it doesn't open, visit: ${url}`);
             openOnce(url);
@@ -188,11 +239,15 @@ export async function ensureTailscale(deps = {}) {
             );
           try {
             await d.turnOn();
-          } catch {
+          } catch (error) {
             d.print(
-              "Switch Tailscale on from its menu bar icon. Reach continues once it's on.",
+              d.platform === "linux" && DENIED.test(`${error?.stderr || ""} ${error?.message || ""}`)
+                ? OPERATOR
+                : SWITCH_ON[d.platform] || SWITCH_ON.darwin,
             );
-            if (d.platform === "darwin" && d.appInstalled()) await d.openApp();
+            // Its switch is in its app: open it (Windows shows no icon until then).
+            if ((d.platform === "darwin" || d.platform === "win32") && d.appInstalled())
+              await d.openApp();
           }
         }
       }

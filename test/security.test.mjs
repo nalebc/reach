@@ -72,6 +72,24 @@ test(
         assert.deepEqual(directives.get("object-src"), ["'none'"]);
         assert.equal(response.headers.get("x-frame-options"), "DENY");
       });
+      await t.test("the page connects to this computer and the tailnet only; loopback only in local mode", async () => {
+        const connectSrc = (value) =>
+          new Promise((resolve, reject) => {
+            http.get(url + "/api/health", { headers: { Host: value } }, (res) => {
+              res.resume();
+              const policy = String(res.headers["content-security-policy"] || "");
+              resolve(policy.split(";").map((p) => p.trim().split(/\s+/)).find(([n]) => n === "connect-src")?.slice(1));
+            }).on("error", reject);
+          });
+        assert.deepEqual(await connectSrc("localhost"), ["'self'", "https://*.ts.net", "wss://*.ts.net", "http://127.0.0.1:*", "http://localhost:*", "ws://127.0.0.1:*", "ws://localhost:*"]);
+        const tailnet = await connectSrc("my-computer.example.ts.net:8444");
+        assert.deepEqual(tailnet, ["'self'", "https://*.ts.net", "wss://*.ts.net"]);
+        const hsts = (value) => new Promise((resolve, reject) => {
+          http.get(url + "/api/health", { headers: { Host: value } }, (res) => { res.resume(); resolve(res.headers["strict-transport-security"]); }).on("error", reject);
+        });
+        assert.equal(await hsts("my-computer.example.ts.net:8444"), "max-age=31536000", "HTTPS only, by its Tailscale name");
+        assert.equal(await hsts("localhost"), undefined, "never on this computer's own loopback");
+      });
       await t.test(
         "mixed-case routes cannot bypass scopes, including agent approvals",
         async () => {

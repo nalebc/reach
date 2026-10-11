@@ -8,6 +8,7 @@ export const sourceName = (source) =>
     gemini: "Gemini CLI",
     openclaw: "OpenClaw",
     mac: "Your computer",
+    update: "Reach",
     browser: "Agent",
     admission: "Agent",
     access: "Agent",
@@ -20,9 +21,10 @@ const clean = (value, limit = 240) =>
     )
     .slice(0, limit);
 export const sourceIcon = (source) =>
-  ["codex", "claude", "gemini", "openclaw", "mac"].includes(source)
-    ? source
-    : "agent";
+  source === "update" ? "mac"
+    : ["codex", "claude", "gemini", "openclaw", "mac"].includes(source)
+      ? source
+      : "agent";
 const hash = (value) =>
   crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const targetUrl = (target) => {
@@ -419,6 +421,8 @@ function otherPush(item) {
     return { title: `${who} · Access request`, body: "Review the requested permissions before allowing access." };
   if (item.source === "restart")
     return { title: "Restart requested", body: `${who} wants to restart the server. Active terminals and live screens will disconnect.` };
+  if (item.source === "update")
+    return { title: pushLine(item.title, 100), body: `${pushLine(item.detail, 60)}. Reach restarts on it; active terminals and live screens will disconnect.` };
   if (item.source === "browser")
     return { title: `${who} · Approval needed`, body: pushLine(item.title, 200) };
   return {
@@ -441,16 +445,17 @@ export function notificationPush(item) {
   const open = item.target?.page === "screen" ? "Open live screen"
     : item.kind === "connection" ? "Review access"
     : item.kind === "question" ? "Reply"
-    : item.source === "restart" ? "Review restart" : "Review request";
+    : item.source === "restart" ? "Review restart"
+    : item.source === "update" ? "Review update" : "Review request";
   return {
-    ...(["mac", "browser", "admission", "access", "restart"].includes(item.source)
+    ...(["mac", "browser", "admission", "access", "restart", "update"].includes(item.source)
       ? otherPush(item) : chatPush(item)),
     icon: sourceIcon(item.source),
     url: targetUrl(item.target),
     actions: [
       { action: "open", title: open },
       ...(item.actions?.some((action) => action.id === "deny")
-        ? [{ action: "deny", title: item.source === "restart" ? "Not now" : "Deny" }] : []),
+        ? [{ action: "deny", title: ["restart", "update"].includes(item.source) ? "Not now" : "Deny" }] : []),
     ],
     notification: { id: item.id, revision: item.revision },
   };

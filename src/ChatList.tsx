@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Check,
   ChevronDown,
   Laptop,
   Menu,
@@ -292,6 +293,100 @@ export function ChatLibraryHeader({
         </div>
       )}
     </header>
+  );
+}
+
+// New chat's app: one pill in the sheet's heading; tapped, a short list with
+// each app's state (its ring, Out, Coming soon) to change it.
+export function ChatAppSwitch({
+  apps,
+  value,
+  onChange,
+  logos,
+  pending = {},
+  health = [],
+  notes = {},
+}: {
+  apps: ChatAppChoice[];
+  value: string;
+  onChange: (value: string) => void;
+  logos: AgentLogos;
+  pending?: Record<string, number>;
+  health?: AgentHealth[];
+  // A word under an app's name (Gemini: "Read only").
+  notes?: Record<string, string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = apps.find((app) => app.agent === value) || apps[0];
+  if (!current) return null;
+  const usageOfApp = (agent: string) => usageOf(health.find((h) => h.agent === agent));
+  const described = (app: ChatAppChoice) =>
+    app.supported
+      ? [pending[app.agent] && pendingLabel(pending[app.agent]), (() => { const u = usageOfApp(app.agent); return u && usageSentence(app.name, u); })()].filter(Boolean).join(". ")
+      : "Coming soon";
+  const note = (app: ChatAppChoice) => {
+    if (!app.supported) return "Coming soon";
+    if (notes[app.agent]) return notes[app.agent];
+    const u = usageOfApp(app.agent);
+    if (!u) return "";
+    return u.level === "out" ? "Out of usage" : `${u.percent}% used`;
+  };
+  const usage = usageOfApp(current.agent);
+  return (
+    <span className="chat-app-switch">
+      <button
+        className={`chat-app-switch-current ${pending[current.agent] ? "has-pending" : ""}`}
+        aria-label={`Change app, ${current.name} selected`}
+        aria-description={described(current) || undefined}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="chat-app-symbol">
+          <AgentLogo agent={current.agent} name={current.name} logos={logos} size={20} />
+          <UsageRing usage={usage} />
+          <UsagePill usage={usage} />
+        </span>
+        <span className="chat-app-switch-name">{current.name}</span>
+        <ChevronDown size={16} />
+      </button>
+      {open && (
+        <>
+          <span className="chat-app-switch-scrim" onClick={() => setOpen(false)} />
+          <span className="chat-app-switch-menu" role="menu" aria-label="Choose an app">
+            {apps.map((app) => {
+              const u = usageOfApp(app.agent);
+              const said = note(app);
+              return (
+                <button
+                  key={app.agent}
+                  role="menuitemradio"
+                  aria-label={app.name}
+                  aria-description={described(app) || undefined}
+                  aria-checked={app.agent === current.agent}
+                  className={`${app.supported ? "" : "upcoming"} ${u?.level === "out" ? "out" : ""}`}
+                  onClick={() => {
+                    onChange(app.agent);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="usage-logo">
+                    <AgentLogo agent={app.agent} name={app.name} logos={logos} size={20} />
+                    <UsageRing usage={u} />
+                  </span>
+                  <span className="chat-app-switch-text">
+                    <span>{app.name}</span>
+                    {said && <small>{said}</small>}
+                  </span>
+                  {!!pending[app.agent] && <span className="chat-attention-count" aria-hidden="true">{pendingCount(pending[app.agent])}</span>}
+                  {app.agent === current.agent && <Check size={16} />}
+                </button>
+              );
+            })}
+          </span>
+        </>
+      )}
+    </span>
   );
 }
 

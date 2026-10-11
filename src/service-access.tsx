@@ -133,21 +133,26 @@ export function useServiceAccess(peer: Peer, enabled = true, changes?: string) {
   return { entries: activeEntries, items, decide, busy, error };
 }
 
-export function ServiceAccessPanel({ peer }: { peer: Peer }) {
+// bare: in its own sheet, without the heading and explanation.
+export function ServiceAccessPanel({ peer, bare = false }: { peer: Peer; bare?: boolean }) {
   const { entries, decide, busy, error } = useServiceAccess(peer);
   const active = entries.filter((entry) =>
     ["pending", "approved"].includes(entry.status),
   );
   return (
     <section className="service-access" aria-label="Agent service access">
-      <h3>
-        <ShieldCheck size={17} /> Service access
-      </h3>
-      <p>
-        Services use the agent's allowed browser. Approve them once per session.
-        Revoking a service stops these tools; existing browser access is managed
-        in Agent Access.
-      </p>
+      {!bare && (
+        <>
+          <h3>
+            <ShieldCheck size={17} /> Service access
+          </h3>
+          <p>
+            Services use the agent's allowed browser. Approve them once per session.
+            Revoking a service stops these tools; existing browser access is managed
+            in Agent Access.
+          </p>
+        </>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}

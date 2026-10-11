@@ -9,6 +9,7 @@
 // app isn't handed to you. When its access ends (expiry or revoke), its apps
 // go back to the Mac: agents come in, do things, and leave.
 import crypto from "node:crypto";
+import { actionWords } from "./agent-actions.mjs";
 import fs from "node:fs";
 import { fail } from "./core.mjs";
 import { inputAction } from "./desktop-protocol.mjs";
@@ -196,10 +197,13 @@ export class AgentApps {
     // The display a phone's screen control is on, by its client id.
     controlDisplay = () => undefined,
     onChange = () => {},
+    // The owner's log of what each agent did (agent-actions.mjs add).
+    actions = () => {},
     now = Date.now,
     inputIdleMs = 30000,
   }) {
     Object.assign(this, {
+      actions,
       threads,
       control,
       file,
@@ -521,11 +525,19 @@ export class AgentApps {
             await this.threads.activate(id);
           }
           tried = await helper.send({ ...inApp, alone: now.alone === true });
-          if (tried.done) {
+          if (tried?.done === true) {
             // Keys posted to the app may count as input on the Mac.
             if (tried.kind === "posted") this.actedAt = this.now();
+            this.actions(client, { kind: action.type, text: actionWords(action.type, { ...action, x: action.x / basis.width, y: action.y / basis.height }), app: thread.name });
             return { done: true, lane: "app" };
           }
+          // The app didn't answer in time: it may still act on it. Neither
+          // done nor pressed again with the pointer (twice); the agent looks.
+          if (tried?.unknown === true || tried?.done !== false)
+            throw fail(
+              409,
+              "Not sure that went through. Look at the screen again before trying.",
+            );
         }
       }
       if (!steps.length)
@@ -550,6 +562,7 @@ export class AgentApps {
         }
       }
       this.touchInput(id);
+      this.actions(client, { kind: action.type, text: actionWords(action.type, { ...action, x: action.x / basis.width, y: action.y / basis.height }), app: thread.name });
       return { done: true, lane: "pointer" };
     });
     // The next action waits for this one, whatever its outcome.

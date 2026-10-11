@@ -14,8 +14,11 @@ const state = stateDir(root);
 let locked = false;
 const lockFile = path.join(state, "launcher.lock");
 let child;
+// A first start's install running alongside its setup (first-start.mjs).
+let stopInstall = () => {};
 const abort = () => {
   child?.kill();
+  stopInstall();
   process.exit(130);
 };
 // Any other Reach on this computer, whichever folder it runs from.
@@ -143,6 +146,16 @@ function npmCli() {
 async function npm(args) {
   const log = path.join(state, "setup.log");
   const fd = fs.openSync(log, "a", 0o600);
+  const from = fs.fstatSync(fd).size;
+  // What it most likely needs, from what this run wrote (setup-failure.mjs).
+  const failed = async () => {
+    let hint = "";
+    try {
+      const { setupFailureHint } = await import("./setup-failure.mjs");
+      hint = setupFailureHint(fs.readFileSync(log, "utf8").slice(from));
+    } catch {}
+    return Error(`${hint ? `${hint}\n` : ""}Setup failed. See ${log} for details.`);
+  };
   try {
     await new Promise((resolve, reject) => {
       child = spawn(process.execPath, [npmCli(), ...args], {
@@ -151,9 +164,7 @@ async function npm(args) {
       });
       child.once("error", reject);
       child.once("exit", (code) =>
-        code === 0
-          ? resolve()
-          : reject(Error(`Setup failed. See ${log} for details.`)),
+        code === 0 ? resolve() : void failed().then(reject),
       );
     });
   } finally {
@@ -161,22 +172,162 @@ async function npm(args) {
     child = null;
   }
 }
+// A checkout installs its npm packages and builds the phone interface and
+// browser sign-in when they changed. `step(label)` names each part as it
+// starts; `say(line)` is everything else it has to tell.
+async function prepare(options, { say, step, signal }) {
+  const stampFile = path.join(state, "setup.json");
+  let stamp = {};
+  try {
+    stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
+  } catch {}
+  const dependencies = `${digest(["package.json", "package-lock.json"])}:${process.versions.modules}:${process.platform}:${process.arch}`;
+  const source = digest([
+    "src",
+    "public",
+    "index.html",
+    "start.html",
+    "vite.config.mjs",
+    "tsconfig.json",
+  ]);
+  // Reach for agents (dist/agent.mjs): every file it was built from, as
+  // esbuild listed them beside it. A server file it bundles (a tool's
+  // schema) rebuilds it, alone; agents then pick it up by themselves.
+  const agentSource = () => {
+    let files;
+    try { files = JSON.parse(fs.readFileSync("dist/.agent-inputs.json", "utf8")); } catch { return ""; }
+    return Array.isArray(files) && files.length && files.every((file) => typeof file === "string") ? digest(files) : "";
+  };
+  let built = false;
+  if (
+    !packaged &&
+    (stamp.dependencies !== dependencies ||
+      !fs.existsSync("node_modules/.package-lock.json"))
+  ) {
+    signal?.throwIfAborted();
+    step("installing dependencies (first run or update)");
+    await npm(["ci", "--no-audit", "--no-fund"]);
+  }
+  if (
+    !packaged &&
+    (stamp.dependencies !== dependencies ||
+      stamp.source !== source ||
+      !fs.existsSync("dist/index.html") ||
+      !fs.existsSync("dist/agent.mjs"))
+  ) {
+    signal?.throwIfAborted();
+    step("preparing the phone interface");
+    await npm(["run", "build"]);
+    built = true;
+  }
+  if (!packaged && !built && (!fs.existsSync("dist/agent.mjs") || !stamp.agent || stamp.agent !== agentSource())) {
+    signal?.throwIfAborted();
+    step("preparing Reach for agents");
+    const { buildAgent } = await import("./build-agent.mjs");
+    await buildAgent();
+  }
+  if (!packaged)
+    fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
+      mode: 0o600,
+    });
+  // The browser sign-in client, for phones without the Tailscale app.
+  if (!packaged && !options.local) {
+    const { buildTailnet, tailnetCurrent } =
+      await import("./build-tailnet.mjs");
+    if (!tailnetCurrent()) {
+      signal?.throwIfAborted();
+      step("preparing browser sign-in for phones (first run or update, about 2 minutes)");
+      try {
+        if (!(await buildTailnet({ log: say, signal })))
+          say(
+            "Reach: Go isn't installed, so phones need the Tailscale app. Install Go (https://go.dev/dl) to let phones sign in from the browser.",
+          );
+      } catch (error) {
+        say(
+          `Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`,
+        );
+      }
+    }
+  }
+}
+// Setup's menus while npm rewrites node_modules: numbered ones until the
+// install is done, never a half-installed menu library.
+async function menusWhile(installing) {
+  const { terminalPrompts } = await import("./prompts.mjs");
+  return terminalPrompts({
+    load: () =>
+      installing.done
+        ? import("prompts")
+        : Promise.reject(Object.assign(Error("Still installing."), { code: "ERR_MODULE_NOT_FOUND" })),
+  });
+}
+// The install that ran alongside setup: waited for, what it held back said,
+// and how long each side took, kept in setup.log.
+async function installed(installing, setupMs) {
+  const { seconds } = await import("./first-start.mjs");
+  const took = await installing.finish();
+  stopInstall = () => {};
+  process.removeListener("SIGTERM", abort);
+  await tidy();
+  if (!took.parts.length) return;
+  console.log(`Reach: installed in ${seconds(took.ms)}, alongside your setup.`);
+  try {
+    fs.appendFileSync(
+      path.join(state, "setup.log"),
+      `\n[${new Date().toISOString()}] first start: setup ${seconds(setupMs)}, install ${seconds(took.ms)} (${took.parts.map((p) => `${p.label.replace(/ \(.*\)$/, "")} ${seconds(p.ms)}`).join(", ")})\n`,
+      { mode: 0o600 },
+    );
+  } catch {}
+}
+// Logs keep their latest part; old builds of the Mac helpers go.
+async function tidy() {
+  try {
+    const { housekeeping } = await import("./housekeeping.mjs");
+    housekeeping(state, { logDirs: [path.join(state, "logs")] });
+  } catch {}
+}
 process.once("exit", () => {
   if (locked) fs.rmSync(lockFile, { force: true });
 });
 const readPackage = () =>
   JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-// `reach update`: npm replaces the installed package; background mode is
-// reinstalled so it runs the new version.
+// `reach update`: the newest Reach from npm, exactly the version it shows,
+// into the folder npm installed this one in; then Reach starts again on it
+// the way it ran (background mode, or this window). It asks first, in
+// Terminal only: run without one (an agent), it never installs, and the
+// owner gets the update on the phone (Needs you) instead. Agents connected
+// to this Mac pick the new version up by themselves.
 async function update() {
-  if (!packaged) {
-    console.log(
-      "This is a source checkout. Update it with git pull, then run ./reach.",
-    );
+  const { PACKAGE, installCommand, latestRelease, reachInstall } = await import("../server/reach-updates.mjs");
+  const { compareVersions } = await import("../server/versions.mjs");
+  const install = reachInstall(root);
+  if (install.source) {
+    console.log(`This is a source checkout. Update it with git pull, then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
-  const { name } = readPackage();
-  console.log(`Reach: updating ${name}…`);
+  const found = await latestRelease();
+  if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
+  if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
+  if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
+  console.log(`Reach ${found.version} is out (you have ${install.version}).`);
+  if (install.reason) throw Error(`Reach can't install it into its own folder. Run: ${install.manual.replace("@latest", `@${found.version}`)}`);
+  const plan = installCommand(install, found.version);
+  if (!plan) throw Error(`npm wasn't found. Run: npm install --global ${PACKAGE}@${found.version}`);
+  if (!process.stdin.isTTY || foreignApp()) {
+    console.log(`Update it from your phone (Needs you), or run ${command} update in Terminal.`);
+    return;
+  }
+  const running = othersRunning().length > 0;
+  const service = serviceInstalled();
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(
+    running || service
+      ? "Install it and restart Reach? Its terminals and live screens end; agents pick it up by themselves. [y/N] "
+      : "Install it? [y/N] ",
+  ).catch(() => "").finally(() => rl.close());
+  if (!/^y(es)?$/i.test(answer.trim())) return console.log("Nothing was installed.");
+  console.log(`Reach: ${plan.display}`);
   const run = (args) =>
     new Promise((resolve, reject) => {
       child = spawn(process.execPath, args, { stdio: "inherit" });
@@ -186,19 +337,12 @@ async function update() {
       );
     });
   try {
-    await run([npmCli(), "install", "--global", `${name}@latest`]);
+    await run([plan.file, ...plan.args]);
   } catch {
-    throw Error(
-      `The update didn't finish. Run it yourself: npm install --global ${name}@latest`,
-    );
+    throw Error(`The update didn't finish. Run it yourself: ${plan.display}`);
   }
-  let service = null;
-  try {
-    service = JSON.parse(
-      fs.readFileSync(path.join(state, "service.json"), "utf8"),
-    );
-  } catch {}
-  if (service?.installed) {
+  if (reachInstall(root).version !== found.version) throw Error(`npm finished, but Reach ${found.version} isn't in place. Run it yourself: ${plan.display}`);
+  if (service) {
     console.log("Reach: restarting background mode on the new version…");
     // The running service holds the one-Reach-per-computer lock: it stops
     // first, and the install starts it again on the new version.
@@ -227,7 +371,15 @@ async function update() {
       }
       throw error;
     }
-  } else console.log("Reach is up to date. Restart it to use the new version.");
+  } else if (running) {
+    // The new version's own restart: everything stops, Reach starts here.
+    console.log(`Reach ${found.version} is installed. Restarting it here…`);
+    process.exitCode = await new Promise((resolve) => {
+      child = spawn(process.execPath, [path.join(root, "bin/reach.mjs"), "restart", "--yes"], { stdio: "inherit" });
+      child.once("error", () => resolve(1));
+      child.once("exit", (code) => resolve(code ?? 0));
+    });
+  } else console.log(`Reach ${found.version} is installed. Start it with ${command}.`);
 }
 // Hand Reach over to background mode. The LaunchAgent starts its own Reach,
 // which takes its own launcher lock, so this process lets go of it first.
@@ -327,7 +479,7 @@ async function restart(options) {
 }
 try {
   let options = parseOptions(process.argv.slice(2));
-  const { configure, readPreferences, applyPreferences } =
+  const { configure, readPreferences, applyPreferences, accountApproval } =
     await import("./configure.mjs");
   const { ensureTailscale } = await import("./tailscale-connect.mjs");
   if (options.version) {
@@ -400,7 +552,18 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         await ensureTailscale();
         options = applyPreferences(options, readPreferences(root), []);
         await startInBackground(options);
-      } else if (result.launch === "foreground" && installed)
+      } else if (result.launch === "login" || (result.launch === "foreground" && process.platform === "darwin")) {
+        // Opening in Terminal at sign-in (a checkout in Documents), or not.
+        const { loginStart } = await import("./login-start.mjs");
+        if (result.launch === "login") {
+          loginStart("install", { root, now: false });
+          console.log("Reach opens in Terminal each time you sign in to this Mac.");
+        } else if (loginStart("status", { root }).installed) {
+          loginStart("uninstall", { root });
+          console.log("Reach no longer opens at sign-in.");
+        }
+      }
+      if (result.launch === "foreground" && installed)
         console.log(
           `Reach still runs in the background. To stop that: ${command} uninstall (ends its terminals and jobs).`,
         );
@@ -487,93 +650,99 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       throw Error(
         `This installation is incomplete. Reinstall it: npm install -g ${readPackage().name}`,
       );
-    const stampFile = path.join(state, "setup.json");
-    let stamp = {};
-    try {
-      stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
-    } catch {}
-    const dependencies = `${digest(["package.json", "package-lock.json"])}:${process.versions.modules}:${process.platform}:${process.arch}`;
-    const source = digest([
-      "src",
-      "public",
-      "index.html",
-      "start.html",
-      "vite.config.mjs",
-      "tsconfig.json",
-      // Reach for agents, bundled into dist/agent.mjs.
-      "scripts/agent-remote.mjs",
-      "scripts/mcp-server.mjs",
-      "scripts/agent-client.mjs",
-    ]);
-    if (
+    // A first run in a terminal installs while its setup asks about
+    // Tailscale (first-start.mjs); every other start installs first.
+    const guided =
       !packaged &&
-      (stamp.dependencies !== dependencies ||
-        !fs.existsSync("node_modules/.package-lock.json"))
-    ) {
-      console.log("Reach: installing dependencies (first run or update)…");
-      await npm(["ci", "--no-audit", "--no-fund"]);
-    }
-    if (
-      !packaged &&
-      (stamp.dependencies !== dependencies ||
-        stamp.source !== source ||
-        !fs.existsSync("dist/index.html") ||
-        !fs.existsSync("dist/agent.mjs"))
-    ) {
-      console.log("Reach: preparing the phone interface…");
-      await npm(["run", "build"]);
-    }
-    if (!packaged)
-      fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source }), {
-        mode: 0o600,
+      !options.local &&
+      process.platform !== "win32" &&
+      !options.service &&
+      process.stdin.isTTY &&
+      (await import("./setup.mjs")).needsOnboarding(root);
+    let installing = null;
+    if (guided) {
+      const { installMeanwhile } = await import("./first-start.mjs");
+      const stopGo = new AbortController();
+      installing = installMeanwhile(
+        (io) => prepare(options, { ...io, signal: stopGo.signal }),
+        {
+          cancel: () => {
+            child?.kill();
+            stopGo.abort();
+          },
+        },
+      );
+      stopInstall = () => installing.cancel();
+      // Ctrl+C now pauses the setup, below; that stops the install too.
+      process.removeListener("SIGINT", abort);
+      console.log(
+        `Reach: installing in the background while you set up (first run only; its log: ${path.join(state, "setup.log")}).`,
+      );
+    } else {
+      await prepare(options, {
+        say: console.log,
+        step: (label) => console.log(`Reach: ${label}…`),
       });
-    // The browser sign-in client, for phones without the Tailscale app.
-    if (!packaged && !options.local) {
-      const { buildTailnet, tailnetCurrent } =
-        await import("./build-tailnet.mjs");
-      if (!tailnetCurrent()) {
-        console.log(
-          "Reach: preparing browser sign-in for phones (first run or update, about 2 minutes)…",
-        );
-        try {
-          if (!(await buildTailnet()))
-            console.log(
-              "Reach: Go isn't installed, so phones need the Tailscale app. Install Go (https://go.dev/dl) to let phones sign in from the browser.",
-            );
-        } catch (error) {
-          console.log(
-            `Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`,
-          );
-        }
-      }
+      process.removeListener("SIGINT", abort);
+      process.removeListener("SIGTERM", abort);
+      await tidy();
     }
-    process.removeListener("SIGINT", abort);
-    process.removeListener("SIGTERM", abort);
-    // Logs keep their latest part; old builds of the Mac helpers go.
-    try {
-      const { housekeeping } = await import("./housekeeping.mjs");
-      housekeeping(state, { logDirs: [path.join(state, "logs")] });
-    } catch {}
     let firstRun = null;
     const detached = detachedWarning({ service: !!options.service });
     if (detached) console.warn(detached);
-    if (!options.local && process.platform !== "win32") {
-      if (packaged && !readPreferences(root))
+    if (!options.local) {
+      // Windows keeps no account settings (pairing code, configure.mjs).
+      const byAccount = accountApproval();
+      if (byAccount && packaged && !readPreferences(root))
         console.log(
           `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
         );
-      // First run in a terminal: the guided setup, start to finish. A
-      // computer already set up (or a background service) never sees it.
-      if (!options.service && process.stdin.isTTY) {
-        const { needsOnboarding, runSetup } = await import("./setup.mjs");
-        if (needsOnboarding(root)) firstRun = await runSetup(root);
+      // Ctrl+C while setup waits (for Tailscale, its HTTPS switch, a
+      // sign-in): said, the lock goes, and the next ./reach picks up here.
+      const { pauseOnInterrupt } = await import("./pause-setup.mjs");
+      const stopPause =
+        !options.service && process.stdin.isTTY
+          ? pauseOnInterrupt({ before: stopInstall })
+          : () => {};
+      try {
+        // First run in a terminal: the guided setup, start to finish. A
+        // computer already set up (or a background service) never sees it.
+        if (!options.service && process.stdin.isTTY) {
+          const { needsOnboarding, runSetup } = await import("./setup.mjs");
+          const setupStarted = Date.now();
+          if (needsOnboarding(root))
+            firstRun = await runSetup(
+              root,
+              installing ? { deps: { ui: await menusWhile(installing) } } : {},
+            );
+          if (installing) await installed(installing, Date.now() - setupStarted);
+        }
+        // A background service can't ask; it reports what's missing instead.
+        await ensureTailscale(options.service ? { interactive: false } : {});
+        const preferences =
+          byAccount && (readPreferences(root) || (await configure(root)));
+        // Installed service arguments are its saved folder/port choices.
+        if (byAccount && !options.service)
+          options = applyPreferences(options, preferences, process.argv.slice(2));
+        if (byAccount && !options.service && process.argv.includes("--https-port")) {
+          const { rememberHttpsPort } = await import("./configure.mjs");
+          if (rememberHttpsPort(root, options.httpsPort))
+            console.log(`Reach: port ${options.httpsPort} saved; later starts use it too.`);
+        }
+      } catch (error) {
+        // Paused or failed: an install still running here stops with it.
+        stopInstall();
+        throw error;
+      } finally {
+        stopPause();
       }
-      // A background service can't ask; it reports what's missing instead.
-      await ensureTailscale(options.service ? { interactive: false } : {});
-      const preferences = readPreferences(root) || (await configure(root));
-      // Installed service arguments are its saved folder/port choices.
-      if (!options.service)
-        options = applyPreferences(options, preferences, process.argv.slice(2));
+    }
+    // In Documents (or the like): Reach opens in Terminal at each sign-in,
+    // and runs in this one now.
+    if (firstRun?.launch === "login") {
+      const { loginStart } = await import("./login-start.mjs");
+      loginStart("install", { root, now: false });
+      console.log("Reach: it opens in Terminal each time you sign in to this Mac.");
     }
     if (firstRun?.launch === "background" && !serviceInstalled()) {
       const since = Date.now();

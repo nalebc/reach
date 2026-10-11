@@ -55,16 +55,23 @@ export function serveSocketPath(
       }
     }
   }
-  const socket = paths.join(
-    base,
-    base === "/tmp" || platform !== "darwin"
-      ? `reach-${uid}-${suffix}`
-      : `r-${suffix}`,
-    "s",
-  );
-  if (Buffer.byteLength(socket) >= (platform === "darwin" ? 104 : 108))
+  const at = (n) =>
+    paths.join(
+      base,
+      base === "/tmp" || platform !== "darwin"
+        ? `reach-${uid}-${suffix.slice(0, n)}`
+        : `r-${suffix.slice(0, n)}`,
+      "s",
+    );
+  // A long account name puts Tailscale's app folder deep; Reach's own folder
+  // in it takes a shorter name then (a computer set up before keeps its own).
+  const limit = platform === "darwin" ? 104 : 108;
+  const socket = [at(12), at(6)].find((p) => Buffer.byteLength(p) < limit);
+  if (!socket)
     throw Error(
-      "Your home path is too long for Tailscale's private socket. Device approval cannot start safely on this host.",
+      base.includes("ipn.macos")
+        ? `Your Mac account's folder (${home}) is too long for the App Store version of Tailscale, which can only reach Reach through a short path. Install Tailscale's standalone app from https://tailscale.com/download/mac instead, or use a Mac account with a shorter name.`
+        : `Your home folder (${home}) is too long for Tailscale's private socket. Use an account with a shorter name; device approval can't start safely otherwise.`,
     );
   return socket;
 }

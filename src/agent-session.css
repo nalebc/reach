@@ -874,14 +874,6 @@ button.as-title:active {
 .codex .as-box .as-field textarea {
   padding: 10px 6px 6px;
 }
-/* New chat on an agent out of usage: the box says so, light, in the tint of
-   its Out pill (usage.css). */
-.as-field.out-of-usage textarea::placeholder {
-  color: color-mix(in srgb, var(--usage-out) 75%, transparent);
-}
-.as-box:has(> .as-field.out-of-usage) {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--usage-out) 25%, transparent);
-}
 .as-when {
   padding: 4px 0 2px;
 }

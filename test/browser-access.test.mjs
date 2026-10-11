@@ -68,6 +68,9 @@ async function start(t, overrides = {}) {
     ...overrides,
   });
   const owner = reach.auth.issue("Owner", ALL_SCOPES);
+  // The first phone turns screen viewing on; these tests start with it off,
+  // as an owner who switched it off.
+  reach.config.screen = false;
   for (const id of ["chosen", "unshared"])
     reach.terminals.sessions.set(id, {
       id,

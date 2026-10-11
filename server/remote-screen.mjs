@@ -1,9 +1,10 @@
-import { NativeScreenSource } from "./screen-stream.mjs";
+import { NativeScreenSource, privateWindows } from "./screen-stream.mjs";
 import { desktopBinary, desktopDisplays } from "./desktop-native.mjs";
 import { streamOptions } from "./desktop-protocol.mjs";
 import { fileURLToPath } from "node:url";
 import { windowsVideoAvailable, WindowsVideoSource } from "./windows-video.mjs";
 import { fail } from "./core.mjs";
+export { privateWindows };
 
 export class RemoteScreenHub {
   constructor(config, prepare) {
@@ -12,7 +13,18 @@ export class RemoteScreenHub {
     this.groups = new Map();
     this.viewers = new Map();
   }
-  async add(ws, authorize, value) {
+  // mayViewDisplay(id): whether this viewer may watch that display. The
+  // hidden displays Reach makes for apps on phones (server/app-threads.mjs)
+  // are only for whoever may use that app.
+  // privateView: a viewer who isn't the owner (a guest): password managers
+  // and Reach's own windows are left out of their picture (Mac), in a group
+  // of its own so the owner's view is unchanged.
+  async add(
+    ws,
+    authorize,
+    value,
+    { mayViewDisplay = () => true, privateView = false } = {},
+  ) {
     if (this.viewers.size >= 4)
       throw fail(429, "Four screen viewers are already connected.");
     const options = streamOptions(value);
@@ -47,6 +59,8 @@ export class RemoteScreenHub {
           options.format = "jpeg";
       }
       if (options.format === "jpeg") options.fps = Math.min(options.fps, 20);
+      if (!mayViewDisplay(options.display))
+        throw fail(403, "This display isn't shared with you.");
       if (
         this.viewers.get(ws) !== reservation ||
         !authorize() ||
@@ -55,11 +69,11 @@ export class RemoteScreenHub {
         this.remove(ws);
         return;
       }
-      const key = JSON.stringify(options);
+      const key = JSON.stringify(privateView ? [options, "private"] : options);
       let group = this.groups.get(key);
       if (!group) {
         const prepare = this.prepare
-          ? () => this.prepare(options)
+          ? () => this.prepare(options, { privateView })
           : async () => {
               if (process.platform === "darwin") {
                 const binary = await desktopBinary(
@@ -74,6 +88,7 @@ export class RemoteScreenHub {
                     String(options.width),
                     String(options.bitrate),
                     "auto",
+                    ...(privateView ? ["", privateWindows()] : []),
                   ]);
               }
               if (options.format === "h264")
@@ -92,14 +107,35 @@ export class RemoteScreenHub {
                   String(options.width),
                 ]);
             };
-        group = new RemoteBroadcast(prepare, options, () =>
-          this.groups.delete(key),
-        );
+        // A group that emptied out frees its key only if it still holds it:
+        // a newer group for the same stream may have taken its place.
+        const created = new RemoteBroadcast(prepare, options, () => {
+          if (this.groups.get(key) === created) this.groups.delete(key);
+        });
+        group = created;
         this.groups.set(key, group);
       }
       this.viewers.set(ws, group);
       ws.send(JSON.stringify({ type: "ready", protocol: 2, ...options }));
-      group.add(ws, authorize);
+      // The display could become an app's hidden display later (ids are
+      // reused): checked again with every frame, refused with a reason.
+      const display = options.display;
+      group.add(ws, () => {
+        if (!authorize()) return false;
+        if (mayViewDisplay(display)) return true;
+        if (ws.readyState === 1) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              error: "This display isn't shared with you.",
+              status: 403,
+              retryable: false,
+            }),
+          );
+          ws.close(4003, "Screen access ended");
+        }
+        return false;
+      });
     } catch (e) {
       if (this.viewers.get(ws) === reservation) this.viewers.delete(ws);
       throw e;
@@ -122,6 +158,22 @@ export class RemoteScreenHub {
     this.viewers.clear();
   }
 }
+// The screen helper's one-byte answers (scripts/native/screen-stream.swift):
+// 0 is "nothing changed"; these say why there is nothing to capture.
+export const IDLE = { 1: "asleep", 2: "locked" };
+// Whether a frame from the helper starts a picture on its own: every still
+// image does; a video frame does when its metadata says it's a keyframe.
+export function sentKeyframe(data, format) {
+  if (format !== "h264") return true;
+  try {
+    const length = data.readUInt32BE(0);
+    if (length > 1024 || length + 4 > data.length) return false;
+    // Read as the phone reads it (src/useRemoteScreen.ts: !!meta.key).
+    return !!JSON.parse(data.subarray(4, 4 + length).toString()).key;
+  } catch {
+    return false;
+  }
+}
 // Short bounded frame window instead of waiting a full network round trip for
 // every frame. Slow viewers skip ahead to an IDR; no undecodable delta frames.
 export class RemoteBroadcast {
@@ -136,6 +188,8 @@ export class RemoteBroadcast {
     this.bitrate = options.bitrate;
     this.adjustedAt = Date.now();
     this.healthy = 0;
+    // Why the helper has nothing to capture now ("asleep", "locked"), or "".
+    this.idle = "";
   }
   add(ws, authorize) {
     this.viewers.set(ws, {
@@ -160,7 +214,9 @@ export class RemoteBroadcast {
       if (seq <= id) viewer.pending.delete(seq);
   }
   remove(ws) {
-    this.viewers.delete(ws);
+    // Not (or no longer) watching here: nothing to stop, and an empty
+    // group's onEmpty never runs twice.
+    if (!this.viewers.delete(ws)) return;
     if (!this.viewers.size) {
       this.generation++;
       clearTimeout(this.timer);
@@ -237,15 +293,36 @@ export class RemoteBroadcast {
           if (ready.length && this.source) {
             const data = await this.source.next(key ? "key" : "frame");
             if (generation !== this.generation) return;
-            // One byte from the helper: nothing changed on screen, send nothing.
+            // One byte from the helper: nothing changed on screen (0), send
+            // nothing; or the Mac shows nothing to capture (asleep, locked):
+            // the phones keep the last picture and say why, and the helper
+            // is asked again about once a second instead of every frame.
+            const idle = data.length === 1 ? IDLE[data[0]] || "" : "";
+            if (idle) {
+              this.idle = idle;
+              for (const [ws, v] of ready) {
+                if (!v.authorize() || ws.readyState !== 1) continue;
+                // The first picture after it wakes starts a fresh video.
+                v.key = true;
+                ws.send(JSON.stringify({ type: "status", idle }));
+              }
+            } else if (data.length > 1 && this.idle) {
+              this.idle = "";
+              for (const [ws, v] of this.viewers)
+                if (v.authorize() && ws.readyState === 1)
+                  ws.send(JSON.stringify({ type: "status", idle: "" }));
+            }
             if (data.length > 1) {
               const seq = ++this.sequence;
               const head = Buffer.alloc(4);
               head.writeUInt32BE(seq);
               const packet = Buffer.concat([head, data]);
+              const keyframe = sentKeyframe(data, this.options.format);
               for (const [ws, v] of ready) {
                 if (!v.authorize() || ws.readyState !== 1) continue;
-                v.key = false;
+                // A viewer waiting for a keyframe keeps asking until one went
+                // out: a delta frame can't start its decoder.
+                if (keyframe) v.key = false;
                 v.pending.set(seq, Date.now());
                 ws.send(packet);
                 v.bytes += packet.length;
@@ -271,7 +348,10 @@ export class RemoteBroadcast {
           if (generation === this.generation && this.viewers.size)
             this.timer = setTimeout(
               tick,
-              Math.max(1, 1000 / this.pacing - (Date.now() - start)),
+              Math.max(
+                1,
+                (this.idle ? 1000 : 1000 / this.pacing) - (Date.now() - start),
+              ),
             );
         } catch (e) {
           for (const ws of this.viewers.keys())

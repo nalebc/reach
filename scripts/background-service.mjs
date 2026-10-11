@@ -12,7 +12,7 @@ import {
   removePersistentRoute,
   recordedRouteMatches,
 } from "./persistent-serve.mjs";
-import { stateDir } from "./home.mjs";
+import { stateDir, command as reachCommand } from "./home.mjs";
 import { removePersistentFunnel } from "./public-link.mjs";
 
 export const serviceLabel = "com.reach.companion";
@@ -121,6 +121,37 @@ async function waitForStop(pid) {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+// macOS keeps background jobs out of these folders (and iCloud Drive): a
+// LaunchAgent started from one never starts (launchd gives up, exit 78).
+// Terminal has access to them, so Reach opens there at sign-in instead
+// (scripts/login-start.mjs). "" when `root` is elsewhere, or not on a Mac.
+export function protectedFolder(root, { home = os.homedir(), platform = process.platform, realpath = fs.realpathSync } = {}) {
+  if (platform !== "darwin") return "";
+  let real = path.resolve(root);
+  try {
+    real = realpath(real);
+  } catch {
+    /* not there (yet): its own path */
+  }
+  for (const [name, dir] of [
+    ["Documents", "Documents"],
+    ["Desktop", "Desktop"],
+    ["Downloads", "Downloads"],
+    ["iCloud Drive", "Library/Mobile Documents"],
+  ]) {
+    let base = path.join(home, dir);
+    try {
+      base = realpath(base);
+    } catch {
+      /* no such folder */
+    }
+    if (real === base || real.startsWith(base + path.sep)) return name;
+  }
+  return "";
+}
+export const protectedFolderMessage = (folder, command = reachCommand) =>
+  `macOS doesn't let a background service use your ${folder} folder, where this copy of Reach is, so it would never start. Instead, run ${command} setup background to open Reach in Terminal each time you sign in, or move this folder out of ${folder} (for example to ~/reach) and install from there.`;
+
 export async function backgroundService(options, root, deps = {}) {
   const platform = deps.platform || process.platform;
   if (platform !== "darwin")
@@ -207,6 +238,8 @@ export async function backgroundService(options, root, deps = {}) {
     throw Error(
       "Reach already has a LaunchAgent. Run ./reach uninstall before changing its setup (ends its running work).",
     );
+  const folder = protectedFolder(root, { home, platform, ...(deps.realpath ? { realpath: deps.realpath } : {}) });
+  if (folder) throw Error(protectedFolderMessage(folder));
   const node = (deps.privateNode || privateNodePath)(root);
   const env = deps.env || process.env;
   const resolved = {

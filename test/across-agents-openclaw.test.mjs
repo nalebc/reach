@@ -53,10 +53,15 @@ export function fakeOpenClaw() {
     },
     // Post-back: OpenClaw's own `send` to the chat's one-to-one destination
     // (the real one refuses groups and channels: test/openclaw.test.mjs).
-    async post({ key, text, requestId }, authorize) {
+    async postTarget({ key }, authorize) {
+      authorize();
+      if (!/:direct:/.test(key)) throw Object.assign(new Error("Reach posts only to one-to-one WhatsApp or Telegram chats"), { status: 403 });
+      return { channel: "whatsapp", to: key.split(":direct:")[1] };
+    },
+    async post({ key, text, requestId, to }, authorize) {
       authorize();
       authorizedCalls.push("post");
-      calls.push({ method: "post", key, text, requestId });
+      calls.push({ method: "post", key, text, requestId, to });
       return { posted: true, channel: "whatsapp" };
     },
     async stop(key) {
@@ -270,11 +275,28 @@ test("post-back: Claude Code's answer goes to the WhatsApp chat that asked, once
   pages[`claude:${opened.id}`].items.push(reply("c-r1", "Fixed: Safari blocked the third-party cookie."));
   await settle();
   const posts = openClaw.calls.filter((c) => c.method === "post");
-  assert.deepEqual(posts, [{ method: "post", key: WHATSAPP, text: "Fixed: Safari blocked the third-party cookie.", requestId: `relay-${relay.id}-post` }]);
+  assert.deepEqual(posts, [{ method: "post", key: WHATSAPP, text: "Fixed: Safari blocked the third-party cookie.", requestId: `relay-${relay.id}-post`, to: { channel: "whatsapp", to: "+33600000000" } }]);
   assert.equal(relays.list()[0].state, "done");
   // Seen again: never posted twice.
   await settle();
   assert.equal(openClaw.calls.filter((c) => c.method === "post").length, 1);
+});
+
+test("post-back: refused up front for a group, and keys in the answer are hidden", async () => {
+  const { relays, openClaw, pages, settle } = stage();
+  const GROUP = "agent:main:whatsapp:group:120@g.us";
+  pages[`openclaw:${GROUP}`] = { session: { title: "Friends", status: "idle" }, items: [user("g1", "Hi")] };
+  await assert.rejects(
+    relays.start({ owner: "phone", from: { agent: "openclaw", id: GROUP }, steps: [{ kind: "build", agent: "claude" }], cwd: "/work/app", postBack: true }),
+    /one-to-one/,
+  );
+  assert.equal(relays.list().length, 0);
+  const { opened } = await relays.start({ owner: "phone", from: { agent: "openclaw", id: WHATSAPP }, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app", postBack: true });
+  pages[`claude:${opened.id}`].session.status = "idle";
+  pages[`claude:${opened.id}`].items.push(reply("c-r1", "Here: OPENAI_API_KEY=sk-proj-abcdefghijklmnop1234 and Bearer abc.def"));
+  await settle();
+  const [post] = openClaw.calls.filter((c) => c.method === "post");
+  assert.equal(post.text, "Here: OPENAI_API_KEY=[hidden] and Bearer [hidden]");
 });
 
 test("post-back stops when access is gone, before anything is posted", async () => {

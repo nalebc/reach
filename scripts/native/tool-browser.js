@@ -112,7 +112,9 @@ function browserRequest(request) {
     var probeURL = "about:blank#reach-tool-check-" + request.probeId;
     var probe, failure;
     try {
+      var showing = chrome && request.background === true ? window.activeTabIndex() : 0;
       window.tabs.push(app.Tab({ url: probeURL }));
+      if (showing) window.activeTabIndex = showing;
       var matches = window.tabs().filter(function (tab) {
         return tab.url() === probeURL;
       });
@@ -192,8 +194,11 @@ function browserRequest(request) {
     }
     var window = windows[0],
       tab = app.Tab({ url: request.url });
+    // A batch tab opens behind: the tab the owner is looking at stays in front.
+    var showing = chrome && request.background === true ? window.activeTabIndex() : 0;
     window.tabs.push(tab);
     var all = window.tabs();
+    if (showing) window.activeTabIndex = showing;
     return JSON.stringify(record(window, all[all.length - 1], all.length));
   }
   var matches = app.windows().filter(function (window) {
@@ -249,6 +254,9 @@ function browserRequest(request) {
     return value;
   }
   if (request.op === "close") {
+    // A batch tab the owner brought forward is theirs now: it stays open.
+    if (chrome && request.behind === true && window.activeTabIndex() === index + 1)
+      refuse("The owner is looking at this tab.", "owner_tab");
     tab.close();
     return "{}";
   }

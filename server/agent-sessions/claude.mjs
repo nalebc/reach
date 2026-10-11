@@ -74,7 +74,7 @@ export function createClaudeSessions({
   // Mac's entire Claude history). Opening it reads it again.
   const brief = (parsed) => {
     const items = parsed.items || [];
-    const said = [...items].reverse().find((i) => i.role !== "tool" && i.text);
+    const said = [...items].reverse().find((i) => i.role !== "tool" && i.kind !== "thinking" && i.text);
     const kept = [...new Set([items[0], said, items.at(-1)].filter(Boolean))].map((i) => ({
       role: i.role,
       at: i.at,
@@ -196,7 +196,7 @@ export function createClaudeSessions({
   async function summary({ id, file }, appRecord) {
     const parsed = await parse(file);
     if (!parsed.items.length) return null;
-    const last = [...parsed.items].reverse().find((i) => i.role !== "tool" && i.text) || parsed.items.at(-1);
+    const last = [...parsed.items].reverse().find((i) => i.role !== "tool" && i.kind !== "thinking" && i.text) || parsed.items.at(-1);
     return {
       agent: "claude",
       id,
@@ -257,7 +257,7 @@ export function createClaudeSessions({
       const seen = (await parse(t.file).catch(() => null))?.usage;
       if (seen && (!newest || seen.at > newest.at)) newest = seen;
     }
-    return newest?.limited && newest.resetsAt > now ? { resetsAt: newest.resetsAt, text: newest.text || "" } : null;
+    return newest?.limited && newest.resetsAt > now ? { at: newest.at, resetsAt: newest.resetsAt, text: newest.text || "" } : null;
   }
   // The installed Claude Code's version, as its transcripts carry it.
   let installed = null;
@@ -285,13 +285,19 @@ export function createClaudeSessions({
   async function withUsage(health) {
     if (!health.signedIn) return health;
     const [limit, meters] = await Promise.all([usage().catch(() => null), accountUsage?.().catch(() => null)]);
-    // Usable: out on a limit message; else as its meters read (a window at
-    // 100% is out); meters unread, unknown (never "has usage": a chat would
-    // be moved here, "back" sent). Fail-open audit, Oct 8.
-    const usable = limit ? false
-      : meters?.available === true ? !meters.windows.some((w) => w.usedPercent >= 100)
+    // Usable: as meters read since its last limit message (a window for all
+    // models at 100% is out; one model's isn't): an upgrade or reset shows
+    // at once (Oct 10). Else out on that message; meters unread, unknown
+    // (never "has usage": a chat would be moved here, "back" sent).
+    // Fail-open audit, Oct 8.
+    const fresh = meters?.available === true && (!limit || meters.updatedAt > limit.at);
+    const usable = fresh ? !meters.windows.some((w) => !w.scoped && w.usedPercent >= 100)
+      : limit ? false
       : meters ? undefined : health.usable;
-    return { ...health, usable, ...(meters ? { usage: meters } : {}), ...(limit ? { resetsAt: limit.resetsAt, ...(limit.text ? { limit: limit.text } : {}) } : {}) };
+    // Out on its meters: back when the last full window resets.
+    const full = fresh ? meters.windows.filter((w) => !w.scoped && w.usedPercent >= 100 && w.resetsAt).map((w) => w.resetsAt) : [];
+    const held = limit && !fresh ? limit : full.length ? { resetsAt: Math.max(...full) } : null;
+    return { ...health, usable, ...(meters ? { usage: meters } : {}), ...(held ? { resetsAt: held.resetsAt, ...(held.text ? { limit: held.text } : {}) } : {}) };
   }
   return {
     usage,
@@ -464,6 +470,24 @@ export function createClaudeSessions({
         /* none yet: the record alone says it */
       }
       return { archived: !!archived };
+    },
+    // An effort picked on the phone, in the Claude app's record of the chat
+    // (written whole and swapped in, as for archive): the app starts the
+    // chat's Claude Code at it when it next loads it. A running app may
+    // write its own back. Only a record that keeps a model the way Reach knows.
+    async appEffort(id, effort) {
+      if (!UUID.test(id) || !/^[a-z][a-z0-9_-]{0,23}$/.test(String(effort))) return false;
+      await records();
+      const file = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0];
+      if (!file) return false;
+      const record = JSON.parse(await fs.readFile(file, "utf8"));
+      if (typeof record?.model !== "string" || record.effort === effort) return record?.effort === effort;
+      record.effort = effort;
+      const temporary = `${file}.reach-${process.pid}-${Date.now()}`;
+      await fs.writeFile(temporary, JSON.stringify(record), { mode: (await fs.stat(file)).mode });
+      await fs.rename(temporary, file);
+      recordCache.delete(file);
+      return true;
     },
     // Deleted: its transcript (and the Claude app's record of it) to the
     // Trash, where it can still be found. appOpen: the Claude app is running;

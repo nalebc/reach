@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { join } from "../scripts/agent-remote.mjs";
-import { agentKey, funnelApi, funnelGateway } from "../scripts/agent-funnel.mjs";
-import { callTool } from "../scripts/mcp-server.mjs";
+import { agentKey, funnelApi, funnelGateway, tailnetAddress } from "../scripts/agent-funnel.mjs";
+import { callTool, computerPlan, computerTools } from "../scripts/mcp-server.mjs";
 
 // Tools over the public link: an agent in a terminal outside the owner's
 // Tailscale network joins with one command and no Tailscale key, then uses
@@ -91,6 +91,12 @@ test("a terminal agent joins through the public link with no Tailscale key, then
   const access = await api("/api/browser");
   const listed = await callTool(api, "reach_list_files", { root: 0, path: "" }, access);
   assert.match(JSON.stringify(listed), /brief\.txt/);
+  // Reach's own list and call plans pass the public link's door too: what
+  // the agent offers is what Reach has now (mcp-server.mjs computerTools).
+  const offered = await computerTools(api, (route) => `${route}?runtime=${"a".repeat(64)}`);
+  assert.ok(offered?.tools.some((tool) => tool.name === "reach_list_files"), "Reach's list, not this copy's");
+  const planned = await computerPlan(api, "reach_list_files", { root: 0, path: "" });
+  assert.match(JSON.stringify(await api(planned.plan.route, planned.plan.method, planned.plan.body)), /brief\.txt/);
   // Nothing beyond its preset.
   await assert.rejects(api("/api/clients"), (e) => e.status === 403);
   // Its session ended (the owner reopened its link): the same key comes back at once.
@@ -130,6 +136,30 @@ test("on the owner's tailnet the private address is used, with the public link a
   assert.ok((await api("/api/browser")).roots);
   assert.equal(f.sent.at(-1), ORIGIN, "fell back to the public link");
   assert.equal(f.sent.at(-2), `${ORIGIN}:8443`, "after the private address was tried");
+});
+
+// Off the tailnet, the private name resolves to the public link's relay: the
+// private address is used only when it resolves into the tailnet, so the
+// agent never stalls on it, and only it is held to that (connections audit,
+// Oct 10).
+test("the private address counts only when it resolves into the tailnet; the public link is never held to that", async () => {
+  for (const address of ["100.64.0.1", "100.107.161.117", "100.127.255.254", "fd7a:115c:a1e0::db33:a176"])
+    assert.equal(tailnetAddress(address), true, address);
+  for (const address of ["100.63.255.255", "100.128.0.1", "192.168.1.4", "127.0.0.1", "::1", "2001:db8::1", "not an address"])
+    assert.equal(tailnetAddress(address), false, address);
+  const held = [];
+  const send = async (endpoint, body, headers, timeoutMs, { tailnetOnly }) => {
+    held.push([endpoint, tailnetOnly]);
+    if (tailnetOnly) throw Object.assign(Error("not on the tailnet"), { unreachable: true });
+    return { status: 200, headers: {}, bytes: Buffer.from("{}") };
+  };
+  const key = agentKey(fs.mkdtempSync(path.join(os.tmpdir(), "reach-funnel-route-")));
+  const gateway = funnelGateway(ORIGIN, key, { send, endpoints: [`${ORIGIN}:8443`, ORIGIN] });
+  assert.equal((await gateway.status("r", "s")).endpoint, ORIGIN);
+  assert.deepEqual(held, [[`${ORIGIN}:8443`, true], [ORIGIN, false]]);
+  held.length = 0;
+  await funnelGateway(ORIGIN, key, { send }).status("r", "s");
+  assert.deepEqual(held, [[ORIGIN, false]], "the public link alone");
 });
 
 test("its credential is worth nothing without its key; leaving ends the access", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {

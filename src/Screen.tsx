@@ -31,7 +31,7 @@ import QuickLauncher from "./QuickLauncher";
 import ScreenPopup from "./ScreenPopup";
 import RemoteTyping from "./RemoteTyping";
 import ScreenActions, { type ScreenAction } from "./ScreenActions";
-import { copyRemoteSelection } from "./remote-copy";
+import { CLIPBOARD_BYTES, copyRemoteSelection, fitBytes } from "./remote-copy";
 import type { TextTarget } from "./desktop-input-queue";
 import DesktopSurface from "./DesktopSurface";
 import { useScreenPresentation } from "./useScreenPresentation";
@@ -200,6 +200,7 @@ export default function Screen({
     control && live && visible,
     stream.selectedDisplay || display,
     ended,
+    canControl && live && visible && !paused,
   );
   const usable =
     control &&
@@ -522,11 +523,16 @@ export default function Screen({
         setFeedback("Laptop clipboard received");
       }
       if (kind === "write") {
+        if (fitBytes(clipboard) !== clipboard)
+          throw Error("That's too long for the clipboard (16 KB at most).");
         await send({ type: "clipboard-write", text: clipboard });
         setFeedback("Laptop clipboard updated");
       }
       if (kind === "phone") {
-        setClipboard(await navigator.clipboard.readText());
+        const text = await navigator.clipboard.readText();
+        const fit = fitBytes(text);
+        setClipboard(fit);
+        if (fit !== text) setFeedback("Only the first 16 KB fits");
       }
       if (kind === "copy") {
         await navigator.clipboard.writeText(clipboard);
@@ -1151,8 +1157,13 @@ export default function Screen({
                     <textarea
                       aria-label="Clipboard text"
                       value={clipboard}
-                      maxLength={16384}
-                      onChange={(e) => setClipboard(e.target.value)}
+                      maxLength={CLIPBOARD_BYTES}
+                      // The limit is in bytes: an emoji or accent takes more than one.
+                      onChange={(e) => {
+                        const fit = fitBytes(e.target.value);
+                        setClipboard(fit);
+                        if (fit !== e.target.value) setFeedback("Only the first 16 KB fits");
+                      }}
                       placeholder="Clipboard preview"
                     />
                     <div className="screen-key-row">

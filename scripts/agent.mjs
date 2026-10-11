@@ -9,8 +9,13 @@ const segment = (value) => {
   if (!text || text === "." || text === ".." || /[\u0000-\u001f\u007f]/.test(text)) throw Error("Give a valid job id.");
   return encodeURIComponent(text);
 };
-if (u.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(u.hostname))
+const local = ["localhost", "127.0.0.1"].includes(u.hostname);
+if (u.protocol !== "https:" && !local)
   throw Error("Remote connections require HTTPS.");
+// A remote Reach is on your tailnet: the token never goes anywhere else
+// (connections audit, Oct 10).
+if (!local && !/\.ts\.net$/i.test(u.hostname))
+  throw Error("REACH_URL must be the computer's Tailscale address, ending in .ts.net.");
 if (process.argv[2] === "connect") {
   // Ask for access; the person approves it from Reach on their phone.
   const flag = (name, fallback) => {

@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import { desktopBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
-import { hiddenControls, nativeRules, typedTextRefusal } from "./agent-guard.mjs";
+import { hiddenControls, nativeRules, protectedPathReason, typedTextRefusal } from "./agent-guard.mjs";
+import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
 
@@ -66,6 +67,32 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
   return (head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
 }
 
+// The numbered controls and visible text as the agent receives them, bounded,
+// from what the helper read (elements, find).
+const fractionOf = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+const tabList = (tabs) => tabs.slice(0, 40).filter((tab) => plain(tab) && typeof tab.title === "string" && tab.title).map((tab) => ({ title: tab.title.slice(0, 120), selected: tab.selected === true }));
+export function shapeElements(result) {
+  const fraction = fractionOf;
+  const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
+    .filter((item) => Number.isInteger(item?.n))
+    .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
+      // What a field holds is on screen already; never a password field's.
+      ...(typeof item.value === "string" && item.value && item.secure !== true ? { value: item.value.slice(0, 120) } : {}),
+      x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
+  // The window's visible text, in reading order: what a person reads there.
+  let budget = 20000;
+  const texts = (Array.isArray(result.texts) ? result.texts : []).slice(0, 500)
+    .filter((line) => typeof line?.text === "string" && line.text)
+    .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
+      x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
+    .filter((line) => (budget -= line.text.length) >= 0);
+  // The form at a glance: its fields, for reach_fill in one call.
+  const fields = items.filter((item) => FIELD_ROLES.has(item.role))
+    .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
+  return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
+    title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
+}
+
 export function normalizeAction(value) {
   if (!plain(value) || typeof value.type !== "string") throw fail(400, "Choose one action: click, move, drag, scroll, type or key.");
   const keys = Object.keys(value);
@@ -75,29 +102,47 @@ export function normalizeAction(value) {
     if (!Array.isArray(value.modifiers) || value.modifiers.length > 4 || value.modifiers.some((m) => !MODIFIERS.has(m))) throw fail(400, "Modifiers are cmd, shift, option or control.");
     return [...new Set(value.modifiers)];
   };
+  // A long press: the button stays down holdMs (100 to 10000), one press only.
+  const hold = () => {
+    if (value.holdMs === undefined) return {};
+    if (!Number.isInteger(value.holdMs) || value.holdMs < 100 || value.holdMs > 10000) throw fail(400, "Hold for 100 to 10000 milliseconds.");
+    if (value.count !== undefined && value.count !== 1) throw fail(400, "Hold one press, not several.");
+    return { holdMs: value.holdMs };
+  };
   const point = (x, y) => { if (!number(value[x], 0, 1) || !number(value[y], 0, 1)) throw fail(400, "Give the point as fractions of the screen, 0 to 1."); return { [x]: value[x], [y]: value[y] }; };
   switch (value.type) {
     case "move": only("type", "x", "y"); return { type: "move", ...point("x", "y") };
     case "click": {
-      only("type", "x", "y", "button", "count", "modifiers");
+      only("type", "x", "y", "button", "count", "modifiers", "holdMs");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
-      return { type: "click", ...point("x", "y"), button: value.button || "left", count: value.count || 1, modifiers: modifiers() };
+      return { type: "click", ...point("x", "y"), button: value.button || "left", count: value.count || 1, modifiers: modifiers(), ...hold() };
     }
-    case "drag": only("type", "x", "y", "toX", "toY"); return { type: "drag", ...point("x", "y"), ...point("toX", "toY") };
+    // holdMs: down that long before moving (a long press picks it up);
+    // durationMs: how long the move takes (a slider, a file onto a folder).
+    case "drag": {
+      only("type", "x", "y", "toX", "toY", "holdMs", "durationMs");
+      if (value.holdMs !== undefined && (!Number.isInteger(value.holdMs) || value.holdMs < 0 || value.holdMs > 5000)) throw fail(400, "Hold before a drag for up to 5000 milliseconds.");
+      if (value.durationMs !== undefined && (!Number.isInteger(value.durationMs) || value.durationMs < 50 || value.durationMs > 5000)) throw fail(400, "Drag over 50 to 5000 milliseconds.");
+      return { type: "drag", ...point("x", "y"), ...point("toX", "toY"),
+        ...(value.holdMs ? { holdMs: value.holdMs } : {}), ...(value.durationMs !== undefined ? { durationMs: value.durationMs } : {}) };
+    }
     case "scroll": {
       only("type", "x", "y", "dx", "dy");
       if (!number(value.dx ?? 0, -2000, 2000) || !number(value.dy ?? 0, -2000, 2000)) throw fail(400, "Scroll by up to 2000 pixels each way.");
       return { type: "scroll", ...point("x", "y"), dx: value.dx ?? 0, dy: value.dy ?? 0 };
     }
     case "type": {
-      only("type", "text", "secret");
+      only("type", "text", "secret", "paste");
       if (value.secret !== undefined && value.secret !== true) throw fail(400, "Mark only a password as secret.");
+      if (value.paste !== undefined && value.paste !== true) throw fail(400, "Set paste to true, or leave it out.");
+      if (value.paste && value.secret) throw fail(400, "Vault values are typed, never pasted.");
       if (typeof value.text !== "string" || !value.text || value.text.length > 2000 || hiddenControls.test(value.text))
         throw fail(400, "Type up to 2000 characters, without hidden controls.");
       // A secret (a username, email or password from the agent's vault) is
       // never echoed, logged or recorded; it never goes into a terminal.
-      return value.secret ? { type: "type", text: value.text, secret: true } : { type: "type", text: value.text };
+      // Pasted text goes through the clipboard in one go (long text).
+      return value.secret ? { type: "type", text: value.text, secret: true } : { type: "type", text: value.text, ...(value.paste ? { paste: true } : {}) };
     }
     case "key": {
       only("type", "key", "modifiers");
@@ -105,28 +150,36 @@ export function normalizeAction(value) {
       if (!KEYS.has(key)) throw fail(400, "Unknown key.");
       return { type: "key", key, modifiers: modifiers() };
     }
+    // A menu item by its path, pressed through accessibility (no pointer).
+    case "menu": {
+      only("type", "path");
+      if (!Array.isArray(value.path) || !value.path.length || value.path.length > 6 ||
+          value.path.some((title) => typeof title !== "string" || !title.trim() || title.length > 80 || hiddenControls.test(title)))
+        throw fail(400, "Give the menu path: the menu's title, then each item down to the one to press, up to 6 names.");
+      return { type: "menu", path: value.path.map((title) => title.trim()) };
+    }
     // A numbered label from elements(): clicked at its live center natively.
     case "element": {
-      only("type", "snapshot", "n", "button", "count");
+      only("type", "snapshot", "n", "button", "count", "holdMs");
       if (typeof value.snapshot !== "string" || !/^[a-z0-9-]{1,40}$/i.test(value.snapshot)) throw fail(400, "Look at the labels again.");
       if (!Number.isInteger(value.n) || value.n < 1 || value.n > 500) throw fail(400, "Choose a label number.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
-      return { type: "element", snapshot: value.snapshot, n: value.n, ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}) };
+      return { type: "element", snapshot: value.snapshot, n: value.n, ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
     }
     // A control by its name, as the screen describes it (press), and a form's
     // fields by their labels, typed in one go (fill): found on the Mac.
     case "press": {
-      only("type", "name", "role", "button", "count");
+      only("type", "name", "role", "button", "count", "holdMs");
       const name = typeof value.name === "string" ? value.name.trim() : "";
       if (!name || name.length > 120 || hiddenControls.test(name)) throw fail(400, "Name the control, up to 120 characters.");
       if (value.role !== undefined && (typeof value.role !== "string" || !/^[A-Za-z]{1,40}$/.test(value.role))) throw fail(400, "Give the control's role as one word, such as Button.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
-      return { type: "press", name, ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}) };
+      return { type: "press", name, ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
     }
     case "fill": {
-      only("type", "fields", "submit", "replace");
+      only("type", "fields", "submit", "replace", "paste");
       if (!Array.isArray(value.fields) || !value.fields.length || value.fields.length > 12) throw fail(400, "Fill 1 to 12 fields.");
       const fields = value.fields.map((field) => {
         if (!plain(field) || Object.keys(field).some((key) => !["label", "text", "secret"].includes(key))) throw fail(400, "Each field takes label, text and secret.");
@@ -137,10 +190,10 @@ export function normalizeAction(value) {
         return field.secret ? { label, text: field.text, secret: true } : { label, text: field.text };
       });
       if (fields.reduce((sum, field) => sum + field.text.length, 0) > 2000) throw fail(400, "Type at most 2000 characters in one fill.");
-      for (const flag of ["submit", "replace"]) if (value[flag] !== undefined && value[flag] !== true) throw fail(400, `Set ${flag} to true, or leave it out.`);
-      return { type: "fill", fields, ...(value.submit ? { submit: true } : {}), ...(value.replace ? { replace: true } : {}) };
+      for (const flag of ["submit", "replace", "paste"]) if (value[flag] !== undefined && value[flag] !== true) throw fail(400, `Set ${flag} to true, or leave it out.`);
+      return { type: "fill", fields, ...(value.submit ? { submit: true } : {}), ...(value.replace ? { replace: true } : {}), ...(value.paste ? { paste: true } : {}) };
     }
-    default: throw fail(400, "Choose one action: click, move, drag, scroll, type, key, element, press or fill.");
+    default: throw fail(400, "Choose one action: click, move, drag, scroll, type, key, element, press, fill or menu.");
   }
 }
 
@@ -150,7 +203,7 @@ const HELPER_FAILURES = {
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
-const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check"]);
+const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file"]);
 const helperFailure = (reason, request, dispatched = false) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
@@ -262,6 +315,8 @@ export function createAgentDesktop(config, {
   paused = () => false,
   onActivity = () => {},
   record = () => {},
+  // The owner's log of what each agent did (agent-actions.mjs add).
+  actions = () => {},
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
@@ -355,12 +410,13 @@ export function createAgentDesktop(config, {
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
   const dispatchInput = async (client, state, request, authorize, scope) => {
-    const pending = { client, helper: state.helper };
+    const pending = { client, helper: state.helper, sent: false };
     pendingInputs.add(pending);
     try {
       return await state.helper.send(request, () => {
         checkState(client, authorize, scope, state);
         checkInputAllowed(client);
+        pending.sent = true;
       });
     } finally {
       // Revoking a client releases its idle lease immediately, but a dying
@@ -470,7 +526,7 @@ export function createAgentDesktop(config, {
       const latest = live(client, authorize, "browser:screen");
       const state = await session(latest);
       checkState(client, authorize, "browser:screen", state);
-      const result = answer(await state.helper.send({ op: "front" }));
+      const result = answer(await state.helper.send({ op: "front", detail: true }));
       checkState(client, authorize, "browser:screen", state);
       const holder = currentHolder();
       // An app the owner hid from this agent: not even its name (security
@@ -483,7 +539,123 @@ export function createAgentDesktop(config, {
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
         terminalLike: result.terminalLike === true, secure: result.secure === true, blocked: String(result.blocked || "").slice(0, 300),
         path: String(result.path || "").slice(0, 4096), layout: String(result.layout || "").slice(0, 2000),
-        holder: holder && holder.clientId !== latest.id ? holder.name : "" };
+        holder: holder && holder.clientId !== latest.id ? holder.name : "",
+        // A browser: its page and tabs, so the agent knows where it is without describing the screen.
+        ...(typeof result.url === "string" && result.url ? { url: result.url.slice(0, 2048) } : {}),
+        ...(Array.isArray(result.tabs) ? { tabs: tabList(result.tabs) } : {}) };
+    },
+    /** Every window the agent may know of: the allowed apps' windows, a browser's with its page and tabs (reach_windows). */
+    async windows(client, authorize) {
+      const latest = live(client, authorize, "browser:screen");
+      const state = await session(latest);
+      checkState(client, authorize, "browser:screen", state);
+      const result = answer(await state.helper.send({ op: "windows" }));
+      checkState(client, authorize, "browser:screen", state);
+      observe(latest);
+      const hidden = latest.policy?.hidden || [];
+      const lower = (value) => String(value || "").toLowerCase();
+      const windows = (Array.isArray(result.windows) ? result.windows : []).slice(0, 120)
+        .filter((item) => plain(item) && typeof item.id === "string" && /^\d{1,8}:\d{1,2}$/.test(item.id))
+        // An app the owner hid from this agent: not even its name, whatever an older helper answers.
+        .filter((item) => !hidden.some((app) => (app.bundleId && app.bundleId === item.bundle) || (app.name && lower(app.name) === lower(item.app))))
+        .map((item) => ({ id: item.id, app: String(item.app || "").slice(0, 100), bundle: String(item.bundle || "").slice(0, 200), title: String(item.title || "").slice(0, 200),
+          minimized: item.minimized === true, front: item.front === true, ...(item.dialog === true ? { dialog: true } : {}),
+          ...(typeof item.url === "string" && item.url ? { url: item.url.slice(0, 2048) } : {}),
+          ...(Array.isArray(item.tabs) ? { tabs: tabList(item.tabs) } : {}) }));
+      const holder = currentHolder();
+      return { windows, holder: holder && holder.clientId !== latest.id ? holder.name : "" };
+    },
+    /** One window brought forward by its id from windows(), its title checked; a browser tab by title (reach_focus_window). */
+    async focusWindow(client, { id, title, tab } = {}, authorize) {
+      const latest = live(client, authorize, "browser:open");
+      if (typeof id !== "string" || !/^\d{1,8}:\d{1,2}$/.test(id)) throw fail(400, "Choose a window by the id reach_windows gave.");
+      if (title !== undefined && (typeof title !== "string" || title.length > 200 || hiddenControls.test(title))) throw fail(400, "Give the window's title as listed, up to 200 characters.");
+      if (tab !== undefined && (typeof tab !== "string" || !tab.trim() || tab.length > 120 || hiddenControls.test(tab))) throw fail(400, "Name the tab by its title, up to 120 characters.");
+      const state = await session(latest);
+      checkState(client, authorize, "browser:open", state);
+      take(latest);
+      const result = answer(await dispatchInput(latest, state, { op: "focus", id, ...(title ? { title } : {}), ...(tab ? { tab: tab.trim() } : {}) }, authorize, "browser:open"));
+      checkState(client, authorize, "browser:open", state);
+      extend(latest);
+      observe(latest);
+      note(latest, "open", result);
+      actions(latest, { kind: "focus", text: actionWords("focus", { title }, result), app: result.app });
+      return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
+        ...(result.front === false ? { front: false } : {}), ...(typeof result.tab === "string" && result.tab ? { tab: result.tab.slice(0, 120) } : {}) };
+    },
+    /** The front app's menu bar: each menu's items with their shortcuts; one menu named, with its submenus (reach_menus). */
+    async menus(client, menu, authorize) {
+      const latest = live(client, authorize, "browser:control");
+      if (menu !== undefined && (typeof menu !== "string" || !menu.trim() || menu.length > 80 || hiddenControls.test(menu))) throw fail(400, "Name one menu, up to 80 characters, or none for all of them.");
+      const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      const result = answer(await state.helper.send({ op: "menus", ...(menu ? { menu: menu.trim() } : {}) }));
+      checkState(client, authorize, "browser:control", state);
+      observe(latest);
+      let budget = 400;
+      const items = (list, depth) => (Array.isArray(list) && depth <= 3 ? list : []).filter((item) => plain(item) && typeof item.title === "string" && item.title).filter(() => budget-- > 0)
+        .map((item) => ({ title: String(item.title || "").slice(0, 80), ...(item.enabled === false ? { enabled: false } : {}), ...(typeof item.key === "string" && item.key ? { key: item.key.slice(0, 12) } : {}),
+          ...(item.checked === true ? { checked: true } : {}), ...(item.submenu === true ? { submenu: true } : {}), ...(Array.isArray(item.items) ? { items: items(item.items, depth + 1) } : {}) }));
+      return { app: String(result.app || "").slice(0, 100), title: String(result.title || "").slice(0, 200),
+        menus: (Array.isArray(result.menus) ? result.menus : []).slice(0, 30).filter(plain).map((entry) => ({ title: String(entry.title || "").slice(0, 80), items: items(entry.items, 1) })),
+        truncated: result.truncated === true || budget < 0 };
+    },
+    /** Something in the front window by its words, scrolled into view, with the screen read again (reach_find). Scrolling is an input: the Mac is held for it. */
+    async find(client, { text, name, role } = {}, authorize) {
+      const latest = live(client, authorize, "browser:control");
+      if ((text === undefined) === (name === undefined)) throw fail(400, "Find text, or a control by its name.");
+      if (text !== undefined && (typeof text !== "string" || !text.trim() || text.length > 200 || hiddenControls.test(text))) throw fail(400, "Give the text to find, up to 200 characters.");
+      if (name !== undefined && (typeof name !== "string" || !name.trim() || name.length > 120 || hiddenControls.test(name))) throw fail(400, "Name the control to find, up to 120 characters.");
+      if (role !== undefined && (name === undefined || typeof role !== "string" || !/^[A-Za-z]{1,40}$/.test(role))) throw fail(400, "Give the control's role as one word, such as Button, with its name.");
+      const askedAt = now();
+      const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      take(latest);
+      const result = answer(await dispatchInput(latest, state, { op: "find", ...(text !== undefined ? { text: text.trim() } : { name: name.trim(), ...(role ? { role } : {}) }) }, authorize, "browser:control"));
+      checkState(client, authorize, "browser:control", state);
+      extend(latest);
+      observe(latest, askedAt);
+      actions(latest, { kind: "find", text: actionWords("find", { text, name }, result), app: result.app });
+      if (result.found !== true) return { found: false, app: String(result.app || "").slice(0, 100), title: String(result.title || "").slice(0, 200), truncated: result.truncated === true };
+      const shaped = shapeElements(result);
+      return { found: true, ...(Number.isInteger(result.n) && result.n >= 1 && result.n <= shaped.items.length ? { n: result.n } : {}),
+        role: String(result.role || "").slice(0, 40), ...(text !== undefined ? { text: String(result.text || "").slice(0, 160) } : { name: String(result.name || "").slice(0, 120) }),
+        matches: Number.isInteger(result.matches) ? Math.max(1, Math.min(500, result.matches)) : 1, inView: result.inView !== false, scrolled: result.scrolled === true,
+        ...(result.inView === false && typeof result.direction === "string" ? { direction: ["above", "below", "left", "right"].includes(result.direction) ? result.direction : "below", distance: Number.isFinite(result.distance) ? Math.max(0, Math.min(100000, Math.round(result.distance))) : 0 } : {}),
+        ...shaped };
+    },
+    /** The front window's whole text, what is scrolled away included (reach_read_page). */
+    async readPage(client, authorize) {
+      const latest = live(client, authorize, "browser:control");
+      const askedAt = now();
+      const state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      const result = answer(await state.helper.send({ op: "read" }));
+      checkState(client, authorize, "browser:control", state);
+      observe(latest, askedAt);
+      return { app: String(result.app || "").slice(0, 100), bundle: String(result.bundle || "").slice(0, 200), title: String(result.title || "").slice(0, 200),
+        url: String(result.url || "").slice(0, 2048), text: String(result.text || "").slice(0, 60000), truncated: result.truncated === true };
+    },
+    /** A file opened in the app that owns it, or shown in the Finder (reach_open_file): never a program, never a protected path. */
+    async openFile(client, filePath, { reveal = false } = {}, authorize) {
+      const latest = live(client, authorize, "browser:open");
+      if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
+      if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
+      const reason = protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
+      if (reason) {
+        actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
+        throw Object.assign(fail(403, reason), { kind: "blocked" });
+      }
+      const state = await session(latest);
+      checkState(client, authorize, "browser:open", state);
+      take(latest);
+      const result = answer(await dispatchInput(latest, state, { op: "open-file", path: filePath, ...(reveal ? { reveal: true } : {}) }, authorize, "browser:open"));
+      checkState(client, authorize, "browser:open", state);
+      extend(latest);
+      observe(latest);
+      note(latest, "open", result);
+      actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }, result), app: result.app });
+      return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** What can be clicked in the front window, numbered, from the accessibility tree. */
     async elements(client, authorize) {
@@ -495,25 +667,7 @@ export function createAgentDesktop(config, {
       checkState(client, authorize, "browser:control", state);
       // The numbered labels read the live screen: that is a look.
       observe(latest, askedAt);
-      const fraction = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-      const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
-        .filter((item) => Number.isInteger(item?.n))
-        .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
-          // What a field holds is on screen already; never a password field's.
-          ...(typeof item.value === "string" && item.value && item.secure !== true ? { value: item.value.slice(0, 120) } : {}),
-          x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
-      // The window's visible text, in reading order: what a person reads there.
-      let budget = 20000;
-      const texts = (Array.isArray(result.texts) ? result.texts : []).slice(0, 500)
-        .filter((line) => typeof line?.text === "string" && line.text)
-        .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
-          x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
-        .filter((line) => (budget -= line.text.length) >= 0);
-      // The form at a glance: its fields, for reach_fill in one call.
-      const fields = items.filter((item) => FIELD_ROLES.has(item.role))
-        .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
-      return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
-        title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
+      return shapeElements(result);
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {
@@ -550,9 +704,13 @@ export function createAgentDesktop(config, {
         extend(latest);
         observe(latest);
         note(latest, action.type, result);
+        actions(latest, { kind: action.type, text: actionWords(action.type, action, result), app: result.app });
         return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || "") };
       } catch (error) {
-        if (error?.kind === "blocked") note(latest, "blocked", { app: "" });
+        if (error?.kind === "blocked") {
+          note(latest, "blocked", { app: "" });
+          actions(latest, { kind: action.type, text: actionWords(action.type, action), ok: false, reason: error.message });
+        }
         throw error;
       }
     },
@@ -569,6 +727,7 @@ export function createAgentDesktop(config, {
       extend(latest);
       observe(latest);
       note(latest, "open", result);
+      actions(latest, { kind: "open", text: actionWords("open", { app: appPath }, result), app: result.app });
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** A website in the owner's own browser (default for web links, or one chosen), within the preset. */
@@ -590,6 +749,7 @@ export function createAgentDesktop(config, {
       extend(latest);
       observe(latest);
       note(latest, "open", result);
+      actions(latest, { kind: "open-url", text: actionWords("open-url", { url }, result), app: result.app });
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** Keep the Mac's input lease for a whole declarative browser operation. */
@@ -646,6 +806,10 @@ export function createAgentDesktop(config, {
     /** The owner's pause: the agent keeps looking, but every action waits until resumed. Kept across restarts. */
     setPaused(id, paused) {
       if (paused) release(id);
+      // A hold or slow drag already sent lets go now (the helper releases what
+      // it holds on stop), rather than seconds after the owner paused it.
+      // Queued input is refused by its own dispatch check.
+      if (paused) for (const entry of pendingInputs) if (entry.sent && entry.client.id === id) try { entry.helper.stop(); } catch {}
       return pausedAgents.set(id, paused);
     },
     isPaused: (id) => pausedAgents.has(id),

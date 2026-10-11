@@ -525,3 +525,165 @@
     transition: none;
   }
 }
+
+/* In the invitation sheet: the same short lists as inviting a person
+   (invite-sheet.css .ivt-rows), one white pill, a line or two at most. */
+.ivt .ag-invite-form {
+  gap: 16px;
+}
+.ivt-row .ag-roll {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ag-muted);
+}
+.ag-access.is-unset .ivt-menu-button {
+  color: var(--ag-text);
+  font-weight: 550;
+}
+.ag-invite .ag-rows {
+  border: 0;
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+}
+.ag-invite .ag-row-head {
+  gap: 12px;
+  min-height: 54px;
+  padding: 0 14px 0 16px;
+}
+.ag-invite .ag-row-label {
+  font-size: 15.5px;
+}
+.ag-invite .ag-row-value {
+  font-size: 14px;
+}
+.ag-invite .ag-row-icon svg {
+  width: 19px;
+  height: 19px;
+}
+.ag-invite .ag-note {
+  display: flex;
+  gap: 8px;
+  margin: 0 6px;
+  padding: 0;
+  background: none;
+  color: var(--ag-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ag-invite .ag-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+.ag-invite .ag-note.is-warn {
+  color: #f2c879;
+}
+.ag-send {
+  gap: 10px;
+  padding-top: 0;
+  border-top: 0;
+}
+.ag-summary {
+  margin: 0 6px;
+  font-size: 13px;
+  text-align: center;
+}
+.ag-send .ag-primary {
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 15px;
+}
+.ag-done .ag-primary,
+.ag-done .ag-secondary {
+  border-radius: 999px;
+}
+.ag-done-next {
+  margin: 0;
+  color: var(--ag-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* One question: what may it do? Four rows; a tap makes the invite. */
+.ag-ask {
+  margin: 2px 4px 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ivt-text, #f3f3f3);
+}
+.ag-choices .ag-choice {
+  width: 100%;
+  min-height: 64px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ag-choices .ag-choice:active:not(:disabled) {
+  background: rgb(255 255 255 / 0.05);
+}
+.ag-choices .ag-choice:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ag-choice-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ag-choice-text strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+.ag-choice-text small {
+  font-size: 13px;
+  color: var(--ivt-muted, #a5a5a5);
+}
+.ag-choice.is-on .ag-choice-text strong {
+  color: #fff;
+}
+.ag-choice-go {
+  flex: none;
+  margin-right: 8px;
+  color: #6f7c73;
+}
+.ag-choice-busy {
+  margin-right: 10px;
+  font-size: 13px;
+  color: var(--ivt-muted, #a5a5a5);
+}
+/* The defaults: smaller, quieter rows under the question. */
+.ag-defaults .ivt-row {
+  min-height: 46px;
+}
+.ag-defaults .ivt-setting-label,
+.ag-defaults .ivt-row .ivt-name {
+  font-size: 14.5px;
+}
+.ag-defaults .ag-rows {
+  margin: 0;
+  background: none;
+  box-shadow: none;
+}
+/* A hosted agent's connector address, to read and check. */
+.ag-done-url {
+  display: block;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--ag-line);
+  border-radius: 12px;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ag-text);
+  overflow-wrap: anywhere;
+  user-select: all;
+}

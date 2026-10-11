@@ -51,7 +51,11 @@ test("restart and start open Terminal when run inside another app, even with a t
 
 test("no Screen Recording ends the stream with the reason, and the phone stops retrying", async () => {
   assert.match(permissionHint("ChatGPT"), /inside ChatGPT, which has no Screen Recording permission.*reach restart in Terminal/);
-  assert.equal(permissionHint("Terminal"), "");
+  // In Terminal the permission is Terminal's, applied once it's reopened:
+  // never "Reach's screen helper" and "reconnect".
+  assert.match(permissionHint("Terminal"), /Screen Recording is off for Terminal\..*Allow Terminal, then quit and reopen Terminal and restart Reach/);
+  assert.match(permissionHint(""), /Allow the app running Reach, such as Terminal, then quit and reopen that app/);
+  assert.doesNotMatch(permissionHint("Terminal"), /screen helper|then reconnect/);
   const source = new NativeScreenSource(process.execPath, [
     "-e",
     "process.stderr.write('Allow Screen Recording for Reach’s screen helper in System Settings.'); process.exit(1)",

@@ -66,3 +66,14 @@
   display: block;
   color: var(--ag-muted);
 }
+
+/* The Mac's own Shortcuts agents may run: a grouped list of switches. */
+.as-mac-title {
+  margin-top: 18px;
+}
+.as-mac-list {
+  margin-top: 8px;
+  border-radius: 14px;
+  background: var(--panel, rgba(127, 127, 127, 0.08));
+  padding: 2px 12px;
+}

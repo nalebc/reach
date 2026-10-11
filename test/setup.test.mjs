@@ -10,6 +10,9 @@ import {
   linkProblem,
   SETUP_SECTIONS,
 } from "../scripts/setup.mjs";
+import { accountApproval, configure, readPreferences } from "../scripts/configure.mjs";
+import { command } from "../scripts/home.mjs";
+import { approveDevice } from "../scripts/approve-device.mjs";
 
 // A tailnet ready for the phone's HTTPS link.
 const READY = {
@@ -287,8 +290,10 @@ test("background first run ends with the phone: link, then approve by the code i
   const answers = ["wrong", "a1b2c3d4"];
   const decided = [];
   const qr = [];
+  const windows = [];
   const ok = await connectPhone(root, {
     deps: {
+      openWindow: (dir) => windows.push(dir),
       print: (m) => printed.push(m),
       sleep: async () => {},
       readHost: () => hosts.shift() ?? host,
@@ -307,6 +312,9 @@ test("background first run ends with the phone: link, then approve by the code i
   assert.equal(ok, true);
   assert.match(text, /Open on your phone: https:\/\/mac\.tail1\.ts\.net\n/, "the start page, for any phone");
   assert.deepEqual(qr, ["https://mac.tail1.ts.net"]);
+  // A phone without the Tailscale app may sign in from its browser meanwhile.
+  assert.deepEqual(windows, ["/x"], "a pairing window opens");
+  assert.match(text, /without it, sign in to Tailscale in the phone's browser in the next 15 minutes/);
   assert.match(text, /New device:/);
   assert.match(text, /Enter the eight-character request/, "a wrong code says why, then asks again");
   assert.deepEqual(decided, ["wrong", "a1b2c3d4"]);
@@ -325,10 +333,14 @@ test("the phone link is the one address only when this Reach answers there", asy
     const asked = [];
     globalThis.fetch = async (url) => (asked.push(String(url)), answer());
     const printed = [];
+    const windows = [];
     await connectPhone(root, {
-      deps: { print: (m) => printed.push(m), sleep: async () => {}, readHost: () => ({ ...host, ...extra }), qr: { generate: () => {} }, pending: () => [], waitMs: 1 },
+      deps: { openWindow: (dir) => windows.push(dir), print: (m) => printed.push(m), sleep: async () => {}, readHost: () => ({ ...host, ...extra }), qr: { generate: () => {} }, pending: () => [], waitMs: 1 },
     });
-    return { link: /Open on your phone: (\S+)/.exec(printed.join("\n"))[1], asked };
+    const link = /Open on your phone: (\S+)/.exec(printed.join("\n"))[1];
+    // The window only where a phone without the app can use it.
+    assert.equal(windows.length, link === host.origin ? 0 : 1, link);
+    return { link, asked };
   };
   const json = (v) => () => new Response(JSON.stringify(v), { status: 200 });
   const me = await shown(json({ product: "Reach", instance: "i1" }));
@@ -376,4 +388,87 @@ test("background first run: start page not reachable → private link; deny keep
     false,
   );
   assert.match(none.join("\n"), /still starting\. When it's ready: \.\/reach status/);
+});
+
+// First-run matrix H14, T22: Windows gets the guided setup too. Phones join
+// there with a pairing code (no Unix socket for Tailscale-account approval),
+// so its steps are Tailscale itself and the HTTPS link, and nothing asks for
+// account settings, invite links or a background service.
+const windows = (s, extra = {}) =>
+  deps(s, {
+    platform: "win32",
+    ensureTailscale: async () => ({
+      BackendState: "Running",
+      Self: { UserID: 7 },
+      User: { 7: { LoginName: "me@x.test" } },
+    }),
+    configure: async () => {
+      throw Error("configure must not run on Windows");
+    },
+    socketPath: () => {
+      throw Error("no Unix socket on Windows");
+    },
+    ...extra,
+  });
+
+test("Windows: a fresh run is Tailscale, then the HTTPS link; no account settings, invites or background", async (t) => {
+  const root = tmp(t);
+  const s = scene();
+  const printed = [];
+  const d = windows(s, { print: (m) => printed.push(m) });
+  let ran = 0;
+  d.ensureTailscale = ((inner) => async (...a) => (ran++, inner(...a)))(d.ensureTailscale);
+  const result = await runSetup(root, { deps: d });
+  assert.equal(ran, 1, "the Tailscale walk-through ran");
+  assert.deepEqual(s.asked, [], "nothing to choose when Tailscale and HTTPS are ready");
+  assert.equal(d.ran.invites, 0);
+  assert.equal(result.launch, "foreground");
+  const board = printed.join("\n");
+  assert.match(board, /1\. Tailscale on this computer {2}—  me@x\.test/);
+  assert.match(board, /2\. HTTPS link for your phone/);
+  assert.doesNotMatch(board, /account & sharing|Invite people|background|3\./);
+  assert.match(board, /Setup complete/);
+  const progress = readProgress(root);
+  assert.deepEqual(progress.steps, { account: "done", link: "done" });
+  assert.equal(progress.done, true);
+  assert.equal(readPreferences(root), null, "no account settings saved");
+  assert.equal(needsOnboarding(root), false, "a finished Windows setup isn't offered again");
+});
+
+test("Windows: HTTPS certificates off: the DNS page opens, the wait says how to pick up", async (t) => {
+  const root = tmp(t);
+  const states = [{ ...READY, CertDomains: [] }, READY];
+  const opened = [];
+  const printed = [];
+  const s = scene();
+  await runSetup(root, {
+    deps: windows(s, {
+      status: async () => states.shift() || READY,
+      open: async (url) => opened.push(url),
+      print: (m) => printed.push(m),
+    }),
+  });
+  assert.deepEqual(opened, ["https://login.tailscale.com/admin/dns"]);
+  assert.match(printed.join("\n"), /Turn on HTTPS certificates/);
+  // `command` is .\reach.cmd on Windows (scripts/home.mjs).
+  assert.ok(printed.includes(`  Waiting… (Ctrl+C to stop; ${command} picks up here)`));
+  assert.equal(readProgress(root).done, true);
+});
+
+test("Windows: invite links aren't a section; account settings say why", async (t) => {
+  const root = tmp(t);
+  await assert.rejects(runSetup(root, { only: "invites", deps: windows(scene()) }), /Unknown setup section "invites"\. Try: account, link\./);
+  const result = await runSetup(root, { only: "account", deps: windows(scene()) });
+  assert.deepEqual(result.ran, ["account"]);
+  assert.equal(accountApproval("win32"), false);
+  for (const platform of ["darwin", "linux"]) assert.equal(accountApproval(platform), true);
+  await assert.rejects(
+    configure(root, { platform: "win32", select: async () => "use", print() {} }),
+    (error) => /^On Windows, Reach has no account settings to configure: start it with /.test(error.message) && /pairing code/.test(error.message) && !/Mac and Linux/.test(error.message),
+  );
+  // `approve` is for account approval: on Windows it points to the code.
+  await assert.rejects(approveDevice(root, { platform: "win32", print() {} }), {
+    message: `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`,
+  });
+  await assert.rejects(approveDevice(root, { platform: "darwin", print() {} }), /configure completed/);
 });

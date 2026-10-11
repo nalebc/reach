@@ -782,231 +782,145 @@
   margin-top: 8px;
 }
 
-/* The invitation page uses one centered composer and a quiet access drawer. */
-.page-invite {
-  padding-top: clamp(24px, 5vh, 64px);
-  padding-bottom: 100px;
-}
-.ivt-heading {
-  text-align: left;
-  margin: 0 0 12px;
+/* The invitation, in its sheet (PeopleHub.tsx): Agent | Person as pills,
+   then a short list (a name, one row per choice, each a menu, as ChatGPT
+   lays out its share settings) and one white pill. Few words. */
+.ppl-invite .ivt {
   max-width: none;
-}
-.ivt-heading-icon {
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  margin: 0 0 18px;
-  color: #ececec;
-  border: 1px solid var(--ivt-line);
-  border-radius: 14px;
-  background: #ffffff05;
-}
-.ivt-heading h1 {
-  margin: 0 0 8px;
-  font-size: clamp(26px, 4vw, 30px);
-  letter-spacing: -0.9px;
-  font-weight: 550;
-  line-height: 1.15;
-}
-.ivt-heading p {
   margin: 0;
-  color: var(--ivt-muted);
-  font-size: 14px;
-  line-height: 1.6;
 }
 .ivt-composer {
   display: grid;
-  gap: 24px;
+  gap: 16px;
   min-width: 0;
-  padding: 28px;
-  border: 1px solid var(--ivt-line);
-  border-radius: 20px;
-  background: #212121;
 }
 .ivt-kind {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 11px;
-  background: #171717;
+  display: flex;
+  gap: 8px;
 }
 .ivt-kind button {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: none;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
   color: var(--ivt-muted);
-  font-size: 14px;
+  font-size: 14.5px;
   font-weight: 500;
 }
 .ivt-kind button[aria-pressed="true"] {
-  background: #343434;
-  color: #f3f3f3;
-  border-color: #ffffff0a;
+  background: #ededed;
+  color: #111 !important;
 }
-.ivt-composer .ivt-add {
-  display: grid;
-  gap: 8px;
+.ivt-rows {
+  overflow: visible;
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
 }
-.ivt-field-label {
-  margin: 0;
-  color: var(--ivt-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-.ivt-name {
-  width: 100%;
-  height: 48px;
-}
-.ivt-permission-row {
+.ivt-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  margin: 0;
-  color: #bac7bf;
-  font-size: 13px;
+  min-height: 54px;
+  padding: 4px 6px 4px 16px;
+}
+/* The hairline starts at the name, as in iOS lists. */
+.ivt-row + .ivt-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 47px;
+  height: 1px;
+  background: rgb(255 255 255 / 0.07);
+}
+.ivt-row > svg:first-child,
+.ivt-setting-label svg {
+  flex: none;
+  color: #c9d3cc;
+  stroke-width: 1.75;
+}
+.ivt-row.ivt-add {
+  flex-wrap: nowrap;
+  padding-right: 16px;
+}
+.ivt-row .ivt-role {
+  flex: none;
+}
+.ivt-row .ivt-role .ivt-menu-button {
+  width: auto;
+}
+.ivt-row .ivt-name {
+  flex-basis: auto;
+  height: 50px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 16px;
 }
 .ivt-setting-label {
   display: inline-flex;
+  flex: 1;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  color: var(--ivt-text);
+  font-size: 15.5px;
+}
+.ivt-row .ivt-menu-button {
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
   color: var(--ivt-muted);
-  font-size: 13px;
+  font-size: 15px;
 }
-.ivt-permission-row .ivt-menu-button {
-  height: 38px;
-  background: #ffffff05;
-  border-radius: 10px;
-  font-size: 13px;
-}
-.ivt-meta {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px 12px;
-  margin-top: -8px;
-}
-.ivt-meta .ivt-menu {
-  justify-self: end;
-  min-width: 0;
-}
-.ivt-meta .ivt-menu-button {
-  max-width: 100%;
-  height: 36px;
-  font-size: 13px;
-  white-space: normal;
-  text-align: left;
-}
-.ivt-meta .ivt-menu-list {
+.ivt-row .ivt-menu-list {
   left: auto;
   right: 0;
+  width: min(300px, calc(100vw - 72px));
 }
 .ivt-send {
   display: grid;
-  gap: 14px;
-  padding-top: 18px;
-  border-top: 1px solid var(--ivt-line);
+  gap: 12px;
 }
 .ivt-send .ivt-summary {
-  margin: 0;
+  margin: 0 6px;
   color: var(--ivt-muted);
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
 }
 .ivt-submit {
   width: 100%;
-  min-height: 46px;
+  min-height: 48px;
   justify-content: center;
-  border-radius: 12px;
-  font-size: 14px !important;
+  border-radius: 999px;
+  font-size: 15px !important;
   font-weight: 600 !important;
-  color: #202020 !important;
+  color: #111 !important;
   transition: background 0.15s;
 }
 .ivt-submit:not(:disabled):hover {
   background: #fff;
 }
 .ivt-submit:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
-.ivt-reassurance {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: var(--ivt-muted);
-  font-size: 11px;
-  text-align: center;
-}
-.ivt-reassurance svg {
-  flex: none;
-}
-.ivt-people {
-  display: block;
-  margin: 0;
-  padding: 6px 16px;
-  border: 1px solid var(--ivt-line);
-  border-radius: 16px;
-}
-.ivt-people > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
-  color: #bac7bf;
-  font-size: 13px;
-  cursor: pointer;
-  list-style: none;
-}
-.ivt-people > summary > span {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.ivt-count {
-  display: inline-grid;
-  place-items: center;
-  min-width: 21px;
-  height: 21px;
-  padding: 0 5px;
-  border-radius: 7px;
-  background: #ffffff0a;
-  color: var(--ivt-muted);
-  font-size: 11px;
-}
-.ivt-people[open] {
-  padding-bottom: 12px;
-}
-.ivt-people[open] > summary > svg {
-  transform: rotate(180deg);
-}
-.ivt-manage {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  width: fit-content;
-  min-height: 44px;
-  margin: 0 auto;
-  padding: 0 10px;
-  border: 0;
-  background: none;
-  color: #9aa89f;
-  font-size: 12px;
-}
-.ivt-manage svg {
-  width: 14px;
+.ivt-link {
+  border-radius: 18px;
 }
 .ivt :is(button, summary, select, input):focus-visible {
   outline: 2px solid #ededed;
   outline-offset: 3px;
+}
+.ivt-row .ivt-name:focus-visible {
+  outline: none;
 }
 .ivt summary::-webkit-details-marker {
   display: none;
@@ -1015,36 +929,6 @@
   width: 40px;
   height: 24px;
   margin: 0;
-}
-@media (max-width: 480px) {
-  .ivt {
-    gap: 12px;
-  }
-  .ivt-heading {
-    margin-bottom: 12px;
-    max-width: none;
-  }
-  .ivt-heading-icon {
-    margin-bottom: 14px;
-    width: 46px;
-    height: 46px;
-  }
-  .ivt-composer {
-    padding: 20px;
-    border-radius: 16px;
-    gap: 22px;
-  }
-  .ivt-permission-row .ivt-role {
-    flex: none;
-  }
-  .ivt-permission-row .ivt-role .ivt-menu-list {
-    left: auto;
-    right: 0;
-    width: min(280px, calc(100vw - 72px));
-  }
-  .ivt-reassurance {
-    font-size: 10.5px;
-  }
 }
 
 /* A finger-sized tap area around the small control; it looks the same. */
@@ -1055,4 +939,74 @@
   content: "";
   position: absolute;
   inset: -10px;
+}
+
+/* The pickers' menus, as ChatGPT's: a raised rounded card, options with an
+   icon, a name, one line and a check (invite-menu.tsx). */
+.ivt-menu-list {
+  padding: 6px;
+  border-radius: 18px;
+  box-shadow: 0 16px 40px #000a;
+}
+.ivt-item {
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+.ivt-item > span:not(.ivt-item-icon) {
+  flex: 1;
+}
+.ivt-item-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  color: #d6d6d6;
+}
+.ivt-item:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.ivt-item:disabled:hover {
+  background: none;
+}
+.ivt-menu-foot {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 12px 8px;
+  border: 0;
+  border-top: 1px solid var(--ivt-line);
+  background: none;
+  color: var(--ivt-text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+.ivt-menu-foot small {
+  color: var(--ivt-muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+/* Who is invited, in the sheet's title: "Invite an agent ⌄". */
+.ppl-who .ivt-menu-button {
+  height: auto;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+.ppl-who .ivt-menu-button svg {
+  color: var(--ivt-muted);
+}
+.ppl-who .ivt-menu-list {
+  left: 0;
+  right: auto;
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: normal;
 }

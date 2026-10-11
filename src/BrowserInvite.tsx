@@ -1,20 +1,19 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
   AppWindow,
-  ArrowUpRight,
   Bot,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock3,
   Copy,
   Dices,
   Eye,
   EyeOff,
   Folder,
-  Lock,
-  Link2,
   Monitor,
   Pencil,
+  Plug,
   Share2,
   ShieldCheck,
 } from "lucide-react";
@@ -28,10 +27,10 @@ import {
   AccessRow,
   AppPicker,
   AppStack,
-  Segments,
   Switch,
   type PickerApp,
 } from "./agent-ui";
+import { Item, Menu, Row, VIA_WORDS, type Via } from "./invite-menu";
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
@@ -91,24 +90,31 @@ type Issued = {
   command?: string;
   // The same, for Windows (PowerShell).
   windowsCommand?: string;
+  // Hosted: the address of Reach's MCP endpoint, added as a custom connector.
+  hosted?: string;
 };
 // What a tools agent runs, once: Reach for agents from this computer's start
-// page, then joining with its link (as Command line invites do). With the
-// runtime's SHA-256 from this computer, a download that isn't exactly it
-// never replaces the agent's runtime (security audit M8). The link goes in
-// on standard input, never as an argument other processes can list (L5).
+// page, then joining with its link (as Command line invites do). The
+// runtime's SHA-256 from this computer is required: a download that isn't
+// exactly it never replaces the agent's runtime (security audit M8). A
+// computer that names no runtime gets no command (connections audit, Oct 10).
+// The link goes in on standard input, never as an argument other processes
+// can list (L5).
+export const NO_RUNTIME = "Update Reach on that computer to invite agents from it: it doesn't name the runtime agents download, so the download couldn't be checked.";
+const pinnedRuntime = (runtime?: string) => {
+  if (!runtime || !/^[0-9a-f]{64}$/.test(runtime)) throw Error(NO_RUNTIME);
+  return runtime;
+};
 export const toolsCommand = (start: string, link: string, runtime?: string) => {
+  const sha = pinnedRuntime(runtime);
   const join = `printf '%s\\n' '${link}' | node ~/.reach-agent/agent.mjs join`;
-  return runtime && /^[0-9a-f]{64}$/.test(runtime)
-    ? `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${runtime} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`
-    : `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && ${join}`;
+  return `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${sha} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`;
 };
 // The same for Windows, in PowerShell (5.1 and later ship with Windows 10
 // and 11): download, check its SHA-256, then the link on standard input.
 export const windowsToolsCommand = (start: string, link: string, runtime?: string) => {
-  const check = runtime && /^[0-9a-f]{64}$/.test(runtime)
-    ? `if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${runtime}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; `
-    : "";
+  const sha = pinnedRuntime(runtime);
+  const check = `if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; `;
   // Windows PowerShell 5.1 may not offer TLS 1.2 on its own.
   return `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
 };
@@ -127,46 +133,37 @@ const listWords = (items: string[]) =>
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
-// What the agent reads: its preset, what stays closed, how to behave with
-// other agents and the owner. Describes the issued invitation, never later edits.
+// What the agent reads, short (Oct 10: "invite message is too long"): how to
+// connect, what it may do, the few rules. Its tools describe themselves.
+// Describes the issued invitation, never later edits.
 export const agentInviteMessage = (link: string, issued: Issued) => {
   const folders =
     issued.folders.slice(0, 3).map(quote).join(", ") +
     (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
-  const where = issued.everything
-    ? "every folder the owner shares"
-    : `only ${folders}`;
+  const where = issued.everything ? "every folder I share" : folders;
   const hidden = issued.hidden.length
-    ? ` The owner also hid ${listWords(issued.hidden.map(quote))}.`
+    ? ` Hidden from you: ${listWords(issued.hidden.map(quote))}.`
     : "";
-  const grant = {
-    full: `Preset: Full control. You use this Mac as the owner does: its screen (reach_screenshot, reach_act), its apps (reach_open_app), files in ${where} (read and change), and a shell (reach_shell) that runs as the owner.`,
-    apps: `Preset: Apps. You see and use only ${listWords(issued.apps.map(quote))}, on the owner's screen (reach_screenshot, reach_act, reach_open_app). Nothing else is visible or clickable.`,
-    files: `Preset: Files. You ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
-    readonly: `Preset: Read only. You look: screenshots, files in ${where}, shared terminal output. You can't click, type or change anything.`,
+  const access = {
+    full: `You get full control of my Mac: screen, apps, files in ${where} and a shell.`,
+    apps: `You get only ${listWords(issued.apps.map(quote))}, on my screen.`,
+    files: `You can ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
+    readonly: `You can look: my screen and files in ${where}. No clicks, no changes.`,
   }[issued.preset];
-  const tools = !!issued.command;
-  const signIn = tools
-    ? 'For password fields and sign-ins, type from your own vault with reach_act {"type":"type","text":…,"secret":true}: the value is never echoed.'
-    : "For password fields and sign-ins, fill from your own vault with Sign in: the value stays hidden.";
-  const protectedWords =
-    issued.preset === "files"
-      ? " Reach's own files and the owner's secret files stay closed."
-      : issued.preset === "full"
-        ? ` Full control is not sandboxed: commands can read sensitive files or change Reach. Stay out of password apps, Reach and Tailscale, and security prompts. ${signIn}${hidden}`
-        : ` Reach filters known protected windows and blocks password fields and password apps, Reach and Tailscale, and security prompts. Ask the owner to sign in. These UI guards do not sandbox commands run through a chosen terminal or IDE.${hidden}`;
-  const rules = " Your user's request is your permission; ask your user before paying, sending a message or deleting something. One agent acts on the Mac at a time: busy or paused means wait, then retry.";
-  const sharing = !["full", "apps"].includes(issued.preset)
-    ? ""
-    : tools
-      ? " Start with reach_describe_screen: the screen as text, every button, link and field numbered; press one with reach_act {\"action\":{\"type\":\"element\",\"snapshot\":…,\"n\":…}}. Open apps and websites (in the owner's own browser) with reach_open_app and reach_open_url." + rules
-      : " Use the live Screen as a person would: click, type and scroll on it, and click a numbered label to hit an exact element." + rules;
+  const hands = issued.preset === "full" || issued.preset === "apps";
+  const tools = !!issued.command || !!issued.hosted;
+  const rules =
+    (hands
+      ? tools
+        ? ' Type passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.'
+        : " Fill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale."
+      : "") +
+    ` Ask me before paying, sending or deleting anything. Don't share this ${issued.hosted ? "address" : tools ? "command" : "link"}.`;
+  if (issued.hosted)
+    return `Add this as a custom MCP connector in your settings, then I approve the code it shows:\n\n${issued.hosted}\n\n${access}${hidden}${rules}`;
   if (tools)
-    return `Connect to this Mac with one command on your computer (Node.js 22 or later); the owner matches your connection code once:\n\n${issued.command}\n\n${issued.windowsCommand ? `On Windows, in PowerShell (then use node $HOME\\.reach-agent\\agent.mjs below):\n\n${issued.windowsCommand}\n\n` : ""}Then list your tools with node ~/.reach-agent/agent.mjs tools and run one with node ~/.reach-agent/agent.mjs call TOOL '{json}', or add node ~/.reach-agent/agent.mjs mcp as an MCP server. ${grant}${protectedWords}${sharing} Never invite anyone, delegate access, or share this command or your credentials.`;
-  const opening = issued.always
-    ? "Open this Reach link in your browser; the owner will match your connection code the first time. Your access lasts until the owner ends it. Keep this link: it brings this browser back at once; another browser needs a new code."
-    : "Open this temporary Reach link in your browser; the owner will match your connection code the first time. Keep this link: until your access ends, it brings this browser back at once; another browser needs a new code.";
-  return `${opening} ${grant}${protectedWords}${sharing} Code agents: window.reach.listTools(). Never invite anyone, delegate access, or share this link or your credentials.\n\n${link}`;
+    return `Connect to my Mac with Reach. Run this once (Node.js 22 or later), then I approve the code it shows:\n\n${issued.command}\n\nThen add Reach as an MCP server: node ~/.reach-agent/agent.mjs mcp\n\n${access}${hidden}${rules}${issued.windowsCommand ? `\n\nOn Windows, in PowerShell:\n\n${issued.windowsCommand}` : ""}`;
+  return `Open this link in your browser, then I approve the code it shows.${issued.always ? " Your access lasts until I end it." : ""} Keep the link: it brings this browser back.\n\n${access}${hidden}${rules}\n\n${link}`;
 };
 
 // Every invite gets a fresh, silly name; the dice roll another.
@@ -227,12 +224,19 @@ const SUGGESTED_HIDDEN = [
   "com.apple.facetime",
 ];
 
+// How the agent connects: Tools and Web page as before; Hosted for an agent
+// in a service that takes a connector URL (claude.ai, ChatGPT, Muse, Grok).
+type Connect = "tools" | "page" | "hosted";
 type Props = {
   peer: Peer;
   device: Device;
   keyPeer: Peer | null;
   onSetup: () => void;
   onCreated: (created: Created, link: string) => void;
+  // How it connects at first (Tools unless chosen before).
+  initialConnect?: Connect;
+  // Command line, offered in Connects where the invitation has it.
+  onCommandLine?: () => void;
 };
 export default function BrowserInvite(props: Props) {
   return (
@@ -242,7 +246,7 @@ export default function BrowserInvite(props: Props) {
     />
   );
 }
-function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props) {
+function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialConnect = "tools", onCommandLine }: Props) {
   const formId = useId();
   const [name, setName] = useState(() => inviteName());
   const [preset, setPreset] = useState<Preset | null>(null);
@@ -251,7 +255,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
   // terminal and calls Reach's tools over Tailscale: the screen as text, an
   // action per call, no pictures to load. Page: a web page with the live
   // screen, for agents with only a browser (slower).
-  const [connect, setConnect] = useState<"page" | "tools">("tools");
+  const [connect, setConnect] = useState<Connect>(initialConnect);
   const [apps, setApps] = useState<string[]>([]);
   const [folders, setFolders] = useState<PickedFolder[]>([]);
   const [write, setWrite] = useState(false);
@@ -275,6 +279,8 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
     // Tools without a one-time Tailscale key: its computer must already be on
     // the owner's tailnet (no invite keys set up here).
     unkeyed?: boolean;
+    // Hosted: the link is the connector address.
+    hosted?: boolean;
   } | null>(null);
   const doneHeading = useRef<HTMLHeadingElement>(null);
   const alive = useRef(true);
@@ -348,6 +354,13 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
     if (next === "apps" || next === "files") setHidden([]);
     setOpenRow(next === "apps" ? "apps" : next === "files" ? "folders" : null);
   };
+  // A choice that needs nothing more makes the invite once it's set.
+  const [go, setGo] = useState(false);
+  useEffect(() => {
+    if (!go) return;
+    setGo(false);
+    void create();
+  }, [go]);
   const create = async () => {
     if (busy || missing || !preset) return;
     setBusy(true);
@@ -368,6 +381,8 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
         url: string;
         publicName?: "missing";
         runtime?: string;
+        privateUrl?: string;
+        hosted?: boolean;
       }>(peer, "/api/agents/browser-invitations", {
         method: "POST",
         signal: controller.signal,
@@ -375,8 +390,12 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           name: name.trim(),
           // Tools over Tailscale where this Mac makes invite keys; else,
           // like Page, through the public link (from anywhere, no key).
-          transport: connect === "tools" && keyPeer?.id === peer.id ? "tailnet" : "funnel",
+          // Every agent through the public link (Tools as page agents), the
+          // Mac's private address inside its link and tried first: an agent
+          // on your tailnet uses it at once, any other the public link.
+          transport: "funnel",
           preset,
+          ...(connect === "hosted" ? { hosted: true } : {}),
           ...(minutes === ALWAYS
             ? { standing: true }
             : { ttlSeconds: minutes * 60 }),
@@ -393,7 +412,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
       created = {
         peer,
         clientId: result.clientId,
-        invitation: result.invitation,
+        invitation: result.invitation ?? "",
       };
       if (!alive.current || controller.signal.aborted)
         throw Error("Invitation creation was cancelled.");
@@ -406,11 +425,32 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
         everything,
         always: minutes === ALWAYS,
       };
-      if (connect === "tools" && keyPeer?.id !== peer.id) {
-        // No invite links here: one command, every request signed by the
-        // agent's own key (scripts/agent-funnel.mjs). It reaches this Mac's
-        // private address when the agent is on the tailnet, else the public
-        // link. Works from any terminal.
+      if (connect === "hosted") {
+        // A hosted agent (claude.ai, ChatGPT, Muse, Grok): the address of
+        // Reach's MCP endpoint, added as a custom connector; the owner
+        // approves its code like any agent's.
+        const address = new URL(result.url);
+        if (address.protocol !== "https:" || !/^\/mcp\/[A-Za-z0-9_-]{43}$/.test(address.pathname) || address.search || address.hash || address.username || address.password)
+          throw Error("The connector address could not be prepared.");
+        setMade({
+          link: address.href,
+          name: name.trim(),
+          access: PRESET_WORDS[preset].title,
+          expiresAt: result.expiresAt,
+          joinBy: result.joinBy,
+          always: minutes === ALWAYS,
+          unpublished: result.publicName === "missing",
+          hosted: true,
+          message: agentInviteMessage(address.href, { ...issuedTo, hosted: address.href }),
+        });
+        onCreated(created, address.href);
+        return;
+      }
+      if (connect === "tools") {
+        // One command that joins through the public link, every request
+        // signed by the agent's own key (scripts/agent-funnel.mjs), the
+        // private address tried first. Works from any terminal, sandboxes
+        // included (Oct 10: Muse couldn't reach Tailscale at all).
         const origin = new URL(result.url).origin;
         const link = guestLinkUrl(origin, {
           key: "",
@@ -429,42 +469,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
           unkeyed: false,
-          message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
-        });
-        onCreated(created, link);
-        return;
-      }
-      if (connect === "tools") {
-        // As a Command line invite: a one-time Tailscale key for its
-        // computer, made for this agent only, and Reach for agents from the
-        // start page.
-        const start = `https://${new URL(peer.url).hostname}`;
-        const key = await request<{ key: string; hostname: string }>(peer, "/api/guests/key", {
-          method: "POST",
-          signal: controller.signal,
-          body: JSON.stringify({
-            // Always: the Mac keeps the device as long as the access lasts.
-            ...(minutes === ALWAYS ? {} : { ttlSeconds: minutes * 60 }),
-            keySeconds: Math.max(60, Math.round((result.joinBy - Date.now()) / 1000)),
-            clientIds: [result.clientId],
-          }),
-        }).catch(() => null);
-        const link = guestLinkUrl(start, {
-          key: key?.key || "",
-          hostname: key?.hostname || "",
-          invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
-        }, "/agent");
-        const command = toolsCommand(start, link, result.runtime);
-        const windowsCommand = windowsToolsCommand(start, link, result.runtime);
-        setMade({
-          link: command,
-          name: name.trim(),
-          access: PRESET_WORDS[preset].title,
-          expiresAt: result.expiresAt,
-          joinBy: result.joinBy,
-          always: minutes === ALWAYS,
-          unpublished: false,
-          unkeyed: !key,
           message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
         });
         onCreated(created, link);
@@ -546,15 +550,20 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
   // Before the Mac's options arrive (its app list can take a while), the
   // durations every current Reach allows are offered; an older Mac that
   // allows less says so, and the server refuses what it doesn't allow.
-  const dayAllowed = (options?.maxFunnelSeconds ?? 86400) >= 86400;
+  // A day is offered only once this Mac says it allows one: an older Mac
+  // never sees a choice it would refuse.
+  const dayAllowed = (options?.maxFunnelSeconds ?? 0) >= 86400;
   // Always: page agents, and tools agents that join with their own invite
   // key (their credential renews itself and a copy is caught).
   // Always, on either route: its key reconnects the agent until the owner
   // ends it (a copy used elsewhere ends it; a week unused ends it).
   const alwaysAllowed = options ? options.standingAllowed === true : true;
   useEffect(() => {
+    // Only once the Mac's options are known: a choice made while they load
+    // isn't thrown away by the defaults.
+    if (!options) return;
     if ((minutes === ALWAYS && !alwaysAllowed) || (minutes === 1440 && !dayAllowed)) setMinutes(60);
-  }, [alwaysAllowed, dayAllowed]);
+  }, [options, alwaysAllowed, dayAllowed]);
   const summary = !preset
     ? ""
     : `${name.trim()} gets ${
@@ -575,83 +584,75 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
       minute: "2-digit",
     });
 
+  // The durations offered, in the Expires menu: a day and Always only where
+  // this Mac allows them, each with its one line.
+  const durations: { value: number; label: string; description?: string }[] = [
+    { value: 15, label: "15 min" },
+    { value: 30, label: "30 min" },
+    { value: 60, label: "1 hour" },
+    ...(dayAllowed
+      ? [{ value: 1440, label: "24 hours", description: "A day is long for an agent on your Mac. End or pause it any time." }]
+      : []),
+    ...(alwaysAllowed
+      ? [{
+          value: ALWAYS,
+          label: "Always",
+          description: connect === "page"
+            ? "Until you end it. It comes back through the same link, with no new invite."
+            : "Until you end it, or a week unused. Its key renews itself; a copy used elsewhere ends the access.",
+        }]
+      : []),
+  ];
+  const vias: Via[] = ["tools", "page", "hosted", ...(onCommandLine ? ["cli" as const] : [])];
+
   return (
     <section
       className="browser-invite ag-invite"
       aria-label="AI browser invitation"
     >
+      {/* As ChatGPT would: one question. Tap what it may do and the invite
+          is ready (Apps and Folders ask which first). The rest has a good
+          default, changed from the small rows below if you care. */}
       <div className="ag-invite-form" hidden={!!made}>
-        <div className="ag-invite-section">
-          <label className="ag-invite-label" htmlFor={`${formId}-name`}>
-            Agent name
-          </label>
-          <div className="ag-identity">
-            <Bot size={21} strokeWidth={1.7} aria-hidden="true" />
-            <input
-              id={`${formId}-name`}
-              className="ag-identity-name"
-              aria-label="AI browser name"
-              value={name}
-              maxLength={80}
-              placeholder="Name the agent"
-              autoComplete="off"
-              onChange={(e) => setName(e.target.value)}
-            />
-            <button
-              type="button"
-              className="ag-roll"
-              aria-label="New name"
-              onClick={() =>
-                setName((current) => inviteName(Math.random, current))
-              }
-            >
-              <Dices size={19} />
-            </button>
-          </div>
-        </div>
-
-        <div className="ag-invite-section">
-          <h3 className="ag-invite-label">What can it access?</h3>
-          <div
-            className="ag-preset-grid"
-            role="radiogroup"
-            aria-label="Access preset"
-          >
-            {(["full", "apps", "files", "readonly"] as Preset[]).map(
-              (value) => {
-                const Icon = PRESET_ICONS[value];
-                const disabled =
-                  !!options &&
-                  (value === "files" ? !filesSupported : !desktopReady);
-                return (
-                  <label
-                    key={value}
-                    className={`ag-preset${preset === value ? " is-on" : ""}${disabled ? " is-disabled" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name={`${formId}-preset`}
-                      value={value}
-                      aria-label={PRESET_WORDS[value].title}
-                      checked={preset === value}
-                      disabled={disabled}
-                      onChange={() => choose(value)}
-                    />
-                    <span className="ag-preset-top">
-                      <Icon size={21} strokeWidth={1.7} aria-hidden="true" />
-                      <span className="ag-preset-check" aria-hidden="true">
-                        {preset === value && (
-                          <Check size={12} strokeWidth={2.5} />
-                        )}
-                      </span>
-                    </span>
-                    <strong>{PRESET_WORDS[value].title}</strong>
-                    <small>{PRESET_WORDS[value].detail}</small>
-                  </label>
-                );
-              },
-            )}
-          </div>
+        <p className="ag-ask">What may it do?</p>
+        <div
+          className="ivt-rows ag-choices"
+          role="radiogroup"
+          aria-label="Access preset"
+        >
+          {(["full", "apps", "files", "readonly"] as Preset[]).map((value) => {
+            const Icon = PRESET_ICONS[value];
+            const disabled =
+              !!options &&
+              (value === "files" ? !filesSupported : !desktopReady);
+            return (
+              <button
+                type="button"
+                key={value}
+                role="radio"
+                aria-checked={preset === value}
+                aria-label={PRESET_WORDS[value].title}
+                className={`ivt-row ag-choice${preset === value ? " is-on" : ""}`}
+                disabled={disabled || busy}
+                onClick={() => {
+                  choose(value);
+                  // Nothing more to choose: the invite is made at once.
+                  if (value === "full" || value === "readonly") setGo(true);
+                }}
+              >
+                <Icon size={21} strokeWidth={1.7} aria-hidden="true" />
+                <span className="ag-choice-text">
+                  <strong>{PRESET_WORDS[value].title}</strong>
+                  <small>{PRESET_WORDS[value].detail}</small>
+                </span>
+                {busy && preset === value ? (
+                  <span className="ag-choice-busy">Creating…</span>
+                ) : (
+                  <ChevronRight size={17} className="ag-choice-go" aria-hidden="true" />
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {preset === "apps" && (
@@ -737,31 +738,120 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
             </div>
           </div>
         )}
-        {(preset === "full" || preset === "readonly") && (
-          <div className="ag-rows">
-            <AccessRow
-              icon={<Folder />}
-              label="Folders"
-              value={
-                folders.length
-                  ? folders.length === 1
-                    ? folders[0].label
-                    : `${folders.length} folders`
-                  : "Everything you share"
-              }
-              open={openRow === "folders"}
-              onToggle={() => toggleRow("folders")}
+        {(preset === "apps" || preset === "files") && (
+          <div className="ag-send">
+            <p
+              className={`ag-summary${missing ? " is-missing" : ""}`}
+              aria-live="polite"
             >
-              <p className="ag-quiet">
-                Leave empty for every folder Reach shares, or limit it to a few.
-              </p>
-              <FolderBrowser
-                peer={peer}
-                device={device}
-                picked={folders}
-                onChange={setFolders}
-              />
-            </AccessRow>
+              {missing || summary}
+            </p>
+            <button
+              className="ag-primary ag-wide"
+              disabled={busy || !!missing}
+              onClick={() => void create()}
+            >
+              {busy ? "Creating link…" : "Create invite link"}
+            </button>
+          </div>
+        )}
+        {(preset === "full" || preset === "readonly") && missing && (
+          <p className="ag-summary is-missing" aria-live="polite">
+            {missing}
+          </p>
+        )}
+
+        {/* The defaults, quiet: change them before tapping, or never. */}
+        <div className="ivt-rows ag-defaults">
+          <div className="ivt-row ivt-add">
+            <Bot size={19} aria-hidden="true" />
+            <input
+              id={`${formId}-name`}
+              className="ivt-name"
+              aria-label="AI browser name"
+              value={name}
+              maxLength={80}
+              placeholder="Name the agent"
+              autoComplete="off"
+              onChange={(e) => setName(e.target.value)}
+            />
+            <button
+              type="button"
+              className="ag-roll"
+              aria-label="New name"
+              onClick={() =>
+                setName((current) => inviteName(Math.random, current))
+              }
+            >
+              <Dices size={19} />
+            </button>
+          </div>
+          <Row icon={<Clock3 size={19} />} label="Expires">
+            <Menu
+              label={durations.find((d) => d.value === minutes)?.label || "1 hour"}
+              wide
+              className="ivt-role"
+            >
+              {(close) => (
+                <div role="group" aria-label="Access duration">
+                  {durations.map((d) => (
+                    <Item
+                      key={d.value}
+                      on={d.value === minutes}
+                      label={d.label}
+                      description={d.description}
+                      onClick={() => {
+                        setMinutes(d.value);
+                        close();
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </Menu>
+          </Row>
+          <Row icon={<Plug size={19} />} label="Connects">
+            <Menu label={VIA_WORDS[connect].label} wide className="ivt-role">
+              {(close) => (
+                <div role="group" aria-label="How the agent connects">
+                  {vias.map((v) => (
+                    <Item
+                      key={v}
+                      on={v === connect}
+                      label={VIA_WORDS[v].label}
+                      description={
+                        v === "tools" && keyPeer?.id !== peer.id
+                          ? "Fastest. One command in any terminal, through your public link."
+                          : VIA_WORDS[v].description
+                      }
+                      onClick={() => {
+                        close();
+                        if (v === "cli") onCommandLine?.();
+                        else setConnect(v);
+                      }}
+                    />
+                  ))}
+                  {connect === "tools" && keyPeer?.id !== peer.id && (
+                    <button
+                      type="button"
+                      className="ivt-menu-foot"
+                      aria-label="Set up invite links"
+                      onClick={() => {
+                        close();
+                        onSetup();
+                      }}
+                    >
+                      Set up invite links
+                      <small>Keeps Tools on your Tailscale network.</small>
+                    </button>
+                  )}
+                </div>
+              )}
+            </Menu>
+          </Row>
+          {/* Apps and Folders show only what they name: nothing to hide. */}
+          {preset !== "apps" && preset !== "files" && (
+          <div className="ag-rows ag-hide">
             <AccessRow
               icon={<EyeOff />}
               label="Hide apps from it"
@@ -803,124 +893,13 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
               )}
             </AccessRow>
           </div>
-        )}
-
-        {preset && (
-          <p className="ag-note">
-            {preset === "full" ? (
-              <ShieldCheck size={14} />
-            ) : preset === "readonly" ? (
-              <Eye size={14} />
-            ) : (
-              <Lock size={14} />
-            )}
-            {
-              {
-                full: "Only invite an agent you trust with your account. Its commands can read sensitive files or change Reach. Screen protections are guardrails, not a sandbox. Anything already signed in is available. Pause or end it anytime in Settings → Agents.",
-                apps: "Only these apps appear on its screen and take its clicks. Reach filters known protected windows and blocks password fields. A selected terminal or IDE can still run commands as you.",
-                files: write
-                  ? "Changes land in your real folders at once. Reach's own files and your secret files stay closed."
-                  : "It reads your real folders. Nothing is copied, nothing changes.",
-                readonly:
-                  "It watches the screen and reads files. Passwords and Reach stay out of its pictures.",
-              }[preset]
-            }
-          </p>
-        )}
-
-        <div className="ag-invite-section">
-          <h3 className="ag-invite-label">How does it connect?</h3>
-          <Segments
-            label="How the agent connects"
-            value={connect}
-            onChange={setConnect}
-            options={[
-              { value: "tools", label: "Tools" },
-              { value: "page", label: "Page" },
-            ]}
-          />
-          <p className="ag-quiet">
-            {connect === "page"
-              ? "For an agent with only a browser: a web page with your live screen. Slower."
-              : "Fastest. It runs one command in its terminal, then uses Reach's tools: the screen as text, click, type, open apps and websites, files and commands. Over your Tailscale network; works as an MCP server."}
-          </p>
-          {connect === "tools" && keyPeer?.id !== peer.id && (
-            <p className="ag-quiet">
-              From any terminal: your Tailscale network when the agent is on
-              it, else your public link.{" "}
-              <button type="button" className="ag-link" onClick={onSetup}>
-                Set up invite links
-              </button>{" "}
-              to give it a Tailscale key.
-            </p>
           )}
         </div>
-
-        <div className="ag-invite-section ag-invite-duration">
-          <h3 className="ag-invite-label">
-            <Clock3 size={16} aria-hidden="true" /> How long?
-          </h3>
-          <Segments
-            label="Access duration"
-            value={minutes}
-            onChange={setMinutes}
-            options={[
-              { value: 15, label: "15 min" },
-              { value: 30, label: "30 min" },
-              { value: 60, label: "1 hour" },
-              ...(dayAllowed ? [{ value: 1440, label: "24 hours" }] : []),
-              ...(alwaysAllowed ? [{ value: ALWAYS, label: "Always" }] : []),
-            ]}
-          />
-          {minutes === 1440 && (
-            <p className="ag-quiet">
-              A day is long for an agent on your Mac. You can end or pause it
-              any time from Settings → Agents.
-            </p>
-          )}
-          {minutes === ALWAYS && connect === "page" && (
-            <p className="ag-quiet">
-              Until you end it in Settings → Agents.{" "}
-              {name.trim() || "The agent"} comes back through the same link,
-              with no new invite: at once in the same browser. In another
-              browser you match a new code, then the old one is disconnected.
-            </p>
-          )}
-          {minutes === ALWAYS && connect === "tools" && (
-            <p className="ag-quiet">
-              Until you end it in Settings → Agents, or a week unused. Its key
-              renews itself; a copy used elsewhere ends the access.
-            </p>
-          )}
-        </div>
-
-        <div className="ag-send">
-          {preset && (
-            <p
-              className={`ag-summary${missing ? " is-missing" : ""}`}
-              aria-live="polite"
-            >
-              {missing || summary}
-            </p>
-          )}
-          <button
-            className="ag-primary ag-wide"
-            disabled={busy || !!missing}
-            onClick={() => void create()}
-          >
-            <Link2 size={18} aria-hidden="true" />
-            {busy ? "Creating link…" : "Create invite link"}
-            <ArrowUpRight
-              className="ag-send-arrow"
-              size={17}
-              aria-hidden="true"
-            />
-          </button>
-          <p className="ag-invite-footnote">
-            <ShieldCheck size={14} aria-hidden="true" /> You approve the
-            connection. End access anytime.
-          </p>
-        </div>
+        <p className="ag-note">
+          <ShieldCheck size={14} />
+          You approve it before it can join. Full control runs as you: invite
+          only an agent you trust.
+        </p>
         {error && (
           <p className="ag-error" role="alert">
             {error}
@@ -930,7 +909,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
           <p className="ag-quiet ag-center">
             Browser invitations currently require macOS. Your own Files and
             terminals remain available. For an agent, choose Command line
-            access.
+            under Connects.
           </p>
         )}
         {options && !filesSupported && (macHost || desktopReady) && (
@@ -960,20 +939,11 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
             Your invite is ready
           </h3>
           <p className="ag-done-for">
-            A little help from <strong>{made.name}</strong>.
+            <strong>{made.name}</strong> · {made.access} ·{" "}
+            {made.always
+              ? "Until you end it"
+              : `Join by ${at(made.joinBy)} · ends ${at(made.expiresAt)}`}
           </p>
-          <div className="ag-invite-receipt">
-            <span>
-              <ShieldCheck size={16} aria-hidden="true" />
-              {made.access}
-            </span>
-            <span>
-              <Clock3 size={16} aria-hidden="true" />
-              {made.always
-                ? "Until you end it in Settings → Agents"
-                : `Join by ${at(made.joinBy)} · ends ${at(made.expiresAt)}`}
-            </span>
-          </div>
           <div className="ag-done-actions">
             <button className="ag-primary" onClick={() => void copyMessage()}>
               {copied ? <Check size={17} /> : <Copy size={17} />}
@@ -1007,22 +977,12 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated }: Props)
               {shareNote}
             </p>
           )}
-          <ol className="ag-invite-next">
-            <li>
-              <span>1</span>
-              <div>
-                <strong>Send it to your agent</strong>
-                <p>Paste the invite into your agent’s chat.</p>
-              </div>
-            </li>
-            <li>
-              <span>2</span>
-              <div>
-                <strong>Approve the connection</strong>
-                <p>Match the code in Home → Needs you, then let it in.</p>
-              </div>
-            </li>
-          </ol>
+          {made.hosted && <code className="ag-done-url">{made.link}</code>}
+          <p className="ag-done-next">
+            {made.hosted
+              ? "Add it to your agent as a custom MCP connector, then approve its code in Home → Needs you."
+              : "Paste it in your agent’s chat, then approve its code in Home → Needs you."}
+          </p>
           <details
             className="ag-message"
             open={showMessage}

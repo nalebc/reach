@@ -1,4 +1,5 @@
 import { post, request, type Peer } from "./api";
+import { isIos, standalone } from "./home-screen";
 
 // Notifications on this phone when something needs you and Reach isn't open
 // (public/sw.js shows them; server/push.mjs sends them). One browser gets
@@ -6,13 +7,6 @@ import { post, request, type Peer } from "./api";
 
 export type PushSupport = "ready" | "home-screen" | "unsupported" | "denied";
 
-const isIos = () =>
-  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const standalone = () =>
-  (typeof matchMedia === "function" &&
-    matchMedia("(display-mode: standalone)").matches) ||
-  (navigator as { standalone?: boolean }).standalone === true;
 
 // Whether this browser can get notifications, or what it needs first.
 export function pushSupport(): PushSupport {

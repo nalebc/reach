@@ -49,20 +49,23 @@ export function terminalPrompts({
       value: c.value,
     }));
     if (output.isTTY && input.setRawMode && env.TERM !== "dumb") {
-      if (library === undefined) {
+      // Not installed yet is asked again at the next menu: the first run
+      // installs it while setup's menus are on screen.
+      let loaded = library;
+      if (loaded === undefined) {
         try {
-          library = (await load()).default;
+          loaded = library = (await load()).default;
         } catch (error) {
           if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
-          library = null;
+          loaded = null;
         }
       }
-      if (library) {
+      if (loaded) {
         let active;
         const end = () => active?.abort();
         input.once("end", end);
         try {
-          const result = await library(
+          const result = await loaded(
             {
               type: "select",
               name: "choice",

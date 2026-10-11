@@ -50,6 +50,31 @@
 .home-peek.is-live {
   opacity: 1;
 }
+/* No fresh picture (asleep, locked, reconnecting): the last one, dimmed. */
+.home-peek.is-live.is-held {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+/* Why, top right across from Pause: one small pill; tap tries again. */
+.home-hero-status {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  max-width: 45%;
+  padding: 4px 10px;
+  border: 1px solid #b5e9dc26;
+  border-radius: 999px;
+  background: #0d171dcc;
+  color: var(--muted, #93a096);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
 .home-live .home-hero-text h1 {
   margin: 6px 0 2px;
   font-size: 19px;
@@ -63,13 +88,6 @@
   margin: 0;
   font-size: 12.5px;
   color: var(--muted, #93a096);
-}
-.home-invite {
-  position: absolute;
-  /* Above the scene, which is layered over the live screen. */
-  z-index: 2;
-  top: 10px;
-  right: 10px;
 }
 .home-needs {
   display: flex;
@@ -408,64 +426,123 @@
 .story-ring.failed + small {
   color: #e6ece7;
 }
-/* Who's on the computer: a pill under its name; amber while someone
+/* Access (who can use this computer), right under it: faces, one line, a
+   white Invite pill. The card opens Agents & people. Amber while someone
    controls it. */
-.home-here {
+.home-access {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 10px auto 0;
-  padding: 3px 11px 3px 4px;
-  border: 0;
-  border-radius: 999px;
-  background: #ffffff0f;
-  color: #d9e1da;
-  font: 500 12.5px system-ui, sans-serif;
+  gap: 8px;
+  padding: 6px 6px 6px 4px;
+  border-radius: 22px;
+  background: #ffffff0a;
+  box-shadow: inset 0 0 0 1px #ffffff0d;
 }
-.home-here.controlling {
-  background: #fac7751f;
-  color: #fac775;
+.home-access.controlling {
+  background: #fac77514;
+  box-shadow: inset 0 0 0 1px #fac77533;
 }
-.home-here-faces {
-  display: flex;
-}
-.home-here-faces i {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  margin-left: -6px;
-  border: 2px solid #0d171d;
-  border-radius: 50%;
-  background: #1f2b25;
-  color: #dce5dd;
-}
-.home-here-faces i:first-child {
-  margin-left: 0;
-}
-.home-here-row {
+.home-access-who {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 56px;
-  padding: 6px 4px;
-  font: 500 15px system-ui, sans-serif;
+  min-height: 48px;
+  padding: 4px 6px 4px 10px;
+  border: 0;
+  border-radius: 18px;
+  background: none;
+  color: #eef4ef;
+  text-align: left;
 }
-.home-here-row > span:last-child {
+.home-access-who:active {
+  background: #ffffff0d;
+}
+.home-access-faces {
+  display: flex;
+  flex: none;
+}
+.home-access-faces i {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  margin-left: -8px;
+  border: 2px solid #0f1613;
+  border-radius: 50%;
+  background: #24302a;
+  color: #dce5dd;
+  font: normal 600 12.5px system-ui, sans-serif;
+}
+.home-access-faces i:first-child {
+  margin-left: 0;
+}
+.home-access-faces i.agent {
+  background: color-mix(in srgb, var(--lime, #b9efd4) 18%, #1a231e);
+  color: var(--lime, #b9efd4);
+}
+.home-access-faces i.you {
+  width: auto;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+}
+/* Here now: a green dot on their face. */
+.home-access-faces i.here::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid #0f1613;
+  border-radius: 50%;
+  background: #5fd38d;
+}
+.home-access-faces b {
+  font-weight: 600;
+}
+.home-access-text {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.home-here-row small {
-  font-size: 12px;
-  font-weight: 400;
+.home-access-text strong {
+  overflow: hidden;
+  font: 550 15px system-ui, sans-serif;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.home-access.controlling .home-access-text strong {
+  color: #fac775;
+}
+.home-access-text small {
+  font-size: 12.5px;
   color: var(--muted, #93a096);
 }
-.home-here-manage {
-  width: 100%;
-  min-height: 46px;
+.home-access-text small.waiting {
+  color: #f2c879;
+}
+.home-access-go {
+  flex: none;
+  color: #6f7c73;
+}
+.home-access-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 40px;
+  padding: 0 15px 0 12px;
   border: 0;
   border-radius: 999px;
-  background: #ffffff12;
-  color: var(--text, #e9eee9);
-  font: 500 15px system-ui, sans-serif;
+  background: #ededed;
+  color: #111;
+  font: 600 14px system-ui, sans-serif;
+}
+.home-access-add:active {
+  background: #fff;
 }

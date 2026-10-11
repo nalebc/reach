@@ -11,46 +11,11 @@ import {
   notificationPreferences,
   type NotificationPreferences,
 } from "./push";
+import { useInstallPrompt } from "./home-screen";
 import "./notifications.css";
 
-// Reach on the Home Screen. Chrome, Edge and Android offer a real install
-// prompt, but only once, at page load: it's kept from start-up (this module
-// loads with the app) for the tap. iPhone has no such prompt.
-type InstallPrompt = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-};
-let installPrompt: InstallPrompt | null = null;
-const installChanged = () =>
-  window.dispatchEvent(new Event("reach-install-changed"));
-if (typeof window !== "undefined") {
-  window.addEventListener("beforeinstallprompt", (e) => {
-    e.preventDefault();
-    installPrompt = e as InstallPrompt;
-    installChanged();
-  });
-  window.addEventListener("appinstalled", () => {
-    installPrompt = null;
-    installChanged();
-  });
-}
-function useInstallPrompt() {
-  const [ready, setReady] = useState(() => !!installPrompt);
-  useEffect(() => {
-    const changed = () => setReady(!!installPrompt);
-    window.addEventListener("reach-install-changed", changed);
-    return () => window.removeEventListener("reach-install-changed", changed);
-  }, []);
-  const install = async () => {
-    const prompt = installPrompt;
-    if (!prompt) return;
-    installPrompt = null;
-    await prompt.prompt();
-    await prompt.userChoice.catch(() => null);
-    installChanged();
-  };
-  return ready ? install : null;
-}
+// Reach on the Home Screen: Chrome, Edge and Android's own install prompt,
+// kept from start-up (home-screen.ts); iPhone has none.
 
 export function useNotificationSetup(peer: Peer, active = true) {
   const [support, setSupport] = useState(pushSupport);
@@ -212,9 +177,14 @@ const CATEGORIES = [
 // iPhone sends notifications only to Home Screen apps. A web page can't add
 // itself there: the nearest is the Share sheet, one tap from "Add to Home
 // Screen", so the button opens it; the two steps show once it's open.
-function HomeScreenSetup() {
+export function HomeScreenSetup({
+  why = "iPhone sends notifications only to Home Screen apps.",
+  label = "Notification setup",
+  steps = false,
+}: { why?: string; label?: string; steps?: boolean } = {}) {
   const canShare = typeof navigator.share === "function";
-  const [asked, setAsked] = useState(!canShare);
+  // `steps`: shown from the start (asked for already, PhonePrompts.tsx).
+  const [asked, setAsked] = useState(!canShare || steps);
   const share = async () => {
     setAsked(true);
     try {
@@ -224,12 +194,12 @@ function HomeScreenSetup() {
     }
   };
   return (
-    <section className="ns ns-install" aria-label="Notification setup">
+    <section className="ns ns-install" aria-label={label}>
       <div className="ns-install-head">
         <img className="ns-app-icon" src="/favicon.svg" alt="" />
         <span className="ns-text">
           <strong>Add Reach to your Home Screen</strong>
-          <small>iPhone sends notifications only to Home Screen apps.</small>
+          <small>{why}</small>
         </span>
       </div>
       {canShare && (

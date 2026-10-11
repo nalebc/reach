@@ -13,6 +13,7 @@ import {
   GuestBar,
   type GuestSession,
 } from "./guest-session";
+import { keepDoorKey } from "./door-key";
 import { parseGuestLink } from "./start-flow";
 import { homeOrigin } from "./home-origin";
 // Capture the new link before the lazy redemption component removes its hash.
@@ -33,8 +34,10 @@ function GuestWorkspace({ peer, onEnd }: { peer: Peer; onEnd: () => void }) {
     setError("");
     request<Device>(peer, "/api/device", { signal: controller.signal })
       .then((device) => {
-        if (!controller.signal.aborted)
-          setBrowser(!!device.access?.scopes.includes("browser:read"));
+        if (controller.signal.aborted) return;
+        // Joined: the public link lets this browser's page through from now on.
+        keepDoorKey(peer);
+        setBrowser(!!device.access?.scopes.includes("browser:read"));
       })
       .catch((e) => {
         if (controller.signal.aborted) return;

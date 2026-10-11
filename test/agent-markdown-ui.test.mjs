@@ -39,6 +39,11 @@ test("a link to another Claude session opens it here, and says when it isn't her
   assert.equal(plain.container.querySelector("button.md-session-link"), null);
   assert.equal(plain.container.querySelector("u").textContent, "open it");
   await plain.unmount();
+  // A plain http link isn't tappable: only its text (connections audit, Oct 10).
+  const insecure = await dom.render(React.createElement(AgentMarkdown, { text: "see [the page](http://example.test/x)" }));
+  assert.equal(insecure.container.querySelector("a"), null);
+  assert.equal(insecure.container.querySelector("u").textContent, "the page");
+  await insecure.unmount();
 });
 after(() => dom?.close());
 const show = async (text) => {

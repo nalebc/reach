@@ -455,3 +455,31 @@ test("a still-running noisy CLI probe is terminated at the observed output limit
   t.mock.timers.tick(10000);
   assert.equal(signals.length, 1, "an exited child receives no late escalation");
 });
+
+// Codex's session service is trusted only at a socket you own, in a folder no
+// one else could have swapped it into (connections audit, Oct 10).
+test("Codex's session service socket must be yours, in a folder no one else writes", { skip: process.platform === "win32" }, async () => {
+  const { ownSocket } = await import("../server/agent-sessions/codex-daemon.mjs");
+  const { default: net } = await import("node:net");
+  const { default: fs } = await import("node:fs");
+  const { default: path } = await import("node:path");
+  const dir = fs.mkdtempSync("/tmp/reach-codex-sock-");
+  const file = path.join(dir, "s");
+  const server = net.createServer();
+  await new Promise((r) => server.listen(file, r));
+  try {
+    await ownSocket(file);
+    await assert.rejects(ownSocket(file, { uid: process.getuid() + 1 }), /isn't one Reach can trust/);
+    fs.chmodSync(dir, 0o777);
+    await assert.rejects(ownSocket(file), /isn't one Reach can trust/, "a folder anyone writes");
+    fs.chmodSync(dir, 0o1777);
+    await ownSocket(file);
+    fs.chmodSync(dir, 0o700);
+    fs.writeFileSync(path.join(dir, "plain"), "");
+    await assert.rejects(ownSocket(path.join(dir, "plain")), /isn't one Reach can trust/, "not a socket");
+    await assert.rejects(ownSocket(path.join(dir, "missing")), /isn't one Reach can trust/);
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

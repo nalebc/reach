@@ -10,11 +10,27 @@ import {
   serveConfigs,
 } from "./tailscale.mjs";
 const exec = promisify(execFile);
+// A refusal is said in Tailscale's own words (often with the page that fixes
+// it), not as "Command failed: /path/to/tailscale …".
 export const runTailscale = (args) =>
   exec(tailscaleCli(), args, {
     timeout: 20000,
     maxBuffer: 1024 * 1024,
     windowsHide: true,
+  }).catch((error) => {
+    const said = String(error?.stderr || error?.stdout || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(" ")
+      .slice(0, 400);
+    if (error?.code === "ENOENT")
+      throw Object.assign(new Error("Tailscale is unavailable. Install and sign in to Tailscale on this computer, then rerun Reach."), { cause: error });
+    throw Object.assign(
+      new Error(said || (error?.killed ? "Tailscale took too long to answer." : "Tailscale refused the change.")),
+      { cause: error, code: error?.code },
+    );
   });
 
 export function exactPersistentRoute(config, origin, target) {

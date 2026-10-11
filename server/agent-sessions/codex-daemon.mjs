@@ -94,6 +94,16 @@ export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
   });
 }
 
+// A socket only you could have put there: yours, in a folder that's yours
+// or that no one else can write to (or sticky, as /tmp is).
+export async function ownSocket(file, { uid = process.getuid?.(), platform = process.platform } = {}) {
+  if (platform === "win32" || uid === undefined) return;
+  const refused = () => Object.assign(new Error("Codex's session service isn't one Reach can trust here."), { status: 503 });
+  const [entry, folder] = await Promise.all([fs.promises.lstat(file), fs.promises.lstat(path.dirname(file))]).catch(() => { throw refused(); });
+  if (!entry.isSocket() || entry.uid !== uid || !folder.isDirectory()) throw refused();
+  if (folder.uid !== uid && folder.uid !== 0) throw refused();
+  if (folder.mode & 0o022 && !(folder.mode & 0o1000)) throw refused();
+}
 export function createCodexDaemon({
   locate = findCodexExecutable,
   run = exec,
@@ -109,6 +119,10 @@ export function createCodexDaemon({
   // Only the real Codex is asked for its CLI catalog and config defaults.
   listCliModels = run === exec ? cliModelList : null,
   defaults = run === exec ? codexDefaults : null,
+  // The session service's socket must be yours, in a folder no one else can
+  // swap it in, as the Codex app's is (codex-desktop.mjs; connections audit,
+  // Oct 10). Only the real Codex is checked.
+  checkSocket = run === exec ? ownSocket : async () => {},
 } = {}) {
   let socket = null;
   let ready = null;
@@ -166,6 +180,7 @@ export function createCodexDaemon({
     });
     const status = JSON.parse(stdout.trim().split("\n").pop());
     if (!status.socketPath) throw new Error("Codex did not report its session service.");
+    await checkSocket(status.socketPath);
     return status.socketPath;
   }
   async function open() {

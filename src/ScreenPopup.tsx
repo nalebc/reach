@@ -9,8 +9,11 @@ export default function ScreenPopup({
   children,
   className = "",
   returnFocus,
+  heading,
 }: {
   title: string;
+  /** Shown in place of the title (a switcher, say); the title still names the popup. */
+  heading?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   className?: string;
@@ -66,7 +69,7 @@ export default function ScreenPopup({
         {/* Bottom sheets on phones: drag it down to close. */}
         <div className="sheet-handle" aria-hidden="true" />
         <header data-sheet-grab>
-          <h2>{title}</h2>
+          <h2>{heading ?? title}</h2>
           <button
             className="icon-button"
             aria-label="Close panel"

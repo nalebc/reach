@@ -7,10 +7,11 @@ import {
   LayoutGrid,
   Plus,
   Settings,
-  UserRoundPlus,
+  UsersRound,
   X,
 } from "lucide-react";
 import ScreenPopup from "./ScreenPopup";
+import { connectionName } from "./connection";
 import { BrandCourier } from "./ReachIdentity";
 import { AppIcon, ComputerIcon } from "./AppIcon";
 import { platform, type Device, type Peer } from "./api";
@@ -23,7 +24,7 @@ import "./more-sheet.css";
 const PLACES: Record<string, { label: string; glyph: ReactNode }> = {
   files: { label: "Files", glyph: <Folder size={21} /> },
   apps: { label: "Apps", glyph: <LayoutGrid size={21} /> },
-  invite: { label: "Invite someone", glyph: <UserRoundPlus size={21} /> },
+  invite: { label: "Agents & people", glyph: <UsersRound size={21} /> },
 };
 
 export default function MoreSheet({
@@ -59,15 +60,7 @@ export default function MoreSheet({
 }) {
   const [switching, setSwitching] = useState(false);
   const online = connections[peer.id]?.state === "connected";
-  const host = (() => {
-    try {
-      return new URL(peer.url).hostname.endsWith(".ts.net")
-        ? "Tailscale"
-        : "Direct";
-    } catch {
-      return "";
-    }
-  })();
+  const host = connectionName(peer.url);
   // Rows come in one after another, quickly.
   let order = 0;
   const step = () => ({ "--i": order++ }) as CSSProperties;

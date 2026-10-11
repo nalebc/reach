@@ -403,6 +403,8 @@ test("a new OpenClaw chat starts from New chat, as a chat of Reach's own, and op
   started = [];
   await click("New chat");
   const sheet = () => dom.document.querySelector('[role="dialog"]');
+  sheet().querySelector(".chat-app-switch-current").click();
+  await settle();
   [...sheet().querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "OpenClaw").click();
   await settle();
   assert.doesNotMatch(sheet().textContent, /discovered automatically/);

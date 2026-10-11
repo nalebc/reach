@@ -130,7 +130,7 @@ test("finds your other Reach computers and links only on request", async () => {
 });
 
 test(
-  "approve once: a phone approved on Mac A is let in by linked Mac B, and only then",
+  "approve once: a phone approved on Mac A is let in by linked Mac B on A's one-use ticket, and only then",
   { skip: process.platform === "win32", timeout: 30000 },
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-fleet-two-"));
@@ -241,13 +241,23 @@ test(
       macs[name] = { reach, socket, dataDir };
     }
     const phone = "100.64.0.10";
-    const ask = async (mac) => {
+    const ask = async (mac, ticket) => {
       const created = await call(mac, "/api/auth/requests", {
         from: phone,
-        body: { name: "My iPhone" },
+        body: { name: "My iPhone", ...(ticket ? { ticket } : {}) },
       });
       assert.equal(created.status, 202);
       return created.json;
+    };
+    // The phone's ticket from Mac A, asked with its own credential there.
+    const ticketFrom = async (mac, token, from = phone) => {
+      const r = await call(mac, "/api/fleet/tickets", {
+        from,
+        body: {},
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      return r.json.ticket;
     };
     const poll = async (mac, r, ms = 1500) => {
       const until = Date.now() + ms;
@@ -269,14 +279,31 @@ test(
       const onA = await poll("A", first);
       assert.equal(onA.status, "approved");
 
-      // Not linked yet: Mac B waits for its own terminal.
+      // Any process on Mac B can claim the phone's Tailscale identity on
+      // B's private socket: an identity alone waits for B's own approval,
+      // linked or not (connections audit, Oct 10).
       assert.equal((await poll("B", await ask("B"), 700)).status, "pending");
-      // B links A, but A hasn't linked B: A won't answer B, so still pending.
+      const refusedTicket = (r) => assert.equal(r.status, 403, JSON.stringify(r.json));
+      // Not linked yet: A's ticket means nothing to B.
+      refusedTicket(await call("B", "/api/auth/requests", { from: phone, body: { name: "My iPhone", ticket: await ticketFrom("A", onA.token) } }));
+      // B links A, but A hasn't linked B: A won't redeem B's ask.
       await macs.B.reach.fleet.link("mac-a");
-      assert.equal((await poll("B", await ask("B"), 700)).status, "pending");
-      // Both linked: approved on B with no terminal step, and B's terminal is told.
+      refusedTicket(await call("B", "/api/auth/requests", { from: phone, body: { name: "My iPhone", ticket: await ticketFrom("A", onA.token) } }));
       await macs.A.reach.fleet.link("mac-b");
-      const third = await ask("B");
+      await fs.rm(path.join(macs.B.dataDir, "device-requests"), { recursive: true, force: true });
+      await fs.mkdir(path.join(macs.B.dataDir, "device-requests"), { mode: 0o700 });
+      // Linked both ways, still no ticket: still B's own approval.
+      assert.equal((await poll("B", await ask("B"), 700)).status, "pending");
+      // A made-up ticket, or a real one brought by another device: refused.
+      refusedTicket(await call("B", "/api/auth/requests", { from: phone, body: { name: "My iPhone", ticket: "made-up" } }));
+      refusedTicket(await call("B", "/api/auth/requests", { from: "100.64.0.13", body: { name: "Laptop", ticket: await ticketFrom("A", onA.token) } }));
+      // Only your own approved device's credential gets a ticket.
+      assert.equal((await call("A", "/api/fleet/tickets", { from: phone, body: {} })).status, 401);
+      // The phone's own ticket: approved on B with no terminal step, once.
+      await fs.rm(path.join(macs.B.dataDir, "device-requests"), { recursive: true, force: true });
+      await fs.mkdir(path.join(macs.B.dataDir, "device-requests"), { mode: 0o700 });
+      const ticket = await ticketFrom("A", onA.token);
+      const third = await ask("B", ticket);
       const onB = await poll("B", third, 4000);
       assert.equal(onB.status, "approved");
       assert.ok(onB.token);
@@ -286,6 +313,7 @@ test(
           .find((r) => r.id === third.id).approvedBy,
         "Mac A",
       );
+      refusedTicket(await call("B", "/api/auth/requests", { from: phone, body: { name: "My iPhone", ticket } }));
       // The credential works on B, bound to the phone.
       const me = await call("B", "/api/device", {
         from: phone,
@@ -293,12 +321,15 @@ test(
       });
       assert.equal(me.status, 200);
 
+      // A process on Mac A claiming linked Mac B's identity can't make A
+      // revoke anything: A asks B back, and B revoked nothing.
+      const forgedByB = await call("A", "/api/fleet/revoked", { from: ip.nB, body: { userId: "42", nodeId: "nPhone" } });
+      assert.equal(forgedByB.status, 403);
+      assert.equal(macs.A.reach.auth.list().filter((c) => c.tailscale?.nodeId === "nPhone").length, 1);
       // Revoke once: revoking the phone on B (through B's API, as the owner
       // does in Settings) drops it on A as well; another device stays.
       const onBClient = macs.B.reach.auth.list().find((c) => c.tailscale?.nodeId === "nPhone");
-      const aBefore = macs.A.reach.auth.list().filter((c) => c.tailscale?.nodeId === "nPhone").length;
-      assert.equal(aBefore, 1);
-      const revoked = await call("B", `/api/clients/${onBClient.id}`, {
+      await call("B", `/api/clients/${onBClient.id}`, {
         from: phone,
         headers: { Authorization: `Bearer ${onB.token}` },
         method: "DELETE",
@@ -308,46 +339,24 @@ test(
       // Only linked computers may tell A to revoke.
       const forged = await call("A", "/api/fleet/revoked", { from: "100.64.0.13", body: { userId: "42", nodeId: "nPhone" } });
       assert.equal(forged.status, 403);
-      // Approve again on A for the checks below.
+      // Approve again on A; B lets it back in on a new ticket.
       const again1 = await ask("A");
       approvalStore(macs.A.dataDir).decide(again1.id, "approve");
-      assert.equal((await poll("A", again1)).status, "approved");
-      // …and B lets it back in by itself (approved on A again). Earlier
-      // requests count toward B's limit of three per device in 5 minutes.
+      const backOnA = await poll("A", again1);
+      assert.equal(backOnA.status, "approved");
       await fs.rm(path.join(macs.B.dataDir, "device-requests"), { recursive: true, force: true });
       await fs.mkdir(path.join(macs.B.dataDir, "device-requests"), { mode: 0o700 });
-      const backOnB = await poll("B", await ask("B"), 4000);
+      const backOnB = await poll("B", await ask("B", await ticketFrom("A", backOnA.token)), 4000);
       assert.equal(backOnB.status, "approved");
 
-      // Only linked computers may ask; never another device or a tagged one.
+      // Only linked computers may redeem; never another device or a tagged one.
+      const spare = await ticketFrom("A", backOnA.token);
       for (const from of ["100.64.0.10", "100.64.0.13", "100.64.0.14"]) {
-        const r = await call("A", "/api/fleet/approved", {
-          from,
-          body: { userId: "42", nodeId: "nPhone" },
-        });
+        const r = await call("A", "/api/fleet/tickets/redeem", { from, body: { ticket: spare } });
         assert.equal(r.status, 403, from);
       }
-      const byB = await call("A", "/api/fleet/approved", {
-        from: ip.nB,
-        body: { userId: "42", nodeId: "nPhone" },
-      });
-      assert.deepEqual(byB.json, { approved: true });
-      const unknownDevice = await call("A", "/api/fleet/approved", {
-        from: ip.nB,
-        body: { userId: "42", nodeId: "nLaptop" },
-      });
-      assert.deepEqual(unknownDevice.json, { approved: false });
-
-      // Revoked on A: no longer vouched for.
-      const client = macs.A.reach.auth
-        .list()
-        .find((c) => c.tailscale?.nodeId === "nPhone");
-      macs.A.reach.auth.revoke(client.id);
-      const again = await call("A", "/api/fleet/approved", {
-        from: ip.nB,
-        body: { userId: "42", nodeId: "nPhone" },
-      });
-      assert.deepEqual(again.json, { approved: false });
+      assert.deepEqual((await call("A", "/api/fleet/tickets/redeem", { from: ip.nB, body: { ticket: spare } })).json, { valid: true, userId: "42", nodeId: "nPhone" });
+      assert.deepEqual((await call("A", "/api/fleet/tickets/redeem", { from: ip.nB, body: { ticket: spare } })).json, { valid: false });
 
       // A page served by Mac A may call Mac B (one phone page, both Macs).
       const cors = await call("B", "/api/health", {
@@ -411,6 +420,25 @@ test("one link for the tailnet: the computer where Reach was set up first", asyn
   }
 });
 
+test("reach link on Windows: refused with why, before anything is read or linked", async () => {
+  const { linkComputers } = await import("../scripts/link.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-link-win-"));
+  try {
+    const printed = [];
+    await assert.rejects(
+      linkComputers(root, "mac-b", {
+        platform: "win32",
+        print: (line) => printed.push(line),
+        fleet: { status: async () => assert.fail("no Tailscale call on Windows") },
+      }),
+      { message: "Linking computers isn't available on Windows yet: it needs phones approved by your Tailscale account, and on Windows they join with a pairing code." },
+    );
+    assert.deepEqual(printed, []);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reach link: lists your Reach computers and links one from any terminal", async () => {
   const { linkComputers } = await import("../scripts/link.mjs");
   const { stateDir } = await import("../scripts/home.mjs");
@@ -429,6 +457,7 @@ test("reach link: lists your Reach computers and links one from any terminal", a
     );
     const printed = [];
     const deps = {
+      platform: "darwin",
       print: (line) => printed.push(line),
       fleet: {
         status: async () => status({ ID: "nB", DNSName: "mac-b.t.ts.net." }),

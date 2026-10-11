@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { actionWords } from "./agent-actions.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { atomicJson, browserIdleEnded, fail, isPlainRecord } from "./core.mjs";
@@ -81,6 +82,8 @@ export function createAgentShortcuts({
   dataDir,
   desktop,
   record = () => {},
+  // The owner's log of what each agent did (agent-actions.mjs add).
+  actions = () => {},
   now = Date.now,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
@@ -572,6 +575,7 @@ export function createAgentShortcuts({
           running.completedSteps = index + 1;
         }
         record("agent", `${client.name} completed a shortcut`);
+        actions(client, { kind: "shortcut", text: actionWords("shortcut", { name: item.name }) });
         return {
           status: "completed",
           id,
@@ -580,6 +584,7 @@ export function createAgentShortcuts({
         };
       } catch (error) {
         record("agent", `${client.name}'s shortcut stopped`);
+        actions(client, { kind: "shortcut", text: actionWords("shortcut", { name: item.name }), ok: false, reason: String(error?.message || "Stopped").slice(0, 300) });
         return {
           status: "stopped",
           id,

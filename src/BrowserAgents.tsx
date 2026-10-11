@@ -3,21 +3,13 @@ import { usePageVisible } from "./page-visible";
 import {
   AppWindow,
   ChevronDown,
-  Clock3,
   Folder,
-  Plus,
-  RefreshCw,
-  Search,
   ShieldCheck,
   Sparkles,
   SquareTerminal,
 } from "lucide-react";
 import { PRESET_WORDS } from "./BrowserInvite";
-import AccessEditor, {
-  appScopedAccess,
-  canEditAccess,
-  type EditableAccess,
-} from "./AccessEditor";
+import { type EditableAccess } from "./AccessEditor";
 import { request, type Device, type Peer } from "./api";
 import { AgentAdmissionReview, type AgentAdmission } from "./agent-admissions";
 import {
@@ -27,9 +19,6 @@ import {
 } from "./browser-approvals";
 import { ErrorLine, Spinner } from "./ui";
 import { AgentAvatar, AppStack, appName } from "./agent-ui";
-import AgentShortcuts from "./AgentShortcuts";
-import { ServiceAccessPanel } from "./service-access";
-import ToolBrowserSetup from "./ToolBrowserSetup";
 import "./browser-agents.css";
 import "./agent-list.css";
 
@@ -52,14 +41,17 @@ export type BrowserAgentSession = EditableAccess & {
     kind?: string;
   };
 };
+// One thing an agent did on the Mac (server/agent-actions.mjs).
+type AgentAction = { id: string; at: number; kind: string; text: string; app?: string; ok: boolean; reason?: string };
 type Props = {
   peer: Peer;
   device: Device;
-  invite: () => void;
   toast: (message: string) => void;
+  // One agent's panel, by its invitation id; without it, the ended agents.
+  focus?: string;
 };
 const sessionCode = (id: string) => id.slice(-8);
-const activeSession = (agent: BrowserAgentSession, now: number) =>
+export const activeSession = (agent: Pick<BrowserAgentSession, "expiresAt" | "status">, now: number) =>
   (agent.expiresAt || 0) > now &&
   (!agent.status ||
     ["invited", "pending", "approved", "accepted"].includes(agent.status));
@@ -93,9 +85,10 @@ export default function BrowserAgents(props: Props) {
     />
   );
 }
-function BrowserAgentList({ peer, device, invite, toast }: Props) {
+function BrowserAgentList({ peer, toast, focus }: Props) {
   const [agents, setAgents] = useState<BrowserAgentSession[]>([]);
   const [records, setRecords] = useState<BrowserRequest[]>([]);
+  const [actions, setActions] = useState<AgentAction[]>([]);
   const [admissions, setAdmissions] = useState<AgentAdmission[]>([]);
   const [connectionReview, setConnectionReview] =
     useState<AgentAdmission | null>(null);
@@ -105,25 +98,15 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
   const [actionError, setActionError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [revision, setRevision] = useState(0);
-  const [editing, setEditing] = useState<BrowserAgentSession | null>(null);
   const [reviewing, setReviewing] = useState<BrowserRequest | null>(null);
-  const [stopSnapshot, setStopSnapshot] = useState<
-    { id: string; name: string }[] | null
-  >(null);
-  const [stopping, setStopping] = useState<string[]>([]);
-  // Which agents are open (by id), and the search text.
+  // Which ended agents are open (by id).
   const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const [query, setQuery] = useState("");
   const visible = usePageVisible();
   const alive = useRef(true);
-  const mutations = useRef(new Set<AbortController>());
-  const mutationPending = useRef(false);
-  const stopped = useRef(new Set<string>());
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
-      for (const controller of mutations.current) controller.abort();
     };
   }, []);
   useEffect(() => {
@@ -151,20 +134,19 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
         request<AgentAdmission[]>(peer, "/api/agents/admissions", {
           signal: controller.signal,
         }),
+        // What this one agent did, newest first; an older Reach has no log.
+        focus
+          ? request<{ actions: AgentAction[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: controller.signal })
+          : Promise.resolve({ actions: [] as AgentAction[] }),
       ]);
       if (!controller.signal.aborted) {
-        const [sessions, requests, history, connections] = results;
+        const [sessions, requests, history, connections, did] = results;
+        if (did.status === "fulfilled" && Array.isArray(did.value?.actions)) setActions(did.value.actions);
         if (
           sessions.status === "fulfilled" &&
           Array.isArray(sessions.value.agents)
         ) {
-          setAgents(
-            sessions.value.agents.map((agent) =>
-              stopped.current.has(agent.id)
-                ? { ...agent, status: "revoked" }
-                : agent,
-            ),
-          );
+          setAgents(sessions.value.agents);
           setError("");
         } else {
           setError(
@@ -173,7 +155,6 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
               : "Agent sessions could not be loaded.",
           );
           setReviewing(null);
-          setEditing(null);
           setConnectionReview(null);
         }
         const nextAdmissions =
@@ -228,55 +209,6 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       clearInterval(timer);
     };
   }, [peer, revision, visible]);
-  const stop = async (clientIds: string[]) => {
-    if (mutationPending.current || !clientIds.length) return;
-    mutationPending.current = true;
-    setStopping(clientIds);
-    setActionError("");
-    const controller = new AbortController();
-    mutations.current.add(controller);
-    try {
-      const result = await request<{ stopped: string[] }>(
-        peer,
-        "/api/browser/agents/stop",
-        {
-          method: "POST",
-          body: JSON.stringify({ clientIds }),
-          signal: controller.signal,
-        },
-      );
-      if (!alive.current || controller.signal.aborted) return;
-      if (!Array.isArray(result.stopped))
-        throw new Error(
-          "Reach did not confirm which sessions stopped. Refresh and try again.",
-        );
-      for (const id of result.stopped) stopped.current.add(id);
-      setAgents((old) =>
-        old.map((agent) =>
-          stopped.current.has(agent.id)
-            ? { ...agent, status: "revoked" }
-            : agent,
-        ),
-      );
-      setStopSnapshot(null);
-      setReviewing(null);
-      setEditing(null);
-      setConnectionReview(null);
-      setRevision((value) => value + 1);
-      toast(
-        result.stopped.length === 1
-          ? "Agent access stopped"
-          : `${result.stopped.length} agent sessions stopped`,
-      );
-    } catch (failure) {
-      if (alive.current && !controller.signal.aborted)
-        setActionError((failure as Error).message);
-    } finally {
-      mutations.current.delete(controller);
-      mutationPending.current = false;
-      if (alive.current && !controller.signal.aborted) setStopping([]);
-    }
-  };
   // Pause one agent on the Mac: it keeps looking, its actions wait.
   const pausing = useRef(new Set<string>());
   const pause = async (agent: BrowserAgentSession, paused: boolean) => {
@@ -294,39 +226,12 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
       pausing.current.delete(agent.id);
     }
   };
-  const active = agents.filter((agent) => activeSession(agent, now));
-  const busy = stopping.length > 0;
-  const words = query.trim().toLowerCase();
-  const found = (agent: BrowserAgentSession) =>
-    !words ||
-    agent.name.toLowerCase().includes(words) ||
-    agent.id.toLowerCase().includes(words) ||
-    (agent.folders || []).some((folder) =>
-      folder.toLowerCase().includes(words),
-    ) ||
-    (agent.policy?.appAccess || []).some((app) =>
-      appName(app).toLowerCase().includes(words),
-    ) ||
-    (agent.policy?.apps || []).some((app) => appName(app).toLowerCase().includes(words)) ||
-    (agent.preset ? PRESET_WORDS[agent.preset].title.toLowerCase().includes(words) : false);
-  const ended = agents.filter((agent) => !activeSession(agent, now));
-  const shownActive = active.filter(found);
-  const shownEnded = ended.filter(found);
-  const needsYou = (agent: BrowserAgentSession) =>
-    activeSession(agent, now) &&
-    (agent.status === "pending" ||
-      records.some(
-        (record) => record.clientId === agent.id && pendingRecord(record, now),
-      ));
-  const waiting = active.filter(needsYou).length;
-  const clock = (value: number) =>
-    new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  const ends = (value: number) =>
-    new Date(value).toDateString() === new Date(now).toDateString()
-      ? clock(value)
-      : time(value);
-
-  const card = (agent: BrowserAgentSession) => {
+  const busy = pausing.current.size > 0;
+  const ended = agents
+    .filter((agent) => !activeSession(agent, now))
+    .sort((a, b) => (b.expiresAt || 0) - (a.expiresAt || 0));
+  // What one agent may use and what it's doing.
+  const body = (agent: BrowserAgentSession) => {
     const active = activeSession(agent, now);
     const agentRecords = records.filter((record) => record.clientId === agent.id);
     const pending = active
@@ -335,79 +240,12 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
     const admission = active
       ? admissions.find((item) => item.clientId === agent.id)
       : undefined;
-    const isStopping =
-      stopping.includes(agent.id) || agent.activity?.state === "stopping";
-    const status = !active
-      ? agent.status === "revoked"
-        ? "Stopped"
-        : agent.status === "denied"
-          ? "Connection denied"
-          : "Expired"
-      : isStopping
-        ? "Stopping"
-        : agent.paused
-          ? "Paused"
-          : agent.holdsMac
-            ? `Using ${agent.using?.app || "the Mac"}`
-        : agent.status === "pending"
-          ? "Awaiting approval"
-          : agent.status === "approved"
-            ? "Connecting"
-            : agent.activity?.state === "waiting"
-              ? "Waiting for folder"
-              : agent.activity?.state === "running"
-                ? "Working"
-                : pending.length || agent.pendingApprovals
-                  ? "Needs approval"
-                  : agent.status === "invited"
-                    ? "Not joined yet"
-                    : "Ready";
-    const tone = !active
-      ? "is-ended"
-      : agent.status === "pending" || pending.length || agent.pendingApprovals
-        ? "is-ask"
-        : agent.activity?.state === "running" || agent.status === "accepted" || agent.holdsMac
-          ? "is-live"
-          : "";
     const presetWords = agent.preset ? PRESET_WORDS[agent.preset] : null;
-    const open = opened[agent.id] ?? (active && (needsYou(agent) || agents.length === 1));
     const policy = agent.policy || {};
     const folders = agent.folders || [];
     const apps = policy.appAccess || [];
     return (
-      <article
-        className={`ba-session ag-agent${open ? " is-open" : ""}${active ? "" : " is-ended"}`}
-        key={agent.id}
-        data-agent-id={agent.id}
-      >
-        <button
-          type="button"
-          className="ag-agent-head"
-          aria-expanded={open}
-          onClick={() =>
-            setOpened((old) => ({ ...old, [agent.id]: !open }))
-          }
-        >
-          <AgentAvatar name={agent.name} size={42} />
-          <span className="ag-agent-title">
-            <strong>{agent.name}</strong>
-            <small title={agent.id}>
-              {active
-                ? agent.standing ? "Always" : `Ends ${ends(agent.expiresAt || 0)}`
-                : `Ended · ${time(agent.expiresAt || 0)}`}
-              {" · "}
-              {sessionCode(agent.id)}
-            </small>
-          </span>
-          {!!pending.length && (
-            <span className="ag-count" aria-label={`${pending.length} waiting`}>
-              {pending.length}
-            </span>
-          )}
-          <span className={`ag-pill ${tone}`}>{status}</span>
-        </button>
-
-        <div className="ag-agent-body" hidden={!open}>
+      <>
           {active && agent.status === "pending" && (
             <div className="ag-ask">
               <p>
@@ -555,26 +393,10 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
                 </div>
               </li>
             )}
-            <li>
-              <Clock3 size={18} />
-              <div>
-                <strong>{active ? "Access ends" : "Invitation expiry"}</strong>
-                <small>{agent.standing && active ? "When you end it" : time(agent.expiresAt || 0)}</small>
-              </div>
-            </li>
           </ul>
 
-          <div className="ag-actions">
-            {canEditAccess(agent) && (
-              <button
-                className="ag-secondary ag-small"
-                disabled={busy || !!error}
-                onClick={() => setEditing(agent)}
-              >
-                {appScopedAccess(agent) ? "Manage access" : "Edit access"}
-              </button>
-            )}
-            {active && (agent.preset === "full" || agent.preset === "apps") && (
+          {active && (agent.preset === "full" || agent.preset === "apps") && (
+            <div className="ag-actions">
               <button
                 className="ag-secondary ag-small"
                 disabled={busy || !!error}
@@ -582,23 +404,28 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
               >
                 {agent.paused ? "Resume" : "Pause"}
               </button>
-            )}
-            {active && (
-              <button
-                className="ag-danger ag-small"
-                disabled={busy || !!error}
-                onClick={() => void stop([agent.id])}
-              >
-                {isStopping ? "Stopping…" : "Stop"}
-              </button>
-            )}
-          </div>
+            </div>
+          )}
 
           <details className="ag-fold ba-history">
             <summary>
-              Activity <span className="ag-fold-count">{agentRecords.length}</span>
+              Activity <span className="ag-fold-count">{actions.length + agentRecords.length}</span>
               <ChevronDown size={15} />
             </summary>
+            {actions.length > 0 && (
+              <ol className="ag-log ba-did" aria-label="What it did">
+                {actions.map((item) => (
+                  <li key={item.id} className={item.ok ? "" : "is-refused"}>
+                    <div>
+                      <strong>{item.text}</strong>
+                      <time dateTime={new Date(item.at).toISOString()}>{time(item.at)}</time>
+                    </div>
+                    {item.app && <small>{item.app}</small>}
+                    {!item.ok && <p className="ba-log-error">{item.reason ? `Refused: ${item.reason}` : "Refused"}</p>}
+                  </li>
+                ))}
+              </ol>
+            )}
             {agentRecords.length ? (
               <ol className="ag-log">
                 {agentRecords.map((record) => (
@@ -626,168 +453,68 @@ function BrowserAgentList({ peer, device, invite, toast }: Props) {
                   </li>
                 ))}
               </ol>
-            ) : (
-              <p className="ag-quiet">No requests or commands recorded for this session.</p>
-            )}
+            ) : !actions.length ? (
+              <p className="ag-quiet">Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here.</p>
+            ) : null}
             <p className="ag-quiet">
-              Recent records are shown. Approvals apply only to this invitation.
+              {actions.length ? "Its last 200 actions, kept across restarts. " : "Recent records are shown. "}Approvals apply only to this invitation.
             </p>
           </details>
+      </>
+    );
+  };
+  // An ended agent: a row that opens to what it could use and did.
+  const card = (agent: BrowserAgentSession) => {
+    const open = !!opened[agent.id];
+    const status =
+      agent.status === "revoked"
+        ? "Stopped"
+        : agent.status === "denied"
+          ? "Connection denied"
+          : "Expired";
+    return (
+      <article
+        className={`ba-session ag-agent is-ended${open ? " is-open" : ""}`}
+        key={agent.id}
+        data-agent-id={agent.id}
+      >
+        <button
+          type="button"
+          className="ag-agent-head"
+          aria-expanded={open}
+          onClick={() => setOpened((old) => ({ ...old, [agent.id]: !open }))}
+        >
+          <AgentAvatar name={agent.name} size={42} />
+          <span className="ag-agent-title">
+            <strong>{agent.name}</strong>
+            <small title={agent.id}>{time(agent.expiresAt || 0)}</small>
+          </span>
+          <span className="ag-pill is-ended">{status}</span>
+        </button>
+        <div className="ag-agent-body" hidden={!open}>
+          {open && body(agent)}
         </div>
       </article>
     );
   };
 
+  // One agent, inside its sheet on Agents & people: what needs you, what it's
+  // doing, what it may use, Pause, and its activity. Edit access, when it
+  // ends, its link and Remove are the sheet's own rows.
+  const focused = focus ? agents.find((agent) => agent.id === focus) : undefined;
   return (
-    <section className="browser-agents ag-agents" aria-label="Agent sessions">
-      <div className="ag-agents-head">
-        <div>
-          <h2>Agents</h2>
-          <p>
-            {active.length
-              ? `${active.length} active${waiting ? ` · ${waiting} ${waiting === 1 ? "needs" : "need"} you` : ""}`
-              : "Invite an agent and choose what it can use."}
-          </p>
-        </div>
-        <button className="ag-primary ag-small" onClick={invite}>
-          <Plus size={16} /> Invite agent
-        </button>
-      </div>
-
-      {agents.length > 0 && (
-        <div className="ag-toolbar">
-          <label className="ag-search">
-            <Search size={16} aria-hidden="true" />
-            <input
-              type="search"
-              aria-label="Search agents"
-              placeholder="Search agents, folders, apps"
-              value={query}
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </label>
-          <button
-            className="ag-icon-button"
-            onClick={() => setRevision((value) => value + 1)}
-            aria-label="Refresh agent sessions"
-            disabled={busy}
-          >
-            <RefreshCw size={16} />
-          </button>
-        </div>
-      )}
+    <section className="browser-agents ag-agents ag-embedded" aria-label={focus ? "Agent session" : "Ended agents"}>
       <ErrorLine error={error} />
       <ErrorLine error={actionError} />
       <ErrorLine error={historyError} />
-      <AgentShortcuts peer={peer} toast={toast} />
-      <ServiceAccessPanel peer={peer} />
-      <ToolBrowserSetup peer={peer} toast={toast} />
-      {stopSnapshot && (
-        <div
-          className="ba-stop-confirm ag-confirm"
-          role="group"
-          aria-label="Confirm stop all agents"
-        >
-          <strong>
-            Stop {stopSnapshot.length}{" "}
-            {stopSnapshot.length === 1 ? "invitation" : "invitations"}?
-          </strong>
-          <p>
-            This ends access and cancels queued work for these sessions. New
-            invitations are not included.
-          </p>
-          <ul>
-            {stopSnapshot.map((agent) => (
-              <li key={agent.id}>
-                <AgentAvatar name={agent.name} size={22} />
-                {agent.name} <small>· {sessionCode(agent.id)}</small>
-              </li>
-            ))}
-          </ul>
-          <div>
-            <button
-              className="ag-secondary ag-small"
-              disabled={busy}
-              onClick={() => setStopSnapshot(null)}
-            >
-              Cancel
-            </button>
-            <button
-              className="ag-danger ag-small"
-              disabled={busy || !!error}
-              onClick={() => void stop(stopSnapshot.map((agent) => agent.id))}
-            >
-              {busy ? "Stopping…" : "Stop these sessions"}
-            </button>
-          </div>
-        </div>
-      )}
       {loading ? (
-        <Spinner label="Loading agent sessions…" />
-      ) : !agents.length && !error ? (
-        <div className="ag-empty">
-          <AgentAvatar name="+" size={56} />
-          <h3>No agents yet</h3>
-          <p>
-            Invite an agent. Pick what it may do, Full control
-            to Read only, and approve it when it connects.
-          </p>
-          <button className="ag-primary" onClick={invite}>
-            <Plus size={17} /> Invite an agent
-          </button>
-        </div>
-      ) : null}
-
-      {(shownActive.length > 0 || (!!active.length && !words)) && (
-        <div className="ag-group">
-          <div className="ag-group-head">
-            <p className="ag-label">Active · {active.length}</p>
-            <button
-              className="ag-link is-danger"
-              disabled={!active.length || busy || !!error}
-              onClick={() =>
-                setStopSnapshot(active.map(({ id, name }) => ({ id, name })))
-              }
-            >
-              Stop all
-            </button>
-          </div>
-          <div className="ba-list ag-list">{shownActive.map(card)}</div>
-        </div>
-      )}
-      {shownEnded.length > 0 && (
-        <details className="ag-group ag-ended" open={!!words || !active.length}>
-          <summary className="ag-group-head">
-            <p className="ag-label">Ended · {ended.length}</p>
-            <ChevronDown size={15} />
-          </summary>
-          <div className="ba-list ag-list">{shownEnded.map(card)}</div>
-        </details>
-      )}
-      {!!words && !shownActive.length && !shownEnded.length && (
-        <p className="ag-quiet ag-center">No agent matches “{query.trim()}”.</p>
-      )}
-      {!!agents.length && (
-        <p className="ag-quiet ag-footnote">
-          Agents work in your real folders and apps, within their preset.
-          Passwords, security prompts and Reach stay closed to every agent.
-        </p>
-      )}
-      {editing && (
-        <AccessEditor
-          key={editing.id}
-          peer={peer}
-          device={device}
-          client={editing}
-          onClose={() => setEditing(null)}
-          onSaved={() => {
-            setEditing(null);
-            setRevision((value) => value + 1);
-          }}
-        />
+        <Spinner label="Loading…" />
+      ) : focus ? (
+        focused && body(focused)
+      ) : ended.length ? (
+        <div className="ba-list ag-list">{ended.map(card)}</div>
+      ) : (
+        <p className="ag-quiet ag-center">No ended agents.</p>
       )}
       {connectionReview && (
         <AgentAdmissionReview

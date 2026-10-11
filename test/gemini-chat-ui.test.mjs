@@ -121,7 +121,9 @@ test("New chat says Gemini CLI is read only instead of offering a chat it refuse
   views.push(view);
   await click(await dom.waitFor(() => $$("button").find((b) => b.textContent.trim() === "New chat")));
   await dom.waitFor(() => $("textarea[aria-label='New Codex chat']"));
-  await click($$(".chat-new-app-row button").find((b) => /Gemini CLI/.test(b.textContent + (b.getAttribute("aria-label") || ""))));
+  await click($(".chat-app-switch-current"));
+  assert.equal($('.chat-app-switch-menu [aria-label="Gemini CLI"] small').textContent, "Read only");
+  await click($('.chat-app-switch-menu [aria-label="Gemini CLI"]'));
   const note = await dom.waitFor(() => $(".chat-coming-soon"));
   assert.match(note.textContent, /Read only/);
   assert.match(note.textContent, /To start a new one, pick another app above\./);

@@ -22,7 +22,8 @@ for (const picker of [true, false]) {
   test(`${picker ? "chat folder picker" : "sharing folder browser"} hides the old directory's actions while loading`, async () => {
     view = await dom.render(dom.React.createElement(picker ? FolderPicker : FolderBrowser,
       picker ? { peer, onPick() {} } : { peer, device, picked: [], onChange() {} }));
-    if (!picker) { open("Home").click(); await settle(); }
+    // The sharing browser opens in Home, not the computer's root.
+    if (!picker) assert.equal(dom.document.querySelector('.fb-crumbs [aria-current="location"]')?.textContent, "Home");
     await dom.waitFor(() => open("Projects"));
     open("Projects").click();
     await dom.waitFor(() => finish);

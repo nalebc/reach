@@ -108,7 +108,9 @@ export function GuestBar({
     <div className="guest-bar" role="status">
       <span>
         <Clock size={13} /> Guest ·{" "}
-        {always ? "Until the owner ends it" : remaining >= 3600
+        {always ? "Until the owner ends it" : remaining >= 2 * 86400
+          ? `${Math.floor(remaining / 86400)} days left`
+          : remaining >= 3600
           ? `${Math.floor(remaining / 3600)} h ${Math.floor((remaining % 3600) / 60)} min left`
           : remaining >= 60
             ? `${Math.ceil(remaining / 60)} min left`

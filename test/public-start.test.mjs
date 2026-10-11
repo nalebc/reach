@@ -94,7 +94,8 @@ async function serve(t) {
 }
 
 test("serves the start page, its config and the browser client, nothing else", async (t) => {
-  const { get } = await serve(t);
+  const served = await serve(t);
+  const { get } = served;
   // (/agent: an agent's link opened in a browser only says what it's for.)
   for (const p of ["/", "/guest", "/agent", "/?pair=1"]) {
     const r = await get(p);
@@ -145,6 +146,17 @@ test("serves the start page, its config and the browser client, nothing else", a
   assert.equal(agent.body, "// reach for agents");
   assert.equal(agent.headers["content-type"], "text/javascript; charset=utf-8");
   assert.equal(agent.headers["cache-control"], "no-cache");
+  // A runtime it served, by its hash (a line from `keep` names one), and
+  // nothing else under that folder (connections audit, Oct 10).
+  const kept = "ab".repeat(32);
+  const { dist } = served.f;
+  fs.mkdirSync(path.join(dist, "agent-runtimes"), { recursive: true });
+  fs.writeFileSync(path.join(dist, "agent-runtimes", `${kept}.mjs`), "// kept");
+  const byHash = await get(`/agent-runtimes/${kept}.mjs`);
+  assert.equal(byHash.status, 200);
+  assert.equal(byHash.body, "// kept");
+  for (const p of [`/agent-runtimes/${"cd".repeat(32)}.mjs`, "/agent-runtimes/", `/agent-runtimes/${kept}`, "/agent-runtimes/../agent.mjs", `/agent-runtimes/${kept.toUpperCase()}.mjs`])
+    assert.equal((await get(p)).status, 404, p);
 });
 
 test("refuses the API, WebSockets, other methods, other hosts and path tricks", async (t) => {

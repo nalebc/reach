@@ -43,6 +43,9 @@ full.patterns = compile(${list(rules.protectedPagePatterns)})
 full.terminalLike = ${list(rules.terminalLike)}
 `;
     const stubs = String.raw`
+// Bank sites are judged by moneyAt (test/money-sites.test.mjs).
+func buildWebTree(_ pid: pid_t) {}
+func moneyAt(_ s: inout Seen, _ point: CGPoint?, _ rules: Rules) throws -> (url: String, title: String)? { nil }
 final class NSRunningApplication {
   let processIdentifier: pid_t
   let bundleIdentifier: String?, localizedName: String?
@@ -60,9 +63,12 @@ final class NSRunningApplication {
 var otherApp: NSRunningApplication? = nil
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: NSRunningApplication? = nil }
 typealias AXUIElement = Int
-// Numbered labels (perform "element"): none in these keyboard cases.
-var snapshots: [(id: String, elements: [AXUIElement])] = []
+// Numbered labels, press and fill (perform "element", "press", "fill") read
+// the screen; none of these keyboard cases do.
 func frameOf(_ element: AXUIElement) -> CGRect? { nil }
+func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen { fatalError("Keyboard fixtures never read the screen") }
+func findControl(_ screen: Screen, name: String, role: String? = nil, fields: Bool = false, near: CGPoint? = nil) throws -> Control { fatalError("Keyboard fixtures never read the screen") }
+func clickControl(_ control: Control, in screen: Screen, _ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expected: [String: String]?) throws -> [String: Any] { fatalError("Keyboard fixtures never read the screen") }
 let kAXFocusedWindowAttribute = "window", kAXFocusedUIElementAttribute = "focus", kAXTitleAttribute = "title"
 var focusedPid: pid_t? = 42, observedPid: pid_t = 42
 var pidLookupSucceeded = true
@@ -89,7 +95,7 @@ func seen(_ element: AXUIElement) -> Seen {
 func windowTitleReason(_ title: String, _ bundle: String, _ path: String, _ pid: pid_t, _ rules: Rules) -> String? { titleReason(title, bundle, rules) }
 func hostsReach(_ app: NSRunningApplication, _ rules: Rules) -> Bool { false }
 func front(_ rules: Rules) -> [String: Any] { [:] }
-func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String:String]? = nil) throws -> Seen { fatalError("Keyboard fixtures must never use pointer input") }
+func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String:String]? = nil, activate: Bool = false) throws -> Seen { fatalError("Keyboard fixtures must never use pointer input") }
 typealias CGKeyCode = UInt16
 struct CGEventFlags: OptionSet {
   let rawValue: Int
@@ -181,6 +187,7 @@ print("OK focus and keyboard dispatch cases")
       + extract("func check(_ s:", "// The window server")
       + extract("struct Focus ", "// No longer called: guessing the owner")
       + extract("let keyCodes:", "let source = CGEventSource")
+      + extract("struct Control {", "func frameOf(")
       + extract("func flags(", "@available(macOS 14.0, *)\nfunc shot(")
       + config + harness;
     assert.doesNotMatch(program, /import (?:AppKit|ApplicationServices)|cghidEventTap/);

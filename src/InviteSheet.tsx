@@ -1,11 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { usePageVisible } from "./page-visible";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
-  Globe2,
+  Bot,
+  Plug,
   Sparkles,
-  Check,
-  ChevronDown,
   Copy,
   Link2,
   Search,
@@ -13,9 +11,7 @@ import {
   Clock3,
   Monitor,
   ShieldCheck,
-  Terminal,
   UserRound,
-  UserRoundPlus,
   X,
 } from "lucide-react";
 import { Share as NativeShare } from "@capacitor/share";
@@ -26,16 +22,19 @@ import { guestLinkUrl, parseGuestLink } from "./start-flow";
 import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
-import BrowserInvite, { toolsCommand } from "./BrowserInvite";
-import AccessEditor, { appScopedAccess, canEditAccess, type EditableAccess } from "./AccessEditor";
+import BrowserInvite, { NO_RUNTIME, toolsCommand } from "./BrowserInvite";
+import { Item, Menu, Row, VIA_WORDS, type Via } from "./invite-menu";
+import type { EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
 // People and assistants share a focused composer; the assistant connection
 // method is a secondary choice. Permissions are checked on every request.
 
 type Role = "watch" | "control" | "files" | "work" | "full" | "custom";
-type Created = { peer: Peer; clientId: string; invitation: string };
-type Guest = EditableAccess & { group?: string };
+export type Created = { peer: Peer; clientId: string; invitation: string };
+export type Guest = EditableAccess & { group?: string };
+// A link made here, by invitation (a computer never keeps them).
+export type MadeLink = { link: string; keyed: boolean; created: Created[]; runtime?: string };
 const ROLES: {
   value: Role;
   label: string;
@@ -109,9 +108,9 @@ const AGENT_DAYS = [
 ];
 // Changing what someone may use later, from their row: no new link. The
 // computer checks it as it checks an invitation (POST /api/guests/:id/access).
-type Level =
+export type Level =
   "watch" | "control" | "open" | "edit" | "work" | "full" | "read" | "run";
-const LEVELS: {
+export const LEVELS: {
   value: Level;
   label: string;
   description: string;
@@ -135,7 +134,7 @@ const LEVELS: {
   { ...ROLES[3], value: "work", folders: true },
   { ...ROLES[4], value: "full" },
 ];
-const AGENT_LEVELS: typeof LEVELS = AGENT_ROLES.map((r) => ({
+export const AGENT_LEVELS: typeof LEVELS = AGENT_ROLES.map((r) => ({
   ...r,
   folders: true,
 }));
@@ -156,7 +155,7 @@ export function levelOf(g: Pick<Guest, "kind" | "scopes">): Level | "" {
   return "";
 }
 // What to ask the computer for: their folders are kept where they have some.
-const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
+export const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
   watch: { screen: "view", apps: "all" },
   control: { screen: "control", apps: "all" },
   open: { folders: "keep", write: false },
@@ -167,23 +166,30 @@ const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
   run: { folders: "keep", write: true, exec: true },
 };
 // Folders they have now, to keep (full access had "everything": not a choice).
-const hasFolders = (g: Guest) =>
+export const hasFolders = (g: Guest) =>
   g.kind === "agent"
     ? (g.policy?.roots?.length || 0) > 0
     : !(g.scopes || []).includes("admin") && (g.guestRoots?.length || 0) > 0;
 const startOf = (peer: Peer) => `https://${new URL(peer.url).hostname}`;
 // What an agent runs, once: Reach for agents from the computer's start page
-// (checked against its SHA-256 when the computer gave it), then join with
-// its link.
-export const agentCommand = (start: string, link: string, runtime?: string) =>
-  toolsCommand(start, link, runtime);
-const list = (items: string[]) =>
+// (checked against its SHA-256), then join with its link. A computer that
+// names no runtime gets no command: "" (connections audit, Oct 10).
+export const agentCommand = (start: string, link: string, runtime?: string) => {
+  try {
+    return toolsCommand(start, link, runtime);
+  } catch {
+    return "";
+  }
+};
+export const list = (items: string[]) =>
   items.length <= 1
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
-const left = (until: number, now: number) => {
+export const left = (until: number, now: number) => {
   const s = Math.max(0, Math.round((until - now) / 1000));
-  return s >= 3600
+  return s >= 2 * 86400
+    ? `${Math.floor(s / 86400)} days left`
+    : s >= 3600
     ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min left`
     : s >= 60
       ? `${Math.ceil(s / 60)} min left`
@@ -213,81 +219,8 @@ export function accessLabel(scopes: string[] = []) {
   return parts.join(" · ") || "No access";
 }
 
-// A small menu anchored to its button: options with a one-line description
-// and a check, like the access pickers in Claude and ChatGPT.
-function Menu({
-  label,
-  children,
-  wide = false,
-  className = "",
-}: {
-  label: ReactNode;
-  children: (close: () => void) => ReactNode;
-  wide?: boolean;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => {
-      if (!box.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const key = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", key);
-    return () => {
-      document.removeEventListener("pointerdown", away);
-      document.removeEventListener("keydown", key);
-    };
-  }, [open]);
-  return (
-    <div className={`ivt-menu ${className}`} ref={box}>
-      <button
-        type="button"
-        className="ivt-menu-button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        {label}
-        <ChevronDown size={15} />
-      </button>
-      {open && (
-        <div className={`ivt-menu-list ${wide ? "wide" : ""}`} role="menu">
-          {children(() => setOpen(false))}
-        </div>
-      )}
-    </div>
-  );
-}
-function Item({
-  on,
-  label,
-  description,
-  onClick,
-}: {
-  on: boolean;
-  label: ReactNode;
-  description?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitemcheckbox"
-      aria-checked={on}
-      className="ivt-item"
-      onClick={onClick}
-    >
-      <span>
-        <strong>{label}</strong>
-        {description && <small>{description}</small>}
-      </span>
-      {on && <Check size={16} />}
-    </button>
-  );
-}
+// The pickers live in invite-menu.tsx (shared with BrowserInvite).
+export { Menu, Item };
 function Toggle({
   on,
   label,
@@ -320,13 +253,18 @@ export function InviteSheet({
   device,
   peers = [peer],
   initialKind = "person",
+  onCreated,
 }: {
   peer: Peer;
   device: Device;
   peers?: Peer[];
   initialKind?: "person" | "browser";
+  // Each link made (or given its key later), for the list of who has access.
+  onCreated?: (clientId: string, made: MadeLink) => void;
 }) {
   const [kind, setKind] = useState<"person" | "agent" | "browser">(initialKind);
+  // How an agent connects, kept when it goes to Command line and back.
+  const [via, setVia] = useState<"tools" | "page" | "hosted">("tools");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("watch");
   const [agentRole, setAgentRole] = useState<AgentRole>("edit");
@@ -359,11 +297,14 @@ export function InviteSheet({
   const [setupOpen, setSetupOpen] = useState(false);
   // Set up, but the tailnet policy lets every device reach everything.
   const [openPolicy, setOpenPolicy] = useState(false);
-  const [guests, setGuests] = useState<Guest[]>([]);
   // Links made here, by invitation (a computer never keeps them).
-  const [links, setLinks] = useState<
-    Record<string, { link: string; keyed: boolean; created: Created[]; runtime?: string }>
-  >({});
+  const [links, setLinks] = useState<Record<string, MadeLink>>({});
+  const told = useRef<Record<string, MadeLink>>({});
+  useEffect(() => {
+    for (const id of Object.keys(links))
+      if (links[id] !== told.current[id]) onCreated?.(id, links[id]);
+    told.current = links;
+  }, [links]);
   const [made, setMade] = useState<{
     clientId: string;
     guest: string;
@@ -377,34 +318,8 @@ export function InviteSheet({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
-  const [now, setNow] = useState(Date.now);
-  // A new link scrolls into view once (not on every clock tick).
+  // A new link scrolls into view once.
   const linkCard = useRef<HTMLElement>(null);
-  // Changing someone's access: the folders to choose first, where they have
-  // none to keep (on each computer their invitation covers).
-  const [picking, setPicking] = useState<{
-    guest: Guest;
-    level: Level;
-    all: { peer: Peer; guest: Guest }[];
-    need: string[];
-  } | null>(null);
-  const [picked, setPicked] = useState<Record<string, PickedFolder[]>>({});
-  const [changed, setChanged] = useState("");
-  const [editing, setEditing] = useState<Guest | null>(null);
-
-  const loadGuests = () =>
-    request<{ clients: Guest[] }>(peer, "/api/clients")
-      .then((r) =>
-        setGuests(
-          (r.clients || []).filter(
-            (c) =>
-              (c.kind === "guest" ||
-                (c.kind === "agent" && c.policy?.invite)) &&
-              (c.expiresAt || 0) > Date.now(),
-          ),
-        ),
-      )
-      .catch(() => {});
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -430,23 +345,10 @@ export function InviteSheet({
       live = false;
     };
   }, [peer.url, peer.token, peers.map((p) => p.id).join(",")]);
-  const visible = usePageVisible();
-  useEffect(() => {
-    // In the background, nothing ticks or is asked; back on screen, at once.
-    if (!visible) return;
-    void loadGuests();
-    const clock = setInterval(() => setNow(Date.now()), 1000);
-    const refresh = setInterval(loadGuests, 10000);
-    return () => {
-      clearInterval(clock);
-      clearInterval(refresh);
-    };
-  }, [peer.url, peer.token, visible]);
   useEffect(() => {
     for (const p of peers)
       if (
-        (computers.includes(p.id) || picking?.need.includes(p.id)) &&
-        !devices[p.id]
+computers.includes(p.id) && !devices[p.id]
       )
         request<Device>(p, "/api/device")
           .then((d) => setDevices((old) => ({ ...old, [p.id]: d })))
@@ -454,7 +356,6 @@ export function InviteSheet({
   }, [
     computers.join(","),
     peers.map((p) => p.id).join(","),
-    picking?.need.join(","),
   ]);
   useEffect(() => {
     if (apps !== "pick" || appList.length) return;
@@ -621,7 +522,6 @@ export function InviteSheet({
       setName("");
       setShare("");
       setOnTailnet(false);
-      void loadGuests();
     } catch (e) {
       // All or nothing: undo the invitations already made.
       await cancel(created);
@@ -691,7 +591,6 @@ export function InviteSheet({
         summary: agentSummary,
       });
       setName("");
-      void loadGuests();
     } catch (e) {
       if (created) await cancel([created]);
       setError((e as Error).message);
@@ -736,179 +635,9 @@ export function InviteSheet({
         setNote("Couldn’t open sharing. Copy the link instead.");
     }
   };
-  // Their invitation on this computer, and on your other computers it covers.
-  const sameInvitation = async (g: Guest) => {
-    const all = [{ peer, guest: g }];
-    if (g.group)
-      for (const p of peers) {
-        if (p.id === peer.id) continue;
-        try {
-          const r = await request<{ clients: Guest[] }>(p, "/api/clients");
-          const twin = (r.clients || []).find(
-            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now(),
-          );
-          if (twin) all.push({ peer: p, guest: twin });
-        } catch {}
-      }
-    return all;
-  };
-  // Computer by computer: one that says no is named (the ones before it
-  // stay changed).
-  const applyLevel = async (
-    g: Guest,
-    level: Level,
-    all: { peer: Peer; guest: Guest }[],
-    folders: Record<string, PickedFolder[]> = {},
-  ) => {
-    for (const x of all)
-      try {
-        await post(x.peer, `/api/guests/${x.guest.id}/access`, {
-          ...LEVEL_BODY[level],
-          ...(folders[x.peer.id]
-            ? {
-                folders: folders[x.peer.id].map(({ root, path }) => ({
-                  root,
-                  path,
-                })),
-              }
-            : {}),
-        });
-      } catch (e) {
-        throw Error(
-          all.length > 1
-            ? `${x.peer.name}: ${(e as Error).message}`
-            : (e as Error).message,
-        );
-      }
-    const label = (g.kind === "agent" ? AGENT_LEVELS : LEVELS).find(
-      (l) => l.value === level,
-    )!.label;
-    setChanged(`${g.name}: ${label.toLowerCase()} now. No new link needed.`);
-  };
-  const changeLevel = async (g: Guest, level: Level) => {
-    if (busy || g.policy?.browser || g.scopes?.includes("browser:read")) return;
-    setBusy(true);
-    setError("");
-    setChanged("");
-    try {
-      const all = await sameInvitation(g);
-      const levels = g.kind === "agent" ? AGENT_LEVELS : LEVELS;
-      const need = levels.find((l) => l.value === level)?.folders
-        ? all.filter((x) => !hasFolders(x.guest)).map((x) => x.peer.id)
-        : [];
-      if (need.length) {
-        setPicked({});
-        setPicking({ guest: g, level, all, need });
-        return;
-      }
-      await applyLevel(g, level, all);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-      void loadGuests();
-    }
-  };
-  const savePicked = async () => {
-    if (!picking || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await applyLevel(picking.guest, picking.level, picking.all, picked);
-      setPicking(null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-      void loadGuests();
-    }
-  };
-  const end = async (g: Guest) => {
-    if (!confirm(`End ${g.name}’s access now?`)) return;
-    const ours = links[g.id]?.created;
-    if (ours) await cancel(ours);
-    else
-      // The same invitation on your other computers ends too, as when it
-      // was made here (after a reload the link's record is gone).
-      for (const x of await sameInvitation(g))
-        await request(x.peer, `/api/clients/${x.guest.id}`, {
-          method: "DELETE",
-        }).catch(() => {});
-    if (made?.clientId === g.id) setMade(null);
-    void loadGuests();
-  };
-
   return (
     <div className={`ivt${kind !== "person" ? " ivt-agent" : ""}`}>
-      <header className="ivt-heading">
-        <span className="ivt-heading-icon">
-          {kind === "person" ? (
-            <UserRoundPlus size={24} strokeWidth={1.5} aria-hidden="true" />
-          ) : (
-            <Sparkles size={24} strokeWidth={1.5} aria-hidden="true" />
-          )}
-        </span>
-        <h1>{kind === "person" ? "Invite someone" : "Invite an agent"}</h1>
-        <p>
-          {kind === "person"
-            ? "Share your workspace. You choose the access."
-            : "Give your agent a place to help. You’re in control."}
-        </p>
-      </header>
       <div className="ivt-composer">
-        <div className="ivt-kind" role="group" aria-label="Invite">
-          <button
-            type="button"
-            aria-pressed={kind === "person"}
-            disabled={busy}
-            onClick={() => {
-              setKind("person");
-              setError("");
-            }}
-          >
-            <UserRound size={18} /> Person
-          </button>
-          <button
-            type="button"
-            aria-pressed={kind !== "person"}
-            disabled={busy}
-            onClick={() => {
-              if (kind === "person") setKind("browser");
-              setError("");
-            }}
-          >
-            <Sparkles size={18} /> Agent
-          </button>
-        </div>
-        {kind !== "person" && (
-          <div className="ag-connect">
-            <div className="ag-connect-tabs" role="group" aria-label="Assistant connection">
-              {([
-                { value: "browser", label: "Browser link", icon: Globe2 },
-                { value: "agent", label: "Command line", icon: Terminal },
-              ] as const).map(({ value, label, icon: Icon }) => (
-                <button
-                  type="button"
-                  key={value}
-                  aria-pressed={kind === value}
-                  disabled={busy}
-                  onClick={() => {
-                    setKind(value);
-                    setError("");
-                    if (value === "agent") setComputers([agentPeer.id]);
-                  }}
-                >
-                  <Icon size={17} strokeWidth={1.7} aria-hidden="true" />{label}
-                </button>
-              ))}
-            </div>
-            <p className="ag-quiet">
-              {kind === "browser"
-                ? "For agents that work in a web browser. No install needed."
-                : "For Claude Code or Codex on a computer you control."}
-            </p>
-          </div>
-        )}
         {openPolicy && (
           <p className="ivt-warn" role="status">
             Invite links are ready. Your Tailscale policy lets every device
@@ -918,8 +647,10 @@ export function InviteSheet({
             then need their own rules).
           </p>
         )}
-        {/* Agents too: a Tools agent outside your tailnet joins with a key. */}
-        {keyed === false && (
+        {/* People and Command line agents need it to join from outside your
+            tailnet; Tools and Web page agents don't (the public link), so
+            for them it shows only when asked for. */}
+        {keyed === false && (kind !== "browser" || setupOpen) && (
           <InviteLinksSetup
             peer={peer}
             policy={policy}
@@ -984,20 +715,26 @@ export function InviteSheet({
             device={device}
             keyPeer={keyPeer}
             onSetup={() => setSetupOpen(true)}
+            initialConnect={via}
+            onCommandLine={() => {
+              setKind("agent");
+              setComputers([agentPeer.id]);
+              setError("");
+            }}
             onCreated={(created, link) => {
               setLinks((old) => ({
                 ...old,
                 [created.clientId]: { link, keyed: true, created: [created] },
               }));
-              void loadGuests();
-            }}
+                    }}
           />
         ) : (
           <>
-            <div className="ivt-add">
-              <label className="ivt-field-label" htmlFor="invite-name">
-                {agent ? "Agent name" : "Their name"}
-              </label>
+            {/* The invitation as short lists: who, then one row per choice,
+                each a menu (as ChatGPT's share settings). */}
+            <div className="ivt-rows">
+            <div className="ivt-row ivt-add">
+              {agent ? <Bot size={19} aria-hidden="true" /> : <UserRound size={19} aria-hidden="true" />}
               <input
                 id="invite-name"
                 className="ivt-name"
@@ -1011,9 +748,11 @@ export function InviteSheet({
                 }
               />
             </div>
-            <div className="ivt-permission-row">
+            </div>
+            <div className="ivt-rows">
+            <div className="ivt-row">
               <span className="ivt-setting-label">
-                <ShieldCheck size={16} /> Access
+                <ShieldCheck size={19} /> Access
               </span>
               {agent ? (
                 <Menu
@@ -1055,11 +794,10 @@ export function InviteSheet({
                 </Menu>
               )}
             </div>
-            <div className="ivt-meta">
               {peers.length > 1 && (
-                <>
+                <div className="ivt-row">
                   <span className="ivt-setting-label">
-                    <Monitor size={16} /> Computer
+                    <Monitor size={19} /> Computer
                   </span>
                   <Menu
                     label={
@@ -1091,10 +829,11 @@ export function InviteSheet({
                       ))
                     }
                   </Menu>
-                </>
+                </div>
               )}
+            <div className="ivt-row">
               <span className="ivt-setting-label">
-                <Clock3 size={16} /> Expires in
+                <Clock3 size={19} /> Expires
               </span>
               {agent ? (
                 <Menu label={agentDuration}>
@@ -1130,6 +869,30 @@ export function InviteSheet({
                 </Menu>
               )}
             </div>
+            {agent && (
+              <Row icon={<Plug size={19} />} label="Connects">
+                <Menu label={VIA_WORDS.cli.label} wide className="ivt-role">
+                  {(close) =>
+                    (["tools", "page", "hosted", "cli"] as Via[]).map((v) => (
+                      <Item
+                        key={v}
+                        on={v === "cli"}
+                        label={VIA_WORDS[v].label}
+                        description={VIA_WORDS[v].description}
+                        onClick={() => {
+                          close();
+                          if (v === "cli") return;
+                          setVia(v);
+                          setKind("browser");
+                          setError("");
+                        }}
+                      />
+                    ))
+                  }
+                </Menu>
+              </Row>
+            )}
+            </div>
 
             {made && madeLink && made.joinBy && (
               <section
@@ -1159,6 +922,7 @@ export function InviteSheet({
                     madeLink.runtime,
                   );
                   const text = `Join my computer with Reach, then add the MCP server it prints:\n${command}`;
+                  if (!command) return <small className="ivt-quiet">{NO_RUNTIME}</small>;
                   return (
                     <div className="ivt-link-row">
                       <input
@@ -1467,10 +1231,6 @@ export function InviteSheet({
                 {busy ? "Creating link…" : "Create invite link"}
                 <ArrowUpRight size={17} />
               </button>
-              <span className="ivt-reassurance">
-                <ShieldCheck size={13} /> Access expires automatically. End it
-                any time.
-              </span>
             </div>
             {error && (
               <p className="ivt-error" role="alert">
@@ -1480,155 +1240,6 @@ export function InviteSheet({
           </>
         )}
       </div>
-
-      <details className="ivt-people" aria-label="People with access">
-        <summary>
-          <span>
-            People with access{" "}
-            <span className="ivt-count">{guests.length + 1}</span>
-          </span>
-          <ChevronDown size={16} />
-        </summary>
-        {changed && (
-          <p className="ivt-quiet" role="status">
-            {changed}
-          </p>
-        )}
-        {picking && (
-          <div
-            className="ivt-panel"
-            aria-label={`Folders for ${picking.guest.name}`}
-          >
-            <p className="ivt-quiet">
-              Choose the folders {picking.guest.name} may use
-              {picking.need.length > 1 ? " on each computer" : ""}.
-            </p>
-            {picking.need.map((id) => {
-              const p = peers.find((x) => x.id === id);
-              return (
-                p && (
-                  <div key={id}>
-                    {picking.need.length > 1 && <strong>{p.name}</strong>}
-                    <FolderBrowser
-                      peer={p}
-                      device={devices[p.id]}
-                      picked={picked[p.id] || []}
-                      onChange={(next) =>
-                        setPicked((old) => ({ ...old, [p.id]: next }))
-                      }
-                    />
-                  </div>
-                )
-              );
-            })}
-            <div className="ivt-pick-actions">
-              <button
-                type="button"
-                className="ivt-secondary"
-                onClick={() => setPicking(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="ivt-primary small"
-                disabled={
-                  busy || picking.need.some((id) => !(picked[id] || []).length)
-                }
-                onClick={() => void savePicked()}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        )}
-        <div className="ivt-person owner">
-          <span className="ivt-avatar">You</span>
-          <span className="ivt-who">
-            <strong>You</strong>
-            <small>{list(peers.map((p) => p.name))}</small>
-          </span>
-          <span className="ivt-role-text">Owner</span>
-        </div>
-        {guests.map((g) => (
-          <div className="ivt-person" key={g.id}>
-            <span className="ivt-avatar" aria-hidden>
-              {g.kind === "agent" ? (
-                <Sparkles size={15} />
-              ) : (
-                g.name.slice(0, 1).toUpperCase()
-              )}
-            </span>
-            <span className="ivt-who">
-              <strong>{g.name}</strong>
-              <small>
-                {g.kind === "agent" && g.status === "pending"
-                  ? "Waiting for your approval · Home → Needs you"
-                  : g.kind === "agent" && g.status === "approved"
-                    ? "Approved · waiting for the agent to connect"
-                    : g.kind === "agent" && g.status === "denied"
-                      ? "Connection denied · invite again to retry"
-                      : g.kind === "agent" && g.status === "expired"
-                        ? "Access or connection request expired"
-                        : `${g.status === "accepted" ? "Joined" : g.kind === "agent" ? "Not joined yet" : "Not opened yet"} · ${left(g.expiresAt || 0, now)}`}
-              </small>
-            </span>
-            {/* Their access: change it here, no new link. */}
-            {g.policy?.browser || g.scopes?.includes("browser:read") ? (
-              canEditAccess(g)
-                ? <button className="button secondary small" onClick={() => setEditing(g)}>{appScopedAccess(g) ? "Manage app requests" : "Edit access"}</button>
-                : <span className="ivt-role-text">Agent</span>
-            ) : (
-              <Menu
-                label={
-                  (g.kind === "agent" ? AGENT_LEVELS : LEVELS).find(
-                    (l) => l.value === levelOf(g),
-                  )?.label || accessLabel(g.scopes)
-                }
-                wide
-                className="ivt-access"
-              >
-                {(close) =>
-                  (g.kind === "agent" ? AGENT_LEVELS : LEVELS)
-                    .filter(
-                      (l) => !l.screen || workspaceCapabilities(device).screen,
-                    )
-                    .map((l) => (
-                      <Item
-                        key={l.value}
-                        on={levelOf(g) === l.value}
-                        label={l.label}
-                        description={l.description}
-                        onClick={() => {
-                          close();
-                          if (levelOf(g) !== l.value)
-                            void changeLevel(g, l.value);
-                        }}
-                      />
-                    ))
-                }
-              </Menu>
-            )}
-            {links[g.id] && (
-              <button
-                className="ivt-icon"
-                aria-label={`Copy ${g.name}’s link`}
-                onClick={() => void copy(links[g.id].link)}
-              >
-                <Copy size={15} />
-              </button>
-            )}
-            <button
-              className="ivt-icon"
-              aria-label={`End ${g.name}’s access`}
-              onClick={() => void end(g)}
-            >
-              <X size={16} />
-            </button>
-          </div>
-        ))}
-      </details>
-      {editing && <AccessEditor key={editing.id} peer={peer} device={device} client={editing} onClose={() => setEditing(null)} onSaved={(removed) => { setEditing(null); setChanged(removed ? "Access removed." : "Access updated."); void loadGuests(); }} />}
     </div>
   );
 }

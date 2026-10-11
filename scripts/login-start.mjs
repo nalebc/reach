@@ -38,6 +38,9 @@ export function loginScript(root, nodeDir, { args = "", restart = false, exists,
     ...["REACH_HOME", "REACH_DATA"]
       .filter((key) => env[key] !== undefined)
       .map((key) => `export ${key}=${shell(env[key])}`),
+    // Started for you (a restart from the phone, or at sign-in): nobody is
+    // reading this window's QR, so no pairing window opens by itself.
+    `export REACH_OPENED_BY=${restart ? "restart" : "login"}`,
     `cd ${shell(root)} || exit 1`,
     args ? `${command} ${args}` : command,
     "exit 0",
@@ -58,7 +61,9 @@ export function loginPlist(script) {
 `;
 }
 
-export function loginStart(command, { root, home = os.homedir(), uid = process.getuid?.(), nodeDir = path.dirname(process.execPath), run, platform = process.platform } = {}) {
+// `now: false`: from the next sign-in on (setup, with Reach about to start in
+// this terminal anyway), rather than opening a Terminal window right away.
+export function loginStart(command, { root, home = os.homedir(), uid = process.getuid?.(), nodeDir = path.dirname(process.execPath), run, platform = process.platform, now = true } = {}) {
   if (platform !== "darwin") throw Error("Starting Reach at sign-in this way is for macOS.");
   const launchctl =
     run || ((args) => execFileSync("/bin/launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
@@ -105,7 +110,7 @@ export function loginStart(command, { root, home = os.homedir(), uid = process.g
   // Loaded now (it opens Terminal once; a Reach already running just says so
   // and that window closes) and again at every sign-in.
   if (loaded(loginLabel)) launchctl(["bootout", `${domain}/${loginLabel}`]);
-  launchctl(["bootstrap", domain, plist]);
+  if (now) launchctl(["bootstrap", domain, plist]);
   return { installed: true, replaced, script, plist };
 }
 

@@ -381,7 +381,10 @@ export default function DesktopSurface({
               field?: unknown;
               secure?: unknown;
               blind?: unknown;
+              skipped?: unknown;
             };
+            // Skipped for the tap behind it: no answer, the field map stands.
+            if (a.skipped === true) return;
             if (probeSerial.current === id) {
               probeAnswer.current = {
                 id,

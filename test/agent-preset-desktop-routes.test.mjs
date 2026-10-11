@@ -248,6 +248,7 @@ test("a batch of actions in one request, stopping at the first refused, with the
     { actions: [{ type: "wait", ms: 5000 }] },
     { actions: [{ type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }, { type: "wait", ms: 2000 }] },
     { actions: Array.from({ length: 11 }, () => ({ type: "key", key: "enter" })) },
+    { actions: [{ type: "click", x: 0.5, y: 0.5, holdMs: 10000 }, { type: "drag", x: 0.1, y: 0.1, toX: 0.9, toY: 0.1, holdMs: 1000, durationMs: 1500 }] },
     { actions: [{ type: "type", text: "x".repeat(1500) }, { type: "type", text: "y".repeat(600) }] },
     { action: { type: "key", key: "enter" }, actions: [{ type: "key", key: "enter" }] },
     { actions: [{ type: "key", key: "enter" }], describe: false },
@@ -284,4 +285,114 @@ test("the Mac waits for text or a control to appear; press and fill ride in batc
   assert.match(batch.body.screen.text, /Fields: "Search"/);
   const ro = await f.join({ preset: "readonly", name: "Reader" });
   assert.equal((await ro.as("/api/browser/desktop/wait", { method: "POST", body: { text: "x" } })).status, 403, "waiting is control");
+});
+
+// Faster ways around the Mac: windows and tabs, menus, finding, reading,
+// opening a shared file, and the owner's Mac shortcuts, each behind its scope.
+test("navigation routes follow the preset and reach the desktop stand-in exactly", privateIngressTest, async (t) => {
+  const { extras, log } = stand();
+  Object.assign(extras, {
+    windows: async (client, authorize) => { authorize(); return { windows: [{ id: "42:0", app: "Google Chrome", bundle: "com.google.Chrome", title: "Inbox", minimized: false, front: true, url: "https://mail.google.com/", tabs: [{ title: "Inbox", selected: true }] }], holder: "" }; },
+    focusWindow: async (client, input, authorize) => { authorize(); log.push(["focus", client.id, input]); return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "Inbox", tab: input.tab }; },
+    menus: async (client, menu, authorize) => { authorize(); log.push(["menus", client.id, menu]); return { app: "Google Chrome", title: "Inbox", menus: [{ title: "File", items: [{ title: "Print…", key: "⌘P" }] }], truncated: false }; },
+    find: async (client, input, authorize) => { authorize(); log.push(["find", client.id, input]);
+      if (input.text === "nowhere") return { found: false, app: "Google Chrome", title: "Inbox", truncated: false };
+      return { found: true, n: 2, snapshot: "f1", role: "Button", name: "Add to cart", matches: 1, inView: true, scrolled: true, app: "Google Chrome", title: "Uber Eats", truncated: false,
+        items: [{ n: 1, role: "Link", name: "Home", x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, { n: 2, role: "Button", name: "Add to cart", x: 0.5, y: 0.9, w: 0.1, h: 0.02 }], texts: [{ text: "$12", x: 0.5, y: 0.85, w: 0.05, h: 0.02 }], fields: [] }; },
+    readPage: async (client, authorize) => { authorize(); log.push(["read", client.id]); return { app: "Google Chrome", bundle: "com.google.Chrome", title: "Inbox", url: "https://mail.google.com/", text: "x".repeat(12000) + "tail", truncated: false }; },
+    openFile: async (client, target, options, authorize) => { authorize(); log.push(["open-file", client.id, target, options]); return { ok: true, app: "TextEdit", bundle: "com.apple.TextEdit" }; },
+  });
+  const shortcutRuns = [];
+  const macShortcuts = {
+    agentList: () => ({ shortcuts: [{ name: "Today's events" }] }),
+    run: async (client, input, authorize) => { authorize(); shortcutRuns.push([client.id, input]); if (input.name !== "Today's events") throw Object.assign(Object.assign(Error("The owner hasn't allowed that."), { status: 403 }), { kind: "blocked" }); return { ok: true, name: input.name, output: "9:00 Standup" }; },
+    owner: async () => ({ shortcuts: [{ name: "Today's events", allowed: true }], missing: [] }),
+    allow: async (name, allowed) => ({ name, allowed }),
+  };
+  const f = await presetFixture(t, { desktopExtras: extras, macShortcuts });
+  const full = await f.join({ preset: "full" });
+  const id = full.created.clientId;
+  const windows = await full.as("/api/browser/desktop/windows");
+  assert.equal(windows.status, 200, JSON.stringify(windows.body));
+  assert.equal(windows.body.windows[0].tabs[0].title, "Inbox");
+  const focused = await full.as("/api/browser/desktop/focus", { method: "POST", body: { id: "42:0", tab: "Inbox" } });
+  assert.equal(focused.status, 200, JSON.stringify(focused.body));
+  assert.deepEqual(log.at(-1), ["focus", id, { id: "42:0", tab: "Inbox" }]);
+  assert.equal((await full.as("/api/browser/desktop/focus", { method: "POST", body: { id: "42:0", extra: 1 } })).status, 400);
+  const menus = await full.as("/api/browser/desktop/menus?menu=File");
+  assert.equal(menus.status, 200, JSON.stringify(menus.body));
+  assert.deepEqual(log.at(-1), ["menus", id, "File"]);
+  assert.equal(menus.body.menus[0].items[0].key, "⌘P");
+  const found = await full.as("/api/browser/desktop/find", { method: "POST", body: { name: "Add to cart", role: "Button" } });
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.equal(found.body.n, 2);
+  assert.match(found.body.screenText, /^Found \[2\] Button "Add to cart", scrolled into view\./);
+  assert.match(found.body.screenText, /\[2\] Button "Add to cart"/);
+  assert.ok(!("items" in found.body), "the screen comes as text, not raw lists");
+  const missing = await full.as("/api/browser/desktop/find", { method: "POST", body: { text: "nowhere" } });
+  assert.equal(missing.body.found, false);
+  assert.match(missing.body.screenText, /Not in this window/);
+  assert.equal((await full.as("/api/browser/desktop/find", { method: "POST", body: { text: "a", name: "b" } })).status, 400);
+  // The page in 12000-character pages, read once.
+  const first = await full.as("/api/browser/desktop/read");
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.text.length, 12000);
+  assert.deepEqual([first.body.more, first.body.nextOffset, first.body.total], [true, 12000, 12004]);
+  const second = await full.as("/api/browser/desktop/read?offset=12000");
+  assert.deepEqual([second.body.text, second.body.more, second.body.offset], ["tail", false, 12000]);
+  assert.equal(log.filter((entry) => entry[0] === "read").length, 1, "the second page came from the first read");
+  assert.equal((await full.as("/api/browser/desktop/read?offset=abc")).status, 400);
+  // A shared file opens by root and relative path; private paths never resolve.
+  const opened = await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "Desktop/Project/brief.txt", reveal: true } });
+  assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  assert.equal(log.at(-1)[0], "open-file");
+  assert.match(log.at(-1)[2], /Desktop\/Project\/brief\.txt$/);
+  assert.deepEqual(log.at(-1)[3], { reveal: true });
+  assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: ".ssh/id_rsa" } })).status, 403);
+  assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "../x" } })).status, 403);
+  assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "" } })).status, 400);
+  // The owner's Mac shortcuts.
+  const allowed = await full.as("/api/browser/desktop/mac-shortcuts");
+  assert.deepEqual(allowed.body, { shortcuts: [{ name: "Today's events" }] });
+  const ran = await full.as("/api/browser/desktop/mac-shortcuts/run", { method: "POST", body: { name: "Today's events", input: "tomorrow" } });
+  assert.equal(ran.status, 200, JSON.stringify(ran.body));
+  assert.deepEqual(ran.body, { ok: true, name: "Today's events", output: "9:00 Standup" });
+  assert.deepEqual(shortcutRuns.at(-1), [id, { name: "Today's events", input: "tomorrow" }]);
+  const refused = await full.as("/api/browser/desktop/mac-shortcuts/run", { method: "POST", body: { name: "Other" } });
+  assert.equal(refused.status, 403);
+  assert.equal(refused.body.kind, "blocked");
+  assert.equal((await full.as("/api/browser/desktop/mac-shortcuts/run", { method: "POST", body: { name: "Other", extra: 1 } })).status, 400);
+  // Read only lists windows and nothing else here; Apps opens no files.
+  const readonly = await f.join({ preset: "readonly" });
+  assert.equal((await readonly.as("/api/browser/desktop/windows")).status, 200);
+  for (const route of ["/api/browser/desktop/menus", "/api/browser/desktop/read", "/api/browser/desktop/mac-shortcuts"]) assert.equal((await readonly.as(route)).status, 403, route);
+  for (const route of ["/api/browser/desktop/find", "/api/browser/desktop/focus", "/api/browser/desktop/open-file", "/api/browser/desktop/mac-shortcuts/run"])
+    assert.equal((await readonly.as(route, { method: "POST", body: { text: "a", id: "42:0", root: 0, path: "x", name: "y" } })).status, 403, route);
+  const apps = await f.join({ name: "Grok", preset: "apps", apps: [{ id: chrome.id }] });
+  assert.equal((await apps.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "x" } })).status, 403);
+  assert.equal((await apps.as("/api/browser/desktop/menus")).status, 200);
+});
+
+// The owner reads what each agent did, by agent, newest first.
+test("the owner's action log lists what an agent ran and changed", privateIngressTest, async (t) => {
+  const { extras } = stand();
+  const f = await presetFixture(t, { desktopExtras: extras, agentShellRun: async (input) => ({ output: `ran: ${input.command}\n`, exitCode: 0, timedOut: false }) });
+  const full = await f.join({ preset: "full" });
+  const id = full.created.clientId;
+  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "Desktop" } })).status, 200);
+  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "sudo ls", root: 0, cwd: "Desktop" } })).body.status, "blocked");
+  assert.equal((await full.as("/api/browser/files/change", { method: "POST", body: { op: "write", root: 0, path: "Desktop/Project/notes.txt", content: "hi" } })).status, 200);
+  const log = await f.call(`/api/agents/actions?${new URLSearchParams({ clientId: id })}`);
+  assert.equal(log.status, 200, JSON.stringify(log.body));
+  assert.deepEqual(log.body.actions.map((a) => [a.kind, a.text, a.ok]), [
+    ["file", "Wrote “Desktop/Project/notes.txt”", true],
+    ["command", "Ran: sudo ls", false],
+    ["command", "Ran: ls", true],
+  ]);
+  assert.match(log.body.actions[1].reason, /password/);
+  assert.equal(log.body.actions[2].app, "Desktop");
+  assert.equal((await f.call("/api/agents/actions?limit=0")).status, 400);
+  assert.equal((await f.call("/api/agents/actions?x=1")).status, 400);
+  // The agent itself cannot read the owner's log.
+  assert.equal((await full.as(`/api/agents/actions?clientId=${id}`)).status, 403);
 });

@@ -64,7 +64,8 @@ test("a new chat can start in a folder found by browsing Home", async () => {
   await settle();
   const folderButton = () => dom.document.querySelector(".chat-folder");
   assert.equal(folderButton().getAttribute("aria-label"), "Folder: /Users/me/reach");
-  // Browsing is directly available, even with many recent folders.
+  // Browsing is the last choice in the folder list, even with many recent folders.
+  await click(folderButton());
   await click(byText("Browse folders…"));
   await dom.waitFor(() => dom.document.querySelector('[aria-label="Open Projects"]'));
   assert.ok(!dom.document.querySelector('[aria-label="Open .config"]'), "hidden folders stay out");
@@ -108,6 +109,7 @@ test("folder navigation selects immediately, including parent breadcrumbs", asyn
   await settle();
   const send = () => dom.document.querySelector('[aria-label="Start"]');
   assert.equal(send().disabled, false);
+  await click(dom.document.querySelector(".chat-folder"));
   await click(byText("Browse folders…"));
   await dom.waitFor(() => dom.document.querySelector('[aria-label="Open Projects"]'));
   await click(dom.document.querySelector('[aria-label="Open Projects"]'));

@@ -12,6 +12,7 @@ import {
   cheapest,
   cheapPlan,
   versionOf,
+  readRouted,
 } from "../server/openclaw-usage.mjs";
 
 const base = "/api/sessions/openclaw";
@@ -156,6 +157,24 @@ test("with sessions.usage, spend covers every agent and a chat shows its cost", 
   await assert.rejects(call("GET", "/spend/chat", { query: { key: "a b" } }), { status: 400 });
 });
 
+test("spend is partial while OpenClaw is still counting sessions (2026.9 cacheStatus)", async () => {
+  const now = Date.now();
+  for (const [status, partial] of [["refreshing", true], ["partial", true], ["stale", true], ["fresh", false], [undefined, false]]) {
+    const { client } = fake({
+      methods: ["usage.cost", "sessions.usage"],
+      handlers: {
+        "usage.cost": () => ({ daily: [{ date: dayKey(now), totalCost: 1 }] }),
+        "sessions.usage": () => ({
+          aggregates: { daily: [{ date: dayKey(now), cost: 0.5 }], byAgent: [] },
+          ...(status ? { cacheStatus: { status, cachedFiles: 1, pendingFiles: 4, staleFiles: 0 } } : {}),
+        }),
+      },
+    });
+    const call = app(client, { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "reach-spend-")) });
+    assert.equal((await call("GET", "/spend")).partial, partial, String(status));
+  }
+});
+
 test("the budget is validated, authorized and kept 0600", async () => {
   const { client } = fake();
   const call = app(client, { dataDir: dir });
@@ -278,6 +297,47 @@ test("Cheap background work moves isolated schedules first, then heartbeats in o
   assert.deepEqual(JSON.parse(writes[1].params.raw), {
     agents: { defaults: { heartbeat: { model } }, list: [{ id: "ops", heartbeat: { model } }] },
   });
+});
+
+// Cheap background work is a token optimization: each schedule run Reach
+// moved goes in the savings ledger, by OpenClaw's own usage count, under its
+// own kind. Nothing is counted on a guess.
+test("runs Reach moved to the cheap model are recorded as savings, in tokens", async () => {
+  const data = fs.mkdtempSync(path.join(dir, "routed-"));
+  let listener;
+  const recorded = [];
+  const { client } = fake({
+    handlers: {
+      "config.get": () => ({ hash: "h1", valid: true, config: config() }),
+      "models.list": () => models,
+      "cron.list": () => ({ jobs: [
+        { id: "j1", sessionTarget: "isolated", payload: { kind: "agentTurn" } },
+        { id: "j2", sessionTarget: "isolated", payload: { kind: "agentTurn", model: "anthropic/claude-haiku-4-5" } },
+      ] }),
+      "cron.update": (p) => ({ id: p.id }),
+      "config.patch": () => ({ ok: true }),
+    },
+  });
+  client.onEvent = (fn) => ((listener = fn), () => {});
+  const model = "anthropic/claude-haiku-4-5";
+  const out = await app(client, { dataDir: data, savings: { record: (e) => recorded.push(e) } })("POST", "/spend/routing/cheap", { body: { model, version: versionOf(routingFrom(config())) } });
+  assert.deepEqual(out.jobs, ["j1"]);
+  assert.deepEqual(readRouted(data), { model, jobs: ["j1"] });
+  assert.equal((fs.statSync(path.join(data, "openclaw-routed.json")).mode & 0o777).toString(8), "600");
+  const usage = { input_tokens: 1200, output_tokens: 300, total_tokens: 1700, cache_read_tokens: 150, cache_write_tokens: 50 };
+  const finished = (over) => ({ jobId: "j1", action: "finished", status: "ok", runId: `r-${Math.random()}`, provider: "anthropic", model: "claude-haiku-4-5", usage, ...over });
+  listener("cron", finished({ runId: "r1" }));
+  listener("cron", finished({ runId: "r1" })); // the same run told twice
+  listener("cron", finished({ jobId: "j2" })); // a job Reach didn't move
+  listener("cron", finished({ model: "claude-opus-4-6" })); // ran on another model
+  listener("cron", finished({ usage: undefined })); // no usage
+  listener("cron", finished({ usage: { ...usage, input_tokens: "1200" } })); // unreadable
+  listener("cron", finished({ status: "error" }));
+  listener("cron", finished({ action: "started" }));
+  assert.deepEqual(recorded, [{ agent: "openclaw", kind: "openclaw-cheap-route", tokens: 1400 }]);
+  // A full ref as the model counts too; cache fields left out are none.
+  listener("cron", finished({ runId: "r2", provider: undefined, model, usage: { input_tokens: 10, output_tokens: 1 } }));
+  assert.deepEqual(recorded.at(-1), { agent: "openclaw", kind: "openclaw-cheap-route", tokens: 10 });
 });
 
 test("the cache fix keeps the main model's cache 1 h; a rate limit is said in Reach's words", async () => {

@@ -289,7 +289,7 @@ test("Claude's catalog names no default effort: settings' effortLevel isn't what
   assert.equal((await sessions.models("claude")).models[0].defaultEffort, null);
 });
 
-test("an effort pick the Mac can't take now says it wasn't changed, never that it goes in by itself", async (t) => {
+test("a model pick the Mac can't take now says it wasn't changed, never that it goes in by itself; an effort pick needs no Mac", async (t) => {
   const automation = createDesktopAutomation();
   automation.noteForeground("com.apple.finder");
   let release;
@@ -305,7 +305,9 @@ test("an effort pick the Mac can't take now says it wasn't changed, never that i
     },
   });
   t.after(() => { release(); sessions.close(); });
-  for (const pick of [{ effort: "high" }, { model: "sonnet" }])
+  // Effort: kept for the chat, never a click in the app (Oct 10).
+  assert.deepEqual(await sessions.model("claude", ID, { effort: "high" }), { model: undefined, effort: "high", applied: true });
+  for (const pick of [{ model: "sonnet" }])
     await assert.rejects(sessions.model("claude", ID, pick), (e) => {
       assert.equal(e.status, 409);
       assert.equal(e.kind, "busy");

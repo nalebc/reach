@@ -1,0 +1,55 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Reach demo · sample desktop</title><!-- A drawn desktop for the README tour: fictional page and agent, no real screen. --><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1512px;height:982px;overflow:hidden;font-family:-apple-system,"SF Pro Text","Helvetica Neue",sans-serif;
+ background:radial-gradient(1200px 700px at 20% 10%,#2f5a45 0%,transparent 60%),radial-gradient(900px 600px at 90% 90%,#1e4d5a 0%,transparent 60%),linear-gradient(135deg,#14261d,#0e1a1f);}
+.menubar{height:30px;background:rgba(20,28,24,.55);backdrop-filter:blur(20px);color:#eef3ee;font-size:14px;display:flex;align-items:center;gap:22px;padding:0 18px}
+.menubar b{font-weight:700}.menubar .r{margin-left:auto;display:flex;gap:18px;opacity:.9}
+.win{position:absolute;border-radius:12px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.08)}
+.bar{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px}
+.dot{width:12px;height:12px;border-radius:50%}
+.browser{left:60px;top:70px;width:860px;height:760px;background:#fff}
+.browser .bar{background:#f1f1f1;border-bottom:1px solid #ddd}
+.url{margin-left:90px;flex:1;max-width:520px;height:26px;border-radius:7px;background:#e4e4e4;font-size:13px;color:#555;display:flex;align-items:center;justify-content:center}
+.page{padding:34px 44px;color:#1b1f1c}
+.brand{font-size:22px;font-weight:800;color:#1f6b4a;letter-spacing:-.3px}
+.nav{display:flex;gap:22px;font-size:14px;color:#555;margin:8px 0 26px}
+h1{font-size:34px;letter-spacing:-.6px;margin-bottom:6px}
+.sub{color:#666;font-size:15px;margin-bottom:24px}
+.card{border:1px solid #e3e6e3;border-radius:14px;padding:20px 22px;margin-bottom:14px;display:flex;align-items:center;gap:18px}
+.time{font-size:24px;font-weight:700;width:150px}.info{flex:1;color:#555;font-size:14px;line-height:1.5}
+.price{font-size:20px;font-weight:700;margin-right:12px}
+.btn{background:#1f6b4a;color:#fff;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600}
+.btn.ghost{background:#eef4f0;color:#1f6b4a}
+.sel{outline:3px solid #7fd6a8;outline-offset:2px}
+.term{left:880px;top:300px;width:580px;height:470px;background:#0f1411;color:#d7e4da;font:14px/1.6 "SF Mono",Menlo,monospace}
+.term .bar{background:#1a211c;color:#9aa89e;font:13px -apple-system,sans-serif;justify-content:flex-start}
+.term .bar span{margin-left:150px}
+.tx{padding:16px 18px;white-space:pre}
+.g{color:#8fe0b3}.m{color:#7d8c82}.y{color:#f0d58c}.w{color:#fff}
+.dock{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);height:66px;padding:8px 12px;display:flex;gap:10px;border-radius:20px;background:rgba(40,52,46,.5);backdrop-filter:blur(20px);box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.ic{width:50px;height:50px;border-radius:12px}
+</style></head><body>
+<div class="menubar"><b>Terminal</b><span>Shell</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span><div class="r"><span>Sat 9:41 AM</span></div></div>
+<div class="win browser"><div class="bar"><i class="dot" style="background:#ff5f57"></i><i class="dot" style="background:#febc2e"></i><i class="dot" style="background:#28c840"></i><div class="url">trains.example.com/search</div></div>
+<div class="page"><div class="brand">Sample Rail</div><div class="nav"><span>Trips</span><span>Tickets</span><span>Help</span></div>
+<h1>Porto → Lisbon</h1><div class="sub">Saturday · 1 adult · Sample data</div>
+<div class="card"><div class="time">07:52</div><div class="info">Arrives 10:41 · 2 h 49 m<br>Direct</div><div class="price">€24</div><div class="btn ghost">Select</div></div>
+<div class="card sel"><div class="time">09:05</div><div class="info">Arrives 11:48 · 2 h 43 m<br>Direct · Window seat</div><div class="price">€29</div><div class="btn">Selected</div></div>
+<div class="card"><div class="time">11:20</div><div class="info">Arrives 14:15 · 2 h 55 m<br>1 change</div><div class="price">€19</div><div class="btn ghost">Select</div></div>
+</div></div>
+<div class="win term"><div class="bar"><i class="dot" style="background:#ff5f57"></i><i class="dot" style="background:#febc2e"></i><i class="dot" style="background:#28c840"></i><span>claude — reach</span></div>
+<div class="tx"><span class="w">&gt; Find a morning train to Lisbon on Saturday</span>
+
+<span class="g">●</span> reach_open_url <span class="m">trains.example.com</span>
+<span class="g">●</span> reach_fill <span class="m">From: Porto · To: Lisbon · Sat</span>
+<span class="g">●</span> reach_press <span class="m">"Search"</span>
+<span class="g">●</span> reach_wait_for <span class="m">"Porto → Lisbon"</span>
+<span class="g">●</span> reach_press <span class="m">"Select" (09:05)</span>
+
+<span class="w">The 09:05 is selected: direct, arrives
+11:48, €29. Shall I book it?</span>
+
+<span class="y">›</span> </div></div>
+<div class="dock">
+<i class="ic" style="background:linear-gradient(#5ac8fa,#007aff)"></i><i class="ic" style="background:linear-gradient(#fff,#ddd)"></i><i class="ic" style="background:linear-gradient(#34c759,#248a3d)"></i><i class="ic" style="background:#1c1c1e;box-shadow:inset 0 0 0 1px #444"></i><i class="ic" style="background:linear-gradient(#ffcc00,#ff9500)"></i><i class="ic" style="background:linear-gradient(#bf5af2,#5e5ce6)"></i><i class="ic" style="background:linear-gradient(#c4ebd3,#5f9a7b)"></i>
+</div></body></html>

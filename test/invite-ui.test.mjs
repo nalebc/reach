@@ -5,11 +5,14 @@ import { startDom, settle } from "./dom/harness.mjs";
 // Inviting someone (a share dialog like Claude's and ChatGPT's): a name, an
 // access level, Invite; one link; everyone with access listed. The requests
 // each computer receives and the link that comes out are checked exactly.
-let dom, React, InviteSheet, accessLabel, parseGuestLink;
+let dom, React, InviteSheet, PeopleHub, accessLabel, parseGuestLink;
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   ({ InviteSheet, accessLabel } = await dom.load("/src/InviteSheet.tsx"));
+  ({ default: PeopleHub } = await dom.load("/src/PeopleHub.tsx"));
   ({ parseGuestLink } = await dom.load("/src/start-flow.ts"));
 });
 after(async () => dom?.close());
@@ -29,6 +32,8 @@ const device = (name, host) => ({
   capabilities: { files: true, terminal: true, apps: true, screen: true, screenSupported: true, codex: true },
 });
 const secret = (c) => c.repeat(43);
+// The SHA-256 of the runtime each computer serves: every agent command pins it.
+const RUNTIME = "ab".repeat(32);
 const KEY = { key: "tskey-auth-kTEST123456-abcdef", hostname: "rg-ab12-k3m9x2p7qa" };
 
 // `keyed`: true, false, or the hosts holding the invite-link credential.
@@ -82,7 +87,9 @@ function computers({ keyed = true, failOn = "", guests = [], policyBlock = false
       return reply(201, { invitation: secret(String.fromCharCode(96 + n)), clientId: `client-${host}`, expiresAt: Date.now() + 3600000, scopes: [] });
     }
     if (u.pathname === "/api/agents/invitations" && init.method === "POST")
-      return reply(201, { invitation: secret("z"), clientId: `agent-${host}`, expiresAt: Date.now() + body.ttlSeconds * 1000, joinBy: Date.now() + 900000, scopes: ["device", "files:read"] });
+      return reply(201, { invitation: secret("z"), clientId: `agent-${host}`, expiresAt: Date.now() + body.ttlSeconds * 1000, joinBy: Date.now() + 900000, scopes: ["device", "files:read"], runtime: RUNTIME });
+    if (/^\/api\/guests\/[^/]+\/link$/.test(u.pathname) && init.method === "POST")
+      return reply(200, { invitation: secret("n"), clientId: u.pathname.split("/")[3], expiresAt: Date.now() + 3600000 });
     if (u.pathname.startsWith("/api/clients/") && init.method === "DELETE") return reply(200, { ok: true });
     return reply(404, { error: "This action does not exist." });
   };
@@ -105,6 +112,11 @@ const toggle = (c, text) => [...c.querySelectorAll(".ivt-toggle")].find((t) => t
 const inviteButton = (c) => c.querySelector(".ivt-submit");
 const render = (props) =>
   dom.render(React.createElement(InviteSheet, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
+// Agents & people: every row's name and its one line, in order.
+const hub = (props) =>
+  dom.render(React.createElement(PeopleHub, { peer: macA, device: device("Mac A", "mac-a"), peers: [macA], ...props }));
+const hubRows = (c) => [...c.querySelectorAll(".ppl-row")].map((r) => [...r.querySelectorAll("strong, small")].map((e) => e.textContent).join(" | "));
+const openRow = (c, name) => click([...c.querySelectorAll(".ppl-row")].find((r) => r.querySelector("strong").textContent === name));
 // An invitation carries one id for all its computers (so its access can be
 // changed later on each): checked on its own, set aside in the exact lists.
 const posts = (log) =>
@@ -429,7 +441,7 @@ test("set up once for all computers: a linked computer's credential is used", as
   await view.unmount();
 });
 
-test("people with access: their access, joined or not, time left; end one now", async () => {
+test("agents & people: their access, joined or not, time left; end one now", async () => {
   const later = Date.now() + 2 * 3600 * 1000 + 60000;
   const log = computers({
     guests: [
@@ -439,21 +451,54 @@ test("people with access: their access, joined or not, time left; end one now", 
       { id: "me", kind: "device", name: "My iPhone", expiresAt: later },
     ],
   });
-  const view = await render({ peers: [macA, macB] });
+  const view = await hub({ peers: [macA, macB], here: [{ id: "x", name: "iPad", kind: "tablet", self: false, activity: "viewing", access: [{ kind: "invited", expiresAt: later }] }] });
   const c = view.container;
   await settle(40);
-  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text, .ivt-access .ivt-menu-button")].map((e) => e.textContent).join(" | "));
-  assert.deepEqual(rows, [
-    "You | Mac A and Mac B | Owner",
-    "Sam | Joined · 2 h 1 min left | Can control",
-    "Kim | Not opened yet · 2 h 1 min left | Can open files",
+  // Who's on it now, live, before who may come in.
+  assert.deepEqual([...c.querySelectorAll(".ppl-here")].map((r) => r.querySelector(".gs-label").textContent), ["iPadWatching the screen · Guest"]);
+  assert.deepEqual(hubRows(c), [
+    "Sam | Can control · 2 h 1 min left",
+    "Kim | Not opened yet · 2 h 1 min left",
+    "My iPhone | This device",
   ]);
+  await openRow(c, "Kim");
+  assert.equal(c.querySelector(".ppl-sheet .ivt-access .ivt-menu-button").textContent, "Can open files");
   dom.window.confirm = globalThis.confirm = () => true;
   await click(c.querySelector('[aria-label="End Kim’s access"]'));
   assert.ok(log.some(([m, , p]) => m === "DELETE" && p === "/api/clients/g2"));
   await view.unmount();
 });
 
+test("someone who hasn't opened their link: a new one, the old one stops working", async () => {
+  const later = Date.now() + 2 * 3600 * 1000;
+  const log = computers({
+    guests: [
+      { id: "g2", kind: "guest", name: "Kim", status: "invited", expiresAt: later, scopes: ["device", "files:read"] },
+      { id: "g3", kind: "guest", name: "Sam", status: "accepted", expiresAt: later, scopes: ["device", "files:read"] },
+    ],
+  });
+  const view = await hub({ toast: () => {} });
+  const c = view.container;
+  await settle(40);
+  // Opened already: nothing to send again.
+  await openRow(c, "Sam");
+  assert.equal(c.querySelector('[aria-label="New invite link for Sam"]'), null);
+  await click(c.querySelector('.ppl-sheet [aria-label="Close panel"]'));
+  await openRow(c, "Kim");
+  assert.equal(c.querySelector('[aria-label="Copy Kim’s link"]'), null, "no link kept from before");
+  await click(c.querySelector('[aria-label="New invite link for Kim"]'));
+  await settle(40);
+  assert.ok(log.some(([m, h, p]) => m === "POST" && h === "mac-a" && p === "/api/guests/g2/link"));
+  assert.ok(log.some(([m, , p, b]) => m === "POST" && p === "/api/guests/key" && b.clientIds.join() === "g2"));
+  let copied = "";
+  Object.defineProperty(dom.window.navigator, "clipboard", { value: { writeText: async (t) => { copied = t; } }, configurable: true });
+  await click(c.querySelector('[aria-label="Copy Kim’s link"]'));
+  const link = parseGuestLink(new URL(copied).hash);
+  assert.equal(new URL(copied).pathname, "/guest");
+  assert.deepEqual(link.invites, [{ origin: "https://mac-a.t.ts.net:8443", secret: secret("n") }]);
+  assert.equal(link.key, KEY.key);
+  await view.unmount();
+});
 test("access names", () => {
   assert.equal(accessLabel(["admin", "device"]), "Full access");
   assert.equal(accessLabel(["device", "screen"]), "Watches screen");
@@ -534,22 +579,23 @@ test("set up after inviting: the waiting link gets its key, so they just open it
 });
 
 // Inviting an agent: the same dialog, then one command it runs to join.
-const kindButton = (c, text) => [...c.querySelectorAll('.ivt-kind button')].find((b) => b.textContent.trim() === text);
+// An agent's invitation opens on Tools; Command line is one of its Connects.
+const connects = (c) => [...c.querySelectorAll(".ivt-row")].find((r) => r.querySelector(".ivt-setting-label")?.textContent.trim() === "Connects")?.querySelector(".ivt-menu-button");
 const chooseAgent = async (c) => {
-  await click(kindButton(c, "Agent"));
-  // How it connects is a two-way pill: Browser link | Command line.
-  await click([...c.querySelectorAll('[aria-label="Assistant connection"] button')].find((b) => b.textContent.trim() === "Command line"));
+  await dom.waitFor(() => connects(c));
+  await click(connects(c));
+  await click(item(c, "Command line"));
   await settle(40);
 };
 const commandLink = (command) => command.match(/printf '%s\\n' '([^']+)' \| node ~\/\.reach-agent\/agent\.mjs join$/)[1];
 
 test("an agent: one computer, a folder, what it may do, then one command to give it", async () => {
   const log = computers();
-  const view = await render({ peers: [macA, macB] });
+  const view = await render({ peers: [macA, macB], initialKind: "browser" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);
-  assert.equal(kindButton(c, "Agent").getAttribute("aria-pressed"), "true");
+  assert.equal(connects(c).textContent, "Command line");
   assert.equal(c.querySelector(".ivt-name").placeholder, "Name the agent");
   await name(c, "Claude on my server");
   assert.equal(menu(c, 0).textContent, "Can edit");
@@ -588,7 +634,8 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   assert.match(card.textContent, /Needs Node 18 or later, nothing else/);
   const command = c.querySelector('[aria-label="Command for the agent"]').value;
   assert.ok(
-    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs https://mac-b.t.ts.net/agent.mjs && printf '%s\\n' 'https://mac-b.t.ts.net/agent#"),
+    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new https://mac-b.t.ts.net/agent.mjs && node -e ") &&
+      command.includes(`~/.reach-agent/agent.mjs.new ${RUNTIME} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && printf '%s\\n' 'https://mac-b.t.ts.net/agent#`),
     command,
   );
   const agentLink = new URL(commandLink(command));
@@ -598,10 +645,11 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   dom.window.navigator.clipboard = { writeText: async (t) => (copied = t) };
   await click([...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "Copy"));
   assert.equal(copied, `Join my computer with Reach, then add the MCP server it prints:\n${command}`);
-  // Back to inviting a person: their dialog as it was.
-  await click(kindButton(c, "Person"));
-  assert.equal(c.querySelector(".ivt-name").placeholder, "Who are you inviting?");
-  assert.equal(menu(c, 0).textContent, "Can watch");
+  // Back to Tools: the agent's preset form.
+  await click(connects(c));
+  await click(item(c, "Tools"));
+  assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
+  assert.equal(connects(c).textContent, "Tools");
   await view.unmount();
 });
 
@@ -609,7 +657,7 @@ test("an agent: one computer, a folder, what it may do, then one command to give
 // agent's access ends there, so its device would outlive it. None is made.
 test("an agent on a computer without the setup: no key from a linked one, a command for your tailnet", async () => {
   const log = computers({ keyed: ["mac-a"] });
-  const view = await render({ peers: [macA, macB] });
+  const view = await render({ peers: [macA, macB], initialKind: "browser" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);
@@ -643,21 +691,31 @@ test("agent invitations show waiting, approved, denied, joined and expired conne
       { id: "a5", kind: "agent", name: "Allowed", policy: { invite: true }, status: "approved", expiresAt: later, scopes: ["device", "files:read"] },
       { id: "a6", kind: "agent", name: "Denied", policy: { invite: true }, status: "denied", expiresAt: later, scopes: ["device", "files:read"] },
       { id: "cli", kind: "agent", name: "Policy agent", policy: { profile: "work" }, expiresAt: later, scopes: ["device", "files:read"] },
+      // Always: stored as ten years, shown as what it is (not "87599 h").
+      { id: "a7", kind: "agent", name: "Keeper", policy: { invite: true, browser: true, standing: true }, status: "invited", expiresAt: Date.now() + 10 * 365 * 86400 * 1000, scopes: ["device", "files:read"] },
     ],
   });
-  const view = await render();
+  const view = await hub();
   const c = view.container;
   await settle(40);
-  const rows = [...c.querySelectorAll(".ivt-person")].map((r) => [...r.querySelectorAll("strong, small, .ivt-role-text, .ivt-access .ivt-menu-button")].map((e) => e.textContent).join(" | "));
-  assert.deepEqual(rows, [
-    "You | Mac A | Owner",
-    "Builder | Joined · 168 h 0 min left | Can run commands",
-    "Reader | Not joined yet · 168 h 0 min left | Can read",
-    "Late | Access or connection request expired | Can read",
-    "Waiting | Waiting for your approval · Home → Needs you | Can read",
-    "Allowed | Approved · waiting for the agent to connect | Can read",
-    "Denied | Connection denied · invite again to retry | Can read",
+  // What needs you comes first.
+  assert.deepEqual(hubRows(c), [
+    "Waiting | Waiting for your approval",
+    "Builder | Can run commands · 7 days left",
+    "Reader | Not joined yet · 7 days left",
+    "Late | Request expired",
+    "Allowed | Approved · connecting",
+    "Denied | Denied",
+    "Policy agent | Read files · 7 days left",
+    "Keeper | Not joined yet · Always",
   ]);
+  await openRow(c, "Keeper");
+  const ends = [...c.querySelectorAll(".ppl-sheet .gs-row")].find((r) => r.querySelector(".gs-label")?.textContent === "Ends");
+  assert.equal(ends?.querySelector(".gs-value")?.textContent.trim(), "After a week unused");
+  await click(c.querySelector('.ppl-sheet [aria-label="Close panel"]'));
+  await settle(20);
+  await openRow(c, "Builder");
+  assert.equal(c.querySelector(".ppl-sheet .ivt-access .ivt-menu-button").textContent, "Can run commands");
   dom.window.confirm = globalThis.confirm = () => true;
   await click(c.querySelector('[aria-label="End Builder’s access"]'));
   assert.ok(log.some(([m, , p]) => m === "DELETE" && p === "/api/clients/a1"));
@@ -667,7 +725,7 @@ test("agent invitations show waiting, approved, denied, joined and expired conne
 test("an agent without invite links: still a command (for a machine on your tailnet); setup adds its key", async () => {
   dom.window.localStorage.clear();
   const log = computers({ keyed: false });
-  const view = await render();
+  const view = await render({ initialKind: "browser" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);

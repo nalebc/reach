@@ -252,7 +252,10 @@ test("Reach companion: authenticated end-to-end flows", async (t) => {
         token = adminToken;
       },
     );
-    await t.test("screen access is off by default", async () => {
+    // The first phone paired turned viewing on (Oct 10: your phone gets full
+    // control); turned off, nothing gets through.
+    await t.test("screen access is on for the first phone, and off means off", async () => {
+      assert.equal((await call("/api/settings", { screen: false })).body.screen, false);
       assert.equal((await call("/api/screen")).status, 403);
       assert.equal(
         (await call("/api/screen/input", { type: "key", key: "enter" })).status,

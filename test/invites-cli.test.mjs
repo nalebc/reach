@@ -81,14 +81,17 @@ test("token path: opens the token page, shows exactly what's added, then it's re
   assert.deepEqual(api.clients[0].scopes, ["auth_keys", "devices:core", "policy_file:read"]);
 });
 
-test("cancel at the confirmation: policy untouched, nothing saved", async (t) => {
+test("cancel at the confirmation: policy untouched, nothing saved, and setup goes on", async (t) => {
   delete process.env.REACH_DATA;
   const root = computer(t);
   const before = `{"grants": []}`;
   const api = fakeApi(before);
-  await assert.rejects(
-    setupInvites(root, {
-      print: () => {},
+  const out = [];
+  // Declining is a choice, not a stop: the invites step is skipped (first-run
+  // matrix I4), where it used to pause the whole setup.
+  assert.deepEqual(
+    await setupInvites(root, {
+      print: (m) => out.push(m),
       select: async ({ message, choices }) =>
         message === "Add these?" ? "no" : choices[0].value,
       ask: async () => "",
@@ -97,9 +100,53 @@ test("cancel at the confirmation: policy untouched, nothing saved", async (t) =>
       status,
       guestKeys: { request: api.request },
     }),
-    /Cancelled/,
+    { ready: false },
   );
+  assert.match(out.join("\n"), /Nothing changed\. Set up invite links any time with \.\/reach setup invites/);
   assert.equal(api.policy, before);
   assert.equal(api.clients.length, 0);
   assert.ok(!fs.existsSync(path.join(root, ".reach", "quick", "tailscale-oauth.json")));
+});
+
+// I3: a new tailnet's default policy (every device reaches every other):
+// offered to narrow that one rule to your members, as the phone does.
+test("a new tailnet's default policy: narrowed to your members once you say yes, then ready", async (t) => {
+  delete process.env.REACH_DATA;
+  const root = computer(t);
+  const api = fakeApi(`{"grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]}`);
+  const out = [];
+  const asked = [];
+  const result = await setupInvites(root, {
+    print: (m) => out.push(m),
+    select: async ({ message, choices }) => (asked.push(message), choices[0].value),
+    ask: async () => "",
+    secret: async () => TOKEN,
+    open: async () => {},
+    status,
+    guestKeys: { request: api.request },
+  });
+  assert.deepEqual(result, { ready: true });
+  assert.deepEqual(asked, ["How do you want to set this up?", "Change the default rule?", "Add these?"]);
+  assert.match(out.join("\n"), /every device may reach every other/);
+  assert.match(out.join("\n"), /all devices → tailnet members/);
+  assert.match(api.policy, /"autogroup:member"/);
+});
+
+test("a new tailnet's default policy, left as it is: nothing changed, invite links stay off", async (t) => {
+  delete process.env.REACH_DATA;
+  const root = computer(t);
+  const before = `{"grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]}`;
+  const api = fakeApi(before);
+  const result = await setupInvites(root, {
+    print: () => {},
+    select: async ({ message, choices }) => (message === "Change the default rule?" ? "no" : choices[0].value),
+    ask: async () => "",
+    secret: async () => TOKEN,
+    open: async () => {},
+    status,
+    guestKeys: { request: api.request },
+  });
+  assert.deepEqual(result, { ready: false });
+  assert.equal(api.policy, before);
+  assert.equal(api.clients.length, 0);
 });

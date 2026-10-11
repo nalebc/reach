@@ -119,3 +119,15 @@
     padding: 15px;
   }
 }
+
+/* What the agent did, one line each; a refusal in red. */
+.ba-did li > div > strong {
+  font-weight: 500;
+}
+.ba-did li.is-refused > div > strong {
+  color: var(--danger, #c0392b);
+}
+.ba-did li > small {
+  display: block;
+  opacity: 0.7;
+}

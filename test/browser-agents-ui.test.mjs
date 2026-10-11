@@ -130,12 +130,13 @@ const element = (props = {}) =>
   React.createElement(BrowserAgents, {
     peer,
     device,
-    invite() {},
     toast() {},
     ...props,
   });
+const panel = (view) => view.container.querySelector(".ag-embedded");
 
-test("same-name agents retain distinct sessions, folders, queue status and approval attribution", async () => {
+// One agent's panel inside its sheet on Agents & people.
+test("same-name agents keep their own folders, requests and activity; a review names its session", async () => {
   const first = session("session-11111111", {
     pendingApprovals: 1,
     activity: { state: "waiting", folder: "/Users/me/Desktop" },
@@ -154,28 +155,20 @@ test("same-name agents retain distinct sessions, folders, queue status and appro
         output: "second-session-only",
       }),
     ],
-    mutate: (route) => reply({ ...approval(first.id), status: "executed" }),
+    mutate: () => reply({ ...approval(first.id), status: "executed" }),
   });
-  const view = await render(element());
-  await dom.waitFor(
-    () => view.container.querySelectorAll(".ba-session").length === 2,
-  );
-  const a = view.container.querySelector('[data-agent-id="session-11111111"]');
-  const b = view.container.querySelector('[data-agent-id="session-22222222"]');
-  assert.match(a.textContent, / · 11111111/);
-  assert.match(b.textContent, / · 22222222/);
-  assert.match(a.textContent, /Waiting for folder/);
-  assert.match(b.textContent, /Working/);
-  assert.match(a.textContent, /1 request waiting for you/);
-  assert.doesNotMatch(b.textContent, /waiting for you/);
-  assert.doesNotMatch(a.textContent, /second-session-only/);
-  assert.match(b.textContent, /second-session-only/);
-  await click(button(a, "Review"));
-  assert.match(
-    view.container.textContent,
-    /Allow Muse · 11111111 to use Notes/,
-  );
-  await click(button(view.container, "Allow for this session"));
+  const a = await render(element({ focus: first.id }));
+  await dom.waitFor(() => /1 request/.test(panel(a)?.textContent || ""));
+  assert.match(panel(a).textContent, /1 request waiting for you/);
+  assert.match(panel(a).textContent, /Waiting to change\s*\/Users\/me\/Desktop/);
+  assert.doesNotMatch(panel(a).textContent, /second-session-only|Project/);
+  const b = await render(element({ focus: second.id }));
+  await dom.waitFor(() => /second-session-only/.test(panel(b)?.textContent || ""));
+  assert.match(panel(b).textContent, /Working in\s*\/Users\/me\/Project/);
+  assert.doesNotMatch(panel(b).textContent, /waiting for you/);
+  await click(button(panel(a), "Review"));
+  assert.match(dom.document.body.textContent, /Allow Muse · 11111111 to use Notes/);
+  await click(button(dom.document.body, "Allow for this session"));
   assert.deepEqual(
     calls
       .filter((call) => call.method === "POST")
@@ -189,100 +182,28 @@ test("same-name agents retain distinct sessions, folders, queue status and appro
   );
 });
 
-test("Stop all freezes displayed session IDs and never includes a later invitation", async () => {
-  let agents = [session("old-one"), session("old-two")];
-  const calls = mock({ agents: () => agents });
-  const view = await render(element());
-  await dom.waitFor(
-    () => view.container.querySelectorAll(".ba-session").length === 2,
-  );
-  await click(button(view.container, "Stop all"));
-  agents = [...agents, session("new-three")];
-  await click(
-    view.container.querySelector('[aria-label="Refresh agent sessions"]'),
-  );
-  await dom.waitFor(
-    () => view.container.querySelectorAll(".ba-session").length === 3,
-  );
-  assert.doesNotMatch(
-    view.container.querySelector(".ba-stop-confirm").textContent,
-    /new-three/,
-  );
-  await click(button(view.container, "Stop these sessions"));
-  assert.deepEqual(
-    calls
-      .filter((call) => call.method === "POST")
-      .map(({ route, body }) => ({ route, body })),
-    [
-      {
-        route: "/api/browser/agents/stop",
-        body: { clientIds: ["old-one", "old-two"] },
-      },
-    ],
-  );
-  assert.match(
-    view.container.querySelector('[data-agent-id="new-three"]').textContent,
-    /Ready/,
-  );
-  assert.equal(
-    button(view.container.querySelector('[data-agent-id="old-one"]'), "Stop"),
-    undefined,
-  );
+test("the panel has no Stop, Edit or ends row of its own: the sheet's rows do that", async () => {
+  mock({ agents: [session("one")] });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => panel(view)?.querySelector(".ag-facts"));
+  for (const word of ["Stop", "Stop all", "Edit access", "Invite agent"])
+    assert.equal(button(view.container, word), undefined, word);
+  assert.doesNotMatch(panel(view).textContent, /Access ends|Search agents/);
 });
 
-test("individual stop sends only its ID and failure keeps access visible for retry", async () => {
-  const notices = [];
-  const calls = mock({
-    agents: [session("one"), session("two")],
-    mutate: () => reply({ error: "Could not stop this session" }, 503),
-  });
-  const view = await render(
-    element({ toast: (message) => notices.push(message) }),
-  );
-  await dom.waitFor(
-    () => view.container.querySelectorAll(".ba-session").length === 2,
-  );
-  await click(
-    button(view.container.querySelector('[data-agent-id="two"]'), "Stop"),
-  );
-  assert.deepEqual(calls.find((call) => call.method === "POST").body, {
-    clientIds: ["two"],
-  });
-  assert.match(view.container.textContent, /Could not stop this session/);
-  assert.equal(
-    button(view.container.querySelector('[data-agent-id="two"]'), "Stop")
-      .disabled,
-    false,
-  );
-  assert.deepEqual(notices, []);
-});
-
-test("switching computers aborts pending mutations and removes captured stop IDs and dialogs", async () => {
-  let release, stopSignal, changePeer;
-  const calls = mock({
-    agents: [session("old-session")],
-    mutate: (_route, _body, init) => {
-      stopSignal = init.signal;
-      return new Promise((resolve) => {
-        release = () => resolve(reply({ stopped: ["old-session"] }));
-      });
-    },
-  });
-  const notices = [];
+test("switching computers drops the old computer's review and shows the new one's agent", async () => {
+  let changePeer;
+  mock({ agents: [session("old-session")], requests: [approval("old-session")] });
   function Host() {
     const [current, setPeer] = React.useState(peer);
     changePeer = setPeer;
-    return element({
-      peer: current,
-      toast: (message) => notices.push(message),
-    });
+    return element({ peer: current, focus: current.id === "mac" ? "old-session" : "new-session" });
   }
   const view = await render(React.createElement(Host));
-  await dom.waitFor(() => view.container.querySelector(".ba-session"));
-  await click(button(view.container, "Stop all"));
-  await click(button(view.container, "Stop these sessions"));
-  assert.ok(release);
-  mock({ agents: [session("new-session")] });
+  await dom.waitFor(() => button(view.container, "Review"));
+  await click(button(view.container, "Review"));
+  assert.ok(dom.document.querySelector(".browser-approval-review, [role=dialog], dialog[open]"));
+  mock({ agents: [session("new-session", { folders: ["/Users/me/Other"] })] });
   dom.update(() =>
     changePeer({
       ...peer,
@@ -291,35 +212,17 @@ test("switching computers aborts pending mutations and removes captured stop IDs
       token: "different-owner",
     }),
   );
-  await dom.waitFor(() =>
-    view.container.querySelector('[data-agent-id="new-session"]'),
-  );
-  assert.equal(stopSignal.aborted, true);
-  assert.equal(view.container.querySelector(".ba-stop-confirm"), null);
-  release();
-  await settle(50);
-  assert.deepEqual(notices, []);
-  assert.match(
-    view.container.querySelector('[data-agent-id="new-session"]').textContent,
-    /Ready/,
-  );
-  assert.equal(calls.filter((call) => call.method === "POST").length, 1);
+  await dom.waitFor(() => /\/Users\/me\/Other/.test(panel(view)?.textContent || ""));
+  assert.doesNotMatch(dom.document.body.textContent, /Allow Muse/);
 });
 
-test("failed session refresh disables stale stop controls and cannot present an empty success", async () => {
-  mock({ agents: [session("one")] });
-  const view = await render(element());
-  await dom.waitFor(() => view.container.querySelector(".ba-session"));
+test("a failed refresh says so and disables the panel's actions", async () => {
+  mock({ agents: [session("one", { preset: "full", policy: { ...session("one").policy, preset: "full" } })] });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => button(view.container, "Pause"));
   mock({ fail: true });
-  await click(
-    view.container.querySelector('[aria-label="Refresh agent sessions"]'),
-  );
-  await dom.waitFor(() =>
-    view.container.textContent.includes("Access list unavailable"),
-  );
-  assert.equal(button(view.container, "Stop all").disabled, true);
-  assert.equal(button(view.container, "Stop").disabled, true);
-  assert.doesNotMatch(view.container.textContent, /No agent invitations/);
+  await dom.waitFor(() => view.container.textContent.includes("Access list unavailable"), 5000);
+  assert.equal(button(view.container, "Pause").disabled, true);
 });
 
 test("agent invite preselection opens browser permissions without advanced MCP access", async () => {
@@ -340,24 +243,18 @@ test("agent invite preselection opens browser permissions without advanced MCP a
   const view = await render(
     React.createElement(InviteSheet, { peer, device, initialKind: "browser" }),
   );
-  await dom.waitFor(() =>
-    view.container.querySelector('[aria-label="Assistant connection"]'),
-  );
-  assert.equal(
-    view.container.querySelector('[aria-label="Assistant connection"] [aria-pressed="true"]').textContent,
-    "Browser link",
-  );
-  await dom.waitFor(() => view.container.querySelector('[aria-label="Access preset"]'));
+  // An agent's invitation opens on its one question, connecting with Tools.
+  await dom.waitFor(() => view.container.querySelector('[aria-label="AI browser invitation"] [aria-label="Access preset"]'));
+  const connects = [...view.container.querySelectorAll(".ivt-row")].find((r) => r.textContent.includes("Connects"));
+  assert.equal(connects.querySelector(".ivt-menu-button").textContent, "Tools");
   assert.doesNotMatch(
     view.container.textContent,
     /Unrestricted command access/,
   );
 });
 
-test("pending and approved connections remain stoppable and connection review targets its session", async () => {
+test("a pending connection is reviewed from its panel, with its session code", async () => {
   const pending = session("pending-11111111", { status: "pending" });
-  const connecting = session("approved-22222222", { status: "approved" });
-  const denied = session("denied-33333333", { status: "denied" });
   const admission = {
     requestId: "join-one",
     clientId: pending.id,
@@ -371,96 +268,42 @@ test("pending and approved connections remain stoppable and connection review ta
     accessExpiresAt: pending.expiresAt,
     verificationCode: "ABCD-1234",
   };
-  const calls = mock({
-    agents: [pending, connecting, denied],
-    admissions: [admission],
-  });
-  const view = await render(element());
-  await dom.waitFor(
-    () => view.container.querySelectorAll(".ba-session").length === 3,
-  );
-  const card = view.container.querySelector(
-    '[data-agent-id="pending-11111111"]',
-  );
-  assert.match(card.textContent, /Wants to connect\. Check its code, then approve/);
-  assert.match(
-    view.container.querySelector('[data-agent-id="approved-22222222"]')
-      .textContent,
-    /Connecting/,
-  );
-  assert.match(
-    view.container.querySelector('[data-agent-id="denied-33333333"]')
-      .textContent,
-    /Connection denied/,
-  );
-  assert.ok(button(card, "Stop"));
-  await click(button(card, "Review connection"));
-  assert.match(
-    view.container.querySelector(".agent-admission-review").textContent,
-    /11111111/,
-  );
-  assert.match(
-    view.container.querySelector(".agent-admission-review").textContent,
-    /ABCD-1234/,
-  );
-  await click(
-    view.container.querySelector(
-      '.agent-admission-review [aria-label="Close panel"]',
-    ),
-  );
-  await click(button(view.container, "Stop all"));
-  await click(button(view.container, "Stop these sessions"));
-  assert.deepEqual(calls.find((call) => call.method === "POST").body, {
-    clientIds: [pending.id, connecting.id],
-  });
+  mock({ agents: [pending], admissions: [admission] });
+  const view = await render(element({ focus: pending.id }));
+  await dom.waitFor(() => button(view.container, "Review connection"));
+  assert.match(panel(view).textContent, /Wants to connect\. Check its code, then approve/);
+  await click(button(view.container, "Review connection"));
+  const review = dom.document.querySelector(".agent-admission-review");
+  assert.match(review.textContent, /11111111/);
+  assert.match(review.textContent, /ABCD-1234/);
 });
 
-test("agents: active and ended groups, search by name, folder or app, and rows open in place", async () => {
+test("without a focus: only ended agents, newest first, each opening to what it could use", async () => {
   mock({
     agents: [
       session("aaaaaaaa1111", { name: "Muse" }),
-      session("bbbbbbbb2222", {
+      session("bbbbbbbb2222", { name: "Older", status: "revoked", expiresAt: Date.now() - 3600000 }),
+      session("cccccccc3333", {
         name: "Researcher",
+        status: "expired",
+        expiresAt: Date.now() - 60000,
         folders: ["/Users/me/Notes"],
-        policy: { invite: true, browser: true, roots: ["/Users/me/Notes"], screen: "apps", appAccess: [{ id: "/Applications/Safari.app", name: "Safari", mode: "view" }] },
       }),
-      session("cccccccc3333", { name: "Old helper", status: "revoked", expiresAt: Date.now() - 60000 }),
     ],
-    requests: [approval("aaaaaaaa1111")],
   });
   const view = await render(element());
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[data-agent-id="cccccccc3333"]'));
-  const names = (root) => [...root.querySelectorAll(".ag-agent-title strong")].map((e) => e.textContent);
-  const [activeGroup, endedGroup] = c.querySelectorAll(".ag-group");
-  assert.deepEqual(names(activeGroup), ["Muse", "Researcher"]);
-  assert.deepEqual(names(endedGroup), ["Old helper"]);
-  assert.equal(endedGroup.open, false, "ended agents stay folded while some are active");
-  assert.match(c.querySelector(".ag-agents-head").textContent, /2 active · 1 needs you/);
-  // The agent that needs you opens by itself; the other stays a single row.
-  const muse = c.querySelector('[data-agent-id="aaaaaaaa1111"]');
-  const researcher = c.querySelector('[data-agent-id="bbbbbbbb2222"]');
-  assert.equal(muse.querySelector(".ag-agent-head").getAttribute("aria-expanded"), "true");
+  const names = [...c.querySelectorAll(".ag-agent-title strong")].map((e) => e.textContent);
+  assert.deepEqual(names, ["Researcher", "Older"]);
+  const researcher = c.querySelector('[data-agent-id="cccccccc3333"]');
+  assert.match(researcher.querySelector(".ag-pill").textContent, /Expired/);
+  assert.match(c.querySelector('[data-agent-id="bbbbbbbb2222"] .ag-pill').textContent, /Stopped/);
+  assert.doesNotMatch(researcher.querySelector(".ag-agent-title small").textContent, /cccc3333/);
   assert.equal(researcher.querySelector(".ag-agent-body").hidden, true);
-  assert.equal(muse.querySelector(".ag-count").textContent, "1");
   await click(researcher.querySelector(".ag-agent-head"));
-  assert.equal(researcher.querySelector(".ag-agent-body").hidden, false);
-  assert.match(researcher.querySelector(".ag-facts").textContent, /Safari/);
-  const search = c.querySelector('[aria-label="Search agents"]');
-  const type = async (text) => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(search, text);
-    search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    await settle(30);
-  };
-  await type("safari");
-  assert.deepEqual(names(c), ["Researcher"], "finds an agent by an app it can see");
-  await type("notes");
-  assert.deepEqual(names(c), ["Researcher"], "and by a folder");
-  await type("old");
-  assert.deepEqual(names(c), ["Old helper"]);
-  assert.equal(c.querySelector(".ag-ended").open, true, "a search opens ended matches");
-  await type("nobody");
-  assert.match(c.textContent, /No agent matches “nobody”/);
+  assert.match(researcher.querySelector(".ag-facts").textContent, /\/Users\/me\/Notes/);
+  assert.equal(button(researcher, "Pause"), undefined);
 });
 
 test("agent session UI emits no React warnings", () =>

@@ -509,24 +509,25 @@ test("with one agent, there's no All page; a new chat from All starts in a real 
   assert.deepEqual(dom.errors, []);
 });
 
-test("from All, New chat starts in an agent that can answer, and one out of usage says so in its box and won't start", async () => {
+test("from All, New chat starts in an agent that can answer, and one out of usage says so above its box and still starts", async () => {
   dom.window.localStorage.setItem("reach.chatAgent", "all");
   // Codex out of usage; Claude's usage unknown (never read as out).
   await home([codexSession(), claudeSession()], both({ usable: false, resetsAt: Date.now() + 3600000 }, { usable: null }));
   await click(await dom.waitFor(() => button("New chat")));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
-  const pressed = () => [...sheet.querySelectorAll(".chat-app-token")].find((b) => b.getAttribute("aria-pressed") === "true");
-  assert.equal(pressed()?.getAttribute("aria-label"), "Claude Code");
+  assert.equal(sheet.querySelector(".chat-app-switch-current").getAttribute("aria-label"), "Change app, Claude Code selected");
   assert.equal(sheet.querySelector("textarea").getAttribute("aria-label"), "New Claude Code chat");
   await typeInto(sheet.querySelector("textarea"), "Fix the header");
   assert.equal(button("Start").disabled, false);
-  // Codex picked anyway: its box says it's out, and Start waits.
-  await click([...sheet.querySelectorAll(".chat-app-token")].find((b) => b.getAttribute("aria-label") === "Codex"));
+  // Codex picked anyway: it says it's out, and what you send still starts
+  // the chat, to continue once usage is back (Oct 10).
+  await click(sheet.querySelector(".chat-app-switch-current"));
+  assert.equal(sheet.querySelector('.chat-app-switch-menu [aria-label="Codex"] small').textContent, "Out of usage");
+  await click(sheet.querySelector('.chat-app-switch-menu [aria-label="Codex"]'));
   const box = await dom.waitFor(() => sheet.querySelector('textarea[aria-label="New Codex chat"]'));
-  assert.match(box.getAttribute("placeholder"), /^Out of Codex usage until /);
-  assert.ok(box.closest(".as-field").classList.contains("out-of-usage"));
+  assert.match(sheet.querySelector(".chat-status.out-of-usage span").textContent, /^Out of usage until /);
   await typeInto(box, "Fix the header");
-  assert.equal(button("Start").disabled, true);
+  assert.equal(button("Start").disabled, false);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -581,7 +582,8 @@ test("a new chat can be a team: the lead and its helpers drawn as a route, start
   await home([codexSession(), claudeSession()]);
   await click(await dom.waitFor(() => button("New chat")));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
-  await click(button("Team"));
+  await click(button("Add"));
+  await click($$('[role="menuitemcheckbox"]').find((b) => b.textContent.startsWith("Team")));
   const picker = sheet.querySelector(".team-picker");
   assert.ok(picker.classList.contains("reach-native"));
   assert.deepEqual(routeLabels(picker), ["leads", "helps"]);
@@ -661,8 +663,10 @@ test("usage on All stays in the header, with limits and new chat a tap away", as
   // Use Codex: a new chat, in Codex.
   await click($(".chat-hub .chat-quick-new"));
   const create = await dom.waitFor(() => $(".chat-create-sheet"));
-  const tokens = [...create.querySelectorAll(".chat-app-token")];
-  assert.equal(tokens.find((b) => b.getAttribute("aria-pressed") === "true")?.getAttribute("aria-label"), "Codex");
+  assert.equal(create.querySelector(".chat-app-switch-current").getAttribute("aria-label"), "Change app, Codex selected");
+  await click(create.querySelector(".chat-app-switch-current"));
+  const tokens = [...create.querySelectorAll(".chat-app-switch-menu [role=menuitemradio]")];
+  assert.equal(tokens.find((b) => b.getAttribute("aria-checked") === "true")?.getAttribute("aria-label"), "Codex");
   // Each agent's ring in New chat, so a long task starts where there's room.
   assert.match(tokens.find((b) => b.getAttribute("aria-label") === "Codex").getAttribute("aria-description"), /30% of Weekly used/);
   assert.equal(create.querySelectorAll(".usage-ring.warning").length, 1);
@@ -969,7 +973,8 @@ test("a chat opened from All goes back to All, by Back or the phone's back gestu
   // An app picked in New chat is the sheet's: closed, the list is still All.
   await click(button("New chat"));
   const sheet = await dom.waitFor(() => $(".chat-create-sheet"));
-  await click(sheet.querySelector('.chat-app-rail button[aria-label="Claude Code"]'));
+  await click(sheet.querySelector(".chat-app-switch-current"));
+  await click(sheet.querySelector('.chat-app-switch-menu [aria-label="Claude Code"]'));
   await dom.waitFor(() => sheet.querySelector("textarea")?.getAttribute("aria-label") === "New Claude Code chat");
   await click(button("Close new conversation"));
   await dom.waitFor(() => !$(".chat-create-sheet"));

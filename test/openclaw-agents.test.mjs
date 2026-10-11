@@ -268,3 +268,11 @@ test("Agents tab: rows, pills, expand, and two-tap remove of a rule", async () =
     await dom.close();
   }
 });
+
+test("an agent named with a key never shows the key", () => {
+  const { agents: rows } = agentRows({
+    roster: { defaultId: "main", agents: [{ id: "main" }, { id: "sk-proj-abcdefghijkl", name: "sk-proj-AbCdEfGhIjKl0123456789" }, { id: "ops", identity: { name: "Bearer sk-live-0123456789abcdef" } }] },
+  });
+  assert.deepEqual(rows.map((r) => r.name), ["main", "Agent named with a key [hidden]", "Agent named with a key [hidden]"]);
+  assert.doesNotMatch(JSON.stringify(rows.map((r) => r.name)), /AbCdEf|0123456789/);
+});

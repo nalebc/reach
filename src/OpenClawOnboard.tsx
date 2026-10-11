@@ -8,7 +8,34 @@ import "./openclaw-onboard.css";
 // Installing and setting up OpenClaw from the phone (server/openclaw-onboard.mjs).
 // Keys go to OpenClaw on the computer; Reach keeps none, here or there.
 const base = "/api/sessions/openclaw";
-type Status = { installed: boolean; configured: boolean; supported: boolean; providers: string[] };
+type Setup = { state: "running" | "done" | "partial" | "failed"; provider: string; error?: string };
+type Status = { installed: boolean; configured: boolean; supported: boolean; providers: string[]; setup?: Setup | null };
+
+// Setup runs on the computer for up to 3 minutes, past a phone's request:
+// look at it until it ends (a few minutes at most), then start the Gateway.
+// A setup whose service didn't install may still start; if not, say why.
+async function finishSetup(peer: Peer) {
+  const until = Date.now() + 4 * 60_000;
+  let setup: Setup | null | undefined;
+  for (;;) {
+    try {
+      setup = (await request<Status>(peer, `${base}/onboard/status`)).setup;
+    } catch {
+      /* the next look tells */
+    }
+    if (setup && setup.state !== "running") break;
+    if (Date.now() > until) throw new Error("OpenClaw is still setting up. Check again in a moment.");
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  const end = setup as Setup;
+  if (end.state !== "done" && end.state !== "partial") throw new Error(end.error || "OpenClaw didn't finish setting up.");
+  try {
+    await post(peer, `${base}/gateway/start`, {});
+  } catch (e) {
+    // Set up, with a Gateway slow to start: Start shows next.
+    if (end.state === "partial") throw new Error(end.error || (e as Error).message);
+  }
+}
 const NAMES: Record<string, string> = {
   openrouter: "OpenRouter",
   anthropic: "Anthropic",
@@ -205,7 +232,10 @@ export function ClawOnboard({ peer, onDone }: { peer: Peer; onDone: () => void }
       live = false;
     };
   }, [peer, check]);
-  if (!status || !status.supported || status.configured) return null;
+  if (!status || !status.supported) return null;
+  // Opened again while a setup runs (OpenClaw writes its config early).
+  if (status.setup?.state === "running") return <SetupRunning peer={peer} onDone={onDone} />;
+  if (status.configured) return null;
   if (!status.installed) return <InstallRow peer={peer} recheck={() => setCheck((n) => n + 1)} />;
   return (
     <div className="claw-onboard">
@@ -221,14 +251,37 @@ export function ClawOnboard({ peer, onDone }: { peer: Peer; onDone: () => void }
         extra={<p className="claw-onboard-note">OpenClaw can run commands on this {computerWord(peer.platform)}</p>}
         send={async (provider, key) => {
           await post(peer, `${base}/onboard`, { provider, key, acceptRisk: true });
-          // Set up either way now: a Gateway slow to start shows Start next.
-          try {
-            await post(peer, `${base}/gateway/start`, {});
-          } finally {
-            onDone();
-          }
+          // A failed setup keeps the form and its reason on screen.
+          await finishSetup(peer);
+          onDone();
         }}
       />
+    </div>
+  );
+}
+
+function SetupRunning({ peer, onDone }: { peer: Peer; onDone: () => void }) {
+  const [problem, setProblem] = useState("");
+  useEffect(() => {
+    let live = true;
+    finishSetup(peer)
+      .then(() => live && onDone())
+      .catch((e) => live && setProblem((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [peer]);
+  return (
+    <div className="claw-onboard" role="status">
+      <div className="claw-onboard-row">
+        <strong>Setting up OpenClaw</strong>
+        {!problem && <Loader2 size={14} className="spin" />}
+      </div>
+      {problem && (
+        <p className="claw-error" role="alert">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }

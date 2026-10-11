@@ -29,6 +29,9 @@ export function watchForApp(config: StartConfig, every = 15000) {
       else location.replace(target);
     });
     document.body.append(pill);
+    // Reach's own suggestion to get the app has nothing left to ask
+    // (PhonePrompts.tsx); the pill above takes over.
+    window.dispatchEvent(new Event("reach-tailscale-app-on"));
   };
   return setInterval(check, every);
 }

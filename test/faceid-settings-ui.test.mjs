@@ -13,7 +13,7 @@ before(async () => {
 after(async () => dom?.close());
 
 const peer = { id: "a", name: "Mac A", url: "https://reach.test:8443", token: "T", platform: "darwin" };
-function computer({ status = 200, keys = [] } = {}) {
+function computer({ status = 200, keys = [], refuse = "" } = {}) {
   const log = [];
   let list = [...keys];
   const reply = (s, v) => new Response(JSON.stringify(v), { status: s, headers: { "Content-Type": "application/json" } });
@@ -26,6 +26,7 @@ function computer({ status = 200, keys = [] } = {}) {
     if (u.pathname === "/api/auth/passkeys/options")
       return reply(200, { challenge: "Yw", rp: { id: "reach.test", name: "Reach" }, user: { id: "dQ", name: "me", displayName: "me" }, pubKeyCredParams: [], excludeCredentials: list.map((k) => ({ type: "public-key", id: k.id })) });
     if (u.pathname === "/api/auth/passkeys" && method === "POST") {
+      if (refuse) return reply(401, { error: refuse });
       list.push({ id: "bmV3", label: "iPhone", createdAt: "2026-10-05T10:00:00Z" });
       return reply(201, list.at(-1));
     }
@@ -80,6 +81,39 @@ test("add this phone's Face ID, straight from the tap", async () => {
   await settle(120);
   assert.ok(log.some(([m, p]) => m === "POST" && p === "/api/auth/passkeys"));
   assert.match(c.textContent, /iPhone\s*Added Oct 5/);
+  await view.unmount();
+});
+
+test("a refused Face ID answer says the computer's reason, not \"pair again\"", async () => {
+  computer({ refuse: "That Face ID response is for an earlier attempt. Try again." });
+  const view = await dom.render(React.createElement(FaceIdSettings, { peer }));
+  await settle(120);
+  const c = view.container;
+  button(c, "Use Face ID").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await settle(120);
+  assert.match(c.textContent, /for an earlier attempt/);
+  assert.doesNotMatch(c.textContent, /Pair this device again/);
+  await view.unmount();
+});
+
+test("a tap after the two-minute challenge ran out fetches a fresh one first", async () => {
+  const { log, created } = computer();
+  const realNow = Date.now;
+  const view = await dom.render(React.createElement(FaceIdSettings, { peer }));
+  await settle(120);
+  const c = view.container;
+  const asked = () => log.filter(([, p]) => p === "/api/auth/passkeys/options").length;
+  const before = asked();
+  Date.now = () => realNow() + 150000;
+  try {
+    button(c, "Use Face ID").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    assert.equal(created.length, 0, "not with the expired challenge");
+    await settle(120);
+    assert.equal(asked(), before + 1);
+    assert.equal(button(c, "Use Face ID").disabled, false, "ready again");
+  } finally {
+    Date.now = realNow;
+  }
   await view.unmount();
 });
 

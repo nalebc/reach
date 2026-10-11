@@ -97,18 +97,29 @@ test("platform, permissions and ready tools determine every workspace entry", ()
   assert.equal(pageAccessible("overview", noDevice), true);
   assert.equal(pageAccessible("files", noDevice), false);
 });
-test("optional tools and disabled screen stay out of navigation until usable", () => {
+test("Chat stays in an owner's navigation without any agent; a disabled screen stays out", () => {
+  // Chat is the page "sessions". With no agent yet (or Codex missing,
+  // signed out, unavailable), it's where an owner adds one (first-run
+  // matrix A2), so it never leaves navigation; nobody else ever sees it.
   const device = host("darwin");
-  for (const state of ["checking", "missing", "signin", "unavailable"])
+  for (const state of ["checking", "missing", "signin", "unavailable", "ready"])
     assert.equal(
-      pageAccessible("chat", workspaceCapabilities(device, { state })),
-      false,
+      pageAccessible("sessions", workspaceCapabilities(device, { state })),
+      true,
       state,
     );
   device.capabilities.codex = false;
   assert.equal(
-    pageAccessible("chat", workspaceCapabilities(device, { state: "ready" })),
+    pageAccessible("sessions", workspaceCapabilities(device, { state: "missing" })),
+    true,
+  );
+  assert.equal(
+    pageAccessible(
+      "sessions",
+      workspaceCapabilities({ ...device, access: { kind: "guest", scopes } }, { state: "ready" }),
+    ),
     false,
+    "a guest with full access doesn't see every chat",
   );
   device.capabilities.screen = false;
   const caps = workspaceCapabilities(device);

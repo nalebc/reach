@@ -151,7 +151,9 @@ test('native helper preparation rechecks the coordinator before spawning', async
   assert.equal(calls, 0);
 });
 
-for (const method of ['draft', 'stop', 'model', 'effort']) test(`${method} waits for desktop control before native mutation`, async t => {
+// (Effort is no longer picked in the Claude app's menu: nothing outside the
+// app changes its process's level, Oct 10; claude-compose.mjs has no effort.)
+for (const method of ['draft', 'stop', 'model']) test(`${method} waits for desktop control before native mutation`, async t => {
   const arbiter = coordinator(); arbiter.setBlocked(true);
   const { compose, ui } = fixture(t, { desktopAutomation: arbiter });
   await assert.rejects(compose[method](B, { title: 'Synthetic', text: 'draft', owner: 'owner', mode: 'manual', model: 'Sonnet 5.5', effort: 'high' }), e => e.waiting);

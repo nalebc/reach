@@ -6,11 +6,14 @@ import { startDom } from "./dom/harness.mjs";
 // finished keeping their circle.
 const peer = { id: "mac", name: "Mac", url: "https://mac.test", token: "t", platform: "darwin" };
 let dom, React, HomeLive;
+// Who the computer says may use it (for the Access card).
+let clients = [];
 before(async () => {
   dom = await startDom({
     mobile: true,
     routes: {
       "/api/sessions/logos": () => ({ version: "v1", logos: {} }),
+      "/api/clients": () => ({ current: "me", clients }),
     },
   });
   React = dom.React;
@@ -76,31 +79,50 @@ test("chats that just finished keep their circle a few minutes, marked done or f
   await view.unmount();
 });
 
-test("who else is on the computer: a pill under its name, and who does what", async () => {
+test("Access on Home: who's here or may come in, one tap to Agents & people, one to Invite", async () => {
   const devices = [
     { id: "me", name: "This phone", kind: "phone", self: true, activity: "connected" },
     { id: "p2", name: "iPad", kind: "tablet", self: false, activity: "viewing" },
     { id: "a1", name: "Helper", kind: "computer", self: false, activity: "controlling", access: [{ kind: "agent", expiresAt: 0 }] },
   ];
+  const later = Date.now() + 3600 * 1000;
+  clients = [
+    { id: "a1", name: "Helper", kind: "agent", status: "accepted", expiresAt: later },
+    { id: "g1", name: "Sam", kind: "guest", status: "invited", expiresAt: later },
+    { id: "a2", name: "Claude", kind: "agent", status: "pending", expiresAt: later },
+    { id: "old", name: "Old", kind: "guest", expiresAt: Date.now() - 1000 },
+  ];
+  const went = [];
+  const owner = { terminal: false, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: true, writeFiles: false };
   const view = await dom.render(
-    home({
-      agentSessions: [],
-      features: { terminal: false, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: true, writeFiles: false },
-      connections: { mac: { state: "connected", devices } },
-    }),
+    home({ agentSessions: [], features: owner, navigate: (to) => went.push(to), connections: { mac: { state: "connected", devices } } }),
   );
-  const pill = await dom.waitFor(() => dom.document.querySelector(".home-here"));
-  assert.ok(pill.classList.contains("controlling"));
-  assert.match(pill.textContent, /Helper is controlling/);
-  pill.click();
-  await dom.waitFor(() => dom.document.querySelectorAll(".home-here-row").length === 2);
-  const rows = [...dom.document.querySelectorAll(".home-here-row")].map((r) => r.textContent);
-  assert.deepEqual(rows, ["iPadWatching the screen", "HelperControlling the screen · Agent"]);
+  const card = await dom.waitFor(() => dom.document.querySelector(".home-access"));
+  assert.ok(card.classList.contains("controlling"));
+  await dom.waitFor(() => card.querySelectorAll(".home-access-faces i").length === 4);
+  assert.match(card.querySelector("strong").textContent, /Helper is controlling/);
+  assert.equal(card.querySelector("small").textContent, "1 waiting for you");
+  // Here now first (a green dot), then who else may come in; Helper once.
+  assert.deepEqual(
+    [...card.querySelectorAll(".home-access-faces i")].map((i) => i.className.trim()),
+    ["here", "here agent", "", "agent"],
+  );
+  card.querySelector(".home-access-who").click();
+  card.querySelector('[aria-label="Invite an agent or someone"]').click();
+  assert.deepEqual(went, ["invite", "invite:new"]);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
-  // Alone on it: no pill.
-  const alone = await dom.render(home({ agentSessions: [], connections: { mac: { state: "connected", devices: [devices[0]] } } }));
-  await dom.waitFor(() => dom.document.querySelector(".home-live"));
-  assert.equal(dom.document.querySelector(".home-here"), null);
+  // Alone, nobody invited: the card still says so, and still invites.
+  clients = [];
+  const alone = await dom.render(home({ agentSessions: [], features: owner, connections: { mac: { state: "connected", devices: [devices[0]] } } }));
+  const only = await dom.waitFor(() => dom.document.querySelector(".home-access"));
+  assert.equal(only.querySelector("strong").textContent, "Only you");
+  assert.equal(only.querySelector("small").textContent, "Agents & people");
+  assert.ok(only.querySelector('[aria-label="Invite an agent or someone"]'));
   await alone.unmount();
+  // Not the owner: no Access card.
+  const guest = await dom.render(home({ agentSessions: [] }));
+  await dom.waitFor(() => dom.document.querySelector(".home-live"));
+  assert.equal(dom.document.querySelector(".home-access"), null);
+  await guest.unmount();
 });

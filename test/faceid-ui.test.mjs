@@ -8,7 +8,8 @@ import { startDom, settle } from "./dom/harness.mjs";
 // stays as the fallback.
 let dom, React, ConnectForm;
 before(async () => {
-  dom = await startDom({ mobile: true });
+  // A page on your tailnet, as Reach is always reached.
+  dom = await startDom({ mobile: true, url: "https://reach.t.ts.net/" });
   React = dom.React;
   ConnectForm = (await dom.load("/src/ConnectForm.tsx")).default;
 });
@@ -28,12 +29,12 @@ function phone({ faceId = true, passkey = true, approveAfterFaceId = true } = {}
     if (u.pathname === "/api/auth/method") return reply(200, { method: "tailscale", eligible: true, login: "me@x.test" });
     if (u.pathname === "/api/auth/requests") return reply(202, { id: REQUEST, secret: "s3cret", expiresAt: Date.now() + 300000, verification: "11111111", ...(passkey ? { passkey: true } : {}) });
     if (u.pathname === `/api/auth/requests/${REQUEST}/passkey/options`)
-      return reply(200, { challenge: "Y2hhbGxlbmdl", rpId: "reach.test", allowCredentials: [{ type: "public-key", id: "AQID" }], userVerification: "required" });
+      return reply(200, { challenge: "Y2hhbGxlbmdl", rpId: "reach.t.ts.net", allowCredentials: [{ type: "public-key", id: "AQID" }], userVerification: "required" });
     if (u.pathname === `/api/auth/requests/${REQUEST}/passkey`) return (faceDone = approveAfterFaceId), reply(200, { approved: true });
     if (u.pathname === `/api/auth/requests/${REQUEST}`)
       return reply(200, passkey && !faceDone ? { status: "pending" } : { status: "approved", token: "T0KEN", device: { id: "mac-a", name: "Mac A", platform: "darwin" } });
     if (u.pathname === "/api/auth/passkeys/options")
-      return reply(200, { challenge: "cmVnaXN0ZXI", rp: { id: "reach.test", name: "Reach" }, user: { id: "dXNlcg", name: "me@x.test", displayName: "me@x.test" }, pubKeyCredParams: [{ type: "public-key", alg: -7 }], excludeCredentials: [] });
+      return reply(200, { challenge: "cmVnaXN0ZXI", rp: { id: "reach.t.ts.net", name: "Reach" }, user: { id: "dXNlcg", name: "me@x.test", displayName: "me@x.test" }, pubKeyCredParams: [{ type: "public-key", alg: -7 }], excludeCredentials: [] });
     if (u.pathname === "/api/auth/passkeys") return reply(201, { id: "AQID", label: "iPhone", createdAt: "now" });
     return reply(404, { error: "no" });
   };
@@ -60,7 +61,7 @@ const render = (props = {}, { saved = [] } = {}) => {
   dom.window.localStorage.removeItem("reach.devices");
   if (saved.length) dom.window.localStorage.setItem("reach.devices", JSON.stringify(saved));
   return dom
-    .render(React.createElement(ConnectForm, { initialUrl: "https://reach.test:8443", name: "iPhone", onPaired: (p) => paired.push(p), legacy: () => null, ...props }))
+    .render(React.createElement(ConnectForm, { initialUrl: "https://reach.t.ts.net:8443", name: "iPhone", onPaired: (p) => paired.push(p), legacy: () => null, ...props }))
     .then((view) => ({ view, c: view.container, paired }));
 };
 const button = (c, text) => [...c.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
@@ -89,7 +90,7 @@ test("a new browser of yours: Use Face ID approves it, called straight from the 
   // the click, before anything is awaited.
   face.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   assert.equal(calls.get.length, 1, "called synchronously in the tap");
-  assert.equal(calls.get[0].publicKey.rpId, "reach.test");
+  assert.equal(calls.get[0].publicKey.rpId, "reach.t.ts.net");
   assert.deepEqual([...new Uint8Array(calls.get[0].publicKey.allowCredentials[0].id)], [1, 2, 3]);
   await settle(1800); // the usual poll picks up the approval
   const sent = log.find(([, , p]) => p === `/api/auth/requests/${REQUEST}/passkey`)[3];
@@ -217,7 +218,7 @@ test("leaving during the offer (phone locked, reload) keeps the approval: saved 
   const saved = JSON.parse(dom.window.localStorage.getItem("reach.browser.devices") || "[]");
   assert.equal(saved.length, 1);
   assert.equal(saved[0].token, "T0KEN");
-  assert.equal(saved[0].url, "https://reach.test:8443");
+  assert.equal(saved[0].url, "https://reach.t.ts.net:8443");
   assert.equal(dom.window.localStorage.getItem("reach.browser.active"), saved[0].id);
   assert.equal(dom.window.localStorage.getItem("reach.devices"), null, "not the app way's");
   await view.unmount(); // the phone goes away mid-offer

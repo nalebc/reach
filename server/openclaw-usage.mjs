@@ -66,6 +66,51 @@ function writeBudget(dataDir, monthlyUsd) {
   fs.renameSync(tmp, file);
 }
 
+// --- Savings --------------------------------------------------------------
+
+// What "Cheap background work" moved (the model, the schedules), so their
+// runs can be counted in Reach's savings ledger (savings.mjs).
+const ROUTED_FILE = "openclaw-routed.json";
+export function readRouted(dataDir) {
+  if (!dataDir) return null;
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(dataDir, ROUTED_FILE), "utf8"));
+    const model = ref(saved?.model);
+    const jobs = Array.isArray(saved?.jobs) ? saved.jobs.filter((id) => typeof id === "string" && id && id.length <= 200).slice(0, 1000) : [];
+    return model ? { model, jobs } : null;
+  } catch {
+    return null;
+  }
+}
+function writeRouted(dataDir, model, jobs) {
+  if (!dataDir) return;
+  const before = readRouted(dataDir);
+  // Moved to the same model again: those too; to another, only the new ones.
+  const all = [...new Set([...(before?.model === model ? before.jobs : []), ...jobs])].slice(-1000);
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const file = path.join(dataDir, ROUTED_FILE);
+  const tmp = `${file}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ model, jobs: all }), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+const count = (n) => (typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : null);
+// The input tokens a schedule's run sent to the cheap model Reach moved it
+// to, by OpenClaw's own count (a cron "finished" event's usage), so not to
+// the main model. Anything missing or unknown: nothing (null).
+export function cheapRunTokens(p, routed) {
+  if (!routed || p?.action !== "finished" || p.status !== "ok") return null;
+  if (typeof p.jobId !== "string" || !routed.jobs.includes(p.jobId)) return null;
+  const model = typeof p.model === "string" ? p.model : "";
+  const provider = typeof p.provider === "string" ? p.provider : "";
+  if (!model || (model !== routed.model && `${provider}/${model}` !== routed.model)) return null;
+  const u = p.usage;
+  const input = count(u?.input_tokens);
+  const read = u?.cache_read_tokens === undefined ? 0 : count(u.cache_read_tokens);
+  const write = u?.cache_write_tokens === undefined ? 0 : count(u.cache_write_tokens);
+  if (input === null || read === null || write === null) return null;
+  return input + read + write;
+}
+
 // --- Spend ----------------------------------------------------------------
 
 // Sums OpenClaw's daily rows (usage.cost: totalCost; sessions.usage: cost).
@@ -171,8 +216,20 @@ export function cheapPlan(routing, jobs, model) {
 }
 
 export function routes(app, client, ctx) {
-  const { base, authorize, dataDir } = ctx;
+  const { base, authorize, dataDir, savings } = ctx;
   const call = (method, params, auth, waitMs) => client.call(method, params, auth, waitMs);
+
+  // ---- savings: each schedule run Reach moved to the cheap model.
+  // (The cache fix isn't counted: heartbeats report no usage to Reach.)
+  const counted = new Set(); // runIds
+  client.onEvent?.((event, p) => {
+    if (event !== "cron" || !savings || typeof p?.runId !== "string" || !p.runId || counted.has(p.runId)) return;
+    const tokens = cheapRunTokens(p, readRouted(dataDir));
+    if (tokens === null) return;
+    counted.add(p.runId);
+    if (counted.size > 512) counted.delete(counted.values().next().value);
+    savings.record({ agent: "openclaw", kind: "openclaw-cheap-route", tokens });
+  });
 
   // ---- spend
   const chats = new Map(); // key -> { at, body }
@@ -198,6 +255,10 @@ export function routes(app, client, ctx) {
     // Every agent when OpenClaw answers sessions.usage; else the default one.
     const all = sessions.status === "fulfilled" && Array.isArray(sessions.value?.aggregates?.daily) ? sessions.value : null;
     const spend = spendFrom(all ? all.aggregates.daily : cost.value?.daily, now);
+    // Still counting (2026.9: sessions not yet read are left out of the
+    // totals): partial, as OpenClaw's own isComplete reads it.
+    const counted = all || cost.value;
+    if (counted?.cacheStatus && counted.cacheStatus.status !== "fresh") spend.partial = true;
     const body = {
       supported: true,
       scope: all ? "all" : "default",
@@ -362,15 +423,26 @@ export function routes(app, client, ctx) {
     const plan = cheapPlan(routing, jobs, model);
     // Schedules first: the config patch restarts the Gateway.
     let moved = 0;
+    // The schedules OpenClaw confirmed moving, kept for the savings count.
+    const remember = () => {
+      if (!moved) return;
+      try {
+        writeRouted(dataDir, model, plan.jobs.slice(0, moved));
+      } catch {
+        /* not counted; the move itself stands */
+      }
+    };
     for (const id of plan.jobs) {
       try {
         await call("cron.update", { id, patch: { payload: { kind: "agentTurn", model } } }, authorize(req));
         moved++;
       } catch (e) {
+        remember();
         if (e?.status === 401 || e?.status === 403) throw e;
         throw fail(409, `OpenClaw didn't move a schedule (${moved} of ${plan.jobs.length} moved). Refresh, then try again.`);
       }
     }
+    remember();
     if (plan.heartbeat || plan.agents.length)
       await patch(req, snapshot, {
         agents: {

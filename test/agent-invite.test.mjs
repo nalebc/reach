@@ -72,7 +72,7 @@ async function start(t, { policy } = {}) {
 }
 
 test("an invited agent gets exactly its folder and access, nothing of yours", async (t) => {
-  const { call, invite, redeem, files } = await start(t);
+  const { call, invite, redeem, files, dir } = await start(t);
   const before = Date.now();
   const created = await invite({ write: true, exec: true });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -134,6 +134,24 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
     else await new Promise((r) => setTimeout(r, 50));
   }
   assert.equal(fs.realpathSync.native(done.output.trim()), acme);
+  // Its jobs run in the sandbox Full control commands do: Reach's
+  // credentials stay out of reach. Yours run as you (connections audit, Oct 10).
+  if (process.platform === "darwin") {
+    const finish = async (r, by = as) => {
+      assert.equal(r.status, 202, JSON.stringify(r.body));
+      for (let i = 0; i < 100; i++) {
+        const j = (await by(`/api/jobs/${r.body.id}`)).body;
+        if (j.status !== "running") return j;
+        await new Promise((res) => setTimeout(res, 50));
+      }
+    };
+    const peek = { root: 0, path: "", command: `cat ${JSON.stringify(path.join(dir, "private", "clients.json"))} >/dev/null && echo read` };
+    const agentJob = await finish(await as("/api/jobs", { method: "POST", body: peek }));
+    assert.notEqual(agentJob.exitCode, 0);
+    assert.doesNotMatch(agentJob.output, /\bread\b/);
+    const ownJob = await finish(await call("/api/jobs", { method: "POST", body: peek }), call);
+    assert.equal(ownJob.output.trim(), "read");
+  }
   assert.equal(
     (
       await as("/api/jobs", {

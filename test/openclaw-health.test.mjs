@@ -173,6 +173,14 @@ test("readiness reads /readyz on loopback and maps channels to fixed labels", as
   const got = await readiness({ configuration: async () => ({ url: "ws://127.0.0.1:19999", token: "t" }), fetch });
   assert.equal(asked, "http://127.0.0.1:19999/readyz");
   assert.deepEqual(got, { supported: true, ready: false, uptimeMs: 1234, failing: ["WhatsApp", "Other"] });
+  // 2026.9.9's other reasons are named for what they are, never a channel;
+  // not ready with nothing named (or a 503) is the Gateway itself.
+  const answer = (body, ok = true) => readiness({ configuration: async () => ({ url: "ws://127.0.0.1:19999" }), fetch: async () => ({ ok, json: async () => body }) });
+  assert.deepEqual((await answer({ ready: false, failing: ["state-database", "agent-database:main", "gateway-draining", "plugin-reload"] })).failing,
+    ["OpenClaw's database", "An agent's database", "Gateway (shutting down)", "Plugins (reloading)"]);
+  assert.deepEqual((await answer({ ready: false, failing: [] })).failing, ["Gateway"]);
+  assert.deepEqual((await answer({ ready: true, failing: [] }, false)).failing, ["Gateway"]);
+  assert.deepEqual((await answer({ ready: true, failing: [] })).failing, []);
   assert.deepEqual(
     await readiness({ configuration: async () => ({ url: "ws://127.0.0.1:1" }), fetch: async () => { throw new Error("ECONNREFUSED secret"); } }),
     { supported: false },
@@ -186,8 +194,8 @@ test("readiness reads /readyz on loopback and maps channels to fixed labels", as
 test("restart runs fixed args in a login shell with a timeout; never echoes its output", async () => {
   const runs = [];
   const configuration = async () => ({ url: "ws://127.0.0.1:18789" });
-  await restartOpenClawGateway({ configuration, run: async (...a) => runs.push(a), env: { SHELL: "/bin/zsh" }, platform: "darwin" });
-  assert.deepEqual(runs, [["/bin/zsh", ["-lc", "exec openclaw gateway restart"], { timeout: 25000 }]]);
+  await restartOpenClawGateway({ configuration, run: async (...a) => runs.push(a), env: { SHELL: "/bin/zsh" }, platform: "darwin", runtime: "/brew/opt/node@24/bin/node" });
+  assert.deepEqual(runs, [["/bin/zsh", ["-lc", `export PATH='/brew/opt/node@24/bin:/brew/bin':"$PATH"; exec openclaw "$@"`, "openclaw", "gateway", "restart"], { timeout: 25000 }]]);
   await assert.rejects(
     restartOpenClawGateway({ configuration, run: async () => { throw new Error(`stderr ${SECRETS.openai}`); }, env: {}, platform: "linux" }),
     (e) => e.status === 503 && !e.message.includes("sk-") && /openclaw gateway restart/.test(e.message),

@@ -1,17 +1,29 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
-let probe;
-export function windowsVideoAvailable() {
-  if (!probe)
-    probe = exec(
+// Whether FFmpeg with libx264 is here for video (otherwise the screen comes
+// as still images). Found once, kept; not found, looked for again a few
+// minutes later, so installing FFmpeg needs no Reach restart.
+let probe, missedAt = 0;
+const MISS_MS = 5 * 60 * 1000;
+export function windowsVideoAvailable({ run = exec, now = Date.now } = {}) {
+  if (probe === false && now() - missedAt < MISS_MS) return Promise.resolve(false);
+  if (!probe || probe === false)
+    probe = run(
       process.env.REACH_FFMPEG || "ffmpeg",
       ["-hide_banner", "-encoders"],
       { timeout: 5000, maxBuffer: 1024 * 1024 },
     )
       .then((r) => r.stdout.includes("libx264"))
-      .catch(() => false);
-  return probe;
+      .catch(() => false)
+      .then((found) => {
+        if (!found) {
+          probe = false;
+          missedAt = now();
+        }
+        return found;
+      });
+  return probe === false ? Promise.resolve(false) : probe;
 }
 // FFmpeg inserts AUD boundaries. Keep at most a few encoded frames, and resume
 // at an IDR after any dropped data so slow clients never see corrupt deltas.

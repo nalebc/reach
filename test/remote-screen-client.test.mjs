@@ -426,6 +426,45 @@ test("no fresh picture keeps the last picture and names the cause while reconnec
   await view.unmount();
 });
 
+// A Mac that sleeps or locks has no picture to send; its helper says so about
+// once a second. That used to be silence: "stalled, reconnecting" every 15 s.
+test("a sleeping or locked Mac keeps the last picture, says why, and never counts as a stall", { timeout: 20000 }, async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  try {
+    // Past the 10 s watchdog, told every 2 s.
+    for (let i = 0; i < 6; i++) {
+      socket.says({ type: "status", idle: i < 3 ? "asleep" : "locked" });
+      await settle(5);
+      if (i === 0)
+        assert.deepEqual(
+          { idle: state().idle, cause: state().cause, ready: state().ready, connecting: state().connecting },
+          { idle: "asleep", cause: "Mac asleep", ready: true, connecting: true },
+        );
+      await settle(2000);
+    }
+    assert.equal(FakeSocket.all.length, 1, "the same connection throughout");
+    assert.equal(socket.readyState, 1);
+    assert.equal(state().idle, "locked");
+    assert.equal(state().cause, "Mac locked");
+    assert.equal(state().ready, true, "the last picture stays");
+    assert.equal(state().error, "");
+    // Pictures again: live, nothing to say.
+    socket.says({ type: "status", idle: "" });
+    socket.frame(2, keyframe);
+    FakeDecoder.all.at(-1).shows();
+    await dom.waitFor(() => !state().connecting);
+    assert.equal(state().idle, "");
+    assert.equal(state().cause, "");
+  } finally {
+    await view.unmount();
+  }
+});
+
 // Each interface edit (agents edit it all day) reloaded an open phone, mid-
 // stream, back to the loading scene.
 test("a live screen holds off the new-interface reload until it closes", async () => {

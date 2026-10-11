@@ -17,7 +17,6 @@ import {
   Tablet,
   Terminal,
   Upload,
-  UserRoundPlus,
 } from "lucide-react";
 import {
   post,
@@ -37,6 +36,7 @@ import { handoffNeeds, requestOpenThread, useHandoffs } from "./handoffs";
 import { useBrowserApprovals } from "./browser-approvals";
 import { useAgentAdmissions } from "./agent-admissions";
 import { useServiceAccess } from "./service-access";
+import { usePermissionRequests } from "./permission-requests";
 import { useBellNeeds } from "./Notifications";
 import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
@@ -60,15 +60,21 @@ const ACTIVE_MS = 4000;
 // A chat that ended its turn this recently keeps its circle, marked done.
 const DONE_MS = 10 * 60 * 1000;
 
-// Who else is on the computer right now, in a word.
-const doing: Record<ConnectedDevice["activity"], string> = {
-  connected: "Connected",
-  viewing: "Watching the screen",
-  controlling: "Controlling the screen",
-  terminal: "In a terminal",
-};
+// Why the live preview shows no fresh picture, as one short pill ("" while
+// it's live or simply starting): tapped, it tries again.
+export function heroStatus(
+  stream: { error: string; cause: string; connecting: boolean; idle?: string },
+  word = "Mac",
+) {
+  const why = stream.error || (stream.connecting ? stream.cause : "");
+  if (stream.idle === "locked" || /\blocked\b/i.test(why)) return `${word} locked`;
+  if (stream.idle === "asleep" || /\basleep\b/i.test(why)) return `${word} asleep`;
+  if (!why) return "";
+  if (/Screen Recording/i.test(why)) return "Screen Recording off";
+  return stream.error ? "Can't show screen" : "Reconnecting";
+}
+
 const isAgent = (d: ConnectedDevice) => !!d.access?.some((a) => a.kind === "agent");
-const isGuest = (d: ConnectedDevice) => !!d.access?.some((a) => a.kind === "invited");
 const DeviceGlyph = ({ device, size = 15 }: { device: ConnectedDevice; size?: number }) =>
   isAgent(device) ? (
     <Bot size={size} />
@@ -294,6 +300,7 @@ export default function HomeLive({
   active,
   connections,
   connection,
+  appLink,
   terminals,
   chats,
   pending,
@@ -316,6 +323,8 @@ export default function HomeLive({
   active: string;
   connections: FleetConnections;
   connection: string;
+  // Signed in from the browser: the Tailscale app, one tap away.
+  appLink?: string;
   terminals: Session[];
   chats: Session[];
   pending: AgentRequest[];
@@ -345,15 +354,21 @@ export default function HomeLive({
   // stops capturing and encoding it).
   const hero = useRef<HTMLElement>(null);
   const heroOnScreen = useOnScreen(hero);
+  // Tapping the preview's status pill connects again.
+  const [heroRetry, setHeroRetry] = useState(0);
+  const watching = features.screen && visible && !paused && heroOnScreen;
   const stream = useRemoteScreen(
     peer,
     features.screen,
-    features.screen && visible && !paused && heroOnScreen,
+    watching,
     "primary",
     "preview",
-    0,
+    heroRetry,
     false,
   );
+  const heroPill = watching
+    ? heroStatus(stream, computerWord(device.platform))
+    : "";
   const peeks = useTerminalPeeks(peer, features.terminal ? terminals : []);
   const mac = useMacTabs(
     peer,
@@ -409,12 +424,14 @@ export default function HomeLive({
     connections[active]?.changes,
   );
   const serviceAccess = useServiceAccess(peer, features.owner && visible, connections[active]?.changes);
+  const permissionRequests = usePermissionRequests(peer, features.owner && visible);
   const bellNeeds = useBellNeeds(peer);
   const needItems: NeedItem[] = [
     ...bellNeeds,
     ...agentAdmissions.items,
     ...browserApprovals.items,
     ...serviceAccess.items,
+    ...permissionRequests.items,
     ...handed,
     ...pending.map(
       (r): NeedItem => ({
@@ -579,7 +596,53 @@ export default function HomeLive({
   // Everyone else on this computer now: other phones, guests, agents.
   const here = (connections[active]?.devices || []).filter((d) => !d.self);
   const controlling = here.find((d) => d.activity === "controlling");
-  const [hereOpen, setHereOpen] = useState(false);
+  // Who may use it (people and agents you invited), for the Access card:
+  // read when Home opens, when someone connects or leaves, and when a new
+  // request comes in. Never on a timer.
+  const [access, setAccess] = useState<
+    { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[]
+  >([]);
+  const hereKey = here.map((d) => d.id).join(",");
+  const requestsKey = (() => {
+    try {
+      return JSON.parse(connections[active]?.changes || "{}")?.requests ?? "";
+    } catch {
+      return "";
+    }
+  })();
+  useEffect(() => {
+    if (!features.owner || !visible) return;
+    let live = true;
+    request<{ clients?: { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[] }>(peer, "/api/clients")
+      .then((r) => live && setAccess(Array.isArray(r?.clients) ? r.clients : []))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [peer.url, peer.token, features.owner, visible, hereKey, requestsKey]);
+  const invited = access.filter(
+    (c) => (c.kind === "guest" || c.kind === "agent") && (c.expiresAt || 0) > Date.now(),
+  );
+  const waiting = invited.filter((c) => c.kind === "agent" && c.status === "pending").length;
+  // Faces: who's here first, then who else may come in.
+  const faces = [
+    ...here.map((d) => ({ id: d.id, here: true, agent: isAgent(d), glyph: <DeviceGlyph device={d} size={13} /> })),
+    ...invited
+      .filter((c) => !here.some((d) => d.id === c.id || d.name === c.name))
+      .map((c) => ({
+        id: c.id,
+        here: false,
+        agent: c.kind === "agent",
+        glyph: c.kind === "agent" ? <Sparkles size={13} /> : <b>{c.name.trim().slice(0, 1).toUpperCase()}</b>,
+      })),
+  ].slice(0, 4);
+  const accessTitle = controlling
+    ? `${controlling.name} is controlling`
+    : here.length
+      ? `${here.length} here now`
+      : invited.length
+        ? `${invited.length} with access`
+        : "Only you";
   return (
     <div className="home-live">
       <section className="home-hero" ref={hero}>
@@ -593,7 +656,7 @@ export default function HomeLive({
           {features.screen && (
             <canvas
               ref={stream.canvas}
-              className={`home-peek ${live ? "is-live" : ""}`}
+              className={`home-peek ${live ? "is-live" : ""} ${live && heroPill ? "is-held" : ""}`}
               aria-hidden="true"
             />
           )}
@@ -604,30 +667,32 @@ export default function HomeLive({
             className="home-scene"
           />
         </button>
+        {heroPill && (
+          // The last picture stays, dimmed; this says why. Tap: try again.
+          <button
+            className="home-hero-status"
+            title={stream.error || stream.cause || heroPill}
+            aria-label={`${heroPill}. Try again`}
+            onClick={() => setHeroRetry((n) => n + 1)}
+          >
+            {heroPill}
+          </button>
+        )}
         <div className="home-hero-text">
           <h1>{device.name}</h1>
           <p>
             <i className={`status-dot ${online ? "" : "off"}`} />
             {online ? "Online" : "Connecting…"} · {connection}
-            {live ? " · live" : paused ? " · paused" : ""}
+            {appLink && (
+              <>
+                {" · "}
+                <a className="home-app-link" href={appLink} target="_blank" rel="noopener noreferrer">
+                  faster with the app
+                </a>
+              </>
+            )}
+            {live && !heroPill ? " · live" : paused ? " · paused" : ""}
           </p>
-          {features.owner && here.length > 0 && (
-            <button
-              className={`home-here${controlling ? " controlling" : ""}`}
-              onClick={() => setHereOpen(true)}
-            >
-              <span className="home-here-faces" aria-hidden="true">
-                {here.slice(0, 3).map((d) => (
-                  <i key={d.id}>
-                    <DeviceGlyph device={d} size={12} />
-                  </i>
-                ))}
-              </span>
-              {controlling
-                ? `${controlling.name} is controlling`
-                : `${here.length} here`}
-            </button>
-          )}
         </div>
         {features.owner && (
           <PauseButton
@@ -638,16 +703,42 @@ export default function HomeLive({
             toast={toast}
           />
         )}
-        {features.owner && (
-          <button
-            className="icon-button home-invite"
-            aria-label="Invite someone"
-            onClick={() => navigate("invite")}
-          >
-            <UserRoundPlus size={18} />
-          </button>
-        )}
       </section>
+
+      {features.owner && (
+        // Who can use this computer, one tap from Home: the card opens
+        // Agents & people (what each may do, Remove); Invite opens the
+        // invitation at once.
+        <section className={`home-access${controlling ? " controlling" : ""}`} aria-label="Access">
+          <button className="home-access-who" onClick={() => navigate("invite")}>
+            <span className="home-access-faces" aria-hidden="true">
+              {faces.length ? (
+                faces.map((f) => (
+                  <i key={f.id} className={`${f.here ? "here" : ""}${f.agent ? " agent" : ""}`}>
+                    {f.glyph}
+                  </i>
+                ))
+              ) : (
+                <i className="you">You</i>
+              )}
+            </span>
+            <span className="home-access-text">
+              <strong>{accessTitle}</strong>
+              <small className={waiting ? "waiting" : undefined}>
+                {waiting ? `${waiting} waiting for you` : "Agents & people"}
+              </small>
+            </span>
+            <ChevronRight className="home-access-go" size={17} />
+          </button>
+          <button
+            className="home-access-add"
+            aria-label="Invite an agent or someone"
+            onClick={() => navigate("invite:new")}
+          >
+            <Plus size={17} /> Invite
+          </button>
+        </section>
+      )}
 
       {needsYou && (
         // Everything that needs you, one card at a time (swipe for the next):
@@ -712,8 +803,8 @@ export default function HomeLive({
             ))}
             {!stories.length && canStart && (
               <p className="home-stories-hint">
-                Start Codex, Claude Code or a terminal on {device.name}. It
-                shows up here while it runs.
+                Start an agent or a terminal on {device.name}. It shows up
+                here while it runs.
               </p>
             )}
           </div>
@@ -728,39 +819,6 @@ export default function HomeLive({
         </section>
       )}
 
-      {hereOpen && (
-        <ScreenPopup
-          title={`On ${device.name}`}
-          className="home-here-sheet"
-          onClose={() => setHereOpen(false)}
-        >
-          <div className="home-plus-list">
-            {here.map((d) => (
-              <div key={d.id} className="home-here-row">
-                <span className="home-plus-icon">
-                  <DeviceGlyph device={d} size={19} />
-                </span>
-                <span>
-                  {d.name}
-                  <small>
-                    {doing[d.activity]}
-                    {isAgent(d) ? " · Agent" : isGuest(d) ? " · Guest" : ""}
-                  </small>
-                </span>
-              </div>
-            ))}
-          </div>
-          <button
-            className="home-here-manage"
-            onClick={() => {
-              setHereOpen(false);
-              navigate("settings");
-            }}
-          >
-            Manage access
-          </button>
-        </ScreenPopup>
-      )}
       {sheet && (
         <ScreenPopup
           title="Start or send"

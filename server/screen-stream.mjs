@@ -7,16 +7,36 @@ import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
 import { hostApp, outsideTerminal, processTable } from "../scripts/instances.mjs";
+import {
+  PROTECTED_APP_IDS,
+  PROTECTED_APP_NAMES,
+  PROTECTED_TITLE_WORDS,
+  REACH_WORDS,
+} from "./agent-guard.mjs";
 const exec = promisify(execFile);
+// The windows a guest's live screen leaves out, for the screen helper
+// (scripts/native/screen-stream.swift): the ones agents never see either.
+export const privateWindows = () =>
+  JSON.stringify({
+    ids: PROTECTED_APP_IDS,
+    names: PROTECTED_APP_NAMES,
+    words: REACH_WORDS,
+    titles: PROTECTED_TITLE_WORDS,
+  });
 const native = fileURLToPath(new URL("../scripts/native/", import.meta.url));
 const MAX_FRAME = 8 * 1024 * 1024;
 const PERMISSION = /Screen Recording/i;
-// Why the screen helper has no Screen Recording, when Reach can tell: it runs
-// inside an app that isn't Terminal (an agent restarted it from its shell).
+// Why the screen helper has no Screen Recording, and what to do. The
+// permission belongs to the app Reach runs inside, never to the helper: run
+// inside another app (an agent restarted it from its shell), Reach goes back
+// to Terminal; in Terminal (or when the app can't be told), Terminal is
+// allowed and reopened, as macOS only applies it to a restarted app (the
+// same steps as server/platform.mjs's screenshot refusal).
 export function permissionHint(app = appOf()) {
-  return outsideTerminal(app)
-    ? `Reach is running inside ${app}, which has no Screen Recording permission. On your Mac, run ./reach restart in Terminal.`
-    : "";
+  if (outsideTerminal(app))
+    return `Reach is running inside ${app}, which has no Screen Recording permission. On your Mac, run ./reach restart in Terminal.`;
+  const who = app || "the app running Reach, such as Terminal";
+  return `Screen Recording is off for ${app || "Reach"}. On your Mac, open System Settings → Privacy & Security → Screen & System Audio Recording (Screen Recording on older macOS). Allow ${who}, then quit and reopen ${app || "that app"} and restart Reach.`;
 }
 // The Mac app Reach runs inside (Terminal, iTerm, an agent's app): the one
 // macOS asks about in its privacy settings. "" when it can't be told.
@@ -57,9 +77,9 @@ export class NativeScreenSource {
       // No permission: retrying can't help, so the phone stops and says why
       // instead of "Connecting…" forever.
       const error = Error(
-        (PERMISSION.test(said) && permissionHint()) ||
-          said ||
-          "Screen capture stopped. Reconnect to try again.",
+        (PERMISSION.test(said) && process.platform === "darwin"
+          ? permissionHint()
+          : said) || "Screen capture stopped. Reconnect to try again.",
       );
       if (PERMISSION.test(said)) error.permanent = true;
       this.stop(error);
@@ -145,7 +165,20 @@ export async function createScreenSource(config) {
       );
     }
     // Construction is delayed until the broadcaster rechecks active viewers.
-    return () => new NativeScreenSource(binary);
+    // The first protocol's one shared picture (no phone of yours speaks it
+    // any more; a guest still can): the primary display as still images,
+    // with password managers and Reach's own windows left out.
+    return () =>
+      new NativeScreenSource(binary, [
+        "primary",
+        "jpeg",
+        "15",
+        "1600",
+        "6000000",
+        "auto",
+        "",
+        privateWindows(),
+      ]);
   }
   if (process.platform === "win32")
     return () =>

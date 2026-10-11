@@ -311,3 +311,44 @@ test("the bell's panel opens from the bell, not as a bottom sheet", async () => 
   assert.equal(view.container.querySelectorAll("dialog[open]").length, 0);
   await view.unmount();
 });
+
+// Reach's own update (server/reach-updates.mjs) joins the restart on Home's
+// Needs you strip, answered right there: Update installs that version.
+test("an update for Reach is a Needs you card on Home: Update, or Not now", async () => {
+  const original = globalThis.fetch;
+  const answered = [];
+  items = [
+    {
+      id: "update:0.2.0",
+      source: "update",
+      revision: "d".repeat(64),
+      title: "Update Reach to 0.2.0",
+      sender: "Reach",
+      icon: "mac",
+      kind: "permission",
+      detail: "You have 0.1.0",
+      summary: "Reach installs it and starts again.",
+      actions: [{ id: "update", label: "Update", tone: "primary" }, { id: "deny", label: "Not now", tone: "deny" }],
+      target: { page: "overview", needs: "update:0.2.0" },
+    },
+  ];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (!new URL(url).pathname.endsWith("/actions")) return original(url, init);
+    answered.push([new URL(url).pathname, JSON.parse(init.body)]);
+    items = [];
+    return new Response('{"version":"0.1.0","state":"installing","to":"0.2.0"}', { status: 200 });
+  };
+  const { useBellNeeds } = await dom.load("/src/Notifications.tsx");
+  const { NeedsYouStrip } = await dom.load("/src/NeedsYou.tsx");
+  const Strip = () => React.createElement(NeedsYouStrip, { items: useBellNeeds(peer) });
+  const view = await dom.render(React.createElement(NotificationCenter, { peer, enabled: true, onOpen: () => {} }, React.createElement(Strip)));
+  await dom.waitFor(() => view.container.textContent.includes("Update Reach to 0.2.0"));
+  const update = [...view.container.querySelectorAll("button")].find((button) => button.textContent.trim() === "Update");
+  assert.ok(update, "answered on Home itself");
+  assert.ok([...view.container.querySelectorAll("button")].some((button) => button.textContent.trim() === "Not now"));
+  update.click();
+  await dom.waitFor(() => answered.length === 1);
+  assert.deepEqual(answered[0], ["/api/notifications/update%3A0.2.0/actions", { revision: "d".repeat(64), action: "update" }]);
+  await view.unmount();
+  globalThis.fetch = dom.window.fetch = original;
+});

@@ -9,7 +9,8 @@ type Missing = { bins: string[]; env: string[]; config: string[]; os: string[] }
 type Job = { status: "running" | "done" | "failed"; flagged?: boolean; message?: string };
 type Skill = {
   name: string;
-  key: string;
+  // null: OpenClaw's key for it isn't one Reach passes; shown, not changed.
+  key: string | null;
   emoji: string;
   source: string;
   bundled: boolean;
@@ -99,7 +100,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
   const q = query.trim().toLowerCase();
   const skills = (data?.skills || []).filter((s) => !q || s.name.toLowerCase().includes(q));
   const toggle = async (skill: Skill) => {
-    if (busy) return;
+    if (busy || !skill.key) return;
     setBusy(skill.key);
     setProblem("");
     try {
@@ -190,7 +191,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                       {skill.state === "setup" && skill.keyName && data?.canToggle && (
                         <KeyField peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
                       )}
-                      {skill.state === "setup" && data?.canSetup && skill.missing.env.some((name) => name !== skill.keyName) && (
+                      {skill.state === "setup" && skill.key && data?.canSetup && skill.missing.env.some((name) => name !== skill.keyName) && (
                         <SkillValues peer={peer} skill={skill} onSaved={() => setRevision((n) => n + 1)} />
                       )}
                       {skill.state === "setup" && (
@@ -211,7 +212,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                         </div>
                       )}
                     </div>
-                    {data?.canToggle && !skill.blocked && (
+                    {data?.canToggle && !skill.blocked && skill.key && (
                       <button
                         role="switch"
                         aria-checked={skill.state !== "off"}

@@ -15,6 +15,7 @@ import "./faceid.css";
 // phone's, or remove one (a phone you lost, say). Shown only to your own
 // approved devices; others get nothing here.
 type Key = { id: string; label: string; createdAt: string; usedAt?: string };
+const CHALLENGE_MS = 120000;
 const day = (iso: string) =>
   new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 
@@ -22,6 +23,7 @@ export function FaceIdSettings({ peer }: { peer: Peer }) {
   const [keys, setKeys] = useState<Key[] | null>(null);
   const [ready, setReady] = useState(false);
   const [options, setOptions] = useState<FaceOptions | null>(null);
+  const [fetchedAt, setFetchedAt] = useState(0);
   const [note, setNote] = useState("");
   const here = sameComputer(peer.url);
   const load = () =>
@@ -38,16 +40,28 @@ export function FaceIdSettings({ peer }: { peer: Peer }) {
     if (!ready || !here || options || keys === null) return;
     let live = true;
     post(peer, "/api/auth/passkeys/options", {}).then(
-      (o) => live && setOptions(o),
+      (o) => {
+        if (!live) return;
+        setOptions(o);
+        setFetchedAt(Date.now());
+      },
       () => {},
     );
     return () => {
       live = false;
     };
   }, [ready, here, options, keys === null]);
+  // The computer's challenge lasts two minutes: a fresh one once it's gone,
+  // so a tap after a while on this page isn't refused.
+  useEffect(() => {
+    if (!options) return;
+    const timer = setTimeout(() => setOptions(null), CHALLENGE_MS + 1000);
+    return () => clearTimeout(timer);
+  }, [options]);
   if (keys === null) return null;
   const add = () => {
     if (!options) return;
+    if (Date.now() - fetchedAt > CHALLENGE_MS - 5000) return setOptions(null);
     const o = options;
     setOptions(null);
     setNote("");

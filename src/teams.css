@@ -10,31 +10,6 @@
   line-height: 1.45;
   text-align: center;
 }
-.team-mode {
-  display: inline-flex;
-  align-self: center;
-  margin: 0 auto 10px;
-  padding: 2px;
-  border: 1px solid #2b332d;
-  border-radius: 999px;
-  background: #101512;
-}
-.team-mode > button {
-  min-height: 30px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: #93a096;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-}
-.team-mode > button[aria-pressed="true"] {
-  background: #b9efd4;
-  color: #16362a;
-}
-
 /* Above the lead's message box. */
 .team-strip {
   margin: 0 6px 8px;

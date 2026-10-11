@@ -91,7 +91,7 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   assert.equal((await files.as("/api/agents/browser-invitations", { method: "POST", body: { name: "X", ttlSeconds: 600, preset: "readonly" } })).status, 403);
 });
 
-test("preset admission refuses filesystem roots before issuing access", privateIngressTest, async (t) => {
+test("preset admission refuses filesystem roots and defaults to Home", privateIngressTest, async (t) => {
   // This owner configuration deliberately includes the filesystem root; no
   // operation reads it, and no preset may obtain access to it.
   const f = await fixture(t, { includeSystemRoot: true });
@@ -101,11 +101,14 @@ test("preset admission refuses filesystem roots before issuing access", privateI
     assert.equal(explicit.status, 403, `${preset}: ${JSON.stringify(explicit.body)}`);
     assert.match(explicit.body.error, /system/i);
   }
+  assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "refused roots create no credentials");
+  // Without chosen folders, Full and Read only default to Home, never the filesystem root.
   for (const preset of ["full", "readonly"]) {
     const defaults = await f.invite({ preset });
-    assert.equal(defaults.status, 403, `${preset}: ${JSON.stringify(defaults.body)}`);
+    assert.equal(defaults.status, 201, `${preset}: ${JSON.stringify(defaults.body)}`);
+    const client = f.reach.auth.list().find((c) => c.id === defaults.body.clientId);
+    assert.deepEqual(client.policy.roots, [f.home], `${preset} defaults to Home`);
   }
-  assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "refused roots create no credentials");
   // An explicit valid project can still be selected from that configuration.
   assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 0, path: "Desktop/Project" }] })).status, 201);
 });

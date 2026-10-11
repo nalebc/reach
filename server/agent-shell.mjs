@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { actionWords } from "./agent-actions.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -40,6 +41,7 @@ export function createAgentShell({
   protectedPids = () => [process.pid, process.ppid],
   home = os.homedir(),
   record = () => {},
+  actions = () => {},    // the owner's log of what each agent did (agent-actions.mjs)
   now = Date.now,
   run = null,            // test override: ({ command, cwd, env, timeoutMs, maxOutput, signal }) => { output, exitCode, timedOut }
   // What the sandbox denies ({readDeny, writeDeny, socketDeny, ports}); null
@@ -116,6 +118,7 @@ export function createAgentShell({
       if (refused) {
         const blocked = { ...item, status: "blocked", error: refused, completedAt: now() };
         await save(blocked);
+        actions(latest, { kind: "command", text: actionWords("command", { command }), ok: false, reason: refused });
         return blocked;
       }
       if (busy.has(latest.id)) throw fail(429, "Wait for the agent's previous command to finish.");
@@ -147,6 +150,7 @@ export function createAgentShell({
         };
         await save(finished);
         record("agent", `${latest.name} ran a command in ${path.basename(folder) || folder} (${Math.round((now() - started) / 100) / 10}s)`);
+        actions(latest, { kind: "command", text: actionWords("command", { command }), app: path.basename(folder) || folder, ok: !result.timedOut, ...(result.timedOut ? { reason: finished.error } : {}) });
         return finished;
       } catch (error) {
         await save({ ...item, status: [401, 403].includes(error?.status) ? "revoked" : "failed",

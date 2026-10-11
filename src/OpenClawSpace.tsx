@@ -74,6 +74,8 @@ type Overview = {
   error?: string;
   // Installed here, its Gateway just isn't running: a phone may start it.
   canStart?: boolean;
+  // Installed, never set up: setup below says it, not an error.
+  notSetUp?: boolean;
   // What it showed, to wait on its next change (an older Mac has none).
   version?: string;
 };
@@ -720,7 +722,7 @@ export default function OpenClawSpace({
                 )}
               </label>
             </div>
-            {(error || data?.error) && (
+            {(error || (data?.error && !data.notSetUp)) && (
               <div className="claw-connection-error" role="alert">
                 <p className="claw-error">{error || data?.error}</p>
                 <button className="claw-button" onClick={reload}>Retry connection</button>

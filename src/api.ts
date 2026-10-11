@@ -269,6 +269,11 @@ export function normalizeUrl(input: string) {
     !(u.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname))
   )
     throw Error("Use the HTTPS link shown by Reach on your computer.");
+  // Your computers are on your tailnet: a credential never goes to an address
+  // outside it, as QR codes and invitations already require (connections
+  // audit, Oct 10).
+  if (u.protocol === "https:" && !/\.ts\.net$/i.test(u.hostname))
+    throw Error("Use your computer's Tailscale address, ending in .ts.net.");
   return u.origin;
 }
 // Funnel sessions sign only their own requests. Owner and tailnet peers retain

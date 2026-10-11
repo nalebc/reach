@@ -7,8 +7,10 @@
 // preset's routes, replays refused. Its approved key reconnects at once;
 // another computer needs the owner's code (core.mjs relink).
 import crypto from "node:crypto";
+import dns from "node:dns";
 import fs from "node:fs";
 import https from "node:https";
+import net from "node:net";
 import path from "node:path";
 import { agentRequestError, agentRequestTimeout } from "../server/agent-transport.mjs";
 import { isScreenImageRoute } from "./agent-client.mjs";
@@ -35,15 +37,49 @@ export function agentKey(conn) {
   return { privateKey, jwk, thumbprint };
 }
 
+// Tailscale's own addresses: 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+export function tailnetAddress(address) {
+  if (net.isIPv4(address)) {
+    const [a, b] = address.split(".").map(Number);
+    return a === 100 && b >= 64 && b <= 127;
+  }
+  return net.isIPv6(address) && /^fd7a:115c:a1e0:/i.test(address);
+}
+// The private address is used only when its name resolves into the tailnet
+// (off the tailnet, it resolves to the public link's relay), and is given up
+// on when no connection is made within a few seconds (connections audit,
+// Oct 10).
+function tailnetLookup(hostname, options, callback) {
+  dns.lookup(hostname, { ...options, all: false }, (error, address, family) => {
+    if (error) return callback(error);
+    if (!tailnetAddress(address))
+      return callback(Object.assign(Error(`${hostname} isn't on your tailnet from here.`), { code: "ENOTTAILNET" }));
+    callback(null, address, family);
+  });
+}
+
 // One signed request to the gateway, over HTTPS to one of the computer's
 // addresses. A failure before the connection is made (no route, refused,
-// a name that doesn't resolve) is marked unreachable: the next address is
-// tried. Anything later isn't, so an action never runs twice.
-export function httpsSend(endpoint, body, headers, timeoutMs) {
+// a name that doesn't resolve, or not into the tailnet) is marked
+// unreachable: the next address is tried. Anything later isn't, so an action
+// never runs twice. A fresh connection each time, so "connected" is known.
+export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = false, connectMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     let connected = false;
     const unreachable = (error) => Object.assign(error, { unreachable: !connected });
-    const req = https.request(`${endpoint}/agent-gateway`, { method: "POST", headers, timeout: timeoutMs }, (res) => {
+    const req = https.request(`${endpoint}/agent-gateway`, {
+      // No forced rejectUnauthorized: an agent behind a TLS-intercepting egress
+      // proxy (Muse's sandbox) joins with its environment's TLS settings, as
+      // the committed runtime always has; forcing it failed every join there
+      // before a request left (Oct 10, reproduced).
+      method: "POST", headers, timeout: timeoutMs,
+      // A fresh connection only for the private address (so "connected" is
+      // known there). The public link goes through Node's shared agent, which
+      // is what carries an agent sandbox's egress proxy (HTTPS_PROXY with
+      // NODE_USE_ENV_PROXY): bypassing it failed every join from Muse's
+      // sandbox before a request left (Oct 10, reproduced).
+      ...(tailnetOnly ? { agent: false, lookup: tailnetLookup } : {}),
+    }, (res) => {
       const chunks = [];
       let size = 0;
       res.on("data", (chunk) => {
@@ -54,7 +90,12 @@ export function httpsSend(endpoint, body, headers, timeoutMs) {
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
       res.on("error", reject);
     });
-    req.on("socket", (socket) => socket.once("connect", () => { connected = true; }));
+    const connecting = tailnetOnly
+      ? setTimeout(() => { if (!connected) req.destroy(unreachable(Error("Reach's private address didn't answer."))); }, connectMs)
+      : null;
+    connecting?.unref?.();
+    req.on("socket", (socket) => socket.once("connect", () => { connected = true; clearTimeout(connecting); }));
+    req.on("close", () => clearTimeout(connecting));
     req.on("timeout", () => req.destroy(unreachable(Error("Reach request timed out. Mutating operations are not retried."))));
     req.once("error", (error) => reject(unreachable(error)));
     req.end(body);
@@ -84,7 +125,8 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
     for (;;) {
       const endpoint = endpoints[current];
       try {
-        const response = await send(endpoint, body, headers, timeoutMs);
+        // Every address but the last (the public link) is a tailnet one.
+        const response = await send(endpoint, body, headers, timeoutMs, { tailnetOnly: current < endpoints.length - 1 });
         let json = null;
         try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
         return { ...response, json, endpoint };

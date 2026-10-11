@@ -114,6 +114,8 @@ export function permittedPath(method, value) {
     (read &&
       [
         "/api/device",
+        // A newer agent runtime, for an agent already admitted.
+        "/api/device/runtime",
         "/api/browser",
         "/api/browser/screen",
         "/api/browser/requests",
@@ -124,6 +126,8 @@ export function permittedPath(method, value) {
         "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/elements", "/api/browser/desktop/describe", "/api/browser/desktop/apps", "/api/browser/shell/history",
         "/api/browser/shortcuts",
         "/api/browser/tools", "/api/browser/tools/protocol",
+        // Reach's own list of the agent's tools (browser-access.mjs).
+        "/api/browser/mcp/tools",
         "/api/browser/services",
         "/api/browser/files/search",
         "/api/files",
@@ -138,11 +142,16 @@ export function permittedPath(method, value) {
       ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
         // Preset sessions: one input action, opening an app, one command, one file change.
         "/api/browser/desktop/input", "/api/browser/desktop/wait", "/api/browser/desktop/open", "/api/browser/desktop/open-url", "/api/browser/shell", "/api/browser/files/change",
+        "/api/browser/desktop/find", "/api/browser/desktop/focus", "/api/browser/desktop/open-file", "/api/browser/desktop/mac-shortcuts/run",
         "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
-        "/api/browser/tools/define", "/api/browser/tools/run",
+        "/api/browser/tools/define", "/api/browser/tools/run", "/api/browser/tools/batch",
+        // The request a tool call makes, planned by Reach (browser-access.mjs).
+        "/api/browser/mcp/plan",
         // The agent's credential traded for a new one (core.mjs).
         "/api/device/rotate",
-        "/api/browser/services/request", "/api/browser/services/run"].includes(route)) ||
+        "/api/browser/services/request", "/api/browser/services/run",
+        // Asking the owner for a missing Mac permission.
+        "/api/browser/permissions/request"].includes(route)) ||
     (method === "DELETE" &&
       (route === "/api/device/access" ||
         route === "/api/browser/shortcuts/record" ||

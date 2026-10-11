@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ArrowUpCircle,
   Bell,
   Check,
   ChevronLeft,
@@ -87,10 +88,10 @@ export function useBellNeeds(peer: Peer): NeedItem[] {
   )
     return [];
   return state.items
-    .filter((item) => item.source === "restart")
+    .filter((item) => item.source === "restart" || item.source === "update")
     .map((item) => ({
       key: item.id,
-      icon: <RotateCw size={22} />,
+      icon: item.source === "update" ? <ArrowUpCircle size={22} /> : <RotateCw size={22} />,
       title: item.title,
       detail: [item.sender, item.summary].filter(Boolean).join(" · "),
       actions: (item.actions || []).map((action) => ({
@@ -497,10 +498,14 @@ export function NotificationCenter({
     }
     setItems((items) => items.filter((value) => value.id !== item.id));
     setNotice(
-      item.source === "restart" && action !== "deny"
+      item.source === "update" && action === "update"
+        ? "Updating Reach. It restarts when it's installed"
+        : item.source === "restart" && action !== "deny"
         ? action === "after"
           ? "Reach restarts when the chats finish"
           : "Reach is restarting"
+        : action === "deny" && item.source === "update"
+        ? "Not now"
         : action === "deny"
         ? "Request denied"
         : action === "approve"

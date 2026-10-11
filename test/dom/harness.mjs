@@ -22,12 +22,13 @@ export async function startDom({
   mobile = true,
   fakes = {},
   routes = {},
+  url = "https://reach.test/",
 } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-    url: "https://reach.test/",
+    url,
     pretendToBeVisual: true,
     virtualConsole,
   });

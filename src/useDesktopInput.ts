@@ -15,6 +15,9 @@ export function useDesktopInput(
   enabled: boolean,
   display: string,
   onEnd: (message: string) => void,
+  // While the screen is open, a stopped control keeps its connection a
+  // minute, parked on the Mac: Control again resumes on it at once.
+  open = enabled,
 ) {
   const [typing, setTyping] = useState(false);
   // The computer can say whether a text field is under the finger.
@@ -37,6 +40,22 @@ export function useDesktopInput(
   );
   const end = useRef(onEnd);
   end.current = onEnd;
+  const on = useRef(enabled);
+  on.current = enabled;
+  const [held, setHeld] = useState(false);
+  const link = useRef<{ park(): void; resume(): void } | null>(null);
+  useEffect(() => {
+    if (!open) return setHeld(false);
+    if (enabled) {
+      setHeld(true);
+      link.current?.resume();
+      return;
+    }
+    link.current?.park();
+    const timer = setTimeout(() => setHeld(false), 60000);
+    return () => clearTimeout(timer);
+  }, [enabled, open]);
+  const connected = open && (enabled || held);
   // Where the computer's text fields are, pushed ahead of any tap, and the
   // last input sent that could have moved them.
   const fieldMap = useRef<{ after: number; fields: Field[] } | null>(null);
@@ -48,7 +67,7 @@ export function useDesktopInput(
     setInitialCursor(null);
     fieldMap.current = null;
     lastChange.current = 0;
-    if (!enabled) {
+    if (!connected) {
       retry.current.reset();
       tries.current = 0;
       setReconnecting(false);
@@ -59,6 +78,7 @@ export function useDesktopInput(
     const socket = new WebSocket(url);
     let stopped = false,
       failed = false,
+      parked = false,
       queue: DesktopInputQueue | undefined,
       measured = 0;
     let deadline: ReturnType<typeof setTimeout>;
@@ -68,6 +88,16 @@ export function useDesktopInput(
       clearTimeout(deadline);
       setReady(false);
       queue?.close();
+      // Control is off: the parked connection ends quietly, nothing to say.
+      if (parked || !on.current) {
+        link.current = null;
+        retry.current.reset();
+        tries.current = 0;
+        setReconnecting(false);
+        setHeld(false);
+        socket.close();
+        return;
+      }
       if (retryable && tries.current < 6) {
         tries.current++;
         setReconnecting(true);
@@ -90,6 +120,29 @@ export function useDesktopInput(
       );
     };
     const fail = (message: string) => stop(message);
+    link.current = {
+      park() {
+        if (failed || parked) return;
+        parked = true;
+        clearTimeout(deadline);
+        queue?.close();
+        queue = undefined;
+        setReady(false);
+        setTyping(false);
+        setProbe(false);
+        fieldMap.current = null;
+      },
+      resume() {
+        if (failed || !parked) return;
+        parked = false;
+        lastChange.current = 0;
+        deadline = setTimeout(
+          () => stop("Desktop input did not become ready. Reconnecting…", true),
+          12000,
+        );
+        socket.send(JSON.stringify({ type: "resume" }));
+      },
+    };
     dispatcher.current = (a) =>
       queue && !failed
         ? queue.enqueue(a)
@@ -120,7 +173,8 @@ export function useDesktopInput(
           stop(m.error, m.retryable === true);
           return;
         }
-        if (m.type === "ready" && !queue) {
+        if (m.type === "parked") return link.current?.park();
+        if (m.type === "ready" && !queue && !parked) {
           clearTimeout(deadline);
           retry.current.reset();
           tries.current = 0;
@@ -197,6 +251,7 @@ export function useDesktopInput(
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
+      link.current = null;
       retry.current.cancel();
       window.removeEventListener("online", wake);
       document.removeEventListener("visibilitychange", wake);
@@ -207,7 +262,7 @@ export function useDesktopInput(
       dispatcher.current = () =>
         Promise.reject(Error("Enable screen control first."));
     };
-  }, [peer.url, peer.token, enabled, display, attempt]);
+  }, [peer.url, peer.token, connected, display, attempt]);
   return {
     ready,
     // Between a dropped connection and the next: control is still on.

@@ -7,10 +7,15 @@ import { promisify } from "node:util";
 import { atomicJson, loadJson } from "../server/core.mjs";
 import { defaultFileRoots } from "../server/file-roots.mjs";
 import { tailscaleJson, tailscaleCli } from "./tailscale.mjs";
-import { stateDir } from "./home.mjs";
+import { stateDir, command } from "./home.mjs";
 const exec = promisify(execFile);
 export const preferencesFile = (root) =>
   path.join(stateDir(root), "preferences.json");
+// Phones approved by your Tailscale account: Tailscale reaches Reach through
+// a private Unix socket only Reach can answer, which Windows doesn't have.
+// There Reach shows a pairing code instead, and keeps no account settings.
+export const accountApproval = (platform = process.platform) =>
+  platform !== "win32";
 export function readPreferences(root) {
   const file = preferencesFile(root);
   if (!fs.existsSync(file)) return null;
@@ -25,7 +30,7 @@ export function readPreferences(root) {
     value.folders.some((p) => typeof p !== "string" || !path.isAbsolute(p))
   )
     throw Error(
-      "Reach configuration is invalid. Run ./reach configure to repair it.",
+      `Reach configuration is invalid. Run ${command} configure to repair it.`,
     );
   return value;
 }
@@ -56,6 +61,14 @@ export async function assertSocketSupport(run = exec) {
       "Update Tailscale: secure device approval requires Serve's Unix socket support. No less secure fallback was enabled.",
     );
 }
+// `./reach --https-port 9443` once: kept, so the next start, the invite
+// rule (invites.mjs) and the background service use it too. True if changed.
+export function rememberHttpsPort(root, port) {
+  const preferences = readPreferences(root);
+  if (!preferences || !Number.isInteger(port) || preferences.httpsPort === port) return false;
+  atomicJson(preferencesFile(root), { ...preferences, httpsPort: port });
+  return true;
+}
 export function applyPreferences(options, preferences, args = []) {
   if (!preferences || options.local) return options;
   return {
@@ -73,13 +86,13 @@ export function applyPreferences(options, preferences, args = []) {
   };
 }
 export async function configure(root, deps = {}) {
-  if ((deps.platform || process.platform) === "win32")
+  if (!accountApproval(deps.platform || process.platform))
     throw Error(
-      "Device approval currently supports Mac and Linux. Windows uses the existing Tailscale + pairing flow.",
+      `On Windows, Reach has no account settings to configure: start it with ${command}. It shows a pairing code to enter on your phone, which needs the Tailscale app, signed in to the same account.`,
     );
   if (!deps.ask && !process.stdin.isTTY)
     throw Error(
-      "Run ./reach configure in an interactive terminal to confirm your Tailscale account first.",
+      `Run ${command} configure in an interactive terminal to confirm your Tailscale account first.`,
     );
   const ui = terminalPrompts();
   const ask = deps.ask || ui.ask;
@@ -116,7 +129,7 @@ export async function configure(root, deps = {}) {
       });
       if (retry !== "retry")
         throw Error(
-          "Setup paused. Rerun ./reach configure when Tailscale is connected.",
+          `Setup paused. Rerun ${command} configure when Tailscale is connected.`,
         );
       continue;
     }
@@ -227,7 +240,7 @@ export async function configure(root, deps = {}) {
   };
   atomicJson(preferencesFile(root), preferences);
   say(
-    "\nSaved. Run ./reach, open its link on your phone (the Tailscale app is optional: it's faster), then approve the request here.\nA Reach that's already running keeps its old settings until it restarts.",
+    `\nSaved. Run ${command}, open its link on your phone (the Tailscale app is optional: it's faster), then approve the request here.\nA Reach that's already running keeps its old settings until it restarts.`,
   );
   return preferences;
 }

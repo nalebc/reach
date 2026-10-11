@@ -5,7 +5,7 @@ import { startDom, settle } from "./dom/harness.mjs";
 let dom,
   React,
   BrowserInvite,
-  InviteSheet,
+  PeopleHub,
   BrowserWorkspace,
   BrowserApprovalReview,
   BrowserActionRequests,
@@ -51,7 +51,7 @@ before(async () => {
     this.open = false;
   };
   ({ default: BrowserInvite } = await dom.load("/src/BrowserInvite.tsx"));
-  ({ InviteSheet } = await dom.load("/src/InviteSheet.tsx"));
+  ({ default: PeopleHub } = await dom.load("/src/PeopleHub.tsx"));
   ({ default: BrowserWorkspace } = await dom.load("/src/BrowserWorkspace.tsx"));
   ({ BrowserApprovalReview, BrowserActionRequests, useBrowserApprovals } =
     await dom.load("/src/browser-approvals.tsx"));
@@ -770,7 +770,7 @@ test("control characters cannot hide the reviewed command and a failed approval 
   await view.unmount();
 });
 
-test("Invite someone exposes the AI browser flow without a generic access upgrade", async () => {
+test("Agents & people: a browser agent opens its scoped editor, and + invites through the AI browser flow", async () => {
   globalThis.fetch = dom.window.fetch = async (url) => {
     const route = new URL(url).pathname;
     if (route === "/api/clients")
@@ -812,40 +812,42 @@ test("Invite someone exposes the AI browser flow without a generic access upgrad
     network: { connected: true, peers: [] },
   };
   const view = await render(
-    React.createElement(InviteSheet, { peer, device: host }),
+    React.createElement(PeopleHub, { peer, device: host }),
   );
   const c = view.container;
   const row = await dom.waitFor(() =>
-    [...c.querySelectorAll(".ivt-person")].find((r) =>
+    [...c.querySelectorAll(".ppl-row")].find((r) =>
       r.textContent.includes("Muse"),
     ),
   );
   assert.ok(row);
+  await click(row);
+  const sheet = c.querySelector(".ppl-sheet");
   assert.ok(
-    button(row, "Edit access"),
+    button(sheet, "Edit access"),
     "browser grants use their scoped access editor",
   );
   assert.equal(
-    row.querySelector(".ivt-menu-button"),
+    sheet.querySelector(".ivt-menu-button"),
     null,
     "cannot convert a browser grant into full or command access",
   );
-  await click(
-    button(c, "Agent") ||
-      button(c, "AI assistant") ||
-      button(c, "Muse / AI browser"),
-  );
+  await click(sheet.querySelector('[aria-label="Close panel"]'));
+  // + opens an agent's invitation straight away; the title switches to a
+  // person, and no other Agent/Person choice is asked again.
+  await click(c.querySelector('[aria-label="Invite"]'));
+  assert.equal(c.querySelector(".ppl-invite .ppl-who .ivt-menu-button").textContent, "Invite an agent");
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
-  await dom.waitFor(() => c.querySelector('[aria-label="Access preset"]'));
-  assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
-  assert.ok(
-    c.querySelector(
-      '[aria-label="Access preset"] input[aria-label="Full control"]',
-    ),
-  );
+  await dom.waitFor(() => c.querySelector('[aria-label="Access preset"] [aria-label="Full control"]'));
+  // The title: a person instead, in one tap.
+  await click(c.querySelector(".ppl-who .ivt-menu-button"));
+  await click([...c.querySelectorAll(".ppl-who .ivt-item")].find((b) => b.textContent.includes("A person")));
+  assert.equal(c.querySelector(".ppl-who .ivt-menu-button").textContent, "Invite someone");
+  await dom.waitFor(() => c.querySelector('.ppl-invite input[aria-label="Name"]'));
+  assert.equal(c.querySelector('[aria-label="AI browser invitation"]'), null);
   await view.unmount();
 });
 

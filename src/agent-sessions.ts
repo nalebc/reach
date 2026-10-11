@@ -100,7 +100,7 @@ export type AgentAsking =
 export type SessionItem = {
   id: string;
   role: "user" | "assistant" | "tool" | "system";
-  kind: "text" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output" | "agent";
+  kind: "text" | "thinking" | "command" | "file-change" | "tool" | "web" | "compaction" | "error" | "notice" | "output" | "agent";
   text: string;
   // A sub-agent the chat started (kind "agent"): its kind, whether it runs
   // in the background, and its status and doing now, from its own files.
@@ -503,6 +503,9 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   // Workflows on this computer (Workflows.tsx), each task without its text.
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [health, setHealth] = useState<AgentHealth[]>([]);
+  // Whether the computer has said what it has (or couldn't): until then,
+  // Chat neither offers to start a chat nor to install one.
+  const [healthChecked, setHealthChecked] = useState(false);
   const [failure, setFailure] = useState("");
   // Bumped when the feed stops or restarts: answers to requests sent
   // before are dropped, so an old "unchanged" can't set `known` over the
@@ -564,6 +567,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     setSessions(null);
     setErrors({});
     setHealth([]);
+    setHealthChecked(false);
     setRelays([]);
     setTeams([]);
     setWorkflows([]);
@@ -588,8 +592,9 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
             lastHealth = next;
             setHealth(r.agents);
           }
+          if (healthActive) setHealthChecked(true);
         })
-        .catch(() => {});
+        .catch(() => healthActive && setHealthChecked(true));
     recheck.current = () => void checkHealth(true);
     void checkHealth();
     const healthTimer = setInterval(checkHealth, 60000);
@@ -617,7 +622,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     seenRevision.current = revision;
     void load();
   }, [revision, load]);
-  return { sessions, errors, health, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
+  return { sessions, errors, health, healthChecked, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>

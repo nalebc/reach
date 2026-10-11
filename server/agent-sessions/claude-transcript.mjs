@@ -303,6 +303,10 @@ function slimEntry(e, results, maxOutput) {
             results.set(b.tool_use_id, { is_error: !!b.is_error, output: clip(textOf(b.content) || String(b.content ?? ""), maxOutput) });
         } else if (b.type === "tool_use") kept.push(slimToolUse(b));
         else if (b.type === "text") kept.push({ type: "text", text: b.text });
+        // What the Claude app shows in grey between steps: the summary of a
+        // thought (an empty one is only its signature, and stays out).
+        else if (b.type === "thinking" && e.type === "assistant" && typeof b.thinking === "string" && b.thinking.trim())
+          kept.push({ type: "thinking", text: clip(b.thinking, 4000) });
         else if (b.type === "image") kept.push({ type: "image" });
         else if (e.type === "user" && partLabel(b)) kept.push({ type: "attachment", label: partLabel(b) });
       }
@@ -622,6 +626,8 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           for (const [n, b] of content.entries()) {
             if (b?.type === "text" && b.text?.trim())
               items.push({ id: `${e.uuid}:${n}`, role: "assistant", kind: "text", text: b.text, at });
+            else if (b?.type === "thinking" && b.text?.trim())
+              items.push({ id: `${e.uuid}:${n}`, role: "assistant", kind: "thinking", text: b.text, at });
             else if (b?.type === "tool_use") {
               // A call still running: its key (a re-asked permission is checked against it).
               items.push({ ...toolItem(b, results.get(b.id), meta.cwd), ...(b.key && !results.has(b.id) ? { key: b.key } : {}), at });

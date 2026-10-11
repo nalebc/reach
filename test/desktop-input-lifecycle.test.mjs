@@ -38,7 +38,7 @@ function child() {
   return value;
 }
 const phone = { id: "phone", kind: "device", name: "Fixture phone", scopes: ["admin", "screen"] };
-function world({ created = () => {} } = {}) {
+function world({ created = () => {}, parkFor } = {}) {
   const control = new ScreenControl(), clients = new Map([[phone.id, phone]]), connections = new Map(), children = [], sockets = [];
   control.acquire(phone, true);
   const connect = (client = phone) => {
@@ -50,7 +50,7 @@ function world({ created = () => {} } = {}) {
     ws.input = (message) => ws.emit("message", Buffer.from(JSON.stringify(message)), false);
     sockets.push(ws);
     desktopConnection(ws, {
-      config: { screen: true }, auth: { verify: (token) => clients.get(token) }, control, scanner: null,
+      config: { screen: true }, auth: { verify: (token) => clients.get(token) }, control, scanner: null, parkFor,
       create: async () => { const process = child(); children.push(process); created(process); return new DesktopInput(process); },
       register: (id, socket) => {
         const current = connections.get(id);
@@ -115,6 +115,34 @@ test("reconnect waits for old native exit and never replays its queued input", a
     assert.deepEqual(w.children[0].requests.map(({ type }) => type), ["heartbeat", "text"]);
     assert.deepEqual(w.children[1].requests.map(({ type }) => type), ["heartbeat", "key"]);
     assert.equal(w.children[1].requests[1].key, "b");
+  } finally { await w.close(); }
+});
+
+test("Control off parks the connection and Control again resumes on the same helper", async () => {
+  const w = world({ parkFor: 200 });
+  try {
+    const ws = w.connect(); await until(() => ready(ws));
+    ws.input({ type: "input", id: 1, action: { type: "key", key: "a", modifiers: [] } });
+    await until(() => ws.sent.some((message) => message.type === "ack" && message.id === 1));
+    // Control off: the lease goes now (others can take it), the helper stays.
+    w.control.acquire(phone, false); ws.parkControl();
+    assert.equal(w.control.holder(), null);
+    assert.ok(ws.sent.some((message) => message.type === "parked"));
+    ws.input({ type: "input", id: 2, action: { type: "key", key: "b", modifiers: [] } });
+    await until(() => ws.sent.some((message) => message.type === "ack" && message.id === 2));
+    assert.equal(ws.sent.find((message) => message.id === 2).ok, false);
+    assert.equal(ws.closedWith, undefined); assert.equal(w.children[0].alive, true);
+    ws.parkControl(); assert.equal(ws.closedWith, undefined, "a second Control off keeps it parked");
+    // Control again: same socket, same helper, a fresh input window.
+    w.control.acquire(phone, true); ws.sent.length = 0;
+    ws.input({ type: "resume" }); await until(() => ready(ws));
+    ws.input({ type: "input", id: 1, action: { type: "key", key: "c", modifiers: [] } });
+    await until(() => ws.sent.some((message) => message.type === "ack" && message.id === 1 && message.ok !== false));
+    assert.equal(w.children.length, 1);
+    assert.deepEqual(w.children[0].requests.map((action) => action.key ?? action.type), ["heartbeat", "a", "release", "heartbeat", "c"]);
+    // Left parked past its minute: the connection ends.
+    w.control.acquire(phone, false); ws.parkControl();
+    await until(() => ws.closedWith?.code === 4001);
   } finally { await w.close(); }
 });
 

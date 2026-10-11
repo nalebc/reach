@@ -21,10 +21,14 @@ export async function desktopBinary(config, kind, { signal } = {}) {
     signal?.throwIfAborted();
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw fail(
-      503,
-      `Could not prepare the ${kind} helper. Install Apple Command Line Tools and check macOS permissions.`,
-    );
+    // Said as the owner can act on it, without Reach's own part names.
+    if (error.developerTools === false)
+      throw Object.assign(
+        fail(503, "This needs Apple's Command Line Tools. Run xcode-select --install on your Mac, then try again."),
+        { developerTools: false },
+      );
+    console.warn(`Reach: building ${kind} failed: ${error.message}`);
+    throw fail(503, "Reach couldn't prepare this on your Mac. Check macOS permissions, then try again.");
   }
   return file;
 }

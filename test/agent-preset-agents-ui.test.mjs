@@ -2,9 +2,10 @@ import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Settings → Agents for preset sessions: the card says the preset and what the
-// agent is using now, Pause and Resume work, and Edit access changes the preset.
-let dom, React, BrowserAgents;
+// A preset agent's panel in its sheet on Agents & people: the preset and what
+// the agent is using now, Pause and Resume; the sheet's Edit access (the
+// AccessEditor) changes the preset.
+let dom, React, BrowserAgents, AccessEditor;
 const peer = { id: "mac", name: "My Mac", url: "https://mac.tail.ts.net:8443", token: "owner", platform: "darwin" };
 const device = { name: "My Mac", roots: [{ id: 0, path: "/Users/me", name: "Home" }], capabilities: { screen: true } };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -23,6 +24,7 @@ before(async () => {
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   ({ default: BrowserAgents } = await dom.load("/src/BrowserAgents.tsx"));
+  ({ default: AccessEditor } = await dom.load("/src/AccessEditor.tsx"));
 });
 after(async () => dom?.close());
 const views = new Set();
@@ -47,78 +49,73 @@ function mock(agents) {
   return calls;
 }
 
-test("the card names the preset, what the agent is using, and pauses it", async () => {
+const panel = (focus) => React.createElement(BrowserAgents, { peer, device, toast() {}, focus });
+const editor = (client) => React.createElement(AccessEditor, { peer, device, client, onClose() {}, onSaved() {} });
+
+test("the panel names the preset, what the agent is using, and pauses it", async () => {
   let paused = false;
   const calls = mock(() => [session("muse-1", paused ? { paused: true, holdsMac: false } : {}), session("grok-2", { name: "Grok", preset: "apps", policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] }, folders: [], using: undefined, holdsMac: false })]);
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
+  const view = await dom.render(panel("muse-1"));
   views.add(view);
   const c = view.container;
-  const muse = await dom.waitFor(() => c.querySelector('[data-agent-id="muse-1"]'));
-  assert.match(muse.querySelector(".ag-pill").textContent, /Using Google Chrome/);
-  assert.match(muse.textContent, /Full control/);
-  assert.match(muse.textContent, /Hidden from it\s*Messages/);
-  assert.match(muse.textContent, /Reads and changes/);
-  const grok = c.querySelector('[data-agent-id="grok-2"]');
-  await click(grok.querySelector(".ag-agent-head"));
-  assert.match(grok.textContent, /Apps/);
-  assert.match(grok.textContent, /Uses.*Google Chrome/s);
+  await dom.waitFor(() => /Full control/.test(c.textContent));
+  assert.match(c.textContent, /Using\s*Google Chrome/);
+  assert.match(c.textContent, /Hidden from it\s*Messages/);
+  assert.match(c.textContent, /Reads and changes/);
   assert.doesNotMatch(c.textContent, /view-only/i);
-  await click(button(muse, "Pause"));
+  await click(button(c, "Pause"));
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/agents/pause"));
   assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/browser/agents/pause")[2], { clientId: "muse-1", paused: true });
   paused = true;
-  await dom.waitFor(() => /Paused/.test(c.querySelector('[data-agent-id="muse-1"] .ag-pill').textContent));
-  assert.ok(button(c.querySelector('[data-agent-id="muse-1"]'), "Resume"));
-  assert.ok(!button(grok, "Pause") || grok.textContent.includes("Pause"), "Apps agents can be paused too");
+  await dom.waitFor(() => button(c, "Resume"));
+  assert.match(c.textContent, /Paused · last in\s*Google Chrome/);
+  const grok = await dom.render(panel("grok-2"));
+  views.add(grok);
+  await dom.waitFor(() => /Uses/.test(grok.container.textContent));
+  assert.match(grok.container.textContent, /Uses.*Google Chrome/s);
+  assert.ok(button(grok.container, "Pause"), "Apps agents can be paused too");
 });
 
-test("an Always agent says Always; there is no Reopen link, since its one link already works from any browser", async () => {
+test("an Always agent's panel has no Reopen link, since its one link already works from any browser", async () => {
   mock(() => [
     session("muse-1", { standing: true, relink: true, expiresAt: Date.now() + 10 * 365 * 86400000 }),
   ]);
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
+  const view = await dom.render(panel("muse-1"));
   views.add(view);
-  const c = view.container;
-  const muse = await dom.waitFor(() => c.querySelector('[data-agent-id="muse-1"]'));
-  assert.match(muse.querySelector(".ag-agent-title small").textContent, /^Always/);
-  assert.match(muse.textContent, /When you end it/);
-  assert.equal(button(muse, "Reopen link"), undefined);
+  await dom.waitFor(() => view.container.querySelector(".ag-facts"));
+  assert.equal(button(view.container, "Reopen link"), undefined);
 });
 
 test("Edit access offers the presets and saves the chosen one", async () => {
   const calls = mock(() => [session("muse-1")]);
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
+  const view = await dom.render(editor(session("muse-1")));
   views.add(view);
-  const c = view.container;
-  const muse = await dom.waitFor(() => c.querySelector('[data-agent-id="muse-1"]'));
-  await click(button(muse, "Edit access"));
-  const editor = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
-  const titles = [...editor.querySelectorAll('[aria-label="Access preset"] input')].map((input) => [input.getAttribute("aria-label"), input.disabled]);
+  const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
+  const titles = [...sheet.querySelectorAll('[aria-label="Access preset"] input')].map((input) => [input.getAttribute("aria-label"), input.disabled]);
   assert.deepEqual(titles, [["Full control", false], ["Apps", false], ["Files", false], ["Read only", false]]);
-  assert.equal(editor.querySelector('[aria-label="Access preset"] input:checked').getAttribute("aria-label"), "Full control");
-  await click(editor.querySelector('[aria-label="Access preset"] input[aria-label="Read only"]'));
-  await click(button(editor, "Save"));
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input:checked').getAttribute("aria-label"), "Full control");
+  await click(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Read only"]'));
+  await click(button(sheet, "Save"));
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/guests/muse-1/access"));
   assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/guests/muse-1/access")[2], {
     preset: "readonly", folders: [{ root: 0, path: "" }], hidden: [{ id: "/System/Applications/Messages.app" }],
   });
 });
 
-test("a Files agent cannot be raised into Full control or Apps from the editor", async () => {
-  mock(() => [session("files-3", { name: "Reader", preset: "files", holdsMac: false, using: undefined, folders: ["/Users/me/Desktop"], policy: { invite: true, browser: true, preset: "files", roots: ["/Users/me/Desktop"], write: true } })]);
-  const view = await dom.render(React.createElement(BrowserAgents, { peer, device, invite() {}, toast() {} }));
+test("a Files agent has nothing to pause and cannot be raised into Full control or Apps", async () => {
+  const reader = session("files-3", { name: "Reader", preset: "files", holdsMac: false, using: undefined, folders: ["/Users/me/Desktop"], policy: { invite: true, browser: true, preset: "files", roots: ["/Users/me/Desktop"], write: true } });
+  mock(() => [reader]);
+  const view = await dom.render(panel("files-3"));
   views.add(view);
-  const c = view.container;
-  const card = await dom.waitFor(() => c.querySelector('[data-agent-id="files-3"]'));
-  await click(card.querySelector(".ag-agent-head"));
-  assert.match(card.textContent, /Files/);
-  assert.equal(button(card, "Pause"), undefined, "nothing to pause: it never touches the Mac");
-  await click(button(card, "Edit access"));
-  const editor = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
-  assert.equal(editor.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]').disabled, true);
-  assert.equal(editor.querySelector('[aria-label="Access preset"] input[aria-label="Apps"]').disabled, true);
-  assert.match(editor.textContent, /Needs a new invitation from your phone/);
-  assert.equal(editor.querySelector('[aria-label="Can edit files"]').checked, true);
+  await dom.waitFor(() => /Files/.test(view.container.textContent));
+  assert.equal(button(view.container, "Pause"), undefined, "nothing to pause: it never touches the Mac");
+  const edit = await dom.render(editor(reader));
+  views.add(edit);
+  const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]').disabled, true);
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Apps"]').disabled, true);
+  assert.match(sheet.textContent, /Needs a new invitation from your phone/);
+  assert.equal(sheet.querySelector('[aria-label="Can edit files"]').checked, true);
 });
 
 test("agent cards render without React warnings", () => assert.deepEqual(dom.errors, []));

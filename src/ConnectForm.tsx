@@ -15,6 +15,8 @@ import {
   upsertPeer,
 } from "./api";
 import { isNative } from "./native";
+import { storageBlocked } from "./storage-fallback";
+import { tailscaleAppLink } from "./connection";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
 import { hasTicket, saveTicket, startFresh, takeTicket } from "./face-start";
@@ -523,6 +525,12 @@ export default function ConnectForm({
               "Your private connection, with your Tailscale account."
             )}
           </p>
+          {storageBlocked() && (
+            <p className="form-note" role="note">
+              This browser blocks website data, so Reach can't remember it:
+              you'll approve it again next time.
+            </p>
+          )}
           <button
             className="button primary full"
             disabled={busy || !method?.eligible}
@@ -542,7 +550,7 @@ export default function ConnectForm({
               <ol>
                 <li>
                   <a
-                    href="https://tailscale.com/download"
+                    href={tailscaleAppLink()}
                     target="_blank"
                     rel="noreferrer"
                   >

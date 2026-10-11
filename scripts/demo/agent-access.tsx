@@ -1,10 +1,10 @@
 // Agent invite, access and approval screens with sample data only. No host,
 // credentials, approvals or real agents. Open /scripts/demo/agent-access.html
-// at phone width; ?view=invite|agents|connect|app|command|manage picks a screen.
+// at phone width; ?view=invite|agents|connect|connect-full|app|command|manage picks a screen.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { InviteSheet } from "../../src/InviteSheet";
-import BrowserAgents from "../../src/BrowserAgents";
+import PeopleHub from "../../src/PeopleHub";
 import { AgentAdmissionReview, type AgentAdmission } from "../../src/agent-admissions";
 import { BrowserApprovalReview, type BrowserRequest } from "../../src/browser-approvals";
 import AccessEditor from "../../src/AccessEditor";
@@ -81,6 +81,12 @@ const admission: AgentAdmission = {
   terminalIds: ["reach:1"], restrictedTerminal: true, terminalApproval: true, scriptApproval: true,
   requestedAt: now - 10000, expiresAt: now + 4 * min, accessExpiresAt: now + 58 * min, verificationCode: "482913", browserTransport: "funnel",
 };
+// A terminal agent invited with the Full control preset, joining over its Tools command.
+const fullAdmission: AgentAdmission = {
+  requestId: "q2", clientId: agents[1].id, name: "Claude Code", preset: "full", browser: true, roots: ["/Users/sample/Projects/reach"],
+  scopes: ["device", "browser:read", "files:read", "browser:write", "browser:screen", "browser:control", "browser:open", "browser:shell"],
+  requestedAt: now - 10000, expiresAt: now + 4 * min, accessExpiresAt: now + 58 * min, verificationCode: "482913", browserTransport: "funnel",
+};
 const files: Record<string, string[]> = {
   "0:": ["Desktop", "Documents", "Downloads", "Projects"],
   "1:": ["reach", "website", "notes"],
@@ -116,7 +122,10 @@ window.fetch = async (input, init = {}) => {
     return json({ icons: Object.fromEntries(ids.filter((id) => icons[id]).map((id) => [id, icons[id]])) });
   }
   if (p === "/api/guests/keys") return json({ configured: true, policy: null });
-  if (p === "/api/clients") return json({ clients: [], current: "" });
+  if (p === "/api/clients")
+    return json({ current: "me", clients: [...agents, { id: "me", kind: "device", name: "My iPhone", createdAt: new Date(now - 3 * 86400000).toISOString(), expiresAt: now + 27 * 86400000 }, { id: "old", kind: "device", name: "My iPhone", createdAt: new Date(now - 7 * 86400000).toISOString(), expiresAt: now + 23 * 86400000 }] });
+  if (p === "/api/agents/shortcuts") return json({ shortcuts: [{ id: "s1", name: "Morning mail", enabled: true, steps: [{ type: "open", app: "/System/Applications/Mail.app" }] }], running: null });
+  if (p === "/api/agents/services") return json({ access: [] });
   if (p === "/api/device") return json(device);
   if (p === "/api/files") return json({ items: (files[`${u.searchParams.get("root")}:${u.searchParams.get("path")}`] || []).map((name) => ({ name, path: name, type: "directory" })) });
   if (p === "/api/agents/browser-options")
@@ -134,7 +143,7 @@ window.fetch = async (input, init = {}) => {
   return json({});
 };
 
-const views = ["invite", "agents", "connect", "app", "command", "manage", "edit", "workspace", "waiting"] as const;
+const views = ["invite", "agents", "connect", "connect-full", "app", "command", "manage", "edit", "workspace", "waiting"] as const;
 function Preview() {
   const [ready, setReady] = useState(false);
   const view = new URLSearchParams(location.search).get("view") || "invite";
@@ -155,8 +164,9 @@ function Preview() {
         {views.map((v) => <a key={v} href={`?view=${v}`} style={{ color: v === view ? "#b9efd4" : "#8a978d" }}>{v}</a>)}
       </nav>
       {view === "invite" && <InviteSheet peer={peer as any} device={device} initialKind="browser" />}
-      {view === "agents" && <BrowserAgents peer={peer as any} device={device} invite={close} toast={close} />}
+      {view === "agents" && <PeopleHub peer={peer as any} device={device as any} toast={close} />}
       {view === "connect" && <AgentAdmissionReview peer={peer as any} admission={admission} onClose={close} onResolved={close} />}
+      {view === "connect-full" && <AgentAdmissionReview peer={peer as any} admission={fullAdmission} onClose={close} onResolved={close} />}
       {view === "app" && <BrowserApprovalReview peer={peer as any} item={appRequest} onClose={close} onResolved={close} />}
       {view === "command" && <BrowserApprovalReview peer={peer as any} item={command} onClose={close} onResolved={close} />}
       {view === "edit" && <AccessEditor peer={peer as any} device={device} client={{ ...agents[1], status: "accepted", policy: policy({ roots: ["/Users/sample/Projects"], terminalIds: ["reach:1"], restrictedTerminal: true, screen: "off" }) } as any} onClose={close} onSaved={close} />}

@@ -31,9 +31,11 @@ export function claudeUsage(data, now = Date.now()) {
   let windows = (Array.isArray(data.limits) ? data.limits : []).filter(r => r && typeof r === 'object').filter(r => percent(r.percent) !== null).map((r, i) => ({
     id: `${r.kind}:${i}`, label: r.scope?.model?.display_name ? `${r.scope.model.display_name} · weekly` : labels[r.kind] || r.group || 'Usage',
     usedPercent: percent(r.percent), resetsAt: date(r.resets_at), severity: r.severity || severity(r.percent),
+    // One model's own limit: that model is out, not Claude.
+    ...(r.scope?.model ? { scoped: true } : {}),
   }));
   if (!windows.length) windows = Object.entries({ five_hour: 'Current session', seven_day: 'All models · weekly', seven_day_opus: 'Opus · weekly', seven_day_sonnet: 'Sonnet · weekly' })
-    .filter(([k]) => percent(data[k]?.utilization) !== null).map(([id, label]) => ({ id, label, usedPercent: data[id].utilization, resetsAt: date(data[id].resets_at), severity: severity(data[id].utilization) }));
+    .filter(([k]) => percent(data[k]?.utilization) !== null).map(([id, label]) => ({ id, label, usedPercent: data[id].utilization, resetsAt: date(data[id].resets_at), severity: severity(data[id].utilization), ...(id.startsWith('seven_day_') ? { scoped: true } : {}) }));
   if (!windows.length) return { available: false, windows: [], error: 'Claude usage could not be read.' };
   return { available: true, windows, updatedAt: now, ...(data.spend ? { spend: { enabled: data.spend.enabled, used: data.spend.used, limit: data.spend.limit } } : {}) };
 }
@@ -55,11 +57,17 @@ export function createClaudeAccountUsage({ run = exec, fetcher = fetch, read = f
         } else credentials = JSON.parse(await read(paths.join(dir, '.credentials.json'), 'utf8'));
         const token = credentials.claudeAiOauth?.accessToken;
         if (!token) throw new Error('unavailable');
+        // Claude Code renews its sign-in only while it runs; Reach never
+        // rotates it (a race would sign Claude Code out). Expired, it says so.
+        const expires = credentials.claudeAiOauth?.expiresAt;
+        if (Number.isFinite(expires) && expires <= now()) throw Object.assign(new Error('expired'), { expired: true });
         const response = await fetcher('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }, redirect: 'error', signal: AbortSignal.timeout(8000) });
         if (!response.ok) throw new Error('unavailable');
         cached = claudeUsage(await response.json(), now());
-      } catch {
-        cached = { ...(cached || { windows: [] }), available: false, error: 'Claude usage could not be refreshed. Open Claude to check usage or refresh its sign-in.' };
+      } catch (e) {
+        cached = { ...(cached || { windows: [] }), available: false, error: e?.expired
+          ? 'Claude’s sign-in renews the next time Claude Code runs. Start or continue a Claude chat to refresh usage.'
+          : 'Claude usage could not be refreshed. Open Claude to check usage or refresh its sign-in.' };
       } finally { checked = now(); pending = null; }
       return cached;
     })();

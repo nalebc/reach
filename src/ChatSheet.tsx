@@ -10,8 +10,12 @@ export default function ChatSheet({
   children,
   className = "",
   leading,
+  heading,
 }: {
   title: string;
+  // In the title's place (New chat: its app, to change); the title still
+  // names the sheet.
+  heading?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   className?: string;
@@ -85,7 +89,7 @@ export default function ChatSheet({
       >
         <header className="chat-sheet-heading">
           {leading && <span className="chat-sheet-leading" aria-hidden="true">{leading}</span>}
-          <h2>{title}</h2>
+          <h2>{heading ?? title}</h2>
           <button
             className="chat-sheet-close"
             aria-label={`Close ${title.toLowerCase()}`}

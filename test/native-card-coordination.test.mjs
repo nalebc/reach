@@ -45,7 +45,7 @@ function fixture(kind, { blocked = false, uncertain = false, switchChat = false,
   };
   let invoke;
   if (kind === "consent") {
-    const c = createClaudeConsent({ ...common,
+    const c = createClaudeConsent({ ...common, idle: () => 600,
       pending: async () => pending ? { id: "consent:one", apps: ["Calculator"] } : null,
       press: (choice, expect, guard) => pressClaudeConsent(choice, { ...options(guard), expect }),
     });

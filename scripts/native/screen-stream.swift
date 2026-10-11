@@ -17,6 +17,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   // goes out every second to keep the stream alive.
   var fresh = true, lastSent = Date.distantPast
   var lastKeyTime = Date.distantPast
+  // macOS said there's nothing to show (a blank, suspended or stopped frame:
+  // the display asleep, the Mac locked) until the next complete frame.
+  var blank = false
   var stream: SCStream?, encoder: VTCompressionSession?
   var width = 0, height = 0, frame: Int64 = 0, codec = ""
   let video: Bool, strictHardware: Bool, fps: Int, maxWidth: Int, bitrate: Int,
@@ -24,6 +27,11 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   // Optional "x,y,w,h" in display points: only that part of the display (an
   // app's window on its hidden display), at full resolution, without a pointer.
   let region: CGRect?
+  // Optional JSON {ids, names, words, titles} (server/agent-guard.mjs's lists):
+  // a viewer who isn't the owner never sees these windows: password
+  // managers, the Mac's security prompts, Reach's own windows.
+  struct Privacy: Decodable { let ids: [String], names: [String], words: [String], titles: [String] }
+  let privacy: Privacy?
   init(_ args: [String]) {
     strictHardware = args.count > 5 && args[5] == "hardware"
     displayID = args.count > 0 && args[0] != "primary" ? UInt32(args[0]) ?? 0 : CGMainDisplayID()
@@ -35,6 +43,52 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     region =
       parts.count == 4 && parts[2] >= 16 && parts[3] >= 16
       ? CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3]) : nil
+    privacy =
+      args.count > 7 && !args[7].isEmpty
+      ? try? JSONDecoder().decode(Privacy.self, from: Data(args[7].utf8)) : nil
+    // Asked to hide windows but unreadable: never show them unfiltered.
+    if args.count > 7 && !args[7].isEmpty && privacy == nil {
+      FileHandle.standardError.write(Data("Invalid privacy rules.\n".utf8))
+      exit(1)
+    }
+  }
+  // "reach" as a word: Reach.app, "Reach — node"; not Preacher.
+  func mentions(_ value: String, _ words: [String]) -> Bool {
+    let text = value.lowercased()
+    for word in words where !word.isEmpty {
+      var search = text.startIndex
+      while let range = text.range(of: word, range: search..<text.endIndex) {
+        let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+        let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+        if !(before?.isLetter ?? false) && !(after?.isLetter ?? false) { return true }
+        search = range.upperBound
+      }
+    }
+    return false
+  }
+  // The windows left out for a viewer who isn't the owner (none otherwise),
+  // as scripts/native/agent-desktop.swift leaves them out for agents.
+  func hidden(_ content: SCShareableContent, _ display: SCDisplay) -> [SCWindow] {
+    guard let p = privacy else { return [] }
+    return content.windows.filter { window in
+      let app = window.owningApplication
+      let id = (app?.bundleIdentifier ?? "").lowercased()
+      let name = (app?.applicationName ?? "").lowercased()
+      let title = (window.title ?? "").lowercased()
+      // Mission Control and App Exposé draw every window's preview in the
+      // Dock's full-screen layer: left out, so hidden stays hidden there.
+      if id == "com.apple.dock" && window.windowLayer > 0
+        && window.frame.width >= display.frame.width * 0.9
+        && window.frame.height >= display.frame.height * 0.9
+      {
+        return true
+      }
+      if p.ids.contains(where: { id == $0 || id.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") }) {
+        return true
+      }
+      return p.names.contains(name) || mentions("\(id) \(name) \(title)", p.words)
+        || p.titles.contains(where: { !$0.isEmpty && title.contains($0) })
+    }
   }
   func failure(_ text: String) -> Never {
     FileHandle.standardError.write(Data((text + "\n").utf8))
@@ -48,17 +102,38 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   // Says what stopped capture. Only a refused permission says "Allow Screen
   // Recording…": Reach stops retrying on that sentence. Sleep, lock and
   // display changes stop capture too, and the phone reconnects after them.
+  // The server words the steps for the app Reach runs in (permissionHint in
+  // server/screen-stream.mjs): the permission is that app's, not this helper's.
   func stopped(_ error: Error, _ what: String) -> Never {
     let e = error as NSError
     if (e.domain == SCStreamErrorDomain && e.code == SCStreamError.Code.userDeclined.rawValue)
       || !CGPreflightScreenCaptureAccess()
     {
-      failure("Allow Screen Recording for Reach’s screen helper in System Settings, then reconnect.")
+      failure(
+        "Screen Recording is off for the app running Reach. Allow it in System Settings, then quit and reopen it."
+      )
+    }
+    // Named, so the phone says why while it reconnects.
+    switch idleCode() {
+    case 2: failure("The Mac is locked. The screen comes back when it's unlocked.")
+    case 1: failure("The Mac is asleep. The screen comes back when it wakes.")
+    default: break
     }
     if e.domain == "Display unavailable" {
       failure("This display is unavailable. Select an available display and reconnect.")
     }
     failure("\(what): \(e.localizedDescription) (\(e.domain) \(e.code)).")
+  }
+  // Why there's no picture to send: 2 the Mac is locked, 1 its display is
+  // asleep or blank, nil when a picture is simply still on its way.
+  func idleCode() -> UInt8? {
+    if let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+      (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
+    {
+      return 2
+    }
+    if blank || CGDisplayIsAsleep(displayID) != 0 { return 1 }
+    return nil
   }
   func stream(_ stream: SCStream, didStopWithError error: Error) {
     stopped(error, "Screen capture stopped")
@@ -130,8 +205,19 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     fresh = true
     write(Data([0]))
   }
+  // Every request gets exactly one answer, never silence: the server gives
+  // up on a helper that doesn't answer in 15 s, and the phone shows "stalled".
   func emit() {
-    guard wanted, !encoding, let buffer = latest else { return }
+    guard wanted, !encoding else { return }
+    guard let buffer = latest else {
+      // Nothing to capture (asleep, locked): one byte says why, and the
+      // phone keeps its last picture. No picture yet otherwise: wait for it.
+      if let code = idleCode() {
+        wanted = false
+        write(Data([code]))
+      }
+      return
+    }
     wanted = false
     if !fresh && !keyframe && Date().timeIntervalSince(lastSent) < 1 {
       write(Data([0]))
@@ -146,11 +232,21 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
           of: CIImage(cvPixelBuffer: buffer), colorSpace: color,
           options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8]
         )
-      else { return }
+      else {
+        // This picture didn't convert: "nothing changed", and the next
+        // request tries again.
+        fresh = true
+        write(Data([0]))
+        return
+      }
       write(data)
       return
     }
-    guard let encoder = encoder else { return }
+    guard let encoder = encoder else {
+      fresh = true
+      write(Data([0]))
+      return
+    }
     encoding = true
     frame += 1
     // A keyframe at a phone's full resolution weighs as much as seconds of
@@ -177,10 +273,16 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         as? [[SCStreamFrameInfo: Any]], let raw = attachments.first?[.status] as? Int
     else { return }
     guard SCFrameStatus(rawValue: raw) == .complete else {
-      if [.blank, .suspended, .stopped].contains(SCFrameStatus(rawValue: raw)) { latest = nil }
+      if [.blank, .suspended, .stopped].contains(SCFrameStatus(rawValue: raw)) {
+        latest = nil
+        blank = true
+        // A request already waiting is answered with why.
+        emit()
+      }
       return
     }
     latest = sample.imageBuffer
+    blank = false
     fresh = true
     emit()
   }
@@ -315,12 +417,40 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     config.pixelFormat =
       video ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA
     if video { try configureEncoder() }
+    let excluded = hidden(content, display)
     let capture = SCStream(
-      filter: SCContentFilter(display: display, excludingWindows: []), configuration: config,
+      filter: SCContentFilter(display: display, excludingWindows: excluded), configuration: config,
       delegate: self)
     stream = capture
     try capture.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
     try await capture.startCapture()
+    // Windows open and close: the hidden ones are looked for again every
+    // second, and the filter changes only when they did.
+    if privacy != nil {
+      let id = displayID
+      Task {
+        var last = Set(excluded.map { $0.windowID })
+        while true {
+          try? await Task.sleep(nanoseconds: 1_000_000_000)
+          guard
+            let content = try? await SCShareableContent.excludingDesktopWindows(
+              false, onScreenWindowsOnly: true),
+            let display = content.displays.first(where: { $0.displayID == id })
+          else { continue }
+          let hide = self.hidden(content, display)
+          let ids = Set(hide.map { $0.windowID })
+          if ids == last { continue }
+          do {
+            try await capture.updateContentFilter(
+              SCContentFilter(display: display, excludingWindows: hide))
+            last = ids
+          } catch {
+            // Can't hide what should be hidden: stop rather than show it.
+            self.failure("Screen capture could not hide private windows.")
+          }
+        }
+      }
+    }
     DispatchQueue.global().async {
       while let line = readLine() {
         self.queue.async {

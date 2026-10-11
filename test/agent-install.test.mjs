@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { hasCommand, installPlan, installTerminalCommand } from "../server/agent-install.mjs";
+import { hasCommand, installLock, installPlan, installTerminalCommand } from "../server/agent-install.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 
@@ -16,7 +16,7 @@ test("each app's own installer, the one this Mac can run", async () => {
   assert.deepEqual(await installPlan("claude", options([])), {
     agent: "claude",
     name: "Claude Code",
-    command: "curl -fsSL https://claude.ai/install.sh | bash",
+    command: "curl -fsSL --proto '=https' --tlsv1.2 https://claude.ai/install.sh | bash",
   });
   assert.equal((await installPlan("codex", options(["npm", "brew"]))).command, "npm install -g @openai/codex");
   assert.equal((await installPlan("codex", options(["brew"]))).command, "brew install --cask codex");
@@ -128,7 +128,7 @@ test("installing from the phone: shown first, run once confirmed, the owner's ow
     // Shown first: nothing runs.
     const plan = await install(owner.token);
     assert.equal(plan.status, 200);
-    const expectedPlan = { agent: "claude", name: "Claude Code", command: process.platform === "win32" ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL https://claude.ai/install.sh | bash" };
+    const expectedPlan = { agent: "claude", name: "Claude Code", command: process.platform === "win32" ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL --proto '=https' --tlsv1.2 https://claude.ai/install.sh | bash" };
     assert.deepEqual(await plan.json(), expectedPlan);
     assert.deepEqual(created, []);
     // Confirmed: in a terminal of its own, which ends with the install.
@@ -175,7 +175,78 @@ test("an install that can't start answers with why, and Reach keeps running", as
     const failed = await install({ confirm: true });
     assert.ok(failed.status >= 400);
     assert.equal(typeof (await failed.json()).error, "string");
+    // The install lock let go: a retry isn't "already installing".
+    assert.notEqual((await install({ confirm: true })).status, 409);
     // Still answering.
+    assert.equal((await install({})).status, 200);
+  } finally {
+    await reach.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+// OpenClaw 2026.9 refuses Node older than 24.16: its npm install runs with
+// Homebrew's node@24 first on PATH, and the phone never sees that shell text.
+test("OpenClaw installs under Homebrew's node@24 when the Mac has it", async () => {
+  const runtime = "/opt/homebrew/opt/node@24/bin/node";
+  const plan = await installPlan("openclaw", { platform: "darwin", has: async (tool) => tool === "npm", findRuntime: async () => runtime });
+  assert.equal(plan.command, "npm install -g openclaw@latest");
+  assert.equal(installTerminalCommand(plan, "darwin"),
+    "set -o pipefail; export PATH='/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin':\"$PATH\"; npm install -g openclaw@latest; exit");
+  // Without node@24, or for another app, nothing is added.
+  const plain = await installPlan("openclaw", { platform: "darwin", has: async (tool) => tool === "npm", findRuntime: async () => null });
+  assert.equal(plain.lead, undefined);
+  assert.equal(installTerminalCommand(plain, "darwin"), "set -o pipefail; npm install -g openclaw@latest; exit");
+  const codex = await installPlan("codex", { platform: "darwin", has: async () => true, findRuntime: async () => runtime });
+  assert.equal(codex.lead, undefined);
+});
+
+test("one install per app at a time: planning or a running terminal holds it", () => {
+  const status = new Map();
+  const lock = installLock((id) => status.get(id) !== "exited");
+  assert.equal(lock.take("openclaw"), true);
+  assert.equal(lock.take("openclaw"), false); // still being planned
+  assert.equal(lock.take("codex"), true); // another app is its own
+  lock.release("codex");
+  lock.started("openclaw", "t1");
+  status.set("t1", "running");
+  assert.equal(lock.take("openclaw"), false);
+  status.set("t1", "exited");
+  assert.equal(lock.take("openclaw"), true);
+});
+
+test("two phones confirming the same install at once: only one terminal", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-install-lock-"));
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const created = [];
+  const reach = await createReach({
+    roots: [root], dataDir: path.join(root, ".reach"), screen: false,
+    agentSessions: { list: async () => ({ sessions: [], errors: {} }), health: async () => [] },
+    agentInstallPlan: async (agent) => { await gate; return { agent, name: "OpenClaw", command: "synthetic-installer-never-run", lead: "export PATH='/x':\"$PATH\"" }; },
+    terminals: {
+      create: (options) => (created.push(options), { id: `t${created.length}`, status: "running" }),
+      list: () => [], get: (id) => ({ id, status: "running" }), dispose: () => {},
+    },
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const install = (body) => fetch(`http://127.0.0.1:${reach.server.address().port}/api/sessions/agent-install/openclaw`, {
+    method: "POST", headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  try {
+    const first = install({ confirm: true });
+    const second = await install({ confirm: true });
+    assert.equal(second.status, 409);
+    release();
+    const done = await first;
+    assert.equal(done.status, 200);
+    const body = await done.json();
+    assert.equal(body.lead, undefined); // shell text stays on the Mac
+    assert.equal(created.length, 1);
+    assert.match(created[0].command, /^set -o pipefail; export PATH='\/x'/);
+    // Its terminal still runs: a third confirm waits too; showing the plan doesn't.
+    assert.equal((await install({ confirm: true })).status, 409);
     assert.equal((await install({})).status, 200);
   } finally {
     await reach.close();

@@ -20,7 +20,7 @@ const whois = (node, name) => ({
 });
 
 test(
-  "another browser on an approved phone is approved and counted once",
+  "another browser on an approved phone asks you once and is counted once",
   { skip: process.platform === "win32", timeout: 20000 },
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-same-"));
@@ -70,13 +70,12 @@ test(
       // Safari, through the Tailscale app: approved in the terminal.
       const first = await connect("100.64.0.1", true);
       assert.equal(first.result.status, "approved");
-      // Chrome on the same phone, same Tailscale app: approved at once.
+      // Chrome on the same phone, same Tailscale app: its identity alone
+      // proves nothing (anything on this Mac can claim it), so you approve it.
       const second = await connect("100.64.0.1");
-      assert.equal(second.result.status, "approved");
-      assert.equal(
-        approvalStore(dataDir).list().find((r) => r.id === second.request.id).approvedBy,
-        "this same device",
-      );
+      assert.equal(second.result.status, "pending");
+      approvalStore(dataDir).decide(second.request.id, "approve");
+      assert.equal((await call(`/api/auth/requests/${second.request.id}`, "100.64.0.1", { secret: second.request.secret })).json.status, "approved");
       // Browser sign-in (no app): Safari approved in the terminal; then a
       // second browser on that iPhone joins as the same device once approved.
       assert.equal((await connect("100.64.0.2", true)).result.status, "approved");
@@ -111,12 +110,12 @@ test(
 );
 
 // A process on this Mac can claim any of your devices' identities on Reach's
-// private socket, and whatever runs on the Mac has the Mac's own. So the Mac
-// itself never joins by identity alone, and nothing does once an agent had
-// this Mac, until it restarts (security audit, Oct 9). Face ID and approving
-// are unchanged.
+// private socket (it's handed the address it claims), and whatever runs on the
+// Mac has the Mac's own. So an identity alone approves nothing, ever: not the
+// Mac, not an approved phone (security audit, Oct 9; connections audit,
+// Oct 10). Face ID, your approval and a linked computer's ticket do.
 test(
-  "identity alone approves nothing from this Mac, or after an agent had it until it restarts",
+  "identity alone approves nothing, and owner routes stay shut while an agent has this Mac",
   { skip: process.platform === "win32", timeout: 20000 },
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-vouch-"));
@@ -126,9 +125,8 @@ test(
     const devices = new Map([
       ["100.64.0.1", whois("nPhoneApp", "owner-iphone")],
       ["100.64.0.9", whois("nMac", "owner-mac")],
-      ["100.64.0.4", whois("nIpad", "owner-ipad")],
     ]);
-    let reach = null, agent = null, booted = Date.now() - 3600_000;
+    let reach = null, agent = null;
     reach = await createReach({
       roots: [root],
       dataDir,
@@ -136,7 +134,6 @@ test(
       tailscaleOwner: owner,
       tailscaleIdentity: { lookup: async (ip) => devices.get(ip) },
       browserHostGuard: { lookup: async () => macStatus, clients: () => [...(reach?.auth.list() || []), ...(agent ? [agent] : [])] },
-      bootedAt: () => booted,
     });
     await reach.listenPrivate(socketPath);
     const call = (route, from, body) =>
@@ -155,23 +152,18 @@ test(
       return (await call(`/api/auth/requests/${r.id}`, from, { secret: r.secret })).json.status;
     };
     try {
-      // The Mac's own browser, approved by you; a second one on the Mac asks.
-      assert.equal(await connect("100.64.0.9", true), "approved");
-      assert.equal(await connect("100.64.0.9"), "pending", "this Mac never joins by its identity alone");
-      // The phone: a second browser joins as the same device.
-      assert.equal(await connect("100.64.0.1", true), "approved");
-      assert.equal(await connect("100.64.0.1"), "approved");
-      assert.equal(await connect("100.64.0.4", true), "approved");
+      for (const from of ["100.64.0.9", "100.64.0.1"]) {
+        assert.equal(await connect(from, true), "approved");
+        assert.equal(await connect(from), "pending", `${from}: an approved device's identity alone`);
+      }
+      // A ticket no linked computer issued is refused outright.
+      assert.equal((await call("/api/auth/requests", "100.64.0.1", { name: "Mine", ticket: "made-up" })).status, 403);
+      // The old question "would you let me in by myself?" is gone: like any
+      // unknown route, it wants a credential.
+      assert.equal((await call("/api/auth/vouched", "100.64.0.1", {})).status, 401);
       // A Full control agent has this Mac: owner routes are closed to it.
       agent = { id: "a1", kind: "agent", policy: { browser: true, preset: "full" }, expiresAt: Date.now() + 60000 };
       assert.equal((await call("/api/auth/requests", "100.64.0.1", { name: "Mine" })).status, 403);
-      // Its access ended: until the Mac restarts, the phone's identity alone
-      // approves nothing (something the agent left could be claiming it).
-      agent = null;
-      assert.equal(await connect("100.64.0.4"), "pending");
-      assert.ok(JSON.parse(await fs.readFile(path.join(dataDir, "agents-seen.json"), "utf8")).at > 0, "kept across Reach restarts");
-      booted = Date.now() + 1000;
-      assert.equal(await connect("100.64.0.1"), "approved", "after a restart, as before");
     } finally {
       await reach.close();
       await fs.rm(root, { recursive: true, force: true });
@@ -196,50 +188,3 @@ test("matching by name only for browser sign-ins of the same kind", () => {
   assert.deepEqual(sameDevice(auth, req("nZ", "ipad-browser")), {}, "another account's device");
   assert.deepEqual(sameDevice(auth, req("nW", "android-browser")), {}, "guests don't count");
 });
-
-// The record that an agent had this Mac, there but unreadable, counts as an
-// agent here: it never reads as "no agent was here" (reliability audit, Oct 10).
-test(
-  "an unreadable record of agents counts as an agent here: identity alone approves nothing",
-  { skip: process.platform === "win32", timeout: 20000 },
-  async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-vouch-torn-"));
-    const socketDir = await fs.mkdtemp("/tmp/reach-vouch-sock-");
-    const socketPath = path.join(socketDir, "s");
-    const dataDir = path.join(root, "private");
-    await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
-    await fs.writeFile(path.join(dataDir, "agents-seen.json"), "{ torn", { mode: 0o600 });
-    const devices = new Map([["100.64.0.1", whois("nPhoneApp", "owner-iphone")]]);
-    let reach = null;
-    reach = await createReach({
-      roots: [root], dataDir, port: 0, tailscaleOwner: owner,
-      tailscaleIdentity: { lookup: async (ip) => devices.get(ip) },
-      browserHostGuard: { lookup: async () => macStatus, clients: () => reach?.auth.list() || [] },
-      bootedAt: () => Date.now() - 3600_000,
-    });
-    await reach.listenPrivate(socketPath);
-    const call = (route, from, body) =>
-      new Promise((resolve, reject) => {
-        const req = http.request(
-          { socketPath, path: route, method: "POST",
-            headers: { Host: "localhost", "X-Forwarded-For": from, "Tailscale-User-Login": owner.login, "Content-Type": "application/json" } },
-          (res) => { let text = ""; res.on("data", (c) => (text += c)); res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(text || "null") })); },
-        );
-        req.once("error", reject);
-        req.end(JSON.stringify(body));
-      });
-    const connect = async (approve = false) => {
-      const r = (await call("/api/auth/requests", "100.64.0.1", { name: "Mine" })).json;
-      if (approve) approvalStore(dataDir).decide(r.id, "approve");
-      return (await call(`/api/auth/requests/${r.id}`, "100.64.0.1", { secret: r.secret })).json.status;
-    };
-    try {
-      assert.equal(await connect(true), "approved");
-      assert.equal(await connect(), "pending");
-    } finally {
-      await reach.close();
-      await fs.rm(root, { recursive: true, force: true });
-      await fs.rm(socketDir, { recursive: true, force: true });
-    }
-  },
-);

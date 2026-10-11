@@ -23,6 +23,9 @@ export function watchInterface({
     running = false,
     again = false,
     stopped = false;
+  // A build still running when Reach stops is stopped with it: Ctrl+C
+  // waited on it (a test saw Reach still up 4 s after SIGTERM, Oct 10).
+  const halt = new AbortController();
   const run = async () => {
     if (stopped) return;
     if (running) {
@@ -31,11 +34,12 @@ export function watchInterface({
     }
     running = true;
     try {
-      await build(root);
+      await build(root, { signal: halt.signal });
       if (!stopped) onBuilt();
     } catch (error) {
-      // Half-saved edits fail too; the next save tries again.
-      log.warn(
+      // Stopped with Reach: nothing to say. Half-saved edits fail too; the
+      // next save tries again.
+      if (!stopped) log.warn(
         `Reach: the phone interface didn't rebuild (${String(error?.message || error).split("\n")[0]}). Phones keep the last one that built.`,
       );
     } finally {
@@ -62,13 +66,14 @@ export function watchInterface({
   return () => {
     stopped = true;
     clearTimeout(timer);
+    halt.abort();
     for (const w of watchers) w.close();
   };
 }
 
 // Vite alone (no typecheck, no compression): a few seconds. The full build
 // still runs when ./reach starts.
-export function buildInterface(root) {
+export function buildInterface(root, { signal } = {}) {
   return new Promise((resolve, reject) =>
     execFile(
       process.execPath,
@@ -80,9 +85,15 @@ export function buildInterface(root) {
         "--logLevel",
         "error",
       ],
-      { cwd: root, timeout: 120000, maxBuffer: 4 * 1024 * 1024 },
+      { cwd: root, timeout: 120000, maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}) },
       (error, stdout, stderr) =>
-        error ? reject(Error(stderr.trim() || error.message)) : resolve(),
+        error
+          ? reject(Error(stderr.trim() || error.message))
+          : // Earlier builds' files, once a day old (prune-assets.mjs).
+            import("../scripts/prune-assets.mjs")
+              .then(({ pruneAssets }) => pruneAssets(path.join(root, "dist")))
+              .catch(() => {})
+              .then(() => resolve()),
     ),
   );
 }

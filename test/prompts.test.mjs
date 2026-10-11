@@ -94,3 +94,31 @@ test("piped input never auto-selects a recommended permission", async () => {
   );
   assert.equal(s.text(), "");
 });
+
+test("the menu library installed during setup is used from the next menu on", async () => {
+  const s = streams();
+  let installed = false;
+  let loads = 0;
+  const ui = terminalPrompts({
+    ...s,
+    env: { TERM: "xterm" },
+    load: async () => {
+      loads++;
+      if (!installed)
+        throw Object.assign(Error("not installed"), { code: "ERR_MODULE_NOT_FOUND" });
+      return import("prompts");
+    },
+  });
+  const first = ui.select({ message: "Choose folder", choices });
+  await rendered(s);
+  assert.match(s.text(), /1\. Documents \(Recommended\)/, "numbered while installing");
+  s.input.write("1\n");
+  assert.equal(await first, "default");
+  installed = true;
+  const second = ui.select({ message: "Choose folder", choices });
+  for (let i = 0; i < 50 && !s.input.isRaw; i++) await tick();
+  assert.equal(s.input.isRaw, true, "the arrow menu, once installed");
+  s.input.write("\r");
+  assert.equal(await second, "default");
+  assert.equal(loads, 2);
+});

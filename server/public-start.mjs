@@ -26,8 +26,11 @@ const TYPES = {
   ".woff2": "font/woff2",
   ".png": "image/png",
 };
+// https://*.ts.net:8443: the start page asks the Mac's private address (port
+// 8443) whether this phone is on the tailnet (probeDirect); without it a phone
+// with the Tailscale app is sent down the in-browser path (Oct 10).
 export const PUBLIC_CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.ts.net https://*.ts.net:8443 wss://*.ts.net https://*.tailscale.com wss://*.tailscale.com; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 // One file name: no "." or ".." (they name folders).
 const NAME = /^\/(?!\.{1,2}$)[\w.-]+$/;
 
@@ -127,6 +130,8 @@ export function publicStartHandler({
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Frame-Options", "DENY");
+    // Funnel serves this only over HTTPS: browsers keep it so.
+    res.setHeader("Strict-Transport-Security", "max-age=31536000");
     let host = "";
     try {
       host = new URL(`http://${req.headers.host || ""}`).hostname;
@@ -167,6 +172,10 @@ export function publicStartHandler({
         path.join(tailnetDir, url.slice(9)),
         "public, max-age=31536000, immutable",
       );
+    // A runtime this computer served, by its SHA-256: a line from `agent.mjs
+    // keep` restores with exactly the one it was kept with.
+    if (/^\/agent-runtimes\/[0-9a-f]{64}\.mjs$/.test(url))
+      return send(req, res, path.join(dist, url.slice(1)), "public, max-age=31536000, immutable");
     // Reach for agents: an invited agent downloads it to join (no secrets).
     if (
       [

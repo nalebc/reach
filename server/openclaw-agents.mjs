@@ -10,6 +10,8 @@
 // `agent` method, and chat.abort only stops runs chat.send started (it
 // answers aborted: false). There is no sessions.abort.
 
+import { scrubSecrets } from "./openclaw-health.mjs";
+
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // OpenClaw's own words for its policy (src/infra/exec-approvals.ts).
 export const SECURITY = ["deny", "allowlist", "full"];
@@ -29,6 +31,12 @@ export const isSubagent = (key) =>
   /^(?:agent:[^:]+:)?(?:subagent|acp):/i.test(String(key || ""));
 const text = (value, max = 120) =>
   typeof value === "string" ? value.trim().slice(0, max) : "";
+// An agent named with a key (pasted into the name field) shows as one
+// with its key hidden, never the key: names reach the phone.
+const shownName = (a) => {
+  const name = text(a.identity?.name) || text(a.name) || text(a.id, 80);
+  return scrubSecrets(name) === name && scrubSecrets(String(a.id)) === String(a.id) ? name : "Agent named with a key [hidden]";
+};
 const shortModel = (model) => text(String(model || "").split("/").pop(), 80);
 
 export function agentRows({ roster, listing, overview, now = Date.now() }) {
@@ -44,7 +52,7 @@ export function agentRows({ roster, listing, overview, now = Date.now() }) {
     .filter((a) => a && typeof a.id === "string" && a.id)
     .map((a) => ({
       id: a.id,
-      name: text(a.identity?.name) || text(a.name) || a.id,
+      name: shownName(a),
       emoji: text(a.identity?.emoji, 16),
       isDefault: a.id === defaultId,
       model: "",

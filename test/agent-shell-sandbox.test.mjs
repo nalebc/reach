@@ -121,3 +121,29 @@ test("a sandboxed command can't reach Reach's socket, port, data or code; ordina
       await fs.rm(sockets, { recursive: true, force: true });
     }
   });
+
+// The permission-prompt socket moves to the temp folder when the data
+// folder's path is too long for a socket: a sandboxed command can't post a
+// prompt to your phone there either (connections audit, Oct 10).
+test("a sandboxed command can't reach Reach's permission-prompt socket in the temp folder", { skip: process.platform !== "darwin" }, async () => {
+  const net = (await import("node:net")).default;
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { agentAskSocket } = await import("../server/agent-sessions/agent-asks.mjs");
+  const deep = path.join(os.tmpdir(), "reach-ask-check", "a".repeat(120));
+  const file = agentAskSocket(deep);
+  assert.equal(path.dirname(file), os.tmpdir(), "a long data folder's socket is in the temp folder");
+  const server = net.createServer((s) => s.end("prompt"));
+  await fs.rm(file, { force: true });
+  await new Promise((r) => server.listen(file, r));
+  try {
+    const probe = `require("net").connect(${JSON.stringify(file)}).on("data",d=>{console.log(String(d));process.exit(0)}).on("error",e=>{console.log(e.code);process.exit(0)})`;
+    const run = async (rules) => (await promisify(execFile)("/usr/bin/sandbox-exec", ["-p", shellSandboxProfile(rules), process.execPath, "-e", probe], { timeout: 10000 })).stdout.trim();
+    assert.equal(await run({}), "prompt");
+    const rules = agentShellSandbox({ dataDir: deep, port: 0 }, { sockets: [file] });
+    assert.equal(await run({ socketDeny: rules.socketDeny }), "EPERM");
+  } finally {
+    server.close();
+    await fs.rm(file, { force: true });
+  }
+});

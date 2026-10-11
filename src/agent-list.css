@@ -1,4 +1,4 @@
-/* Settings → Agents (BrowserAgents.tsx): one row per agent that opens in
+/* A browser agent's panel in its sheet on Agents & people, and the Ended list
    place. What needs you shows first and in amber; everything else is calm. */
 .ag-agents {
   display: grid;
