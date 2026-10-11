@@ -117,7 +117,7 @@ async function fixture(t) {
   return { reach, send, jsonPost, form, invite, approve, pkce, register, authorizeUrl, connect, rpc, refresh, reused, root };
 }
 
-test("a hosted agent at its own address discovers Reach, registers, connects with the owner's code and uses the preset's tools", { skip: !posix, timeout: 30000 }, async (t) => {
+test("a hosted agent at its own address discovers Reach, registers, connects with the owner's code and uses the preset's tools", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)", timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const nobody = strangerId();
   // Nothing invited: no address answers, and no shared one exists.

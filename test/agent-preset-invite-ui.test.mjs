@@ -81,7 +81,7 @@ const open = async ({ connect = "page", keyPeer = peer, onSetup = () => {} } = {
 const issued = (calls) => calls.find(([, route]) => route === "/api/agents/browser-invitations")?.[2];
 const message = (c) => c.querySelector('textarea[aria-label="AI browser invitation message"]').value;
 
-test("one question: tapping Full control makes the invite, nothing else to fill", async () => {
+test("one question: tapping Full control makes the invite, nothing else to fill", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async () => {
   const calls = mock();
   const { c, made } = await open();
   const name = c.querySelector('[aria-label="AI browser name"]').value;

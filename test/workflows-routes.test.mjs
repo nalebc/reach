@@ -55,7 +55,8 @@ test("workflows are written, planned, run and stopped by the owner's devices onl
   try {
     assert.equal((await call("/api/sessions/workflows", { cwd: home, tasks }, agent.token)).status, 403);
     assert.equal((await call("/api/sessions/workflows", undefined, agent.token)).status, 403);
-    assert.equal((await call("/api/sessions/workflows", { cwd: root, tasks })).status, 400, "outside the home folder");
+    // The disk's root: the temp folder can be inside home (CI runners).
+    assert.equal((await call("/api/sessions/workflows", { cwd: path.parse(home).root, tasks })).status, 400, "outside the home folder");
     const made = await call("/api/sessions/workflows", { title: "Items API", cwd: home, tasks });
     assert.equal(made.status, 200, await made.clone().text());
     const { workflow } = await made.json();

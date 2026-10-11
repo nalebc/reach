@@ -484,7 +484,7 @@ test("from the phone: an open policy makes no invite key", routeTest, async (t) 
 
 // Always over Tools: offered only with invite keys; the device is kept as
 // long as the access lasts, by the Mac, whatever the phone sends.
-test("Always over Tools needs invite keys; its device lasts as long as its access", routeTest, async (t) => {
+test("Always over Tools needs invite keys; its device lasts as long as its access", { ...routeTest, skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async (t) => {
   const api = fakeTailscale();
   api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
   const f = await routeFixture(t, { api });

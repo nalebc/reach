@@ -3,6 +3,8 @@ import nodeTest from "node:test";
 // This suite exercises the POSIX private ingress socket and its UID/mode checks.
 // Signed request, admission and scope suites also run on Windows.
 const test = (name, fn) => nodeTest(name, { skip: process.platform === "win32" ? "Unix private ingress is not implemented on Windows" : false }, fn);
+// These connect with a preset that uses the screen: Linux refuses it, as it should.
+const macTest = (name, fn) => nodeTest(name, { skip: process.platform !== "darwin" ? "agent presets need macOS (its protected file and screen helpers)" : false }, fn);
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -649,7 +651,7 @@ test("only an authorized browser request extends the idle lease; silence expires
   );
 });
 
-test("one link over either route: an agent on the tailnet (even under the owner's login) gets exactly what Funnel gets", async (t) => {
+macTest("one link over either route: an agent on the tailnet (even under the owner's login) gets exactly what Funnel gets", async (t) => {
   const f = await setup(t);
   // Same socket, no Funnel mark, and the owner's own Tailscale login: how Muse
   // looks when it joins the tailnet under the owner's account.
@@ -688,7 +690,7 @@ test("one link over either route: an agent on the tailnet (even under the owner'
   assert.equal(fresh.status, 200);
 });
 
-test("through the gateway: the page reconnects on its own, never takes access from the browser now using it", async (t) => {
+macTest("through the gateway: the page reconnects on its own, never takes access from the browser now using it", async (t) => {
   const f = await setup(t);
   const grant = await f.ownerCall("/api/agents/browser-invitations", {
     method: "POST",
@@ -721,7 +723,7 @@ test("through the gateway: the page reconnects on its own, never takes access fr
   assert.equal(there.body.status, "approved", "the browser now using it keeps it");
 });
 
-test("an agent whose access ended hears that it ended, on either route, even with nothing else open", async (t) => {
+macTest("an agent whose access ended hears that it ended, on either route, even with nothing else open", async (t) => {
   const f = await setup(t);
   const tailnet = { target: "tailnet", headers: { "X-Forwarded-For": "100.64.0.1", "Tailscale-User-Login": OWNER.login } };
   const join = async () => {
@@ -768,7 +770,7 @@ test("an agent whose access ended hears that it ended, on either route, even wit
 // to keys Reach knows (agents with access, and ones that ended lately, so
 // they hear that they ended), and open to everyone only while a stranger
 // must get in: an invitation waiting, or an agent whose page has to load.
-test("the public door: shut to strangers, open to known keys, open to all only while a stranger must get in", async (t) => {
+macTest("the public door: shut to strangers, open to known keys, open to all only while a stranger must get in", async (t) => {
   const f = await setup(t);
   fs.writeFileSync(path.join(f.dist, "agent.mjs"), "// the runtime\n");
   const stranger = signingKey();

@@ -56,7 +56,7 @@ async function fixture(t) {
   return { reach, send, invite, root, sent, socketPath, privately: (value) => { privateAnswers = value; } };
 }
 
-test("a terminal agent joins through the public link with no Tailscale key, then uses Reach's tools", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+test("a terminal agent joins through the public link with no Tailscale key, then uses Reach's tools", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)", timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const grant = f.invite();
   const home = path.join(f.root, "agent-home");

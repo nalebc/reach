@@ -113,6 +113,10 @@ jobs:
             node: 24
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    # Windows is experimental (README): many tests still assume POSIX shells,
+    # signals and file modes. Its run is reported but doesn't fail the build
+    # until those are sorted into Windows-only and POSIX-only.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -131,6 +135,7 @@ jobs:
         if: runner.os != 'Windows'
       - run: .\reach.cmd --help
         if: runner.os == 'Windows'
+        shell: pwsh
       - run: npm run build:release
       # Native helper and ConPTY tests share the small hosted runner.
       - run: npm run test:ci

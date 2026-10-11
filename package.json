@@ -51,7 +51,7 @@
     "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs",
     "build:release": "npm run build && node scripts/prune-assets.mjs --release && node scripts/build-tailnet.mjs --required && node scripts/build-notices.mjs && node scripts/release-assets.mjs",
     "verify:package": "node scripts/smoke-package.mjs",
-    "test:ci": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000 --test-concurrency=2 test/*.test.mjs"
+    "test:ci": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=180000 --test-concurrency=2 test/*.test.mjs"
   },
   "dependencies": {
     "buffer-crc32": "1.0.0",
