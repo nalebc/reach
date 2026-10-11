@@ -16,23 +16,32 @@ import {
 import { startDom, settle } from "./dom/harness.mjs";
 
 const base = "/api/sessions/openclaw";
-// Synthetic secrets, shaped like real ones. Each is written with a "~" after
-// its prefix and joined at run time, so the release privacy check, secret
-// scanners and GitHub's own scanning never see a token-shaped string in source.
-const SECRETS = Object.fromEntries(Object.entries({
-  openai: "sk-proj-~Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z",
-  anthropic: "sk-ant-~api03-Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2",
-  slackBot: "xoxb-~1111111111-2222222222-AbCdEfGhIjKlMnOp",
-  slackApp: "xapp-~1-A0123456789-1234567890-abcdef0123",
-  github: "ghp_~0123456789abcdefghijklmnopqrstuvwxyz",
-  google: "AIza~SyD-0123456789abcdefghijklmnopqrstu",
-  telegram: "123456789:~AAH-dqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
-  jwt: "eyJ~hbGciOiJIUzI1NiJ9.eyJ~zdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-  hex: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-  base64: "QWxhZGRpbjpvcGVuIHNlc2FtZQ9xYZ12Abc8dEf==",
-  aws: "AKIA~IOSFODNN7EXAMPLE",
-  discord: "MTA1~MjM0NTY3ODkwMTIzNDU2Nzg5~.GaBcDe~.Xy9_abcdefGHIJKLmnop0123456789qrstuv",
-}).map(([name, shape]) => [name, shape.replaceAll("~", "")]));
+// Made-up secrets in each key's shape, built at run time from a seeded random
+// source: the source holds no token-shaped text for scanners to flag, and
+// every run gets the same values.
+let seed = 0x5eed;
+const rand = () => ((seed = (seed * 1103515245 + 12345) >>> 0) >>> 8) / 0x1000000;
+const pick = (chars) => (n) => Array.from({ length: n }, () => chars[Math.floor(rand() * chars.length)]).join("");
+const digits = pick("0123456789");
+const upper = pick("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+const hexs = pick("0123456789abcdef");
+const alnum = pick("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+// Long runs have a digit, a lower and an upper case letter, as real ones do.
+const mixedRun = (n) => "a1B" + alnum(n - 3);
+const SECRETS = {
+  openai: "sk-proj-" + mixedRun(32),
+  anthropic: "sk-ant-api03-" + mixedRun(24),
+  slackBot: "xoxb-" + digits(10) + "-" + digits(10) + "-" + mixedRun(16),
+  slackApp: "xapp-1-A" + digits(10) + "-" + digits(10) + "-" + hexs(10),
+  github: "ghp_" + mixedRun(36),
+  google: "AIza" + "Sy" + mixedRun(33),
+  telegram: digits(9) + ":" + "AA" + mixedRun(33),
+  jwt: "eyJ" + mixedRun(20) + ".eyJ" + mixedRun(28) + "." + mixedRun(43),
+  hex: hexs(64),
+  base64: mixedRun(40) + "==",
+  aws: "AKIA" + upper(16),
+  discord: mixedRun(26) + "." + mixedRun(6) + "." + mixedRun(38),
+};
 
 test("scrubLine hides every key shape", () => {
   for (const [name, secret] of Object.entries(SECRETS)) {
