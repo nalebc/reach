@@ -423,3 +423,13 @@
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
 }
+/* Face ID confirms approvals (Settings → Agents): one quiet line. */
+.admission-faceid {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 12px;
+  color: var(--admission-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}

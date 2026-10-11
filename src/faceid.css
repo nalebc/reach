@@ -13,3 +13,7 @@
 .faceid-row small {
   opacity: 0.7;
 }
+/* Settings → Agents: Face ID confirms approvals, a row with a switch. */
+.agent-faceid {
+  margin: 14px 0;
+}

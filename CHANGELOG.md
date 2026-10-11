@@ -13,6 +13,15 @@ real-device checks that are still open.
 
 ### Added
 
+- Face ID confirms agent approvals, a switch in Settings → Agents for the
+  owner's own devices once Face ID is set up on the computer. With it on,
+  approving an agent's first connection on the phone asks for Face ID, and the
+  computer refuses an approval that doesn't carry its answer; the answer is
+  made for that one request, from that one phone, and used once. Denying
+  never asks. Turning the switch off takes Face ID too, and the last passkey
+  stays while it's on, so a phone in the wrong hands can't lift it with a
+  tap. Guests, agents and Face ID-joined browsers can neither use it nor see
+  the setting.
 - Agent access presets. Inviting a browser agent (Muse, ChatGPT agent, Grok
   bots) is one choice among four presets, Full control, Apps, Files and Read
   only, instead of seven switches and per-action approvals. Scopes, routes,

@@ -24,6 +24,7 @@ import BrowserAgents, { activeSession, type BrowserAgentSession } from "./Browse
 import AgentShortcuts from "./AgentShortcuts";
 import { ServiceAccessPanel } from "./service-access";
 import ToolBrowserSetup from "./ToolBrowserSetup";
+import AgentFaceIdSetting from "./AgentFaceId";
 import AccessEditor, { accessSummary, appScopedAccess, canEditAccess } from "./AccessEditor";
 import {
   AGENT_LEVELS,
@@ -667,6 +668,7 @@ export default function PeopleHub({
         {extras.services > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
         {ended > 0 && extraRow("ended", <History size={19} />, "Ended", ended)}
       </Group>
+      <AgentFaceIdSetting peer={peer} />
       <ToolBrowserSetup peer={peer} toast={toast} />
 
       {people.length > 0 && <Group title="People">{people.map((c) => row(c))}</Group>}

@@ -5,10 +5,18 @@ import {
   ChevronDown,
   Folder,
   Monitor,
+  ScanFace,
   ShieldCheck,
   Terminal,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import {
+  faceIdError,
+  faceIdReady,
+  sameComputer,
+  signWithFaceId,
+  type FaceOptions,
+} from "./passkeys";
 import { scopeLabel } from "./scope-words";
 import type { NeedItem } from "./NeedsYou";
 import ScreenPopup from "./ScreenPopup";
@@ -182,17 +190,70 @@ export function AgentAdmissionReview({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  // Face ID confirms approvals (Settings → Agents): on this computer's own
+  // page, on a phone that has it, the options come before the tap (Safari
+  // shows Face ID straight from a tap only) and the tap calls WebAuthn first
+  // thing. Used once: a cancelled or refused answer fetches new ones.
+  const [faceRequired, setFaceRequired] = useState(false);
+  const [faceOptions, setFaceOptions] = useState<FaceOptions | null>(null);
+  const [faceAttempt, setFaceAttempt] = useState(0);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      if (!sameComputer(peer.url) || !(await faceIdReady())) return;
+      const settings = await request<{ faceIdForAgents?: boolean }>(
+        peer,
+        "/api/settings",
+      ).catch(() => null);
+      if (live && settings?.faceIdForAgents === true) setFaceRequired(true);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [peer.url, peer.token]);
+  useEffect(() => {
+    if (!faceRequired || faceOptions || expired || busy) return;
+    let live = true;
+    post<FaceOptions>(
+      peer,
+      `/api/agents/admissions/${encodeURIComponent(admission.requestId)}/passkey/options`,
+      {},
+    ).then(
+      (options) => live && setFaceOptions(options),
+      (e: { status?: number; message?: string }) => {
+        if (!live) return;
+        // No Face ID on the computer anymore: the code alone approves.
+        if (e.status === 404) setFaceRequired(false);
+        else setError(e.message || "Face ID isn't ready. Try again.");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [faceRequired, faceOptions, expired, busy, faceAttempt]);
   const decide = async (decision: "approve" | "deny") => {
     if (pending.current || expired || (decision === "approve" && !codeMatches))
       return;
+    // Face ID first thing in the tap, before anything is awaited.
+    const answer =
+      decision === "approve" && faceOptions
+        ? signWithFaceId(faceOptions)
+        : null;
+    if (decision === "approve" && faceRequired && !answer) {
+      setError("Face ID isn't ready yet. Try again.");
+      setFaceAttempt((n) => n + 1);
+      return;
+    }
     pending.current = true;
     setBusy(true);
     setError("");
+    if (answer) setFaceOptions(null); // used once, whatever the answer
     try {
+      const credential = answer ? await answer : undefined;
       const result = await post<{ status?: string; error?: string }>(
         peer,
         `/api/agents/admissions/${encodeURIComponent(admission.requestId)}`,
-        { decision },
+        { decision, ...(credential ? { credential } : {}) },
       );
       if (["expired", "revoked", "failed"].includes(result.status || "")) {
         setFinished(true);
@@ -202,13 +263,17 @@ export function AgentAdmissionReview({
         );
       } else onResolved();
     } catch (e) {
-      setError((e as Error).message);
-      if (
-        [401, 403, 404, 409, 410].includes(
-          (e as { status?: number }).status || 0,
-        )
-      )
+      const err = e as Error & { status?: number; body?: { error?: string } };
+      // Face ID cancelled, or its answer refused (the Mac's own words, not
+      // the usual 401's): say so; fresh options are fetched for another try.
+      const faceIdFailed =
+        !!answer && (!err.status || err.status === 400 || err.status === 401);
+      setError(
+        faceIdFailed ? err.body?.error || faceIdError(err) : err.message,
+      );
+      if (!faceIdFailed && [401, 404, 409, 410].includes(err.status || 0))
         setFinished(true);
+      else if (answer || faceRequired) setFaceAttempt((n) => n + 1);
     } finally {
       pending.current = false;
       setBusy(false);
@@ -638,6 +703,12 @@ export function AgentAdmissionReview({
             </>
           )}
         </p>
+        {faceRequired && !expired && (
+          <p className="admission-faceid">
+            <ScanFace size={14} aria-hidden="true" />
+            Face ID confirms approvals
+          </p>
+        )}
         <div className="agent-admission-actions">
           <button
             className="admission-deny"
@@ -651,7 +722,11 @@ export function AgentAdmissionReview({
             disabled={busy || expired || !codeMatches}
             onClick={() => void decide("approve")}
           >
-            {busy ? "Responding…" : "Approve connection"}
+            {busy
+              ? "Responding…"
+              : faceRequired
+                ? "Approve with Face ID"
+                : "Approve connection"}
           </button>
         </div>
       </footer>

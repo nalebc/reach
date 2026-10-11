@@ -233,6 +233,27 @@ export async function createReach(overrides = {}) {
           ...overrides.passkeys,
         })
       : null;
+  // Face ID on your phone confirms each agent connection you allow
+  // (Settings → Agents): this computer's setting, in force only while a
+  // passkey is set up here. Your own devices turn it on; never a guest's or
+  // an agent's credential, which the settings and agents routes refuse.
+  const faceIdForAgents = () =>
+    settings.faceIdForAgents === true && !!passkeys?.has();
+  // Who turns it on or off and asks for its Face ID challenges: your own
+  // approved device on your Tailscale account, as for managing Face ID
+  // itself (ownDevice below). Not a Face ID-joined browser, nor any other
+  // kind of credential, whatever its scopes.
+  const faceIdOwner = (req) => {
+    const client = req.reauthorize();
+    if (
+      client.kind !== "device" ||
+      !client.scopes.includes("admin") ||
+      (config.tailscaleOwner && !ownerIdentity(req.reachIdentity, config.tailscaleOwner))
+    )
+      throw fail(403, "Only your own devices use Face ID for agents.");
+    return client;
+  };
+  const settingBinding = (client) => `setting:faceIdForAgents:${client.id}`;
   let privateServer, privateSocket;
   const approvalCleanup = approvals
     ? setInterval(() => approvals.list(), 30000)
@@ -1437,6 +1458,10 @@ export async function createReach(overrides = {}) {
   });
   app.delete("/api/auth/passkeys/:id", (req, res) => {
     ownDevice(req);
+    // The last passkey stays while Face ID confirms agent approvals: turn
+    // that off first (with Face ID), so a credential alone never lifts it.
+    if (faceIdForAgents() && !passkeys.list().some((p) => p.id !== req.params.id))
+      throw fail(409, "Face ID confirms agent approvals. Turn that off in Settings → Agents first, then remove this Face ID.");
     passkeys.remove(req.params.id);
     // Also end the browsers that this passkey admitted. Old Face ID devices
     // without provenance are revoked conservatively during this migration.
@@ -1900,7 +1925,42 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Send paused as true or false.");
     res.json(await setPaused(req.body?.paused));
   });
+  // The Face ID challenge for turning Face ID for agents off: this device's
+  // own, used once (server/passkeys.mjs).
+  app.post("/api/settings/passkey/options", (req, res) => {
+    const client = faceIdOwner(req);
+    if (!passkeys?.has()) throw fail(404, "Face ID isn't set up on this computer.");
+    res.json(passkeys.assertionOptions(settingBinding(client)));
+  });
   app.post("/api/settings", (req, res) => {
+    const body = isPlainRecord(req.body) ? req.body : {};
+    if ("faceIdForAgents" in body) {
+      if (
+        typeof body.faceIdForAgents !== "boolean" ||
+        Object.keys(body).some((key) => !["faceIdForAgents", "credential"].includes(key)) ||
+        (body.credential !== undefined && body.faceIdForAgents)
+      )
+        throw fail(400, "Send faceIdForAgents as true or false, on its own.");
+      const client = faceIdOwner(req);
+      if (body.faceIdForAgents && !passkeys?.has())
+        throw fail(409, "Add Face ID in Settings first.");
+      // Off takes Face ID while it's in force: the switch guards against a
+      // phone in the wrong hands, so a tap on it can't be what lifts it.
+      // Checked before anything changes; its challenge is this device's own.
+      let faceId = null;
+      if (body.credential !== undefined) {
+        if (!passkeys?.has()) throw fail(404, "Face ID isn't set up on this computer.");
+        faceId = passkeys.verifyAssertion(settingBinding(client), body.credential);
+      } else if (!body.faceIdForAgents && faceIdForAgents())
+        throw fail(403, "Face ID turns this off. Use the phone that has it.");
+      settings.faceIdForAgents = body.faceIdForAgents;
+      atomicJson(settingsFile, settings);
+      record(
+        "settings",
+        `Face ID for agent approvals turned ${body.faceIdForAgents ? "on" : `off${faceId ? ` with Face ID (${faceId.label})` : ""}`}`,
+      );
+      return res.json(settings);
+    }
     if (typeof req.body?.screen !== "boolean")
       throw fail(400, "Send screen as true or false.");
     settings.screen = config.screen = req.body?.screen;
@@ -2109,13 +2169,38 @@ export async function createReach(overrides = {}) {
     admissionOwner(req);
     res.json(auth.listAgentAdmissions());
   });
+  // Face ID on your phone for one waiting connection (Settings → Agents):
+  // its challenge is for that request, from this device's credential, and
+  // used once (server/passkeys.mjs). While Face ID confirms approvals,
+  // Approve needs its answer; Deny never does.
+  const admissionBinding = (req, client) => {
+    if (!passkeys?.has()) throw fail(404, "Face ID isn't set up on this computer.");
+    if (!auth.listAgentAdmissions().some((a) => a.requestId === req.params.requestId))
+      throw fail(404, "This agent connection request was not found.");
+    return `admission:${req.params.requestId}:${client.id}`;
+  };
+  app.post("/api/agents/admissions/:requestId/passkey/options", (req, res) => {
+    const binding = admissionBinding(req, faceIdOwner(req));
+    res.json(passkeys.assertionOptions(binding));
+  });
   app.post("/api/agents/admissions/:requestId", (req, res) => {
     admissionOwner(req);
-    if (Object.keys(req.body || {}).some((key) => key !== "decision"))
+    const body = isPlainRecord(req.body) ? req.body : {};
+    if (Object.keys(body).some((key) => !["decision", "credential"].includes(key)) ||
+        (body.credential !== undefined && body.decision !== "approve"))
       throw fail(400, "Approve or deny the exact connection shown.");
-    const result = auth.decideAgentAdmission(req.params.requestId, req.body?.decision);
-    record("agent", req.body?.decision === "approve"
-      ? "Approved an invited agent's connection" : "Denied an invited agent's connection");
+    // Checked before anything is decided: a refused answer approves nothing.
+    let faceId = null;
+    if (body.credential !== undefined) {
+      const binding = admissionBinding(req, faceIdOwner(req));
+      faceId = passkeys.verifyAssertion(binding, body.credential);
+    }
+    if (!faceId && body.decision === "approve" && faceIdForAgents())
+      throw fail(403, "Face ID confirms agent approvals on this computer. Approve with Face ID on your phone, or turn it off in Settings → Agents.");
+    const result = auth.decideAgentAdmission(req.params.requestId, body.decision);
+    record("agent", body.decision === "approve"
+      ? `Approved an invited agent's connection${faceId ? ` with Face ID (${faceId.label})` : ""}`
+      : "Denied an invited agent's connection");
     // Declined on the tailnet: its device leaves at once. (A public-link
     // agent declined in another browser keeps its access and has no device.)
     if (result.status === "denied") {
