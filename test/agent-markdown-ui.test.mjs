@@ -5,11 +5,11 @@ import { startDom } from "./dom/harness.mjs";
 
 // Tables in a chat (Claude's /context, its comparisons) showed as raw "|"
 // pipes; now they're tables, and what only looks like one stays words.
-let dom, React, AgentMarkdown, SessionLinkContext;
+let dom, React, AgentMarkdown, SessionLinkContext, RunCommandContext;
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
-  ({ default: AgentMarkdown, SessionLinkContext } = await dom.load("/src/AgentMarkdown.tsx"));
+  ({ default: AgentMarkdown, SessionLinkContext, RunCommandContext } = await dom.load("/src/AgentMarkdown.tsx"));
 });
 
 test("a link to another Claude session opens it here, and says when it isn't here yet", async () => {
@@ -119,4 +119,47 @@ test("session links keep a visible keyboard focus indicator after the link-style
     await view.unmount();
     style.remove();
   }
+});
+
+test("a shell block has a play button that runs its command; other code, or no chat to run it, has none", async () => {
+  const text = [
+    "Run the tests:",
+    "```bash",
+    "npm test",
+    "```",
+    "Then this, in a console:",
+    "```console",
+    "$ cd app",
+    "$ npm run build",
+    "```",
+    "The code:",
+    "```js",
+    "const x = 1;",
+    "```",
+    "Still streaming:",
+    "```sh",
+    "echo partial",
+  ].join("\n");
+  const ran = [];
+  const view = await dom.render(
+    React.createElement(RunCommandContext.Provider, { value: (command) => ran.push(command) },
+      React.createElement(AgentMarkdown, { text })),
+  );
+  const blocks = [...view.container.querySelectorAll(".md-code")];
+  assert.equal(blocks.length, 4);
+  assert.deepEqual(blocks.map((b) => b.querySelector("code").textContent),
+    ["npm test", "$ cd app\n$ npm run build", "const x = 1;", "echo partial"], "code shows as written");
+  const buttons = [...view.container.querySelectorAll("button.md-run")];
+  assert.equal(buttons.length, 3, "bash, console and sh blocks; not js");
+  assert.equal(buttons[0].getAttribute("aria-label"), "Run in a terminal");
+  for (const b of buttons) b.click();
+  assert.deepEqual(ran, ["npm test", "cd app\nnpm run build", "echo partial"], "a console's $ prompts aren't typed");
+  assert.match(view.container.textContent, /Then this, in a console:/);
+  assert.match(view.container.textContent, /The code:/);
+  await view.unmount();
+  // Where nothing can run it (OpenClaw's space, a plan), no button.
+  const plain = await dom.render(React.createElement(AgentMarkdown, { text }));
+  assert.equal(plain.container.querySelectorAll("button.md-run").length, 0);
+  assert.equal(plain.container.querySelectorAll("pre").length, 4);
+  await plain.unmount();
 });

@@ -54,7 +54,7 @@ States: `running`, `completed`, `failed`, `timed_out`, `cancelled`, `interrupted
 ## Terminals — scope `terminal`
 
 - `GET /api/terminals` — list live and exited session metadata.
-- `POST /api/terminals` — `{root, path, name}`; starts a real PTY.
+- `POST /api/terminals` — `{root, path, name}`; starts a real PTY. Or `{cwd, input}` (a chat's play button): `cwd` is a full path inside a shared folder (403 otherwise), and `input` (1–8,000 characters, no control codes except tabs and newlines; not with `run`) is typed into the new shell, each line followed by Enter.
 - `DELETE /api/terminals/:id` — stop its shell.
 
 Connect to `wss://computer.tailnet.ts.net:8443/ws/terminal`. Authenticate in the **first message**, within five seconds:

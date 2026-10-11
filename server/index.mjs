@@ -3890,7 +3890,32 @@ export async function createReach(overrides = {}) {
     const run = req.body?.run;
     if (run !== undefined && !Object.hasOwn(AGENTS, run))
       throw fail(400, "Choose Codex or Claude Code.");
-    const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
+    // A command from a chat's code block (its play button): typed into the
+    // new shell as the person would type it, so it can do nothing their own
+    // typing in a Reach terminal couldn't. Text only, one screenful at most.
+    const input = req.body?.input;
+    if (input !== undefined && (run !== undefined || typeof input !== "string" || !input.trim() ||
+        input.length > 8000 || /[\0-\x08\x0b-\x1f\x7f]/.test(input)))
+      throw fail(400, "That command can't be run here.");
+    // A chat's folder, by its full path: it must be inside a shared folder,
+    // then it meets the same checks as any other.
+    let root = req.body?.root, relative = req.body?.path || "";
+    if (typeof req.body?.cwd === "string") {
+      const roots = req.client?.agentRoots || config.roots;
+      // Real paths on both sides (/tmp and /var are links on a Mac).
+      const real = (p) => { try { return fs.realpathSync.native(p); } catch { return ""; } };
+      const wanted = path.isAbsolute(req.body.cwd) ? real(req.body.cwd) : "";
+      const at = wanted
+        ? roots.findIndex((r) => {
+            const rel = path.relative(real(r), wanted);
+            return real(r) && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
+          })
+        : -1;
+      if (at < 0) throw fail(403, "This folder isn't one of your shared folders.");
+      root = at;
+      relative = path.relative(real(roots[at]), wanted);
+    }
+    const cwd = resolve(root, relative, req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const command = run ? await locateAgent(run) : "";
     if (run && !command)
@@ -3900,6 +3925,7 @@ export async function createReach(overrides = {}) {
       name: req.body?.name || (run ? AGENTS[run] : undefined),
       clientId: req.client.id,
       command,
+      input: input?.trim(),
     });
     record("terminal", `Started ${terminal.name}`);
     res.json(terminal);

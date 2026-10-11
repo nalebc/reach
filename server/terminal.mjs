@@ -25,7 +25,7 @@ export function terminalPreview(buffer, lines = 2) {
 }
 export class Terminals {
   sessions = new Map();
-  create({ cwd, name, clientId, cols = 90, rows = 28, command = "" }) {
+  create({ cwd, name, clientId, cols = 90, rows = 28, command = "", input = "" }) {
     if (
       [...this.sessions.values()].filter((s) => s.status === "running")
         .length >= 12
@@ -90,6 +90,9 @@ export class Terminals {
     this.sessions.set(session.id, session);
     // Server-resolved agent command (never client text), run once the shell starts.
     if (command) proc.write(`${command}\r`);
+    // Or text the person chose to run (a chat's play button), typed as they
+    // would type it: each line ends with Enter.
+    else if (input) proc.write(`${input.replace(/\r?\n/g, "\r")}\r`);
     return this.meta(session);
   }
   meta(s) {

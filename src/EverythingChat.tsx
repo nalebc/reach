@@ -24,7 +24,7 @@ import { useNotifyBack } from "./notify-back";
 import { post, type Peer } from "./api";
 import AgentSessionView, { ComposerMenu, ModeMenu, ModelPicker } from "./AgentSession";
 import { modelDisplayName } from "./ModelSheet";
-import { SessionLinkContext } from "./AgentMarkdown";
+import { RunCommandContext, SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import AgentUpdate, { useTerminalRun } from "./AgentUpdate";
 import OpenClawSpace from "./OpenClawSpace";
@@ -985,6 +985,7 @@ export default function EverythingChat({
   computers,
   connections,
   onOpenOn,
+  runCommand,
 }: {
   peer: Peer;
   feed?: AgentFeed;
@@ -997,6 +998,8 @@ export default function EverythingChat({
   computers?: Peer[];
   connections?: FleetConnections;
   onOpenOn?: (computer: Peer, chat: { agent: string; id: string; title?: string }) => void;
+  // A shell block's play button: run it in a Reach terminal in this folder.
+  runCommand?: (cwd: string, command: string) => void;
 }) {
   const own = useAgentSessions(shared ? null : peer);
   const { sessions, errors, health, failure, reload, recheck } = shared || own;
@@ -1296,6 +1299,9 @@ export default function EverythingChat({
             return true;
           }}
         >
+          <RunCommandContext.Provider
+            value={runCommand && open.cwd ? (command) => runCommand(open.cwd, command) : null}
+          >
           <AgentSessionView
             key={peer.id + ":" + open.agent + ":" + open.id}
             peer={peer}
@@ -1324,6 +1330,7 @@ export default function EverythingChat({
               setSheet("new");
             }}
           />
+          </RunCommandContext.Provider>
         </SessionLinkContext.Provider>
       ) : (
         <ChatAppPager key={peer.id} apps={apps} value={picked.agent} onChange={setAgent} hidden={!!sheet}>

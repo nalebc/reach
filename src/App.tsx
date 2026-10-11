@@ -959,6 +959,20 @@ function ReachWorkspace() {
                       choose(computer.id);
                       setLinkTarget({ page: "sessions", agent: chat.agent, id: chat.id, computer: computer.id });
                     }}
+                    // A shell block's play button: a Reach terminal in the
+                    // chat's folder runs it, and opens so you see it run.
+                    runCommand={
+                      pageAccessible("terminal", features)
+                        ? (cwd, command) =>
+                            void post<{ id: string }>(peer, "/api/terminals", { cwd, input: command })
+                              .then((created) => {
+                                setTerminalId(created.id);
+                                setTerminalSource("reach");
+                                navigate("terminal");
+                              })
+                              .catch((e) => toast((e as Error).message))
+                        : undefined
+                    }
                   />
                 )}
                 {page === "apps" && (

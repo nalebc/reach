@@ -387,8 +387,34 @@ button.as-title:active {
   color: var(--as-inline);
   font: 0.86em "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
 }
-.md pre {
+/* A code block, and a shell one's play button in its corner. */
+.md-code {
+  position: relative;
   margin: 0 0 10px;
+}
+.md-runnable pre {
+  padding-right: 46px;
+}
+.md-run {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--as-code-line);
+  border-radius: 8px;
+  background: var(--as-bg);
+  color: var(--as-text);
+  cursor: pointer;
+}
+.md-run:active {
+  opacity: 0.6;
+}
+.md pre {
+  margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
   border: 1px solid var(--as-code-line);

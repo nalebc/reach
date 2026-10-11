@@ -1,4 +1,5 @@
 import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
+import { Play } from "lucide-react";
 
 // A link to another Claude session, as the Claude app writes them
 // ("[title](#local_<id>)"): the chat that shows this message opens that
@@ -161,21 +162,52 @@ function blocks(text: string, key: string): ReactNode[] {
   return out;
 }
 
-function AgentMarkdown({ text }: { text: string }) {
-  const parts = text.split(/^```[^\n]*\n?/m);
+// A shell code block's play button, as in the Claude and Codex apps: the chat
+// that shows this message runs the command in a Reach terminal in its folder.
+// Without a provider (OpenClaw's space, plans) blocks have no button.
+export const RunCommandContext = createContext<((command: string) => void) | null>(null);
+const SHELL = /^(bash|sh|shell|zsh|console|terminal)$/i;
+// "$ npm test" in a console block: the prompt isn't part of the command.
+const runnable = (code: string) =>
+  code
+    .split("\n")
+    .map((line) => line.replace(/^\s*\$\s+/, ""))
+    .join("\n")
+    .trim();
+function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  const run = useContext(RunCommandContext);
+  const command = run && SHELL.test(lang) ? runnable(code) : "";
   return (
-    <div className="md">
-      {parts.map((part, i) =>
-        i % 2 ? (
-          <pre key={i}>
-            <code>{part.replace(/\n$/, "")}</code>
-          </pre>
-        ) : (
-          <Fragment key={i}>{blocks(part, String(i))}</Fragment>
-        ),
+    <div className={command ? "md-code md-runnable" : "md-code"}>
+      <pre>
+        <code>{code}</code>
+      </pre>
+      {command && (
+        <button
+          type="button"
+          className="md-run"
+          aria-label="Run in a terminal"
+          title="Run in a terminal"
+          onClick={() => run!(command)}
+        >
+          <Play size={14} fill="currentColor" />
+        </button>
       )}
     </div>
   );
+}
+
+function AgentMarkdown({ text }: { text: string }) {
+  // Split on fences, keeping what follows each ```: text, then for every
+  // block its language, its code, the closing fence's (empty) rest and the
+  // text after it. A block still streaming has no closing fence yet.
+  const parts = text.split(/^```([^\n]*)\n?/m);
+  const out: ReactNode[] = [<Fragment key={0}>{blocks(parts[0], "0")}</Fragment>];
+  for (let i = 1; i < parts.length; i += 4) {
+    out.push(<CodeBlock key={i} lang={parts[i].trim()} code={(parts[i + 1] ?? "").replace(/\n$/, "")} />);
+    if (i + 3 < parts.length) out.push(<Fragment key={i + 3}>{blocks(parts[i + 3], String(i + 3))}</Fragment>);
+  }
+  return <div className="md">{out}</div>;
 }
 
 // Drawn again only when its text changes: a chat redraws on every update,
