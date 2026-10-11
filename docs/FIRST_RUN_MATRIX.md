@@ -45,17 +45,17 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | --- | --- | --- | --- | --- | --- |
 | H1 | Node 22+ is on PATH | Reach uses it | P | CI `./reach --help` | CI only |
 | H2 | Node is missing or older than 22 | Reach downloads its pinned private Node and checks its hash | U | `installable` (version/hash parity) | passed Oct 10 |
-| H3 | No internet, or no curl or tar | Says what to do (install curl, or Node.js 22+), not curl's raw error | P | `launcher-script` | fixed, passed Oct 10 |
+| H3 | No internet, or no curl or tar | Says what to do (install curl, or Node.js 22+), not curl's raw error | P, M | `launcher-script`, M7 | fixed, passed Oct 10; on Ubuntu (M7) too |
 | H4 | Unsupported OS or CPU | Git Bash on Windows is sent to `.\reach.cmd`; another computer is named, with installing Node.js 22+ yourself as the way | U | `launcher-script` | fixed, passed Oct 10 |
 | H5 | `npm ci` or the build fails | Names the likely fix (build tools, internet, disk), then `.reach/setup.log` | P | `setup-blockers` | fixed, passed Oct 10 |
 | H6 | No Go toolchain | Reach starts. Without the browser client, phones need the Tailscale app | P | `release-assets` | passed Oct 10 |
 | H7 | Reach is already running, or its lock is held | Says where it runs and offers `./reach restart` | P | `instances` | passed Oct 10 |
 | H8 | Started from iTerm, VS Code, Warp or Codex on a Mac | Opens a Terminal window and runs there | U | `outside-terminal` | passed Oct 10 |
 | H9 | No terminal (no TTY) | Skips the guided setup and names the next step | P | `setup-blockers`, `tailscale-connect`, `first-run-launch` | passed Oct 10 |
-| H10 | Ctrl+C at a menu or during a wait | "Paused. Run ./reach to continue."; lock released; resumes at the same step | U, P | `setup-blockers` | fixed, passed Oct 10 |
+| H10 | Ctrl+C at a menu or during a wait | "Paused. Run ./reach to continue."; lock released; resumes at the same step | U, P, M | `setup-blockers`, M7 | fixed, passed Oct 10; in a real terminal on Ubuntu (M7) too |
 | H11 | npm global install | Settings and phones live in `~/.reach` | U | `installable` | passed Oct 10 |
 | H12 | Checkout under `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive | Detected; background mode explained (see B2) | U | `setup-blockers` | fixed, passed Oct 10 |
-| H13 | Linux without a C compiler (node-pty builds from source) | Names the packages to install | U | `setup-blockers` | fixed, passed Oct 10 |
+| H13 | Linux without a C compiler (node-pty builds from source) | Names the packages to install | U, M | `setup-blockers`, M7 | fixed, passed Oct 10; real npm on Ubuntu (M7) too |
 | H18 | Windows, first `.\reach.cmd` in a terminal | The guided setup in two steps: 1. Tailscale on this computer (T17–T21), 2. HTTPS link for your phone (T22). Then the pairing code (T23). No account, invite or background step, and no account settings saved | U | `setup` | partly: setup's Windows steps passed; bootstrap running them on Windows is checked only on a Windows host (M8) |
 | H19 | Windows: hints on the first-run path (setup's wait, `pair`, `approve`, `configure`, `link`, `update`) and the phone's ("run … configure", "run … invites") | Name `.\reach.cmd`, never `./reach` | U | `setup`, `tailscale-connect` | partly: every hint uses `command` (`scripts/home.mjs`), checked on this Mac; the literal `.\reach.cmd` only shows on Windows (M8) |
 | H14 | First run in a terminal (a checkout) | The install (npm, the phone interface, browser sign-in) runs while setup asks about Tailscale; the first question comes in seconds, not after the install. Nothing the install says interrupts a menu; menus are numbered until it's done. `setup.log` records how long setup and each install part took | U | `first-start`, `prompts` | fixed, passed Oct 10 |
@@ -67,16 +67,16 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 
 | ID | Case | Expected | Type | Test | Status |
 | --- | --- | --- | --- | --- | --- |
-| T1 | Tailscale not installed | Menu, the download page opened, **and the URL printed** (headless Linux) | U | `tailscale-connect`, `setup-blockers` | fixed, passed Oct 10 |
-| T2 | Installed, not running | Mac app: opens it. Linux: `sudo systemctl enable --now tailscaled` | U | `tailscale-connect` | fixed, passed Oct 10 |
+| T1 | Tailscale not installed | Menu, the download page opened, **and the URL printed** (headless Linux) | U, M | `tailscale-connect`, `setup-blockers`, M7 | fixed, passed Oct 10; on Ubuntu (M7) too |
+| T2 | Installed, not running | Mac app: opens it. Linux: `sudo systemctl enable --now tailscaled` | U, M | `tailscale-connect`, M7 | fixed, passed Oct 10; on Ubuntu (M7) the words passed, the command itself wasn't run (no systemd in the test container; apt starts Tailscale itself) |
 | T3 | Signed out | Runs `tailscale login`, prints and opens the URL | U | `tailscale-connect` | passed Oct 10 |
 | T4 | Waiting for admin approval | Opens the machines page | U | `tailscale-connect` | passed Oct 10 |
-| T5 | Switched off | Offers `tailscale up`. The fallback wording fits the OS (no "menu bar icon" on Linux) | U | `tailscale-connect`, `setup-blockers` | fixed, passed Oct 10 |
-| T6 | Linux user without operator permission | Prints `sudo tailscale set --operator=$USER` | U | `setup-blockers` | fixed, passed Oct 10 |
+| T5 | Switched off | Offers `tailscale up`. The fallback wording fits the OS (no "menu bar icon" on Linux). Linux, refused: the operator command, then Reach tries again and goes on | U, M | `tailscale-connect`, `setup-blockers`, M7 | failed on Ubuntu (M7: never tried again), fixed, passed Oct 10 |
+| T6 | Linux user without operator permission | Signed out: `sudo tailscale up --operator=$USER` (Tailscale refuses a signed-out computer to everyone but root, its operator too). Switched off, or already on: `sudo tailscale set --operator=$USER`. Reach goes on once it's done | U, M | `tailscale-connect`, M7 | failed on Ubuntu (M7), fixed, passed Oct 10 |
 | T7 | Tagged device, or not a personal account | Retry or set up later | U | `tailscale-auth` | passed Oct 10 |
 | T8 | Tailscale too old for socket targets | "Update Tailscale…" | U | `tailscale-auth` | passed Oct 10 |
 | T9 | Mac App Store Tailscale with a short name over 14 characters | Caught in setup, before "Setup complete", with the fix | U | `setup-blockers` | fixed, passed Oct 10 |
-| T10 | MagicDNS or HTTPS certificates off | Opens the DNS page and waits | U | `setup` | passed Oct 10 |
+| T10 | MagicDNS or HTTPS certificates off | Opens the DNS page and waits | U, M | `setup`, M7 | passed Oct 10; on Ubuntu (M7) HTTPS off passed, MagicDNS off not reproduced |
 | T11 | Port 8443 used by another service, by Funnel, or by an older Reach's route | Each gets its exact fix (`tailscale serve --https=8443 off`, `--https-port`) | U | `launcher`, `setup-blockers` | fixed, passed Oct 10 |
 | T12 | `--https-port 9443` | Saved, reused on the next start, and used by the invites rule | U | `setup-blockers` | fixed, passed Oct 10 |
 | T13 | Port 443 used by another service | Reach runs; phones need the Tailscale app; the terminal says so | U | `first-run-launch` | passed Oct 10 |
@@ -195,7 +195,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | --- | --- | --- | --- | --- | --- |
 | D1 | No Apple Command Line Tools | The screen says to install them. Saved tools say why instead of vanishing. Mac prompts retry later. No internal helper names | S, D | `first-run-agents` | fixed, passed Oct 10 |
 | D2 | No Screen Recording or Accessibility | Each permission named | S | `screen-stream`, `agent-desktop` | passed Oct 10 |
-| D3 | Linux host | No Screen tab | U | `capabilities` | fixed (its assertion), passed Oct 10 |
+| D3 | Linux host | No Screen tab | U, M | `capabilities`, M7 | fixed (its assertion), passed Oct 10; on Ubuntu (M7) the API says no screen too |
 | D4 | Windows without FFmpeg | Compatibility video; FFmpeg installed later is found within minutes, no restart | U | `setup-blockers` | fixed, passed Oct 10 |
 
 ## M. Manual checks (real devices)
@@ -210,7 +210,7 @@ Record the commit, host OS, Tailscale version, phone and browser, and the result
 | M4 | Android Chrome with and without the app, including the browser's own install prompt | not tested |
 | M5 | Desktop browser on the tailnet: no Home Screen prompt, and no nudge on the app connection | not tested |
 | M6 | A fresh macOS user account with nothing installed, Tailscale included:<br>1. `./reach` from `~/reach`. The Tailscale question comes within seconds, while the install runs (H14).<br>2. Ctrl+C at a menu, then `./reach` again (H17).<br>3. `./reach` from `~/Documents/reach`.<br>4. Background mode from each.<br>Record the times `setup.log` gives. | not tested |
-| M7 | Ubuntu host, first run | not tested |
+| M7 | Ubuntu host, first run:<br>1. `./reach` without build tools, then with them (H13).<br>2. Tailscale missing, installed, not running, signed out, switched off, on without the operator (T1, T2, T5, T6).<br>3. MagicDNS or HTTPS off (T10).<br>4. A full start: the QR shows the one address and a pairing window opens.<br>5. A phone with the Tailscale app, then one without.<br>6. Files and terminals; no Screen. | partial, Oct 10 (Ubuntu 24.04 in a container; see Results). Steps 1–3 and 6 passed after fixes. Steps 4–5 not tested: they need a real tailnet and a phone |
 | M8 | A fresh Windows 11 user without Tailscale:<br>1. `.\reach.cmd` in PowerShell. The arrow-key menus work.<br>2. The Windows download page opens. After installing, Reach continues without a restart.<br>3. The sign-in page opens. If HTTPS is off, the DNS page opens.<br>4. The pairing code shows. A phone with the Tailscale app pairs with it. | not tested |
 
 ## Results
@@ -296,12 +296,41 @@ Before this pass, `.\reach.cmd` on Windows skipped the guided setup and the Tail
 
 The real console still needs M8: the menus in PowerShell, `explorer.exe` opening the page, and the Tailscale app's file name (`tailscale-ipn.exe`).
 
+### October 10, 2026: Ubuntu first run (M7, partial)
+
+**Where it ran.** Ubuntu 24.04.5 LTS (arm64) in a Docker container on this Mac, not a VM: no systemd, no desktop (nothing to open a page with), 4 GB of memory. Reach was a copy of the shared checkout as of 11:25, with this pass's fixes copied in. The computer had Ubuntu's own tools only (curl, python3, git), and no compiler at first. Tailscale 1.104.1 came from Tailscale's apt repository, with `tailscaled` started as root by hand, as systemd would. Reach ran as a normal user in a real terminal (tmux). For the signed-in states, the computer joined a throwaway headscale control server on the same Docker network, not the owner's tailnet. Nothing signed in to Tailscale's own service.
+
+**Found on the real host, then fixed.** The unit tests had passed: their fake Tailscale came on by itself after a refusal. The new tests (`tailscale-connect`, "Linux, …") answer as Tailscale did on Ubuntu, and failed against the code before the fix:
+
+| Row | Found | Fixed in |
+| --- | --- | --- |
+| T6 | Signed out, Tailscale refuses every user but root, its operator too, and forgets the operator until a sign-in is saved. `sudo tailscale set --operator=$USER`, which Reach printed, could never help. `sudo tailscale up --operator=$USER` signs in and keeps the user as operator | `scripts/tailscale-connect.mjs` |
+| T5 | Switched off and `tailscale up` refused: after the operator command, Reach said it would go on but never asked again, and waited out its 15 minutes | `scripts/tailscale-connect.mjs` (tries `up` again on each look) |
+| T6 | Already on through Tailscale's own Linux steps (`sudo tailscale up`), without the operator: Reach said nothing and went on to Serve, which Tailscale refuses | `scripts/tailscale-connect.mjs` (reads the operator from `tailscale debug prefs`, which leaves it out while unset) |
+
+Each fix was then run on the host: Reach printed the command, it was run in another terminal, and setup went on within seconds.
+
+**Passed on the real host:**
+
+- H13: real `npm ci` failed on node-pty ("not found: make"), and Reach named `build-essential`. With it installed, setup went on.
+- H3: no curl gives the new message. Stock Ubuntu 24.04 Desktop ships wget but not curl (its published package list), so a desktop install meets this message on its first run.
+- H6: no Go: "phones need the Tailscale app", on every start.
+- T1: the download link printed, with nothing to open it.
+- T2: the `systemctl` line. The command itself wasn't run (no systemd).
+- T10: HTTPS certificates off (headscale has none): the DNS page named, then a wait. MagicDNS off wasn't reproduced: headscale kept sending it on.
+- H10: Ctrl+C during the wait: "Paused. Run ./reach to continue your setup.", the lock released.
+- D3, files and terminals, with `./reach --local` (pairing code, no Tailscale). The device says `screenSupported: false`, and `/api/screen/displays` answers 501 "Remote desktop currently supports macOS and Windows." Files listed, a folder made, a file uploaded, read and edited. A terminal (node-pty, built from source) ran a command and answered.
+
+**Not tested (needs the owner).** A full Tailscale-mode start (the QR with the one address, the pairing window, Funnel), and phones with and without the Tailscale app: they need a real tailnet and a phone. Without the app also needs Go; any Go 1.21 or newer fetches the version `tailnet/go.mod` names. Also left: the `systemctl` command and MagicDNS off on a real host, and x86-64.
+
+**Seen, not fixed (small).** On Linux, setup's HTTPS step says "(opening it)" but opens nothing. "Opening the Tailscale sign-in page in your browser…" prints just before a refusal. Without Go, "preparing browser sign-in … about 2 minutes" prints on every start.
+
 ### Not live until Reach restarts
 
 Interface changes (`src/`, `index.html`) reach phones as soon as they're saved. Server and launcher changes, the pairing window included, take effect at the next `./reach restart`.
 
 ### Known limits (not fixed in this pass)
 
-Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people without the Tailscale app need the public start page, which needs the same socket: setup doesn't offer them on Windows, and the phone's Invite sheet on a Windows host is unchecked. Validation on a real Windows host (M8) and a real Linux host is separate work. A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
+Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people without the Tailscale app need the public start page, which needs the same socket: setup doesn't offer them on Windows, and the phone's Invite sheet on a Windows host is unchecked. Validation on a real Windows host (M8) is separate work. On Ubuntu, the full start and the phones are still to check (M7). A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
 
 This Mac's `dist/` still holds its earlier builds until the next full build prunes them (`./reach` start, or `npm run build`).
