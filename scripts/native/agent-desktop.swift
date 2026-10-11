@@ -1450,7 +1450,7 @@ func focusWindow(_ id: String, title wanted: String, tab: String, _ rules: Rules
       if pick.candidates > 1 { try refuse("\(pick.candidates) tabs match \"\(String(tab.prefix(60)))\". Give more of the title.", "invalid") }
       try refuse("No tab named \"\(String(tab.prefix(60)))\" in that window. List the windows again.", "retry")
     }
-    if titleReason(tabs[at].title, bundle, rules) != nil { try refuse(protectedReason) }
+    if windowTitleReason(tabs[at].title, bundle, path, pid, rules) != nil { try refuse(protectedReason) }
     guard AXUIElementPerformAction(tabs[at].element, kAXPressAction as CFString) == .success else { try refuse("That tab couldn't be chosen. Click it instead.", "retry") }
     usleep(150_000)
     result["tab"] = hideSecrets(String(tabs[at].title.prefix(120)), typedSecrets)

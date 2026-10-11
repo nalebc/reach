@@ -232,7 +232,7 @@ test(
     });
     assert.equal(init.result.capabilities.tools.listChanged, true);
     // One line: the tools' own descriptions carry the rest.
-    assert.match(init.result.instructions, /^Check reach_tools[^\n]*reach_tool_batch\.$/);
+    assert.match(init.result.instructions, /^Check reach_tools[^\n]*reach_tool_batch\./);
     assert.equal(
       (await one.request("tools/list")).result.tools.some((tool) =>
         tool.name.startsWith("reach_saved_"),

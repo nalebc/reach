@@ -63,7 +63,7 @@ async function fixture(t, { redeemPause } = {}) {
     element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     await settle();
   };
-  await dom.waitFor(() => view.container.querySelector(".ivt-setup-line"));
+  await dom.waitFor(() => view.container.querySelector(".ivt-setup-line, .ivt-no-keys"));
   const input = view.container.querySelector(".ivt-name");
   Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(input, "Synthetic visitor");
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
