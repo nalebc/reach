@@ -683,9 +683,9 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         `Reach: installing in the background while you set up (first run only; its log: ${path.join(state, "setup.log")}).`,
       );
     } else {
-      await prepare(options, {
-        say: console.log,
-        step: (label) => console.log(`Reach: ${label}…`),
+      const { withStartupProgress } = await import("./startup-progress.mjs");
+      await withStartupProgress((io) => prepare(options, io), {
+        log: path.join(state, "setup.log"),
       });
       process.removeListener("SIGINT", abort);
       process.removeListener("SIGTERM", abort);
