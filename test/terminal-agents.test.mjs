@@ -94,6 +94,10 @@ test("a chat's play button: its command is typed into a new terminal in the chat
     }
     assert.match(preview, /ran-42/);
     await call(`/api/terminals/${started.body.id}`, undefined, "DELETE");
+    // No folder (OpenClaw, a Gemini chat Reach can't place): the home
+    // folder, which this Reach doesn't share.
+    if (!os.homedir().startsWith(root))
+      assert.equal((await call("/api/terminals", { input: "ls" })).status, 403);
   } finally {
     reach.server.close();
     await reach.close?.();

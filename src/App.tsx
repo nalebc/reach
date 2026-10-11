@@ -964,7 +964,7 @@ function ReachWorkspace() {
                     runCommand={
                       pageAccessible("terminal", features)
                         ? (cwd, command) =>
-                            void post<{ id: string }>(peer, "/api/terminals", { cwd, input: command })
+                            void post<{ id: string }>(peer, "/api/terminals", { ...(cwd ? { cwd } : {}), input: command })
                               .then((created) => {
                                 setTerminalId(created.id);
                                 setTerminalSource("reach");

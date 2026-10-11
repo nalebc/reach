@@ -3900,6 +3900,10 @@ export async function createReach(overrides = {}) {
     // A chat's folder, by its full path: it must be inside a shared folder,
     // then it meets the same checks as any other.
     let root = req.body?.root, relative = req.body?.path || "";
+    // A chat with no folder of its own (OpenClaw, a Gemini chat Reach can't
+    // place) runs it in the home folder, if that's shared.
+    if (input !== undefined && req.body?.cwd === undefined && root === undefined)
+      req.body.cwd = os.homedir();
     if (typeof req.body?.cwd === "string") {
       const roots = req.client?.agentRoots || config.roots;
       // Real paths on both sides (/tmp and /var are links on a Mac).

@@ -998,7 +998,8 @@ export default function EverythingChat({
   computers?: Peer[];
   connections?: FleetConnections;
   onOpenOn?: (computer: Peer, chat: { agent: string; id: string; title?: string }) => void;
-  // A shell block's play button: run it in a Reach terminal in this folder.
+  // A shell block's play button: run it in a Reach terminal in this folder
+  // ("": the home folder, for chats without one).
   runCommand?: (cwd: string, command: string) => void;
 }) {
   const own = useAgentSessions(shared ? null : peer);
@@ -1251,12 +1252,17 @@ export default function EverythingChat({
         </div>
       );
     if (app.agent === "openclaw")
-      return <OpenClawSpace peer={peer} apps={apps} logos={logos}
-        onScreen={onScreen}
-        openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
-        onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
-        deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
-        onNew={() => { setNewFolder(""); setSheet("new"); }} />;
+      return (
+        // OpenClaw's chats have no folder: a command runs in the home folder.
+        <RunCommandContext.Provider value={runCommand ? (command) => runCommand("", command) : null}>
+          <OpenClawSpace peer={peer} apps={apps} logos={logos}
+            onScreen={onScreen}
+            openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
+            onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
+            deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
+            onNew={() => { setNewFolder(""); setSheet("new"); }} />
+        </RunCommandContext.Provider>
+      );
     const agent: AgentName = app.agent === "claude" || app.agent === "gemini" ? app.agent : "codex";
     const appHealth = health.find(h => h.agent === agent);
     const needsSetup = app.supported && !!appHealth && (!appHealth.installed || !appHealth.signedIn || !!appHealth.error);
@@ -1300,7 +1306,7 @@ export default function EverythingChat({
           }}
         >
           <RunCommandContext.Provider
-            value={runCommand && open.cwd ? (command) => runCommand(open.cwd, command) : null}
+            value={runCommand ? (command) => runCommand(open.cwd || "", command) : null}
           >
           <AgentSessionView
             key={peer.id + ":" + open.agent + ":" + open.id}

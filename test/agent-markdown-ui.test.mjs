@@ -157,7 +157,7 @@ test("a shell block has a play button that runs its command; other code, or no c
   assert.match(view.container.textContent, /Then this, in a console:/);
   assert.match(view.container.textContent, /The code:/);
   await view.unmount();
-  // Where nothing can run it (OpenClaw's space, a plan), no button.
+  // Where nothing can run it (a device without Reach terminals), no button.
   const plain = await dom.render(React.createElement(AgentMarkdown, { text }));
   assert.equal(plain.container.querySelectorAll("button.md-run").length, 0);
   assert.equal(plain.container.querySelectorAll("pre").length, 4);

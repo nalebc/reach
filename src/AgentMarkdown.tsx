@@ -163,8 +163,9 @@ function blocks(text: string, key: string): ReactNode[] {
 }
 
 // A shell code block's play button, as in the Claude and Codex apps: the chat
-// that shows this message runs the command in a Reach terminal in its folder.
-// Without a provider (OpenClaw's space, plans) blocks have no button.
+// that shows this message runs the command in a Reach terminal in its folder
+// (the home folder for chats without one: OpenClaw, some Gemini chats).
+// Without a provider (no Reach terminals for this device) there's no button.
 export const RunCommandContext = createContext<((command: string) => void) | null>(null);
 const SHELL = /^(bash|sh|shell|zsh|console|terminal)$/i;
 // "$ npm test" in a console block: the prompt isn't part of the command.
