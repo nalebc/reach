@@ -438,17 +438,31 @@ export function sniffImage(data) {
   if (data.length >= 12 && data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
   return null;
 }
-export async function codexImageData(source, { readFile = fs.promises.readFile, stat = fs.promises.stat, maxBytes = 25 * 1024 * 1024 } = {}) {
+export async function codexImageData(source, { maxBytes = 25 * 1024 * 1024 } = {}) {
   let data = null;
   if (source?.type === "image" && typeof source.url === "string") {
     const m = /^data:(image\/[\w.+-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(source.url);
     if (m && IMAGE_TYPES.includes(m[1])) data = Buffer.from(m[2], "base64");
   } else if (source?.type === "localImage" && typeof source.path === "string" && path.isAbsolute(source.path)) {
-    const info = await stat(source.path).catch(() => null);
-    if (info?.isFile() && info.size <= maxBytes) data = await readFile(source.path).catch(() => null);
+    data = await imageFile(source.path, maxBytes).catch(() => null);
   }
   const type = data && data.length <= maxBytes ? sniffImage(data) : null;
   return type ? { type, data } : null;
+}
+// The file opened once, then measured and read as that open file: swapped or
+// grown after it's measured, it can't make Reach read past the limit or wait
+// on a pipe (CodeQL #163).
+async function imageFile(file, maxBytes) {
+  const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maxBytes) return null;
+    const chunks = [];
+    for await (const chunk of handle.createReadStream({ start: 0, end: maxBytes, autoClose: false })) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function createCodexSessions({
