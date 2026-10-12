@@ -185,7 +185,7 @@ const WINDOWS_PRIVATE_DATA = /(?:(?:appdata\/(?:local|roaming)|%(?:local)?appdat
 /** Returns null when the command may run, or the reason it may not. */
 const isUrl = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
 export function commandRefusal(command, { protectedPaths = [], home = "", hosts = [], platform = process.platform } = {}) {
-  const windows = platform === "win32", paths = windows ? path.win32 : path;
+  const windows = platform === "win32", paths = windows ? path.win32 : path.posix;
   if (typeof command !== "string" || !command.trim()) return "Enter a command.";
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(command)) return "Hidden control characters are not allowed in commands.";
   // Preserve quoted/embedded arguments before the conservative segment split:
@@ -280,7 +280,7 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
 export function protectedPathReason(target, { protectedPaths = [], home = "", platform = process.platform } = {}) {
   // Windows paths are Windows' (whatever this host), and one file whatever
   // the letters' case.
-  const paths = platform === "win32" ? path.win32 : path;
+  const paths = platform === "win32" ? path.win32 : path.posix;
   const canonical = (value) => platform === "win32" ? paths.resolve(value).toLowerCase() : paths.resolve(value);
   if (typeof target !== "string" || !paths.isAbsolute(target)) return "Give the file's full path.";
   const resolved = canonical(target), separators = resolved.replace(/\\/g, "/");

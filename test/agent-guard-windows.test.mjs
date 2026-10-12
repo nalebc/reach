@@ -29,6 +29,21 @@ test("the Mac's native rules are exactly what they were before Windows' data", (
   if (process.platform === "darwin") sameJson(rulesFor(macFixture.options), { full: macFixture.full, apps: macFixture.apps, readonly: macFixture.readonly }, "this Mac's default changed");
 });
 
+test("with platform darwin, the guard gives the Mac's answers on any host: POSIX paths, never the host's", () => {
+  // On a Windows host, path is path.win32: C:\… would count as absolute and a
+  // backslash as a folder break, and a Mac's path checks would change.
+  assert.equal(protectedPathReason(String.raw`C:\Users\me\notes.txt`, { ...mac }), "Give the file's full path.");
+  assert.equal(protectedPathReason(String.raw`\Users\me\notes.txt`, { ...mac }), "Give the file's full path.");
+  const options = { home: "/Users/me", protectedPaths: ["/Users/me/code/reach"], ...mac };
+  // A Mac folder may have a backslash in its name: "code\reach" isn't code/reach.
+  assert.equal(protectedPathReason(String.raw`/Users/me/code\reach/notes.txt`, options), null);
+  assert.ok(protectedPathReason("/Users/me/code/reach/notes.txt", options));
+  assert.equal(commandRefusal(String.raw`cat /Users/me/code\reach/notes.txt`, options), null);
+  assert.ok(commandRefusal("cat /Users/me/code/reach/notes.txt", options));
+  assert.equal(commandRefusal(String.raw`cat C:\Users\me\code\reach\notes.txt`, { home: "/Users/me", protectedPaths: [String.raw`C:\Users\me\code\reach`], ...mac }), null,
+    "a Windows root means nothing to a Mac's checks");
+});
+
 test("a Windows helper gets the same rule keys, with Windows' lists", () => {
   const windows = rulesFor({ ...macFixture.options, ...win });
   for (const preset of ["full", "apps", "readonly"]) {
