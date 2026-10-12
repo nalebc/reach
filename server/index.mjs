@@ -4664,6 +4664,10 @@ export async function createReach(overrides = {}) {
   // granted access" read on the phone as Reach refusing its owner (Oct 7):
   // it names what to allow, and where.
   const privacyRefusal = () => {
+    // Windows says EPERM for a file another program holds as well as for
+    // its permissions and Controlled folder access (parity audit #39).
+    if (process.platform === "win32")
+      return "Windows didn't let Reach open this. Another program may have it open, or Windows Security (Controlled folder access) or its permissions keep it from Reach.";
     if (process.platform !== "darwin")
       return "Your computer has not granted access to this location.";
     let host = "";
@@ -4685,6 +4689,7 @@ export async function createReach(overrides = {}) {
             EACCES: 403,
             EPERM: 403,
             ENOENT: 404,
+            EBUSY: 423,
           }[error.code] ||
           500,
       )
@@ -4698,7 +4703,9 @@ export async function createReach(overrides = {}) {
                 ? privacyRefusal()
                 : error.code === "EEXIST"
                   ? "That name is already in use."
-                  : "Could not complete this action. Check the companion console.",
+                  : error.code === "EBUSY"
+                    ? "This file is open in another program. Close it there, then try again."
+                    : "Could not complete this action. Check the companion console.",
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
         // A person waiting for the owner's Allow: their page waits too.
         ...(error.waiting === true ? { waiting: true } : {}),

@@ -34,7 +34,14 @@ async function openUrl(url) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", [url], { timeout: 12000 });
   else if (process.platform === "win32")
-    await exec("explorer.exe", [url], { timeout: 12000, windowsHide: true });
+    // Not explorer.exe: it exits with 1 even when the page opened, so every
+    // shortcut read as failed (platform.mjs launchApp). The link travels as
+    // data, never as script text.
+    await exec(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:REACH_URL"],
+      { timeout: 12000, windowsHide: true, env: { ...process.env, REACH_URL: url } },
+    );
   else throw fail(501, "Desktop shortcuts support Mac and Windows.");
 }
 function definition(value) {

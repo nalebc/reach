@@ -130,6 +130,10 @@ export function deviceCapabilities({
     apps: desktop && (scopes.includes("apps") || scopes.includes("apps:open")),
     screen: desktop && scopes.includes("screen") && screen === true,
     screenSupported: desktop && scopes.includes("screen"),
+    // Whether invited people may watch: Windows can't yet leave password
+    // managers and Reach's windows out of their picture, so it refuses them
+    // (remote-screen.mjs privateViewRefused); the invite sheet doesn't offer it.
+    guestScreen: desktop && platform !== "win32",
     codex: scopes.includes("codex") && codexInstalled === true,
   };
 }

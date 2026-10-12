@@ -41,6 +41,8 @@ export type Device = {
     apps: boolean;
     screen: boolean;
     screenSupported?: boolean;
+    // Invited people may watch the screen here (false on Windows for now).
+    guestScreen?: boolean;
     codex: boolean;
   };
   tools?: { codex?: { installed: boolean } };

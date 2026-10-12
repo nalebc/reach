@@ -161,6 +161,21 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
   await view.unmount();
 });
 
+// Windows refuses invited people its screen until it can leave password
+// managers out of their picture (parity audit #12): nothing offers it there.
+test("on a Windows PC nobody is invited to watch or control the screen", async () => {
+  computers();
+  const pc = { ...device("Mac A", "mac-a"), platform: "win32" };
+  pc.capabilities = { ...pc.capabilities, guestScreen: false };
+  const view = await render({ peer: { ...macA, platform: "win32" }, device: pc });
+  const c = view.container;
+  assert.equal(access(c, "Can watch"), undefined);
+  assert.equal(access(c, "Can control"), undefined);
+  assert.ok(access(c, "Can use files"), "the other roles stay");
+  assert.notEqual(chosen(c), "Can watch");
+  await view.unmount();
+});
+
 test("Custom on two computers: control, folders on each, terminal, editable, 1 day", async () => {
   const log = computers();
   const view = await render({ peers: [macA, macB] });

@@ -407,11 +407,10 @@ computers.includes(p.id) && !devices[p.id]
   }, [apps]);
 
   const chosen = peers.filter((p) => computers.includes(p.id));
-  const screenOk =
-    workspaceCapabilities(device).screen ||
-    chosen.some(
-      (p) => devices[p.id] && workspaceCapabilities(devices[p.id]).screen,
-    );
+  // Somewhere they could watch: Windows refuses invited people its screen
+  // for now (server/capabilities.mjs guestScreen).
+  const watchable = (d?: Device | null) => !!d && workspaceCapabilities(d).screen && d.capabilities.guestScreen !== false;
+  const screenOk = watchable(device) || chosen.some((p) => watchable(devices[p.id]));
   const roles = ROLES.filter((r) => screenOk || !r.screen);
   const current = roles.find((r) => r.value === role) || roles[0];
   // What the chosen access grants.
