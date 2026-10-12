@@ -178,16 +178,20 @@ export const isMarkdown = (name: string) =>
 const documents = new Set(["doc", "docx", "rtf", "odt"]);
 
 // How the viewer opens a file: show the image or PDF, read it as text, extract
-// a document's text, or offer a download.
-export function previewMode(entry: {
-  name: string;
-  type: string;
-}): "image" | "pdf" | "text" | "document" | null {
+// a document's text, or offer a download. Only a Mac extracts a document's
+// text (server/document-text.mjs): elsewhere it's a download.
+export function previewMode(
+  entry: {
+    name: string;
+    type: string;
+  },
+  platform?: string,
+): "image" | "pdf" | "text" | "document" | null {
   if (entry.type === "directory") return null;
   const ext = extension(entry.name);
   if (imageTypes[ext]) return "image";
   if (ext === "pdf") return "pdf";
-  if (documents.has(ext)) return "document";
+  if (documents.has(ext)) return !platform || platform === "darwin" ? "document" : null;
   const kind = fileKind(entry);
   return kind === "text" ||
     kind === "code" ||

@@ -1534,7 +1534,7 @@ function Viewer({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const kind = fileKind(file);
-  const mode = previewMode(file);
+  const mode = previewMode(file, peer.platform);
   const [text, setText] = useState(""),
     [image, setImage] = useState(""),
     [pdf, setPdf] = useState<Blob | null>(null),
