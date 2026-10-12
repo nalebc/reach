@@ -434,3 +434,41 @@
 .handoff-followup > :first-child { flex: 1; min-width: 0; }
 .handoff-followup button, .handoff-add { min-height: 44px; border: 0; background: none; color: var(--reach-ink); font: inherit; }
 .handoff-add { display: flex; align-items: center; gap: 6px; text-align: left; }
+
+/* Continued in the same chat: said once, then gone (Relays.tsx). */
+.relay-hint {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--reach-line, #2b332d);
+  border-radius: 999px;
+  background: var(--reach-bg, #101512);
+  color: var(--reach-muted, #93a096);
+  font-size: 12.5px;
+  animation: relay-hint 4s ease forwards;
+}
+.relay-hint > svg {
+  color: var(--reach-mint, #b9efd4);
+}
+@keyframes relay-hint {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  8%,
+  85% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-hint {
+    animation: none;
+  }
+}

@@ -6,7 +6,7 @@ import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, 
 import { mergeHealth } from "./usage";
 import { BrandCourier } from "./ReachIdentity";
 import { ChatLibraryHeader, FlowRuns, ago, chatRank, firstFew, flowFinder, foldedAway, inFlowTitle, inFlows, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
-import { quietRelay, relayLine } from "./Relays";
+import { continuedHere, quietRelay, relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
 import {
   chatComputers,
@@ -316,6 +316,8 @@ export default function ChatHub({
       !r.steps.some((s) => (s.kind as string) === "report") &&
       // Auto-continue that only waits for a limit is a sign in its chat (Relays.tsx).
       !quietRelay(r) &&
+      // Continued in the same chat: nothing moved (Relays.tsx).
+      !continuedHere(r) &&
       (["waiting", "sending"].includes(r.state) || Date.now() - r.updatedAt < 60 * 60 * 1000),
   );
   const crews = teams.filter((t) => t.state === "active");
