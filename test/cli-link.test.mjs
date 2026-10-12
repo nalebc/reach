@@ -59,3 +59,39 @@ test("with no folder of yours on PATH, says how to add one and links nothing", (
   assert.match(result.text, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   assert.equal(fs.existsSync(path.join(home, ".local/bin/reach")), false);
 });
+
+// Windows (parity audit #44): no symlink (it needs Developer Mode, and cmd
+// and PowerShell can't run the sh launcher); a reach.cmd that starts this
+// folder's goes into a folder on PATH that's yours, and the advice is
+// PowerShell's, not ~/.zshrc.
+test("Windows: reach cli writes a reach.cmd into a PATH folder you own, and says so in Windows' words", () => {
+  const disk = new Map();
+  const dirsOn = new Set();
+  const files = {
+    existsSync: (p) => disk.has(p.toLowerCase()) || dirsOn.has(p.toLowerCase()),
+    accessSync: (p) => { if (!dirsOn.has(p.toLowerCase())) throw Error("EACCES"); },
+    readFileSync: (p) => { if (!disk.has(p.toLowerCase())) throw Error("ENOENT"); return disk.get(p.toLowerCase()); },
+    writeFileSync: (p, text) => disk.set(p.toLowerCase(), text),
+  };
+  const home = "C:\\Users\\Sam";
+  const apps = "C:\\Users\\Sam\\AppData\\Local\\Microsoft\\WindowsApps";
+  const env = { Path: `C:\\Windows\\system32;${apps}`, LOCALAPPDATA: "C:\\Users\\Sam\\AppData\\Local" };
+  const script = "C:\\Users\\Sam\\code\\reach\\reach";
+  // No PATH folder of yours: PowerShell's two lines, never a shell profile.
+  const none = linkCli({ script, env, home, files, platform: "win32" });
+  assert.equal(none.ok, false);
+  assert.match(none.text, /SetEnvironmentVariable\("Path"/);
+  assert.doesNotMatch(none.text, /zshrc|export PATH/);
+  // WindowsApps is on PATH and yours: the shim goes there.
+  dirsOn.add(apps.toLowerCase());
+  const made = linkCli({ script, env, home, files, platform: "win32" });
+  assert.equal(made.ok, true, made.text);
+  assert.equal(made.at, `${apps}\\reach.cmd`);
+  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"C:\\Users\\Sam\\code\\reach\\reach.cmd" %*\r\n');
+  assert.match(made.text, /PowerShell or Command Prompt/);
+  assert.equal(linkCli({ script, env, home, files, platform: "win32" }).already, true);
+  // Something else named reach.cmd is left alone.
+  disk.set(`${apps}\\reach.cmd`.toLowerCase(), "@echo off\r\necho mine\r\n");
+  assert.match(linkCli({ script, env, home, files, platform: "win32" }).text, /something else, not Reach/);
+  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), "@echo off\r\necho mine\r\n");
+});
