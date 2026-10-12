@@ -18,6 +18,25 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Hidden per-app displays (`apps:drive`, owner profiles only) | Needs an attestation-signed virtual display driver | Apps run on the real screen, as the Apps preset already does on a Mac |
 | Acting in elevated (administrator) windows | UIPI; needs a signed `uiAccess` helper installed in Program Files | Refused with the reason, as a guardrail |
 
+## Decisions: the same on Mac and Windows (owner, Oct 12)
+
+"Make the same decisions between Mac and Windows; don't let them diverge." Where a design left a Windows-only choice, it takes the Mac's, or both platforms change together:
+
+| Question | Both platforms |
+| --- | --- |
+| Reach running inside a terminal app | Only the window whose title names Reach is closed to narrower presets (the Mac's title rule); Reach titles its own console window "Reach" on both |
+| Browser developer-tools keys (Firefox Ctrl/Cmd+Shift/Opt+K, E, Z) | Refused on both: the Mac gains the refusal it lacked |
+| A browser on the computer itself asking to be approved | Allowed on both; the approval prompt says it came from this computer itself, on both |
+| Where account approval is turned on | Saved setup preferences (`./reach setup`), on both; no Windows-only environment variable once it is accepted |
+| Reach's own files writable by other users of the computer | Same check on both: refused with the reason |
+| This computer as a Tailscale exit node | Allowed on both; Windows adds a CI test proving the keyed route stays closed |
+| Reach's folders | Owner-only on both (0700 / owner, SYSTEM, Administrators ACL) |
+| Company-managed computers blocking Reach's helpers | Refused with the reason on both |
+| Protected windows covered by others | The Mac's refined rule on both |
+| File manager in the Apps picker | Offered on both (Finder, File Explorer), with the same guards |
+
+Only what Windows itself makes impossible differs (table above): UAC prompts, hidden per-app displays, administrator windows.
+
 ## Rules
 
 0. Parity is measured against what the Mac code and its tests do, not against the docs (they had drifted: `docs/SECURITY.md` promised an owner-presence check the helper no longer runs).

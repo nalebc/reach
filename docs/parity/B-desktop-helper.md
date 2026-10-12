@@ -1246,7 +1246,7 @@ Each decision says what this design does until the owner decides.
 
 *Until decided:* refused with the reason.
 
-**D3. Terminals while Reach runs in one.** When Reach runs in a classic console window, only that window is closed to agents. When it runs inside Windows Terminal, VS Code or another pseudo-console host, Windows doesn't say which window shows Reach's tab. So every window of that host app is closed to agents in non-Full presets: input, screenshots and the window list. For example, all of Windows Terminal, or all of VS Code.
+**D3. Terminals while Reach runs in one.** **Decided (owner, Oct 12, parity): the Mac's title rule on both: only the window whose title names Reach is closed; Reach titles its console window "Reach".** When Reach runs in a classic console window, only that window is closed to agents. When it runs inside Windows Terminal, VS Code or another pseudo-console host, Windows doesn't say which window shows Reach's tab. So every window of that host app is closed to agents in non-Full presets: input, screenshots and the window list. For example, all of Windows Terminal, or all of VS Code.
 
 The app is found from the ancestry of Reach's console processes (§7.3). Two fallbacks reach wider:
 - On default-terminal handoff, every Windows Terminal window closes.
@@ -1278,7 +1278,7 @@ Options:
 
 *Until decided:* real PC and fakes.
 
-**D7. Firefox developer-tools keys.** Windows refuses Ctrl+Shift+K/E/Z in browsers (§7.7). The Mac has the same gap: Cmd+Opt+K/E/Z aren't refused (`agent-desktop.swift:1052`). Rule 1 keeps macOS byte-for-byte the same in this workstream, so the Mac fix needs its own change and its own decision.
+**D7. Firefox developer-tools keys.** **Decided (owner, Oct 12, parity): refused on both; the Mac gains the refusal in its own change.** Windows refuses Ctrl+Shift+K/E/Z in browsers (§7.7). The Mac has the same gap: Cmd+Opt+K/E/Z aren't refused (`agent-desktop.swift:1052`). Rule 1 keeps macOS byte-for-byte the same in this workstream, so the Mac fix needs its own change and its own decision.
 
 *Until decided:* Windows refuses these keys, and the Mac is unchanged.
 

@@ -1209,6 +1209,8 @@ Face ID join and linking computers get their own flag and acceptance later.
 
 ## 11. Decisions for the owner
 
+**Decided (owner, Oct 12): the same as the Mac** (`docs/WINDOWS_AGENT_PARITY.md`, Decisions): D1 allowed with the "from this computer itself" note on both; D2 saved preferences as on the Mac once accepted (the environment variable only until the real-PC acceptance); D3 yes; D4 the same check on both platforms; D5 allowed on both, with a Windows CI test proving the keyed route stays closed; D6 unchanged (default-on after the owner's real-PC acceptance). The table below records the original options.
+
 Each decision has a default that ships if the owner says nothing. Each default is the fail-closed choice.
 
 | # | Decision | Default (ships if unanswered) | Alternative | Cost of the default |
