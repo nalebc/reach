@@ -72,6 +72,18 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 - #44: `reach cli` writes a `reach.cmd`.
 - #48: docs.
 
+Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12. Neither has been compiled or run on Windows yet.
+
+- **D:** everything is behind `REACH_WINDOWS_ACCOUNT=1`, which is off. A security review is pending.
+- **M:**
+  - #2: Codex's session service is reached over a named pipe.
+  - #17: Codex and Team pipes are checked. Only one known to be another account's is refused; one that couldn't be checked is used, as on a Mac.
+  - #46: the Codex holder.
+  - #7: Git for Windows appears in health and installs from the phone.
+  - #33: agent updates.
+  - #45: Gemini is detected.
+  - #14: the team bridge runs on a named pipe.
+
 Follow-ups the reviews left, both for a real PC:
 - **Stale Claude Code record.** One whose pid Windows gave to another `node.exe` reads as held until the record goes. Compare the process's start time (CIM `Win32_Process.CreationDate`) with the record's.
 - **Silent delete.** A file the Recycle Bin can't take is deleted for good without a word. This happens when the bin is off for that drive or the file is too big for it.
