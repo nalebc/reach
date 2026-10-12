@@ -70,6 +70,13 @@
         ]
       },
       {
+        "sha": "f177b2d2",
+        "alerts": [
+          229
+        ],
+        "note": "test reads the shim instead of lstat-then-read, so it adds no new race alert"
+      },
+      {
         "sha": "183b4e09",
         "alerts": [
           226
@@ -120,7 +127,7 @@
         ]
       }
     ],
-    "note": "Commits cherry-pick onto the PR branch. Scanner closure needs a fresh hosted analysis; no CodeQL CLI was run locally."
+    "note": "Commits sit on a394bb72, whose tree equals the public PR head 72f04a8b, and cherry-pick onto it. They do not target the private origin branch validation/public-readiness-20261012 (babb4dec), an older, different commit. Scanner closure needs a fresh hosted analysis; no CodeQL CLI was run locally."
   },
   "countsBySeverity": {
     "medium": 34,
@@ -144,6 +151,7 @@
   "limitations": [
     "No CodeQL run after the changes: 'code-changed' alerts are expected to close on the next hosted analysis but are unproven; each has a fallback dismissal text.",
     "js/log-injection closure depends on CodeQL treating JSON.stringify as a log sanitizer; js/insufficient-password-hash closure depends on crypto.scrypt not being modeled as a weak hash.",
+    "Alerts 187, 188, 199, 200 and 220 are open on main and not in today's gate, but these commits edit their lines: if the next scan does not accept a fix, the alert becomes a new gate alert and its fallback dismissal is needed to merge. Expected dismissals after a rescan: 12 (10 used in tests, 191/192 won't fix); worst case if no code change is recognized: 33 (12 + 16 gate code changes + these 5).",
     "Carried-forward alerts keep the prior triage's reasons; only the named production alerts and the gate were re-read at their PR lines.",
     "first-install-phone-ui needed locally built dist/ and tailnet/dist (gitignored) in this worktree to run."
   ],
@@ -5015,7 +5023,7 @@
       "openOnMain": false,
       "classification": "genuine-local-toctou-not-remotely-reachable",
       "decision": "code-changed",
-      "commit": "ad4d1eac",
+      "commit": "ad4d1eac + f177b2d2",
       "reason": "existsSync then writeFileSync on the sign-in browser shim in Reach's private data dir: a stale file or a planted symlink at that name was executed as BROWSER/open, and the check left a gap before the write. No request controls the path; reaching it needs write access to Reach's private folder (same user). Fixed: written to a wx temp file and renamed into place on every sign-in; a link at that name is replaced, never followed.",
       "tests": [
         "test/agent-sign-in.test.mjs: the browser shim is always Reach's own (fails on the old code: symlink kept)"
