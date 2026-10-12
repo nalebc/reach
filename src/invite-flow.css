@@ -1,0 +1,321 @@
+/* The invitation, step by step (invite-menu.tsx, InviteSheet.tsx,
+   BrowserInvite.tsx): who (two rows), then one short form: where an agent
+   runs as three tiles, what they may do as a list with icons and a check,
+   their name and how long as rows with menus, one white pill. The link
+   replaces the form. ChatGPT's look on Reach's dark green; few words. */
+
+/* Sections: a small quiet name above each group. */
+.inv-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.inv-title {
+  margin: 0 6px;
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
+.inv-form {
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+}
+.inv-form[hidden] {
+  display: none;
+}
+
+/* Who: an agent or a person. */
+.inv-who {
+  gap: 14px;
+}
+.inv-who-row,
+.inv-choice {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.inv-who-row {
+  min-height: 76px;
+  gap: 14px;
+  padding: 12px 14px;
+}
+.ivt-rows > .inv-who-row + .inv-who-row::before {
+  left: 72px;
+}
+.inv-who-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.07);
+  color: #e6ece8;
+}
+.inv-who-row.agent .inv-who-icon {
+  background: color-mix(in srgb, #b9efd4 16%, transparent);
+  color: #b9efd4;
+}
+.inv-go {
+  flex: none;
+  color: #6f7c73;
+}
+.inv-foot {
+  margin: 0 8px;
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* The choice that matters: an icon, a name, one line, a check. */
+.inv-choice {
+  min-height: 62px;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.ivt-rows > .inv-choice + .inv-choice::before {
+  left: 62px;
+}
+.inv-choice-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: rgb(255 255 255 / 0.06);
+  color: #d4dcd6;
+  transition: background 0.15s, color 0.15s;
+}
+.inv-choice.is-on .inv-choice-icon {
+  background: color-mix(in srgb, #b9efd4 18%, transparent);
+  color: #b9efd4;
+}
+.inv-choice-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.inv-choice-text strong {
+  font-size: 15.5px;
+  font-weight: 500;
+}
+.inv-choice-text small {
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.inv-check {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.18);
+}
+.inv-choice.is-on .inv-check {
+  background: #b9efd4;
+  box-shadow: none;
+  color: #0d0d0d;
+}
+.inv-choice:active:not(:disabled),
+.inv-who-row:active {
+  background: rgb(255 255 255 / 0.04);
+}
+.inv-choice:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* What a choice asks for next (apps, folders), right under the list. */
+.inv-section > .ag-rows,
+.inv-section > .ivt-panel {
+  margin-top: 4px;
+}
+
+/* Where an agent runs: three tiles, and one line about the chosen one. */
+.inv-places {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.inv-place {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 7px;
+  min-height: 78px;
+  padding: 10px 6px;
+  border: 0;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.inv-place.is-on {
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1.5px #ededed;
+  color: #f6f6f6;
+}
+.inv-place-line {
+  margin: 2px 6px 0;
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* The agent form's rows sit in the same groups as a person's. */
+.ag-invite .ivt-rows .ivt-row .ivt-name,
+.inv-form .ivt-rows .ivt-row .ivt-name {
+  font-size: 15.5px;
+}
+.ag-invite .ag-send {
+  gap: 12px;
+}
+.ag-invite .ag-send .ag-primary,
+.ivt-send .ivt-submit {
+  min-height: 50px;
+  justify-content: center;
+  border-radius: 999px;
+}
+
+/* Made: one screen for every invitation (the agent's .ag-done looks the
+   same): a check, who, what and how long, the link, Copy and Share. */
+.inv-done {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 12px;
+  padding: 12px 0 0;
+  border: 0;
+  background: none;
+  text-align: center;
+}
+.inv-done-icon,
+.ag-done .ag-done-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 0 4px;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, #b9efd4 16%, transparent);
+  color: #b9efd4;
+}
+.inv-done h3 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.inv-done-for {
+  margin: -4px 0 0;
+  color: var(--ivt-muted, #a5a5a5);
+  font-size: 13.5px;
+}
+.inv-done .ivt-link-field {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  text-overflow: ellipsis;
+}
+.inv-done-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+}
+.inv-done-actions button {
+  justify-self: stretch;
+  min-width: 0;
+  height: 48px;
+  border-radius: 999px;
+  font-size: 15px;
+}
+.inv-done .ivt-quiet {
+  margin: 0;
+  font-size: 13px;
+}
+.inv-done .ivt-tailscale {
+  justify-items: center;
+  width: 100%;
+}
+.inv-done .ivt-tailscale > .ivt-primary {
+  justify-self: center;
+}
+.inv-done .ivt-fallback {
+  width: 100%;
+  text-align: left;
+}
+.inv-done .ivt-fallback summary {
+  text-align: center;
+}
+/* The agent's ready screen (BrowserInvite.tsx), as the others. */
+.ag-done h3 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.ag-done .ag-done-for {
+  margin-top: -4px;
+  font-size: 13.5px;
+}
+.inv-again {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--ivt-muted, #a5a5a5) !important;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+/* A menu near the bottom of the sheet opens upward (invite-menu.tsx). */
+.ivt-menu-list.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* The sheet's title on a form: back to who, then the title. */
+.ppl-invite-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  margin-left: -12px;
+}
+.ppl-back {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.ppl-back:active {
+  background: rgb(255 255 255 / 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inv-choice-icon,
+  .inv-place {
+    transition: none;
+  }
+}

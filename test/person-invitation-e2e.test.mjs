@@ -68,8 +68,7 @@ async function fixture(t, { redeemPause } = {}) {
   Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(input, "Synthetic visitor");
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await settle();
-  await click(view.container.querySelector(".ivt-menu-button"));
-  await click([...view.container.querySelectorAll(".ivt-item")].find(item => item.textContent.startsWith("Full access")));
+  await click(view.container.querySelector('.inv-choices [aria-label="Full access"]'));
   await click(view.container.querySelector(".ivt-submit"));
   await dom.waitFor(() => view.container.querySelector(".ivt-tailscale"));
   await click(view.container.querySelector(".ivt-tailscale input[type=checkbox]"));

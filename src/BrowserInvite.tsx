@@ -4,7 +4,6 @@ import {
   Bot,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock3,
   Copy,
   Dices,
@@ -13,7 +12,6 @@ import {
   Folder,
   Monitor,
   Pencil,
-  Plug,
   Share2,
   ShieldCheck,
 } from "lucide-react";
@@ -30,7 +28,14 @@ import {
   Switch,
   type PickerApp,
 } from "./agent-ui";
-import { Item, Menu, Row, VIA_WORDS, type Via } from "./invite-menu";
+import {
+  Choices,
+  Item,
+  Menu,
+  Places,
+  Row,
+  Section,
+} from "./invite-menu";
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
@@ -41,13 +46,13 @@ export type Preset = "full" | "apps" | "files" | "readonly";
 export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
   full: {
     title: "Full control",
-    detail: "Use every app, file and command as you.",
+    detail: "Every app, file and command.",
   },
-  apps: { title: "Apps", detail: "Work in just the apps you choose." },
-  files: { title: "Files", detail: "Read or edit selected folders." },
+  apps: { title: "Apps", detail: "Only the apps you pick." },
+  files: { title: "Files", detail: "Only the folders you pick." },
   readonly: {
     title: "Read only",
-    detail: "See your screen and files. No changes.",
+    detail: "Looks, never changes.",
   },
 };
 const PRESET_ICONS = {
@@ -235,8 +240,12 @@ type Props = {
   onCreated: (created: Created, link: string) => void;
   // How it connects at first (Tools unless chosen before).
   initialConnect?: Connect;
-  // Command line, offered in Connects where the invitation has it.
+  // Command line (folders, over Tailscale): offered only on a computer
+  // where the presets aren't (one that isn't a Mac).
   onCommandLine?: () => void;
+  // Its name so far, kept when the invitation goes to Command line and back.
+  initialName?: string;
+  onName?: (name: string) => void;
 };
 export default function BrowserInvite(props: Props) {
   return (
@@ -246,9 +255,10 @@ export default function BrowserInvite(props: Props) {
     />
   );
 }
-function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialConnect = "tools", onCommandLine }: Props) {
+function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", onCommandLine, initialName, onName }: Props) {
   const formId = useId();
-  const [name, setName] = useState(() => inviteName());
+  const [name, setName] = useState(() => initialName || inviteName());
+  useEffect(() => onName?.(name), [name]);
   const [preset, setPreset] = useState<Preset | null>(null);
   const [minutes, setMinutes] = useState(30);
   // Tools (first, and the default): the agent runs one command in its
@@ -276,9 +286,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     message: string;
     always: boolean;
     unpublished: boolean;
-    // Tools without a one-time Tailscale key: its computer must already be on
-    // the owner's tailnet (no invite keys set up here).
-    unkeyed?: boolean;
     // Hosted: the link is the connector address.
     hosted?: boolean;
   } | null>(null);
@@ -354,13 +361,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     if (next === "apps" || next === "files") setHidden([]);
     setOpenRow(next === "apps" ? "apps" : next === "files" ? "folders" : null);
   };
-  // A choice that needs nothing more makes the invite once it's set.
-  const [go, setGo] = useState(false);
-  useEffect(() => {
-    if (!go) return;
-    setGo(false);
-    void create();
-  }, [go]);
   const create = async () => {
     if (busy || missing || !preset) return;
     setBusy(true);
@@ -469,7 +469,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
           joinBy: result.joinBy,
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
-          unkeyed: false,
           message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
         });
         onCreated(created, link);
@@ -604,166 +603,171 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
         }]
       : []),
   ];
-  const vias: Via[] = ["tools", "page", "hosted", ...(onCommandLine ? ["cli" as const] : [])];
+  const presetChoices = (["full", "apps", "files", "readonly"] as Preset[]).map(
+    (value) => ({
+      value,
+      label: PRESET_WORDS[value].title,
+      description: PRESET_WORDS[value].detail,
+      icon: PRESET_ICONS[value],
+      disabled:
+        !!options && (value === "files" ? !filesSupported : !desktopReady),
+    }),
+  );
 
   return (
     <section
       className="browser-invite ag-invite"
       aria-label="AI browser invitation"
     >
-      {/* As ChatGPT would: one question. Tap what it may do and the invite
-          is ready (Apps and Folders ask which first). The rest has a good
-          default, changed from the small rows below if you care. */}
+      {/* As ChatGPT would: where it runs, what it may do (a list with a
+          check), its name and how long, then one white pill. Choosing
+          never sends anything. */}
       <div className="ag-invite-form" hidden={!!made}>
-        <p className="ag-ask">What may it do?</p>
-        <div
-          className="ivt-rows ag-choices"
-          role="radiogroup"
-          aria-label="Access preset"
-        >
-          {(["full", "apps", "files", "readonly"] as Preset[]).map((value) => {
-            const Icon = PRESET_ICONS[value];
-            const disabled =
-              !!options &&
-              (value === "files" ? !filesSupported : !desktopReady);
-            return (
-              <button
-                type="button"
-                key={value}
-                role="radio"
-                aria-checked={preset === value}
-                aria-label={PRESET_WORDS[value].title}
-                className={`ivt-row ag-choice${preset === value ? " is-on" : ""}`}
-                disabled={disabled || busy}
-                onClick={() => {
-                  choose(value);
-                  // Nothing more to choose: the invite is made at once.
-                  if (value === "full" || value === "readonly") setGo(true);
-                }}
+        <Places
+          via={connect}
+          onChange={(v) => {
+            setConnect(v as Connect);
+            setError("");
+          }}
+        />
+        <Section title="What can it do?">
+          <Choices
+            label="Access preset"
+            options={presetChoices}
+            value={preset}
+            onChange={choose}
+            disabled={busy}
+          />
+          {preset === "apps" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<AppWindow />}
+                label="Apps it may use"
+                value={
+                  chosenApps.length ? (
+                    <AppStack peer={peer} apps={chosenApps} />
+                  ) : (
+                    "Pick apps"
+                  )
+                }
+                open={openRow === "apps"}
+                onToggle={() => toggleRow("apps")}
+                attention={!apps.length}
               >
-                <Icon size={21} strokeWidth={1.7} aria-hidden="true" />
-                <span className="ag-choice-text">
-                  <strong>{PRESET_WORDS[value].title}</strong>
-                  <small>{PRESET_WORDS[value].detail}</small>
-                </span>
-                {busy && preset === value ? (
-                  <span className="ag-choice-busy">Creating…</span>
-                ) : (
-                  <ChevronRight size={17} className="ag-choice-go" aria-hidden="true" />
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {preset === "apps" && (
-          <div className="ag-rows">
-            <AccessRow
-              icon={<AppWindow />}
-              label="Apps it may use"
-              value={
-                chosenApps.length ? (
-                  <AppStack peer={peer} apps={chosenApps} />
-                ) : (
-                  "Pick apps"
-                )
-              }
-              open={openRow === "apps"}
-              onToggle={() => toggleRow("apps")}
-              attention={!apps.length}
-            >
-              <p className="ag-quiet">
-                It sees and touches only these. Your browser with its saved
-                logins counts as one app.
-              </p>
-              {!options ? (
-                <p className="ag-quiet">Loading apps…</p>
-              ) : options.presetAppsError ? (
-                <p className="ag-error" role="alert">
-                  {options.presetAppsError}
+                <p className="ag-quiet">
+                  It sees and touches only these. Your browser with its saved
+                  logins counts as one app.
                 </p>
-              ) : (
-                <AppPicker
+                {!options ? (
+                  <p className="ag-quiet">Loading apps…</p>
+                ) : options.presetAppsError ? (
+                  <p className="ag-error" role="alert">
+                    {options.presetAppsError}
+                  </p>
+                ) : (
+                  <AppPicker
+                    peer={peer}
+                    apps={pickerApps}
+                    chosen={apps}
+                    onChange={setApps}
+                    chosenWords="Can use it"
+                  />
+                )}
+              </AccessRow>
+            </div>
+          )}
+          {preset === "files" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<Folder />}
+                label="Folders"
+                value={
+                  folders.length
+                    ? folders.length === 1
+                      ? folders[0].label
+                      : `${folders.length} folders`
+                    : "Pick folders"
+                }
+                open={openRow === "folders"}
+                onToggle={() => toggleRow("folders")}
+                attention={!folders.length}
+              >
+                <p className="ag-quiet">
+                  Your real folders. Home itself and system folders can't be
+                  chosen.
+                </p>
+                <FolderBrowser
                   peer={peer}
-                  apps={pickerApps}
-                  chosen={apps}
-                  onChange={setApps}
-                  chosenWords="Can use it"
+                  device={device}
+                  picked={folders}
+                  onChange={setFolders}
                 />
-              )}
-            </AccessRow>
-          </div>
-        )}
-        {preset === "files" && (
-          <div className="ag-rows">
-            <AccessRow
-              icon={<Folder />}
-              label="Folders"
-              value={
-                folders.length
-                  ? folders.length === 1
-                    ? folders[0].label
-                    : `${folders.length} folders`
-                  : "Pick folders"
-              }
-              open={openRow === "folders"}
-              onToggle={() => toggleRow("folders")}
-              attention={!folders.length}
-            >
-              <p className="ag-quiet">
-                Your real folders. Home itself and system folders can't be
-                chosen.
-              </p>
-              <FolderBrowser
-                peer={peer}
-                device={device}
-                picked={folders}
-                onChange={setFolders}
-              />
-            </AccessRow>
-            <div className="ag-row">
-              <div className="ag-row-head ag-row-static">
-                <span className="ag-row-icon">
-                  <Pencil />
-                </span>
-                <span className="ag-row-label">Can edit</span>
-                <span className="ag-row-value">
-                  {write ? "Changes files directly" : "Read only"}
-                </span>
-                <Switch
-                  label="Can edit files"
-                  checked={write}
-                  onChange={setWrite}
-                />
+              </AccessRow>
+              <div className="ag-row">
+                <div className="ag-row-head ag-row-static">
+                  <span className="ag-row-icon">
+                    <Pencil />
+                  </span>
+                  <span className="ag-row-label">Can edit</span>
+                  <span className="ag-row-value">
+                    {write ? "Changes files directly" : "Read only"}
+                  </span>
+                  <Switch
+                    label="Can edit files"
+                    checked={write}
+                    onChange={setWrite}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-        )}
-        {(preset === "apps" || preset === "files") && (
-          <div className="ag-send">
-            <p
-              className={`ag-summary${missing ? " is-missing" : ""}`}
-              aria-live="polite"
-            >
-              {missing || summary}
-            </p>
-            <button
-              className="ag-primary ag-wide"
-              disabled={busy || !!missing}
-              onClick={() => void create()}
-            >
-              {busy ? "Creating link…" : "Create invite link"}
-            </button>
-          </div>
-        )}
-        {(preset === "full" || preset === "readonly") && missing && (
-          <p className="ag-summary is-missing" aria-live="polite">
-            {missing}
-          </p>
-        )}
+          )}
+          {/* Only Read only shows everything else, so only it hides apps. */}
+          {preset === "readonly" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<EyeOff />}
+                label="Hide apps from it"
+                value={
+                  hiddenApps.length ? (
+                    <AppStack peer={peer} apps={hiddenApps} />
+                  ) : (
+                    "None"
+                  )
+                }
+                open={openRow === "hidden"}
+                onToggle={() => toggleRow("hidden")}
+              >
+                <p className="ag-quiet">
+                  Reach filters known password and Reach windows from
+                  pictures. Add apps where your codes and mail arrive.
+                </p>
+                {suggested.length > 0 && !hidden.length && (
+                  <button
+                    type="button"
+                    className="ag-link"
+                    onClick={() => setHidden(suggested.map((app) => app.id))}
+                  >
+                    Hide {listWords(suggested.map((app) => app.name))}
+                  </button>
+                )}
+                {!options ? (
+                  <p className="ag-quiet">Loading apps…</p>
+                ) : (
+                  <AppPicker
+                    peer={peer}
+                    apps={hideableApps}
+                    chosen={hidden}
+                    onChange={setHidden}
+                    chosenWords="Hidden from it"
+                    chipsLabel="Hidden apps"
+                  />
+                )}
+              </AccessRow>
+            </div>
+          )}
+        </Section>
 
-        {/* The defaults, quiet: change them before tapping, or never. */}
-        <div className="ivt-rows ag-defaults">
+        <div className="ivt-rows">
           <div className="ivt-row ivt-add">
             <Bot size={19} aria-hidden="true" />
             <input
@@ -811,107 +815,50 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               )}
             </Menu>
           </Row>
-          <Row icon={<Plug size={19} />} label="Connects">
-            <Menu label={VIA_WORDS[connect].label} wide className="ivt-role">
-              {(close) => (
-                <div role="group" aria-label="How the agent connects">
-                  {vias.map((v) => (
-                    <Item
-                      key={v}
-                      on={v === connect}
-                      label={VIA_WORDS[v].label}
-                      description={
-                        v === "tools" && keyPeer?.id !== peer.id
-                          ? "Fastest. One command in any terminal, through your public link."
-                          : VIA_WORDS[v].description
-                      }
-                      onClick={() => {
-                        close();
-                        if (v === "cli") onCommandLine?.();
-                        else setConnect(v);
-                      }}
-                    />
-                  ))}
-                  {connect === "tools" && keyPeer?.id !== peer.id && (
-                    <button
-                      type="button"
-                      className="ivt-menu-foot"
-                      aria-label="Set up invite links"
-                      onClick={() => {
-                        close();
-                        onSetup();
-                      }}
-                    >
-                      Set up invite links
-                      <small>Keeps Tools on your Tailscale network.</small>
-                    </button>
-                  )}
-                </div>
-              )}
-            </Menu>
-          </Row>
-          {/* Apps and Folders show only what they name: nothing to hide. */}
-          {(preset === null || preset === "readonly") && (
-          <div className="ag-rows ag-hide">
-            <AccessRow
-              icon={<EyeOff />}
-              label="Hide apps from it"
-              value={
-                hiddenApps.length ? (
-                  <AppStack peer={peer} apps={hiddenApps} />
-                ) : (
-                  "None"
-                )
-              }
-              open={openRow === "hidden"}
-              onToggle={() => toggleRow("hidden")}
-            >
-              <p className="ag-quiet">
-                Reach filters known password and Reach windows from pictures.
-                Add apps where your codes and mail arrive.
-              </p>
-              {suggested.length > 0 && !hidden.length && (
-                <button
-                  type="button"
-                  className="ag-link"
-                  onClick={() => setHidden(suggested.map((app) => app.id))}
-                >
-                  Hide {listWords(suggested.map((app) => app.name))}
-                </button>
-              )}
-              {!options ? (
-                <p className="ag-quiet">Loading apps…</p>
-              ) : (
-                <AppPicker
-                  peer={peer}
-                  apps={hideableApps}
-                  chosen={hidden}
-                  onChange={setHidden}
-                  chosenWords="Hidden from it"
-                  chipsLabel="Hidden apps"
-                />
-              )}
-            </AccessRow>
-          </div>
-          )}
         </div>
-        <p className="ag-note">
-          <ShieldCheck size={14} />
-          {preset === "full"
-            ? "Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within macOS permissions. Approve only an agent you trust."
-            : "You approve it before it can join. You can pause it or end its access at any time."}
-        </p>
+
+        <div className="ag-send">
+          <p
+            className={`ag-summary${missing ? " is-missing" : ""}`}
+            aria-live="polite"
+          >
+            {missing || summary}
+          </p>
+          <button
+            className="ag-primary ag-wide"
+            disabled={busy || !!missing}
+            onClick={() => void create()}
+          >
+            {busy ? "Creating…" : "Create invite"}
+          </button>
+        </div>
         {error && (
           <p className="ag-error" role="alert">
             {error}
           </p>
         )}
+        <p className="ag-note">
+          <ShieldCheck size={14} />
+          {preset === "full"
+            ? "Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within macOS permissions. Approve only an agent you trust."
+            : "You approve it before it can join. Pause it or end its access any time."}
+        </p>
         {options && !macHost && !filesSupported && !desktopReady && (
-          <p className="ag-quiet ag-center">
-            Browser invitations currently require macOS. Your own Files and
-            terminals remain available. For an agent, choose Command line
-            under Connects.
-          </p>
+          <>
+            <p className="ag-quiet ag-center">
+              Browser invitations currently require macOS. Your own Files and
+              terminals remain available.
+            </p>
+            {onCommandLine && (
+              <button
+                type="button"
+                className="ag-secondary ag-wide"
+                onClick={onCommandLine}
+              >
+                Invite with folder access
+              </button>
+            )}
+          </>
         )}
         {options && !filesSupported && (macHost || desktopReady) && (
           <p className="ag-quiet ag-center">
@@ -937,14 +884,15 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
             <Check size={27} strokeWidth={1.8} aria-hidden="true" />
           </span>
           <h3 ref={doneHeading} tabIndex={-1}>
-            Your invite is ready
+            {made.name} is invited
           </h3>
           <p className="ag-done-for">
-            <strong>{made.name}</strong> · {made.access} ·{" "}
+            {made.access} ·{" "}
             {made.always
               ? "Until you end it"
               : `Join by ${at(made.joinBy)} · ends ${at(made.expiresAt)}`}
           </p>
+          {made.hosted && <code className="ag-done-url">{made.link}</code>}
           <div className="ag-done-actions">
             <button className="ag-primary" onClick={() => void copyMessage()}>
               {copied ? <Check size={17} /> : <Copy size={17} />}
@@ -957,16 +905,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               <Share2 size={17} /> Share…
             </button>
           </div>
-          {made.unkeyed && (
-            <p className="ag-note is-warn" role="status">
-              No Tailscale invite key: the agent's computer must already be on
-              your Tailscale network.{" "}
-              <button type="button" className="ag-link" onClick={onSetup}>
-                Set up invite links
-              </button>{" "}
-              to let any computer join with the command.
-            </p>
-          )}
           {made.unpublished && (
             <p className="ag-note is-warn" role="status">
               Agents can’t open this link yet: Tailscale hasn’t published its
@@ -978,7 +916,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               {shareNote}
             </p>
           )}
-          {made.hosted && <code className="ag-done-url">{made.link}</code>}
           <p className="ag-done-next">
             {made.hosted
               ? "Add it to your agent as a custom MCP connector, then approve its code in Home → Needs you."
