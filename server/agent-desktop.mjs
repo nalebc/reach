@@ -408,7 +408,7 @@ export function createAgentDesktop(config, {
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
     if (!state) {
-      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home });
+      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, ...(windows ? { platform } : {}) });
       const helper = await start(rules);
       state = { helper, fingerprint: fp, rules };
       // The policy may have changed while the helper started.
@@ -766,7 +766,7 @@ export function createAgentDesktop(config, {
               delete action.paste;
             }
             // Content checks apply only to narrower presets.
-            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home, ...(windows ? { platform } : {}) });
             if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           }
           action.terminalLikeChecked = front.terminalLike === true;
@@ -812,7 +812,7 @@ export function createAgentDesktop(config, {
         throw fail(400, "Give a web address that starts with https://.");
       if (browserPath !== undefined && (windows ? !appTarget(browserPath) : typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
         throw fail(400, "Choose the browser by its path on this Mac.");
-      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home, ...(windows ? { platform } : {}) });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);

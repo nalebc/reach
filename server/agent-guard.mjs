@@ -45,6 +45,39 @@ export const TERMINAL_LIKE = ["terminal", "iterm", "warp", "ghostty", "alacritty
   "visual studio code", "vscode", "vscodium", "cursor", "windsurf", "xcode", "jetbrains", "intellij", "pycharm", "webstorm", "goland",
   "clion", "rider", "phpstorm", "rubymine", "zed", "nova", "emacs", "neovim", "neovide", "codex", "claude"];
 
+// The same lists on Windows, chosen by platform (guardData below), in the
+// same shapes, so a Windows helper gets the rules a Mac's does. Ids are Store
+// packages' names (the part of an app id before "_"), matched like bundle
+// ids; names are programs' .exe names without .exe, and display names.
+export const WINDOWS_PROTECTED_APP_IDS = [
+  "microsoft.sechealthui", // Windows Security
+  "microsoft.lockapp", "microsoft.creddialoghost", "microsoft.aad.brokerplugin", "microsoft.accountscontrol", "microsoft.bioenrollment",
+  "8bitsolutionsllc.bitwardendesktop",
+];
+export const WINDOWS_PROTECTED_APP_NAMES = [
+  // Password managers.
+  "1password", "bitwarden", "keepass", "keepassxc", "dashlane", "lastpass", "nordpass", "keeper", "keeper password manager", "keeperpasswordmanager",
+  "proton pass", "protonpass", "enpass", "roboform",
+  // Windows' security prompts and the tools that change who controls the PC or stop Reach.
+  "consent", "credentialuibroker", "logonui", "lockapp", "taskmgr", "task manager", "regedit", "regedt32", "registry editor", "mmc", "gpedit",
+  "sechealthui", "windows security", "credential manager",
+];
+// Settings is allowed except these pages, matched on the page's name in the
+// Settings app (WINDOWS_SETTINGS_APPS); their ms-settings: addresses are
+// protected pages.
+export const WINDOWS_SETTINGS_APPS = ["windows.immersivecontrolpanel", "systemsettings"];
+export const WINDOWS_PRIVATE_PANES = ["privacy", "security", "sign-in options", "network", "wi-fi", "ethernet", "vpn", "proxy", "windows update",
+  "recovery", "accounts", "tailscale"];
+const WINDOWS_SETTINGS_PAGES = [/^ms-settings:(privacy|signinoptions|network|windowsupdate|recovery|windowsdefender)/i, /^windowsdefender:/i];
+export const WINDOWS_PROTECTED_PAGE_PATTERNS = [...PROTECTED_PAGE_PATTERNS, ...WINDOWS_SETTINGS_PAGES];
+export const WINDOWS_PROTECTED_TITLE_WORDS = [...PROTECTED_TITLE_WORDS, "credential manager", "windows security", "task manager", "registry editor",
+  "user account control", "group policy"];
+export const WINDOWS_TERMINAL_LIKE = [...TERMINAL_LIKE, "powershell", "pwsh", "windows terminal", "windowsterminal", "cmd", "command prompt", "wt",
+  "conhost", "wsl", "git bash", "mintty"];
+const guardData = (platform) => platform === "win32"
+  ? { appIds: WINDOWS_PROTECTED_APP_IDS, appNames: WINDOWS_PROTECTED_APP_NAMES, panes: WINDOWS_PRIVATE_PANES, titleWords: WINDOWS_PROTECTED_TITLE_WORDS, pages: WINDOWS_PROTECTED_PAGE_PATTERNS, terminals: WINDOWS_TERMINAL_LIKE }
+  : { appIds: PROTECTED_APP_IDS, appNames: PROTECTED_APP_NAMES, panes: PRIVATE_PANES, titleWords: PROTECTED_TITLE_WORDS, pages: PROTECTED_PAGE_PATTERNS, terminals: TERMINAL_LIKE };
+
 // Characters that hide or reorder text; refused everywhere an agent sends text.
 export const hiddenControls = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
 const lower = (value) => (typeof value === "string" ? value.normalize("NFKC").toLowerCase() : "");
@@ -61,17 +94,20 @@ export function protectedAppReason(app, { platform = process.platform } = {}) {
   const file = appFile(app?.id, platform);
   const all = `${id} ${name} ${file}`;
   if (mentionsReach(all)) return "Reach and Tailscale are always protected.";
-  if (PROTECTED_APP_IDS.some((prefix) => id === prefix || id.startsWith(prefix.endsWith(".") ? prefix : `${prefix}.`)) ||
-      PROTECTED_APP_NAMES.includes(name) || PROTECTED_APP_NAMES.includes(file))
+  const { appIds, appNames } = guardData(platform);
+  // On Windows a Store app's package name counts as its id too.
+  const ids = platform === "win32" && windowsAppId(app?.id) ? [id, file] : [id];
+  if (ids.some((value) => appIds.some((prefix) => value === prefix || value.startsWith(prefix.endsWith(".") ? prefix : `${prefix}.`))) ||
+      appNames.includes(name) || appNames.includes(file))
     return "Passwords, security prompts and Reach's lifeline are always protected.";
   return null;
 }
-const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper"]);
-export const terminalLikeApp = (app) => {
+const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper", "cmd", "wt", "wsl"]);
+export const terminalLikeApp = (app, { platform = process.platform } = {}) => {
   const all = `${lower(app?.bundleId)} ${lower(app?.name)} ${lower(app?.id)}`;
   // Short names only count as whole words ("Zed", not "Authorized"; "Rio", not "Portfolio").
   const tokens = new Set(all.split(/[^a-z0-9]+/).filter(Boolean));
-  return TERMINAL_LIKE.some((word) => SHORT_TERMINAL_WORDS.has(word) ? tokens.has(word) : all.includes(word));
+  return guardData(platform).terminals.some((word) => SHORT_TERMINAL_WORDS.has(word) ? tokens.has(word) : all.includes(word));
 };
 // Only unambiguous, explicit HTTP(S) URLs may discard their path/query for
 // Reach's host check. Keep the old conservative match for everything else.
@@ -95,15 +131,15 @@ const reachHostSubject = (value) => {
 // A shell argument can execute substitutions even when its text parses as a
 // URL. Such arguments keep the whole-text check; browser URLs do not expand $.
 const commandHostSubject = (value) => value.includes("$") ? value : reachHostSubject(value);
-export const protectedPage = (url, hosts = []) => {
+export const protectedPage = (url, hosts = [], { platform = process.platform } = {}) => {
   const value = lower(url).trim();
   if (!value) return false;
   const subject = reachHostSubject(value);
-  return PROTECTED_PAGE_PATTERNS.some((pattern) => pattern.test(value)) || hosts.some((host) => host && subject.includes(lower(host)));
+  return guardData(platform).pages.some((pattern) => pattern.test(value)) || hosts.some((host) => host && subject.includes(lower(host)));
 };
-export const protectedTitle = (title) => {
+export const protectedTitle = (title, { platform = process.platform } = {}) => {
   const value = lower(title);
-  return PROTECTED_TITLE_WORDS.some((word) => value.includes(word));
+  return guardData(platform).titleWords.some((word) => value.includes(word));
 };
 
 // The shell deny list. Each rule names what it refuses, in the owner's words.
@@ -127,9 +163,29 @@ const segments = (command) => String(command).split(/\n|;|&&|\|\||\||`|\$\(|\(|\
 const baseName = (token) => token.replace(/^.*\//, "").replace(/^\\/, "").toLowerCase();
 const skipPrefixes = new Set(["env", "nohup", "nice", "time", "command", "builtin", "exec", "xargs", "caffeinate", "script", "watch", "timeout", "gtimeout", "stdbuf", "ionice", "chroot", "arch"]);
 
+// Windows, added to the list above (commandRefusal with platform "win32").
+// A program's name is matched whatever its folder, letters' case or
+// extension (C:\Windows\System32\REG.EXE is reg).
+const windowsName = (token) => token.split(/[\\/]/).at(-1).toLowerCase().replace(/\.(exe|com|cmd|bat|ps1|msc)$/, "");
+const WINDOWS_SKIP = new Set(["cmd", "start", "start-process", "call"]);
+const WINDOWS_ADMIN_COMMANDS = new Set(["runas", "reg", "bcdedit", "netsh", "sc", "icacls", "takeown", "set-mppreference", "add-mppreference", "wmic"]);
+const WINDOWS_DISK_COMMANDS = new Set(["vssadmin", "cipher", "format", "diskpart"]);
+// Windows' security tools, opened from a command line.
+const WINDOWS_PROTECTED_PROGRAMS = new Set(["taskmgr", "regedit", "regedt32", "mmc", "gpedit", "credentialuibroker", "consent"]);
+const WINDOWS_DELETE = new Set(["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"]);
+// Windows' own folders and every program's: the drive's root, Windows,
+// Program Files and ProgramData, by path or by their environment names.
+const WINDOWS_SYSTEM_PATH = /^(?:[a-z]:[\\/]?$|[a-z]:[\\/](?:windows|program files|program files \(x86\)|programdata)(?:[\\/]|$)|(?:%|\$\{?env:)(?:systemroot|windir|programfiles|programw6432|programdata))/i;
+const WINDOWS_SYSTEM_PLACE = /(?:^|[\s"'])(?:[a-z]:[\\/](?:windows|program files|programdata)(?=[\\/\s"' (]|$)|(?:%|\$\{?env:)(?:systemroot|windir|programfiles|programw6432|programdata))/i;
+// Where Windows and its apps keep passwords and sign-ins (beside SECRET_PATH).
+// Matched on a path or on a whole command, with / for \, by folder or by
+// environment name (%APPDATA%, $env:LOCALAPPDATA).
+const WINDOWS_PRIVATE_DATA = /(?:(?:appdata\/(?:local|roaming)|%(?:local)?appdata%|\$\{?env:(?:local)?appdata\}?)\/(?:google\/chrome\/user|microsoft\/edge\/user|bravesoftware|mozilla\/firefox|microsoft\/(?:credentials|protect|vault)|microsoft\/windows\/powershell\/psreadline|1password|bitwarden|keepassxc|tailscale|reach)|(?:programdata|%programdata%|\$\{?env:programdata\}?)\/tailscale|windows\/system32\/config)(?![a-z0-9])/i;
+
 /** Returns null when the command may run, or the reason it may not. */
 const isUrl = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
-export function commandRefusal(command, { protectedPaths = [], home = "", hosts = [] } = {}) {
+export function commandRefusal(command, { protectedPaths = [], home = "", hosts = [], platform = process.platform } = {}) {
+  const windows = platform === "win32", paths = windows ? path.win32 : path;
   if (typeof command !== "string" || !command.trim()) return "Enter a command.";
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(command)) return "Hidden control characters are not allowed in commands.";
   // Preserve quoted/embedded arguments before the conservative segment split:
@@ -138,18 +194,19 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
     return "That's Reach's own address. The agent can't open Reach.";
   const lowered = command.normalize("NFKC").toLowerCase();
   const canonicalPath = (value) => {
-    const resolved = path.resolve(value);
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    const resolved = paths.resolve(value);
+    return windows ? resolved.toLowerCase() : resolved;
   };
-  const roots = protectedPaths.filter((root) => typeof root === "string" && path.isAbsolute(root)).map(canonicalPath);
+  const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonicalPath);
   const protectedPath = (value) => {
     const expanded = value.replace(/^~(?=[\\/]|$)/, home || "~").replace(/^\$\{?HOME\}?(?=[\\/]|$)/, home || "~");
-    const absolute = path.isAbsolute(expanded) ? canonicalPath(expanded) : null;
+    const absolute = paths.isAbsolute(expanded) ? canonicalPath(expanded) : null;
     const separators = expanded.replace(/\\/g, "/");
-    return SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) ||
-      (absolute !== null && roots.some((root) => absolute === root || absolute.startsWith(root.endsWith(path.sep) ? root : root + path.sep)));
+    return SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || (windows && WINDOWS_PRIVATE_DATA.test(separators)) ||
+      (absolute !== null && roots.some((root) => absolute === root || absolute.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)));
   };
-  for (const raw of segments(command)) {
+  // On Windows a lone & starts a new command too (cmd).
+  for (const raw of windows ? segments(command).flatMap((piece) => piece.split("&")) : segments(command)) {
     const piece = raw.replace(/\\ /g, " ");
     // Keep quoted assignment values intact. Removing text only up to its
     // first space could turn data such as NOTE='From: Reach Audit' into a
@@ -164,9 +221,10 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
     }
     if (!tokens.length) continue;
     let index = 0;
-    while (index < tokens.length && (skipPrefixes.has(baseName(tokens[index].text)) || /^-/.test(tokens[index].text))) index++;
+    while (index < tokens.length && (skipPrefixes.has(baseName(tokens[index].text)) || /^-/.test(tokens[index].text) ||
+      (windows && (WINDOWS_SKIP.has(windowsName(tokens[index].text)) || /^\/[a-z]$/i.test(tokens[index].text))))) index++;
     const first = tokens[index];
-    const name = baseName(first?.text || "");
+    const name = windows ? windowsName(first?.text || "") : baseName(first?.text || "");
     const args = tokens.slice(index + 1);
     const plainArgs = args.filter((arg) => !arg.quoted).map((arg) => arg.text);
     const values = args.map((arg) => arg.text);
@@ -186,6 +244,20 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
         : "That changes who can control this Mac, or reads its secrets.";
     }
     if (DISK_COMMANDS.test(name)) return "That could erase or shut down this Mac.";
+    if (windows) {
+      if (WINDOWS_ADMIN_COMMANDS.has(name)) return "That changes who can control this PC, or reads its secrets.";
+      if (name === "schtasks") return "Scheduled jobs would outlive this session.";
+      if (WINDOWS_DISK_COMMANDS.has(name)) return "That could erase or shut down this PC.";
+      if (WINDOWS_PRIVATE_DATA.test(piece.replace(/\\/g, "/"))) return "That path holds your passwords, keys or Reach's own files.";
+      if (WINDOWS_PROTECTED_PROGRAMS.has(name) || (name === "control" && values.some((arg) => /credentialmanager/i.test(arg))) ||
+          [first?.text || "", ...values].some((arg) => WINDOWS_SETTINGS_PAGES.some((pattern) => pattern.test(arg.trim()))))
+        return "That opens a part of Windows that holds passwords or controls this PC.";
+      if (["taskkill", "stop-process"].includes(name) && /reach|node|tailscale/i.test(lowered)) return "That would stop Reach or Windows' own processes.";
+      // Read in the whole command too: a quoted path such as "C:\Program
+      // Files (x86)\…" is split at its bracket above.
+      if (WINDOWS_DELETE.has(name) && (values.some((arg) => !/^[-/]/.test(arg) && WINDOWS_SYSTEM_PATH.test(arg)) || WINDOWS_SYSTEM_PLACE.test(command)))
+        return "That would delete Windows' or your apps' own files.";
+    }
     // Whatever the pid comes from (a name, a subshell), the whole command is read.
     if (["kill", "killall", "pkill"].includes(name) && /reach|node|tailscale|terminal|iterm|launchd|loginwindow|windowserver|finder|dock|systemuiserver/i.test(lowered))
       return "That would stop Reach or the Mac's own processes.";
@@ -213,13 +285,14 @@ export function protectedPathReason(target, { protectedPaths = [], home = "", pl
   if (typeof target !== "string" || !paths.isAbsolute(target)) return "Give the file's full path.";
   const resolved = canonical(target), separators = resolved.replace(/\\/g, "/");
   const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonical);
-  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)))
+  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || (platform === "win32" && WINDOWS_PRIVATE_DATA.test(separators)) ||
+      roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)))
     return "That path holds your passwords, keys or Reach's own files.";
   return null;
 }
 
 /** Typed text is checked like a command when a terminal or IDE is in front, and always for protected page addresses. */
-export function typedTextRefusal(text, { terminalLike = false, hosts = [], protectedPaths = [], home = "" } = {}) {
+export function typedTextRefusal(text, { terminalLike = false, hosts = [], protectedPaths = [], home = "", platform = process.platform } = {}) {
   if (typeof text !== "string" || !text) return "Type something.";
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
@@ -227,19 +300,27 @@ export function typedTextRefusal(text, { terminalLike = false, hosts = [], prote
     // A recognizable shell command is checked argument by argument below.
     // Direct URLs, malformed addresses and protected schemes retain this check.
     const commandLike = terminalLike && /^[a-z0-9_./~\\-]+\s+\S/i.test(value);
-    if (protectedPage(value, commandLike ? [] : hosts)) return "That page shows saved passwords or runs code. It stays closed to the agent.";
+    if (protectedPage(value, commandLike ? [] : hosts, { platform })) return "That page shows saved passwords or runs code. It stays closed to the agent.";
   }
   if (terminalLike) {
     for (const line of lines) {
-      const reason = line.trim() ? commandRefusal(line, { protectedPaths, home, hosts }) : null;
+      const reason = line.trim() ? commandRefusal(line, { protectedPaths, home, hosts, platform }) : null;
       if (reason) return reason;
     }
   }
   return null;
 }
 
-// The rules the native checker applies to every event, as plain data.
-export function nativeRules({ preset, apps = [], hidden = [] }, { hosts = [], titles = [], protectedPaths = [], home = "" } = {}) {
+// The rules the native checker applies to every event, as plain data. A
+// Windows helper gets the same keys with Windows' lists (guardData): Store
+// package names as ids, .exe names as names, Settings pages as panes.
+export function nativeRules({ preset, apps = [], hidden = [] }, { hosts = [], titles = [], protectedPaths = [], home = "", platform = process.platform } = {}) {
+  if (platform === "win32") {
+    const data = guardData(platform);
+    return { ...nativeRules({ preset, apps, hidden }, { hosts, titles, protectedPaths, home, platform: "darwin" }),
+      protectedAppIds: data.appIds, protectedAppNames: data.appNames, privatePanes: data.panes, protectedTitleWords: data.titleWords,
+      protectedPagePatterns: data.pages.map((pattern) => pattern.source), terminalLike: data.terminals };
+  }
   return {
     mode: preset === "apps" ? "apps" : preset === "full" ? "full" : "view",
     hosts: [...new Set(hosts.map(lower).filter(Boolean))],
