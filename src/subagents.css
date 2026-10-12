@@ -182,8 +182,10 @@
   line-height: 15px;
 }
 /* Its list opens under the header (the menu's look, Chat details). */
+/* Its height is the screen's, not the header's (50% of the bar squashed it). */
 .as-bar .as-details.sa-menu {
   top: calc(100% + 6px);
+  max-height: 50vh;
 }
 .sa-menu .sa-strip-list {
   padding: 0;

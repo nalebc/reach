@@ -1553,7 +1553,6 @@ button.as-mode:disabled {
 .as-tools > button.as-mode > svg.as-mode-wait {
   display: block;
   opacity: 0.7;
-  animation: as-spin 1s linear infinite;
 }
 .claude .as-tools > .as-model > svg {
   display: none;

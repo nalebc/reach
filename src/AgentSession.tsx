@@ -26,6 +26,7 @@ import {
   Copy,
   Ellipsis,
   Laptop,
+  Clock,
   Loader2,
   Mic,
   Monitor,
@@ -338,7 +339,9 @@ function ContextMeter({ used, window: size }: { used: number; window: number | n
   }
   const share = Math.min(1, used / size);
   const percent = Math.round(share * 100);
-  const r = 7;
+  // A filled slice in an outline, not a ring: a ring with a gap read as a
+  // spinner on a phone, where the number is hidden (Oct 12).
+  const r = 3.5;
   const around = 2 * Math.PI * r;
   return (
     <span
@@ -347,8 +350,8 @@ function ContextMeter({ used, window: size }: { used: number; window: number | n
       aria-label={`${percent}% of context used`}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
-        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
+        <circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" strokeOpacity="0.45" strokeWidth="1.5" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth={r * 2} strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" />
       </svg>
       <span className="as-context-num">{percent}%</span>
     </span>
@@ -3748,7 +3751,9 @@ export default function AgentSessionView({
                 }}
               >
                 {agent === "codex" && <ShieldCheck size={14} />}
-                {pendingMode && <Loader2 size={14} className="as-mode-wait" aria-hidden />}
+                {/* Waiting for Claude's next step, which may be a while off
+                    in an idle chat: a still clock, not a spinner (Oct 12). */}
+                {pendingMode && <Clock size={13} className="as-mode-wait" aria-hidden />}
                 <span>{pendingMode ? modeName(pendingMode) : modeShown ? modeName(modeShown) : "Default"}</span>
               </button>
             )}
