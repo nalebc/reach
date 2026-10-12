@@ -6,6 +6,7 @@ import { hiddenControls, nativeRules, protectedPathReason, typedTextRefusal } fr
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
 // (scripts/native/agent-desktop.swift): one helper process per agent session,
@@ -340,7 +341,16 @@ export function createAgentDesktop(config, {
   // it, a store of its own, kept in pausesFile.
   pauses = null,
   pausesFile = null,
+  // Whose names for apps and files the agent gives (app-identity.mjs): a
+  // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
+  platform = process.platform,
 } = {}) {
+  const windows = platform === "win32";
+  // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
+  // path or a Store app's id.
+  const appTarget = (value) => windows
+    ? windowsExePath(value) || windowsAppId(value)
+    : typeof value === "string" && value.startsWith("/") && value.endsWith(".app") && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
   // When each agent last looked at the screen. Looking never holds the Mac:
@@ -671,9 +681,9 @@ export function createAgentDesktop(config, {
     /** A file opened in the app that owns it, or shown in the Finder (reach_open_file): never a program, never a protected path. */
     async openFile(client, filePath, { reveal = false } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
+      if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
-      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, ...(windows ? { platform } : {}) });
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -766,8 +776,7 @@ export function createAgentDesktop(config, {
     /** Open or bring forward one app, within the preset. */
     async open(client, appPath, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof appPath !== "string" || !appPath.startsWith("/") || !appPath.endsWith(".app") || appPath.length > 4096 || /[\u0000-\u001f\u007f]/.test(appPath))
-        throw fail(400, "Choose an app by its path on this Mac.");
+      if (!appTarget(appPath)) throw fail(400, "Choose an app by its path on this Mac.");
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
@@ -786,7 +795,7 @@ export function createAgentDesktop(config, {
       try { parsed = new URL(url); } catch { parsed = null; }
       if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
         throw fail(400, "Give a web address that starts with https://.");
-      if (browserPath !== undefined && (typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
+      if (browserPath !== undefined && (windows ? !appTarget(browserPath) : typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
         throw fail(400, "Choose the browser by its path on this Mac.");
       const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -839,7 +848,7 @@ export function createAgentDesktop(config, {
           await guard();
         });
         await guard();
-        note(latest, "tool", { app: appPath.split("/").pop().replace(/\.app$/, "") });
+        note(latest, "tool", { app: windows ? appLabel(appPath, { platform }) : appPath.split("/").pop().replace(/\.app$/, "") });
         return result;
       } finally {
         if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;

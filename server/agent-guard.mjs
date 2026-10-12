@@ -2,6 +2,7 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
 import { moneyRules } from "./money-sites.mjs";
+import { windowsAppId, windowsPackageName } from "./app-identity.mjs";
 
 // What narrower presets keep off limits. Full control deliberately bypasses
 // these filters. One list, used by the owner's app picker, typed commands for
@@ -50,9 +51,14 @@ const lower = (value) => (typeof value === "string" ? value.normalize("NFKC").to
 // "reach" as a word (Reach.app, com.reach.app, "Reach — node"), not inside
 // another word (Preacher).
 export const mentionsReach = (value) => REACH_WORDS.some((word) => new RegExp(`(^|[^a-z])${word}([^a-z]|$)`).test(lower(value)));
-export function protectedAppReason(app) {
+// The app's file name from its id, lowercased: a Mac bundle's name without
+// .app; on Windows an .exe's name without .exe, or a Store app's package name.
+const appFile = (id, platform) => platform !== "win32"
+  ? lower(id).split("/").at(-1)?.replace(/\.app$/, "") || ""
+  : windowsAppId(id) ? lower(windowsPackageName(id)) : lower(id).split(/[\\/]/).at(-1).replace(/\.(exe|app)$/, "");
+export function protectedAppReason(app, { platform = process.platform } = {}) {
   const id = lower(app?.bundleId), name = lower(app?.name);
-  const file = lower(app?.id).split("/").at(-1)?.replace(/\.app$/, "") || "";
+  const file = appFile(app?.id, platform);
   const all = `${id} ${name} ${file}`;
   if (mentionsReach(all)) return "Reach and Tailscale are always protected.";
   if (PROTECTED_APP_IDS.some((prefix) => id === prefix || id.startsWith(prefix.endsWith(".") ? prefix : `${prefix}.`)) ||
@@ -199,11 +205,15 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
 }
 
 /** A file an agent may never open or reveal: Reach's own, the browser profiles, keychains, shell histories. */
-export function protectedPathReason(target, { protectedPaths = [], home = "" } = {}) {
-  if (typeof target !== "string" || !path.isAbsolute(target)) return "Give the file's full path.";
-  const resolved = path.resolve(target), separators = resolved.replace(/\\/g, "/");
-  const roots = protectedPaths.filter((root) => typeof root === "string" && path.isAbsolute(root)).map((root) => path.resolve(root));
-  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(path.sep) ? root : root + path.sep)))
+export function protectedPathReason(target, { protectedPaths = [], home = "", platform = process.platform } = {}) {
+  // Windows paths are Windows' (whatever this host), and one file whatever
+  // the letters' case.
+  const paths = platform === "win32" ? path.win32 : path;
+  const canonical = (value) => platform === "win32" ? paths.resolve(value).toLowerCase() : paths.resolve(value);
+  if (typeof target !== "string" || !paths.isAbsolute(target)) return "Give the file's full path.";
+  const resolved = canonical(target), separators = resolved.replace(/\\/g, "/");
+  const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonical);
+  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)))
     return "That path holds your passwords, keys or Reach's own files.";
   return null;
 }

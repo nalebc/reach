@@ -1,5 +1,6 @@
 import path from "node:path";
 import { protectedAppReason } from "./agent-guard.mjs";
+import { appLabel, validAppPath } from "./app-identity.mjs";
 
 // Agent access is one of four presets. Everything an agent may do (its scopes,
 // the routes it may call, the tools it sees, the rules the native checker
@@ -17,9 +18,9 @@ const validBrowserTerminalId = (id) => typeof id === "string" && /^(reach|deskto
 const invalid = (message, status = 400) => Object.assign(Error(message), { status });
 const plain = (value) => value !== null && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const controls = (value) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(value);
-export const validAppPath = (value) =>
-  typeof value === "string" && value.length <= 4096 && path.posix.isAbsolute(value) && value.endsWith(".app") &&
-  !controls(value) && !value.includes("\\") && path.posix.normalize(value) === value;
+// An app is a Mac bundle's POSIX path on any host; on Windows also an .exe
+// path or a Store app's id (app-identity.mjs).
+export { validAppPath };
 
 // Full control and Apps touch the Mac: Reach then answers only the phone that
 // created the invitation (browser-host-guard.mjs), as app sessions did.
@@ -184,7 +185,7 @@ export function presetAppsFromCatalog(catalog, chosen, { allowProtected = false 
     if (!app || !validAppPath(app.id)) throw invalid("Choose apps installed on this Mac.");
     const reason = protectedAppReason(app);
     if (reason && !allowProtected) throw invalid(reason, 403);
-    return { id: app.id, name: String(app.name || path.basename(app.id, ".app")).slice(0, 100), bundleId: String(app.bundleId || "").slice(0, 200),
+    return { id: app.id, name: String(app.name || appLabel(app.id)).slice(0, 100), bundleId: String(app.bundleId || "").slice(0, 200),
       ...(/^[a-f0-9]{64}$/.test(app.identity || "") ? { identity: app.identity } : {}) };
   });
 }
