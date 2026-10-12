@@ -232,7 +232,7 @@ jobs:
       - name: Real iOS pairing, authenticated files and native transfer bridges
         run: |
           mkdir -p reports
-          npm run test:file -- --test-timeout=300000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
+          npm run test:file -- --test-timeout=420000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
         env:
           REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
           REACH_TEST_IOS_REPORT: reports/ios-simulator.json

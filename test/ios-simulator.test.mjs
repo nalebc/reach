@@ -19,12 +19,13 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 const exec = promisify(execFile);
 const enabled = process.platform === "darwin" && !!process.env.REACH_TEST_IOS_APP;
 
-// The CI lane's budget (ci.yml passes --test-timeout=300000; this per-test
+// The CI lane's budget (ci.yml passes --test-timeout=420000; this per-test
 // value overrides it, so it must say the same). Each step is bounded on its
 // own; together a hosted macos-15 runner needed 215 s in a passing run: Reach,
 // a new simulator's cold first boot, install, then up to 100 s of the page.
+// A cold first boot alone took over 90 s on one run (Oct 12): it gets 180 s.
 test("iOS simulator pairs through the real UI, reads files and runs native transfer/share bridges", {
-  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: 300000,
+  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: 420000,
 }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ios-smoke-"));
   const output = process.env.REACH_TEST_IOS_REPORT;
@@ -236,7 +237,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   reached(`simulator created (iOS ${runtime.version}, ${type.name})`);
   await sim("boot", device);
   reached("simulator booting");
-  await sim("bootstatus", device, "-b");
+  await exec("xcrun", ["simctl", "bootstatus", device, "-b"], { timeout: 180000, maxBuffer: 2 << 20 });
   reached("simulator booted");
   await sim("keychain", device, "add-root-cert", authority);
   reached("test certificate trusted in the simulator");

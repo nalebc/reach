@@ -166,10 +166,15 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     const { stdout } = await exec("powershell.exe", [
       "-NoProfile",
       "-Command",
-      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match 'screen-stream.ps1|desktop-input.ps1' } | ForEach-Object { $_.ProcessId }",
+      // Not this query's own process: its command line names the helpers too.
+      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match '-File .*(screen-stream|desktop-input)\\.ps1' } | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }",
     ]);
-    return stdout.split(/\s+/).filter(Boolean);
+    return stdout.split(/\r?\n/).filter((line) => line.trim());
   };
-  await until(async () => !(await helpers()).length, "no screen or input helper left after Pause", 20000);
+  let left = [];
+  await until(async () => !(left = await helpers()).length, "no screen or input helper left after Pause", 20000).catch((error) => {
+    note({ helpersLeft: left });
+    throw Object.assign(error, { message: `${error.message}: ${left.join(" | ")}` });
+  });
   note({ paused: true, helpersAfterPause: 0 });
 });
