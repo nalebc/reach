@@ -16,7 +16,7 @@ export const suites = {
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
-    "uploads-concurrency", "windows-commands",
+    "uploads-concurrency", "windows-commands", "windows-screen-helpers", "phone-link",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

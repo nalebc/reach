@@ -358,7 +358,10 @@ export default function HomeLive({
   const heroOnScreen = useOnScreen(hero);
   // Tapping the preview's status pill connects again.
   const [heroRetry, setHeroRetry] = useState(0);
-  const watching = features.screen && visible && !paused && heroOnScreen;
+  // On the computer itself the preview would only show itself (Screen says
+  // so and streams if asked).
+  const watching =
+    features.screen && visible && !paused && heroOnScreen && !device.sameComputer;
   const stream = useRemoteScreen(
     peer,
     features.screen,

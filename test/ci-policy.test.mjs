@@ -193,6 +193,17 @@ test("every Batch 1 platform-gated regression has a CI lane that enables its gat
 });
 
 
+test("Windows CI runs the real screen helpers under a normal PC's script policy", () => {
+  // Oct 11: GitHub's runners allow every script, so a helper refused on a
+  // normal PC passed CI. The lane sets Restricted, then runs them for real.
+  const ci = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(ci, /Set-ExecutionPolicy Restricted -Scope LocalMachine -Force/);
+  assert.match(ci, /test\/windows-desktop-native\.test\.mjs/);
+  assert.match(ci, /REACH_TEST_WINDOWS_DESKTOP: "1"/);
+  for (const name of ["windows-screen-helpers", "phone-link"])
+    assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+});
+
 test("installed CI covers a real portable first launch and npm 12 on Linux", () => {
   assert.ok(suites.windows.includes("notice-versions"), "Windows must validate notices using native checkout line endings");
   const installed = fs.readFileSync(new URL('../.github/scripts/test-installed-package.mjs', import.meta.url), 'utf8');

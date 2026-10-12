@@ -46,6 +46,9 @@ export type Device = {
   tools?: { codex?: { installed: boolean } };
   // Reach is paused on the computer (src/pause.ts).
   paused?: boolean;
+  // This browser runs on the computer itself: its screen would only show
+  // itself (server/platform.mjs sameComputer).
+  sameComputer?: boolean;
   host?: {
     screenRecording: boolean;
     accessibility: boolean;

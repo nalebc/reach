@@ -106,6 +106,10 @@ export default function Screen({
       !!scopes?.includes("admin") ||
       !!scopes?.includes("screen:control");
   const [live, setLive] = useState(enabled),
+    // On the computer itself, its screen would show itself inside itself
+    // (Oct 11, a Windows user): said first, shown only if asked. Read from
+    // each device update: the first one may be a saved copy without it.
+    [showHere, setShowHere] = useState(false),
     [visible, setVisible] = useState(!document.hidden),
     [control, setControl] = useState(false),
     [busy, setBusy] = useState(false),
@@ -185,11 +189,12 @@ export default function Screen({
     },
     [release],
   );
+  const here = !!device.sameComputer && !showHere;
   const aspect = useRef(1.6);
   const stream = useRemoteScreen(
     peer,
     enabled,
-    live && visible && !paused,
+    live && visible && !paused && !here,
     display,
     quality,
     revision,
@@ -645,6 +650,21 @@ export default function Screen({
             }
           >
             Enable screen viewing on this computer to begin.
+          </Empty>
+        </section>
+      ) : here ? (
+        <section className="panel screen-setup">
+          <Empty
+            icon={Monitor}
+            title="You're on this computer"
+            action={
+              <button className="button" onClick={() => setShowHere(true)}>
+                Show anyway
+              </button>
+            }
+          >
+            Open Reach on your phone or another computer to see this screen.
+            Here it would only show itself.
           </Empty>
         </section>
       ) : (

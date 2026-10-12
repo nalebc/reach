@@ -5,7 +5,7 @@ The complete manual: platforms, every feature, install and first run, pairing, b
 ## Supported platforms
 
 - **macOS host, phone in the browser (Safari on iPhone, Chrome on Android):** the primary target. Local macOS tests pass; physical-phone acceptance for this candidate is still required.
-- **Windows host:** experimental. It requires a successful candidate CI run and a physical-host test. Browser-agent invitations are unavailable; their protected helpers require macOS.
+- **Windows host:** experimental, not yet verified on a physical PC. Phones need the Tailscale app, signed in to the PC's account: Windows can't offer browser sign-in or invite links yet (Tailscale can't hand it requests through a private socket there). Browser-agent invitations are unavailable; their protected helpers require macOS.
 - **Linux host:** owner file browsing and Reach terminals; no desktop screen or app control. Browser-agent invitations are unavailable. Scoped command-line agent access uses its separate file/command permissions.
 - **Native iOS app:** optional developer build, unsigned. The browser needs no app.
 
@@ -101,7 +101,7 @@ cd reach
 ./reach
 ```
 
-On Windows, use `.\reach.cmd` in place of `./reach` (experimental; see [Supported platforms](#supported-platforms)).
+On Windows, use `.\reach.cmd` in place of `./reach`, and put the Tailscale app on your phone, signed in to the same account (experimental; see [Supported platforms](#supported-platforms) and the [README's Windows steps](../README.md#on-a-windows-pc-experimental)).
 
 Once 0.1.0 is on npm:
 

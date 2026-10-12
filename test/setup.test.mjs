@@ -447,6 +447,9 @@ test("Windows: a fresh run is Tailscale, then the HTTPS link; no account setting
   assert.match(board, /1\. Tailscale on this computer {2}—  me@x\.test/);
   assert.match(board, /2\. HTTPS link for your phone/);
   assert.doesNotMatch(board, /account & sharing|Invite people|background|3\./);
+  // The phone's part, before any QR (Oct 11: a Windows user scanned without
+  // the Tailscale app and got "can't connect").
+  assert.match(board, /Your phone will need the Tailscale app, signed in (as \S+|with this computer's account)\. On Windows, phones can't sign in from the browser yet\./);
   assert.match(board, /Setup complete/);
   const progress = readProgress(root);
   assert.deepEqual(progress.steps, { account: "done", link: "done" });

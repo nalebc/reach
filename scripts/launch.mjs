@@ -31,7 +31,7 @@ import { createReach } from "../server/index.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
 import { atomicJson, loadJson, openPairingWindow, pairingWindowFile } from "../server/core.mjs";
 import { publicNameState } from "../server/public-dns.mjs";
-import { phoneLinkText, UNPUBLISHED } from "./phone-link.mjs";
+import { phoneAppFirst, phoneLinkText, UNPUBLISHED } from "./phone-link.mjs";
 import {
   prepareTailscale,
   tailscaleCli,
@@ -408,6 +408,15 @@ export async function launch(options, root) {
       plain || options.service
         ? `  REACH · ${reach.config.name}`
         : banner(`REACH · ${reach.config.name}`);
+    // Pairing codes over the private address: the phone needs the Tailscale
+    // app, signed in to this computer's account (named when Tailscale says).
+    const phoneNeedsApp = !options.local && !preferences;
+    let phoneAccount = "";
+    if (phoneNeedsApp)
+      try {
+        const status = await tailscaleJson(["status", "--json"]);
+        phoneAccount = status?.User?.[status?.Self?.UserID]?.LoginName || "";
+      } catch {}
     const showCode = (renew = false) => {
       const pairing = renew
         ? {
@@ -419,6 +428,7 @@ export async function launch(options, root) {
       console.log(
         `\n${heading(renew)}\n\n  ${options.local ? "Open on this computer" : "Open on your phone"}: ${origin}\n  Pairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\n`,
       );
+      if (phoneNeedsApp) console.log(`${phoneAppFirst({ account: phoneAccount })}\n`);
       if (!options.local && process.stdout.isTTY) {
         const fragment = new URLSearchParams({
           pair: pairing.code,
@@ -536,9 +546,9 @@ export async function launch(options, root) {
       console.log(
         "  Paused: your phone can't see or use this computer until you resume.",
       );
-    if (!options.local && !preferences)
+    if (phoneNeedsApp)
       console.log(
-        "  Private Tailscale link · Connect Tailscale on your phone first.\n  Reach pairing is also required. No public internet tunnel is enabled.",
+        "  Private Tailscale link: only your Tailscale devices open it, and Reach pairing is also required. No public internet tunnel is enabled.",
       );
     if (!options.service) {
       console.log(

@@ -88,7 +88,7 @@ import {
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
-import { RemoteScreenHub } from "./remote-screen.mjs";
+import { RemoteScreenHub, screenTrouble } from "./remote-screen.mjs";
 import {
   AppThreads,
   AppScreenHub,
@@ -151,6 +151,7 @@ import { saveBrowserCommandRecords } from "./browser-command-records.mjs";
 import {
   apps,
   launchApp,
+  sameComputer,
   tailscaleInfo,
   screenCapture,
   screenInput,
@@ -1918,6 +1919,8 @@ export async function createReach(overrides = {}) {
     const tools = req.client.scopes.includes("codex")
       ? await detectTools()
       : undefined;
+    const people = !["agent", "guest"].includes(req.client.kind);
+    const net = people ? await getNetwork() : { connected: !!config.publicOrigin, peers: [] };
     res.json({
       ...device,
       name: config.name,
@@ -1931,9 +1934,12 @@ export async function createReach(overrides = {}) {
       })),
       memory: { total: os.totalmem(), free: await availableMemory() },
       uptime: os.uptime(),
-      network: ["agent", "guest"].includes(req.client.kind)
-        ? { connected: !!config.publicOrigin, peers: [] }
-        : await getNetwork(),
+      network: net,
+      // This browser runs on the computer itself (Oct 11: a Windows user
+      // opened the link on the PC, and Screen showed the PC watching
+      // itself). Only for the Screen page's notice: on Windows any local
+      // program can write X-Forwarded-For, so it never decides access.
+      ...(people && sameComputer(req, net.ips) && { sameComputer: true }),
       access: {
         kind: req.client.kind,
         scopes: req.client.scopes,
@@ -5020,9 +5026,14 @@ export async function createReach(overrides = {}) {
                 hub.add(ws, authorized, message, {
                   mayViewDisplay,
                   privateView,
-                }))().catch(
-                (e) => reject(e.message, e.status || 503),
-              );
+                }))().catch((e) => {
+                // The computer's own trouble (no displays, helper refused)
+                // shows in Reach's window too; a refusal for this viewer
+                // doesn't. Retrying can't fix a permanent one (Windows
+                // policy): the phone stops and says why.
+                if (!e.status || e.status >= 500) screenTrouble(e.message);
+                reject(e.message, e.permanent ? 403 : e.status || 503);
+              });
             } else {
               screenStreams.add(ws, authorized);
               ws.send(

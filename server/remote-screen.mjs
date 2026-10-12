@@ -3,8 +3,21 @@ import { desktopBinary, desktopDisplays } from "./desktop-native.mjs";
 import { streamOptions } from "./desktop-protocol.mjs";
 import { fileURLToPath } from "node:url";
 import { windowsVideoAvailable, WindowsVideoSource } from "./windows-video.mjs";
+import { powershellFile } from "./powershell.mjs";
 import { fail } from "./core.mjs";
 export { privateWindows };
+// Why the live screen failed, in Reach's window on the computer too: the
+// phone may only show "Connecting…", and a person at the computer can act on
+// the cause. Each cause once a minute, not once per retry or viewer.
+const told = new Map();
+export function screenTrouble(message, { now = Date.now, log = console.warn } = {}) {
+  const text = String(message || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300);
+  if (!text || (told.has(text) && now() - told.get(text) < 60000)) return false;
+  told.set(text, now());
+  if (told.size > 50) told.delete(told.keys().next().value);
+  log(`Reach: live screen: ${text}`);
+  return true;
+}
 
 export class RemoteScreenHub {
   constructor(config, prepare) {
@@ -94,18 +107,18 @@ export class RemoteScreenHub {
               if (options.format === "h264")
                 return () => new WindowsVideoSource(selectedDisplay, options);
               return () =>
-                new NativeScreenSource("powershell.exe", [
-                  "-NoProfile",
-                  "-File",
-                  fileURLToPath(
-                    new URL(
-                      "../scripts/native/screen-stream.ps1",
-                      import.meta.url,
+                new NativeScreenSource(
+                  "powershell.exe",
+                  powershellFile(
+                    fileURLToPath(
+                      new URL(
+                        "../scripts/native/screen-stream.ps1",
+                        import.meta.url,
+                      ),
                     ),
+                    [options.display, String(options.width)],
                   ),
-                  options.display,
-                  String(options.width),
-                ]);
+                );
             };
         // A group that emptied out frees its key only if it still holds it:
         // a newer group for the same stream may have taken its place.
@@ -354,14 +367,17 @@ export class RemoteBroadcast {
               ),
             );
         } catch (e) {
+          if (this.viewers.size) screenTrouble(e.message);
           for (const ws of this.viewers.keys())
             this.fail(ws, e.message, !e.permanent);
         }
       };
       void tick();
     } catch (e) {
-      if (generation === this.generation)
+      if (generation === this.generation) {
+        if (this.viewers.size) screenTrouble(e.message);
         for (const ws of this.viewers.keys()) this.fail(ws, e.message);
+      }
     }
   }
 }

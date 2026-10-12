@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
+import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 const exec = promisify(execFile),
   native =fileURLToPath(new URL("../scripts/native/", import.meta.url));
 export async function desktopBinary(config, kind, { signal } = {}) {
@@ -32,26 +33,30 @@ export async function desktopBinary(config, kind, { signal } = {}) {
   }
   return file;
 }
-export async function desktopDisplays(config) {
+export async function desktopDisplays(config, { run = exec, platform = process.platform } = {}) {
   let result;
-  if (process.platform === "darwin")
-    result = await exec(
+  if (platform === "darwin")
+    result = await run(
       await desktopBinary(config, "screen-stream"),
       ["--list"],
       { timeout: 10000, maxBuffer: 65536 },
     );
-  else if (process.platform === "win32")
-    result = await exec(
+  else if (platform === "win32")
+    result = await run(
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-STA",
-        "-File",
-        path.join(native, "desktop-input.ps1"),
-        "--list",
-      ],
-      { timeout: 15000, maxBuffer: 65536 },
-    );
+      powershellFile(path.join(native, "desktop-input.ps1"), ["--list"], { sta: true }),
+      { timeout: COLD_START_MS, maxBuffer: 65536, windowsHide: true },
+    ).catch((error) => {
+      // Said in words, not as PowerShell's raw command line and stack.
+      const said = String(error.stderr || "").trim();
+      if (scriptBlocked(said)) throw Object.assign(fail(503, SCRIPT_BLOCKED), { permanent: true });
+      throw fail(
+        503,
+        error.killed
+          ? "Windows took too long to list its displays. Keep the PC signed in and unlocked, then reconnect."
+          : `Windows couldn't list its displays${said ? `: ${said.split(/\r?\n/)[0].slice(0, 200)}` : "."} Keep the PC signed in and unlocked, and run Reach in your desktop session.`,
+      );
+    });
   else throw fail(501, "Remote desktop currently supports macOS and Windows.");
   const list = JSON.parse(result.stdout);
   if (!Array.isArray(list) || !list.length || list.length > 32)
@@ -111,13 +116,7 @@ export class DesktopInput {
       args = [display];
     } else if (process.platform === "win32") {
       executable = "powershell.exe";
-      args = [
-        "-NoProfile",
-        "-STA",
-        "-File",
-        path.join(native, "desktop-input.ps1"),
-        display,
-      ];
+      args = powershellFile(path.join(native, "desktop-input.ps1"), [display], { sta: true });
     } else throw fail(501, "Desktop input supports macOS and Windows.");
     return new DesktopInput(
       spawn(executable, args, {

@@ -88,6 +88,18 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 
 ## Quick start
 
+### What you need
+
+Tailscale runs on the computer you reach. What the phone needs depends on that computer:
+
+|                     | Mac or Linux computer                                                        | Windows PC (experimental)                                                          |
+| ------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer     | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 |
+| **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)           | The same                                                                            |
+| **On the phone**    | Just a browser. The Tailscale app is optional and faster                     | **The Tailscale app**, signed in to the same account and turned on                  |
+
+From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. Windows can't offer browser sign-in yet: its phones always need the app.
+
 ### Install the CLI
 
 Reach includes a `reach` command for use from any terminal. The npm package is **not published yet**; once the first release is available, install it with [Node.js 22 or newer](https://nodejs.org/) and run:
@@ -101,7 +113,7 @@ The npm package includes the built phone interface and browser connection, so yo
 
 ### Run from source (available now)
 
-You need a Mac and [Tailscale](https://tailscale.com/download). `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
+On a Mac or Linux computer. `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
 ```sh
 git clone https://github.com/nalebc/reach.git
@@ -123,7 +135,24 @@ No Tailscale app on the phone? Then the link only opens while pairing: for 15 mi
 
 Already using a source checkout? Run `./reach cli` once to make `reach`, `reach status` and the other commands work from any terminal. Keep the checkout: this command links to it.
 
-Use macOS 13 or newer with [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07). On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Linux, Windows and npm installs are covered in the [full guide](docs/GUIDE.md#install).
+Use macOS 13 or newer with [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07). On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Linux and npm installs are covered in the [full guide](docs/GUIDE.md#install).
+
+### On a Windows PC (experimental)
+
+Windows support hasn't been verified on a physical PC yet. In PowerShell:
+
+```powershell
+git clone https://github.com/nalebc/reach.git
+cd reach
+.\reach.cmd
+```
+
+1. **Tailscale on the PC.** Setup opens Tailscale's download page if it's missing, and its sign-in if you're signed out. Then it opens the page that turns on MagicDNS and HTTPS certificates, if they're off, and waits.
+2. **Tailscale on the phone.** Install the Tailscale app, sign in with the same account as the PC, and turn it on. Reach's link opens only through the app on Windows.
+3. **Scan and connect.** Scan the QR in the PowerShell window with the phone's camera and tap **Connect**. Each code works once, for 10 minutes: press Enter for a new one.
+4. **Use it from your phone or another computer.** Opened on the PC itself, Screen would only show itself.
+
+Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
 
 ## Security
 
@@ -140,7 +169,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 | ----------- | ---------------------------------------------------------------------------------- |
 | **macOS**   | Primary: screen, control, files, terminals, chats, agents                          |
 | **Linux**   | Files, terminals and command-line agents; no screen or agent presets               |
-| **Windows** | Experimental: guided setup, pairing code, files and terminals; no invite links yet |
+| **Windows** | Experimental, not yet verified on a physical PC: guided setup, pairing code (the phone needs the Tailscale app), files, terminals, screen. No browser sign-in or invite links yet |
 | **Phone**   | Safari on iPhone, Chrome on Android. No app needed                                 |
 
 ## Docs

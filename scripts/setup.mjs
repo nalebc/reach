@@ -179,7 +179,15 @@ function makeSteps(root, deps) {
             connection = await ensureTailscale(deps.tailscale || { select, print });
           }
           const problem = linkProblem(connection);
-          if (!problem) return { note: "ready" };
+          if (!problem) {
+            // Pairing-code computers (Windows): the link opens only in the
+            // Tailscale app, so the phone's part is said here, before the QR.
+            if (!byAccount) {
+              const login = connection?.User?.[connection?.Self?.UserID]?.LoginName;
+              print(`  Your phone will need the Tailscale app, signed in ${login ? `as ${login}` : "with this computer's account"}.${platform === "win32" ? " On Windows, phones can't sign in from the browser yet." : ""}`);
+            }
+            return { note: "ready" };
+          }
           if (problem !== shown) {
             shown = problem;
             print(

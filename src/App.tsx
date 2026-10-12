@@ -129,6 +129,10 @@ const pages = [
 ];
 // Bottom bar on phones; everything else is under More.
 const mobileOrder = ["overview", "sessions", "screen", "terminal"];
+// Off the menus for now (Oct 11): Apps opens only for an app an agent handed
+// you (Home, notifications).
+const offMenus = new Set(["apps"]);
+const menuPages = pages.filter((p) => !offMenus.has(p.id));
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
   // Signed in from the browser: works anywhere, but the app connects device
@@ -248,7 +252,7 @@ function ReachWorkspace() {
     agent: AgentName | "openclaw";
     id: string;
   } | null>(null);
-  const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
+  const visiblePages = menuPages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
     .filter((p) => mobileOrder.includes(p.id))
     .sort((a, b) => mobileOrder.indexOf(a.id) - mobileOrder.indexOf(b.id));
@@ -1068,7 +1072,7 @@ function ReachWorkspace() {
           peer={peer}
           device={device}
           {...morePlaces(
-            pages.map((p) => p.id),
+            menuPages.map((p) => p.id),
             mobileOrder,
             features,
             codexStatus,

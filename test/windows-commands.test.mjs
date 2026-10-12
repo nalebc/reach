@@ -109,7 +109,7 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
     preloads: [AS_WINDOWS],
     // The guidance is printed after the pairing code in a separate stdout
     // write. Wait for the line we assert, not an earlier output chunk.
-    ready: /Private Tailscale link · Connect Tailscale on your phone first/,
+    ready: /No public internet tunnel is enabled/,
     pair: false,
     prepare: async (root) => {
       fake = await fakeTailscale(root);
@@ -119,7 +119,13 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
   const text = reach.output();
   assert.match(text, new RegExp(`Open on your phone: https://${HOST.replace(/\./g, "\\.")}:8443\\n`));
   assert.match(text, /Pairing code: \d{4} \d{4}/);
-  assert.match(text, /Private Tailscale link · Connect Tailscale on your phone first/);
+  // What the phone needs comes before the code and its QR, where a first-time
+  // user looks (Oct 11: scanned without the app, "can't connect"), with the
+  // account to sign in as and why the browser can't do it here.
+  const first = text.indexOf("First, on your phone: install the Tailscale app, sign in as ");
+  assert.ok(first > 0 && first < text.indexOf("Code works once"), text);
+  assert.match(text, /sign in as \S+@\S+ and turn it on\.\n  On Windows, phones can't sign in from the browser yet\./);
+  assert.match(text, /Private Tailscale link: only your Tailscale devices open it/);
   const state = await fake.read();
   const route = state.serve.Web[`${HOST}:8443`].Handlers["/"].Proxy;
   assert.match(route, /^http:\/\/127\.0\.0\.1:\d+$/, "its local address, not a socket");

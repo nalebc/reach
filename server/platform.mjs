@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fail } from "./core.mjs";
+import { SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 import { tailscaleCli } from "../scripts/tailscale.mjs";
 export const exec = promisify(execFile);
 const options = {
@@ -77,9 +78,25 @@ export async function launchApp(appId) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", ["-a", app.id], options);
   else if (process.platform === "win32")
-    await exec("explorer.exe", [`shell:AppsFolder\\${app.id}`], options);
+    // Not explorer.exe: it exits with 1 even when the app opened, so every
+    // launch looked failed. Start-Process says when one really fails; the id
+    // (from Get-StartApps above) travels as data, never as script text.
+    await exec(
+      "powershell.exe",
+      ["-NoProfile", "-Command", 'Start-Process -FilePath ("shell:AppsFolder\\" + $env:REACH_APP_ID)'],
+      { ...options, env: { ...process.env, REACH_APP_ID: app.id } },
+    );
   else throw fail(501, "App launching is supported on Mac and Windows.");
   return { name: app.name };
+}
+// Whether a request comes from a browser on this computer: through Tailscale
+// Serve, its forwarded address is one of this computer's own Tailscale
+// addresses; with no proxy in between (--local), the loopback itself. A
+// notice only, never access: the header is the visitor's word.
+export function sameComputer(req, ownIps = []) {
+  const forwarded = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
+  if (forwarded) return ownIps.includes(forwarded);
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket?.remoteAddress);
 }
 export async function tailscaleInfo() {
   try {
@@ -215,7 +232,7 @@ export async function screenInput(config, payload, authorize = () => {}) {
     }
   } else if (process.platform === "win32") {
     executable = "powershell.exe";
-    args = ["-NoProfile", "-File", path.join(native, "input.ps1")];
+    args = powershellFile(path.join(native, "input.ps1"));
   } else throw fail(501, "Screen input is supported on Mac and Windows.");
   authorize();
   await new Promise((resolve, reject) => {
@@ -237,8 +254,10 @@ export async function screenInput(config, payload, authorize = () => {}) {
         : reject(
             fail(
               403,
-              error ||
-                "Allow the Reach input helper or the app running Reach in System Settings → Privacy & Security → Accessibility, then try again.",
+              process.platform === "win32" && scriptBlocked(error)
+                ? SCRIPT_BLOCKED
+                : error ||
+                    "Allow the Reach input helper or the app running Reach in System Settings → Privacy & Security → Accessibility, then try again.",
             ),
           );
     });
