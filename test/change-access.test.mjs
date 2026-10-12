@@ -157,7 +157,8 @@ test("a full-access guest can't change anyone's access, its own included", async
   assert.equal((await change(boss.id, { screen: "view" }, boss.token)).status, 403);
 });
 
-test("an agent's running command stops when running commands is taken away", async (t) => {
+// Agents' commands run only in the Mac's sandbox (none elsewhere yet).
+test("an agent's running command stops when running commands is taken away", { skip: process.platform !== "darwin" }, async (t) => {
   const { call, owner, work, change } = await start(t);
   const made = await call("/api/agents/invitations", { token: owner, method: "POST", body: { name: "Claude", ttlSeconds: 86400, folders: work, write: true, exec: true } });
   const joined = await approveAgentClaim((route, options) => call(route, { token: owner, ...options }), await call("/api/invitations/redeem", { method: "POST", body: { invitation: made.body.invitation } }));

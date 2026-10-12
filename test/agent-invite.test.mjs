@@ -12,7 +12,7 @@ import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 // within a short window, bound to the Tailscale device that joined, and never
 // screen, apps, your terminals or managing access.
 
-async function start(t, { policy } = {}) {
+async function start(t, { policy, overrides = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-invite-"));
   const files = path.join(dir, "files");
   for (const d of ["Projects/acme", "Projects/other"])
@@ -32,6 +32,7 @@ async function start(t, { policy } = {}) {
     roots: [files],
     dataDir: path.join(dir, "private"),
     agentPolicyFile,
+    ...overrides,
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   t.after(async () => {
@@ -121,22 +122,27 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
     403,
   );
 
-  // Commands start in its folder only, within its time limit.
+  // Commands start in its folder only, within its time limit; only in a
+  // sandbox, which only a Mac has yet (Oct 12: Windows and Linux ran them
+  // as you, free to rewrite Reach's own files).
   const job = await as("/api/jobs", {
     method: "POST",
-    body: { root: 0, path: "", command: process.platform === "win32" ? "(Get-Location).Path" : "pwd" },
+    body: { root: 0, path: "", command: "pwd" },
   });
-  assert.equal(job.status, 202, JSON.stringify(job.body));
-  let done;
-  for (let i = 0; i < 100 && !done; i++) {
-    const j = (await as(`/api/jobs/${job.body.id}`)).body;
-    if (j.status !== "running") done = j;
-    else await new Promise((r) => setTimeout(r, 50));
-  }
-  assert.equal(fs.realpathSync.native(done.output.trim()), acme);
-  // Its jobs run in the sandbox Full control commands do: Reach's
-  // credentials stay out of reach. Yours run as you (connections audit, Oct 10).
-  if (process.platform === "darwin") {
+  if (process.platform !== "darwin") {
+    assert.equal(job.status, 503, JSON.stringify(job.body));
+    assert.match(job.body.error, /run only in a sandbox, which this (Windows PC|computer) doesn't have yet/);
+  } else {
+    assert.equal(job.status, 202, JSON.stringify(job.body));
+    let done;
+    for (let i = 0; i < 100 && !done; i++) {
+      const j = (await as(`/api/jobs/${job.body.id}`)).body;
+      if (j.status !== "running") done = j;
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(fs.realpathSync.native(done.output.trim()), acme);
+    // Its jobs run in the sandbox Full control commands do: Reach's
+    // credentials stay out of reach. Yours run as you (connections audit, Oct 10).
     const finish = async (r, by = as) => {
       assert.equal(r.status, 202, JSON.stringify(r.body));
       for (let i = 0; i < 100; i++) {
@@ -353,4 +359,19 @@ test("an agent's invite key lasts its join window; its device lasts the invitati
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("with no sandbox (Windows and Linux today), an agent's command never runs; yours still do", async (t) => {
+  // Oct 12: off macOS jobSandbox() was null and an agent's job ran as you,
+  // free to rewrite Reach's own files (clients.json) and so its own access.
+  const { call, invite, redeem } = await start(t, { overrides: { jobSandbox: null } });
+  const made = await invite({ exec: true });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const joined = await redeem(made.body.invitation);
+  assert.equal(joined.status, 200, JSON.stringify(joined.body));
+  const job = await call("/api/jobs", { token: joined.body.token, method: "POST", body: { root: 0, path: "", command: "echo ran" } });
+  assert.equal(job.status, 503);
+  assert.match(job.body.error, /^Commands from agents and invited people run only in a sandbox, which this (Mac|Windows PC|computer) doesn't have yet\. Your own devices can run commands\.$/);
+  const own = await call("/api/jobs", { method: "POST", body: { root: 0, path: "Projects/acme", command: "echo ran" } });
+  assert.equal(own.status, 202, JSON.stringify(own.body));
 });

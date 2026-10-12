@@ -89,6 +89,7 @@ import {
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub, screenTrouble } from "./remote-screen.mjs";
+import { computerWord } from "./computer-word.mjs";
 import {
   AppThreads,
   AppScreenHub,
@@ -3010,9 +3011,14 @@ export async function createReach(overrides = {}) {
     // Your own devices run as you; anyone else's job runs in the sandbox
     // Full control agents' commands do.
     const own = req.client.kind === "device" && req.client.scopes.includes("admin");
-    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, {
-      sandbox: own ? null : jobSandbox(),
-    });
+    const sandbox = own ? null : jobSandbox();
+    // No sandbox here yet (Windows and Linux): an agent's or invited
+    // person's command would run as you, free to rewrite Reach's own files
+    // and so its own access. It doesn't run, as without sandbox-exec on a
+    // Mac (jobs.mjs). Oct 12: Windows and Linux had run them unsandboxed.
+    if (!own && !sandbox)
+      throw fail(503, `Commands from agents and invited people run only in a sandbox, which this ${computerWord(process.platform)} doesn't have yet. Your own devices can run commands.`);
+    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });
