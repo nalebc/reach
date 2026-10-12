@@ -19,6 +19,9 @@ export const suites = {
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
+    // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-route-audit", "windows-private-folder", "windows-oracle",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

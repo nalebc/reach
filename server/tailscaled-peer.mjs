@@ -46,6 +46,8 @@ export function createTailscaledPeerCheck({
   clearTimer = clearTimeout,
   // Once per distinct reason: the helper stopped, or didn't answer in time.
   onProblem = () => {},
+  // Each answer as the helper gave it (Windows CI records them).
+  onAnswer = () => {},
 } = {}) {
   let child = null;
   let live = false;
@@ -114,8 +116,13 @@ export function createTailscaledPeerCheck({
       const list = entry.waiters.get(Number(port));
       if (!list) continue;
       entry.waiters.delete(Number(port));
-      for (const waiter of list)
-        waiter.resolve(value === "t" && Number(ms) > 0 && Number(ms) <= waiter.acceptedAt + slackMs);
+      for (const waiter of list) {
+        const ok = value === "t" && Number(ms) > 0 && Number(ms) <= waiter.acceptedAt + slackMs;
+        try {
+          onAnswer({ port: waiter.port, ingress: waiter.ingress, value, createdMs: value === "t" ? Number(ms) : 0, acceptedAt: waiter.acceptedAt, ok });
+        } catch {}
+        waiter.resolve(ok);
+      }
     }
     // Asked but not answered: no.
     for (const list of entry.waiters.values()) for (const waiter of list) waiter.resolve(false);
