@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-12",
+  "scope": "Isolated hosted platform regressions and actual installed archives. Synthetic data and provider credentials only; the final integrated source still needs normal CI. No production Reach restart or real provider sign-in.",
+  "sourceSha256": {
+    "server/terminal.mjs": "741ea89f2a84d90308c0936bc5a61b960e9d7a6273239a94be515cf5c7ea17be",
+    "server/pty-helper.mjs": "e40c92add95272af39780ad23dcca39c15373c030c129b8d7494870d860cd249",
+    "server/agent-sessions/sign-in.mjs": "8829ec506144aae698998ea45e7bc39d748497d6bbaab9b846b338323f2f91b9",
+    "test/terminal-windows-exit.test.mjs": "f35aeaae5ab3dcd68f9e128b04730f84f45126d50e5e42afe7e1fa299da31a8a",
+    "test/agent-sign-in.test.mjs": "fd5e6d3760cbf74aac31056ec9e36f1af06d84ee226bec983d4a1bb9714327db",
+    "test/ios-simulator.test.mjs": "2f568d27ba7731d49d4ef2c155284524d6932c4fbc854d733a22d5a77dbb13a2"
+  },
+  "windows": {
+    "platform": "windows-2025, Node 22",
+    "cause": "node-pty 1.1.0 natural shell exit left a worker/input pipe and native console resources alive. Archive smoke completed all assertions and server.close in 4256ms but the Node process remained alive until its unchanged 30-second deadline.",
+    "before": {
+      "commit": "5cf83ec398c73c519d754785356658dde8153855",
+      "job": "https://github.com/nalebc/reach/actions/runs/38190375643/job/114621654449",
+      "conclusion": "failure"
+    },
+    "fix": [
+      "Pin node-pty to exact 1.1.0 for the narrow compatibility shim.",
+      "Use bundled ConPTY on Windows; release only exited PTY input socket and output worker, without killing an exited/reused PID.",
+      "Use Windows cmd and a browser shim for Claude phone sign-in; late discovery/provider responses cannot restart cancelled sign-in."
+    ],
+    "after": {
+      "commit": "afc5a95198386d226a7b267632ddaf34b96fc00e",
+      "job": "https://github.com/nalebc/reach/actions/runs/38191471271/job/114624947996",
+      "conclusion": "success",
+      "targetedTests": {
+        "passed": 11,
+        "failed": 0,
+        "skipped": 1,
+        "skipReason": "POSIX-only shell shim"
+      },
+      "completedAt": "2026-10-12T01:25:50Z",
+      "checks": [
+        "Three natural PowerShell exits leave no owned console hosts while the parent remains alive.",
+        "Worker message ports close and the parent exits naturally; no process.exit shortcut or deadline increase.",
+        "Requested close and terminal liveness remain valid.",
+        "Real PTY runs a quoted .cmd provider fixture from a path containing spaces; synthetic login link/code round trip writes completion proof.",
+        "Actual npm and portable archives install; CLI/launcher, built UI/agent assets, deep links, authenticated files, traversal rejection and native terminal command/shutdown all pass."
+      ]
+    },
+    "limits": [
+      "This was a scoped diagnostic, not the final combined required CI matrix.",
+      "Claude sign-in used a synthetic provider; real account authorization was not exercised.",
+      "Windows ARM and physical Windows phone/browser interactions were not exercised."
+    ]
+  },
+  "ios": {
+    "source": "test/ios-simulator.test.mjs",
+    "fix": "Generate an explicit disposable CA and server-authentication leaf with subject/authority key identifiers and SAN; verify the chain/server purpose and localhost IP. Production TLS verification remains enabled.",
+    "local": {
+      "status": "success",
+      "simulatorRuntime": "26.3.1",
+      "openssl": "macOS system LibreSSL 3.3.6",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "checks": 8,
+      "durationSeconds": 121.94,
+      "physicalDevice": false,
+      "checksSummary": [
+        "Real pairing UI and authenticated synthetic file bytes",
+        "Folder traversal rejection",
+        "Native filesystem and background transfer/share bridges",
+        "Backgrounded download preserves bytes"
+      ],
+      "additionalCertificateProbe": "Certificate chain/purpose/IP also passed Homebrew OpenSSL 3.6.5."
+    },
+    "hosted": {
+      "status": "failure",
+      "diagnosticCommit": "8aa8a7df554a00f721c61fd04c6b56ddd3fe9ee4",
+      "note": "Xcode build succeeded. Before simulator creation, openssl verify rejected the temporary leaf with unable to get local issuer certificate; this remains unqualified on the hosted runner despite local certificate/simulator passes. Runner-specific certificate diagnostics are pending.",
+      "workflow": "https://github.com/nalebc/reach/actions/runs/38191938260",
+      "completedAt": "2026-10-12T01:30:05Z",
+      "job": "https://github.com/nalebc/reach/actions/runs/38191938260/job/114626362662"
+    },
+    "limits": [
+      "Disposable simulator only; no physical iPhone, camera, push delivery or external share recipient.",
+      "No Tailscale account or production Reach process was used."
+    ]
+  }
+}

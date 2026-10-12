@@ -11,11 +11,11 @@ const exec = promisify(execFile);
 
 export const suites = {
   windows: [
-    "agent-install", "browser-mutations", "private-ingress-platform",
+    "agent-install", "agent-sign-in", "browser-mutations", "private-ingress-platform",
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
-    "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness",
+    "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-commands",
   ],
   native: [

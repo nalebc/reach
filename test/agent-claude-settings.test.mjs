@@ -30,7 +30,7 @@ async function fixture(t, overrides = {}) {
       ],
     },
     claudeOpen: async () => true,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       model: async (id, value) => (calls.push({ id, ...value }), { model: value.model }),
       effort: async (id, value) => (calls.push({ id, ...value }), { effort: value.effort }),
       ...overrides,

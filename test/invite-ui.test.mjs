@@ -237,7 +237,7 @@ test("Full access sends just that; files need a folder; nothing is left half-mad
   await click(access(c, "Full access"));
   await click(inviteButton(c));
   await settle(80);
-  assert.deepEqual(posts(log)[0], ["mac-a", "/api/guests", { name: "Ali", ttlSeconds: 14400, full: true }]);
+  assert.deepEqual(posts(log)[0], ["mac-a", "/api/guests", { name: "Ali", ttlSeconds: 14400, full: true, fullControlVersion: 1 }]);
   await view.unmount();
 
   computers();

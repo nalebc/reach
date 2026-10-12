@@ -64,7 +64,7 @@ test("archive extraction requires the owner (or a full-access person), admin, re
   const scoped = admitAgent(f.reach.auth, scopedInvite.invitation);
   const guestInvite = f.reach.auth.inviteGuest({ name: "Write guest", ttlSeconds: 600, roots: [0], write: true });
   const guest = f.reach.auth.redeemGuest(guestInvite.invitation);
-  const fullGuestInvite = f.reach.auth.inviteGuest({ name: "Full guest", ttlSeconds: 600, full: true });
+  const fullGuestInvite = f.reach.auth.inviteGuest({ name: "Full guest", ttlSeconds: 600, full: true, fullControlVersion: 1 });
   const fullGuest = f.reach.auth.redeemGuest(fullGuestInvite.invitation);
   const browserInvite = f.reach.auth.inviteBrowser({ name: "Browser file editor", ttlSeconds: 600, preset: "files", folders: [{ root: 0, path: "nested" }], write: true });
   const browser = admitAgent(f.reach.auth, browserInvite.invitation);

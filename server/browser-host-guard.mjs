@@ -75,7 +75,9 @@ function apiPath(req) {
  *
  * A different node ID alone does not mean a different physical device: a host
  * browser can run its own Tailscale/WASM node. Only the specifically pinned
- * native Tailscale issuer(s) can reach ordinary APIs during the session. OS is
+ * native Tailscale issuer(s) can reach owner APIs during the session. People
+ * have a separate node-bound grant; embedded/browser nodes need explicit
+ * owner approval for coexistence. OS is
  * enrollment metadata, not hardware attestation; this assumes an agent cannot
  * enroll/configure a native Tailscale node or proxy through the approved phone.
  */
@@ -180,12 +182,21 @@ export function createBrowserHostGuard({
   // the owner's Allow (a link that reached the Mac's screen stops there).
   const onHost = (req) => {
     const identity = req?.reachIdentity;
-    if (!identity) return false;
+    if (!identity) return true;
     return !fresh() || typeof identity.nodeId !== "string" || !identity.nodeId || identity.nodeId === self;
   };
+  const personIdentity = (req, client) => client?.kind === "guest" &&
+    trusted(req) === true && !onHost(req) && expires(client) > now() &&
+    Number.isFinite(req.reachIdentity?.validUntil) && req.reachIdentity.validUntil > now() &&
+    client.tailscale?.nodeId === req.reachIdentity.nodeId &&
+    (client.tailscale?.userId || "") === (req.reachIdentity.userId || "");
+  const coexistenceApproved = (req, client) => client.macEntry?.status === "allowed" &&
+    client.macEntry.nodeId === req.reachIdentity.nodeId;
+  const needsPersonApproval = (req, client) => personIdentity(req, client) &&
+    client.macEntry?.status !== "waiting" && !nativeRemote(req) && !coexistenceApproved(req, client);
   const personIn = (req, client) =>
-    client?.kind === "guest" && client.macEntry?.status !== "waiting" &&
-    expires(client) > now() && !onHost(req);
+    personIdentity(req, client) && client.macEntry?.status !== "waiting" &&
+    (nativeRemote(req) || coexistenceApproved(req, client));
   const allows = (req, verifiedClient = null) => {
     const current = state();
     return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current) ||
@@ -232,5 +243,5 @@ export function createBrowserHostGuard({
       return release;
     } catch (error) { release(); throw error; }
   };
-  return { isActive, fresh, refresh, invalidate, allows, allowsConnection, onHost, assertRequest, beginInvitation };
+  return { isActive, fresh, refresh, invalidate, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, beginInvitation };
 }

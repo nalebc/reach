@@ -141,3 +141,15 @@ test("opening the phone keyboard never increases the user's screen zoom", () => 
     assert.equal(view.scale, scale);
   }
 });
+
+test("typing on a phone on its side spans the strip above the keyboard, field in view", () => {
+  // A 16:10 Mac in the 844×150 strip left above a landscape keyboard.
+  const baseW = 240, baseH = 150;
+  const view = typingView({ scale: 1, x: 0, y: 0 }, { x: 0.3, y: 0.8 }, baseW, baseH, 844, 150);
+  assert.ok(Math.abs(view.scale - 844 / 240) < 1e-9);
+  // The whole width shows; the field's row is inside the strip.
+  assert.equal(view.x, 0);
+  const top = (150 - baseH * view.scale) / 2 + view.y;
+  const fieldY = top + 0.8 * baseH * view.scale;
+  assert.ok(fieldY >= 0 && fieldY <= 150, `field y ${fieldY}`);
+});

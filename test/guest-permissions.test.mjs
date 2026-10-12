@@ -118,7 +118,7 @@ async function start(t, extra = {}) {
     ]);
     return code;
   };
-  return { reach, call, invite, stream, owner };
+  return { reach, call, invite, stream, owner, sockets };
 }
 
 test("scopes: invitations get exactly what was chosen; agents never get control", () => {
@@ -384,7 +384,7 @@ test("while the Mac shows one of its own dialogs, someone invited can't click or
   dialogs = [{ id: "7", kind: "password" }];
   const held = await key(guest.token);
   assert.equal(held.status, 423);
-  assert.match(held.body.error, /only its owner can answer/);
+  assert.match(held.body.error, /owner or a person explicitly given full control/);
   assert.equal((await control(guest.token)).status, 423);
   // Letting go still works; the owner controls and answers.
   assert.equal((await control(guest.token, false)).status, 200);
@@ -526,4 +526,19 @@ test("folders chosen by browsing: exactly that folder, nothing beside or above i
   assert.deepEqual(both.body.scopes, ["device", "files:read", "files:write"]);
   const legacy = await call("/api/guests", { method: "POST", body: { name: "Old", ttlSeconds: 900, roots: [0] } });
   assert.equal(legacy.status, 201);
+});
+
+test("removing Full-person consent closes an unfiltered stream even when scopes stay the same", async t => {
+  const { call, invite, stream, sockets } = await start(t);
+  const person = await invite({ full: true, fullControlVersion: 1 });
+  assert.equal(await stream(person.token), "open");
+  assert.equal((await call("/api/screen/control", { token: person.token, method: "POST", body: { enabled: true } })).status, 200);
+  const closed = once(sockets.at(-1), "close");
+  const changed = await call(`/api/guests/${person.clientId}/access`, { method: "POST", body: { full: true } });
+  assert.equal(changed.status, 200);
+  assert.equal((await closed)[0], 4002);
+  const view = await call("/api/device", { token: person.token });
+  assert.equal(view.body.access.fullControlVersion, undefined);
+  assert.equal((await call("/api/screen", { token: person.token })).status, 403);
+  assert.equal((await call("/api/screen/input", { token: person.token, method: "POST", body: { type: "key", key: "invalid" } })).status, 403);
 });

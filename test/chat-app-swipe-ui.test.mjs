@@ -494,7 +494,9 @@ test("a browser ending its touch pointer stream leaves the non-passive touch swi
   await mount();
   const page = $(".chat-workspace");
   touch(page, "touchstart", [point(250)]);
-  touch(page, "touchmove", [point(120)]);
+  // Cross halfway so this checks pointer cancellation, independently of
+  // whether a loaded runner releases within the short-flick deadline.
+  touch(page, "touchmove", [point(40)]);
   const canceledPointer = new dom.window.Event("pointercancel", {
     bubbles: true,
   });
@@ -502,7 +504,7 @@ test("a browser ending its touch pointer stream leaves the non-passive touch swi
   page.dispatchEvent(canceledPointer);
   await settle();
   assert.equal($(".chat-app-pages").dataset.motion, "dragging");
-  touch(page, "touchend", [], [point(120)]);
+  touch(page, "touchend", [], [point(40)]);
   await idle();
   assert.equal(selected(), "claude");
 });

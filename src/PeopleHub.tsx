@@ -21,7 +21,8 @@ import { workspaceCapabilities } from "./capabilities";
 import { groupDevices } from "./device-groups";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import ScreenPopup from "./ScreenPopup";
-import BrowserAgents, { activeSession, type BrowserAgentSession } from "./BrowserAgents";
+import BrowserAgents, { type BrowserAgentSession } from "./BrowserAgents";
+import { listedAccess } from "./access-list";
 import AgentShortcuts from "./AgentShortcuts";
 import { ServiceAccessPanel } from "./service-access";
 import ToolBrowserSetup from "./ToolBrowserSetup";
@@ -332,11 +333,9 @@ export default function PeopleHub({
 
   const session = (c: Client) => sessions.find((s) => s.id === c.id);
   const asks = (c: Client) => statusOf(c, now, session(c)).tone === "attention";
-  // Live: not past its end, and not stopped (or idle-ended, as the Mac says).
-  const live = (c: Client) => {
-    const s = session(c);
-    return s ? activeSession(s, now) : (c.expiresAt || 0) > now && c.status !== "revoked";
-  };
+  // Live: not past its end, and not stopped (or idle-ended, as the Mac
+  // says); Home's Access card reads the same (src/access-list.ts).
+  const listed = listedAccess(clients, sessions, now);
   // Active or idle, for those who joined (the others' line says where they
   // are): connected now, holding or working on the Mac, or a recent use.
   const connected = (c: Client) =>
@@ -350,10 +349,10 @@ export default function PeopleHub({
   };
   const activeNow = (c: Client) => !!use(c)?.active;
   // What needs you first, then who is active.
-  const agents = clients.filter((c) => c.kind === "agent" && live(c)).sort((a, b) => Number(asks(b)) - Number(asks(a)) || Number(activeNow(b)) - Number(activeNow(a)));
-  const people = clients.filter((c) => c.kind === "guest" && live(c)).sort((a, b) => Number(activeNow(b)) - Number(activeNow(a)));
+  const agents = listed.agents.sort((a, b) => Number(asks(b)) - Number(asks(a)) || Number(activeNow(b)) - Number(activeNow(a)));
+  const people = listed.people.sort((a, b) => Number(activeNow(b)) - Number(activeNow(a)));
   const own = groupDevices(clients.filter((c) => c.kind !== "guest" && c.kind !== "agent"));
-  const ended = sessions.filter((s) => !activeSession(s, now)).length;
+  const ended = listed.ended;
   const opened = [...agents, ...people].find((c) => c.id === openId);
   const openedDevice = own.find((c) => c.id === openId);
 

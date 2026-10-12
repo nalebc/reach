@@ -11,6 +11,8 @@ let dom, WorkflowSheet, view, stored, delay;
 const edits = [];
 before(async () => {
   dom = await startDom({ routes: {
+    // The task editor's model picker.
+    "/api/sessions/models": () => ({ models: [], modes: [], mode: null }),
     "/api/sessions/workflows/wf": (init) => {
       if (init.method !== "POST") return { ...stored, version: String(stored.updatedAt) };
       const body = JSON.parse(init.body);

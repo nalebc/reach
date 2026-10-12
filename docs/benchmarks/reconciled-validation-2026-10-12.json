@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "date": "2026-10-12",
-  "status": "saved_evidence_reconciled_final_integration_in_progress",
-  "generatedAt": "2026-10-12T00:08:22.768084+00:00",
+  "status": "saved_evidence_and_final_linux24_passed_mac_hosted_reconciliation_pending",
+  "generatedAt": "2026-10-12T00:50:02.364777+00:00",
   "purpose": "Reconcile the separate workflow saved artifacts with the coordinating release validation. These counts are overlapping suites, not unique coverage.",
   "savedSnapshot": {
     "head": "b08734c06b5426e4d8acb69a53463c48869fb268",
@@ -2034,15 +2034,17 @@
     "Earlier coordinator snapshot production SHA 50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376 is superseded; 37 production paths differ in t17."
   ],
   "finalLinux24": {
-    "status": "running",
+    "status": "passed",
     "snapshot": {
-      "capturedAt": "2026-10-12T00:19:14.417315+00:00",
+      "capturedAt": "2026-10-12T00:34:35.965787+00:00",
+      "baseCommit": "babb4dec3f207c401618b81bc815f235e13292af",
+      "sourceSha256": "bfeedea64c3ee9c2a8a5e86bf3e01bf6dc7aad727195fdad51d6a2cd087b81df",
+      "productionSha256": "463c402aaee299ae8dd6baae43570cb0e0f1b5667ebf311eaee343914bc6b8b7",
       "sourceFiles": 1251,
-      "sourceSha256": "9fdee67f5eca2773548a8c80775444897972d6aadfc94a851f4c9126d80a576c",
       "productionFiles": 630,
-      "productionSha256": "cbe93d80e1e7244356b9ed81084dc8c2479fd938df9292c5459a708d8985d032",
+      "allSourceUnchangedDuringCopy": true,
       "productionUnchangedDuringCopy": true,
-      "allSourceUnchangedDuringCopy": true
+      "copiedFrom": "/private/tmp/reach-reconcile-mac-i7thd7jm"
     },
     "sameProductionBytesAsFinalMacSnapshot": true,
     "environment": {
@@ -2055,12 +2057,206 @@
       "memoryBytes": 5368709120,
       "pidLimit": 512
     },
-    "planned": "Fresh release build, guarded full CI runner, package and both archive verification, installed npm and portable first-run matrix, actual npm 12.2.0 blocked-script/rebuild test.",
-    "logs": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24",
-    "sourceManifest": "/tmp/reach-linux-bash-h7d72qjx/logs/final-feature-source-snapshot.json"
+    "logs": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24-final",
+    "sourceManifest": "/tmp/reach-linux-bash-h7d72qjx/logs/final-feature-source-snapshot.json",
+    "results": {
+      "full-suite": {
+        "status": "passed",
+        "counts": {
+          "tests": 3638,
+          "pass": 3552,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 86,
+          "todo": 0
+        },
+        "durationMs": 653757.675382,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24-final/full-suite.log",
+        "logSha256": "86b92639ff9ea18ff6974662adec553716b58116d6d41fa10e5c63cc3aa9fe97"
+      },
+      "installed-matrix": {
+        "status": "passed",
+        "counts": {
+          "tests": 72,
+          "pass": 71,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 1,
+          "todo": 0
+        },
+        "durationMs": 106893.042508,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24-final/installed-matrix.log",
+        "logSha256": "4cf2ffac26134393efdbb1f8f072a4c9788cca50a3f44790a9963cccdfe4acc3"
+      },
+      "npm12-install": {
+        "status": "passed",
+        "counts": {
+          "tests": 1,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "durationMs": 9258.965253,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24-final/npm12-install.log",
+        "logSha256": "34c63db60e5f11e5d9de34e3d3d1fb8c67d64074acbf1981b49ad7f0bd8a108b"
+      }
+    },
+    "completedAt": "2026-10-12T00:50:02.364684+00:00",
+    "steps": [
+      {
+        "name": "versions",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "node --version; npm --version; go version; uname -a"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 110
+      },
+      {
+        "name": "npm-ci",
+        "command": [
+          "npm",
+          "ci"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 12362
+      },
+      {
+        "name": "release-build",
+        "command": [
+          "npm",
+          "run",
+          "build:release"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 17230
+      },
+      {
+        "name": "full-suite",
+        "command": [
+          "npm",
+          "run",
+          "test:ci"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 656296
+      },
+      {
+        "name": "package",
+        "command": [
+          "npm",
+          "run",
+          "package"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 9040
+      },
+      {
+        "name": "verify-package",
+        "command": [
+          "npm",
+          "run",
+          "verify:package"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 16208
+      },
+      {
+        "name": "installed-matrix",
+        "command": [
+          "npm",
+          "run",
+          "test:ci:installed"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 111538
+      },
+      {
+        "name": "npm12-install",
+        "command": [
+          "node",
+          "/opt/reach-npm12/node_modules/npm/bin/npm-cli.js",
+          "run",
+          "test:file",
+          "--",
+          "--test-timeout=180000",
+          "test/npm12-install.test.mjs"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 9467
+      },
+      {
+        "name": "candidate",
+        "command": [
+          "node",
+          ".github/scripts/package-candidate.mjs"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 397
+      },
+      {
+        "name": "resources",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "cat /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.events /sys/fs/cgroup/pids.events"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 1
+      }
+    ],
+    "artifacts": {
+      "receipt": {
+        "filename": "nalebc-reach-0.1.0.tgz",
+        "sha256": "5bc293176ec20167b8f9d17d62f60953064bf8c7c6bae9bf18607a73fd197f49",
+        "version": "0.1.0",
+        "package": "@nalebc/reach",
+        "commit": "local",
+        "portable": {
+          "filename": "reach-0.1.0-portable.tar.gz",
+          "sha256": "99b62927c86ac0ff484809682b5f7dfc009f6b208525b7a464d88e1501691645"
+        }
+      },
+      "archives": [
+        {
+          "filename": "nalebc-reach-0.1.0.tgz",
+          "bytes": 28301687,
+          "sha256": "5bc293176ec20167b8f9d17d62f60953064bf8c7c6bae9bf18607a73fd197f49",
+          "receiptDigestMatches": true,
+          "candidateDigestMatches": true
+        },
+        {
+          "filename": "reach-0.1.0-portable.tar.gz",
+          "bytes": 34917394,
+          "sha256": "99b62927c86ac0ff484809682b5f7dfc009f6b208525b7a464d88e1501691645",
+          "receiptDigestMatches": true,
+          "candidateDigestMatches": true
+        }
+      ],
+      "published": false,
+      "archiveDigestsStillMatchAfterInstalledMatrix": true
+    },
+    "allFrozenSourceBytesUnchangedAfterBuildAndTests": true,
+    "resourceObservations": {
+      "memoryPeakBytes": 2624335872,
+      "raw": "2624335872\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nmax 0\n"
+    },
+    "coverage": "Real Ubuntu ARM64 Node24 suite, fresh release build including Go/WASM, both exact archive clean-install smoke tests, npm/portable first-run phone fixtures, and actual npm12 script-blocking/explicit native rebuild. External Tailscale identity and phones in onboarding remain deterministic fixtures."
   },
   "unprovenByTheseSavedRuns": [
-    "Linux Node24/npm12 compatibility execution; addressed by the pending independent lane.",
     "Native Windows and Intel macOS execution on hosted runners.",
     "Hosted iOS simulator interaction lane; separate local simulator evidence exists in the coordinator report.",
     "Actual GitHub required-check evaluation, branch/ruleset enforcement, public CodeQL/dependency review and Scorecard.",
@@ -2362,5 +2558,337 @@
     "runnerExit": 0,
     "log": "/tmp/reach-linux-bash-h7d72qjx/logs/t17-npm12-node24.log",
     "logSha256": "989d2bd3b58d47465697cfeee70a63abbf582822853a47866eb8c969ab6d30c2"
+  },
+  "linuxNode24WatcherRegression": {
+    "status": "fixed_final_full_suite_passed",
+    "sourceFiles": [
+      "server/agent-sessions/agent-watch.mjs",
+      "test/agent-watch.test.mjs"
+    ],
+    "cause": "Node24.21.0 Linux recursive fs.watch returns an inert watcher for a nonexistent root instead of throwing or emitting error, preventing the existing install-later retry. Instrumented real-fs fixture saw one watch call with exists=false and no events after7.6seconds. Installed runtime internal/fs/recursive_watch source confirms the startup catch suppresses this error with default options.",
+    "fix": "The real filesystem watcher stats its root before constructing fs.watch so missing roots trigger the existing retry; injected test watchers are unchanged.",
+    "before": {
+      "originalIntegration": "Failed independently in the full suite and single-case rerun after5.24seconds.",
+      "deterministicRegression": "New inert-watcher simulation failed against the frozen original implementation after3seconds.",
+      "logs": [
+        "/tmp/reach-linux-watch-scoped.log",
+        "/tmp/reach-linux-watch-diagnostic.log",
+        "/tmp/reach-linux-watch-silent-before.log"
+      ]
+    },
+    "after": {
+      "node24": {
+        "tests": 7,
+        "pass": 7,
+        "fail": 0,
+        "skipped": 0,
+        "log": "/tmp/reach-linux-watch-final-node24.log"
+      },
+      "node22": {
+        "tests": 7,
+        "pass": 7,
+        "fail": 0,
+        "skipped": 0,
+        "log": "/tmp/reach-linux-watch-final-node22.log"
+      }
+    },
+    "scope": "Focused tests ran unchanged assertions against a scratch copy of the fixed module, preserving the full-run frozen snapshot until its results are collected.",
+    "replacementRegression": {
+      "before": {
+        "tests": 3,
+        "pass": 0,
+        "fail": 3,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/watch-replacement-before.log"
+      },
+      "afterNode24": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0,
+        "skipped": 0,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/watch-replacement-fixed24.log"
+      },
+      "afterNode22": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0,
+        "skipped": 0,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/watch-replacement-fixed22.log"
+      },
+      "cause": "Deleting, moving or atomically replacing the provider root emits rename without error; the watcher stays attached to its previous inode.",
+      "fix": "On rename, the real-fs wrapper compares bigint root device/inode; a missing/replaced root retires before forwarding any old event and enters the existing retry. Errors schedule one retry; close cancels it and late callbacks are ignored."
+    }
+  },
+  "linux24BaselineBeforeWatchFix": {
+    "status": "failed_missing_root_watcher_regression",
+    "snapshot": {
+      "capturedAt": "2026-10-12T00:19:14.417315+00:00",
+      "sourceFiles": 1251,
+      "sourceSha256": "9fdee67f5eca2773548a8c80775444897972d6aadfc94a851f4c9126d80a576c",
+      "productionFiles": 630,
+      "productionSha256": "cbe93d80e1e7244356b9ed81084dc8c2479fd938df9292c5459a708d8985d032",
+      "productionUnchangedDuringCopy": true,
+      "allSourceUnchangedDuringCopy": true
+    },
+    "sameProductionBytesAsFinalMacSnapshot": true,
+    "environment": {
+      "os": "Ubuntu24.04 Linux ARM64 container inside Docker Desktop VM",
+      "node": "24.21.0",
+      "npm": "11.19.0",
+      "compatibilityNpm": "12.2.0",
+      "go": "1.27.2",
+      "cpus": 4,
+      "memoryBytes": 5368709120,
+      "pidLimit": 512
+    },
+    "planned": "Fresh release build, guarded full CI runner, package and both archive verification, installed npm and portable first-run matrix, actual npm 12.2.0 blocked-script/rebuild test.",
+    "logs": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24",
+    "sourceManifest": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24/source.json",
+    "steps": [
+      {
+        "name": "versions",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "node --version; npm --version; go version; uname -a"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 116
+      },
+      {
+        "name": "npm-ci",
+        "command": [
+          "npm",
+          "ci"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 16275
+      },
+      {
+        "name": "release-build",
+        "command": [
+          "npm",
+          "run",
+          "build:release"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 21906
+      },
+      {
+        "name": "full-suite",
+        "command": [
+          "npm",
+          "run",
+          "test:ci"
+        ],
+        "exit": 1,
+        "signal": null,
+        "durationMs": 599834
+      },
+      {
+        "name": "package",
+        "command": [
+          "npm",
+          "run",
+          "package"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 1552
+      },
+      {
+        "name": "verify-package",
+        "command": [
+          "npm",
+          "run",
+          "verify:package"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 15636
+      },
+      {
+        "name": "installed-matrix",
+        "command": [
+          "npm",
+          "run",
+          "test:ci:installed"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 167934
+      },
+      {
+        "name": "npm12-install",
+        "command": [
+          "node",
+          "/opt/reach-npm12/node_modules/npm/bin/npm-cli.js",
+          "run",
+          "test:file",
+          "--",
+          "--test-timeout=180000",
+          "test/npm12-install.test.mjs"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 9005
+      },
+      {
+        "name": "candidate",
+        "command": [
+          "node",
+          ".github/scripts/package-candidate.mjs"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 382
+      },
+      {
+        "name": "resources",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "cat /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.events /sys/fs/cgroup/pids.events"
+        ],
+        "exit": 0,
+        "signal": null,
+        "durationMs": 2
+      }
+    ],
+    "results": {
+      "full-suite": {
+        "counts": {
+          "tests": 3631,
+          "pass": 3544,
+          "fail": 1,
+          "cancelled": 0,
+          "skipped": 86,
+          "todo": 0
+        },
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24/full-suite.log"
+      },
+      "installed-matrix": {
+        "counts": {
+          "tests": 72,
+          "pass": 71,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 1,
+          "todo": 0
+        },
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24/installed-matrix.log"
+      },
+      "npm12-install": {
+        "counts": {
+          "tests": 1,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24/npm12-install.log"
+      }
+    },
+    "artifactsRetained": "/tmp/reach-linux-bash-h7d72qjx/logs/reconciled-linux24/artifacts"
+  },
+  "hostedFixtureFollowup": {
+    "intelFunnel": {
+      "cause": "The first protected-file HTTP request lazily compiled its Swift helper. A five-second request timeout deleted the fixture state while the compiler still linked.",
+      "fix": "Compile the real source-hashed native helper once in suite setup under its existing 120-second native-build bound, then copy it into each isolated fixture. HTTP requests retain five-second deadlines.",
+      "files": [
+        "test/funnel-agent-integration.test.mjs"
+      ],
+      "macArm64": {
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0,
+        "durationMs": 5691.993542,
+        "logSha256": "fc80300c4e8f3c8697e0e9fdb11328cb48d30d834081e066361c8a8f6f424e60"
+      },
+      "delayedRealCompileProof": {
+        "delayMs": 6500,
+        "passed": 14,
+        "failed": 0,
+        "durationMs": 11821.049417,
+        "logSha256": "f0833880f443def9ee7bde3da84403ba824dc61f0f2aa60016686d91b9edd9f0",
+        "note": "Scratch preload delayed completion of the real Swift compiler. Exactly one compile; production code unchanged."
+      },
+      "hostedIntelStatus": "Requires hosted rerun on this fixture change."
+    },
+    "linux22ColdSource": {
+      "hostedBaseline": "Failed waiting 120 seconds for owner approval while stdout still showed the first installation step; original runner discarded setup/npm logs. That progress line alone does not establish which preparation phase was active.",
+      "diagnosticChange": "Failure includes bounded tails from fixture setup.log and two newest npm debug logs before cleanup. Existing timeout unchanged.",
+      "reproduction": {
+        "snapshotProductionSha256": "463c402aaee299ae8dd6baae43570cb0e0f1b5667ebf311eaee343914bc6b8b7",
+        "node": "22.23.3",
+        "platform": "linux-arm64",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "durationMs": 33226.500223,
+        "installPhaseSeconds": 27,
+        "dependenciesSeconds": 10,
+        "interfaceBuildSeconds": 17,
+        "logSha256": "67c7e330decc1d59816bcb94040a824542fc0bf8edefaabe872fdad4db48d32e"
+      },
+      "hostedX64Status": "Passed on the corrected fixture in the isolated hosted Linux22 job. The final combined release matrix still needs to run on the final merged commit.",
+      "hostedDiagnostic": {
+        "commit": "b3b8ae34743fb9e7d4d32d6d0b346a089fa96eb6",
+        "runUrl": "https://github.com/nalebc/reach/actions/runs/38190781847",
+        "jobId": 114622892186,
+        "platform": "ubuntu-24.04-x64",
+        "node": "22.23.3",
+        "passed": 0,
+        "failed": 1,
+        "skipped": 1,
+        "durationMs": 172912.376288,
+        "failure": "Owner-approval prompt was not reached within the unchanged 120-second bound.",
+        "observation": "Preserved npm logs show npm ci and npm run build both exited 0; setup.log ends after Built dist/agent.mjs. The stall is after the successful dependency and interface builds; the exact remaining preparation phase is being instrumented.",
+        "logSha256": "490a8d1ae0754f908a7b535bd9e49b0475f0052f21ab69647a41f72ca3693d5d",
+        "gateNote": "This diagnostic tee step did not propagate the test failure, so its green step status is not a passing test receipt. The actual TAP result above is authoritative; the diagnostic workflow shell is being corrected."
+      },
+      "hostedIndependentReproduction": {
+        "commit": "0e89956403113360ee41d7b01394b149bcc00014",
+        "runUrl": "https://github.com/nalebc/reach/actions/runs/38191101562",
+        "jobId": 114623839148,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 1,
+        "durationMs": 116574.153201,
+        "failure": "Setup completed and built browser sign-in, then the required missing-Go warning assertion failed.",
+        "observation": "The supposedly no-Go fixture discovered a real hosted compiler through its restricted PATH. Browser sign-in compiled and compressed, taking the installation to 110 seconds. This explains the earlier timeout as an unintended Go build rather than a failed npm install.",
+        "logSha256": "a135765ed0dd83b0c5da830555b11a70530b3d87dd5c28a2b3caec6df3511aee"
+      },
+      "fix": "Only the cold source scenario maps execFile(\"go\") to a private nonexistent path, so the real child-process implementation returns ENOENT even when the host image exposes /usr/bin/go. The existing 120-second owner-approval deadline and missing-Go/browser-sign-in assertions remain unchanged.",
+      "goInstalledIsolationProof": {
+        "platform": "linux-arm64",
+        "node": "22.23.3",
+        "hostGo": "1.27.2 exposed as /usr/bin/go during this proof; removed afterward",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "durationMs": 33726.178807,
+        "scope": "Actual private Node download and checksum, npm ci, production frontend/agent build, simulated Tailscale setup, phone approval, and protected file. The missing-Go scenario succeeds despite a real Go compiler installed in the fixture PATH.",
+        "logSha256": "018bcc970d2485c90de92020190f21244a8ea8347044549336e815b7e2b40fec"
+      },
+      "hostedFixedProof": {
+        "commit": "a5ec885ef571a8f7daa8c0ba3a1ee3cadcc2a12f",
+        "runUrl": "https://github.com/nalebc/reach/actions/runs/38191563380",
+        "jobUrl": "https://github.com/nalebc/reach/actions/runs/38191563380/job/114625218053",
+        "platform": "ubuntu-24.04-x64",
+        "node": "22.23.3",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "durationMs": 46423.801749,
+        "skipReason": "The companion test refusing the source harness on macOS does not apply to Linux.",
+        "scope": "Actual private Node download/checksum, npm ci, frontend/agent build, absent-Go fallback, simulated Tailscale onboarding, first phone approval and protected file access.",
+        "gateNote": "The diagnostic step uses bash with pipefail and the actual guarded test TAP passed.",
+        "logSha256": "210200845144489af3f019418d5f0d52c372bf1ad33663a815b0904917be0acb"
+      }
+    }
   }
 }

@@ -98,6 +98,19 @@ const host = (claude, extra = {}) =>
     ...extra,
   });
 
+test("Claude chat keeps the configured Git Bash without inheriting host credentials", async t => {
+  const claude = fakeClaude(), h = host(claude, {
+    env: { PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe",
+      CLAUDE_CODE_GIT_BASH_PATH_EXTRA: "not allowed", CLAUDE_CONFIG_DIR: "/another-profile",
+      claudeCode: "nested", Anthropic_Api_Key: "secret", Reach_Pair_Token: "private" },
+  });
+  t.after(() => h.close());
+  await h.send(ID, { text: "hello", cwd: "/work/app" });
+  assert.deepEqual(claude.last().options.env, {
+    PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe",
+  });
+});
+
 test("a temporarily unavailable Claude probe asks to retry rather than update Reach", async (t) => {
   const claude = fakeClaude(), h = host(claude, { check: async () => ({ status: "unavailable" }) });
   t.after(() => h.close());
@@ -930,7 +943,7 @@ test("a message to a chat the Claude app lists goes into the app itself (its win
     takeOverMs: 30,
     claudeImports: { add: async () => {}, close() {} },
     claudeOpen: async () => app.open,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async (id, { begin, ...message }) => {
         if (refuse) throw Object.assign(new Error(refuse), { waiting: true });
         // Marked on its way only as it's typed, as the real one does.
@@ -2050,7 +2063,7 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
           return { session: { agent: "claude", id, cwd: "/work/site", inApp: true, title: "Claw", model: "native-model", effort: "low" }, items: [] };
         },
       },
-      claudeCompose: { deliver: async (id, message) => {
+      typeIntoApp: true, claudeCompose: { deliver: async (id, message) => {
         attempts++;
         if (scenario === "uncertain delivery") throw Object.assign(Error("delivery uncertain"), { retryable: false });
         received.push({ id, ...message });
@@ -2084,3 +2097,29 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
     }
   });
 }
+
+
+test("the default Claude app-chat delivery sends text and images together through the CLI", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach-claude-image-default-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const picture = path.join(directory, "picture.png");
+  const bytes = Buffer.from("synthetic image bytes"); fs.writeFileSync(picture, bytes);
+  const fake = fakeClaude();
+  const sessions = createAgentSessions({
+    dataDir: directory,
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}) },
+    claude: { list: async () => [], starts: async () => [], health: async () => ({ installed: true, signedIn: true }),
+      read: async id => ({ session: { id, agent: "claude", cwd: directory, inApp: true, status: "idle", mode: "auto" }, items: [] }) },
+    live: async () => new Map(), claudeHost: host(fake), signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    claudeCompose: { deliver: async () => assert.fail("default sends must not type into the desktop box") },
+    claudeOpen: async () => true,
+  });
+  t.after(() => sessions.close());
+  await sessions.send("claude", ID, { text: "Describe this fixture", images: [picture] });
+  const messages = fake.last().lines.filter(line => line.type === "user");
+  assert.equal(messages.length, 1);
+  assert.ok(messages[0].message.content.some(item => item.type === "text" && item.text === "Describe this fixture"));
+  assert.ok(messages[0].message.content.some(item => item.type === "image" && item.source.data === bytes.toString("base64")));
+});

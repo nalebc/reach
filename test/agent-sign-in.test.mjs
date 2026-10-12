@@ -54,6 +54,117 @@ test("the sign-in link for another device is read from Claude Code's output", ()
   assert.equal(plainText(LOGIN_OUTPUT).includes("\x1b"), false);
 });
 
+test("Claude sign-in keeps the configured Git Bash without inheriting host credentials", async t => {
+  const dir = await dataDir(), term = fakeTerminal();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const signIn = createSignIn({
+    dataDir: dir, claudeCommand: async () => "claude", claudeHealth: async () => ({}),
+    spawn: term.spawn, platform: "darwin", linkMs: 0,
+    env: { PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe",
+      CLAUDE_CODE_GIT_BASH_PATH_EXTRA: "not allowed", CLAUDE_CONFIG_DIR: "/another-profile",
+      claudeCode: "nested", Anthropic_Api_Key: "secret", Reach_Pair_Token: "private" },
+  });
+  t.after(() => signIn.cancel("claude"));
+  await signIn.start("claude");
+  assert.deepEqual(term.spawned[0].options.env, {
+    PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe", TERM: "xterm-256color",
+  });
+});
+
+test("Windows phone sign-in uses cmd, a browser shim and exited-PTY cleanup", async t => {
+  const dir = await dataDir();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const term = fakeTerminal();
+  let released = 0;
+  term.proc._agent = { _inSocket: { destroy: () => released++ }, _conoutSocketWorker: { dispose: () => released++ } };
+  const signIn = createSignIn({
+    dataDir: dir, platform: "win32", claudeCommand: async () => "claude",
+    claudeHealth: async () => ({ signedIn: true }), spawn: term.spawn, linkMs: 0,
+    env: { Path: "C:\\Windows", ComSpec: "cmd.exe", BROWSER: "unwanted-browser", CLAUDECODE: "1",
+      Claude_Code_Git_Bash_Path: "C:\\Custom Git\\bin\\bash.exe", Anthropic_Api_Key: "secret" },
+  });
+  await signIn.start("claude");
+  t.after(() => signIn.cancel("claude"));
+  const [{ file, args, options }] = term.spawned;
+  assert.equal(file, "cmd.exe");
+  assert.equal(args, '/d /s /c "claude auth login"');
+  assert.equal(options.useConptyDll, true);
+  assert.equal(options.env.PATH, `${path.join(dir, "sign-in")};C:\\Windows`);
+  assert.equal(options.env.Path, undefined);
+  assert.equal(options.env.CLAUDECODE, undefined);
+  assert.equal(options.env.Claude_Code_Git_Bash_Path, "C:\\Custom Git\\bin\\bash.exe");
+  assert.equal(options.env.Anthropic_Api_Key, undefined);
+  assert.equal(options.env.BROWSER, path.join(dir, "sign-in", "open.cmd"));
+  assert.match(await fs.readFile(options.env.BROWSER, "utf8"), /exit \/b 0/);
+  term.print(LOGIN_OUTPUT);
+  assert.equal(signIn.view("claude").url, MANUAL);
+  await term.exit(0);
+  assert.equal(released, 2);
+  assert.equal(signIn.view("claude").state, "done");
+});
+
+test("Windows Claude phone sign-in runs a quoted cmd launcher through a real PTY", {
+  skip: process.platform !== "win32", timeout: 30000,
+}, async t => {
+  const dir = await dataDir();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const folder = path.join(dir, "CLI with spaces");
+  await fs.mkdir(folder);
+  const script = path.join(folder, "fake-login.mjs"), command = path.join(folder, "claude.cmd"), completed = path.join(folder, "completed.txt");
+  await fs.writeFile(script, `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    assert.deepEqual(process.argv.slice(2), ['auth', 'login']);
+    assert.match(fs.readFileSync(process.env.BROWSER, 'utf8'), /exit \\/b 0/);
+    assert.equal(process.env.CLAUDECODE, undefined);
+    process.stdout.write(${JSON.stringify(LOGIN_OUTPUT)});
+    const timeout = setTimeout(() => process.exit(2), 10000);
+    process.stdin.on('data', data => {
+      if (String(data).trim() === 'SYNTHETIC_CODE') {
+        fs.writeFileSync(${JSON.stringify(completed)}, 'synthetic sign-in completed');
+        clearTimeout(timeout); process.exit(0);
+      }
+    });
+    process.stdin.resume();
+  `);
+  await fs.writeFile(command, `@"${process.execPath}" "${script}" %*\r\n`);
+  let signedIn = false;
+  const signIn = createSignIn({ dataDir: dir, claudeCommand: async () => `"${command}"`,
+    claudeHealth: async () => ({ signedIn }), env: { ...process.env, CLAUDECODE: "synthetic" }, timeoutMs: 20000,
+  });
+  t.after(() => signIn.cancel("claude"));
+  const result = await signIn.start("claude");
+  assert.equal(result.state, "link", JSON.stringify(result));
+  assert.equal(result.url, MANUAL);
+  signedIn = true;
+  signIn.submit("claude", "SYNTHETIC_CODE");
+  const deadline = Date.now() + 10000;
+  while (signIn.view("claude").state === "checking" && Date.now() < deadline) await settle(20);
+  assert.equal(signIn.view("claude").state, "done", JSON.stringify(signIn.view("claude")));
+  assert.equal(await fs.readFile(completed, "utf8"), "synthetic sign-in completed");
+});
+
+test("cancelled sign-in cannot start a late terminal or revive a late Codex login", async t => {
+  const dir = await dataDir();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const command = Promise.withResolvers(), login = Promise.withResolvers(), term = fakeTerminal(), calls = [];
+  const signIn = createSignIn({ dataDir: dir, claudeCommand: () => command.promise,
+    claudeHealth: async () => ({}), spawn: term.spawn, linkMs: 0,
+    daemon: { rpc: (method, params) => { calls.push([method, params]); return method === "account/login/start" ? login.promise : Promise.resolve({}); } },
+  });
+  const claude = signIn.start("claude");
+  signIn.cancel("claude");
+  command.resolve("claude");
+  await claude;
+  assert.equal(term.spawned.length, 0, "late discovery cannot start a cancelled login");
+  const codex = signIn.start("codex");
+  signIn.cancel("codex");
+  login.resolve({ loginId: "late", verificationUrl: "https://auth.example/device", userCode: "synthetic" });
+  await codex;
+  assert.equal(signIn.view("codex").state, "cancelled");
+  assert.deepEqual(calls.at(-1), ["account/login/cancel", { loginId: "late" }]);
+});
+
 test("Claude Code signs in from the phone: link out, code in, nothing opens on the Mac", { skip: process.platform === "win32" && "Executes a POSIX shell shim" }, async () => {
   const dir = await dataDir();
   const term = fakeTerminal();

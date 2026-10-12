@@ -200,17 +200,18 @@
     {
       "id": "SC14",
       "section": "Host guard / D6",
-      "status": "documentation_and_message_corrected",
-      "conclusion": "Invited, waiting or connected Apps/Full bind supervision to the approving native Tailscale device. Pausing agent input does not lift this guard. The person-facing message now says access must end; invalidated legacy Full no longer holds the guard.",
+      "status": "revised_and_regression_tested",
+      "conclusion": "Owner APIs remain pinned to the native approving device while Apps/Full agent access exists. Separately invited people can coexist; new joins and pre-existing browser/WASM nodes require explicit node-bound owner approval. Missing/untrusted/expired identity, the host node, waiting and revoked grants fail closed. Pausing retains the owner guard.",
       "sources": [
         "server/browser-host-guard.mjs",
         "server/core.mjs"
       ],
       "regressionFiles": [
         "test/browser-host-guard.test.mjs",
-        "test/person-kept-out.test.mjs",
+        "test/person-beside-agent.test.mjs",
         "test/full-control-migration.test.mjs"
-      ]
+      ],
+      "limits": "Approval confirms intended custody; it is not hardware attestation."
     },
     {
       "id": "SC15",
@@ -341,15 +342,18 @@
     {
       "id": "SC24",
       "section": "Guest permissions / historical claims",
-      "status": "documentation_corrected",
-      "conclusion": "Initial guest section claiming no terminal/AI/screen control is historical. Detailed guest grants can explicitly include these capabilities; guests cannot manage access.",
+      "status": "revised_with_explicit_consent",
+      "conclusion": "Detailed guest grants may include terminal/AI/control. Unfiltered screen and system-dialog control require fullControlVersion 1 from the current owner form; unmarked legacy Full grants stay restricted. Guest management APIs remain blocked, but Full desktop/terminal power is not isolation from the OS account.",
       "sources": [
         "server/core.mjs",
         "server/index.mjs"
       ],
       "regressionFiles": [
         "test/guest-permissions.test.mjs",
-        "test/guest-access.test.mjs"
+        "test/guest-access.test.mjs",
+        "test/person-full-consent.test.mjs",
+        "test/person-waiting-ui.test.mjs",
+        "test/screen.test.mjs"
       ]
     },
     {
@@ -545,5 +549,6 @@
     "Model-driven malicious-content resistance and unrestricted Full control in a real application",
     "Final combined platform matrix and CI/release enforcement are tracked separately",
     "Independent penetration/security review and long-duration resource/availability testing"
-  ]
+  ],
+  "followupDate": "2026-10-12"
 }

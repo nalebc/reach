@@ -3,89 +3,96 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import { once } from "node:events";
+import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 
-// While an agent has Full control or Apps, a person still comes in (Oct 11:
-// "let them in both"): opening their invitation binds it to their device and
-// waits for the owner's Allow, once, so an agent that saw the link on the
-// Mac's screen can't use it to step outside its limits. People who came in
-// before, or once allowed, share the Mac with the agent.
-test("a person opening their invite while an agent has Full control waits for the owner's Allow, then shares the Mac", async (t) => {
+// Real HTTP/WS authorization through the private Unix ingress. WhoIs and
+// daemon status are synthetic; no actual tailnet or desktop is touched.
+test("people beside an active agent need bound identity and pinned-owner approval", {
+  skip: process.platform === "win32" && "Private Unix ingress is POSIX-only", timeout: 30000,
+}, async t => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-person-beside-")));
-  fs.mkdirSync(path.join(root, "shared"));
-  let agent = null, reach = null;
+  const socketDir = fs.mkdtempSync("/tmp/reach-person-socket-");
+  const socketPath = path.join(socketDir, "s"), shared = path.join(root, "shared");
+  fs.mkdirSync(shared);
+  const nodes = { 1: "phone", 2: "other", 3: "browser", 4: "native", 5: "late", 6: "host" };
+  const identity = nodeId => ({ nodeId, userId: "42", tagged: false, validUntil: Date.now() + 600000 });
+  let agent = null, reach;
+  const peers = Object.fromEntries(Object.values(nodes).filter(id => id !== "host").map(id => [id,
+    { ID: id, UserID: 42, OS: id === "phone" ? "iOS" : ["browser", "late"].includes(id) ? "js" : "darwin", Online: true }]));
   reach = await createReach({
-    name: "Fixture Mac", roots: [path.join(root, "shared")], dataDir: path.join(root, "state"), screen: false,
+    name: "Fixture Mac", roots: [shared], dataDir: path.join(root, "state"), screen: false, publicOrigin: "https://fixture.test:8443",
+    tailscaleOwner: { userId: "42", login: "owner@example.test" },
+    tailscaleIdentity: { lookup: async ip => ({ Node: { StableID: nodes[Number(ip.split(".").at(-1))], User: 42,
+      Name: "fixture.test.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" }, UserProfile: { ID: 42, LoginName: "owner@example.test" } }) },
     browserHostGuard: {
-      lookup: async () => ({ BackendState: "Running", Self: { ID: "nMac", KeyExpiry: "0001-01-01T00:00:00Z" }, Peer: {} }),
+      lookup: async () => ({ BackendState: "Running", Self: { ID: "host" }, Peer: peers }),
       clients: () => [...(reach?.auth.list() || []), ...(agent ? [agent] : [])],
     },
   });
-  await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { await reach.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  const url = `http://127.0.0.1:${reach.server.address().port}`;
-  const call = async (route, { token, method = "GET", body } = {}) => {
-    const response = await fetch(url + route, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: response.status, body: await response.json().catch(() => null) };
+  const sockets = [];
+  t.after(async () => {
+    for (const ws of sockets) ws.terminate();
+    await reach.close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(socketDir, { recursive: true, force: true });
+  });
+  await reach.listenPrivate(socketPath);
+  const call = (route, { from = 1, token, method = "GET", body } = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: route, method, headers: { Host: "fixture.test",
+      "Tailscale-User-Login": "owner@example.test", "X-Forwarded-For": `100.64.0.${from}`, "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => { const text = Buffer.concat(chunks).toString(); resolve({ status: res.statusCode, body: text ? JSON.parse(text) : null }); });
+      res.on("error", reject);
+    });
+    req.setTimeout(5000, () => req.destroy(Error("fixture HTTP deadline")));
+    req.on("error", reject); req.end(body ? JSON.stringify(body) : undefined);
+  });
+  const owner = reach.auth.issue("Owner phone", ALL_SCOPES, "device", { tailscale: identity("phone") });
+  const other = reach.auth.issue("Other owner", ALL_SCOPES, "device", { tailscale: identity("other") });
+  const invite = name => reach.auth.inviteGuest({ name, ttlSeconds: 600, full: true, fullControlVersion: 1 });
+  const early = invite("Browser person"), nativeInvite = invite("Native person");
+  const browser = reach.auth.redeemGuest(early.invitation, identity("browser"));
+  const native = reach.auth.redeemGuest(nativeInvite.invitation, identity("native"));
+  agent = { id: "active-agent", kind: "agent", policy: { browser: true, preset: "full", fullControlVersion: 1 }, expiresAt: Date.now() + 600000,
+    browserAppApprover: { nodeId: "phone", userId: "42", clientId: owner.clientId } };
+  // Pre-existing browser credentials cannot bypass by having a different node.
+  const waiting = await call("/api/device", { from: 3, token: browser.token });
+  assert.equal(waiting.status, 403); assert.equal(waiting.body.waiting, true, JSON.stringify(waiting.body));
+  assert.equal((await call("/api/device", { from: 4, token: native.token })).status, 200);
+  const ws = (from, token) => {
+    const socket = new WebSocket(`ws+unix:${socketPath}:/ws/presence`, { headers: { Host: "fixture.test", "Tailscale-User-Login": "owner@example.test", "X-Forwarded-For": `100.64.0.${from}` }, handshakeTimeout: 5000 });
+    sockets.push(socket);
+    socket.on("error", () => {});
+    socket.on("open", () => socket.send(JSON.stringify({ type: "auth", token })));
+    return socket;
   };
-  const owner = reach.auth.issue("owner", ALL_SCOPES);
-  const takeControl = () => { agent = { id: "a1", kind: "agent", name: "Muse", policy: { browser: true, preset: "full" }, expiresAt: Date.now() + 600_000 }; };
-
-  // Before any agent: a person comes straight in.
-  const early = reach.auth.inviteGuest({ name: "Sam", ttlSeconds: 3600, full: true });
-  const sam = await call("/api/guest/redeem", { method: "POST", body: { invitation: early.invitation } });
-  assert.equal(sam.status, 200, JSON.stringify(sam.body));
-  assert.equal(sam.body.waiting, undefined);
-
-  takeControl();
-  // Who was in before keeps working beside the agent.
-  assert.equal((await call("/api/device", { token: sam.body.token })).status, 200);
-  // Other devices of the owner stay behind the guard, as before.
-  assert.equal((await call("/api/clients", { token: owner.token })).status, 403);
-
-  // A new person opens their invite now: in, bound, and waiting.
-  const { invitation, clientId } = reach.auth.inviteGuest({ name: "Aya", ttlSeconds: 3600, full: true });
-  const opened = await call("/api/guest/redeem", { method: "POST", body: { invitation } });
-  assert.equal(opened.status, 200, JSON.stringify(opened.body));
-  assert.ok(opened.body.token);
-  assert.equal(opened.body.waiting, true);
-  const waiting = await call("/api/device", { token: opened.body.token });
-  assert.equal(waiting.status, 403);
-  assert.equal(waiting.body.waiting, true);
-  assert.match(waiting.body.error, /Waiting for the owner to let you in/);
-  assert.equal(reach.auth.list().find((c) => c.id === clientId).status, "waiting");
-
-  // Still waiting with the agent gone: only the owner's Allow lets them in.
+  await assert.rejects(once(ws(3, browser.token), "open"));
+  const allow = (token, from = 1, id = browser.clientId) => call(`/api/guests/${id}/allow`, { from, token, method: "POST" });
+  assert.equal((await allow(native.token, 4)).status, 403, "a person cannot approve another person");
+  assert.equal((await allow(other.token, 2)).status, 403, "another owner is not the pinned supervisor");
+  assert.equal((await allow(owner.token)).status, 200, "pinned owner approves while the agent remains active");
+  assert.equal((await call("/api/device", { from: 3, token: browser.token })).status, 200);
+  assert.notEqual((await call("/api/device", { from: 6, token: browser.token })).status, 200, "host cannot reuse a bound token");
+  assert.equal((await call("/api/clients", { from: 3, token: browser.token })).status, 403);
+  const live = ws(3, browser.token);
+  const [message] = await once(live, "message");
+  assert.equal(JSON.parse(String(message)).type, "presence");
+  const late = invite("New browser person");
+  const opened = await call("/api/guest/redeem", { from: 5, method: "POST", body: { invitation: late.invitation } });
+  assert.equal(opened.status, 200); assert.equal(opened.body.waiting, true);
+  const hostInvite = invite("Host attempt");
+  assert.equal((await call("/api/guest/redeem", { from: 6, method: "POST", body: { invitation: hostInvite.invitation } })).status, 403);
+  assert.ok(reach.auth.unopenedInvitation(hostInvite.invitation), "refusal does not spend the invitation");
+  const closed = once(live, "close");
+  reach.auth.revoke(browser.clientId);
+  const [code] = await closed;
+  assert.notEqual(code, 1000, "ongoing authorization ends the revoked live connection");
   agent = null;
-  assert.equal((await call("/api/device", { token: opened.body.token })).body.waiting, true);
-  const heard = (await call("/api/activity", { token: owner.token })).body.filter((entry) => /Aya is waiting to come in/.test(entry.title));
-  assert.equal(heard.length, 1, "the owner hears who is waiting");
-  // A person can't let themselves (or anyone) in.
-  assert.equal((await call(`/api/guests/${clientId}/allow`, { method: "POST", token: sam.body.token })).status, 403);
-  const allowed = await call(`/api/guests/${clientId}/allow`, { method: "POST", token: owner.token });
-  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
-  assert.equal((await call(`/api/guests/${clientId}/allow`, { method: "POST", token: owner.token })).status, 404, "once");
-
-  // Allowed: in beside the agent from then on.
-  takeControl();
-  const device = await call("/api/device", { token: opened.body.token });
-  assert.equal(device.status, 200, JSON.stringify(device.body));
-  assert.equal(device.body.access.kind, "guest");
-
-  // Managing agents stays yours, even for a person with full access.
-  for (const route of ["/api/browser/agents/pause", "/api/browser/agents/stop"])
-    assert.equal((await call(route, { method: "POST", token: opened.body.token, body: { id: "a1", paused: true } })).status, 403, route);
-  assert.equal((await call("/api/browser/agents", { token: opened.body.token })).status, 403);
-
-  // Someone still waiting can leave; their access (and your card) ends.
-  const late = reach.auth.inviteGuest({ name: "Lee", ttlSeconds: 3600, full: true });
-  const lee = await call("/api/guest/redeem", { method: "POST", body: { invitation: late.invitation } });
-  assert.equal(lee.body.waiting, true);
-  assert.equal((await call("/api/device/access", { method: "DELETE", token: lee.body.token })).status, 200);
-  assert.equal(reach.auth.list().some((c) => c.id === late.clientId), false);
-
-  // An unknown invitation still meets the guard.
-  const unknown = await call("/api/guest/redeem", { method: "POST", body: { invitation: "x".repeat(43) } });
-  assert.equal(unknown.status, 403);
+  assert.equal((await call("/api/device", { from: 5, token: opened.body.token })).body.waiting, true, "ending the agent does not substitute for approval");
+  assert.equal((await call("/api/device/access", { from: 5, token: opened.body.token, method: "DELETE" })).status, 200);
 });

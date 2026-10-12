@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-12",
+  "scope": "Generated-pixel native H.264 regression; no desktop capture, user screen permissions, or Reach runtime.",
+  "status": "fixed_and_reproduced_on_affected_hosted_compiler",
+  "source": "scripts/native/screen-stream.swift",
+  "sourceSha256": "9dde0892dc53cf0ed1b22e99a880832a4a79cf6ba54f36cf72720ea31fc0210c",
+  "cause": "With Swift 6.1.2 -O, passing the conditional self-test/normal argument array into Capture selected video=false and strictHardware=false for --self-test. It emitted JPEG where the test required framed H.264. Separate initializer calls in explicit branches preserve the requested format.",
+  "fix": [
+    "Construct Capture in separate self-test and normal branches.",
+    "Fail the H.264 self-test explicitly unless video and strictHardware are both enabled.",
+    "Check normal initialized video/hardware flags against the requested arguments; preserve intentional JPEG mode."
+  ],
+  "affectedEnvironment": {
+    "runner": "macos-15-arm64",
+    "os": "macOS 15.7.9 (24G830)",
+    "xcode": "16.4 (16F6)",
+    "swift": "6.1.2 (swiftlang-6.1.2.1.2 clang-1700.0.13.5)",
+    "target": "arm64-apple-macosx15.0",
+    "optimization": "-O"
+  },
+  "before": {
+    "sourceSha256": "782a7378eab58ad83b7f12b1a0a404bed77b623a3af7b59cac7aa29b56142057",
+    "binarySha256": "46979fdf1692d169630a0d7b00194344af156a61670c06a5f9e1271929710d07",
+    "firstDiagnostic": "https://github.com/nalebc/reach/actions/runs/38190781847/job/114622891905",
+    "comparisonDiagnostic": "https://github.com/nalebc/reach/actions/runs/38191101562/job/114623839295",
+    "observedFailure": "Uninstrumented -O output began ffd8ffdb (JPEG) rather than the bounded JSON metadata length; self-test/emit instrumentation reported video=false, strictHardware=false.",
+    "crossHostProof": "The hash-verified hosted binary also failed the guarded generated-pixel test on a different local Mac; local Swift 6.3 builds passed.",
+    "comparisons": [
+      {
+        "variant": "Original conditional initializer, uninstrumented, -O",
+        "result": "failed"
+      },
+      {
+        "variant": "Initializer logging instrumentation, -O",
+        "result": "passed",
+        "note": "Instrumentation changed optimization; not accepted as the fix."
+      },
+      {
+        "variant": "Explicit initialization branches, uninstrumented, -O",
+        "result": "passed"
+      },
+      {
+        "variant": "@inline(never) initializer, uninstrumented, -O",
+        "result": "failed"
+      },
+      {
+        "variant": "Normal positional H.264 arguments with generated pixels, -O",
+        "result": "passed"
+      },
+      {
+        "variant": "Instrumented original source, -Onone",
+        "result": "passed"
+      }
+    ]
+  },
+  "after": {
+    "diagnosticCommit": "afc5a95198386d226a7b267632ddaf34b96fc00e",
+    "job": "https://github.com/nalebc/reach/actions/runs/38191471326/job/114624948164",
+    "completedAt": "2026-10-12T01:21:44Z",
+    "conclusion": "success",
+    "productionBinarySha256": "d0012198a6f090dbbc7622651a4cda83cafe96d1d589a12e588a806f596c1d70",
+    "validation": [
+      "Exact final source compiled with the same hosted Swift 6.1.2 -O and passed the strict native test.",
+      "Generated key/frame/frame/key commands produced bounded JSON metadata, avc1 codec, 640x360 dimensions and the expected true/false/false/true keyframe flags.",
+      "Annex B keyframes contained SPS, PPS and IDR NALs; interframes contained a non-IDR slice and no IDR.",
+      "Instrumented optimized and unoptimized variants also passed; no fallback or skip accepted.",
+      "A configuration-only helper checked normal h264/jpeg modes with hardware/auto arguments (four combinations).",
+      "The final source also passed the guarded local native test: one passed, zero skipped."
+    ],
+    "limits": [
+      "This proves format selection and NAL framing, not pixel-accurate decoder rendering.",
+      "It does not exercise physical screen capture, screen permissions, network streaming, or phone playback.",
+      "The complete integrated candidate still needs its normal hosted CI lanes."
+    ]
+  },
+  "localEvidence": [
+    "/tmp/reach-security-encoder/hosted-debug.log",
+    "/tmp/reach-security-encoder/hosted-debug-2.log",
+    "/tmp/reach-security-encoder/hosted-binary-local.log",
+    "/tmp/reach-security-encoder/hosted-final-native.log",
+    "/tmp/reach-security-encoder/final-local.log"
+  ]
+}

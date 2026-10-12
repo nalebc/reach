@@ -188,3 +188,80 @@ test("responsive layout follows primary input and viewport changes, not an optio
   await change(false);
   assert.equal(state.mobile, false);
 });
+
+// A phone turned on its side opens the screen fullscreen; turning it back
+// closes only what the turn opened.
+function orientation(type) {
+  const target = new dom.window.EventTarget();
+  target.type = type;
+  Object.defineProperty(dom.window.screen, "orientation", {
+    configurable: true,
+    value: target,
+  });
+  Object.defineProperty(dom.window.screen, "width", { configurable: true, value: 390 });
+  Object.defineProperty(dom.window.screen, "height", { configurable: true, value: 844 });
+  return async (next) => {
+    target.type = next;
+    target.dispatchEvent(new dom.window.Event("change"));
+    await settle();
+  };
+}
+test("turning a phone sideways opens fullscreen and turning it back closes it", async () => {
+  const turn = orientation("portrait-primary");
+  try {
+    await mount({ coarse: true });
+    assert.equal(state.fullscreen, false);
+    await turn("landscape-primary");
+    await dom.waitFor(() => state.fullscreen);
+    assert.equal(state.landscape, true);
+    // In-page fullscreen: no tap means the browser's own would be refused.
+    assert.equal(entered, 0);
+    await turn("portrait-primary");
+    await dom.waitFor(() => !state.fullscreen);
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});
+test("fullscreen closed by hand while sideways stays closed until the next turn", async () => {
+  const turn = orientation("landscape-primary");
+  try {
+    await mount({ coarse: true });
+    // Already sideways when the screen opens.
+    await dom.waitFor(() => state.fullscreen);
+    toggle();
+    await dom.waitFor(() => !state.fullscreen);
+    await turn("landscape-secondary");
+    assert.equal(state.fullscreen, false);
+    await turn("portrait-primary");
+    await turn("landscape-primary");
+    await dom.waitFor(() => state.fullscreen);
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});
+test("fullscreen opened by hand survives turning the phone back upright", async () => {
+  const turn = orientation("portrait-primary");
+  try {
+    await mount({ coarse: true });
+    toggle();
+    await dom.waitFor(() => state.fullscreen);
+    await turn("landscape-primary");
+    await turn("portrait-primary");
+    assert.equal(state.fullscreen, true);
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});
+test("tablets and desktops keep their layout when turned", async () => {
+  const turn = orientation("portrait-primary");
+  Object.defineProperty(dom.window.screen, "width", { configurable: true, value: 820 });
+  Object.defineProperty(dom.window.screen, "height", { configurable: true, value: 1180 });
+  try {
+    await mount({ coarse: true });
+    await turn("landscape-primary");
+    assert.equal(state.landscape, false);
+    assert.equal(state.fullscreen, false);
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});

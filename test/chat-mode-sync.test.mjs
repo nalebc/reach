@@ -51,7 +51,7 @@ const claudeWith = (session, extra = {}) => {
     },
     ...(extra.live ? { live: extra.live, liveMs: -1 } : {}),
     signIn: {},
-    ...(extra.claudeCompose ? { claudeCompose: extra.claudeCompose } : {}),
+    ...(extra.claudeCompose ? { typeIntoApp: true, claudeCompose: extra.claudeCompose } : {}),
     claudeImports: { add: async () => {}, close() {} },
     agentAsks: extra.agentAsks || { close() {} },
     processes: async () => [],
@@ -83,7 +83,7 @@ test("a Claude app chat's mode goes with Claude Code's next request, never throu
   const queued = [];
   const clicked = [];
   const { sessions } = claudeWith(session, {
-    claudeCompose: { mode: async (...a) => clicked.push(a) },
+    typeIntoApp: true, claudeCompose: { mode: async (...a) => clicked.push(a) },
     agentAsks: { close() {}, queueMode: (...a) => queued.push(a) },
   });
   assert.deepEqual(await sessions.mode("claude", ID, { mode: "auto" }), { mode: "auto", applied: false, next: "request" });

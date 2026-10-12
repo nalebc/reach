@@ -14,6 +14,21 @@ import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES, atomicJson } from "../server/core.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
+import { desktopBinary } from "../server/desktop-native.mjs";
+
+// Compile the real protected-file helper before measuring HTTP requests. On a
+// cold Intel runner its first build can exceed the request's five-second
+// deadline; deleting that request's fixture then interrupts the linker. One
+// source-hashed binary is copied into each isolated fixture's state directory.
+let nativeCache, fileHelper;
+nodeTest.before(async () => {
+  if (!nativeFiles) return;
+  nativeCache = fs.mkdtempSync(path.join(os.tmpdir(), "reach-funnel-native-"));
+  fileHelper = await desktopBinary({ dataDir: nativeCache }, "browser-files");
+}, { timeout: 125000 });
+nodeTest.after(() => {
+  if (nativeCache) fs.rmSync(nativeCache, { recursive: true, force: true });
+});
 
 const ORIGIN = "https://fixture.ts.net";
 const OWNER = { userId: "42", login: "owner@example.test" };
@@ -68,8 +83,10 @@ async function setup(t) {
   const outside = path.join(shared, "outside");
   const state = path.join(root, "state");
   const dist = path.join(root, "public");
-  for (const dir of [scoped, outside, dist])
+  for (const dir of [scoped, outside, dist, state])
     fs.mkdirSync(dir, { recursive: true });
+  if (fileHelper)
+    fs.copyFileSync(fileHelper, path.join(state, path.basename(fileHelper)));
   fs.writeFileSync(path.join(scoped, "brief.txt"), "Only the shared brief");
   fs.writeFileSync(
     path.join(scoped, "sample.bin"),

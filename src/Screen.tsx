@@ -126,7 +126,7 @@ export default function Screen({
     [feedback, setFeedback] = useState("");
   const [clipboard, setClipboard] = useState(""),
     [clipboardBusy, setClipboardBusy] = useState(false);
-  const [panel, setPanel] = useState<"clipboard" | "more" | "apps" | "connection" | null>(
+  const [panel, setPanel] = useState<"clipboard" | "more" | "apps" | "connection" | "touch" | null>(
     null,
   );
   const [helperBusy, setHelperBusy] = useState(false);
@@ -918,7 +918,9 @@ export default function Screen({
                     ? `Open on ${device.name}`
                     : panel === "connection"
                       ? "Connection"
-                      : "Screen options"
+                      : panel === "touch"
+                        ? "Touch & mouse"
+                        : "Screen options"
               }
               className="gs-sheet screen-menu"
               onClose={() => setPanel(null)}
@@ -943,6 +945,7 @@ export default function Screen({
                   )}
                   {control && (
                     <ScreenActions
+                      strip
                       platform={device.platform}
                       disabled={!usable || helperBusy}
                       run={(helper) => void runHelper(helper)}
@@ -979,94 +982,6 @@ export default function Screen({
                       )}
                     </div>
                   )}
-                  {(canControl || displays.length > 1) && (
-                    <div className="gs-group">
-                      {canControl && (
-                        <label className="gs-row">
-                          <Hand />
-                          <span className="gs-label">Touch</span>
-                          <select
-                            className="gs-select"
-                            aria-label="Touch mode"
-                            value={mode}
-                            onChange={(e) => {
-                              void input.send({ type: "release" }).catch(() => {});
-                              setDrag(false);
-                              setMode(e.target.value);
-                            }}
-                          >
-                            <option value="trackpad">Trackpad</option>
-                            <option value="direct">Direct</option>
-                            <option value="pan">Pan & zoom</option>
-                          </select>
-                        </label>
-                      )}
-                      {canControl && (
-                        <label className="gs-row">
-                          <MousePointerClick />
-                          <span className="gs-label">Tap</span>
-                          <select
-                            className="gs-select"
-                            aria-label="Tap action"
-                            value={clickMode}
-                            onChange={(e) => setClickMode(e.target.value)}
-                          >
-                            <option value="left">Click</option>
-                            <option value="right">Right-click</option>
-                            <option value="double">Double-click</option>
-                          </select>
-                        </label>
-                      )}
-                      {canControl && (
-                        <button
-                          className="gs-row"
-                          disabled={!usable || mode === "pan"}
-                          aria-pressed={drag}
-                          onClick={() => {
-                            void input.send({ type: "release" }).catch(() => {});
-                            setDrag(!drag);
-                          }}
-                        >
-                          <Move />
-                          <span className="gs-label">Drag</span>
-                          <span className="gs-value">{drag ? "On · touch and move" : "Off"}</span>
-                        </button>
-                      )}
-                      {canControl && (
-                        <button
-                          className="gs-row"
-                          disabled={!usable}
-                          onClick={() => void action({ type: "release" })}
-                        >
-                          <Unplug />
-                          <span className="gs-label">Release mouse</span>
-                        </button>
-                      )}
-                      {displays.length > 1 && (
-                        <label className="gs-row">
-                          <Monitor />
-                          <span className="gs-label">Display</span>
-                          <select
-                            className="gs-select"
-                            aria-label="Display"
-                            value={display}
-                            onChange={(e) => {
-                              release();
-                              setDisplay(e.target.value);
-                              setFeedback("");
-                            }}
-                          >
-                            <option value="primary">Main display</option>
-                            {displays.map((d) => (
-                              <option key={d.id} value={d.id}>
-                                {d.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
-                    </div>
-                  )}
                   <div className="gs-group">
                     <button
                       className="gs-row"
@@ -1081,10 +996,13 @@ export default function Screen({
                       {live ? <Pause /> : <Play />}
                       <span className="gs-label">{live ? "Pause" : "Resume"}</span>
                     </button>
-                    <button className="gs-row" onClick={reconnect}>
-                      <RefreshCw />
-                      <span className="gs-label">Reconnect</span>
-                    </button>
+                    {(canControl || displays.length > 1) && (
+                      <button className="gs-row" onClick={() => setPanel("touch")}>
+                        <Hand />
+                        <span className="gs-label">Touch & mouse</span>
+                        <ChevronRight className="gs-chevron" size={18} />
+                      </button>
+                    )}
                     <button className="gs-row" onClick={() => setPanel("connection")}>
                       <Activity />
                       <span className="gs-label">Connection</span>
@@ -1093,6 +1011,94 @@ export default function Screen({
                     </button>
                   </div>
                 </>
+              )}
+              {panel === "touch" && (
+                <div className="gs-group">
+                  {canControl && (
+                    <label className="gs-row">
+                      <Hand />
+                      <span className="gs-label">Touch</span>
+                      <select
+                        className="gs-select"
+                        aria-label="Touch mode"
+                        value={mode}
+                        onChange={(e) => {
+                          void input.send({ type: "release" }).catch(() => {});
+                          setDrag(false);
+                          setMode(e.target.value);
+                        }}
+                      >
+                        <option value="trackpad">Trackpad</option>
+                        <option value="direct">Direct</option>
+                        <option value="pan">Pan & zoom</option>
+                      </select>
+                    </label>
+                  )}
+                  {canControl && (
+                    <label className="gs-row">
+                      <MousePointerClick />
+                      <span className="gs-label">Tap</span>
+                      <select
+                        className="gs-select"
+                        aria-label="Tap action"
+                        value={clickMode}
+                        onChange={(e) => setClickMode(e.target.value)}
+                      >
+                        <option value="left">Click</option>
+                        <option value="right">Right-click</option>
+                        <option value="double">Double-click</option>
+                      </select>
+                    </label>
+                  )}
+                  {canControl && (
+                    <button
+                      className="gs-row"
+                      disabled={!usable || mode === "pan"}
+                      aria-pressed={drag}
+                      onClick={() => {
+                        void input.send({ type: "release" }).catch(() => {});
+                        setDrag(!drag);
+                      }}
+                    >
+                      <Move />
+                      <span className="gs-label">Drag</span>
+                      <span className="gs-value">{drag ? "On · touch and move" : "Off"}</span>
+                    </button>
+                  )}
+                  {canControl && (
+                    <button
+                      className="gs-row"
+                      disabled={!usable}
+                      onClick={() => void action({ type: "release" })}
+                    >
+                      <Unplug />
+                      <span className="gs-label">Release mouse</span>
+                    </button>
+                  )}
+                  {displays.length > 1 && (
+                    <label className="gs-row">
+                      <Monitor />
+                      <span className="gs-label">Display</span>
+                      <select
+                        className="gs-select"
+                        aria-label="Display"
+                        value={display}
+                        onChange={(e) => {
+                          release();
+                          setDisplay(e.target.value);
+                          setFeedback("");
+                        }}
+                      >
+                        <option value="primary">Main display</option>
+                        {displays.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
               )}
               {panel === "apps" && (
                 <QuickLauncher
@@ -1128,6 +1134,18 @@ export default function Screen({
                     )}
                   </div>
                   {stream.fallbackReason && <p className="gs-foot">{stream.fallbackReason}</p>}
+                  <div className="gs-group gs-end">
+                    <button
+                      className="gs-row"
+                      onClick={() => {
+                        reconnect();
+                        setPanel(null);
+                      }}
+                    >
+                      <RefreshCw />
+                      <span className="gs-label">Reconnect</span>
+                    </button>
+                  </div>
                   {owner && (
                     <>
                       <div className="gs-group gs-end">

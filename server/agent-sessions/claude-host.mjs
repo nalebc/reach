@@ -17,6 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sweepAtRest } from "./at-rest.mjs";
+import { claudeEnvironment } from "./claude-environment.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code's permission modes as it lists them in --help, in the order and
@@ -322,9 +323,7 @@ export function createClaudeHost({
   };
   // Reach's own environment, never a host app's (a terminal inside Claude Code
   // sets CLAUDECODE) or its own pairing settings.
-  const clean = Object.fromEntries(
-    Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|REACH_)/.test(k) && k !== "CLAUDECODE"),
-  );
+  const clean = claudeEnvironment(env);
   const fresh = (id) => ({
     id,
     cwd: null,

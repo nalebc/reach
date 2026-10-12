@@ -103,15 +103,22 @@ for (const file of paths)
     const smoke = String.raw`
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
-      import { createReach } from ${JSON.stringify(pathToFileURL(path.join(installed, "server/index.mjs")).href)};
+      const started = Date.now();
+      const phase = name => console.log(${JSON.stringify(`Release ${label}: `)} + name + ' (' + (Date.now() - started) + 'ms)');
+      phase('load installed server');
+      const { createReach } = await import(${JSON.stringify(pathToFileURL(path.join(installed, "server/index.mjs")).href)});
       const shared = ${JSON.stringify(path.join(fixture, "shared"))};
       fs.mkdirSync(shared);
       fs.writeFileSync(shared + '/hello.txt', 'Release smoke test');
+      phase('create isolated server');
       const app = await createReach({ roots: [shared], dataDir: ${JSON.stringify(path.join(fixture, "private"))}, port: 0 });
       try {
+        phase('listen on localhost');
         await new Promise(r => app.server.listen(0, '127.0.0.1', r));
         const base = 'http://127.0.0.1:' + app.server.address().port;
-        const page = await fetch(base + '/');
+        const request = (route, options = {}) => fetch(base + route, { ...options, signal: AbortSignal.timeout(10000) });
+        phase('verify served interface');
+        const page = await request('/');
         assert.equal(page.status, 200);
         const html = await page.text();
         const installedDist = ${JSON.stringify(path.join(installed, "dist"))};
@@ -119,25 +126,27 @@ for (const file of paths)
         const assets = [...new Set([...html.matchAll(/(?:src|href)="(\/assets\/[^"?]+)"/g)].map(match => match[1]))];
         assert.ok(assets.length > 0, 'the built page must reference assets');
         for (const asset of assets) {
-          const response = await fetch(base + asset);
+          const response = await request(asset);
           assert.equal(response.status, 200, asset);
           assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(installedDist + asset), asset);
         }
         for (const [route, file] of [['/agent-browser', '/agent.html'], ['/files/smoke-deep-link', '/index.html']]) {
-          const response = await fetch(base + route);
+          const response = await request(route);
           assert.equal(response.status, 200, route);
           assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(installedDist + file), route);
         }
-        assert.equal((await fetch(base + '/api/files')).status, 401);
+        phase('verify file authorization');
+        assert.equal((await request('/api/files')).status, 401);
         const owner = app.auth.issue('Release tester', ['files'], 'agent');
-        const response = await fetch(base + '/api/files', { headers: { Authorization: 'Bearer ' + owner.token } });
+        const response = await request('/api/files', { headers: { Authorization: 'Bearer ' + owner.token } });
         assert.equal(response.status, 200);
         const data = await response.json();
         assert.ok(JSON.stringify(data).includes('hello.txt'));
-        assert.equal((await fetch(base + '/api/files?path=..', { headers: { Authorization: 'Bearer ' + owner.token } })).status, 403);
+        assert.equal((await request('/api/files?path=..', { headers: { Authorization: 'Bearer ' + owner.token } })).status, 403);
         // Importing node-pty is not enough: an installed native helper can
         // load successfully but fail to spawn (missing executable permission,
         // skipped install scripts, or an unavailable prebuilt binary).
+        phase('run packaged native terminal');
         const terminal = app.terminals.create({
           cwd: shared, name: 'Release smoke', clientId: 'release-smoke',
           command: process.platform === 'win32'
@@ -154,7 +163,11 @@ for (const file of paths)
         } finally { clearTimeout(timer); }
         assert.equal(session.exitCode, 0);
         assert.match(session.buffer, /REACH_PACKAGE_TERMINAL_OK/);
-      } finally { await app.close(); }
+      } finally {
+        phase('close isolated server');
+        await app.close();
+      }
+      phase('finished');
     `;
     run(["--input-type=module", "-e", smoke]);
   };

@@ -299,7 +299,7 @@ test("a model pick the Mac can't take now says it wasn't changed, never that it 
     claude: { read: async () => ({ session: { ...native }, items: [] }) },
     claudeHost: { models: async () => [{ value: "sonnet", resolvedModel: "claude-sonnet-5-5" }] },
     claudeOpen: async () => true,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       effort: (id, value) => automation.run(async () => ({ effort: value.effort })),
       model: (id, value) => automation.run(async () => ({ model: value.model })),
     },

@@ -179,7 +179,7 @@ test("a Send now that can't go is tried once, then waits like the others", async
     agentAsks: { close() {} },
     outbox,
     queueMs: 10,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         tries++;
         throw Object.assign(new Error("The Claude app is showing another chat."), { waiting: true });

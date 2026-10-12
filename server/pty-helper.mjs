@@ -11,6 +11,22 @@ export function loadPty({ load = createRequire(import.meta.url) } = {}) {
   }
 }
 
+// node-pty 1.1.0 closes its output pipe on a natural Windows shell exit but
+// leaves the input pipe and ConoutConnection worker alive. Release only these
+// owned JS resources after onExit; calling kill again can target a reused PID.
+// Keep this compatibility shim alongside the pinned node-pty dependency.
+export function releaseExitedPty(proc, platform = process.platform) {
+  if (platform !== "win32") return;
+  const agent = proc?._agent;
+  for (const release of [
+    () => agent?._inSocket?.destroy(),
+    () => agent?._conoutSocketWorker?.dispose(),
+  ]) {
+    try { release(); }
+    catch (error) { console.warn(`Reach: could not release an exited terminal resource: ${error.message}`); }
+  }
+}
+
 // node-pty publishes its macOS helper without the executable bit (checked in
 // the node-pty 1.1.0 tarball), and terminals can't start without it. Reach
 // sets it when it starts, rather than in an install script. Returns a message

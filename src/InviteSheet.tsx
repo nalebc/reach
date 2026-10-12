@@ -80,7 +80,7 @@ const ROLES: {
   {
     value: "full",
     label: "Full access",
-    description: "All but managing access.",
+    description: "Every window, private data and system dialogs. Only invite someone you trust with your computer.",
   },
   {
     value: "custom",
@@ -189,7 +189,7 @@ export const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
   open: { folders: "keep", write: false },
   edit: { folders: "keep", write: true },
   work: { folders: "keep", write: true, terminal: true, agents: true },
-  full: { full: true },
+  full: { full: true, fullControlVersion: 1 },
   read: { folders: "keep", write: false },
   run: { folders: "keep", write: true, exec: true },
 };
@@ -440,7 +440,7 @@ computers.includes(p.id) && !devices[p.id]
   const canEdit = current.value === "work" || write;
   const body = (p: Peer) =>
     "full" in grant
-      ? { full: true }
+      ? { full: true, fullControlVersion: 1 }
       : {
           roots: [],
           folders: usesFiles

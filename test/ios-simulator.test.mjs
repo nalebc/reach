@@ -43,25 +43,32 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const certificate = path.join(dir, "localhost.pem"), key = path.join(dir, "localhost.key");
   const authority = path.join(dir, "root.pem"), authorityKey = path.join(dir, "root.key");
   const request = path.join(dir, "localhost.csr"), extensions = path.join(dir, "localhost.ext");
+  // OpenSSL 1.1.1 adds -addext entries to the runner's configured CA
+  // extensions instead of replacing them. Duplicate SKI/basicConstraints
+  // make that root unusable as an issuer. Own the whole disposable config.
+  const opensslConfig = path.join(dir, "openssl.cnf");
+  await fs.writeFile(opensslConfig, "[req]\ndistinguished_name=dn\n[dn]\n");
   // URLSession requires a server-authentication leaf, not a CA reused as the
   // endpoint certificate. Trust only this disposable CA inside our simulator;
   // production certificate validation remains enabled throughout the test.
-  await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", authorityKey,
+  await exec("openssl", ["req", "-config", opensslConfig, "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", authorityKey,
     "-out", authority, "-days", "1", "-subj", `/CN=Reach simulator ${nonce}`,
-    "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"], { timeout: 10000 });
-  await exec("openssl", ["req", "-new", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", key,
+    "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    "-addext", "subjectKeyIdentifier=hash"], { timeout: 10000 });
+  await exec("openssl", ["req", "-config", opensslConfig, "-new", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", key,
     "-out", request, "-subj", "/CN=localhost"], { timeout: 10000 });
   await fs.writeFile(extensions, [
     "basicConstraints=critical,CA:FALSE",
     "keyUsage=critical,digitalSignature,keyEncipherment",
     "extendedKeyUsage=serverAuth",
     "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    "authorityKeyIdentifier=keyid,issuer",
+    "authorityKeyIdentifier=keyid:always",
     "subjectKeyIdentifier=hash",
   ].join("\n"));
   await exec("openssl", ["x509", "-req", "-in", request, "-CA", authority, "-CAkey", authorityKey,
     "-CAcreateserial", "-out", certificate, "-days", "1", "-sha256", "-extfile", extensions], { timeout: 10000 });
-  await exec("openssl", ["verify", "-purpose", "sslserver", "-verify_ip", "127.0.0.1", "-CAfile", authority, certificate], { timeout: 10000 });
+  await exec("openssl", ["verify", "-purpose", "sslserver", "-CAfile", authority, certificate], { timeout: 10000 });
+  assert.equal(new crypto.X509Certificate(await fs.readFile(certificate)).checkIP("127.0.0.1"), "127.0.0.1");
   let resolveResult, rejectResult;
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   let noteDownload, allowDownload, noteResponse;
