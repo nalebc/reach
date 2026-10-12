@@ -15,7 +15,7 @@ import path from "node:path";
 import * as pty from "node-pty";
 import { computerWord } from "../computer-word.mjs";
 import { releaseExitedPty } from "../pty-helper.mjs";
-import { claudeEnvironment } from "./claude-environment.mjs";
+import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
 export const plainText = (text) => String(text).replace(ANSI, "").replace(/\r/g, "");
@@ -51,6 +51,8 @@ export function createSignIn({
   linkMs = 10000,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Git Bash for a real Windows Claude Code (claude-environment.mjs).
+  gitBash = spawn === pty.spawn && platform === "win32" ? () => windowsGitBash(env) : () => null,
 }) {
   const flows = new Map();
   const view = (flow) =>
@@ -128,6 +130,9 @@ export function createSignIn({
       for (const key of Object.keys(clean)) if (/^(path|browser)$/i.test(key)) delete clean[key];
       clean.PATH = `${dir};${previousPath}`;
       clean.BROWSER = open;
+      // The Git Bash Reach found: Git installed from the phone after Reach
+      // started isn't on its PATH.
+      Object.assign(clean, withGitBash(clean, gitBash()));
     }
     const proc = spawn(
       shell || (windows ? env.ComSpec || env.COMSPEC || "cmd.exe" : env.SHELL || (platform === "darwin" ? "/bin/zsh" : "/bin/sh")),

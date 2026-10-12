@@ -271,6 +271,35 @@ test("Claude's health on Windows says it needs Git for Windows, before sign-in a
   assert.deepEqual(await health(absent, () => null), { agent: "claude", installed: false, signedIn: false });
   // A Mac (or a Claude Code Reach didn't start) is never asked.
   assert.deepEqual(await createClaudeSessions({ projects: os.tmpdir(), appRecords: os.tmpdir(), run: answer(exit1(signedOut)), accountUsage: null, platform: "darwin" }).health(), { agent: "claude", installed: true, signedIn: false, usable: false });
+  // Once it's there, Claude Code's checks get the Git Bash Reach found (Git
+  // installed after Reach started isn't on Reach's PATH).
+  const envs = [];
+  const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+  await createClaudeSessions({ projects: os.tmpdir(), appRecords: os.tmpdir(), run: async (_file, _args, options) => (envs.push(options.env), { stdout: signedOut }), accountUsage: null, env: { Path: "C:\\Windows" }, gitBash: () => bash }).health();
+  assert.equal(envs[0].CLAUDE_CODE_GIT_BASH_PATH, bash);
+});
+
+test("signing Claude Code in on Windows gets the Git Bash Reach found, unless the owner chose one", async (t) => {
+  const { createSignIn } = await import("../server/agent-sessions/sign-in.mjs");
+  const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+  const started = async (env) => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-sign-in-"));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const spawned = [];
+    const spawn = (file, args, options) => {
+      const proc = new EventEmitter();
+      Object.assign(proc, { onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }), kill() {}, write() {} });
+      spawned.push(options.env);
+      return proc;
+    };
+    const signIn = createSignIn({ dataDir, platform: "win32", claudeCommand: async () => "claude", claudeHealth: async () => ({}), spawn, linkMs: 0, env, gitBash: () => bash });
+    t.after(() => signIn.cancel("claude"));
+    await signIn.start("claude");
+    return spawned[0];
+  };
+  assert.equal((await started({ Path: "C:\\Windows", ComSpec: "cmd.exe" })).CLAUDE_CODE_GIT_BASH_PATH, bash);
+  const own = await started({ Path: "C:\\Windows", ComSpec: "cmd.exe", claude_code_git_bash_path: "D:\\Git\\bin\\bash.exe" });
+  assert.deepEqual(Object.entries(own).filter(([key]) => /git_bash/i.test(key)), [["claude_code_git_bash_path", "D:\\Git\\bin\\bash.exe"]]);
 });
 
 test("Mac and Linux are unchanged: PATH's codex as is, Claude Code from the login shell", { skip: process.platform === "win32" && "POSIX PATH and modes" }, async (t) => {

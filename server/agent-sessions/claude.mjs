@@ -10,7 +10,7 @@ import { claudeLines } from "./move.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
 import { createClaudeAccountUsage } from "./account-usage.mjs";
-import { claudeEnvironment, windowsGitBash } from "./claude-environment.mjs";
+import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { recycle as recycleFile } from "../recycle-bin.mjs";
 
@@ -287,7 +287,7 @@ export function createClaudeSessions({
     }
   };
   function cleanEnv() {
-    return claudeEnvironment(env);
+    return withGitBash(claudeEnvironment(env), gitBash());
   }
   async function cliHealth() {
     try {
