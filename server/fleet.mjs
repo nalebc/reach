@@ -54,11 +54,20 @@ export function createFleet({
   const listeners = new Set();
   const changed = () => listeners.forEach((f) => f());
   let cache = { at: 0, value: null };
+  let discovering;
 
   // Reach computers on this tailnet under the owner's account, other than
   // this one. Each answers its public start page with its private address.
   async function discover({ fresh = false } = {}) {
     if (!fresh && cache.value && now() - cache.at < 15000) return cache.value;
+    // Several phones opening together share the current scan, including
+    // forced refreshes. A failed lookup releases the slot for the next try.
+    if (!discovering)
+      discovering = scan().finally(() => { discovering = undefined; });
+    return discovering;
+  }
+
+  async function scan() {
     const st = await status();
     const selfHost = selfOrigin ? new URL(selfOrigin).hostname : "";
     const peers = Object.values(st?.Peer || {}).filter(
@@ -71,7 +80,6 @@ export function createFleet({
         typeof p.DNSName === "string" &&
         typeof p.ID === "string",
     );
-    const linked = read();
     const found = await Promise.all(
       peers.map(async (p) => {
         const host = p.DNSName.replace(/\.$/, "").toLowerCase();
@@ -92,14 +100,18 @@ export function createFleet({
             origin: origin.origin,
             short: shortName(origin.origin),
             since: Number.isFinite(start.since) ? start.since : 0,
-            linked: linked.some((l) => l.nodeId === p.ID),
           };
         } catch {
           return null;
         }
       }),
     );
-    cache = { at: now(), value: found.filter(Boolean) };
+    // Link state may change while peer requests are in flight.
+    const linked = read();
+    cache = {
+      at: now(),
+      value: found.filter(Boolean).map(c => ({ ...c, linked: linked.some(l => l.nodeId === c.nodeId) })),
+    };
     return cache.value;
   }
 

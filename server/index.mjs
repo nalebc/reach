@@ -26,6 +26,7 @@ import {
   createAppShortcuts,
 } from "./app-shortcuts.mjs";
 import express from "express";
+import { rateLimit, MemoryStore } from "express-rate-limit";
 import net from "node:net";
 import http from "node:http";
 import fs from "node:fs";
@@ -1304,7 +1305,7 @@ export async function createReach(overrides = {}) {
   });
   // A person kept out while an agent has Full control or Apps (the host
   // guard): you hear who, once per person every ten minutes, so you can end
-  // or pause the agent to let them in.
+  // the agent's access to let them in. Pausing keeps the host guard active.
   const keptOut = new Map();
   const personKeptOut = (person) => {
     const now = Date.now();
@@ -1313,7 +1314,7 @@ export async function createReach(overrides = {}) {
     keptOut.set(person.id, now);
     const name = person.name || "Someone";
     record("agent", `${name} couldn't come in: an agent has full control of this Mac`);
-    notify({ category: "access", title: `${name} couldn't come in`, body: "An agent has full control of this Mac right now, so people are kept out. End or pause it in Agents & people to let them in.", icon: "agent", tag: `person-kept-out-${person.id}` });
+    notify({ category: "access", title: `${name} couldn't come in`, body: "An agent has full control of this Mac right now, so people are kept out. End its access in Agents & people to let them in.", icon: "agent", tag: `person-kept-out-${person.id}` });
   };
   app.use("/api", async (req, res, next) => {
     if (agentsActive()) {
@@ -1574,10 +1575,11 @@ export async function createReach(overrides = {}) {
         403,
         "This Mac uses agent profiles. Ask its owner for a scoped CLI credential.",
       );
-    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    // Only the verified private transport can assign a device identity.
+    // Ordinary callers may supply forwarding headers, so never use them
+    // to select a fresh request budget.
     const address =
       req.reachIdentity?.nodeId ||
-      (forwarded && net.isIP(forwarded) ? forwarded : "") ||
       req.socket.remoteAddress ||
       "unknown";
     const now = Date.now();
@@ -3124,7 +3126,21 @@ export async function createReach(overrides = {}) {
   const installs = installLock((id) => {
     try { return terminals.get(id)?.status !== "exited"; } catch { return false; }
   });
-  app.post("/api/sessions/agent-install/:agent", async (req, res) => {
+  // Plans probe installed binaries, and fresh status checks query publishers.
+  // Authenticate first, then bound that work across all maintenance routes.
+  // Device identity survives IP/header changes without grouping other phones.
+  const maintenanceStore = new MemoryStore();
+  const maintenanceLimit = rateLimit({
+    windowMs: 60_000, limit: 30, store: maintenanceStore,
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this device first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "agent-maintenance",
+    message: { error: "Too many app installation or update requests. Try again in one minute." },
+  });
+  app.post("/api/sessions/agent-install/:agent", maintenanceLimit, async (req, res) => {
     const agent = String(req.params.agent);
     const confirm = req.body?.confirm === true;
     if (confirm && !installs.take(agent))
@@ -3154,10 +3170,10 @@ export async function createReach(overrides = {}) {
   // newer version is certain, as Install: its command shown, then run once
   // confirmed. A copy inside an app updates with the app.
   const agentUpdates = overrides.agentUpdates || createAgentUpdates();
-  app.get("/api/sessions/agent-updates", async (req, res) =>
+  app.get("/api/sessions/agent-updates", maintenanceLimit, async (req, res) =>
     res.json({ agents: (await agentUpdates.list({ fresh: req.query.fresh === "1" })).map(({ file, ...rest }) => rest) }),
   );
-  app.post("/api/sessions/agent-update/:agent", async (req, res) => {
+  app.post("/api/sessions/agent-update/:agent", maintenanceLimit, async (req, res) => {
     const agent = String(req.params.agent);
     const confirm = req.body?.confirm === true;
     if (confirm && !installs.take(agent))
@@ -3517,7 +3533,7 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Unknown model.");
     if (body.effort !== undefined && body.effort !== null && !(typeof body.effort === "string" && EFFORT.test(body.effort)))
       throw fail(400, "Unknown thinking level.");
-    if (agent && body.mode !== undefined && body.mode !== null && !(typeof body.mode === "string" && REPLY_MODES[agent]?.(body.mode)))
+    if (agent && body.mode !== undefined && body.mode !== null && !(typeof body.mode === "string" && Object.hasOwn(REPLY_MODES, agent) && REPLY_MODES[agent](body.mode)))
       throw fail(400, "Unknown permission mode.");
     // Codex's speed (a service tier id from its model list, e.g. "default").
     if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
@@ -5351,6 +5367,7 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      maintenanceStore.shutdown();
       // Asked to stop: the next start isn't after an unexpected end, even if
       // what follows takes too long and the launcher exits anyway.
       if (runMarker) markStopped(config.dataDir);

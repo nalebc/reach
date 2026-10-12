@@ -320,9 +320,9 @@ export function createAgentSessions({
   const adapters = { codex, claude, gemini };
   const fileSearch = createFileSearch();
   const adapter = (agent) => {
-    const a = adapters[agent];
-    if (!a) throw Object.assign(new Error("Unknown agent."), { status: 404 });
-    return a;
+    if (!Object.hasOwn(adapters, agent))
+      throw Object.assign(new Error("Unknown agent."), { status: 404 });
+    return adapters[agent];
   };
   const blocked = (message) => Object.assign(new Error(message), { status: 409 });
   // A model or effort pick the Mac couldn't take now: nothing retries it, so

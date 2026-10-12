@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { JSDOM } from "jsdom";
 import { benchmarkBrowserWorkflow, summarize } from "../scripts/benchmark-browser-workflow.mjs";
 
-function fixture(t, { loseSearchReply = false, expectedBrowser = "Safari", preconnect = false } = {}) {
+function fixture(t, { loseSearchReply = false, expectedBrowser = "Safari", preconnect = false, replaceNonceBeforeSearch = false } = {}) {
   const tabs = new Map(), modes = [], actions = [], sockets = [];
   let id = 0;
   t.after(() => { for (const socket of sockets) socket.destroy(); for (const tab of tabs.values()) tab.dom.window.close(); });
@@ -37,6 +37,10 @@ function fixture(t, { loseSearchReply = false, expectedBrowser = "Safari", preco
         if (request.op === "info" || request.op === "focus") return { window: 1, tab: tab.tab, url: tab.url };
         if (request.op === "close") { tab.dom.window.close(); tabs.delete(tab.tab); return {}; }
         assert.equal(request.op, "evaluate");
+        if (replaceNonceBeforeSearch && request.source.includes("#find")) {
+          tab.dom.window.document.body.dataset.benchmark = "another-page";
+          tab.dom.window.document.querySelector("#find").onclick = () => assert.fail("The replaced page must not be clicked");
+        }
         const result = JSON.parse(tab.dom.window.eval(request.source));
         if (request.source.includes(".click()")) actions.push(request.source);
         if (loseSearchReply && request.source.includes("#find")) throw Object.assign(Error("Response lost after search"), { uncertain: true });
@@ -73,6 +77,12 @@ test("a lost effect response stops the benchmark without replay and still cleans
   const f = fixture(t, { loseSearchReply: true });
   await assert.rejects(benchmarkBrowserWorkflow({ browser: "Safari", rounds: 1, driverFactory: f.driverFactory }), /Response lost/);
   assert.equal(f.actions.length, 1);
+  assert.equal(f.tabs.size, 0);
+});
+
+test("the encoded benchmark nonce stops effects when the owned page is replaced", async t => {
+  const f = fixture(t, { replaceNonceBeforeSearch: true });
+  await assert.rejects(benchmarkBrowserWorkflow({ browser: "Safari", rounds: 1, driverFactory: f.driverFactory }), /test page changed before search/);
   assert.equal(f.tabs.size, 0);
 });
 

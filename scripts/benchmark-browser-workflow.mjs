@@ -38,6 +38,8 @@ export async function benchmarkBrowserWorkflow({ browser = "Chrome", rounds = 3,
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > 10) throw Error("Choose 1 to 10 rounds.");
   signal?.throwIfAborted();
   const nonce = crypto.randomUUID(), basePath = `/navigation-test-${nonce}/`;
+  // Carry the locally generated nonce as encoded data, not JS string syntax.
+  const encodedNonce = Buffer.from(nonce, "utf8").toString("base64");
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     if (req.method !== "GET" || ![basePath + "one", basePath + "two"].includes(url.pathname)) { res.writeHead(404); res.end(); return; }
@@ -68,7 +70,7 @@ export async function benchmarkBrowserWorkflow({ browser = "Chrome", rounds = 3,
         const call = async request => { signal?.throwIfAborted(); calls++; return driver.transport(browser, request, options); };
         const timed = async (name, work) => { const start = performance.now(); const value = await work(); steps.push({ name, ms: round(performance.now() - start) }); return value; };
         const evaluate = (target, code) => call({ op: "evaluate", target, expectedURL: target.url,
-          source: `JSON.stringify((()=>{if(document.body?.dataset.benchmark!==${JSON.stringify(nonce)})return {ready:false};${code}})())` });
+          source: `JSON.stringify((()=>{if(document.body?.dataset.benchmark!==atob("${encodedNonce}"))return {ready:false};${code}})())` });
         const until = async (target, code) => {
           const end = performance.now() + 8000;
           for (;;) {

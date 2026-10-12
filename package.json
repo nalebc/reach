@@ -59,6 +59,7 @@
   "dependencies": {
     "buffer-crc32": "1.0.0",
     "express": "^5.1.0",
+    "express-rate-limit": "8.7.1",
     "json5": "^2.2.3",
     "multer": "^2.0.2",
     "node-pty": "^1.1.0",

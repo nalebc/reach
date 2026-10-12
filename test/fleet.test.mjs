@@ -21,6 +21,52 @@ const status = (...peers) => ({
   ),
 });
 
+test("concurrent discovery shares probes, recovers after failure and observes unlink during refresh", async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-fleet-budget-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  let clock = 1, scans = 0, probes = 0, broken = false, probeGate;
+  const fleet = createFleet({
+    dataDir: dir, owner, now: () => clock,
+    status: async () => {
+      scans++;
+      if (broken) throw Error("status unavailable");
+      return status({ ID: "nB", DNSName: "mac-b.t.ts.net." });
+    },
+    request: async () => {
+      probes++;
+      if (probeGate) await probeGate.promise;
+      return { product: "Reach", origin: "https://mac-b.t.ts.net:8443", name: "Mac B" };
+    },
+  });
+  const batch = () => Promise.all(Array.from({ length: 20 }, () => fleet.discover()));
+  assert.ok((await batch()).every(value => value[0].nodeId === "nB"));
+  assert.equal(scans, 1, "a cold burst runs one Tailscale lookup");
+  assert.equal(probes, 1, "a cold burst probes each peer once");
+  await batch();
+  assert.equal(scans, 1, "completed results retain the existing cache");
+  clock += 15_001;
+  broken = true;
+  const failed = await Promise.allSettled(Array.from({ length: 20 }, () => fleet.discover()));
+  assert.ok(failed.every(result => result.status === "rejected"));
+  assert.equal(scans, 2, "a failed lookup is shared by its waiting callers");
+  broken = false;
+  await batch();
+  assert.equal(scans, 3, "a failure releases the in-flight slot");
+  await fleet.link("mac-b");
+  assert.equal((await fleet.discover())[0].linked, true);
+  const before = { scans, probes };
+  probeGate = Promise.withResolvers();
+  const refreshing = Array.from({ length: 20 }, () => fleet.discover({ fresh: true }));
+  await Promise.resolve();
+  fleet.unlink("mac-b");
+  probeGate.resolve();
+  const refreshed = await Promise.all(refreshing);
+  assert.equal(scans, before.scans + 1, "forced refreshes also coalesce while pending");
+  assert.equal(probes, before.probes + 1);
+  assert.ok(refreshed.every(value => !value[0].linked), "a completed refresh cannot restore stale link metadata");
+  assert.equal((await fleet.discover())[0].linked, false);
+});
+
 test("finds your other Reach computers and links only on request", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-fleet-"));
   try {
