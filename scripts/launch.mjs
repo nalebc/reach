@@ -534,7 +534,10 @@ export async function launch(options, root) {
           }
           if (stopped) return;
           if (state) {
-            selfIps = state.status?.Self?.TailscaleIPs || [];
+            // The last ones Tailscale gave: a status without them doesn't
+            // unmark this PC's own requests.
+            const ips = state.status?.Self?.TailscaleIPs;
+            if (Array.isArray(ips) && ips.length) selfIps = ips;
             setRouteProblem(keyedSupportProblem(state));
           } else if (misses >= 2) setRouteProblem("Reach couldn't read Tailscale's settings on this PC.");
         }, options.keyedEveryMs || 15000);

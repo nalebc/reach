@@ -303,7 +303,9 @@ export async function listenKeyedIngress({
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
     res.end("Not found.", () => req.socket.destroy());
   };
-  const server = http.createServer(async (req, res) => {
+  // continued: the client sent "Expect: 100-continue", answered only once
+  // every check has passed (Node would answer it before any).
+  const handle = async (req, res, continued = false) => {
     const why = refuse();
     if (why) {
       onRefused(why);
@@ -316,6 +318,7 @@ export async function listenKeyedIngress({
       return req.socket.destroy();
     }
     if (!open(req.socket) || refuse()) return req.socket.destroy();
+    if (continued) res.writeContinue();
     strip(req);
     ingress.add(req);
     if (fromInternet(req)) {
@@ -330,7 +333,9 @@ export async function listenKeyedIngress({
         res.writeHead(503);
         res.end();
       });
-  });
+  };
+  const server = http.createServer((req, res) => handle(req, res));
+  server.on("checkContinue", (req, res) => handle(req, res, true));
   server.on("connection", (socket) => acceptedAt.set(socket, Date.now()));
   server.on("upgrade", async (req, socket, head) => {
     const why = refuse() || (keyed(req) ? "" : "key");

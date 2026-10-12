@@ -126,6 +126,22 @@ test("without the exact key: 404, the connection closed, and nothing else asked"
   assert.ok(seen.refused.length >= wrong.length && seen.refused.every((kind) => kind === "key"));
 });
 
+// Node answers "Expect: 100-continue" before any handler runs unless the
+// server listens for it: a peer nobody checked got "100 Continue" back
+// (security review of workstream D, finding 2).
+test("Expect: 100-continue is answered only after the key and Tailscale's own process", async (t) => {
+  const expect = (target) => get(target, { Expect: "100-continue", "Content-Length": "2", "Content-Type": "application/json" });
+  const stranger = await keyed(t, { peerCheck: { check: async () => false } });
+  assert.deepEqual(await exchange(stranger.port, expect(`/r-${KEY}/api/auth/requests`)), { how: "closed", text: "" });
+  const keyless = await exchange(stranger.port, expect("/api/auth/requests"));
+  assert.match(keyless.text, /^HTTP\/1\.1 404 /);
+  assert.ok(!keyless.text.includes("100 Continue"), keyless.text);
+  const { port, seen } = await keyed(t);
+  const fine = await exchange(port, `${expect(`/r-${KEY}/api/health`)}{}`);
+  assert.match(fine.text, /^HTTP\/1\.1 100 Continue\r\n\r\nHTTP\/1\.1 200 /);
+  assert.deepEqual(seen.app.map((r) => r.url), ["/api/health"]);
+});
+
 test("the right key from a process that isn't Tailscale's: closed without a byte", async (t) => {
   const { port, seen } = await keyed(t, { peerCheck: { check: async () => false } });
   const forged = await exchange(port, get(`/r-${KEY}/api/auth/method`, { "Tailscale-User-Login": "owner@example.test", "X-Forwarded-For": "100.64.0.10" }));
