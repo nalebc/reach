@@ -47,13 +47,24 @@ Only what Windows itself makes impossible differs (table above): UAC prompts, hi
 
 ## Audit (Oct 12)
 
-`docs/parity/AUDIT.md`: six sweeps of all of Reach, not only agents, verified adversarially. It lists 50 items, two of which block use. Done on Oct 12:
+`docs/parity/AUDIT.md`: six sweeps of all of Reach, not only agents, verified adversarially. It lists 50 items, two of which block use.
+
+Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): GitHub refused every run from 20:08 UTC, because the account is locked for billing.
 
 - #1: new Claude chats in drive-letter folders.
+- #5: a locked PC dims the live screen with "Windows PC locked". Two signals are required: the session's lock flag, and the input desktop not being Default.
 - #6: agents started in Reach terminals through a PowerShell call.
-- #8 (first half): live Claude chats read from Claude Code's registry, and the Claude app never ended to take a chat over.
-- #12 and #13 (fail-closed halves): guests refused the Windows screen and clipboard.
-- #14 (first half): Team hidden where there's no team bridge.
+- #8 (first half):
+  - live Claude chats are read from Claude Code's registry, checked against the pid's program;
+  - the Claude app is never ended to take a chat over, and a reply waiting on it says why.
+- #12 and #13 (fail-closed halves):
+  - guests are refused the Windows screen, both viewing and control;
+  - their phones show no Screen, and the invite sheet offers no screen roles.
+- #14 (first half): Team is hidden on Windows, which has no team bridge yet.
+- #25: "Windows PC" on pages every computer shows, with a ratchet test.
+- #39: a busy file gives "open in another program".
+- #42: website shortcuts open through Start-Process.
+- #48: docs.
 
 The rest are in workstreams K to W below.
 
