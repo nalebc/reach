@@ -165,6 +165,10 @@ test("without the desktop service (as on Windows), the owner's pause is kept, en
   assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: false } })).body.paused, false);
   assert.equal((await f.call("/api/browser/agents")).body.agents.find((entry) => entry.id === id).paused, undefined);
   const resumed = await change("resumed.txt");
+  assert.notEqual(resumed.body?.kind, "paused", JSON.stringify(resumed.body));
+  // Agents' file writes need the Mac's protected file helper (Linux has none,
+  // Windows waits for workstream C): past the pause, only a Mac writes.
+  if (process.platform !== "darwin") return assert.equal(resumed.status, 503, JSON.stringify(resumed.body));
   assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
   assert.equal(fs.readFileSync(path.join(f.home, "Desktop", "Project", "resumed.txt"), "utf8"), "x");
 });
