@@ -743,8 +743,11 @@ export function NewChat({
 // then a check again finds it. Its newest output line shows while it runs.
 function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { peer: Peer; agent: string; name: string; recheck: () => void; ask?: boolean }) {
   const [plan, setPlan] = useState<InstallPlan | null>(null);
-  const [step, setStep] = useState<"" | "confirm" | "running" | "failed">("");
+  const [step, setStep] = useState<"" | "confirm" | "running" | "failed" | "installed">("");
   const [problem, setProblem] = useState("");
+  // Installed, but still not found a few seconds later: said, never the
+  // Install button again as if nothing had happened (Oct 12).
+  const [unseen, setUnseen] = useState(false);
   const terminal = useRef("");
   const starting = useRef(false);
   const [launching, setLaunching] = useState(false);
@@ -752,9 +755,17 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
   // Ended, or its terminal gone: checked again either way, so one that did
   // install shows as installed.
   const line = useTerminalRun(peer, step === "running" ? terminal.current : null, (ok) => {
-    setStep(ok ? "" : "failed");
+    setStep(ok ? "installed" : "failed");
+    setUnseen(false);
     recheck();
   });
+  // Still here once the check had time: Reach doesn't see it yet.
+  useEffect(() => {
+    if (step !== "installed") return;
+    const timer = setTimeout(() => setUnseen(true), 6000);
+    return () => clearTimeout(timer);
+  }, [step]);
+  const cli = agent === "claude" ? "claude" : agent;
   const ask = async () => {
     setProblem("");
     try {
@@ -801,6 +812,22 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
           <Loader2 size={14} className="spin" /> Installing {name} on your {word}…
           {line && <code>{line}</code>}
         </p>
+      ) : step === "installed" ? (
+        <>
+          {unseen ? (
+            <p className="chat-setup-problem">
+              {name} finished installing, but Reach doesn't find it on your {word} yet. Tap Check again. If it's still missing, open a new terminal on your {word} and run <code>{cli} --version</code>.
+            </p>
+          ) : (
+            <p className="chat-setup-running">
+              <Loader2 size={14} className="spin" /> {name} is installed. Looking for it…
+            </p>
+          )}
+          <div className="chat-setup-actions">
+            <button className="primary" onClick={recheck}>Check again</button>
+            <button onClick={() => void ask()}>Install again</button>
+          </div>
+        </>
       ) : (
         <>
           {step === "failed" && (

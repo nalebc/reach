@@ -7,6 +7,14 @@ import { computerWord } from "./pause";
 // A Reach terminal running an installer or updater: its newest line while
 // it runs, then onEnd(ok) once it ends, or once it's gone (closed, or Reach
 // restarted): never left spinning.
+// The installer's own newest line, not the shell's: zsh closing its session
+// ("…saving history…truncating history files…", "…completed.") and the typed
+// command's echo used to be what the phone showed when an install ended.
+const SHELL_NOISE = /^(?:\.\.\.)?\s*(?:saving session|saving history|truncating history|restored session|\.*completed\.?$)/i;
+export function installerLine(preview: string[]) {
+  const lines = preview.join("\n").split("\n").map((l) => l.trim());
+  return [...lines].reverse().find((l) => l && !SHELL_NOISE.test(l) && !/;\s*exit$/.test(l)) || "";
+}
 export function useTerminalRun(peer: Peer, id: string | null, onEnd: (ok: boolean) => void) {
   const [line, setLine] = useState("");
   const end = useRef(onEnd);
@@ -24,7 +32,7 @@ export function useTerminalRun(peer: Peer, id: string | null, onEnd: (ok: boolea
         const list = await request<(Session & { exitCode?: number })[]>(peer, "/api/terminals", { signal: abort.signal });
         if (over) return;
         const t = list.find((x) => x.id === id);
-        if (t?.preview) setLine(t.preview.join("\n").trim().split("\n").pop() || "");
+        if (t?.preview) setLine(installerLine(t.preview));
         if (t?.status === "running") return;
         if (!t) setLine("");
         over = true;

@@ -69,6 +69,33 @@ test("the phone installs Claude Code on the Mac: shown, confirmed, watched, chec
   assert.deepEqual(dom.errors, []);
 });
 
+test("an install that finished but isn't found yet says so, with the installer's own last line", async () => {
+  // Oct 12: the install ended, the check still said "not installed", and the
+  // phone showed Install again as if nothing had happened; its last line was
+  // zsh closing its session.
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  const view = await dom.render(
+    React.createElement(EverythingChat, {
+      peer,
+      feed: { sessions: [], errors: {}, health, failure: "", reload: async () => {}, recheck: () => {} },
+    }),
+  );
+  await click(await dom.waitFor(() => button("Install on Mac")));
+  await dom.waitFor(() => dom.document.querySelector(".chat-setup-command"));
+  await click(button("Install"));
+  terminal = { ...terminal, status: "running", preview: ["Claude Code successfully installed!", "...saving history...truncating history files...", "...completed."] };
+  await dom.waitFor(() => /Claude Code successfully installed!/.test(dom.document.querySelector(".chat-setup-running code")?.textContent || ""), 5000);
+  assert.doesNotMatch(dom.document.body.textContent, /saving history|completed\./);
+  terminal = { ...terminal, status: "exited", exitCode: 0 };
+  await dom.waitFor(() => /Claude Code is installed\. Looking for it/.test(dom.document.body.textContent), 5000);
+  await dom.waitFor(() => /finished installing, but Reach doesn't find it on your Mac yet/.test(dom.document.body.textContent), 10000);
+  assert.match(dom.document.body.textContent, /run claude --version/);
+  assert.ok(button("Check again"));
+  assert.equal(button("Install on Mac"), undefined, "never the Install button again as if nothing happened");
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
 test("repeated install taps while starting send only one confirmation", async t => {
   terminal = { id: "slow-install", status: "running", preview: [] };
   sent.length = 0;

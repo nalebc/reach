@@ -106,7 +106,44 @@ let claudeFound = null;
 // once when the phone checks again (forgetClaudeMiss).
 let claudeMissedAt = 0;
 const claudeMissMs = 30000;
-export function locateClaude(run = exec, { now = Date.now, platform = process.platform, env = process.env, home = os.homedir() } = {}) {
+// Where Claude Code lands without being on PATH: its installer's folder
+// (~/.local/bin, which a fresh install often hasn't added to the shell yet),
+// its older local install, and the copy the Claude desktop app keeps for
+// itself (verified, newest version first). Oct 12: someone with only the
+// Claude app, or a fresh install, was told Claude Code isn't installed, and
+// installing from the phone looked like nothing happened.
+export function claudeInstallLocations({ platform = process.platform, env = process.env, home = os.homedir(), readdir = (dir) => fs.readdirSync(dir), exists = fs.existsSync } = {}) {
+  const win = platform === "win32";
+  const paths = win ? path.win32 : path.posix;
+  const at = (name) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
+  const appData = win ? at("APPDATA") || paths.join(home, "AppData", "Roaming") : paths.join(home, "Library", "Application Support");
+  const own = win ? [] : [paths.join(home, ".local", "bin", "claude"), paths.join(home, ".claude", "local", "claude")];
+  const bundled = [];
+  const root = paths.join(appData, "Claude", "claude-code");
+  const version = (name) => name.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const newer = (a, b) => { const x = version(a), y = version(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+  let versions = [];
+  try { versions = readdir(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(newer); } catch {}
+  for (const v of versions) {
+    let builds = [];
+    try { builds = readdir(paths.join(root, v)); } catch {}
+    for (const build of builds) {
+      // Only a copy the app finished checking (it writes .verified last).
+      if (!exists(paths.join(root, v, build, ".verified"))) continue;
+      bundled.push(win ? paths.join(root, v, build, "claude.exe") : paths.join(root, v, build, "claude.app", "Contents", "MacOS", "claude"));
+    }
+  }
+  return [...own, ...bundled];
+}
+const runnable = (file, platform) => {
+  try {
+    fs.accessSync(file, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+export function locateClaude(run = exec, { now = Date.now, platform = process.platform, env = process.env, home = os.homedir(), locations = claudeInstallLocations, isRunnable = runnable } = {}) {
   // Gone from where it was (reinstalled elsewhere, an update that moved
   // it): looked for again rather than sent to a missing file.
   if (claudeFound && !fs.existsSync(claudeFound)) claudeAt = claudeFound = null;
@@ -119,6 +156,8 @@ export function locateClaude(run = exec, { now = Date.now, platform = process.pl
         .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
         .then((found) => (found?.startsWith("/") ? found : null)))
     .catch(() => null)
+    // Not on PATH: where installers and the Claude app put it.
+    .then((found) => found || locations({ platform, env, home }).find((file) => isRunnable(file, platform)) || null)
     .then((found) => {
       if (!found) claudeAt = null; // look again later
       claudeMissedAt = found ? 0 : now();
