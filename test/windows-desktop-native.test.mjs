@@ -75,3 +75,22 @@ test("Reach lists the displays and captures a real, non-black frame under that p
   assert.ok(width > 0 && width <= 1600 && height > 0, `${width}×${height}`);
   assert.ok(colors > 4, `the picture shows something (${colors} colors on a 40×40 grid)`);
 });
+
+// A locked PC ended the live screen (parity audit #5): the helper now says
+// "locked" as the Mac's does, one byte (2), and keeps answering. Locking the
+// runner itself would end every later desktop test, so the lock is told.
+// The frame above proves the real check reads this unlocked runner as such.
+test("a locked session answers the Mac's one-byte locked status, and keeps answering", { skip: !run, timeout: 120000 }, async (t) => {
+  const displays = await desktopDisplays({});
+  const primary = displays.find((d) => d.primary) || displays[0];
+  process.env.REACH_TEST_SCREEN_LOCKED = "1";
+  let source;
+  try {
+    source = new NativeScreenSource("powershell.exe", powershellFile(path.join(native, "screen-stream.ps1"), [primary.id, "1600"]));
+  } finally {
+    delete process.env.REACH_TEST_SCREEN_LOCKED;
+  }
+  t.after(() => source.stop());
+  for (const command of ["key", "frame", "frame"])
+    assert.deepEqual([...(await source.next(command))], [2], "locked, for as long as it is");
+});

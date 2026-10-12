@@ -14,6 +14,17 @@ public class ReachScreenDpi {
  [StructLayout(LayoutKind.Sequential)] public struct ICONINFO { public bool fIcon; public uint xHotspot,yHotspot; public IntPtr hbmMask,hbmColor; }
  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x,y; }
  [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize,flags; public IntPtr hCursor; public POINT ptScreenPos; }
+ [DllImport("wtsapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool WTSQuerySessionInformation(IntPtr server,int session,int infoClass,out IntPtr buffer,out int bytes);
+ [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr memory);
+ // This session locked (WTSSessionInfoEx, level 1: SessionFlags is
+ // WTS_SESSIONSTATE_LOCK). Unknown reads as unlocked: capture then fails
+ // as before, with its message.
+ public static bool Locked() {
+  IntPtr buffer; int bytes;
+  if (!WTSQuerySessionInformation(IntPtr.Zero, -1, 25, out buffer, out bytes)) return false;
+  try { return bytes >= 16 && Marshal.ReadInt32(buffer) == 1 && Marshal.ReadInt32(buffer, 12) == 0; }
+  finally { WTSFreeMemory(buffer); }
+ }
 }
 '@
 [ReachScreenDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
@@ -24,6 +35,15 @@ $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Dr
 try {
     while ($null -ne ($line = [Console]::ReadLine())) {
         if ($line -notin 'frame','key') { continue }
+        # Locked: one byte (2), as the Mac's helper says it. The phone keeps
+        # the last picture, dimmed, with "Windows PC locked", and asks again
+        # about once a second instead of reconnecting (remote-screen.mjs).
+        if ($env:REACH_TEST_SCREEN_LOCKED -eq '1' -or [ReachScreenDpi]::Locked()) {
+            $out.Write([BitConverter]::GetBytes([System.Net.IPAddress]::HostToNetworkOrder([int]1)), 0, 4)
+            $out.WriteByte(2)
+            $out.Flush()
+            continue
+        }
         $screen = if ($Display -eq 'primary') {[System.Windows.Forms.Screen]::PrimaryScreen} else {[System.Windows.Forms.Screen]::AllScreens | Where-Object {($_.DeviceName -replace '^.*(DISPLAY[0-9]+)$','$1') -eq $Display} | Select-Object -First 1}
         if (!$screen) { throw 'Display disconnected' }
         $bounds = $screen.Bounds
