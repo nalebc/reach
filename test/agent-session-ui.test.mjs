@@ -4790,6 +4790,20 @@ test("a voice memo becomes words in the box; one the Mac can't hear is attached,
   assert.deepEqual(dom.errors, []);
 });
 
+// Only a Mac makes words of a memo; on a Windows PC the mic only attached a
+// recording coding agents can't read (parity audit #35): it isn't offered.
+test("a Windows PC's chat offers no voice memo", async (t) => {
+  globalThis.MediaRecorder = class { static isTypeSupported = () => true; };
+  Object.defineProperty(dom.window.navigator, "mediaDevices", { value: { getUserMedia: async () => ({ getTracks: () => [] }) }, configurable: true });
+  t.after(() => {
+    delete globalThis.MediaRecorder;
+    delete dom.window.navigator.mediaDevices;
+  });
+  await open(codexSession(), signedIn, { ...peer, platform: "win32" });
+  await dom.waitFor(() => $("textarea"));
+  assert.equal(button("Record a voice memo"), undefined);
+});
+
 test("without a microphone the memo says so and nothing breaks", async (t) => {
   globalThis.MediaRecorder = class { static isTypeSupported = () => false; };
   Object.defineProperty(dom.window.navigator, "mediaDevices", {

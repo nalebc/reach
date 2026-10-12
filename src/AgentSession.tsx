@@ -3787,7 +3787,9 @@ export default function AgentSessionView({
                 <X size={16} />
               </button>
             )}
-            {(canRecord() || memo.state !== "idle") && (
+            {/* Only a Mac makes words of a memo (server/agent-sessions/voice.mjs);
+                elsewhere it would only attach a recording agents can't read. */}
+            {((peer.platform === "darwin" && canRecord()) || memo.state !== "idle") && (
               <button
                 className={`as-icon as-mic ${memo.state}`}
                 aria-label={memo.state === "recording" ? "Stop recording" : memo.state === "working" ? "Transcribing" : "Record a voice memo"}
