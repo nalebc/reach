@@ -130,6 +130,7 @@ async function start(t, extra = {}) {
     appDisplays: fake.start,
     // Reach's menu bar item, as on a real Mac.
     ...(extra.menuBar && { menuBar: true }),
+    ...extra.overrides,
     appList: async () => [
       { id: CHROME, name: "Google Chrome" },
       { id: NOTES, name: "Notes" },
@@ -593,3 +594,14 @@ test(
     }
   },
 );
+
+test("pause ends any screen capture left from an earlier Reach; resume doesn't look", async (t) => {
+  // Oct 12: a capture left running kept the Mac's screen-sharing mark on for
+  // hours, even paused, and Netflix wouldn't play.
+  const swept = [];
+  const { reach, pause } = await start(t, { overrides: { sweepScreenHelpers: (o) => swept.push(o.dataDir) } });
+  assert.deepEqual((await pause(true)).body, { paused: true });
+  assert.deepEqual(swept, [reach.config.dataDir]);
+  assert.deepEqual((await pause(false)).body, { paused: false });
+  assert.equal(swept.length, 1, "nothing to end on resume");
+});

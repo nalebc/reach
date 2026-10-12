@@ -26,6 +26,7 @@ export const privateWindows = () =>
   });
 const native = fileURLToPath(new URL("../scripts/native/", import.meta.url));
 const MAX_FRAME = 8 * 1024 * 1024;
+const KILL_AFTER_MS = 5000;
 const PERMISSION = /Screen Recording/i;
 // Why the screen helper has no Screen Recording, and what to do. The
 // permission belongs to the app Reach runs inside, never to the helper: run
@@ -154,7 +155,47 @@ export class NativeScreenSource {
     }
     this.child.stdin.destroy();
     this.child.kill();
+    // The helper stops its capture and exits within a couple of seconds
+    // (scripts/native/screen-stream.swift finish); one that doesn't is ended
+    // outright, so no capture outlives what it was for (Oct 12: a stream
+    // left running kept the Mac's screen-sharing mark on for hours).
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      const force = setTimeout(() => {
+        if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGKILL");
+      }, KILL_AFTER_MS);
+      force.unref?.();
+      this.child.once("exit", () => clearTimeout(force));
+    }
   }
+}
+// Screen helpers an earlier Reach left running (it was killed, or crashed
+// mid-stream): this data folder's own helper binaries whose parent isn't this
+// Reach. Ended on start and on Pause, so a paused Mac captures nothing.
+export function sweepScreenHelpers({
+  dataDir,
+  self = process.pid,
+  table = processTable,
+  kill = (pid, signal) => process.kill(pid, signal),
+  platform = process.platform,
+} = {}) {
+  if (platform !== "darwin" || !dataDir) return [];
+  const prefix = path.join(dataDir, "reach-screen-stream-");
+  let rows;
+  try {
+    rows = table();
+  } catch {
+    return [];
+  }
+  const ended = [];
+  for (const row of rows) {
+    if (row.pid === self || row.ppid === self) continue;
+    if (!row.command.startsWith(prefix)) continue;
+    try {
+      kill(row.pid, "SIGTERM");
+      ended.push(row.pid);
+    } catch {}
+  }
+  return ended;
 }
 
 export async function createScreenSource(config) {

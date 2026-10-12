@@ -104,7 +104,7 @@ import { createNotificationActions, notificationPush, admissionNotification, pus
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
-import { ScreenBroadcast, createScreenSource, hostAppName } from "./screen-stream.mjs";
+import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
 import { createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
@@ -827,6 +827,8 @@ export async function createReach(overrides = {}) {
   // puts the apps back on the phone; screens reconnect by themselves.
   let paused = settings.paused === true;
   screenControl.paused = appThreads.paused = paused;
+  // Started paused: the Mac dialog watcher stays off too.
+  if (paused) agentSessions.pauseMacPrompts?.(true);
   const PAUSED = pausedMessage();
   const notPaused = () => {
     if (paused) throw fail(423, PAUSED);
@@ -854,7 +856,13 @@ export async function createReach(overrides = {}) {
         browserScreenSnapshots.stop(PAUSED);
         remoteScreens.stop(PAUSED, true);
         appScreens.stop(PAUSED, true);
+        // Nothing on a paused Mac captures its screen (Oct 12: the Mac's
+        // screen-sharing mark stayed on, so Netflix wouldn't play): the
+        // dialog watcher stops, and a screen helper an earlier Reach left
+        // running is ended.
+        (overrides.sweepScreenHelpers || sweepScreenHelpers)({ dataDir: config.dataDir });
       }
+      agentSessions.pauseMacPrompts?.(value);
       for (const nudge of presenceNudges) nudge();
       // The menu bar's helper hears it before resuming apps (it refuses to
       // lend windows while it thinks Reach is paused), after holding them.

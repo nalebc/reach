@@ -28,6 +28,7 @@ import {
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
 import { createReach } from "../server/index.mjs";
+import { sweepScreenHelpers } from "../server/screen-stream.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
 import { atomicJson, loadJson, openPairingWindow, pairingWindowFile } from "../server/core.mjs";
 import { publicNameState } from "../server/public-dns.mjs";
@@ -129,6 +130,9 @@ export async function launch(options, root) {
         : { agentPolicyFile: path.join(privateDir, "agent-policy.json") }),
     ...(options.folders.length ? { roots: options.folders } : {}),
   });
+  // A screen helper an earlier Reach left capturing (killed mid-stream) ends
+  // now, not when someone notices the Mac's screen-sharing mark (Oct 12).
+  sweepScreenHelpers({ dataDir: reach.config.dataDir });
   let input,
     stopped = false,
     stopPromise;

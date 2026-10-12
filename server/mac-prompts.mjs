@@ -111,6 +111,8 @@ export function createMacPrompts({
   let version = 0;
   let child = null;
   let closed = false;
+  // Reach paused: no watcher runs (its dialog pictures are screen captures).
+  let held = false;
   let timer = null;
   const listeners = new Set();
   const update = (list) => {
@@ -121,7 +123,7 @@ export function createMacPrompts({
     for (const listener of listeners) listener();
   };
   async function run() {
-    if (closed || platform !== "darwin") return;
+    if (closed || held || platform !== "darwin") return;
     let file;
     try {
       file = await prepare({ signal: preparing.signal });
@@ -133,7 +135,7 @@ export function createMacPrompts({
       }
       return;
     }
-    if (closed) return;
+    if (closed || held) return;
     child = spawn(file, [], { stdio: ["pipe", "pipe", "ignore"] });
     let buffer = "";
     child.stdout.setEncoding("utf8");
@@ -156,7 +158,7 @@ export function createMacPrompts({
     child.on("exit", () => {
       child = null;
       update([]);
-      if (!closed) timer = setTimeout(run, retryMs);
+      if (!closed && !held) timer = setTimeout(run, retryMs);
     });
   }
   return {
@@ -207,6 +209,17 @@ export function createMacPrompts({
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    // Pause gives the Mac back: the watcher stops and looks at nothing until
+    // Resume starts it again (Oct 12: a paused Mac must capture nothing).
+    pause(value) {
+      if (closed || held === !!value) return;
+      held = !!value;
+      clearTimeout(timer);
+      if (!held) return void run();
+      child?.stdin?.end();
+      child?.kill("SIGTERM");
+      update([]);
     },
     close() {
       closed = true;

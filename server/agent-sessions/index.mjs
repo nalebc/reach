@@ -1674,6 +1674,8 @@ export function createAgentSessions({
     // The Mac's own dialogs on screen now (screen control holds others'
     // pointers and keys while one is up).
     macDialogs: () => macPrompts.current?.().prompts || [],
+    // Reach paused or resumed (server/index.mjs setPaused).
+    pauseMacPrompts: (value) => macPrompts.pause?.(value),
     // The System Settings page a Mac prompt belongs to, opened on the Mac.
     openMacSetting: async (id) => {
       if (!macPrompts.openSetting) throw Object.assign(new Error("That Mac prompt was already answered."), { status: 404 });

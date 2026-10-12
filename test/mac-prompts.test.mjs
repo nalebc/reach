@@ -232,3 +232,34 @@ test("closing Mac prompts aborts helper preparation and prevents a late helper f
   prompts.start();
   assert.deepEqual(prompts.current(), { version: 0, prompts: [] });
 });
+
+test("paused, the dialog watcher stops and looks at nothing until Resume", async () => {
+  // Its dialog pictures are screen captures: a paused Mac takes none (Oct 12).
+  const runs = [];
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stdin = new PassThrough();
+    child.killed = false;
+    child.kill = () => { child.killed = true; child.emit("exit", 0); };
+    runs.push(child);
+    return child;
+  };
+  const prompts = createMacPrompts({ dataDir: "/tmp", platform: "darwin", binary: async () => "/bin/mac-prompts", spawn, retryMs: 20 });
+  prompts.start();
+  await settle();
+  runs[0].stdout.write(`${JSON.stringify({ prompts: [{ id: 7, kind: "privacy", texts: ["A dialog"] }] })}\n`);
+  await settle();
+  assert.equal(prompts.current().prompts.length, 1);
+  prompts.pause(true);
+  assert.equal(runs[0].killed, true, "the watcher stops at once");
+  assert.deepEqual(prompts.current().prompts, [], "nothing left showing");
+  await settle(60);
+  assert.equal(runs.length, 1, "not restarted while paused");
+  prompts.pause(true);
+  assert.equal(runs.length, 1);
+  prompts.pause(false);
+  await settle();
+  assert.equal(runs.length, 2, "Resume starts it again");
+  prompts.close();
+});

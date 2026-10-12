@@ -99,7 +99,18 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   }
   func failure(_ text: String) -> Never {
     FileHandle.standardError.write(Data((text + "\n").utf8))
-    exit(1)
+    finish(1)
+  }
+  // Every way out stops the capture first. Exiting with it running once left
+  // macOS capturing for 14 hours with nobody reading (Oct 12): the Mac kept
+  // its screen-sharing mark, even with Reach paused, and Netflix wouldn't play.
+  func finish(_ code: Int32) -> Never {
+    if let stream {
+      let done = DispatchSemaphore(value: 0)
+      stream.stopCapture { _ in done.signal() }
+      _ = done.wait(timeout: .now() + 2)
+    }
+    exit(code)
   }
   func write(_ data: Data) {
     var size = UInt32(data.count).bigEndian
@@ -470,7 +481,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
           self.emit()
         }
       }
-      exit(0)
+      self.finish(0)
     }
   }
 }
@@ -518,6 +529,21 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         capture.strictHardware == (args.count > 5 && args[5] == "hardware")
       else { capture.failure("Screen capture format could not be initialized.") }
     }
+    // Stopped by Reach (SIGTERM), or Reach gone without closing the pipe
+    // (adopted by launchd): the capture ends with this helper, never after.
+    var endings: [DispatchSourceProtocol] = []
+    for signo in [SIGTERM, SIGINT, SIGHUP] {
+      signal(signo, SIG_IGN)
+      let source = DispatchSource.makeSignalSource(signal: signo, queue: .global())
+      source.setEventHandler { capture.finish(0) }
+      source.resume()
+      endings.append(source)
+    }
+    let orphan = DispatchSource.makeTimerSource(queue: .global())
+    orphan.schedule(deadline: .now() + 2, repeating: 2)
+    orphan.setEventHandler { if getppid() == 1 { capture.finish(0) } }
+    orphan.resume()
+    endings.append(orphan)
     do {
       if test { try capture.selfTest(w, h) } else { try await capture.start() }
       while true { try await Task.sleep(nanoseconds: 60_000_000_000) }
