@@ -52,6 +52,8 @@ export const TERMINAL_LIKE = ["terminal", "iterm", "warp", "ghostty", "alacritty
 export const WINDOWS_PROTECTED_APP_IDS = [
   "microsoft.sechealthui", // Windows Security
   "microsoft.lockapp", "microsoft.creddialoghost", "microsoft.aad.brokerplugin", "microsoft.accountscontrol", "microsoft.bioenrollment",
+  "microsoft.windows.cloudexperiencehost", // Microsoft account sign-in
+  "microsoft.yourphone", // Phone Link, as iPhone Mirroring on a Mac
   "8bitsolutionsllc.bitwardendesktop",
 ];
 export const WINDOWS_PROTECTED_APP_NAMES = [
@@ -60,20 +62,43 @@ export const WINDOWS_PROTECTED_APP_NAMES = [
   "proton pass", "protonpass", "enpass", "roboform",
   // Windows' security prompts and the tools that change who controls the PC or stop Reach.
   "consent", "credentialuibroker", "logonui", "lockapp", "taskmgr", "task manager", "regedit", "regedt32", "registry editor", "mmc", "gpedit",
-  "sechealthui", "windows security", "credential manager",
+  "sechealthui", "windows security", "credential manager", "credwiz", "rekeywiz", "netplwiz", "useraccountcontrolsettings", "msconfig",
+  "system configuration", "systempropertiesremote", "systemreset", "rstrui", "mpcmdrun",
+  // What sees and stops every process, as Activity Monitor and Console on a Mac.
+  "resmon", "resource monitor", "perfmon", "performance monitor", "procexp", "procexp64", "procexp64a", "process explorer", "procmon", "procmon64",
+  "process monitor", "systeminformer", "system informer", "processhacker", "process hacker", "eventvwr", "event viewer", "autoruns", "autoruns64",
+  // Phone Link, as iPhone Mirroring.
+  "phonelink", "phone link", "yourphone",
 ];
 // Settings is allowed except these pages, matched on the page's name in the
 // Settings app (WINDOWS_SETTINGS_APPS); their ms-settings: addresses are
 // protected pages.
 export const WINDOWS_SETTINGS_APPS = ["windows.immersivecontrolpanel", "systemsettings"];
+// As the Mac's: privacy and security, accessibility, startup apps (login
+// items), accounts and family (users & groups), sign-in options (passwords,
+// Touch ID), network and VPN, lock screen, nearby sharing and remote desktop
+// (sharing, remote), backup and the phone (Apple account, iCloud), and the
+// pages that change what runs: updates, recovery, developers, optional
+// features, encryption, find my device.
 export const WINDOWS_PRIVATE_PANES = ["privacy", "security", "sign-in options", "network", "wi-fi", "ethernet", "vpn", "proxy", "windows update",
-  "recovery", "accounts", "tailscale"];
-const WINDOWS_SETTINGS_PAGES = [/^ms-settings:(privacy|signinoptions|network|windowsupdate|recovery|windowsdefender)/i, /^windowsdefender:/i];
+  "recovery", "accounts", "tailscale", "accessibility", "startup apps", "lock screen", "your info", "email & accounts", "family", "other users",
+  "access work or school", "windows backup", "for developers", "device encryption", "find my device", "nearby sharing", "remote desktop",
+  "optional features", "mobile devices", "phone link"];
+const WINDOWS_SETTINGS_PAGES = [/^ms-settings:(privacy|signinoptions|network|windowsupdate|recovery|windowsdefender|easeofaccess|accessibility|startupapps|lockscreen|yourinfo|emailandaccounts|otherusers|family-group|workplace|accounts|sync|backup|developers|deviceencryption|findmydevice|nearbysharing|remotedesktop|optionalfeatures|mobile-devices|crossdevice|assignedaccess)/i,
+  /^windowsdefender:/i];
 export const WINDOWS_PROTECTED_PAGE_PATTERNS = [...PROTECTED_PAGE_PATTERNS, ...WINDOWS_SETTINGS_PAGES];
 export const WINDOWS_PROTECTED_TITLE_WORDS = [...PROTECTED_TITLE_WORDS, "credential manager", "windows security", "task manager", "registry editor",
-  "user account control", "group policy"];
+  "user account control", "group policy", "resource monitor", "performance monitor", "process explorer", "process monitor", "system informer",
+  "process hacker", "event viewer", "autoruns", "system configuration", "computer management", "local security policy", "windows defender firewall",
+  "user accounts", "system properties", "bitlocker"];
+// Programs' exact .exe names are written with their backslash (\code.exe is
+// VS Code, never Xcode or barcode.exe); Store apps by their package names.
 export const WINDOWS_TERMINAL_LIKE = [...TERMINAL_LIKE, "powershell", "pwsh", "windows terminal", "windowsterminal", "cmd", "command prompt", "wt",
-  "conhost", "wsl", "git bash", "mintty"];
+  "conhost", "openconsole", "wsl", "git bash", "git-bash", "mintty", "msys2", "mingw", "cygwin", "conemu", "cmder", "devenv",
+  "microsoft vs code", "\\code.exe", "\\code - insiders.exe", "\\bash.exe", "\\sh.exe", "\\zsh.exe", "bash",
+  // WSL's distributions: their Store packages and launchers.
+  "canonicalgrouplimited", "thedebianproject", "kalilinux", "46932suse", "whitewaterfoundry", "ubuntu", "debian", "kali linux", "opensuse",
+  "pengwin", "almalinux", "oraclelinux", "fedoraremix", "\\kali.exe"];
 const guardData = (platform) => platform === "win32"
   ? { appIds: WINDOWS_PROTECTED_APP_IDS, appNames: WINDOWS_PROTECTED_APP_NAMES, panes: WINDOWS_PRIVATE_PANES, titleWords: WINDOWS_PROTECTED_TITLE_WORDS, pages: WINDOWS_PROTECTED_PAGE_PATTERNS, terminals: WINDOWS_TERMINAL_LIKE }
   : { appIds: PROTECTED_APP_IDS, appNames: PROTECTED_APP_NAMES, panes: PRIVATE_PANES, titleWords: PROTECTED_TITLE_WORDS, pages: PROTECTED_PAGE_PATTERNS, terminals: TERMINAL_LIKE };
@@ -104,7 +129,7 @@ export function protectedAppReason(app, { platform = process.platform } = {}) {
     return "Passwords, security prompts and Reach's lifeline are always protected.";
   return null;
 }
-const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper", "cmd", "wt", "wsl"]);
+const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper", "cmd", "wt", "wsl", "bash"]);
 export const terminalLikeApp = (app, { platform = process.platform } = {}) => {
   const all = `${folded(app?.bundleId, platform)} ${folded(app?.name, platform)} ${folded(app?.id, platform)}`;
   // Short names only count as whole words ("Zed", not "Authorized"; "Rio", not "Portfolio").
@@ -177,7 +202,9 @@ const WINDOWS_SKIP = new Set(["cmd", "start", "start-process", "call"]);
 const WINDOWS_ADMIN_COMMANDS = new Set(["runas", "reg", "bcdedit", "netsh", "sc", "icacls", "takeown", "set-mppreference", "add-mppreference", "wmic"]);
 const WINDOWS_DISK_COMMANDS = new Set(["vssadmin", "cipher", "format", "diskpart"]);
 // Windows' security tools, opened from a command line.
-const WINDOWS_PROTECTED_PROGRAMS = new Set(["taskmgr", "regedit", "regedt32", "mmc", "gpedit", "credentialuibroker", "consent"]);
+const WINDOWS_PROTECTED_PROGRAMS = new Set(["taskmgr", "regedit", "regedt32", "mmc", "gpedit", "credentialuibroker", "consent", "credwiz", "rekeywiz",
+  "netplwiz", "useraccountcontrolsettings", "msconfig", "systempropertiesremote", "systemreset", "rstrui", "resmon", "perfmon", "procexp", "procexp64",
+  "procexp64a", "procmon", "procmon64", "systeminformer", "processhacker", "eventvwr", "autoruns", "autoruns64", "phonelink", "yourphone"]);
 const WINDOWS_DELETE = new Set(["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"]);
 const WINDOWS_SHORT_NAME = "Give the full name: a short name such as PROGRA~1 hides which folder is meant.";
 // Windows' own folders and every program's: the drive's root, Windows,

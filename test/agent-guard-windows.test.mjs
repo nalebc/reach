@@ -82,6 +82,56 @@ test("on Windows, password managers and Windows' security tools are protected by
   assert.equal(protectedAppReason({ id: "/Applications/Task Manager.app", name: "Task Manager" }, mac), null);
 });
 
+test("on Windows, shells, IDEs and WSL are terminals, by .exe, folder or Store package; look-alikes aren't", () => {
+  const terminals = [
+    { id: String.raw`C:\Program Files\Git\git-bash.exe` }, { id: String.raw`C:\Program Files\Git\bin\bash.exe` }, { id: String.raw`C:\Windows\System32\bash.exe` },
+    { id: String.raw`C:\Program Files\Git\usr\bin\mintty.exe` }, { id: String.raw`C:\msys64\msys2.exe` }, { id: String.raw`C:\Windows\System32\wsl.exe` },
+    { id: "CanonicalGroupLimited.Ubuntu22.04LTS_79rhkp1fndgsc!ubuntu2204", name: "" }, { id: "CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc!ubuntu", name: "Ubuntu" },
+    { id: "TheDebianProject.DebianGNULinux_76v4gfsz19hv4!debian", name: "" }, { id: "KaliLinux.54290C8133FEE_ey8k8hqnwqnmg!kali", name: "" },
+    { id: String.raw`C:\Users\me\AppData\Local\Microsoft\WindowsApps\kali.exe` }, { id: String.raw`C:\Users\me\AppData\Local\Microsoft\WindowsApps\ubuntu2204.exe` },
+    { id: String.raw`C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe`, name: "" }, { id: String.raw`C:\Program Files\ConEmu\ConEmu64.exe` },
+    { id: String.raw`C:\Tools\cmder\Cmder.exe` }, { id: String.raw`C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.21_x64__8wekyb3d8bbwe\OpenConsole.exe` },
+    { id: String.raw`C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe`, name: "" }, { id: String.raw`D:\Apps\VSCode\Code.exe`, name: "" },
+    { id: String.raw`C:\Users\me\AppData\Local\Programs\Microsoft VS Code Insiders\Code - Insiders.exe`, name: "" },
+  ];
+  for (const app of terminals) assert.equal(terminalLikeApp(app, win), true, app.id);
+  for (const app of [{ id: String.raw`C:\Tools\barcode.exe`, name: "Barcode" }, { id: String.raw`C:\Tools\unicode.exe`, name: "" }, { id: String.raw`C:\Users\me\code\app\app.exe`, name: "" },
+    { id: String.raw`C:\Tools\bashful.exe`, name: "" }, { id: String.raw`C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE`, name: "Word" }])
+    assert.equal(terminalLikeApp(app, win), false, app.id);
+  // The Mac's list is the Mac's.
+  assert.equal(terminalLikeApp({ id: "/Applications/Ubuntu Fonts.app", name: "Ubuntu Fonts" }, mac), false);
+  assert.ok(nativeRules({ preset: "apps", apps: [] }, win).terminalLike.includes("devenv"));
+});
+
+test("on Windows, the tools that see and stop every process are protected, as Activity Monitor and Console are", () => {
+  for (const app of [String.raw`C:\Windows\System32\resmon.exe`, String.raw`C:\Windows\System32\perfmon.exe`, String.raw`C:\Tools\Sysinternals\procexp64.exe`,
+    String.raw`C:\Tools\Sysinternals\procexp.exe`, String.raw`C:\Tools\Sysinternals\Procmon64.exe`, String.raw`C:\Program Files\SystemInformer\SystemInformer.exe`,
+    String.raw`C:\Program Files\Process Hacker 2\ProcessHacker.exe`, String.raw`C:\Windows\System32\eventvwr.exe`, String.raw`C:\Tools\Sysinternals\Autoruns64.exe`,
+    String.raw`C:\Windows\System32\msconfig.exe`, String.raw`C:\Windows\System32\netplwiz.exe`, "Microsoft.YourPhone_8wekyb3d8bbwe!App"])
+    assert.ok(protectedAppReason({ id: app, name: "" }, win), app);
+  for (const name of ["Resource Monitor", "Performance Monitor", "Process Explorer", "Process Monitor", "System Informer", "Process Hacker", "Event Viewer", "Phone Link"])
+    assert.ok(protectedAppReason({ id: String.raw`C:\Tools\x.exe`, name }, win), name);
+  for (const title of ["Resource Monitor", "Process Explorer - Sysinternals: www.sysinternals.com [DESKTOP\\me]", "Event Viewer", "System Configuration",
+    "Autoruns [DESKTOP\\me] - Sysinternals"])
+    assert.equal(protectedTitle(title, win), true, title);
+  for (const command of ["resmon", "perfmon /res", "start procexp64", String.raw`C:\Tools\Sysinternals\procmon.exe /accepteula`, "systeminformer", "eventvwr.msc", "msconfig", "netplwiz"])
+    assert.ok(commandRefusal(command, win), command);
+  assert.equal(protectedAppReason({ id: "/Applications/Process Explorer.app", name: "Process Explorer" }, mac), null, "a Mac's lists are the Mac's");
+});
+
+test("on Windows, the Settings pages a Mac keeps closed are closed, by name and by ms-settings: address", () => {
+  const rules = nativeRules({ preset: "apps", apps: [] }, win);
+  for (const pane of ["accessibility", "startup apps", "lock screen", "your info", "other users", "family", "for developers", "remote desktop", "nearby sharing", "windows backup"])
+    assert.ok(rules.privatePanes.includes(pane), pane);
+  for (const page of ["ms-settings:easeofaccess-display", "ms-settings:startupapps", "ms-settings:lockscreen", "ms-settings:yourinfo", "ms-settings:emailandaccounts",
+    "ms-settings:otherusers", "ms-settings:family-group", "ms-settings:workplace", "ms-settings:backup", "ms-settings:developers", "ms-settings:deviceencryption",
+    "ms-settings:findmydevice", "ms-settings:remotedesktop", "ms-settings:optionalfeatures", "ms-settings:mobile-devices", "MS-SETTINGS:RemoteDesktop"])
+    assert.equal(protectedPage(page, [], win), true, page);
+  for (const page of ["ms-settings:display", "ms-settings:sound", "ms-settings:taskbar", "ms-settings:personalization-background", "ms-settings:bluetooth"])
+    assert.equal(protectedPage(page, [], win), false, page);
+  assert.ok(commandRefusal("start ms-settings:remotedesktop", win));
+});
+
 test("on Windows, protected windows, pages and terminals are Windows' own", () => {
   for (const title of ["Credential Manager", "Windows Security", "Task Manager", "Registry Editor", "User Account Control", "Local Group Policy Editor", "DevTools - example.com"])
     assert.equal(protectedTitle(title, win), true, title);
