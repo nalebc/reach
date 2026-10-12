@@ -839,13 +839,14 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   sessions.close();
 });
 
-// Windows has no gentle signal: Node's SIGINT there ends a process outright,
-// which could cost the Claude app its turn (docs/parity/AUDIT.md #8). The
-// reply waits until the app lets go of the chat itself, then goes in.
-test("on Windows an idle Claude app process is never ended: a reply waits for the app to let go, then goes", async (t) => {
+// Chats stay in sync across the Claude app, Claude Code and Reach, the same
+// on every computer (owner, Oct 12): on a Windows PC too, a reply to a chat
+// the Claude app holds idle goes in at once, as on a Mac, and one it's busy
+// with waits its turn.
+test("on Windows a reply to a chat the Claude app holds goes in as on a Mac: at once when idle, after its turn when busy", async (t) => {
   const claude = fakeClaude();
   const claudeHost = host(claude);
-  const app = { pid: 5150, alive: true, signals: [] };
+  const app = { pid: 5150, alive: true, busy: true, signals: [] };
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
@@ -855,28 +856,39 @@ test("on Windows an idle Claude app process is never ended: a reply waits for th
       health: async () => ({ agent: "claude", installed: true, signedIn: true }),
       read: async (id) => ({ session: { agent: "claude", id, cwd: "C:\\work\\site", status: "idle" }, items: [], before: null }),
     },
-    live: async () => new Map(app.alive ? [[ID, { where: "claude-app", pid: app.pid, tty: null, exact: true, busy: false }]] : []),
+    live: async () => new Map(app.alive ? [[ID, { where: "claude-app", pid: app.pid, tty: null, exact: true, busy: app.busy }]] : []),
     claudeHost,
     signIn: {},
     liveMs: -1,
     queueMs: 10,
     platform: "win32",
-    kill: (pid, signal) => app.signals.push(signal),
+    kill: (pid, signal) => {
+      app.signals.push(signal);
+      if (!app.busy) app.alive = false;
+    },
     alive: () => app.alive,
     takeOverMs: 30,
     claudeImports: { add: async () => {}, close() {} },
   });
   t.after(() => sessions.close());
-  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "from the phone" })), { queued: true, delivered: false });
-  await settle(60);
-  assert.deepEqual(app.signals, [], "the app's process is never ended");
-  assert.match(sessions.view("claude", ID).outbox[0]?.error || "", /Claude app to let go/, "the phone is told why it waits");
-  assert.equal(claude.runs.length, 0, "nothing writes while the app holds it");
-  // The app lets go on its own (its idle timeout): the reply goes in.
-  app.alive = false;
-  await settle(5200);
-  assert.equal(claude.last()?.lines.filter((l) => l.type === "user").at(-1)?.message.content[0].text, "from the phone");
+  // Busy in the app: it waits its turn; nothing is ended.
+  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "after your turn" })), { queued: true, delivered: false });
+  await settle(40);
   assert.deepEqual(app.signals, []);
+  assert.equal(claude.runs.length, 0);
+  // The app finishes: its idle process is handed over and the reply goes in.
+  app.busy = false;
+  await settle(80);
+  assert.deepEqual(app.signals, ["SIGINT"]);
+  assert.equal(claude.last().lines.filter((l) => l.type === "user").at(-1).message.content[0].text, "after your turn");
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
+  claudeHost.release(ID);
+  // Idle in the app: handed over at once.
+  app.alive = true;
+  app.signals = [];
+  await sessions.send("claude", ID, { text: "from the phone" });
+  assert.deepEqual(app.signals, ["SIGINT"]);
+  assert.equal(claude.last().lines.at(-1).message.content[0].text, "from the phone");
   claude.last().print({ type: "result", subtype: "success", is_error: false });
   claudeHost.release(ID);
 });

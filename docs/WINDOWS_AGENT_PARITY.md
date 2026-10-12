@@ -34,6 +34,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Company-managed computers blocking Reach's helpers | Refused with the reason on both |
 | Protected windows covered by others | The Mac's refined rule on both |
 | File manager in the Apps picker | Offered on both (Finder, File Explorer), with the same guards |
+| Chats in sync | Always in sync across the agent's app, its CLI and Reach, delivered the same way on both: a reply to a chat the app holds idle goes in at once (the app's idle process is handed over), one it's busy with waits its turn, one a terminal holds is refused with the reason. Never a new wait, queue or refusal on one platform only (owner, Oct 12) |
 | One Reach per computer | Machine-wide on both (replaces the per-folder Windows behaviour `docs/FIRST_RUN_MATRIX.md` H20 accepted on Oct 10) |
 | Restarts and updates | On both, an agent's `reach restart` asks on the phone, and Reach restarts in a visible window |
 | The computer kept awake while Reach runs | On both, with the same three modes, shown by `reach status` |
@@ -54,9 +55,7 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 - #1: new Claude chats in drive-letter folders.
 - #5: a locked PC dims the live screen with "Windows PC locked". Two signals are required: the session's lock flag, and the input desktop not being Default.
 - #6: agents started in Reach terminals through a PowerShell call.
-- #8 (first half):
-  - live Claude chats are read from Claude Code's registry, checked against the pid's program;
-  - the Claude app is never ended to take a chat over, and a reply waiting on it says why.
+- #8 (first half): live Claude chats are read from Claude Code's registry, checked against the pid's program. Replies are then delivered exactly as on a Mac. The audit proposed refusing hand-over on Windows; that was reverted by the owner's rule below.
 - #12 and #13 (fail-closed halves):
   - guests are refused the Windows screen, both viewing and control;
   - their phones show no Screen, and the invite sheet offers no screen roles.

@@ -600,9 +600,6 @@ export function createAgentSessions({
   };
   // Ends the app's idle process the way its idle timeout does; false if it's still there.
   const handOver = async (holder) => {
-    // Windows has no such signal: Node would end the app's process outright.
-    // The reply waits until the app lets go of the chat itself.
-    if (platform === "win32") return false;
     try {
       kill(holder.pid, "SIGINT");
     } catch {
@@ -773,9 +770,7 @@ export function createAgentSessions({
           }
           const holder = await holderOf(id);
           if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
-            // Windows never ends the app's process (handOver): said, so the
-            // phone doesn't show a queue with no reason.
-            outbox.problem(id, next.id, platform === "win32" ? "Waiting for the Claude app to let go of this chat. It goes in by itself after." : null);
+            outbox.problem(id, next.id, null);
             continue;
           }
           const { id: messageId, at, error, ...message } = next;
