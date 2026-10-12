@@ -870,7 +870,34 @@ export async function transcribeVoice(peer: Peer, memo: Blob, locale = navigator
     { method: "POST", body: form, signal: AbortSignal.timeout(330000) },
   );
 }
-export async function uploadImage(peer: Peer, file: Blob, name = "image") {
+// An iPhone photo picked from Files arrives as HEIC, which only a Mac turns
+// into something agents read (sips; parity audit #36). Turned into a JPEG
+// here instead, where Safari reads it, so every computer takes it: at most
+// 16 million pixels (iOS's canvas limit; more than any agent looks at). A
+// browser that can't read HEIC sends it as it is.
+export async function phoneJpeg(
+  file: Blob,
+  name: string,
+  { decode = (b: Blob) => createImageBitmap(b), canvas = () => document.createElement("canvas") } = {},
+): Promise<{ file: Blob; name: string }> {
+  if (!/^image\/hei[cf]$/i.test(file.type) && !/\.hei[cf]$/i.test(name)) return { file, name };
+  try {
+    const bitmap = await decode(file);
+    const scale = Math.min(1, Math.sqrt(16_000_000 / (bitmap.width * bitmap.height)));
+    const surface = canvas();
+    surface.width = Math.max(1, Math.floor(bitmap.width * scale));
+    surface.height = Math.max(1, Math.floor(bitmap.height * scale));
+    surface.getContext("2d")!.drawImage(bitmap, 0, 0, surface.width, surface.height);
+    bitmap.close?.();
+    const jpeg = await new Promise<Blob | null>((resolve) => surface.toBlob(resolve, "image/jpeg", 0.9));
+    return jpeg ? { file: jpeg, name: `${name.replace(/\.hei[cf]$/i, "") || "photo"}.jpg` } : { file, name };
+  } catch {
+    return { file, name };
+  }
+}
+
+export async function uploadImage(peer: Peer, picked: Blob, given = "image") {
+  const { file, name } = await phoneJpeg(picked, given);
   const form = new FormData();
   form.append("file", file, name);
   const r = await request<{ id: string }>(peer, "/api/sessions/images", {
