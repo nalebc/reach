@@ -194,6 +194,39 @@ test("a skill Reach can't read is never installed from the phone", async () => {
   await assert.rejects(g.hit("GET", "/skills/check", { query: { name: "memo", install: "a b" } }), { status: 400 });
 });
 
+// CodeQL #252: SKILL.md was measured by its path, then read by its path again,
+// so a file that grew in between was read whole. Now one open file is
+// measured and read, and never past 256 KB.
+test("a SKILL.md that grows past 256 KB once it's measured is refused", async (t) => {
+  const s = await skillDir("memo", { install: [{ id: "brew", kind: "brew", formula: "memo" }] });
+  t.after(() => fs.rm(s.dir, { recursive: true, force: true }));
+  const f = fixture({ skills: [statusSkill({ filePath: s.file, baseDir: s.folder })] });
+  const grow = () => fs.appendFile(s.file, "\n" + "x".repeat(300 * 1024));
+  // Whichever way the file is measured (by its path, or once open), it grows right after.
+  const handle = await fs.open(s.file);
+  const FileHandle = Object.getPrototypeOf(handle);
+  await handle.close();
+  for (const [owner, name] of [[fs, "stat"], [FileHandle, "stat"]]) {
+    const measure = owner[name];
+    t.mock.method(owner, name, async function (...args) {
+      const stat = await measure.apply(this, args);
+      if (stat.isFile?.() && stat.size < 1024) await grow();
+      return stat;
+    });
+  }
+  await assert.rejects(f.hit("GET", "/skills/check", { query: { name: "memo", install: "brew" } }), { status: 409 });
+  t.mock.restoreAll();
+  // A FIFO named SKILL.md is refused without waiting for a writer.
+  if (process.platform !== "win32") {
+    const pipe = path.join(s.dir, "pipe");
+    await fs.mkdir(pipe);
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("mkfifo", [path.join(pipe, "SKILL.md")]);
+    const g = fixture({ skills: [statusSkill({ filePath: path.join(pipe, "SKILL.md") })] });
+    await assert.rejects(g.hit("GET", "/skills/check", { query: { name: "memo", install: "brew" } }), { status: 409 });
+  }
+});
+
 test("install needs the second confirm and the same checked file", async () => {
   const s = await skillDir("memo", { install: [{ id: "brew", kind: "brew", formula: "memo" }] });
   const f = fixture({ skills: [statusSkill({ filePath: s.file, baseDir: s.folder })] });
