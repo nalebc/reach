@@ -1773,7 +1773,7 @@ export async function createReach(overrides = {}) {
           "Access expired or was revoked. Ask the laptop owner for a new invitation, or pair your own device again.",
       });
     const route = req.path.split("/")[1].toLowerCase();
-    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause", "/browser/agents/reopen"].includes(req.path) ? "admin" : {
+    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause", "/browser/agents/reopen", "/browser/agents/clear"].includes(req.path) ? "admin" : {
       files: "files",
       terminals: "terminal",
       apps: "apps",

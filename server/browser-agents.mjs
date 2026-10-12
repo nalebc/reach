@@ -101,4 +101,30 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     }
     res.json({ stopped, missing });
   });
+  // Clear ended agents from the list. Only ones the Mac itself reads as
+  // ended go; nothing live is touched (no session to end, no screen stopped).
+  app.post('/api/browser/agents/clear', (req, res) => {
+    owner(req);
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some(key => key !== 'clientIds') ||
+        !Array.isArray(body.clientIds) || !body.clientIds.length || body.clientIds.length > 500 ||
+        body.clientIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) ||
+        new Set(body.clientIds).size !== body.clientIds.length)
+      throw fail(400, 'Choose between 1 and 500 distinct ended agents to clear.');
+    const at = Date.now();
+    const ended = client => client.status === 'revoked' || client.expiresAt <= at ||
+      (client.status === 'accepted' && browserIdleEnded(client, at)) ||
+      (!!client.status && !['invited', 'pending', 'approved', 'accepted'].includes(client.status));
+    const clients = new Map(auth.list().map(client => [client.id, client]));
+    owner(req);
+    const cleared = [], kept = [];
+    for (const id of body.clientIds) {
+      const client = clients.get(id);
+      if (!client) continue;
+      if (!eligible(client) || !ended(client)) { kept.push(id); continue; }
+      auth.revoke(id);
+      cleared.push(id);
+    }
+    res.json({ cleared, kept });
+  });
 }

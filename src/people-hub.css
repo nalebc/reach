@@ -43,13 +43,6 @@
 .ppl-add:active {
   background: #fff;
 }
-.ppl-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
 /* A row: an avatar where Settings has a line icon. */
 .ppl .gs-row .gs-label strong {
   font-weight: 450;
@@ -188,4 +181,45 @@
 }
 .ppl-sheet .ppl-live {
   border-color: #1d211f;
+}
+
+/* Ended (BrowserAgents.tsx): a page in place of the list; each ended agent
+   a row with a dimmed initial, opening its own page. */
+.ppl-page .ag-embedded {
+  margin-top: 0;
+}
+.ag-ended-avatar {
+  opacity: 0.6;
+}
+.ppl .ag-ended-list .gs-row + .gs-row::before {
+  left: 62px;
+}
+.ppl-page .ppl-hero {
+  margin: 4px 0 6px;
+}
+.ppl-page .ppl-hero h1 {
+  margin: 4px 0 0;
+  font: 650 22px/1.2 system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.3px;
+  color: #f1f6f2;
+  outline: none;
+}
+.ppl-page .ppl-hero ~ .gs-title {
+  margin-top: 14px;
+}
+.ag-ended-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 72px 24px;
+  color: var(--muted, #93a096);
+  text-align: center;
+}
+.ag-ended-empty p {
+  margin: 0;
+  color: #dfe7e1;
+  font-size: 16px;
+}
+.ag-ended-empty small {
+  font-size: 13.5px;
 }

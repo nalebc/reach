@@ -294,14 +294,14 @@
   display: inline-flex;
   align-items: center;
   gap: 0;
-  margin-left: -12px;
+  margin-left: -17px;
 }
 .ppl-back {
   display: grid;
   flex: none;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   border: 0;
   border-radius: 50%;

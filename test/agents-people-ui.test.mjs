@@ -288,8 +288,17 @@ test("a browser agent's sheet holds its live panel; stopped agents leave the lis
   const ended = rowNamed(c, "Ended");
   assert.equal(ended.querySelector(".gs-value").textContent, "1");
   await click(ended);
-  await dom.waitFor(() => c.querySelector('.ppl-sheet [data-agent-id="old-2"]'));
-  assert.match(c.querySelector('.ppl-sheet [data-agent-id="old-2"]').textContent, /Old helper.*Stopped/);
+  await dom.waitFor(() => c.querySelector('.ppl-page [data-agent-id="old-2"]'));
+  assert.match(c.querySelector('.ppl-page [data-agent-id="old-2"]').textContent, /Old helper.*Stopped/);
+  assert.equal(c.querySelector(".ppl-head"), null, "Ended is a page in place of the list, not a sheet over it");
+  assert.equal(c.querySelector("dialog.ppl-sheet"), null);
+  // Its own page, then back twice: Ended, then the list.
+  await click(c.querySelector('.ppl-page [data-agent-id="old-2"]'));
+  await dom.waitFor(() => c.querySelector('.ppl-page [aria-label="Back to Ended"]'));
+  await click(c.querySelector('[aria-label="Back to Ended"]'));
+  await dom.waitFor(() => c.querySelector('.ppl-page [data-agent-id="old-2"]'));
+  await click([...c.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back to Agents & people"));
+  await dom.waitFor(() => c.querySelector(".ppl-head"));
 });
 
 test("Shortcuts and Services are rows only when an agent saved or was given one", async () => {
@@ -302,8 +311,25 @@ test("Shortcuts and Services are rows only when an agent saved or was given one"
   assert.equal(rowNamed(c, "Shortcuts").querySelector(".gs-value").textContent, "1");
   assert.equal(rowNamed(c, "Services").querySelector(".gs-value").textContent, "1");
   await click(rowNamed(c, "Shortcuts"));
-  await dom.waitFor(() => /Morning mail/.test(c.querySelector(".ppl-sheet")?.textContent || ""));
-  assert.equal(c.querySelector(".ppl-sheet .as-shortcuts"), null, "no fold inside its own sheet");
+  await dom.waitFor(() => /Morning mail/.test(c.querySelector(".ppl-page")?.textContent || ""));
+  assert.equal(c.querySelector(".ppl-page .sub-page h1").textContent, "Shortcuts");
+  assert.equal(c.querySelector(".ppl-page .as-shortcuts"), null, "no fold inside its own page");
+});
+
+test("a service waiting for you heads the Agents list in amber", async () => {
+  const muse = browserAgent("muse-1");
+  mac({
+    clients: [muse],
+    sessions: [listed(muse)],
+    services: [{ id: "x", status: "pending", expiresAt: later(), accessExpiresAt: later(), agentName: "Muse", serviceName: "Gmail", permissions: ["read"], account: "me", reason: "" }],
+  });
+  const { container: c } = await render();
+  await dom.waitFor(() => rowNamed(c, "Services"));
+  const services = rowNamed(c, "Services");
+  assert.equal(services.querySelector(".gs-value").textContent, "1 waiting");
+  assert.ok(services.querySelector(".gs-value").classList.contains("ppl-attention"));
+  await dom.waitFor(() => c.querySelector(".ppl-row"));
+  assert.ok(services.compareDocumentPosition(c.querySelector(".ppl-row")) & 4, "before the agents");
 });
 
 test("Agents & people renders without React warnings", () => assert.deepEqual(dom.errors, []));

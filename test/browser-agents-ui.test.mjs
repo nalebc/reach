@@ -411,7 +411,7 @@ test("a pending connection is reviewed from its panel, with its session code", a
   assert.match(review.textContent, /ABCD-1234/);
 });
 
-test("without a focus: only ended agents, newest first, each opening to what it could use", async () => {
+test("without a focus: the Ended page lists only ended agents, newest first, each opening its own page", async () => {
   mock({
     agents: [
       session("aaaaaaaa1111", { name: "Muse" }),
@@ -424,20 +424,108 @@ test("without a focus: only ended agents, newest first, each opening to what it 
       }),
     ],
   });
-  const view = await render(element());
+  const opened = [], back = [];
+  const view = await render(element({ onOpen: (id) => opened.push(id), onBack: () => back.push(1) }));
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[data-agent-id="cccccccc3333"]'));
   assert.doesNotMatch(c.textContent, historyWarning);
-  const names = [...c.querySelectorAll(".ag-agent-title strong")].map((e) => e.textContent);
+  assert.equal(c.querySelector(".sub-page h1").textContent, "Ended");
+  const names = [...c.querySelectorAll(".ag-ended-row .gs-label strong")].map((e) => e.textContent);
   assert.deepEqual(names, ["Researcher", "Older"]);
   const researcher = c.querySelector('[data-agent-id="cccccccc3333"]');
-  assert.match(researcher.querySelector(".ag-pill").textContent, /Expired/);
-  assert.match(c.querySelector('[data-agent-id="bbbbbbbb2222"] .ag-pill').textContent, /Stopped/);
-  assert.doesNotMatch(researcher.querySelector(".ag-agent-title small").textContent, /cccc3333/);
-  assert.equal(researcher.querySelector(".ag-agent-body").hidden, true);
-  await click(researcher.querySelector(".ag-agent-head"));
-  assert.match(researcher.querySelector(".ag-facts").textContent, /\/Users\/me\/Notes/);
-  assert.equal(button(researcher, "Pause"), undefined);
+  assert.match(researcher.querySelector(".gs-label small").textContent, /^Expired · /);
+  assert.match(c.querySelector('[data-agent-id="bbbbbbbb2222"] .gs-label small').textContent, /^Stopped/);
+  assert.doesNotMatch(researcher.querySelector(".gs-label small").textContent, /cccc3333/);
+  await click(researcher);
+  assert.deepEqual(opened, ["cccccccc3333"]);
+  await click([...c.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back to Agents & people"));
+  assert.equal(back.length, 1);
+});
+
+test("an ended agent's page shows who it was, what it could use and did, and no Pause", async () => {
+  mock({
+    agents: [session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000, folders: ["/Users/me/Notes"] })],
+  });
+  const view = await render(element({ focus: "cccccccc3333", ended: true }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector(".ag-facts"));
+  assert.equal(c.querySelector(".ppl-hero h1").textContent, "Researcher");
+  assert.match(c.querySelector(".ppl-hero small").textContent, /^Expired · /);
+  assert.match(c.querySelector(".ag-facts").textContent, /\/Users\/me\/Notes/);
+  assert.match(c.textContent, /No activity recorded\./);
+  assert.equal(c.querySelector("details.ba-history"), null, "activity shows open, no fold");
+  assert.equal(button(c, "Pause"), undefined);
+  assert.ok(c.querySelector('[aria-label="Back to Ended"]'));
+});
+
+test("Clear all asks in Reach's own sheet and clears only what the Mac cleared", async () => {
+  let list = [
+    session("aaaaaaaa1111", { name: "Muse" }),
+    session("bbbbbbbb2222", { name: "Older", status: "revoked", expiresAt: Date.now() - 3600000 }),
+    session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000 }),
+  ];
+  const calls = mock({
+    agents: () => list,
+    // The Mac keeps one: it came back while you were asked.
+    mutate: (route, body) => {
+      list = list.filter((agent) => agent.id !== "cccccccc3333");
+      return reply({ cleared: ["cccccccc3333"], kept: ["bbbbbbbb2222"] });
+    },
+  });
+  const toasts = [];
+  dom.window.confirm = globalThis.confirm = () => assert.fail("no browser confirm");
+  const view = await render(element({ toast: (t) => toasts.push(t) }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector('[data-agent-id="cccccccc3333"]'));
+  await click(button(c, "Clear all"));
+  const sheet = dom.document.querySelector(".confirm-sheet");
+  assert.match(sheet.textContent, /Clear 2 ended agents\?/);
+  assert.match(sheet.textContent, /Their activity goes too\./);
+  assert.equal(dom.document.activeElement?.textContent, "Cancel", "Cancel takes focus");
+  await click(button(sheet, "Cancel"));
+  assert.equal(dom.document.querySelector(".confirm-sheet"), null);
+  assert.equal(calls.filter((x) => x.method === "POST").length, 0);
+  await click(button(c, "Clear all"));
+  await click(button(dom.document.querySelector(".confirm-sheet"), "Clear all"));
+  assert.deepEqual(calls.filter((x) => x.method === "POST").map((x) => [x.route, x.body]), [
+    ["/api/browser/agents/clear", { clientIds: ["cccccccc3333", "bbbbbbbb2222"] }],
+  ]);
+  await dom.waitFor(() => !c.querySelector('[data-agent-id="cccccccc3333"]'));
+  assert.ok(c.querySelector('[data-agent-id="bbbbbbbb2222"]'), "one the Mac kept stays listed");
+  assert.deepEqual(toasts, ["1 wasn’t cleared. It’s active again."]);
+});
+
+test("Clear on an ended agent's page asks, clears it and goes back to Ended", async () => {
+  let list = [session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000 })];
+  mock({
+    agents: () => list,
+    mutate: (route, body) => {
+      list = [];
+      return reply({ cleared: body.clientIds, kept: [] });
+    },
+  });
+  const toasts = [], back = [];
+  const view = await render(element({ focus: "cccccccc3333", ended: true, toast: (t) => toasts.push(t), onBack: () => back.push(1) }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector(".ag-facts"));
+  await click(button(c, "Clear"));
+  const sheet = dom.document.querySelector(".confirm-sheet");
+  assert.match(sheet.textContent, /Clear Researcher\?/);
+  assert.match(sheet.textContent, /Its activity goes too\./);
+  await click(button(sheet, "Clear"));
+  await dom.waitFor(() => back.length === 1);
+  await settle(50);
+  assert.equal(back.length, 1, "back once, not twice");
+  assert.deepEqual(toasts, ["Researcher cleared"]);
+});
+
+test("an empty Ended page says so, without Clear all", async () => {
+  mock({ agents: [session("aaaaaaaa1111", { name: "Muse" })] });
+  const view = await render(element());
+  const c = view.container;
+  await dom.waitFor(() => /No ended agents/.test(c.textContent));
+  assert.match(c.textContent, /Agents show up here when their access ends\./);
+  assert.equal(button(c, "Clear all"), undefined);
 });
 
 test("agent session UI emits no React warnings", () =>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -21,6 +21,7 @@ import { workspaceCapabilities } from "./capabilities";
 import { groupDevices } from "./device-groups";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import ScreenPopup from "./ScreenPopup";
+import SubPage from "./SubPage";
 import BrowserAgents, { type BrowserAgentSession } from "./BrowserAgents";
 import { listedAccess } from "./access-list";
 import AgentShortcuts from "./AgentShortcuts";
@@ -172,6 +173,20 @@ function statusOf(g: Guest, now: number, live?: Live): { text: string; tone?: "a
 // Active: it used its access in the last two minutes (a request, the Mac's
 // screen, a tool), or it's connected to the Mac right now. Idle otherwise.
 const ACTIVE_MS = 120_000;
+// Ended, Shortcuts and Services open as pages in place; an ended agent opens
+// one more page under Ended.
+type Page = { kind: "ended" | "shortcuts" | "services"; agent?: string };
+const depth = (p: Page | null) => (p ? (p.agent ? 2 : 1) : 0);
+const pageIn = (state: unknown): Page | null => {
+  const p = (state as { reachPeople?: Page } | null)?.reachPeople;
+  return p && ["ended", "shortcuts", "services"].includes(p.kind) ? p : null;
+};
+// What scrolls the hub: the nearest scrolling ancestor, else the page.
+const scrollerOf = (el: HTMLElement | null) => {
+  for (let at = el?.parentElement; at; at = at.parentElement)
+    if (/(auto|scroll)/.test(getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) return at;
+  return document.scrollingElement as HTMLElement | null;
+};
 const ago = (at: number, now: number) => {
   const min = Math.max(1, Math.round((now - at) / 60000));
   return min < 60 ? `${min} min ago` : min < 2880 ? `${Math.round(min / 60)} h ago` : `${Math.round(min / 1440)} days ago`;
@@ -241,10 +256,19 @@ export default function PeopleHub({
   const [inviting, setInviting] = useState<Start | null>(start?.kind || null);
   // Browser agents as the Mac lists them: live state, and the ended ones.
   const [sessions, setSessions] = useState<BrowserAgentSession[]>([]);
-  // Saved shortcuts and shared services, counted; a sheet for each.
-  const [extras, setExtras] = useState({ shortcuts: 0, services: 0 });
+  // Saved shortcuts and shared services, counted (and services waiting for
+  // you); a page for each.
+  const [extras, setExtras] = useState({ shortcuts: 0, services: 0, waiting: 0 });
   const [extrasAt, setExtrasAt] = useState(0);
-  const [panel, setPanel] = useState<"" | "ended" | "shortcuts" | "services">("");
+  // The page open in place of the list. Each one pushed is a history entry,
+  // so the back chevron (history.back), Safari's swipe and Android's back
+  // are one path; leaving Agents & people takes its entries back.
+  const [page, setPage] = useState<Page | null>(null);
+  const pushed = useRef(0);
+  const pushing = useRef(false);
+  const hub = useRef<HTMLDivElement>(null);
+  const hubScroll = useRef(0);
+  const opener = useRef<HTMLElement | null>(null);
   const [openId, setOpenId] = useState("");
   const [editing, setEditing] = useState<Guest | null>(null);
   // Links made here, by invitation (a computer never keeps them).
@@ -313,7 +337,9 @@ export default function PeopleHub({
       request<{ access: { status: string; expiresAt: number }[] }>(peer, "/api/agents/services", { signal: controller.signal }),
     ]).then(([shortcuts, services]) => {
       if (controller.signal.aborted) return;
+      const access = services.status === "fulfilled" && Array.isArray(services.value?.access) ? services.value.access : [];
       setExtras({
+        waiting: access.filter((e) => e.expiresAt > Date.now() && e.status === "pending").length,
         shortcuts: shortcuts.status === "fulfilled" && Array.isArray(shortcuts.value?.shortcuts) ? shortcuts.value.shortcuts.length : 0,
         services:
           services.status === "fulfilled" && Array.isArray(services.value?.access)
@@ -323,6 +349,48 @@ export default function PeopleHub({
     });
     return () => controller.abort();
   }, [peer.url, peer.token, visible, extrasAt]);
+  useEffect(() => {
+    // A reload keeps the entry's state: it starts on the list, unmarked.
+    if (pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
+    const onPop = () => {
+      const next = pageIn(window.history.state);
+      pushed.current = depth(next);
+      pushing.current = false;
+      setPage(next);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (pushed.current) window.history.go(-pushed.current);
+    };
+  }, []);
+  const goTo = (next: Page) => {
+    if (!pushed.current) {
+      hubScroll.current = scrollerOf(hub.current)?.scrollTop || 0;
+      opener.current = document.activeElement as HTMLElement | null;
+    }
+    window.history.pushState({ ...window.history.state, reachPeople: next }, "");
+    pushed.current = depth(next);
+    pushing.current = true;
+    setPage(next);
+  };
+  const goBack = () => window.history.back();
+  // A page opens at its top; back on the list, where it was, focus on the
+  // row that opened it, and the counts read again.
+  const shown = useRef<Page | null>(null);
+  useLayoutEffect(() => {
+    const was = shown.current;
+    shown.current = page;
+    const scroller = scrollerOf(hub.current);
+    if (page && depth(page) > depth(was)) {
+      if (scroller) scroller.scrollTop = 0;
+    } else if (!page && was) {
+      if (scroller) scroller.scrollTop = hubScroll.current;
+      opener.current?.focus?.({ preventScroll: true });
+      void load(true);
+      setExtrasAt(Date.now());
+    }
+  }, [page]);
   useEffect(() => {
     for (const p of peers)
       if (picking?.need.includes(p.id) && !devices[p.id])
@@ -630,14 +698,14 @@ export default function PeopleHub({
     );
   };
 
-  function extraRow(id: typeof panel, icon: ReactNode, label: string, count: number) {
+  function extraRow(kind: Page["kind"], icon: ReactNode, label: string, value: ReactNode, attention = false) {
     return (
-      <button className="gs-row" onClick={() => setPanel(id)}>
+      <button className="gs-row" onClick={() => goTo({ kind })}>
         <span className="ppl-avatar plain" aria-hidden="true">
           {icon}
         </span>
         <span className="gs-label">{label}</span>
-        <span className="gs-value">{count}</span>
+        <span className={`gs-value${attention ? " ppl-attention" : ""}`}>{value}</span>
         <ChevronRight className="gs-chevron" size={18} />
       </button>
     );
@@ -693,7 +761,32 @@ export default function PeopleHub({
   }
 
   return (
-    <div className="settings-workspace gs ppl">
+    <div className="settings-workspace gs ppl" ref={hub}>
+      {page ? (
+        <div className={pushing.current ? "ppl-page is-pushed" : "ppl-page"} key={`${page.kind}:${page.agent || ""}`}>
+          {page.kind === "ended" ? (
+            <BrowserAgents
+              peer={peer}
+              device={device}
+              toast={toast}
+              focus={page.agent}
+              ended={!!page.agent}
+              onOpen={(agent) => goTo({ kind: "ended", agent })}
+              onBack={goBack}
+              onCleared={() => void load(true)}
+            />
+          ) : (
+            <SubPage
+              title={page.kind === "shortcuts" ? "Shortcuts" : "Services"}
+              backLabel="Back to Agents & people"
+              onBack={goBack}
+            >
+              {page.kind === "shortcuts" ? <AgentShortcuts peer={peer} toast={toast} bare /> : <ServiceAccessPanel peer={peer} bare />}
+            </SubPage>
+          )}
+        </div>
+      ) : (
+        <>
       <header className="ppl-head">
         <div>
           <h1>Agents &amp; people</h1>
@@ -734,10 +827,11 @@ export default function PeopleHub({
       {/* One way to invite on this screen: the + above. Empty lists say
           so in a line, without another button. */}
       <Group title="Agents">
+        {extras.waiting > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", `${extras.waiting} waiting`, true)}
         {agents.map((c) => row(c))}
         {loaded && !loadErrors.clients && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
         {extras.shortcuts > 0 && extraRow("shortcuts", <Zap size={19} />, "Shortcuts", extras.shortcuts)}
-        {extras.services > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
+        {extras.services > 0 && !extras.waiting && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
         {ended > 0 && extraRow("ended", <History size={19} />, "Ended", ended)}
       </Group>
       <AgentFaceIdSetting peer={peer} />
@@ -750,6 +844,9 @@ export default function PeopleHub({
           {own.map((c) => row(c, c.ids.includes(current)))}
           {!loaded && <div className="gs-row gs-note">…</div>}
         </Group>
+      )}
+
+        </>
       )}
 
       {opened && (
@@ -941,25 +1038,6 @@ export default function PeopleHub({
               </div>
             </div>
           </div>
-        </ScreenPopup>
-      )}
-
-      {panel && (
-        <ScreenPopup
-          title={panel === "ended" ? "Ended" : panel === "shortcuts" ? "Shortcuts" : "Services"}
-          className="gs-sheet ppl-sheet"
-          onClose={() => {
-            setPanel("");
-            setExtrasAt(Date.now());
-          }}
-        >
-          {panel === "ended" ? (
-            <BrowserAgents peer={peer} device={device} toast={toast} />
-          ) : panel === "shortcuts" ? (
-            <AgentShortcuts peer={peer} toast={toast} bare />
-          ) : (
-            <ServiceAccessPanel peer={peer} bare />
-          )}
         </ScreenPopup>
       )}
 

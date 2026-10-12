@@ -4,10 +4,13 @@ import { usePageVisible } from "./page-visible";
 import {
   AppWindow,
   ChevronDown,
+  ChevronRight,
   Folder,
+  History,
   ShieldCheck,
   Sparkles,
   SquareTerminal,
+  Trash2,
 } from "lucide-react";
 import { PRESET_WORDS } from "./BrowserInvite";
 import { type EditableAccess } from "./AccessEditor";
@@ -20,7 +23,9 @@ import {
   type BrowserRequest,
 } from "./browser-approvals";
 import { ErrorLine, Spinner } from "./ui";
-import { AgentAvatar, AppStack, appName } from "./agent-ui";
+import SubPage from "./SubPage";
+import ConfirmSheet from "./ConfirmSheet";
+import { AppStack, appName } from "./agent-ui";
 import "./browser-agents.css";
 import "./agent-list.css";
 
@@ -49,8 +54,15 @@ type Props = {
   peer: Peer;
   device: Device;
   toast: (message: string) => void;
-  // One agent's panel, by its invitation id; without it, the ended agents.
+  // One agent's panel, by its invitation id; without it, the Ended page.
   focus?: string;
+  // With a focus: that agent's own page under Ended.
+  ended?: boolean;
+  // Pages under Agents & people: open one ended agent, go back, and say
+  // when some were cleared (its Ended count is the hub's).
+  onOpen?: (id: string) => void;
+  onBack?: () => void;
+  onCleared?: () => void;
 };
 const sessionCode = (id: string) => id.slice(-8);
 // Still going (src/access-list.ts: one reading for every list).
@@ -61,6 +73,13 @@ const time = (value: number | string) =>
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  });
+// The day an agent ended, with its year when not this one.
+const endedOn = (at: number, now: number) =>
+  new Date(at).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(new Date(at).getFullYear() !== new Date(now).getFullYear() ? { year: "numeric" } : {}),
   });
 const pendingRecord = (record: BrowserRequest, now: number) =>
   record.status === "pending" && record.expiresAt > now;
@@ -85,7 +104,7 @@ export default function BrowserAgents(props: Props) {
     />
   );
 }
-function BrowserAgentList({ peer, toast, focus }: Props) {
+function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack, onCleared }: Props) {
   const [agents, setAgents] = useState<BrowserAgentSession[]>([]);
   const [records, setRecords] = useState<BrowserRequest[]>([]);
   const [currentRequests, setCurrentRequests] = useState<BrowserRequest[]>([]);
@@ -100,8 +119,6 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
   const [now, setNow] = useState(Date.now());
   const [revision, setRevision] = useState(0);
   const [reviewing, setReviewing] = useState<BrowserRequest | null>(null);
-  // Which ended agents are open (by id).
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
   const visible = usePageVisible();
   const alive = useRef(true);
   useEffect(() => {
@@ -421,6 +438,59 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
             </div>
           )}
 
+          {pastPage ? (
+            <>
+              <h2 className="gs-title">Activity</h2>
+            {actions.length > 0 && (
+              <ol className="ag-log ba-did" aria-label="What it did">
+                {actions.map((item) => (
+                  <li key={item.id} className={item.ok ? "" : "is-refused"}>
+                    <div>
+                      <strong>{item.text}</strong>
+                      <time dateTime={new Date(item.at).toISOString()}>{time(item.at)}</time>
+                    </div>
+                    {item.app && <small>{item.app}</small>}
+                    {!item.ok && <p className="ba-log-error">{item.reason ? `Refused: ${item.reason}` : "Refused"}</p>}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {agentRecords.length ? (
+              <ol className="ag-log">
+                {agentRecords.map((record) => (
+                  <li key={record.id} className={`is-${record.status}`}>
+                    <div>
+                      <strong>{statusWords(record.status)}</strong>
+                      <time dateTime={new Date(record.createdAt).toISOString()}>
+                        {time(record.createdAt)}
+                      </time>
+                    </div>
+                    <code>{browserActionWords(record.action)}</code>
+                    {record.folder && (
+                      <small className="ba-path">
+                        {record.folder}
+                        {record.directory ? ` / ${record.directory}` : ""}
+                      </small>
+                    )}
+                    {record.output && (
+                      <details>
+                        <summary>Output</summary>
+                        <pre>{record.output}</pre>
+                      </details>
+                    )}
+                    {record.error && <p className="ba-log-error">{record.error}</p>}
+                  </li>
+                ))}
+              </ol>
+            ) : !actions.length ? (
+              <p className="ag-quiet">
+                {pastPage
+                  ? "No activity recorded."
+                  : "Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here."}
+              </p>
+            ) : null}
+            </>
+          ) : (
           <details className="ag-fold ba-history">
             <summary>
               Activity <span className="ag-fold-count">{actions.length + agentRecords.length}</span>
@@ -468,68 +538,117 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
                 ))}
               </ol>
             ) : !actions.length ? (
-              <p className="ag-quiet">Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here.</p>
+              <p className="ag-quiet">
+                {pastPage
+                  ? "No activity recorded."
+                  : "Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here."}
+              </p>
             ) : null}
             <p className="ag-quiet">
               {actions.length ? "Its last 200 actions, kept across restarts. " : "Recent records are shown. "}Approvals apply only to this invitation.
             </p>
           </details>
+          )}
       </>
     );
   };
-  // An ended agent: a row that opens to what it could use and did.
-  const card = (agent: BrowserAgentSession) => {
-    const open = !!opened[agent.id];
+  // Clear ended agents (the Mac forgets only ones it reads as ended;
+  // nothing live is touched). Asked first in Reach's own sheet.
+  const [asking, setAsking] = useState<BrowserAgentSession[] | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const clear = async (list: BrowserAgentSession[]) => {
+    setAsking(null);
+    if (clearing || !list.length) return;
+    setClearing(true);
+    setActionError("");
+    try {
+      const ids = list.map((agent) => agent.id);
+      const cleared: string[] = [], kept: string[] = [];
+      for (let i = 0; i < ids.length; i += 500) {
+        const answer = await request<{ cleared?: string[]; kept?: string[] }>(peer, "/api/browser/agents/clear", {
+          method: "POST",
+          body: JSON.stringify({ clientIds: ids.slice(i, i + 500) }),
+        });
+        cleared.push(...(Array.isArray(answer?.cleared) ? answer.cleared : []));
+        kept.push(...(Array.isArray(answer?.kept) ? answer.kept : []));
+      }
+      if (!alive.current) return;
+      // Only what the Mac says it cleared leaves the list.
+      setAgents((old) => old.filter((agent) => !cleared.includes(agent.id)));
+      setRevision((value) => value + 1);
+      onCleared?.();
+      if (kept.length)
+        toast(kept.length === 1 ? "1 wasn’t cleared. It’s active again." : `${kept.length} weren’t cleared. They’re active again.`);
+      else if (cleared.length)
+        toast(list.length === 1 ? `${list[0].name} cleared` : `Cleared ${cleared.length} ${cleared.length === 1 ? "agent" : "agents"}`);
+    } catch (failure) {
+      const status = (failure as { status?: number }).status;
+      if (alive.current)
+        setActionError(status === 404 ? "Restart Reach on the Mac to clear ended agents." : (failure as Error).message);
+    } finally {
+      if (alive.current) setClearing(false);
+    }
+  };
+  const statusLine = (agent: BrowserAgentSession) => {
     const status =
       agent.status === "revoked"
         ? "Stopped"
         : agent.status === "denied"
           ? "Connection denied"
           : "Expired";
-    return (
-      <article
-        className={`ba-session ag-agent is-ended${open ? " is-open" : ""}`}
-        key={agent.id}
-        data-agent-id={agent.id}
-      >
-        <button
-          type="button"
-          className="ag-agent-head"
-          aria-expanded={open}
-          onClick={() => setOpened((old) => ({ ...old, [agent.id]: !open }))}
-        >
-          <AgentAvatar name={agent.name} size={42} />
-          <span className="ag-agent-title">
-            <strong>{agent.name}</strong>
-            <small title={agent.id}>{time(agent.expiresAt || 0)}</small>
-          </span>
-          <span className="ag-pill is-ended">{status}</span>
-        </button>
-        <div className="ag-agent-body" hidden={!open}>
-          {open && body(agent)}
-        </div>
-      </article>
-    );
+    // When it ended; one still dated ahead was stopped early (no date).
+    const at = agent.expiresAt || 0;
+    return at && at <= now ? `${status} · ${endedOn(at, now)}` : status;
   };
+  const initialOf = (name: string) => [...name.trim()][0]?.toUpperCase() || "?";
+  // An ended agent: a row that opens its own page.
+  const row = (agent: BrowserAgentSession) => (
+    <button
+      type="button"
+      className="gs-row ag-ended-row"
+      key={agent.id}
+      data-agent-id={agent.id}
+      onClick={() => onOpen?.(agent.id)}
+    >
+      <span className="ppl-avatar ag-ended-avatar" aria-hidden="true">
+        {initialOf(agent.name)}
+      </span>
+      <span className="gs-label">
+        <strong>{agent.name}</strong>
+        <small title={agent.id}>{statusLine(agent)}</small>
+      </span>
+      <ChevronRight className="gs-chevron" size={18} />
+    </button>
+  );
+  const asked = asking && (
+    <ConfirmSheet
+      title={asking.length === 1 ? `Clear ${asking[0].name}?` : `Clear ${asking.length} ended agents?`}
+      detail={asking.length === 1 ? "Its activity goes too." : "Their activity goes too."}
+      confirm={asking.length === 1 ? "Clear" : "Clear all"}
+      onConfirm={() => void clear(asking)}
+      onCancel={() => setAsking(null)}
+    />
+  );
 
   // One agent, inside its sheet on Agents & people: what needs you, what it's
   // doing, what it may use, Pause, and its activity. Edit access, when it
   // ends, its link and Remove are the sheet's own rows.
   const focused = focus ? agents.find((agent) => agent.id === focus) : undefined;
-  return (
-    <section className="browser-agents ag-agents ag-embedded" aria-label={focus ? "Agent session" : "Ended agents"}>
+  // Cleared (here or elsewhere), or never there: back to Ended, never a
+  // blank page.
+  const gone = !!focus && pastPage && !loading && !error && !focused;
+  useEffect(() => {
+    if (gone) onBack?.();
+  }, [gone]);
+  const errors = (
+    <>
       <ErrorLine error={error} />
       <ErrorLine error={actionError} />
       <ErrorLine error={historyError} />
-      {loading ? (
-        <Spinner label="Loading…" />
-      ) : focus ? (
-        focused && body(focused)
-      ) : ended.length ? (
-        <div className="ba-list ag-list">{ended.map(card)}</div>
-      ) : (
-        <p className="ag-quiet ag-center">No ended agents.</p>
-      )}
+    </>
+  );
+  const reviews = (
+    <>
       {connectionReview && (
         <AgentAdmissionReview
           key={connectionReview.requestId}
@@ -560,6 +679,79 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
           }}
         />
       )}
+    </>
+  );
+  // The Ended page: one list, Clear all across from Back.
+  if (!focus)
+    return (
+      <SubPage
+        title="Ended"
+        backLabel="Back to Agents & people"
+        onBack={() => onBack?.()}
+        action={
+          !loading && ended.length > 0 && (
+            <button type="button" className="sub-page-action is-danger" disabled={clearing} onClick={() => setAsking(ended)}>
+              {clearing ? "Clearing…" : "Clear all"}
+            </button>
+          )
+        }
+      >
+        <section className="browser-agents ag-agents ag-embedded" aria-label="Ended agents">
+          {errors}
+          {loading ? (
+            <Spinner label="Loading…" />
+          ) : ended.length ? (
+            <div className="gs-group ag-ended-list">{ended.map(row)}</div>
+          ) : (
+            <div className="ag-ended-empty">
+              <History size={26} />
+              <p>No ended agents</p>
+              <small>Agents show up here when their access ends.</small>
+            </div>
+          )}
+        </section>
+        {asked}
+      </SubPage>
+    );
+  // One ended agent's page: who it was, what it could use, what it did, Clear.
+  if (pastPage)
+    return (
+      <SubPage backLabel="Back to Ended" onBack={() => onBack?.()}>
+        <section className="browser-agents ag-agents ag-embedded" aria-label="Ended agent">
+          {errors}
+          {loading ? (
+            <Spinner label="Loading…" />
+          ) : (
+            focused && (
+              <>
+                <div className="ppl-hero">
+                  <span className="ppl-avatar large ag-ended-avatar" aria-hidden="true">
+                    {initialOf(focused.name)}
+                  </span>
+                  <h1 tabIndex={-1}>{focused.name}</h1>
+                  <small>{statusLine(focused)}</small>
+                </div>
+                <h2 className="gs-title">Access</h2>
+                {body(focused)}
+                <div className="gs-group gs-end">
+                  <button type="button" className="gs-row gs-danger" disabled={clearing} onClick={() => setAsking([focused])}>
+                    <Trash2 size={21} />
+                    <span className="gs-label">{clearing ? "Clearing…" : "Clear"}</span>
+                  </button>
+                </div>
+              </>
+            )
+          )}
+        </section>
+        {asked}
+      </SubPage>
+    );
+  // One live agent, inside its sheet on Agents & people.
+  return (
+    <section className="browser-agents ag-agents ag-embedded" aria-label="Agent session">
+      {errors}
+      {loading ? <Spinner label="Loading…" /> : focused && body(focused)}
+      {reviews}
     </section>
   );
 }
