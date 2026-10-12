@@ -49,7 +49,8 @@ test("with platform darwin, the guard gives the Mac's answers on any host: POSIX
 test("a Windows helper gets the same rule keys, with Windows' lists", () => {
   const windows = rulesFor({ ...macFixture.options, ...win });
   for (const preset of ["full", "apps", "readonly"]) {
-    assert.deepEqual(Object.keys(windows[preset]), Object.keys(macFixture[preset]), preset);
+    // The Mac's keys, then what the Mac's helper keeps in its own code.
+    assert.deepEqual(Object.keys(windows[preset]), [...Object.keys(macFixture[preset]), "programExtensions", "runnerApps"], preset);
     for (const key of ["mode", "hosts", "titles", "allowedApps", "hiddenApps", "reachWords", "protectedPaths", "home"])
       sameJson(windows[preset][key], macFixture[preset][key], `${preset}.${key} is the same everywhere`);
   }
@@ -62,6 +63,10 @@ test("a Windows helper gets the same rule keys, with Windows' lists", () => {
   for (const word of ["credential manager", "windows security", "task manager", "registry editor", "user account control"]) assert.ok(rules.protectedTitleWords.includes(word), word);
   assert.ok(rules.protectedPagePatterns.some((source) => new RegExp(source, "i").test("ms-settings:signinoptions")));
   for (const shell of ["powershell", "pwsh", "cmd", "wt"]) assert.ok(rules.terminalLike.includes(shell), shell);
+  for (const extension of ["exe", "bat", "cmd", "ps1", "vbs", "js", "hta", "lnk", "url", "reg", "msi", "msc", "cpl", "scr", "settingcontent-ms", "appref-ms"])
+    assert.ok(rules.programExtensions.includes(extension), extension);
+  for (const runner of ["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "msiexec"]) assert.ok(rules.runnerApps.includes(runner), runner);
+  assert.ok([...rules.programExtensions, ...rules.runnerApps].every((entry) => entry === entry.toLowerCase() && !entry.startsWith(".")), "lower case, no dots");
   // Every pattern a helper receives compiles as given.
   for (const source of rules.protectedPagePatterns) assert.doesNotThrow(() => new RegExp(source, "i"), source);
 });

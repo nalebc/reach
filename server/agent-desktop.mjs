@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import { desktopBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
-import { hiddenControls, nativeRules, protectedPathReason, typedTextRefusal } from "./agent-guard.mjs";
+import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typedTextRefusal, windowsProgramFile } from "./agent-guard.mjs";
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
@@ -702,7 +702,10 @@ export function createAgentDesktop(config, {
       const latest = live(client, authorize, "browser:open");
       if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
-      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform });
+      // On Windows a program or script is refused here first, before the
+      // helper's own check (as the Mac's helper refuses them itself).
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform }) ||
+        (windows && windowsProgramFile(filePath) ? PROGRAM_REASON : null);
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });

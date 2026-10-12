@@ -99,6 +99,20 @@ export const WINDOWS_TERMINAL_LIKE = [...TERMINAL_LIKE, "powershell", "pwsh", "w
   // WSL's distributions: their Store packages and launchers.
   "canonicalgrouplimited", "thedebianproject", "kalilinux", "46932suse", "whitewaterfoundry", "ubuntu", "debian", "kali linux", "opensuse",
   "pengwin", "almalinux", "oraclelinux", "fedoraremix", "\\kali.exe"];
+// Files that run when opened (reach_open_file never opens them for narrower
+// presets), and the programs that run what they open (never used to open a
+// file), as agent-desktop.swift's programExtensions and runnerApps. Without
+// the dot, in lower case; programs by .exe name and Store package.
+export const WINDOWS_PROGRAM_EXTENSIONS = ["exe", "com", "pif", "scr", "bat", "cmd", "ps1", "psm1", "psd1", "ps1xml", "psc1", "pssc", "vbs", "vbe", "js", "jse",
+  "wsf", "wsh", "hta", "lnk", "url", "website", "reg", "msi", "msp", "mst", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "application",
+  "appref-ms", "msc", "cpl", "settingcontent-ms", "search-ms", "searchconnector-ms", "library-ms", "scf", "shb", "shs", "inf", "jar", "chm", "hlp",
+  "diagcab", "xbap", "gadget", "iso", "img", "vhd", "vhdx", "rdp", "sys", "dll", "ocx", "drv", "xll", "ppkg", "theme", "themepack", "deskthemepack"];
+export const WINDOWS_RUNNER_APPS = ["cmd", "powershell", "pwsh", "powershell_ise", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "msiexec",
+  "regedit", "mmc", "control", "msdt", "hh", "installutil", "msbuild", "appinstaller", "microsoft.desktopappinstaller", "wt", "windowsterminal",
+  "microsoft.windowsterminal", "conhost", "openconsole", "bash", "wsl", "python", "pythonw", "py", "node", "java", "javaw", "mstsc"];
+export const PROGRAM_REASON = "That file would run as a program. Open documents, not programs or scripts.";
+/** A Windows file that runs as a program when opened, by its extension (Report.PDF.exe is an .exe). */
+export const windowsProgramFile = (file) => WINDOWS_PROGRAM_EXTENSIONS.includes(windowsFold(String(file).split(/[\\/]/).at(-1).split(".").slice(1).at(-1) ?? ""));
 const guardData = (platform) => platform === "win32"
   ? { appIds: WINDOWS_PROTECTED_APP_IDS, appNames: WINDOWS_PROTECTED_APP_NAMES, panes: WINDOWS_PRIVATE_PANES, titleWords: WINDOWS_PROTECTED_TITLE_WORDS, pages: WINDOWS_PROTECTED_PAGE_PATTERNS, terminals: WINDOWS_TERMINAL_LIKE }
   : { appIds: PROTECTED_APP_IDS, appNames: PROTECTED_APP_NAMES, panes: PRIVATE_PANES, titleWords: PROTECTED_TITLE_WORDS, pages: PROTECTED_PAGE_PATTERNS, terminals: TERMINAL_LIKE };
@@ -399,7 +413,10 @@ export function nativeRules({ preset, apps = [], hidden = [] }, { hosts = [], ti
     const data = guardData(platform);
     return { ...nativeRules({ preset, apps, hidden }, { hosts, titles, protectedPaths, home, platform: "darwin" }),
       protectedAppIds: data.appIds, protectedAppNames: data.appNames, privatePanes: data.panes, protectedTitleWords: data.titleWords,
-      protectedPagePatterns: data.pages.map((pattern) => pattern.source), terminalLike: data.terminals };
+      protectedPagePatterns: data.pages.map((pattern) => pattern.source), terminalLike: data.terminals,
+      // What the Mac's helper keeps in its own code (programExtensions,
+      // runnerApps in agent-desktop.swift), handed to Windows' as data.
+      programExtensions: WINDOWS_PROGRAM_EXTENSIONS, runnerApps: WINDOWS_RUNNER_APPS };
   }
   return {
     mode: preset === "apps" ? "apps" : preset === "full" ? "full" : "view",

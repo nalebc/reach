@@ -72,6 +72,34 @@ test("on Windows an agent opens a file by its drive-letter path; protected files
   assert.equal(apps.requests.filter((request) => request.op === "open-file").length, 1);
 });
 
+test("on Windows, programs and scripts are refused before the helper for Apps; Full control may open them; a Mac leaves it to its helper", async (t) => {
+  const apps = world("win32", { preset: "apps" });
+  apps.client.policy.apps = [{ id: chromeExe, name: "Google Chrome", bundleId: "" }];
+  apps.client.policy.roots = [];
+  apps.client.scopes = presetScopes(apps.client.policy);
+  t.after(() => apps.desktop.close());
+  for (const file of ["setup.exe", "run.BAT", "build.cmd", "script.ps1", "macro.vbs", "tool.js", "page.hta", "shortcut.lnk", "site.url", "keys.reg", "install.msi",
+    "console.msc", "panel.cpl", "saver.scr", "page.settingcontent-ms", "app.appref-ms", "Report.pdf.exe", "disk.iso"])
+    for (const reveal of [false, true])
+      await rejects(apps.desktop.openFile(apps.client, "C:\\Users\\me\\Downloads\\" + file, { reveal }, apps.authorize), 403, /run as a program/);
+  assert.equal(apps.requests.filter((request) => request.op === "open-file").length, 0, "nothing refused reached the helper");
+  await apps.desktop.openFile(apps.client, String.raw`C:\Users\me\Downloads\Report.pdf`, {}, apps.authorize);
+  await apps.desktop.openFile(apps.client, String.raw`C:\Users\me\Downloads\notes`, {}, apps.authorize);
+  assert.equal(apps.requests.filter((request) => request.op === "open-file").length, 2);
+  const full = world("win32", { preset: "full" });
+  t.after(() => full.desktop.close());
+  await full.desktop.openFile(full.client, String.raw`C:\Users\me\Downloads\setup.exe`, {}, full.authorize);
+  assert.deepEqual(full.requests.at(-1), { op: "open-file", path: String.raw`C:\Users\me\Downloads\setup.exe` });
+  // A Mac's helper refuses programs itself (agent-desktop.swift); its requests are unchanged.
+  const mac = world("darwin", { preset: "apps" });
+  mac.client.policy.apps = [{ id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" }];
+  mac.client.policy.roots = [];
+  mac.client.scopes = presetScopes(mac.client.policy);
+  t.after(() => mac.desktop.close());
+  await mac.desktop.openFile(mac.client, "/Users/me/Downloads/setup.exe", {}, mac.authorize);
+  assert.deepEqual(mac.requests.at(-1), { op: "open-file", path: "/Users/me/Downloads/setup.exe" });
+});
+
 test("Mac modifier names become Windows keys in one place: cmd and control are Ctrl, option is Alt", () => {
   for (const [mac, windows] of [["cmd", "ctrl"], ["command", "ctrl"], ["meta", "ctrl"], ["control", "ctrl"], ["ctrl", "ctrl"], ["option", "alt"], ["alt", "alt"], ["shift", "shift"]])
     assert.deepEqual(windowsModifiers([mac]), [windows], mac);
