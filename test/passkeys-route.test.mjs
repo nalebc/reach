@@ -6,6 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 import { softAuthenticator } from "./helpers/soft-authenticator.mjs";
 
 // Face ID end to end, as a real Reach sees it (Tailscale identity on every
@@ -141,7 +142,8 @@ test(
     assert.equal(here.json.passkey, undefined, "no Face ID offered");
     const refused = await call("nThisMac", `/api/auth/requests/${here.json.id}/passkey/options`, { body: { secret: here.json.secret } });
     assert.equal(refused.status, 403);
-    assert.match(refused.json.error, /came from this Mac itself: type its code in Reach on the Mac/);
+    const word = computerWord(process.platform);
+    assert.equal(refused.json.error, `This request came from this ${word} itself: type its code in Reach on the ${word} instead.`);
     const { pendingApprovals, describeApproval } = await import("../scripts/approve-device.mjs");
     const pending = pendingApprovals(path.join(dir, "private")).find((r) => r.id === here.json.id);
     assert.equal(pending.thisComputer, true);
