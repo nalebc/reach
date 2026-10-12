@@ -1434,14 +1434,17 @@ export async function createReach(overrides = {}) {
         : await fleet?.ticketApproval(req.reachIdentity, ticket);
     if (ticket !== undefined && !from)
       throw fail(403, "Your other computer didn't vouch for this device.");
+    // From this computer itself (its own Tailscale address, as tailscaled
+    // says): anyone signed in to it could have asked as you. Its prompt says
+    // so, on a Mac as on Windows, and only the code typed there approves it:
+    // Face ID on the phone would skip the warning (docs/parity/D-public-door.md
+    // §0.8, D1).
+    const fromHere = thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps());
     const created = approvals.request(
       req.reachIdentity,
       req.body?.name,
       config.tailscaleOwner,
-      // From this PC itself, through Windows' keyed route: anyone signed in
-      // to Windows here could have asked as you, so its prompt says so
-      // (docs/parity/D-public-door.md §0.8).
-      hostPlatform === "win32" && thisComputerRequest(req) ? { thisComputer: true } : undefined,
+      fromHere ? { thisComputer: true } : undefined,
     );
     if (from)
       try {
@@ -1449,7 +1452,7 @@ export async function createReach(overrides = {}) {
       } catch {}
     res
       .status(202)
-      .json({ ...created, ...(passkeys?.has() ? { passkey: true } : {}) });
+      .json({ ...created, ...(passkeys?.has() && !fromHere ? { passkey: true } : {}) });
   });
   app.post("/api/auth/requests/:id", (req, res) => {
     if (!approvals) throw fail(404, "Device approval is not configured.");
@@ -1479,12 +1482,14 @@ export async function createReach(overrides = {}) {
   // issues the credential exactly as approving here does.
   const passkeyRequest = (req) => {
     if (!passkeys) throw fail(404, "Face ID isn't available on this computer.");
-    approvals.pending(
+    const pending = approvals.pending(
       req.params.id,
       req.body?.secret,
       req.reachIdentity,
       config.tailscaleOwner,
     );
+    if (pending.thisComputer)
+      throw fail(403, `This request came from this ${computerWord(hostPlatform)} itself: type its code in Reach on the ${computerWord(hostPlatform)} instead.`);
     return `${req.params.id}:${req.reachIdentity.nodeId}`;
   };
   app.post("/api/auth/requests/:id/passkey/options", (req, res) => {
@@ -2133,6 +2138,18 @@ export async function createReach(overrides = {}) {
   // tailnet (this computer and the linked ones, on Reach's port).
   const readStatus =
     overrides.tailscaleStatus || (() => tailscaleJson(["status", "--json"]));
+  // This computer's own Tailscale addresses: the last ones Tailscale gave, so
+  // a status read that fails doesn't forget them.
+  let ownIpsSeen = [];
+  const ownTailscaleIps = async () => {
+    try {
+      const ips = (await readStatus())?.Self?.TailscaleIPs;
+      if (Array.isArray(ips) && ips.length) ownIpsSeen = ips;
+    } catch {
+      /* the last known ones */
+    }
+    return ownIpsSeen;
+  };
   app.get("/api/guests/keys", async (req, res) => {
     let policy = null;
     try {

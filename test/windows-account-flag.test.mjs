@@ -249,7 +249,7 @@ test("a Windows Reach with browser sign-in: invite keys, no linked computers or 
   assert.doesNotMatch(invite.text, /aren't available on Windows yet/);
 });
 
-test("this PC's own browser on Windows' keyed route: allowed, its request marked and said so where you approve it; a Mac's answers unchanged", async (t) => {
+test("this PC's own browser on Windows' keyed route: allowed, its request marked and said so where you approve it; one from elsewhere unchanged", async (t) => {
   const { reach } = await windowsReach(t);
   const key = newIngressKey();
   const port = await reach.listenKeyed({ key, peerCheck: { check: async () => true }, selfIps: () => ["100.64.0.10"] });
@@ -265,9 +265,10 @@ test("this PC's own browser on Windows' keyed route: allowed, its request marked
   const other = requests.find((r) => r.name === "Phone");
   assert.equal(pc.thisComputer, true);
   assert.equal("thisComputer" in other, false);
-  assert.match(describeApproval(pc), /\n  From this PC itself: anyone signed in to Windows here could have asked\. Approve only if you just asked from this PC's browser\.$/);
-  assert.doesNotMatch(describeApproval(other), /From this PC itself/);
-  // A Mac: its socket never marks a request; the record and prompt are as before.
+  assert.match(describeApproval(pc, "win32"), /\n  From this PC itself: anyone signed in to Windows here could have asked\. Approve only if you just asked from this PC's browser\.$/);
+  assert.doesNotMatch(describeApproval(other, "win32"), /From this PC itself/);
+  // A request from elsewhere (a Mac's marks only its own browser's:
+  // passkeys-route.test.mjs): the record and prompt are as before.
   const mac = await windowsReach(t, { platform: "darwin" });
   const created = mac.reach.approvals.request({ userId: "42", nodeId: "nPC", login: OWNER.login, nodeName: "pc", tagged: false, validUntil: Date.now() + 60000 }, "Mac Safari", OWNER);
   const [stored] = mac.reach.approvals.list();

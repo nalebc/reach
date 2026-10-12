@@ -69,8 +69,8 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
   };
   return {
     list: () => list().map(({ secretHash, token, ...rest }) => rest),
-    // `thisComputer`: asked from this computer itself (Windows' keyed route,
-    // server/tailscale-auth.mjs thisComputerRequest), kept so the prompt says so.
+    // `thisComputer`: asked from this computer itself (server/index.mjs), kept
+    // so the prompt says so and only the code typed there approves it.
     request(identity, name, owner, { thisComputer = false } = {}) {
       if (!ownerIdentity(identity, owner))
         throw fail(
@@ -156,7 +156,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           403,
           "This connection request expired or belongs to another device.",
         );
-      return { id: r.id, name: r.name };
+      return { id: r.id, name: r.name, ...(r.thisComputer === true && { thisComputer: true }) };
     },
     poll(id, secret, identity, owner, auth) {
       const r = loadJson(file(id), null);

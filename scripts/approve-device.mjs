@@ -1,6 +1,7 @@
 import path from "node:path";
 import { terminalPrompts } from "./prompts.mjs";
 import { loadJson } from "../server/core.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
 import { stateDir, command } from "./home.mjs";
 import { accountApproval, flagMissing, FLAG_MISSING } from "./configure.mjs";
@@ -11,12 +12,15 @@ export function pendingApprovals(dataDir) {
     .list()
     .filter((r) => r.status === "pending");
 }
-// From this PC itself (Windows' keyed route): anyone signed in to Windows
-// here could have asked as you (docs/parity/D-public-door.md §0.8).
-export const THIS_COMPUTER =
-  "From this PC itself: anyone signed in to Windows here could have asked. Approve only if you just asked from this PC's browser.";
-export function describeApproval(r) {
-  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}\n  Grants owner access (including terminals and files); screen control stays separately enabled.${r.thisComputer === true ? `\n  ${THIS_COMPUTER}` : ""}`;
+// From this computer itself: tailscaled serves the computer's own
+// connections too, so anyone signed in to it could have asked as you; said
+// on a Mac as on Windows (docs/parity/D-public-door.md §0.8, D1).
+export const thisComputerNote = (platform = process.platform) =>
+  platform === "win32"
+    ? "From this PC itself: anyone signed in to Windows here could have asked. Approve only if you just asked from this PC's browser."
+    : `From this ${computerWord(platform)} itself: anyone signed in to it could have asked. Approve only if you just asked from a browser on it.`;
+export function describeApproval(r, platform = process.platform) {
+  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}\n  Grants owner access (including terminals and files); screen control stays separately enabled.${r.thisComputer === true ? `\n  ${thisComputerNote(platform)}` : ""}`;
 }
 export function decideApproval(dataDir, value) {
   const deny = value.startsWith("deny ");
