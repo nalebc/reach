@@ -40,7 +40,17 @@ const digest = (value) =>
 // from a reused requestId. A full-control tool may type a password into a
 // page, so they are never kept as a plain fast hash someone could guess
 // from: salted scrypt, per run, compared in constant time.
-const scrypt = promisify(crypto.scrypt);
+// One at a time, all agents together: each is ~30 ms of one of libuv's four
+// threads, worked out before any run budget, and an agent replaying a
+// requestId (or naming a browser it can't use) as fast as it could kept all
+// four busy, stalling Reach's file, zlib and crypto work (CodeQL #67).
+const derive = promisify(crypto.scrypt);
+let deriving = Promise.resolve();
+const scrypt = (...args) => {
+  const turn = deriving.then(() => derive(...args));
+  deriving = turn.catch(() => {});
+  return turn;
+};
 const INPUTS = /^s1:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$/;
 export const inputsFingerprint = async (inputs, salt = crypto.randomBytes(16)) =>
   `s1:${salt.toString("base64url")}:${(await scrypt(inputs, salt, 32)).toString("base64url")}`;

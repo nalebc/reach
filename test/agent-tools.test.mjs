@@ -764,6 +764,34 @@ test("a run's inputs are kept only as a salted scrypt fingerprint: a typed passw
   assert.equal(tab.dom.window.document.querySelector("input").value, "");
 });
 
+// CodeQL #67: each fingerprint is ~30 ms of scrypt on one of libuv's four
+// threads, run before any run budget. An agent replaying a requestId (or
+// naming a browser it can't use) as fast as it could kept all four busy,
+// stalling Reach's file, zlib and crypto work for everyone. One at a time now.
+test("run fingerprints are worked out one at a time, whoever asks and however often", async (t) => {
+  let active = 0, most = 0;
+  const scrypt = crypto.scrypt;
+  t.mock.method(crypto, "scrypt", (...args) => {
+    const done = args.pop();
+    most = Math.max(most, ++active);
+    scrypt(...args, (error, key) => { active--; done(error, key); });
+  });
+  // A copy of the module that took the counting scrypt when it loaded.
+  const { inputsFingerprint, sameInputs } = await import(`../server/agent-tools.mjs?fingerprints=${Date.now()}`);
+  const inputs = JSON.stringify(["sign_in_fill", "Safari", { value: "hunter2" }]);
+  const kept = await inputsFingerprint(inputs);
+  most = 0;
+  const answers = await Promise.all([
+    ...Array.from({ length: 8 }, () => sameInputs(kept, inputs)),
+    ...Array.from({ length: 4 }, () => inputsFingerprint(inputs)),
+    sameInputs(kept, inputs.replace("hunter2", "hunter3")),
+  ]);
+  assert.equal(most, 1);
+  assert.deepEqual(answers.slice(0, 8), Array(8).fill(true));
+  for (const fingerprint of answers.slice(8, 12)) assert.match(fingerprint, /^s1:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}$/);
+  assert.equal(answers[12], false);
+});
+
 test("downloads enforce the file limit; protected pages and cross-site controls cannot be used", async (t) => {
   const f = setup(t);
   const search = await f.run("builtin_gmail_find", { query: "invoice" }),
