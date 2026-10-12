@@ -114,30 +114,52 @@ const point = (x, y = 300, identifier = 1) => ({
   clientY: y,
   identifier,
 });
-function swipe(target = $(".chat-workspace"), dx = -130, dy = 0, x = 250) {
-  touch(target, "touchstart", [point(x)]);
-  const move = touch(target, "touchmove", [point(x + dx, 300 + dy)]);
-  const end = touch(target, "touchend", [], [point(x + dx, 300 + dy)]);
+// The pager reads Date.now() for a release's speed (a short drag commits only
+// as a flick: 64 px within 100 ms) and for the ghost click it swallows after.
+// Run each event at a pinned time: the first touchmove renders the neighbor
+// page synchronously, which on a loaded runner (macos-15-intel, Oct 12) took
+// over 100 ms, so a quick swipe read as a slow drag and slid back.
+function at(time, action) {
+  const now = Date.now;
+  Date.now = () => time;
+  try {
+    return action();
+  } finally {
+    Date.now = now;
+  }
+}
+// A quick flick: lifted 50 ms after the finger landed.
+function swipe(
+  target = $(".chat-workspace"),
+  dx = -130,
+  dy = 0,
+  x = 250,
+  start = Date.now(),
+) {
+  const [, move, end] = timedDrag(
+    target,
+    [
+      [0, x],
+      [40, x + dx, 300 + dy],
+      [50, x + dx, 300 + dy],
+    ],
+    start,
+  );
   return { move, end };
 }
 // Give releases a realistic timeline without waiting on gesture duration.
-function timedDrag(target, points) {
-  const now = Date.now;
-  const start = now();
-  try {
-    points.forEach(([at, x, y = 300], index) => {
-      Date.now = () => start + at;
-      const final = index === points.length - 1;
+function timedDrag(target, points, start = Date.now()) {
+  return points.map(([ms, x, y = 300], index) => {
+    const final = index === points.length - 1;
+    return at(start + ms, () =>
       touch(
         target,
         index === 0 ? "touchstart" : final ? "touchend" : "touchmove",
         final ? [] : [point(x, y)],
         [point(x, y)],
-      );
-    });
-  } finally {
-    Date.now = now;
-  }
+      ),
+    );
+  });
 }
 
 for (const width of [320, 393, 768]) {
@@ -305,13 +327,15 @@ test("vertical scrolling, short and diagonal drags, phone edges, and multitouch 
 test("swiping a chat row switches apps without also opening the row; a fresh tap still opens a chat", async () => {
   await mount();
   const card = $(".chat-card");
-  swipe(card);
+  const start = Date.now();
+  swipe(card, -130, 0, 250, start);
   const ghost = new dom.window.MouseEvent("click", {
     bubbles: true,
     cancelable: true,
     detail: 1,
   });
-  card.dispatchEvent(ghost);
+  // The browser's synthesized click follows the release; on the same clock.
+  at(start + 60, () => card.dispatchEvent(ghost));
   assert.equal(ghost.defaultPrevented, true);
   await idle();
   assert.equal(selected(), "claude");
@@ -365,8 +389,11 @@ test("an OpenClaw conversation keeps its swipes; provider swipes return after cl
 test("the page follows the finger, reveals real adjacent chats, and promotes the same preview only after settling", async () => {
   await mount();
   const page = $(".chat-workspace");
-  touch(page, "touchstart", [point(250)]);
-  touch(page, "touchmove", [point(170)]);
+  // A 130 px release commits only as a flick: keep the finger on the pinned
+  // clock while the checks between move and release take real time.
+  const start = Date.now();
+  at(start, () => touch(page, "touchstart", [point(250)]));
+  at(start + 40, () => touch(page, "touchmove", [point(170)]));
   await settle();
   const pager = $(".chat-app-pages");
   const next = $(".chat-page-pane.neighbor");
@@ -380,7 +407,7 @@ test("the page follows the finger, reveals real adjacent chats, and promotes the
     "claude plan",
   );
   assert.equal(selected(), "codex");
-  touch(page, "touchend", [], [point(120)]);
+  at(start + 50, () => touch(page, "touchend", [], [point(120)]));
   assert.equal(pager.dataset.motion, "settling");
   assert.equal(pager.style.getPropertyValue("--chat-page-x"), "-393px");
   assert.equal(
