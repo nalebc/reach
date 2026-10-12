@@ -10,7 +10,8 @@ import { EventEmitter, once } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { PIPE, createCodexDaemon } from "../server/agent-sessions/codex-daemon.mjs";
+import { createCodexDaemon } from "../server/agent-sessions/codex-daemon.mjs";
+import { PIPE } from "../server/windows-owners.mjs";
 import { findCodexExecutable } from "../server/capabilities.mjs";
 import { spawnable } from "../server/agent-cli.mjs";
 

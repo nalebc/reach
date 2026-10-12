@@ -10,6 +10,7 @@ import { findCodexExecutable } from "../capabilities.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { trustedSocket } from "./trusted-socket.mjs";
+import { PIPE } from "../windows-owners.mjs";
 
 const exec = promisify(execFile);
 
@@ -97,11 +98,6 @@ export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
     send({ id: 1, method: "initialize", params: { clientInfo: { name: "reach", title: "Reach", version: "0.1.0" } } });
   });
 }
-
-// A Windows named pipe (\\.\pipe\name or \\?\pipe\name), the only local
-// endpoint Node can open there. One name, as Windows documents it: no
-// slashes and not only dots, so it can't turn into a path to something else.
-export const PIPE = /^\\\\[.?]\\pipe\\(?!\.+$)[^\\/\0-\x1f]{1,256}$/i;
 
 // The session service's socket, held to Reach's rule for Codex sockets
 // (trusted-socket.mjs); the socket to connect to, or why it isn't trusted.
