@@ -222,12 +222,42 @@ const pidAlive = (pid) => {
     return error.code === "EPERM";
   }
 };
-export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive } = {}) {
+// When Windows last started, in seconds (it has no boot id to read, as macOS
+// and Linux do). Two readings within two minutes are the same boot.
+export const windowsBootTime = (now = Date.now(), uptime = os.uptime()) => Math.round(now / 1000 - uptime);
+export const sameBoot = (a, b) =>
+  typeof a === "number" && typeof b === "number" ? Math.abs(a - b) <= 120 : a === b;
+// A Windows process's program ("node.exe"), from tasklist: "" when no process
+// has that id, null when tasklist can't say. Windows hands a finished
+// process's id to the next one within minutes, so an id alone names nothing.
+export function windowsImage(
+  pid,
+  run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true }),
+) {
+  let out;
+  try {
+    out = String(run("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]));
+  } catch {
+    return null;
+  }
+  const row = out.match(/^"([^"]+)","(\d+)"/m);
+  return row && Number(row[2]) === pid ? row[1].toLowerCase() : "";
+}
+// Whether a recorded Windows Reach still runs: its process lives, in the same
+// boot, and is still Node (Oct 12: after a crash or reboot, an unrelated
+// program with a reused id was "Reach", and stop would have ended it).
+export function windowsReachAlive(record, { alive = pidAlive, image = windowsImage, boot = windowsBootTime } = {}) {
+  if (!Number.isInteger(record?.pid) || record.pid <= 0 || !alive(record.pid)) return false;
+  if (typeof record.boot === "number" && !sameBoot(record.boot, boot())) return false;
+  const name = image(record.pid);
+  return name === null || name === "node.exe";
+}
+export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive, image = windowsImage, boot = windowsBootTime } = {}) {
   let host = null;
   try {
     host = JSON.parse(read(path.join(state, "host-status.json")));
   } catch {}
-  return Number.isInteger(host?.pid) && host.pid > 0 && alive(host.pid) ? host : null;
+  return windowsReachAlive(host, { alive, image, boot }) ? host : null;
 }
 export function windowsStatusText(host, { command = "reach", now } = {}) {
   if (!host) return `Reach isn't running from this folder. Start it with ${command}.`;

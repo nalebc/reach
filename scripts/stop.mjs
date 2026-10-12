@@ -17,7 +17,7 @@ import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // The processes and every Reach among them (instances.mjs): one Reach per
 // computer, so stop and restart reach it whichever folder it came from.
-import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost } from "./instances.mjs";
+import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost, windowsImage } from "./instances.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -193,6 +193,7 @@ async function stopWindows(
     },
     taskkill = (pid) =>
       execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }),
+    image = windowsImage,
     graceMs = 15000,
   },
 ) {
@@ -218,6 +219,10 @@ async function stopWindows(
   };
   try {
     if (!(await gone(graceMs))) {
+      // Ended outright only while that id is still Node: never a program
+      // that got Reach's old id after it ended.
+      if (image(host.pid) !== "node.exe")
+        throw Error(`Reach (process ${host.pid}) did not stop by itself. Close its PowerShell window, or end it in Task Manager.`);
       try {
         taskkill(host.pid);
       } catch {}

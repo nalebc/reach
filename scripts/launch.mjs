@@ -41,7 +41,7 @@ import {
   tailscaleVersions,
 } from "./tailscale.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
-import { watchStopRequest } from "./instances.mjs";
+import { watchStopRequest, windowsBootTime } from "./instances.mjs";
 import { pageOpener } from "./tailscale-connect.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { setStartInfo } from "../server/delivery.mjs";
@@ -248,6 +248,9 @@ export async function launch(options, root) {
       pid: process.pid,
       // When it started (Windows' status says it; there's no ps to ask).
       startedAt: Date.now(),
+      // Which boot (Windows reuses process ids): a status file from before a
+      // restart of the PC names no Reach.
+      ...(process.platform === "win32" && { boot: windowsBootTime() }),
       instance: reach.instance,
       localUrl,
       origin: privateOrigin || localUrl,

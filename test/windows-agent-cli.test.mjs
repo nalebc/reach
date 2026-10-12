@@ -340,3 +340,23 @@ test("Windows, wired: npm's Codex and Claude Code are found and started through 
   const sent = claudeLog.find((e) => e.stdin?.type === "user");
   assert.deepEqual(sent.stdin.message.content, [{ type: "text", text }], "the message as typed");
 });
+
+test("Windows sign-in and terminal shortcuts start the CLI by its full path, never npm's .ps1", async () => {
+  const { windowsCliCommand, powershellCall } = await import("../server/app-shortcuts.mjs");
+  // A native install off PATH, and an npm shim's JS entry (started with Node).
+  const native = await windowsCliCommand("claude", { find: async () => "C:\\Users\\Sam\\.local\\bin\\claude.exe" });
+  assert.equal(native, '"C:\\Users\\Sam\\.local\\bin\\claude.exe"');
+  const script = await windowsCliCommand("gemini", { find: async () => "C:\\Users\\Sam\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js", node: "C:\\Reach\\node.exe" });
+  assert.equal(script, '"C:\\Reach\\node.exe" "C:\\Users\\Sam\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js"');
+  assert.equal(await windowsCliCommand("claude", { find: async () => null }), null);
+  // Codex is looked up with its native codex.exe in mind.
+  let options;
+  await windowsCliCommand("codex", { find: async (_, o) => ((options = o), null) });
+  assert.equal(typeof options.native, "function");
+  // cmd runs the quoted form as is (sign-in: cmd /d /s /c "<command> auth login");
+  // PowerShell gets a call with single quotes, so $ and ' in a path stay as written.
+  assert.equal(powershellCall(native), "& 'C:\\Users\\Sam\\.local\\bin\\claude.exe'");
+  assert.equal(powershellCall('"C:\\Users\\O\'Neil$x\\claude.exe"'), "& 'C:\\Users\\O''Neil$x\\claude.exe'");
+  assert.equal(powershellCall(script), "& 'C:\\Reach\\node.exe' 'C:\\Users\\Sam\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js'");
+  assert.equal(powershellCall("claude"), "claude", "a Mac command passes through");
+});

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, startTimes, stateOf, statusText, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -55,22 +55,33 @@ function lock() {
       bootSession = fs
         .readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
         .trim();
+    else if (process.platform === "win32") bootSession = windowsBootTime();
   } catch {}
   try {
     const previous = JSON.parse(fs.readFileSync(lockFile, "utf8"));
     if (
       bootSession &&
       previous.bootSession &&
-      bootSession !== previous.bootSession
+      !sameBoot(bootSession, previous.bootSession)
     ) {
       // A PID from an earlier boot may now belong to an unrelated process.
       fs.unlinkSync(lockFile);
     } else
       try {
         process.kill(previous.pid, 0);
+        // Windows reuses a finished process's id within minutes: a live id
+        // holds this lock only while it's still Node.
+        if (process.platform === "win32" && !["node.exe", null].includes(windowsImage(previous.pid)))
+          fs.unlinkSync(lockFile);
       } catch (error) {
         if (error.code === "ESRCH") fs.unlinkSync(lockFile);
-        else if (error.code === "EPERM") {
+        else if (error.code === "EPERM" && process.platform === "win32") {
+          // Another account's (or an administrator's) process: a Reach only if
+          // it's Node; tasklist, not /bin/ps, says which.
+          const image = windowsImage(previous.pid);
+          if (image === null) throw new ProcessInventoryError(error);
+          if (image !== "node.exe") fs.unlinkSync(lockFile);
+        } else if (error.code === "EPERM") {
           // The pid belongs to another user's process now: a Reach only if
           // its command is one; otherwise the lock is stale.
           let command = "";
@@ -226,8 +237,10 @@ async function prepare(options, { say, step, signal }) {
     fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
       mode: 0o600,
     });
-  // The browser sign-in client, for phones without the Tailscale app.
-  if (!packaged && !options.local) {
+  // The browser sign-in client, for phones without the Tailscale app. Not on
+  // Windows: its start page needs account approval, which Windows can't do
+  // yet (configure.mjs accountApproval), and it cost a first run 2 minutes.
+  if (!packaged && !options.local && process.platform !== "win32") {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {

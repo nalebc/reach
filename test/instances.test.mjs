@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { alreadyRunning, describe, processTable, reachHosts, stateOf, statusText, whereItRuns, withoutHandover } from "../scripts/instances.mjs";
+import { alreadyRunning, describe, processTable, reachHosts, sameBoot, stateOf, statusText, whereItRuns, windowsBootTime, windowsImage, windowsReachAlive, withoutHandover } from "../scripts/instances.mjs";
 import { stopReach } from "../scripts/stop.mjs";
 
 test("process discovery distinguishes an unavailable inventory from no running Reach", () => {
@@ -256,4 +256,34 @@ test("Windows: a running Reach stops on a request for it, and only for it", asyn
   fs.writeFileSync(stopRequestFile(state), JSON.stringify({ pid: 77 }));
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(stops, 1, "it stopped watching once it was stopping");
+});
+
+test("Windows: a recorded Reach is the one running only in the same boot and while its id is still Node", () => {
+  // Oct 12: Windows reuses process ids within minutes. A status file or lock
+  // left by a crash or a restart of the PC named an unrelated program.
+  const tasklist = (rows) => (cmd, args) => {
+    assert.equal(cmd, "tasklist");
+    assert.deepEqual(args.slice(0, 2), ["/FI", `PID eq ${args[1].split(" ").pop()}`]);
+    return rows;
+  };
+  assert.equal(windowsImage(4242, tasklist('"node.exe","4242","Console","1","61,234 K"\r\n')), "node.exe");
+  assert.equal(windowsImage(4242, tasklist('"Chrome.exe","4242","Console","1","1,234 K"\r\n')), "chrome.exe");
+  assert.equal(windowsImage(4242, tasklist("INFO: No tasks are running which match the specified criteria.\r\n")), "");
+  assert.equal(windowsImage(4242, tasklist('"node.exe","14242","Console","1","1 K"\r\n')), "", "another id");
+  assert.equal(windowsImage(4242, () => { throw Error("not on Windows"); }), null);
+
+  assert.equal(windowsBootTime(1_000_000_000, 3600), 996_400);
+  assert.equal(sameBoot(996_400, 996_460), true, "the same boot, read a minute apart");
+  assert.equal(sameBoot(996_400, 1_200_000), false, "rebooted since");
+  assert.equal(sameBoot("a1", "a1"), true, "macOS and Linux boot ids are compared as they are");
+
+  const record = { pid: 4242, boot: 996_400 };
+  const live = { alive: () => true, image: () => "node.exe", boot: () => 996_430 };
+  assert.equal(windowsReachAlive(record, live), true);
+  assert.equal(windowsReachAlive(record, { ...live, alive: () => false }), false, "ended");
+  assert.equal(windowsReachAlive(record, { ...live, boot: () => 1_200_000 }), false, "a file from before the PC restarted");
+  assert.equal(windowsReachAlive(record, { ...live, image: () => "chrome.exe" }), false, "its id now names another program");
+  assert.equal(windowsReachAlive(record, { ...live, image: () => null }), true, "tasklist can't say: the living id counts");
+  assert.equal(windowsReachAlive({ pid: 4242 }, live), true, "an older file without a boot");
+  assert.equal(windowsReachAlive({ pid: "x" }, live), false);
 });
