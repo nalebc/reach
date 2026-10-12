@@ -45,11 +45,15 @@ test("a picture file swapped for a pipe once it's measured is still read at once
   const FileHandle = Object.getPrototypeOf(handle);
   await handle.close();
   // Whichever way it's measured (by its path, or once open), the pipe takes its name right after.
+  let swapped = false;
   for (const owner of [fs.promises, FileHandle]) {
     const measure = owner.stat;
     t.mock.method(owner, "stat", async function (...args) {
       const info = await measure.apply(this, args);
-      if (info.isFile?.() && fs.existsSync(pipe)) fs.renameSync(pipe, pic);
+      if (info.isFile?.() && !swapped) {
+        swapped = true;
+        fs.renameSync(pipe, pic);
+      }
       return info;
     });
   }
