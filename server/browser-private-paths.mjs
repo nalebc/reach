@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { windowsCanonicalPath, windowsWithin } from './app-identity.mjs';
 
 export const browserPrivateNames = ['.reach', '.ssh', '.aws', '.azure', '.kube', '.gnupg', '.codex', '.claude', '.config', '.netrc', '.npmrc', '.git-credentials',
   '.git', '.gitconfig', '.zshenv', '.zshrc', '.zprofile', '.zlogin', '.zlogout', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
@@ -42,20 +43,51 @@ export function agentShellSandbox(config, { home = os.homedir(), appRoot = appli
   };
 }
 
-export function browserPrivatePaths(config, { home = os.homedir(), appRoot = applicationRoot } = {}) {
+// On Windows, beside the list every computer gets: what a Mac keeps in
+// ~/Library and the folders outside it that a Mac protects (launch agents,
+// Tailscale's state and app, the keychains). The whole of AppData, as the
+// Mac's whole ~/Library: browser profiles (Chrome, Edge, Brave, Firefox,
+// Opera, Vivaldi), mail (Outlook, Thunderbird, Windows Mail), the credential
+// stores (Microsoft\Credentials, Protect, Vault), the user's Startup folder,
+// PowerShell's history. Then PowerShell's profiles (its .zshrc), everyone's
+// Startup folder, Tailscale's state and program, Windows' own password
+// database and scheduled tasks. Folders come from the environment where
+// Windows says they are, else where Windows puts them.
+function windowsPrivatePaths(home, env) {
+  const p = path.win32, absolute = (value) => typeof value === 'string' && p.isAbsolute(value) && /^[a-z]:/i.test(value) ? value : null;
+  const programData = absolute(env.ProgramData) || absolute(env.ALLUSERSPROFILE) || 'C:\\ProgramData';
+  const systemRoot = absolute(env.SystemRoot) || absolute(env.windir) || 'C:\\Windows';
+  const programFiles = [absolute(env.ProgramFiles) || 'C:\\Program Files', absolute(env['ProgramFiles(x86)']) || 'C:\\Program Files (x86)', absolute(env.ProgramW6432)];
+  const documents = [p.join(home, 'Documents'), ...(absolute(env.OneDrive) ? [p.join(env.OneDrive, 'Documents')] : [])];
+  return [p.join(home, 'AppData'), absolute(env.APPDATA), absolute(env.LOCALAPPDATA),
+    ...documents.flatMap(folder => [p.join(folder, 'PowerShell'), p.join(folder, 'WindowsPowerShell')]),
+    p.join(programData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'StartUp'), p.join(programData, 'Tailscale'),
+    ...programFiles.filter(Boolean).map(folder => p.join(folder, 'Tailscale')),
+    p.join(systemRoot, 'System32', 'config'), p.join(systemRoot, 'System32', 'Tasks')];
+}
+
+export function browserPrivatePaths(config, { home = os.homedir(), appRoot = applicationRoot, platform = process.platform, env = process.env } = {}) {
+  // Windows paths are Windows' whatever the host (tests run them anywhere).
+  const windows = platform === 'win32', where = windows ? path.win32 : path;
   const paths = [appRoot, config.dataDir, config.agentPolicyFile, ...(config.privatePaths || []),
-    ...browserPrivateNames.map(name => path.join(home, name)),
-    path.join(home, 'Library'), path.join(home, '.tailscale'), path.join(home, '.local'), path.join(home, 'bin'),
+    ...browserPrivateNames.map(name => where.join(home, name)),
+    where.join(home, 'Library'), where.join(home, '.tailscale'), where.join(home, '.local'), where.join(home, 'bin'),
     '/Library/Keychains', '/Library/LaunchAgents', '/Library/LaunchDaemons',
     '/Library/PrivilegedHelperTools', '/var/lib/tailscale', '/var/run/tailscale',
-    '/etc/tailscale', '/Applications/Tailscale.app', '/Applications/Reach.app'];
+    '/etc/tailscale', '/Applications/Tailscale.app', '/Applications/Reach.app', ...(windows ? windowsPrivatePaths(home, env) : [])];
   return [...new Set(paths.filter(p => typeof p === 'string' && p).flatMap(p => {
-    const absolute = path.resolve(p);
+    const absolute = where.resolve(p);
     try { return [absolute, fs.realpathSync.native(absolute)]; } catch { return [absolute]; }
   }))];
 }
 
-export function isBrowserPrivatePath(target, privatePaths) {
+export function isBrowserPrivatePath(target, privatePaths, { platform = process.platform } = {}) {
+  // On Windows one file has one name whatever its letters' case, prefix or
+  // trimmed dots (windowsCanonicalPath).
+  if (platform === 'win32') {
+    const absolute = windowsCanonicalPath(target);
+    return absolute.split('\\').some(part => browserPrivateNames.includes(part)) || privatePaths.some(p => windowsWithin(absolute, windowsCanonicalPath(p)));
+  }
   const absolute = path.resolve(target);
   return absolute.split(path.sep).some(part => browserPrivateNames.includes(part.toLowerCase())) ||
     privatePaths.some(p => absolute === p || absolute.startsWith(p + path.sep));

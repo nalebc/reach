@@ -2,7 +2,7 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
 import { moneyRules } from "./money-sites.mjs";
-import { windowsAppId, windowsCanonicalPath, windowsFold, windowsPackageName, windowsShortName } from "./app-identity.mjs";
+import { windowsAppId, windowsCanonicalPath, windowsFold, windowsPackageName, windowsShortName, windowsWithin } from "./app-identity.mjs";
 
 // What narrower presets keep off limits. Full control deliberately bypasses
 // these filters. One list, used by the owner's app picker, typed commands for
@@ -162,6 +162,10 @@ const ACTS_ON = new Set(["kill", "killall", "pkill", "rm", "mv", "cp", "chmod", 
 // Commands are split at every place a new command can start, so a refusal
 // can't hide behind a pipe or a semicolon. Each piece is checked on its own.
 const segments = (command) => String(command).split(/\n|;|&&|\|\||\||`|\$\(|\(|\{|\bthen\b|\bdo\b|\belse\b/g);
+// On Windows too at a lone & (cmd) and at DO in any case, but never inside a
+// folder's name (Program Files (x86)) or a variable's (${env:APPDATA}).
+const windowsSegments = (command) =>
+  String(command).split(/\n|;|&&|\|\||\||`|\$\(|\((?!x86\))|(?<!\$)\{|\bthen\b|\bdo\b|\belse\b/gi).flatMap((piece) => piece.split("&"));
 const baseName = (token) => token.replace(/^.*\//, "").replace(/^\\/, "").toLowerCase();
 const skipPrefixes = new Set(["env", "nohup", "nice", "time", "command", "builtin", "exec", "xargs", "caffeinate", "script", "watch", "timeout", "gtimeout", "stdbuf", "ionice", "chroot", "arch"]);
 
@@ -180,10 +184,40 @@ const WINDOWS_SHORT_NAME = "Give the full name: a short name such as PROGRA~1 hi
 // Program Files and ProgramData, by path or by their environment names.
 const WINDOWS_SYSTEM_PATH = /^(?:[a-z]:[\\/]?$|[a-z]:[\\/](?:windows|program files|program files \(x86\)|programdata)(?:[\\/]|$)|(?:%|\$\{?env:)(?:systemroot|windir|programfiles|programw6432|programdata))/i;
 const WINDOWS_SYSTEM_PLACE = /(?:^|[\s"'])(?:[a-z]:[\\/](?:windows|program files|programdata)(?=[\\/\s"' (]|$)|(?:%|\$\{?env:)(?:systemroot|windir|programfiles|programw6432|programdata))/i;
-// Where Windows and its apps keep passwords and sign-ins (beside SECRET_PATH).
-// Matched on a path or on a whole command, with / for \, by folder or by
-// environment name (%APPDATA%, $env:LOCALAPPDATA).
-const WINDOWS_PRIVATE_DATA = /(?:(?:appdata\/(?:local|roaming)|%(?:local)?appdata%|\$\{?env:(?:local)?appdata\}?)\/(?:google\/chrome\/user|microsoft\/edge\/user|bravesoftware|mozilla\/firefox|microsoft\/(?:credentials|protect|vault)|microsoft\/windows\/powershell\/psreadline|1password|bitwarden|keepassxc|tailscale|reach)|(?:programdata|%programdata%|\$\{?env:programdata\}?)\/tailscale|windows\/system32\/config)(?![a-z0-9])/i;
+// Where Windows and its apps keep passwords and sign-ins (beside SECRET_PATH),
+// as the Mac's PRIVATE_LIBRARY names ~/Library's: browser profiles, mail,
+// credential stores, the Startup folders, PowerShell's history and profiles
+// (its .zshrc), password managers, Tailscale and Reach. Matched on a path or
+// on a whole command, with / for \. AppData by its environment names
+// (%APPDATA%, $env:LOCALAPPDATA) is private as a whole, as ~/Library is
+// (browserPrivatePaths protects the folder itself).
+const WINDOWS_APP_DATA_SECRETS = ["google/chrome", "chromium", "microsoft/edge", "bravesoftware", "mozilla", "thunderbird", "opera software", "vivaldi", "yandex",
+  "librewolf", "waterfox", "packages/thebrowsercompany\\.arc_[^/]*", "microsoft/outlook", "comms", "packages/microsoft\\.windowscommunicationsapps_[^/]*",
+  "packages/microsoft\\.outlookforwindows_[^/]*", "microsoft/(?:credentials|protect|vault|crypto|systemcertificates)", "microsoft/windows/start menu/programs/startup",
+  "microsoft/windows/powershell/psreadline", "packages/microsoft\\.windowsterminal[^/]*", "1password", "agilebits", "bitwarden", "keepassxc", "keepass", "dashlane",
+  "lastpass", "nordpass", "enpass", "proton pass", "protonpass", "keeper", "roboform", "gnupg", "github cli", "tailscale", "reach"];
+const WINDOWS_PRIVATE_DATA = new RegExp("(?:" + [
+  `appdata/(?:local|roaming|locallow)/(?:${WINDOWS_APP_DATA_SECRETS.join("|")})`,
+  "%(?:local)?appdata%", "\\$\\{?env:(?:local)?appdata\\b",
+  "(?:programdata|%programdata%|%allusersprofile%|\\$\\{?env:(?:programdata|allusersprofile)\\}?)/(?:tailscale|microsoft/windows/start menu/programs/startup)",
+  "(?:windows|%systemroot%|%windir%|\\$\\{?env:(?:systemroot|windir)\\}?)/system32/(?:config|tasks)",
+  "program files(?: \\(x86\\))?/tailscale", "documents/(?:windows)?powershell", "(?:windows)?powershell/[^/]*profile\\.ps1",
+].join("|") + ")(?![a-z0-9])", "i");
+// The owner's and Windows' folders as a command names them (%USERPROFILE%,
+// $env:APPDATA, ${env:LOCALAPPDATA}, ~, $HOME), read as the folders they are
+// so the protected folders' check sees them. Per-user ones only with home.
+const windowsFolders = (home) => {
+  const drive = /^[a-z]:/i.exec(home)?.[0] || "C:";
+  const system = { systemdrive: "C:", systemroot: "C:\\Windows", windir: "C:\\Windows", programfiles: "C:\\Program Files", "programfiles(x86)": "C:\\Program Files (x86)",
+    programw6432: "C:\\Program Files", commonprogramfiles: "C:\\Program Files\\Common Files", programdata: "C:\\ProgramData", allusersprofile: "C:\\ProgramData", public: "C:\\Users\\Public" };
+  return home ? { ...system, userprofile: home, home, homedrive: drive, homepath: home.slice(drive.length) || "\\", appdata: `${home}\\AppData\\Roaming`,
+    localappdata: `${home}\\AppData\\Local`, onedrive: `${home}\\OneDrive` } : system;
+};
+const windowsExpand = (value, home) => {
+  const folders = windowsFolders(home);
+  return value.replace(/%([a-z0-9_()]+)%|\$\{env:([^}]+)\}|\$env:([a-z0-9_]+)/gi, (whole, a, b, c) => folders[(a || b || c).toLowerCase()] ?? whole)
+    .replace(/^~(?=[\\/]|$)/, home || "~").replace(/^\$\{?home\}?(?=[\\/]|$)/i, home || "~");
+};
 
 /** Returns null when the command may run, or the reason it may not. */
 const isUrl = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
@@ -199,6 +233,15 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
   const canonicalPath = (value) => windows ? windowsCanonicalPath(value) : paths.resolve(value);
   const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonicalPath);
   const protectedPath = (value) => {
+    if (windows) {
+      // As written, with its folders' names read (%APPDATA%, ~), and as the one file it is.
+      const expanded = windowsExpand(value, home);
+      const absolute = paths.isAbsolute(expanded) ? canonicalPath(expanded) : null;
+      return [value, expanded, absolute ?? ""].some((text) => {
+        const separators = text.replace(/\\/g, "/");
+        return SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || WINDOWS_PRIVATE_DATA.test(separators);
+      }) || (absolute !== null && roots.some((root) => windowsWithin(absolute, root)));
+    }
     const expanded = value.replace(/^~(?=[\\/]|$)/, home || "~").replace(/^\$\{?HOME\}?(?=[\\/]|$)/, home || "~");
     const absolute = paths.isAbsolute(expanded) ? canonicalPath(expanded) : null;
     const separators = expanded.replace(/\\/g, "/");
@@ -206,7 +249,7 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
       (absolute !== null && roots.some((root) => absolute === root || absolute.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)));
   };
   // On Windows a lone & starts a new command too (cmd).
-  for (const raw of windows ? segments(command).flatMap((piece) => piece.split("&")) : segments(command)) {
+  for (const raw of windows ? windowsSegments(command) : segments(command)) {
     const piece = raw.replace(/\\ /g, " ");
     // Keep quoted assignment values intact. Removing text only up to its
     // first space could turn data such as NOTE='From: Reach Audit' into a
@@ -269,8 +312,17 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
     if (name === "defaults" && /tcc|com\.apple\.security|loginwindow|screensaver|universalaccess/i.test(piece)) return "That changes the Mac's security settings.";
     if (["crontab", "at", "batch"].includes(name) && values.length && !values.includes("-l")) return "Scheduled jobs would outlive this session.";
     if (name === "history" || (name === "cat" && values.some((arg) => /_history$/.test(arg)))) return "Shell history can hold your secrets.";
-    for (const arg of values) if (!arg.startsWith("-") && protectedPath(arg)) return "That path holds your passwords, keys or Reach's own files.";
+    // On Windows a path also comes as an option's value (-Path:C:\…, /d:C:\…)
+    // or a variable's (set X=C:\…).
+    const pathArgs = !windows ? values : values.flatMap((arg) => {
+      const option = /^[-/][a-z][\w-]*[:=](.+)$/is.exec(arg), assigned = /^[a-z_]\w*=(.+)$/is.exec(arg);
+      return option ? [option[1]] : assigned ? [arg, assigned[1]] : [arg];
+    });
+    for (const arg of pathArgs) if (!arg.startsWith("-") && protectedPath(arg)) return "That path holds your passwords, keys or Reach's own files.";
     if (/(^|\s)(cat|less|more|head|tail|strings|xxd|hexdump|cp|mv|scp|rsync|sqlite3|plutil|python3?|node|ruby|perl)\s/.test(piece) && (SECRET_PATH.test(piece) || PRIVATE_LIBRARY.test(piece)))
+      return "That path holds your passwords, keys or Reach's own files.";
+    if (windows && /(^|\s)(type|gc|get-content|cat|more|copy|xcopy|robocopy|copy-item|cpi|move|move-item|mi|findstr|select-string|sls|certutil|format-hex|fhx|py|python3?|node|sqlite3)\s/i.test(piece) &&
+        SECRET_PATH.test(piece.replace(/\\/g, "/")))
       return "That path holds your passwords, keys or Reach's own files.";
   }
   return null;
@@ -286,8 +338,8 @@ export function protectedPathReason(target, { protectedPaths = [], home = "", pl
   if (platform === "win32" && windowsShortName(target)) return WINDOWS_SHORT_NAME;
   const resolved = canonical(target), separators = resolved.replace(/\\/g, "/");
   const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonical);
-  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || (platform === "win32" && WINDOWS_PRIVATE_DATA.test(separators)) ||
-      roots.some((root) => resolved === root || resolved.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep)))
+  const within = (root) => platform === "win32" ? windowsWithin(resolved, root) : resolved === root || resolved.startsWith(root.endsWith(paths.sep) ? root : root + paths.sep);
+  if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || (platform === "win32" && WINDOWS_PRIVATE_DATA.test(separators)) || roots.some(within))
     return "That path holds your passwords, keys or Reach's own files.";
   return null;
 }

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { commandRefusal, nativeRules, protectedAppReason, protectedPage, protectedPathReason, protectedTitle, terminalLikeApp, typedTextRefusal } from "../server/agent-guard.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
+import { browserPrivatePaths } from "../server/browser-private-paths.mjs";
 import { createAgentPauses } from "../server/agent-pauses.mjs";
 
 // Windows' guard data beside the Mac's, chosen by platform (docs/
@@ -142,6 +143,51 @@ test("on Windows, the files where Windows and its apps keep passwords are protec
     assert.ok(protectedPathReason(file, options), file);
   for (const file of [String.raw`C:\Users\me\AppData\Local\Temp\log.txt`, String.raw`C:\Users\me\AppData\Roaming\reachability-notes\a.txt`, String.raw`C:\Users\me\Documents\notes.txt`])
     assert.equal(protectedPathReason(file, options), null, file);
+});
+
+// By name, as the Mac's PRIVATE_LIBRARY names ~/Library's secrets: whoever's
+// profile they're in, whatever protected folders Reach passes.
+test("on Windows, browser profiles, mail, credential stores and startup places are protected by name", () => {
+  const options = { home: String.raw`C:\Users\me`, protectedPaths: [], ...win };
+  const appData = (rest) => "C:\\Users\\other\\AppData\\" + rest;
+  for (const file of [appData(String.raw`Local\Google\Chrome Beta\User Data\Default\Login Data`), appData(String.raw`Local\Chromium\User Data\Default\Cookies`),
+    appData(String.raw`Local\BraveSoftware\Brave-Browser\User Data\Default\Login Data`), appData(String.raw`Roaming\Mozilla\Firefox\Profiles\x\logins.json`),
+    appData(String.raw`Local\Mozilla\Firefox\Profiles\x\cache2`), appData(String.raw`Roaming\Opera Software\Opera Stable\Login Data`),
+    appData(String.raw`Local\Vivaldi\User Data\Default\Login Data`), appData(String.raw`Local\Microsoft\Edge Beta\User Data\Default\Cookies`),
+    appData(String.raw`Local\Microsoft\Outlook\me.ost`), appData(String.raw`Roaming\Thunderbird\Profiles\x\key4.db`), appData(String.raw`Local\Comms\Unistore\data`),
+    appData(String.raw`Local\Packages\microsoft.windowscommunicationsapps_8wekyb3d8bbwe\LocalState\x`), appData(String.raw`Local\Microsoft\Credentials\x`),
+    appData(String.raw`Local\Microsoft\Vault\x`), appData(String.raw`Roaming\Microsoft\Crypto\RSA\x`), appData(String.raw`Roaming\Microsoft\SystemCertificates\My\x`),
+    appData(String.raw`Roaming\Microsoft\Windows\Start Menu\Programs\Startup\run.lnk`), appData(String.raw`Local\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json`),
+    appData(String.raw`Roaming\KeePass\KeePass.config.xml`), appData(String.raw`Local\1Password\data\1password.sqlite`), appData(String.raw`Roaming\GitHub CLI\hosts.yml`),
+    String.raw`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\run.lnk`, String.raw`C:\Windows\System32\Tasks\job`,
+    String.raw`C:\Program Files\Tailscale\tailscaled.exe`, String.raw`C:\Users\me\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`,
+    String.raw`C:\Users\me\OneDrive\Documents\WindowsPowerShell\profile.ps1`, String.raw`D:\Scripts\WindowsPowerShell\Microsoft.PowerShellISE_profile.ps1`])
+    assert.ok(protectedPathReason(file, options), file);
+  for (const file of [appData(String.raw`Local\Programs\Microsoft VS Code\Code.exe`), String.raw`C:\Users\me\Documents\PowerShellScripts\build.ps1`,
+    String.raw`C:\Users\me\Documents\keeper-notes.txt`, String.raw`C:\Program Files\Tailscaled-notes\x`])
+    assert.equal(protectedPathReason(file, options), null, file);
+});
+
+// As a whole, as ~/Library: Reach passes AppData among its protected
+// folders (browserPrivatePaths), and a command's own names for it
+// (%APPDATA%, $env:LOCALAPPDATA, ~\AppData, %USERPROFILE%\AppData) are read.
+test("on Windows, AppData is protected as a whole, whatever name a command gives it", () => {
+  const home = String.raw`C:\Users\me`;
+  const protectedPaths = browserPrivatePaths({ dataDir: String.raw`C:\Users\me\.reach` }, { home, appRoot: String.raw`C:\Users\me\code\reach`, env: {}, ...win });
+  const options = { home, protectedPaths, ...win };
+  for (const file of [String.raw`C:\Users\me\AppData\Local\Temp\log.txt`, String.raw`C:\Users\me\AppData\Roaming\SomeApp\token.json`, String.raw`c:\users\me\APPDATA\locallow\x`])
+    assert.ok(protectedPathReason(file, options), file);
+  for (const command of [String.raw`type %APPDATA%\SomeApp\token.json`, String.raw`Get-Content $env:LOCALAPPDATA\SomeApp\token.json`, "gc ${env:APPDATA}\\x",
+    String.raw`type ~\AppData\Roaming\SomeApp\token.json`, String.raw`type $HOME\AppData\Local\x`, String.raw`type %USERPROFILE%\AppData\Local\x`,
+    String.raw`type %HOMEDRIVE%%HOMEPATH%\AppData\Local\x`, String.raw`copy C:\Users\me\AppData\Roaming\SomeApp\token.json D:\out`, String.raw`dir %APPDATA%`,
+    String.raw`Get-Content -Path:C:\Users\me\AppData\Roaming\x`, String.raw`set TOKEN=C:\Users\me\AppData\Roaming\x`, String.raw`type /Users/me/AppData/Roaming/x`,
+    String.raw`type \Users\me\AppData\Roaming\x`, String.raw`type "C:\Users\me\code\reach\server\index.mjs"`, String.raw`type C:\Users\me\code\REACH\server\index.mjs`,
+    String.raw`type %USERPROFILE%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`, String.raw`type %ProgramData%\Tailscale\server-state.conf`,
+    String.raw`type %SystemRoot%\System32\config\SAM`, String.raw`copy evil.lnk "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"`])
+    assert.ok(commandRefusal(command, options), command);
+  for (const command of [String.raw`type %TEMP%\log.txt`, String.raw`type C:\Users\me\Documents\notes.txt`, String.raw`dir %USERPROFILE%\Documents`, "git status",
+    String.raw`type C:\Users\me\code\reach-notes\a.txt`])
+    assert.equal(commandRefusal(command, options), null, command);
 });
 
 test("with no platform given, a Windows host takes Windows' data (test/helpers/as-windows.mjs)", async () => {

@@ -39,10 +39,22 @@ export function windowsCanonicalPath(value) {
   let text = String(value).replace(/\//g, "\\");
   text = text.replace(/^\\\\[?.]\\(unc\\)?|^\\\?\?\\(unc\\)?/i, (_, a, b) => (a || b ? "\\\\" : ""));
   text = text.replace(/^\\\\[^\\]+\\([a-z])\$(?=\\|$)/i, "$1:");
-  const resolved = path.win32.resolve(text);
-  const drive = /^[a-z]:/i.test(resolved) ? resolved.slice(0, 2) : "";
-  const names = resolved.slice(drive.length).split("\\").map((name) => name.replace(/:.*$/s, "").replace(/[. ]+$/, "") || name);
-  return windowsFold(drive + names.join("\\"));
+  // Each name as Windows reads it, before ".." is followed: no stream, no
+  // trailing dots or spaces (".. " is "..").
+  const drive = /^[a-z]:/i.test(text) ? text.slice(0, 2) : "";
+  const names = text.slice(drive.length).split("\\").map((name) => {
+    const plain = name.replace(/:.*$/s, "");
+    return /^\.+ *$/.test(plain) ? plain.trimEnd() : plain.replace(/[. ]+$/, "");
+  });
+  const joined = drive + names.join("\\");
+  // Root-relative (\Windows) stays on no drive in particular (windowsWithin),
+  // never this host's working folder.
+  return windowsFold(/^\\(?!\\)/.test(joined) ? path.win32.normalize(joined) : path.win32.resolve(joined));
+}
+/** A canonical Windows path is a protected folder or inside it; a root-relative one (\Users\me) on any drive. */
+export function windowsWithin(target, root) {
+  const inside = (value, folder) => value === folder || value.startsWith(folder.endsWith("\\") ? folder : folder + "\\");
+  return inside(target, root) || (/^\\(?!\\)/.test(target) && /^[a-z]:\\/.test(root) && inside(target, root.slice(2)));
 }
 /** A short (8.3) alias in a Windows path: PROGRA~1, another name for a folder that would dodge a check by name. */
 export const windowsShortName = (value) => String(value).split(/[\\/]/).some((name) => /~\d/.test(name));
