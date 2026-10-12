@@ -15,6 +15,7 @@ import {
 import { PRESET_WORDS } from "./BrowserInvite";
 import { type EditableAccess } from "./AccessEditor";
 import { request, type Device, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { requestDeadline } from "./request-deadline";
 import { AgentAdmissionReview, type AgentAdmission } from "./agent-admissions";
 import {
@@ -486,7 +487,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
               <p className="ag-quiet">
                 {pastPage
                   ? "No activity recorded."
-                  : "Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here."}
+                  : `Nothing yet. Every click, key, menu, file and command it does on this ${computerWord(peer.platform)} will be listed here.`}
               </p>
             ) : null}
             </>
@@ -541,7 +542,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
               <p className="ag-quiet">
                 {pastPage
                   ? "No activity recorded."
-                  : "Nothing yet. Every click, key, menu, file and command it does on this Mac will be listed here."}
+                  : `Nothing yet. Every click, key, menu, file and command it does on this ${computerWord(peer.platform)} will be listed here.`}
               </p>
             ) : null}
             <p className="ag-quiet">
@@ -584,7 +585,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
     } catch (failure) {
       const status = (failure as { status?: number }).status;
       if (alive.current)
-        setActionError(status === 404 ? "Restart Reach on the Mac to clear ended agents." : (failure as Error).message);
+        setActionError(status === 404 ? `Restart Reach on the ${computerWord(peer.platform)} to clear ended agents.` : (failure as Error).message);
     } finally {
       if (alive.current) setClearing(false);
     }

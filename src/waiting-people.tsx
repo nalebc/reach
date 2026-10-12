@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { UserRound } from "lucide-react";
 import { request, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { usePageVisible } from "./page-visible";
 import type { NeedItem } from "./NeedsYou";
 
@@ -54,8 +55,8 @@ export function useWaitingPeople(peer: Peer, enabled = true, changes?: string) {
         icon: <UserRound size={22} />,
         title: `${person.name || "Someone"} wants to come in`,
         detail: person.macEntry?.nodeName
-          ? `On ${person.macEntry.nodeName} · an agent is using the Mac`
-          : "An agent is using the Mac",
+          ? `On ${person.macEntry.nodeName} · an agent is using the ${computerWord(peer.platform)}`
+          : `An agent is using the ${computerWord(peer.platform)}`,
         actions: [
           { label: "Deny", completes: true, run: () => answer(person, false) },
           { label: "Let in", primary: true, completes: true, run: () => answer(person, true) },

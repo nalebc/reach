@@ -402,7 +402,7 @@ export async function createReach(overrides = {}) {
       !browserHostGuard.fresh() &&
       auth.verify(token, req.reachIdentity)
     )
-      return "Checking this Mac's connection. Reconnecting…";
+      return `Checking this ${computerWord(process.platform)}'s connection. Reconnecting…`;
     return "";
   };
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
@@ -1634,7 +1634,7 @@ export async function createReach(overrides = {}) {
     if (fs.existsSync(config.agentPolicyFile))
       throw fail(
         403,
-        "This Mac uses agent profiles. Ask its owner for a scoped CLI credential.",
+        `This ${computerWord(process.platform)} uses agent profiles. Ask its owner for a scoped CLI credential.`,
       );
     // Only the verified private transport can assign a device identity.
     // Ordinary callers may supply forwarding headers, so never use them

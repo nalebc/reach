@@ -16,6 +16,7 @@ import {
 import { usePageVisible } from "./page-visible";
 import type { ConnectedDevice } from "./useFleetConnections";
 import { post, request, type Device, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { requestDeadline } from "./request-deadline";
 import { workspaceCapabilities } from "./capabilities";
 import { groupDevices } from "./device-groups";
@@ -141,17 +142,17 @@ export const runtimeUpdateCommand = (g: Runtimed, peer: Peer) => {
 };
 // A browser agent's live state, from the Mac's list of agent sessions.
 type Live = Pick<BrowserAgentSession, "status" | "pendingApprovals" | "paused" | "holdsMac" | "using" | "activity">;
-function sessionWords(s: Live): { text: string; tone?: "attention" } | null {
+function sessionWords(s: Live, word: string): { text: string; tone?: "attention" } | null {
   if (s.status === "pending") return { text: "Waiting for your approval", tone: "attention" };
   if (s.pendingApprovals)
     return { text: `${s.pendingApprovals} ${s.pendingApprovals === 1 ? "request" : "requests"} waiting`, tone: "attention" };
   if (s.paused) return { text: "Paused" };
-  if (s.holdsMac) return { text: `Using ${s.using?.app || "the Mac"}` };
+  if (s.holdsMac) return { text: `Using ${s.using?.app || `the ${word}`}` };
   if (s.activity?.state === "running") return { text: "Working" };
   return null;
 }
-function statusOf(g: Guest, now: number, live?: Live): { text: string; tone?: "attention" | "off" } {
-  const words = live && sessionWords(live);
+function statusOf(g: Guest, now: number, live?: Live, word = "computer"): { text: string; tone?: "attention" | "off" } {
+  const words = live && sessionWords(live, word);
   if (words) return words;
   const runtime = (g as Runtimed).runtime;
   if (g.kind === "agent" && (!g.status || g.status === "accepted") && runtime === "one-time")
@@ -400,7 +401,8 @@ export default function PeopleHub({
   }, [picking?.need.join(",")]);
 
   const session = (c: Client) => sessions.find((s) => s.id === c.id);
-  const asks = (c: Client) => statusOf(c, now, session(c)).tone === "attention";
+  const word = computerWord(peer.platform);
+  const asks = (c: Client) => statusOf(c, now, session(c), word).tone === "attention";
   // Live: not past its end, and not stopped (or idle-ended, as the Mac
   // says); Home's Access card reads the same (src/access-list.ts).
   const listed = listedAccess(clients, sessions, now);
@@ -676,10 +678,10 @@ export default function PeopleHub({
     const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     const count = (c as Client & { ids?: string[] }).ids?.length || 1;
     const where = [
-      c.nodeName ? (slug(c.nodeName) === slug(device.name) ? "On this Mac" : c.nodeName) : c.tailscale || self ? "" : "Unknown device",
+      c.nodeName ? (slug(c.nodeName) === slug(device.name) ? `On this ${word}` : c.nodeName) : c.tailscale || self ? "" : "Unknown device",
       count > 1 ? `${count} browsers` : "",
     ].filter(Boolean);
-    const status = c.kind === "guest" || c.kind === "agent" ? statusOf(c, now, session(c)) : { text: [...where, self ? "This device" : paired].join(" · ") };
+    const status = c.kind === "guest" || c.kind === "agent" ? statusOf(c, now, session(c), word) : { text: [...where, self ? "This device" : paired].join(" · ") };
     const using = c.kind === "guest" || c.kind === "agent" ? use(c) : null;
     return (
       <button key={c.id} className="gs-row ppl-row" aria-label={`${c.name}, ${using ? `${using.active ? "active" : "idle"}, ` : ""}${status.text}`} onClick={() => open(c.id)}>
@@ -853,8 +855,8 @@ export default function PeopleHub({
         <ScreenPopup title={opened.name} className="gs-sheet ppl-sheet" onClose={() => setOpenId("")}>
           <div className="ppl-hero">
             <Avatar client={opened} large active={activeNow(opened)} />
-            <small className={statusOf(opened, now, session(opened)).tone ? `ppl-${statusOf(opened, now, session(opened)).tone}` : undefined}>
-              {opened.kind === "agent" ? "Agent" : "Guest"} · {statusOf(opened, now, session(opened)).text}
+            <small className={statusOf(opened, now, session(opened), word).tone ? `ppl-${statusOf(opened, now, session(opened), word).tone}` : undefined}>
+              {opened.kind === "agent" ? "Agent" : "Guest"} · {statusOf(opened, now, session(opened), word).text}
             </small>
             {(() => {
               const using = use(opened);

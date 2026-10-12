@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import JSON5 from "json5";
+import { computerWord } from "./computer-word.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const SOURCES = {
@@ -186,7 +187,7 @@ export function routes(app, client, ctx) {
     if (!option) throw fail(404, "This installer isn't offered anymore.");
     const file = skill.filePath;
     if (typeof file !== "string" || !path.isAbsolute(file) || path.basename(file) !== "SKILL.md")
-      throw fail(409, "Reach can't check this skill. Install it on your Mac.");
+      throw fail(409, `Reach can't check this skill. Install it on your ${computerWord(process.platform)}.`);
     let text;
     try {
       const real = await fs.realpath(file);
@@ -194,14 +195,14 @@ export function routes(app, client, ctx) {
       if (!stat.isFile() || stat.size > 256 * 1024) throw new Error();
       text = await fs.readFile(real, "utf8");
     } catch {
-      throw fail(409, "Reach can't check this skill. Install it on your Mac.");
+      throw fail(409, `Reach can't check this skill. Install it on your ${computerWord(process.platform)}.`);
     }
     // OpenClaw's installId: the spec's id, or `${kind}-${index}`.
     const spec = (skillManifest(text)?.install || []).find(
       (s, i) => (s.id ?? `${s.kind}-${i}`).trim() === installId,
     );
     if (!spec || spec.kind !== option.kind || (spec.kind === "node" && !String(option.label).includes(spec.target)))
-      throw fail(409, "Reach can't check this installer. Install it on your Mac.");
+      throw fail(409, `Reach can't check this installer. Install it on your ${computerWord(process.platform)}.`);
     const bundled = skill.bundled === true;
     const folder = await scripts(path.dirname(await fs.realpath(file)));
     const thirdPartyTap = spec.kind === "brew" && spec.target.split("/").length === 3;

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
+import { computerWord } from "./pause";
 import { ReconnectTimer, screenCanRetry } from "./reconnect";
 import { latestFramePainter } from "./frame-painter";
 import { holdReload } from "./build-reload";
@@ -296,7 +297,7 @@ export function useRemoteScreen(
               ...s,
               idle,
               connecting: true,
-              cause: idle === "locked" ? "Mac locked" : "Mac asleep",
+              cause: `${computerWord(peer.platform)} ${idle}`,
             }
           : { ...s, idle: "", connecting: !s.ready, cause: "" },
       );

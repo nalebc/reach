@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { post, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { clawBase, useClawCatalog } from "./OpenClawControls";
 import { ClawWizard } from "./OpenClawWizard";
 import { ClawAddProvider } from "./OpenClawOnboard";
@@ -336,7 +337,7 @@ export function WhatsAppLink({
             device, then scan this code.
           </p>
           <p className="claw-note">
-            Is WhatsApp on this phone? Open this page in Reach on your Mac (or
+            Is WhatsApp on this phone? Open this page in Reach on your {computerWord(peer.platform)} (or
             another device) and scan it from there.{note ? ` ${note}` : ""}
           </p>
           <p className="claw-note" role="status">

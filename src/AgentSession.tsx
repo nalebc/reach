@@ -956,7 +956,7 @@ function ImageViewer({
       ) : current.url ? (
         <img src={current.url} alt="" />
       ) : (
-        <span className="as-viewer-gone">This picture isn't on the Mac anymore.</span>
+        <span className="as-viewer-gone">This picture isn't there anymore.</span>
       )}
       {at > 0 && (
         <button type="button" className="as-viewer-arrow left" aria-label="Previous image" onClick={() => move(-1)}>

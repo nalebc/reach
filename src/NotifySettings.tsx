@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bell, BellOff, Moon, Share, SquarePlus } from "lucide-react";
 import { request, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { sameComputer } from "./passkeys";
 import {
   disablePush,
@@ -156,6 +157,8 @@ export function useNotificationSetup(peer: Peer, active = true) {
     busy,
     note,
     here,
+    // "Mac", "Windows PC" or "computer", as it's called everywhere here.
+    word: computerWord(peer.platform),
     toggle: () => act(),
     test: () => act(true),
     refresh,
@@ -169,7 +172,8 @@ const CATEGORIES = [
   ["done", "Chats finished"],
   ["openclaw", "OpenClaw background work"],
   ["chat", "Agent questions & approvals"],
-  ["computer", "Mac permission prompts"],
+  // Its prompts, and Reach restarting or updating there (server/notifications.mjs).
+  ["computer", "prompts & updates"],
   ["handoffs", "Apps handed to you"],
   ["access", "Access requests"],
 ] as const;
@@ -308,7 +312,7 @@ export function NotificationSetup({
             <strong>Notifications</strong>
             <small>
               {!on
-                ? "A ping when an agent or your Mac needs you"
+                ? `A ping when an agent or your ${state.word} needs you`
                 : paused
                   ? `Paused until ${until}`
                   : "On for this device"}
@@ -381,7 +385,7 @@ export function NotificationSetup({
             {CATEGORIES.map(([key, label]) => (
               <label className="ns-row" key={key}>
                 <span className="ns-text">
-                  <strong>{label}</strong>
+                  <strong>{key === "computer" ? `${state.word} ${label}` : label}</strong>
                 </span>
                 <input
                   type="checkbox"
@@ -422,7 +426,7 @@ export function NotificationSetup({
       )}
       {on && (
         <small className="ns-foot">
-          For this device only. Your Mac needs to be awake and running Reach.
+          For this device only. Your {state.word} needs to be awake and running Reach.
         </small>
       )}
     </section>

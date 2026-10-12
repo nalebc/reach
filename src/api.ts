@@ -310,7 +310,8 @@ export async function request<T = any>(
   const response = await peerFetch(peer, route, options).catch((e: Error) => {
     // The browser's own words ("Failed to fetch", "Load failed") said
     // nothing; a cancel stays a cancel.
-    const where = peer.platform === "darwin" ? "Mac" : "computer";
+    // pause.ts computerWord, here without importing what imports this.
+    const where = peer.platform === "darwin" ? "Mac" : peer.platform === "win32" ? "Windows PC" : "computer";
     if (e?.name === "TimeoutError") throw Object.assign(Error(`Your ${where} didn't answer in time. Try again.`), { cause: e });
     if (e?.name === "TypeError") throw Object.assign(Error(`Couldn't reach your ${where}. Check the connection and try again.`), { cause: e });
     throw e;

@@ -43,7 +43,7 @@ import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
-import { controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
+import { computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
 import "./settings-list.css";
@@ -853,7 +853,7 @@ export default function Screen({
               </span>
             ) : !control && using ? (
               <span className="simple-screen-caption" role="status">
-                {using} is using the Mac
+                {using} is using the {computerWord(device.platform)}
               </span>
             ) : null}
             <div
