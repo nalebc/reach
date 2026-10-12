@@ -94,7 +94,7 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 
 |                     | Mac or Linux computer                                                     | Windows PC (experimental)                                                             |
 | ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer  | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 |
+| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer  | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 or ARM64 |
 | **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)        | The same                                                                              |
 | **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | **The Tailscale app**, signed in to the same account and turned on                    |
 

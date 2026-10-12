@@ -96,6 +96,20 @@ test("import brings paired phones and settings, never paths, logs or caches", ()
   }
 });
 
+// .\reach.cmd downloads the same Node.js release, for x64 and ARM64 PCs
+// (parity audit #49), each pinned to Node's published SHA-256.
+test("the Windows launcher pins the same Node.js release, for x64 and ARM64", () => {
+  const script = fs.readFileSync(path.join(repo, "scripts", "bootstrap.ps1"), "utf8");
+  assert.equal(script.match(/^\$version = '([^']+)'$/m)[1], NODE_VERSION);
+  const builds = Object.fromEntries([...script.matchAll(/'(AMD64|ARM64)' = @\('(win-[\w]+)', '([0-9a-f]{64})'\)/g)].map((m) => [m[1], m[2]]));
+  assert.deepEqual(builds, { AMD64: "win-x64", ARM64: "win-arm64" });
+  // Quiet (Windows PowerShell's progress bar slows the download), retried,
+  // and said plainly when there's no internet.
+  assert.match(script, /\$ProgressPreference = 'SilentlyContinue'/);
+  assert.match(script, /foreach \(\$try in 1\.\.3\)/);
+  assert.match(script, /couldn't download Node\.js \(no internet here\?\)/);
+});
+
 test("the installed reach pins the same Node.js build as the ./reach script", async () => {
   const script = fs.readFileSync(path.join(repo, "reach"), "utf8");
   assert.equal(script.match(/^VERSION=(.+)$/m)[1], NODE_VERSION);
