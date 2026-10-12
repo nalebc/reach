@@ -335,7 +335,10 @@ export function createAgentDesktop(config, {
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
-  // Where the owner's pauses are kept across restarts (agent-pauses.mjs).
+  // The owner's pauses (agent-pauses.mjs): Reach's one store, made on every
+  // computer whether or not this service exists (server/index.mjs). Without
+  // it, a store of its own, kept in pausesFile.
+  pauses = null,
   pausesFile = null,
 } = {}) {
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
@@ -348,7 +351,7 @@ export function createAgentDesktop(config, {
   const capturing = new Map(); // clientId -> { width, promise } of the capture running now
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
-  const pausedAgents = createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
+  const pausedAgents = pauses || createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
   const start = async (rules) => {
@@ -429,6 +432,14 @@ export function createAgentDesktop(config, {
   };
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
+  // The owner paused this agent: it lets go of the Mac. A hold or slow drag
+  // already sent lets go now (the helper releases what it holds on stop),
+  // rather than seconds after the owner paused it. Queued input is refused by
+  // its own dispatch check.
+  const letGo = (clientId) => {
+    release(clientId);
+    for (const entry of pendingInputs) if (entry.sent && entry.client.id === clientId) try { entry.helper.stop(); } catch {}
+  };
   const dispatchInput = async (client, state, request, authorize, scope) => {
     const pending = { client, helper: state.helper, sent: false };
     pendingInputs.add(pending);
@@ -852,13 +863,12 @@ export function createAgentDesktop(config, {
     },
     /** The owner's pause: the agent keeps looking, but every action waits until resumed. Kept across restarts. */
     setPaused(id, paused) {
-      if (paused) release(id);
-      // A hold or slow drag already sent lets go now (the helper releases what
-      // it holds on stop), rather than seconds after the owner paused it.
-      // Queued input is refused by its own dispatch check.
-      if (paused) for (const entry of pendingInputs) if (entry.sent && entry.client.id === id) try { entry.helper.stop(); } catch {}
+      if (paused) letGo(id);
       return pausedAgents.set(id, paused);
     },
+    // What pausing one agent does here, before the pause is kept (Reach's
+    // pause route keeps it in the shared store, server/index.mjs).
+    letGo,
     isPaused: (id) => pausedAgents.has(id),
     // Every one of these agents, at once: after Reach ended unexpectedly, or
     // when the saved pauses couldn't be read (who was paused is unknown).

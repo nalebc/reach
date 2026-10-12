@@ -26,11 +26,11 @@ function stand() {
     elements: async (client, authorize) => { authorize(); return { snapshot: "s1", app: "Google Chrome", title: "Uber Eats", truncated: false,
       items: [{ n: 1, role: "TextField", name: "Search", value: "diapers", x: 0.3, y: 0.1, w: 0.2, h: 0.02 }, { n: 2, role: "Button", name: "Add to cart", x: 0.5, y: 0.5, w: 0.05, h: 0.02 }],
       texts: [{ text: "Pampers Swaddlers", heading: true, x: 0.1, y: 0.5, w: 0.2, h: 0.02 }, { text: "$34.99", x: 0.1, y: 0.53, w: 0.05, h: 0.02 }] }; },
-    activity: () => ({ holder: busy ? { clientId: busy, name: "Muse" } : null, agents: busy ? { [busy]: { at: 1, kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" } } : {}, paused: [...paused] }),
-    setPaused: (id, value) => { if (value) paused.add(id); else paused.delete(id); return paused.has(id); },
-    isPaused: (id) => paused.has(id),
+    activity: () => ({ holder: busy ? { clientId: busy, name: "Muse" } : null, agents: busy ? { [busy]: { at: 1, kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" } } : {} }),
+    // Pausing: the desktop lets go of what the agent holds; Reach keeps the
+    // pause itself (agent-pauses.mjs), on every computer.
+    letGo: (id) => { log.push(["let-go", id]); },
   };
-  const paused = new Set();
   return { extras, log };
 }
 
@@ -73,6 +73,7 @@ test("screen, input, open and the app list follow the preset", privateIngressTes
   // The owner pauses one agent from the list; agents can't pause anyone.
   const pausedNow = await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: full.created.clientId, paused: true } });
   assert.deepEqual(pausedNow.body, { clientId: full.created.clientId, paused: true });
+  assert.deepEqual(log.at(-1), ["let-go", full.created.clientId]);
   assert.equal((await f.call("/api/browser/agents")).body.agents.find((agent) => agent.id === full.created.clientId).paused, true);
   assert.equal((await full.as("/api/browser/agents/pause", { method: "POST", body: { clientId: grok.created.clientId, paused: true } })).status, 403);
   assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: "nope", paused: true } })).status, 404);
