@@ -243,6 +243,16 @@ test("CLI execution and MCP jobs report real output and enforce per-agent owners
   const one = await f.mcp(first), two = await f.mcp(second);
   const command = path.join(f.shared, "job.sh");
   await fs.writeFile(command, process.platform === "win32" ? "[Console]::Write('REACH_JOB_OK')\n" : "printf 'REACH_JOB_OK'\n");
+  // Off a Mac there's no sandbox yet for an agent's commands: they're
+  // refused, with the reason, rather than run as the owner (aa09b7da).
+  if (process.platform !== "darwin") {
+    const refused = await exec(process.execPath, [cli, "exec", "--credential", one.file, "--allow-local", "--command-file", command]).then(() => null, (error) => error);
+    assert.ok(refused, "an agent's command doesn't run without a sandbox");
+    assert.match(refused.stderr, /run only in a sandbox, which this .+ doesn't have yet/);
+    const viaMcp = await one.request("tools/call", { name: "reach_run_command", arguments: { command: "echo hi", timeoutMs: 5000 } });
+    assert.equal(viaMcp.result.isError, true);
+    return;
+  }
   const started = await exec(process.execPath, [cli, "exec", "--credential", one.file, "--allow-local", "--command-file", command]);
   const job = JSON.parse(started.stdout);
   let result;

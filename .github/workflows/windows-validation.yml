@@ -1,0 +1,50 @@
+name: Windows validation
+# The Windows parity work's quick loop (docs/WINDOWS_AGENT_PARITY.md): only
+# the Windows tests asked for, on a real Windows runner under a normal PC's
+# Restricted script policy, without the whole CI matrix. Never a required
+# check; CI's own Windows lane runs the same tests for merges.
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Test files under test/, space-separated
+        required: false
+        default: windows-desktop-native windows-desktop-e2e
+permissions:
+  contents: read
+concurrency:
+  group: windows-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build:release
+      - name: Chosen tests under a normal PC's script policy
+        # PowerShell 7 (this step's shell) keeps its own policy; Reach's
+        # helpers run in Windows PowerShell, which gets the Restricted one.
+        shell: pwsh
+        env:
+          TESTS: ${{ inputs.tests }}
+          REACH_TEST_WINDOWS_DESKTOP: "1"
+        run: |
+          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
+          if ($LASTEXITCODE) { exit 1 }
+          node .github/scripts/windows-validation.mjs
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-validation
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
