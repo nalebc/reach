@@ -179,7 +179,7 @@ test("a kept line restores with exactly the runtime it was kept with", { skip: p
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const start = `http://127.0.0.1:${server.address().port}`;
-  const ok = await run(`printf 'the line\\n' | (${restoreCommand(start, "", sha(v1)).replace("node ~/.reach-agent/agent.mjs restore", "node ~/.reach-agent/agent.mjs restore")})`, home);
+  const ok = await run(`printf 'the line\\n' | (${restoreCommand(start, "", sha(v1))})`, home);
   assert.equal(ok.code, 0, ok.stderr);
   assert.match(ok.stdout, /^v1 restore the line/);
   // A runtime the computer doesn't keep, or other bytes under its name: nothing replaced.

@@ -15,6 +15,10 @@ const identity = (name, user = 42) => ({
   UserProfile: { ID: user, LoginName: user === 42 ? "owner@example.test" : "other@example.test" },
 });
 
+// The fake Tailscale's sign-in link, as the line Reach prints ends with it.
+// Anchored at the line's end: a link with more after it isn't this one
+// (CodeQL #231-#237 flagged the unanchored copies).
+export const SIGN_IN_LINK = /https:\/\/login\.tailscale\.com\/a\/fixture-login$/m;
 export const setupMenu = async (reach, title, answer = "") => {
   await reach.until(title);
   await reach.until(/Choose 1–\d+ \[\d+\], or q to cancel: /);

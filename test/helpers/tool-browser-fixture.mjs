@@ -82,7 +82,9 @@ export function toolBrowserFixture() {
       tab.url = url;
       const w = tab.dom.window,
         doc = w.document;
-      if (url.startsWith("https://mail.google.com")) {
+      // By the exact site, never a prefix (CodeQL #143, #144).
+      const origin = URL.canParse(url) ? new URL(url).origin : "";
+      if (origin === "https://mail.google.com") {
         const query = decodeURIComponent(
           new URL(url).hash.replace(/^#search\//, ""),
         );
@@ -115,7 +117,7 @@ export function toolBrowserFixture() {
             draft.append(saved);
           };
         };
-      } else if (url.startsWith("https://www.walmart.com")) {
+      } else if (origin === "https://www.walmart.com") {
         doc.body.innerHTML =
           '<h1>Purchase history</h1><section data-testid="order-card"><span data-testid="order-id">ORDER-123</span><p>Blue chair</p><a href="https://www.walmart.com/orders/123">View details</a><button>Track shipment</button></section>';
         doc.querySelector("a").onclick = (event) => {

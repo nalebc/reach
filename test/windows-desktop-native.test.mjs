@@ -58,9 +58,11 @@ test("Reach lists the displays and captures a real, non-black frame under that p
   note({ firstFrameMs, warmFrameMs: Date.now() - started, bytes: frame.length });
   assert.deepEqual([...frame.subarray(0, 2)], [0xff, 0xd8], "a JPEG");
   // Not a black rectangle: the colors on a 40×40 grid of the picture.
-  const file = path.join(os.tmpdir(), `reach-windows-frame-${process.pid}.jpg`);
+  // In a folder of the test's own, never a name another user could make first (CodeQL #241).
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "reach-windows-frame-"));
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const file = path.join(scratch, "frame.jpg");
   fs.writeFileSync(file, frame);
-  t.after(() => fs.rmSync(file, { force: true }));
   const { stdout } = await exec(
     "powershell.exe",
     [

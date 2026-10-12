@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { firstInstall, finishFirstSetup } from "./helpers/first-install.mjs";
+import { firstInstall, finishFirstSetup, SIGN_IN_LINK } from "./helpers/first-install.mjs";
 
 // Opt in: actually downloads Reach's pinned Node (including its checksum
 // check), runs npm ci and builds the interface. Tailscale stays simulated.
@@ -18,7 +18,7 @@ test("source first install without Node, npm, Go or Tailscale: runtime, dependen
   reach.answer("");
   await reach.until(/waiting for Tailscale to be installed/);
   await reach.installTailscale();
-  await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/);
+  await reach.until(SIGN_IN_LINK);
   await reach.fake.setStatus({ BackendState: "Running" });
   await finishFirstSetup(reach, { source: true });
   assert.match(reach.output(), /Go isn't installed, so phones need the Tailscale app/);

@@ -198,7 +198,8 @@ test("a portable archive with sources but no git points to the next archive with
   assert.equal(install.source, false);
   assert.equal(install.reason, "portable");
   assert.match(install.manual, /portable archive/i);
-  assert.ok(install.manual.includes("https://github.com/nalebc/reach/releases"), install.manual);
+  // The one link it gives is exactly the releases page (CodeQL #240: not a substring check).
+  assert.deepEqual(install.manual.match(/https:\/\/\S+/g), ["https://github.com/nalebc/reach/releases"], install.manual);
   assert.doesNotMatch(install.manual, /git pull/);
   const updates = createReachUpdates({ root: "/apps/reach", install, fetch: feed("0.2.0"), spawn: () => assert.fail("portable updates must remain manual") });
   const status = await updates.check();
