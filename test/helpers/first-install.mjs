@@ -23,8 +23,8 @@ export const setupMenu = async (reach, title, answer = "") => {
 export async function finishFirstSetup(reach, { link, source = false } = {}) {
   await setupMenu(reach, /Which Tailscale account should Reach use\?/);
   await link?.();
-  await setupMenu(reach, /Set up invite links now\?/);
-  if (process.platform === "darwin") await setupMenu(reach, /Keep Reach running after you close this terminal\?/);
+  // Invites and background wait for later: a first run asks nothing more.
+  await reach.until(/▸ 3\. Your phone/, source ? 120000 : 15000);
   await reach.until(/Type a device request code to approve/, source ? 120000 : 15000);
   assert.equal((await reach.read("onboarding.json")).done, true);
   assert.equal((await reach.read("preferences.json")).owner.login, "owner@example.test");

@@ -98,6 +98,12 @@ export async function launch(options, root) {
   const reach = await createReach({
     dataDir,
     port: options.port,
+    // Setup's step 3 (scripts/setup.mjs phoneStep): said once the first phone
+    // is in, so a first run visibly ends with it.
+    ...(options.phoneStep && {
+      onFirstDevice: () =>
+        console.log(`\n  ✔ 3. Your phone  —  connected. Setup is done; change anything later with ${command} setup.\n`),
+    }),
     // A source checkout: interface edits reach phones without a restart.
     liveInterface: !packaged,
     publicOrigin: privateOrigin,

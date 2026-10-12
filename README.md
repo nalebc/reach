@@ -88,32 +88,33 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 
 ## Quick start
 
+> **Tailscale is required.** Reach has no server of its own: your phone reaches your computer through [Tailscale](https://tailscale.com), a free private network. It must be installed and signed in on the computer. Setup walks you through it.
+
 ### What you need
 
-Tailscale runs on the computer you reach. What the phone needs depends on that computer:
-
-|                     | Mac or Linux computer                                                        | Windows PC (experimental)                                                          |
-| ------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer     | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 |
-| **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)           | The same                                                                            |
-| **On the phone**    | Just a browser. The Tailscale app is optional and faster                     | **The Tailscale app**, signed in to the same account and turned on                  |
+|                     | Mac or Linux computer                                                     | Windows PC (experimental)                                                             |
+| ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer  | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 |
+| **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)        | The same                                                                              |
+| **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | **The Tailscale app**, signed in to the same account and turned on                    |
 
 From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. Windows can't offer browser sign-in yet: its phones always need the app.
 
-### Install the CLI
+### What setup walks you through
 
-Reach includes a `reach` command for use from any terminal. The npm package is **not published yet**; once the first release is available, install it with [Node.js 22 or newer](https://nodejs.org/) and run:
+The first run takes about 3 minutes. It shows three steps, then prompts you through each one. Ctrl+C stops at any point; run Reach again to pick up where you left off.
 
-```sh
-npm install --global @nalebc/reach
-reach
-```
+1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. On a Mac or Linux it also asks which Tailscale account your phones sign in with.
+2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
+3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
+   - **Mac or Linux:** type the code your phone shows into the terminal to approve it. No Tailscale app on the phone? Sign in from its browser in the next 15 minutes (later: `reach pair`).
+   - **Windows:** install the Tailscale app on the phone first and sign in with the same account. The QR carries a one-time code; press Enter for a new one.
 
-The npm package includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach` walks you through setup; `reach update` installs later releases.
+The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes (Mac).
 
-### Run from source (available now)
+### Install
 
-On a Mac or Linux computer. `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
+**From source (available now), on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
 ```sh
 git clone https://github.com/nalebc/reach.git
@@ -121,9 +122,28 @@ cd reach
 ./reach
 ```
 
-The first run walks you through Tailscale, the HTTPS link and optional background mode. Scan the QR code with your phone, tap **Connect**, and approve the phone in the Mac's terminal. That's it.
+On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
 
-No Tailscale app on the phone? Then the link only opens while pairing: for 15 minutes after each start, or after `./reach pair`. The rest of the time it shows "Not found".
+**On a Windows PC (experimental, not yet verified on a physical PC).** In PowerShell:
+
+```powershell
+git clone https://github.com/nalebc/reach.git
+cd reach
+.\reach.cmd
+```
+
+Use Reach from your phone or another computer: opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
+
+**With npm (once published).** The npm package is **not published yet**. Once the first release is out, with [Node.js 22 or newer](https://nodejs.org/):
+
+```sh
+npm install --global @nalebc/reach
+reach
+```
+
+It includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach update` installs later releases.
+
+### Everyday commands
 
 ```sh
 ./reach status    # where Reach runs, and its link
@@ -133,26 +153,7 @@ No Tailscale app on the phone? Then the link only opens while pairing: for 15 mi
 ./reach setup     # change setup choices
 ```
 
-Already using a source checkout? Run `./reach cli` once to make `reach`, `reach status` and the other commands work from any terminal. Keep the checkout: this command links to it.
-
-Use macOS 13 or newer with [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07). On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Linux and npm installs are covered in the [full guide](docs/GUIDE.md#install).
-
-### On a Windows PC (experimental)
-
-Windows support hasn't been verified on a physical PC yet. In PowerShell:
-
-```powershell
-git clone https://github.com/nalebc/reach.git
-cd reach
-.\reach.cmd
-```
-
-1. **Tailscale on the PC.** Setup opens Tailscale's download page if it's missing, and its sign-in if you're signed out. Then it opens the page that turns on MagicDNS and HTTPS certificates, if they're off, and waits.
-2. **Tailscale on the phone.** Install the Tailscale app, sign in with the same account as the PC, and turn it on. Reach's link opens only through the app on Windows.
-3. **Scan and connect.** Scan the QR in the PowerShell window with the phone's camera and tap **Connect**. Each code works once, for 10 minutes: press Enter for a new one.
-4. **Use it from your phone or another computer.** Opened on the PC itself, Screen would only show itself.
-
-Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
+On Windows, use `.\reach.cmd` in place of `./reach`. In a source checkout, run `./reach cli` once to make `reach` and its commands work from any terminal; keep the checkout, as it links to it. Linux, npm and Windows details are in the [full guide](docs/GUIDE.md#install).
 
 ## Security
 

@@ -11,10 +11,13 @@ import { readPreferences, configure, preferencesFile, accountApproval } from "./
 // running `./reach` again picks up where it left off. Nothing here needs npm
 // packages, so it still works while Reach is installing them on first run.
 //
-// Steps: 1) Tailscale + your account + what to share, 2) invite links so
-// people and agents can join without the Tailscale app (optional), 3) keep
-// Reach running in the background (optional). `./reach setup` re-runs it;
-// `./reach setup invites` (or account) jumps straight to one step.
+// A first run is three steps: 1) Tailscale on this computer (on Mac and
+// Linux, your account and what to share too), 2) your private link (MagicDNS
+// and HTTPS certificates), 3) your phone, which the launcher connects with its
+// QR. Invite links and the background service wait for later (Oct 11: four
+// steps, five step lists and an invite question before any phone worked
+// confused a first user): `./reach setup invites` / `background`, or
+// `./reach setup` to pick one. `./reach setup <section>` jumps to one step.
 
 export const SETUP_SECTIONS = ["account", "link", "invites", "background"];
 const DNS_PAGE = "https://login.tailscale.com/admin/dns";
@@ -74,8 +77,8 @@ const mark = (state) =>
   state && state !== "pending" ? "✔" : state === "pending" ? "·" : "○";
 const line = (n, title, note) => `  ${n}. ${title}${note ? `  ${note}` : ""}`;
 
-// The step list, with a check on what's done. Shown at the start and after
-// each step so progress is always visible (OpenClaw-style, but plain text).
+// Every step with a check on what's done: for `./reach setup` on a finished
+// setup and for a single section. A first run shows its plan once instead.
 function board(print, steps, progress, activeId) {
   print(`\n  Reach setup · ${command}\n`);
   for (const [i, step] of steps.entries()) {
@@ -85,12 +88,22 @@ function board(print, steps, progress, activeId) {
     const note =
       state && state !== "pending"
         ? progress.notes?.[step.id] || labelFor(step.id, state)
-        : step.optional
-          ? "optional"
+        : step.later
+          ? "later"
           : "";
     print(`  ${m} ${i + 1}. ${step.title}${note ? `  —  ${note}` : ""}`);
   }
   print("");
+}
+// A first run's plan, once: its steps, why each, and the phone last (the
+// launcher does that one). Resumed, the finished ones carry their check.
+function plan(print, steps, progress) {
+  for (const [i, step] of steps.entries()) {
+    const state = progress.steps?.[step.id];
+    const done = state && state !== "pending";
+    print(`  ${done ? "✔" : " "} ${i + 1}. ${step.title.padEnd(28)}${done ? `—  ${progress.notes?.[step.id] || "done"}` : step.why}`);
+  }
+  print(`    ${steps.length + 1}. ${"Your phone".padEnd(28)}scan a QR code, tap Connect\n`);
 }
 function labelFor(id, state) {
   if (id === "invites") return state === "skipped" ? "set up later" : "ready";
@@ -124,7 +137,8 @@ function makeSteps(root, deps) {
   return [
     {
       id: "account",
-      title: byAccount ? "Tailscale account & sharing" : "Tailscale on this computer",
+      title: "Tailscale on this computer",
+      why: "the free private network your phone reaches it through",
       async run({ print, select, ask, explicit }) {
         const ensureTailscale =
           deps.ensureTailscale ||
@@ -150,7 +164,8 @@ function makeSteps(root, deps) {
     },
     {
       id: "link",
-      title: "HTTPS link for your phone",
+      title: "Your private link",
+      why: "an https:// address only your devices can open",
       async run({ print, select }) {
         const status =
           deps.status ||
@@ -180,13 +195,8 @@ function makeSteps(root, deps) {
           }
           const problem = linkProblem(connection);
           if (!problem) {
-            // Pairing-code computers (Windows): the link opens only in the
-            // Tailscale app, so the phone's part is said here, before the QR.
-            if (!byAccount) {
-              const login = connection?.User?.[connection?.Self?.UserID]?.LoginName;
-              print(`  Your phone will need the Tailscale app, signed in ${login ? `as ${login}` : "with this computer's account"}.${platform === "win32" ? " On Windows, phones can't sign in from the browser yet." : ""}`);
-            }
-            return { note: "ready" };
+            const name = connection?.Self?.DNSName?.replace(/\.$/, "");
+            return { note: name || "ready" };
           }
           if (problem !== shown) {
             shown = problem;
@@ -208,8 +218,9 @@ function makeSteps(root, deps) {
     },
     {
       id: "invites",
-      title: "Invite people & agents without the Tailscale app",
-      optional: true,
+      title: "Invite people & agents with a link",
+      hint: "invite people and agents with a link",
+      later: true,
       skip: !byAccount,
       async run({ print, select, ask, explicit }) {
         const choice = explicit
@@ -242,8 +253,9 @@ function makeSteps(root, deps) {
     },
     {
       id: "background",
-      title: "Keep Reach running in the background",
-      optional: true,
+      title: "Keep Reach running after this window closes",
+      hint: "keep Reach running after this window closes",
+      later: true,
       skip: platform !== "darwin",
       async run({ select }) {
         // In Documents (and the like) a background service never starts:
@@ -313,15 +325,19 @@ export async function runSetup(root, { only, deps = {} } = {}) {
     if (pick === "over") progress = { steps: {}, notes: {} };
     else only = pick;
   }
+  // A first run: Tailscale and the link now, invites and background later.
+  const first = all.filter((s) => !s.later);
   const resuming = !only && Object.keys(progress.steps).length > 0;
-  if (!only)
+  if (!only) {
     print(
       resuming
-        ? `\n  Picking up your Reach setup where you left off.`
-        : `\n  Welcome to Reach. A short setup: stop any time with Ctrl+C, and ${command} picks it up again.`,
+        ? `\n  Picking up your Reach setup where you left off.\n`
+        : `\n  Welcome to Reach. ${first.length + 1} steps, about 3 minutes. Ctrl+C stops; ${command} picks up here.\n`,
     );
+    plan(print, first, progress);
+  }
   const ran = [];
-  for (const step of all.filter((s) => !only || s.id === only)) {
+  for (const step of only ? all.filter((s) => s.id === only) : first) {
     // A full run skips finished steps; a chosen section is redone.
     if (
       !only &&
@@ -329,7 +345,9 @@ export async function runSetup(root, { only, deps = {} } = {}) {
       progress.steps[step.id] !== "pending"
     )
       continue;
-    board(print, all, progress, step.id);
+    const n = first.indexOf(step) + 1;
+    if (only) board(print, all, progress, step.id);
+    else print(`  ▸ ${n}. ${step.title}`);
     let result;
     try {
       result = (await step.run({ print, select, ask, explicit: !!only })) || {};
@@ -344,20 +362,40 @@ export async function runSetup(root, { only, deps = {} } = {}) {
     if (result.note) progress.notes[step.id] = result.note;
     else delete progress.notes[step.id];
     ran.push(step.id);
-    // Re-running one section never un-finishes a completed setup.
+    if (!only) print(`  ✔ ${n}. ${step.title}  —  ${progress.notes[step.id] || "done"}\n`);
+    // Re-running one section never un-finishes a completed setup; a first
+    // run is done when its own steps are (the phone is the launcher's).
     if (!only)
-      progress.done = all.every(
+      progress.done = first.every(
         (s) => progress.steps[s.id] && progress.steps[s.id] !== "pending",
       );
     writeProgress(root, progress);
   }
-  board(print, all, progress);
-  print(
-    only
-      ? `  Saved.\n`
-      : `  Setup complete. Change anything later with ${command} setup.\n`,
-  );
+  if (only) {
+    board(print, all, progress);
+    print(`  Saved.\n`);
+  } else print(phoneStep({ first, all, progress, byAccount: accountApproval(deps.platform || process.platform), platform: deps.platform || process.platform }));
   return { launch: launchOf(progress), progress, ran };
+}
+// The end of a first run: the phone, which the launcher's QR connects, and
+// what waits for later. A pairing-code computer (Windows) says first that the
+// phone needs the Tailscale app, signed in as the account step found.
+export function phoneStep({ first, all, progress, byAccount, platform }) {
+  const n = first.length + 1;
+  const account = progress.notes?.account;
+  const lines = [`  ▸ ${n}. Your phone`];
+  if (!byAccount)
+    lines.push(
+      `     Install the Tailscale app on your phone, sign in ${account && account !== "connected" ? `as ${account}` : "with this computer's account"} and turn it on.${platform === "win32" ? " On Windows, phones can't sign in from the browser yet." : ""}`,
+    );
+  lines.push("     Reach starts now: scan its QR code with your phone's camera, then tap Connect.");
+  const later = all.filter((s) => s.later);
+  if (later.length)
+    lines.push(
+      "\n  Later, when you want them:",
+      ...later.map((s) => `    ${`${command} setup ${s.id}`.padEnd(28)}${s.hint}`),
+    );
+  return lines.join("\n") + "\n";
 }
 const launchOf = (progress) =>
   ["background", "login"].includes(progress.steps.background) ? progress.steps.background : "foreground";

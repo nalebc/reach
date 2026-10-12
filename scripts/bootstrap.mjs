@@ -753,7 +753,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       await connectPhone(root, { since });
     } else {
       const { launch } = await import("./launch.mjs");
-      await launch(options, root);
+      // A first run's step 3 is the phone: the launcher says when it's in.
+      await launch(firstRun ? { ...options, phoneStep: true } : options, root);
     }
   }
 } catch (error) {

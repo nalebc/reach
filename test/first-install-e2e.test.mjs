@@ -122,11 +122,11 @@ test("first install resumes after Tailscale signed out while HTTPS setup was pau
   await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/, 5000);
   assert.doesNotMatch(reach.output(), /Turn on HTTPS certificates/, "sign in before diagnosing HTTPS");
   await reach.fake.setStatus({ ...ready, CertDomains: [HOST] });
-  await menu(reach, /Set up invite links now\?/);
-  if (process.platform === "darwin") await menu(reach, /Keep Reach running after you close this terminal\?/);
   await reach.until(/Type a device request code to approve/);
   assert.equal((await reach.read("onboarding.json")).done, true);
   await approvePhone(reach, "100.64.0.21");
+  // Setup's step 3 ends with the phone in, said by the launcher.
+  await reach.until(/✔ 3\. Your phone {2}— {2}connected\. Setup is done/);
 });
 
 test("a returning setup detects a different desktop Tailscale account before offering a broken phone link", options, async t => {

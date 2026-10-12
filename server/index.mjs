@@ -196,6 +196,7 @@ export async function createReach(overrides = {}) {
   // full control"). Control still takes macOS's own permissions.
   const auth = createAuth(config, {
     firstDevice: () => {
+      overrides.onFirstDevice?.();
       if (settings.screenChosen || config.screen) return;
       settings.screen = config.screen = true;
       atomicJson(settingsFile, settings);

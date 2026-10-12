@@ -61,40 +61,47 @@ const tmp = (t) => {
   return dir;
 };
 
-test("a fresh run walks every step in order and records each as it finishes", async (t) => {
+test("a fresh run: three steps shown once, Tailscale and the link, then the phone; invites and background wait", async (t) => {
   const root = tmp(t);
   const s = scene();
-  const d = deps(s);
+  const printed = [];
+  const d = deps(s, { print: (m) => printed.push(m), status: async () => ({ ...READY, Self: { DNSName: "mac.tail1.ts.net." } }) });
   const result = await runSetup(root, { deps: d });
-  assert.deepEqual(s.asked, [
-    "Set up invite links now?",
-    "Keep Reach running after you close this terminal?",
-  ]);
+  // Oct 11: four steps, five step lists and an invite question before any
+  // phone worked confused a first user. Nothing to choose now.
+  assert.deepEqual(s.asked, []);
   assert.equal(d.ran.tailscale, 1);
   assert.equal(d.ran.configure, 1);
-  assert.equal(d.ran.invites, 0, "declined, so invites setup never runs");
+  assert.equal(d.ran.invites, 0);
   assert.equal(result.launch, "foreground");
   const progress = readProgress(root);
   assert.equal(progress.done, true);
-  assert.deepEqual(progress.steps, {
-    account: "done",
-    link: "done",
-    invites: "skipped",
-    background: "foreground",
-  });
+  assert.deepEqual(progress.steps, { account: "done", link: "done" });
+  const text = printed.join("\n");
+  assert.match(text, /Welcome to Reach\. 3 steps, about 3 minutes\./);
+  assert.match(text, /1\. Tailscale on this computer +the free private network your phone reaches it through/);
+  assert.match(text, /2\. Your private link +an https:\/\/ address only your devices can open/);
+  assert.match(text, /3\. Your phone +scan a QR code, tap Connect/);
+  assert.equal(text.match(/2\. Your private link +an https/g)?.length, 1, "the plan is shown once, not after every step");
+  assert.match(text, /✔ 1\. Tailscale on this computer {2}— {2}me@x\.test/);
+  assert.match(text, /✔ 2\. Your private link {2}— {2}mac\.tail1\.ts\.net/);
+  assert.match(text, /▸ 3\. Your phone\n {5}Reach starts now: scan its QR code with your phone's camera, then tap Connect\./);
+  assert.match(text, /Later, when you want them:\n {4}\.\/reach setup invites +invite people and agents with a link\n {4}\.\/reach setup background +keep Reach running after this window closes/);
+  assert.doesNotMatch(text, /Install the Tailscale app on your phone/, "phones sign in from the browser here");
   // A finished setup is not offered again.
   assert.equal(needsOnboarding(root), false);
 });
 
-test("choosing invites now runs the invite setup; background install is signalled", async (t) => {
+test("later: setup invites runs the invite setup; setup background signals the install", async (t) => {
   const root = tmp(t);
-  const s = scene({
-    "Set up invite links now?": "now",
-    "Keep Reach running after you close this terminal?": "background",
-  });
-  const d = deps(s);
-  const result = await runSetup(root, { deps: d });
+  await runSetup(root, { deps: deps(scene()) });
+  const d = deps(scene());
+  await runSetup(root, { only: "invites", deps: d });
   assert.equal(d.ran.invites, 1);
+  const result = await runSetup(root, {
+    only: "background",
+    deps: deps(scene({ "Keep Reach running after you close this terminal?": "background" })),
+  });
   assert.equal(result.launch, "background");
   // The device identity exists so invite keys can be named before Reach runs.
   assert.ok(
@@ -106,14 +113,11 @@ test("choosing invites now runs the invite setup; background install is signalle
 
 test("an interrupted setup resumes at the first unfinished step", async (t) => {
   const root = tmp(t);
-  // First attempt stops right after the account step (Ctrl+C at invites).
+  // First attempt stops while the link step waits for HTTPS (Ctrl+C there).
   const first = deps(scene(), {
-    setupInvites: async () => {
-      throw Error("Cancelled. Nothing was saved.");
-    },
-    select: async ({ message, choices }) => {
-      if (message === "Set up invite links now?") return "now";
-      return choices[0].value;
+    status: async () => ({ ...READY, CertDomains: [] }),
+    sleep: async () => {
+      throw Error("Paused.");
     },
   });
   await assert.rejects(runSetup(root, { deps: first }), (e) => e.paused);
@@ -123,14 +127,14 @@ test("an interrupted setup resumes at the first unfinished step", async (t) => {
 
   // Second attempt skips the done account step and finishes the rest.
   const s = scene();
-  const d = deps(s);
+  const printed = [];
+  const d = deps(s, { print: (m) => printed.push(m) });
   const result = await runSetup(root, { deps: d });
   assert.equal(d.ran.tailscale, 0, "account already done, not re-run");
   assert.equal(d.ran.configure, 0);
-  assert.deepEqual(s.asked, [
-    "Set up invite links now?",
-    "Keep Reach running after you close this terminal?",
-  ]);
+  assert.deepEqual(s.asked, []);
+  assert.match(printed.join("\n"), /Picking up your Reach setup where you left off\.\n/);
+  assert.match(printed.join("\n"), /✔ 1\. Tailscale on this computer +— {2}me@x\.test/, "the finished step keeps its check");
   assert.equal(result.launch, "foreground");
   assert.equal(readProgress(root).done, true);
 });
@@ -178,8 +182,11 @@ test("a computer configured before onboarding is marked done, never prompted", a
 test("on a non-Mac the background step is left out", async (t) => {
   const root = tmp(t);
   const s = scene();
-  const result = await runSetup(root, { deps: deps(s, { platform: "linux" }) });
-  assert.deepEqual(s.asked, ["Set up invite links now?"]);
+  const printed = [];
+  const result = await runSetup(root, { deps: deps(s, { platform: "linux", print: (m) => printed.push(m) }) });
+  assert.deepEqual(s.asked, []);
+  assert.match(printed.join("\n"), /setup invites/);
+  assert.doesNotMatch(printed.join("\n"), /setup background/);
   assert.equal(result.launch, "foreground");
   assert.equal(readProgress(root).steps.background, undefined);
   assert.equal(readProgress(root).done, true);
@@ -228,7 +235,7 @@ test("start over runs every step again; paired phones aren't touched", async (t)
   const d = deps(s);
   const result = await runSetup(root, { deps: d });
   assert.equal(d.ran.configure, 1, "account step ran again");
-  assert.deepEqual(result.ran, ["account", "link", "invites", "background"]);
+  assert.deepEqual(result.ran, ["account", "link"], "invites and background stay as they were");
   assert.ok(fs.existsSync(phones), "pairings untouched");
   assert.equal(readProgress(root).done, true);
 });
@@ -445,12 +452,11 @@ test("Windows: a fresh run is Tailscale, then the HTTPS link; no account setting
   assert.equal(result.launch, "foreground");
   const board = printed.join("\n");
   assert.match(board, /1\. Tailscale on this computer {2}—  me@x\.test/);
-  assert.match(board, /2\. HTTPS link for your phone/);
-  assert.doesNotMatch(board, /account & sharing|Invite people|background|3\./);
+  assert.match(board, /2\. Your private link/);
+  assert.doesNotMatch(board, /Invite people|background|Later, when/);
   // The phone's part, before any QR (Oct 11: a Windows user scanned without
   // the Tailscale app and got "can't connect").
-  assert.match(board, /Your phone will need the Tailscale app, signed in (as \S+|with this computer's account)\. On Windows, phones can't sign in from the browser yet\./);
-  assert.match(board, /Setup complete/);
+  assert.match(board, /▸ 3\. Your phone\n {5}Install the Tailscale app on your phone, sign in as me@x\.test and turn it on\. On Windows, phones can't sign in from the browser yet\./);
   const progress = readProgress(root);
   assert.deepEqual(progress.steps, { account: "done", link: "done" });
   assert.equal(progress.done, true);
