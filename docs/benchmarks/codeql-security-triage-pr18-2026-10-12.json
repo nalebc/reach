@@ -88,6 +88,11 @@
      67
     ],
     "what": "tool run fingerprints worked out one at a time (server/agent-tools.mjs)"
+   },
+   {
+    "sha": "0a3eb98a",
+    "alerts": [],
+    "what": "#163's new test swaps the pipe in once without checking its path first, so it adds no test-only race alert"
    }
   ],
   "note": "Scanner closure needs a fresh hosted analysis; no CodeQL CLI was run locally. Evidence lines point at the branch tree (after these commits); the alert location is the analysed line."
@@ -103,11 +108,11 @@
   "runtime": 154
  },
  "countsByDecision": {
-  "fixed-in-code": 16,
+  "code-changed": 16,
   "proposed-dismissal": 193
  },
  "countsByDecisionInChangedFiles": {
-  "fixed-in-code": 12,
+  "code-changed": 12,
   "proposed-dismissal": 139
  },
  "dismissalsByReason": {
@@ -177,6 +182,17 @@
   },
   "js/xss-through-dom": {
    "false positive": 3
+  }
+ },
+ "macBehaviour": {
+  "changedOnMac": {
+   "67": "Real Mac bug (availability): a tailnet Full control or Apps agent could stall Reach by flooding tool runs; fingerprints are now serialized.",
+   "163": "Real Mac bug, needs a same-user process: a picture file swapped for a FIFO hung the request; same pictures and results otherwise.",
+   "252": "Real Mac bug, needs a same-user process: a SKILL.md that grew after it was measured was read past the 256 KB cap; same results otherwise."
+  },
+  "unchangedOnMac": {
+   "243": "Windows-only branch (win32).",
+   "251": "Windows-only branch (win32); the Mac symlink path is untouched."
   }
  },
  "ownerDecisions": [
@@ -305,6 +321,7 @@
  },
  "limitations": [
   "No CodeQL run after the changes: the 16 fixed alerts are expected to close on the next hosted analysis but are unproven; each has a fallbackDismissal. #67 is fixed for real but will likely stay open (the rule looks for rate-limit middleware), as may #163, #251 and #252 if the rule pairs other checks with the new reads/writes.",
+  "#67's fix serializes the scrypt step rather than bounding it: a flooding agent no longer stalls the rest of Reach but can still delay other agents' tool runs; the owner's remedy is pause or revoke.",
   "The exact gate set (163) cannot be listed (100 annotations). Alerts in files the PR changes: 151; on changed lines: 27; matched to annotations: 101. Every alert has a verdict, so the gate is covered whichever 163 they are.",
   "Evidence lines point at the branch tree (codeql-pr18-triage); the alert location is the analysed line (12d654a0 / PR head). Evidence was gathered with read-only reviews per rule group and re-located by exact text; the lead re-checked the hosted-MCP, agent-guard, residual and rate-limit outliers.",
   "Windows-only test changes (#241 in windows-desktop-native) were not exercised on this Mac (skipped); first-install-source is Linux-only and skipped here; first-install-e2e ran with dist/ and tailnet/dist linked from the main checkout's build (this worktree has none).",
@@ -334,7 +351,7 @@
    "newOnPr18": false,
    "priorStatus": "fixture-trace-no-production-boundary",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -374,7 +391,7 @@
    "newOnPr18": false,
    "priorStatus": "fixture-trace-no-production-boundary",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -2219,7 +2236,7 @@
    "newOnPr18": false,
    "priorStatus": "existing-resource-admission",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 4f71485e",
    "commit": "4f71485e",
    "reason": "Real, availability. POST /api/browser/tools/run (Full control and Apps agents) works out a salted scrypt fingerprint of the run's inputs (~30 ms, 16 MiB, on libuv's 4-thread pool) before any run budget: on every replay of a requestId already in the ledger, and for a new run before the browser check, so neither spends the 1000-run ledger or the single-run slot. A tailnet agent (no gateway limiter) flooding either path kept all four threads busy and stalled Reach's file, zlib and crypto work for everyone. Fingerprints are now worked out one at a time across all agents (requests wait their turn; none refused; results unchanged). The scanner looks for rate-limit middleware, so this alert will likely stay open after the fix.",
@@ -4881,7 +4898,7 @@
    "newOnPr18": false,
    "priorStatus": "fixture-trace-no-production-boundary",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -4921,7 +4938,7 @@
    "newOnPr18": false,
    "priorStatus": "fixture-trace-no-production-boundary",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -5576,7 +5593,7 @@
    "newOnPr18": false,
    "priorStatus": "guard-or-trust-boundary-reviewed",
    "priorDecisionPr10": "carried-forward",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 71ed46bb",
    "commit": "71ed46bb",
    "reason": "A picture file named by a Codex message was measured by path (stat) and read by path again; swapped for a FIFO in between, readFile waited for a writer forever (a hung request), and a file that grew was read whole before the size check. Needs a same-user local process, so a hardening rather than a remote exploit. Now opened once (O_NONBLOCK), measured and read through the handle, never past the limit; same pictures on a Mac.",
@@ -7443,7 +7460,7 @@
    "newOnPr18": false,
    "priorStatus": null,
    "priorDecisionPr10": "proposed-dismissal",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7483,7 +7500,7 @@
    "newOnPr18": false,
    "priorStatus": null,
    "priorDecisionPr10": "proposed-dismissal",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7523,7 +7540,7 @@
    "newOnPr18": false,
    "priorStatus": null,
    "priorDecisionPr10": "proposed-dismissal",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7563,7 +7580,7 @@
    "newOnPr18": false,
    "priorStatus": null,
    "priorDecisionPr10": "proposed-dismissal",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7603,7 +7620,7 @@
    "newOnPr18": false,
    "priorStatus": null,
    "priorDecisionPr10": "proposed-dismissal",
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7641,7 +7658,7 @@
    },
    "openOnMain": false,
    "newOnPr18": true,
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7679,7 +7696,7 @@
    },
    "openOnMain": false,
    "newOnPr18": true,
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 7460b4b3",
    "commit": "7460b4b3",
    "classification": "test-only",
@@ -7751,7 +7768,7 @@
    },
    "openOnMain": false,
    "newOnPr18": true,
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in b0a75ec8",
    "commit": "b0a75ec8",
    "reason": "Real on Windows hosts. windowsCanonicalPath (and the device-name check) cut trailing dots and spaces with /[. ]+$/, which retries from every space of a long run: quadratic. Paths an agent sends reach it on win32 (commandRefusal, protectedPathReason, isBrowserPrivatePath); a 64k-space name held the event loop 2.4 s (16k, the URL limit for the flagged query routes: 151 ms), a large request body far longer. Replaced by a linear trim with the same results. Macs never reach it (both callers branch on win32).",
@@ -8023,7 +8040,7 @@
    },
    "openOnMain": false,
    "newOnPr18": true,
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in 8396840d",
    "commit": "8396840d",
    "reason": "Oct 12 Windows code. `reach cli` checked existsSync(reach.cmd) then wrote it, so a reach.cmd another tool created in between was overwritten despite the 'Reach left it alone' promise. The folder is the user's own (~\\.local\\bin or WindowsApps), so no privilege boundary, but the promise now holds: the shim is created exclusively ('wx'); on EEXIST it is read, and overwritten only if it is another Reach folder's shim.",
@@ -8062,7 +8079,7 @@
    },
    "openOnMain": false,
    "newOnPr18": true,
-   "decision": "fixed-in-code",
+   "decision": "code-changed",
    "verdict": "fixed in beb9066f",
    "commit": "beb9066f",
    "reason": "Same code as #171 (prior: local-mutation residual), renumbered after an Oct 12 edit on a nearby line. SKILL.md was measured by path (stat) and read by path again, so a file that grew in between was read whole past the 256 KB cap. Now opened once (O_NOFOLLOW, O_NONBLOCK so a FIFO is refused at once), measured and read through that handle, bounded to 256 KB. The install's check hash still covers exactly the text read.",
