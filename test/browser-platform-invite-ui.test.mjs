@@ -11,7 +11,7 @@ before(async () => {
 afterEach(async () => { for (const view of views) await view.unmount(); views.clear(); });
 after(async () => dom?.close());
 
-async function render(platform, support) {
+async function render(platform, support, props = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     calls.push([new URL(url).pathname, init.method || "GET"]);
@@ -23,7 +23,7 @@ async function render(platform, support) {
   const peer = { id: "host", name: "Computer", url: "https://host.test", token: "owner", platform };
   const device = { name: "Computer", platform, roots: [{ id: 0, name: "Project", path: "/project" }] };
   const view = await dom.render(dom.React.createElement(BrowserInvite, {
-    peer, device, keyPeer: peer, onSetup() {}, onCreated() { assert.fail("Unsupported invitation must not be created"); },
+    peer, device, keyPeer: peer, onSetup() {}, onCreated() { assert.fail("Unsupported invitation must not be created"); }, ...props,
   }));
   views.add(view);
   await dom.waitFor(() => calls.length === 1);
@@ -44,9 +44,9 @@ for (const platform of ["linux", "win32"]) {
     assert.ok(choices.every((choice) => choice.disabled));
     assert.match(container.textContent, /Browser invitations currently require macOS/);
     assert.match(container.textContent, /Your own Files and terminals remain available/);
-    assert.match(container.textContent, /choose Command line\s+under Connects/);
+    assert.doesNotMatch(container.textContent, /Connects/);
     assert.doesNotMatch(container.textContent, /Turn on Screen Recording|Screen presets need this Mac/);
-    // Tapping any of them (each would make the invite at once) does nothing.
+    // Tapping any of them does nothing.
     for (const choice of choices) choice.click();
     await settle();
     assert.equal(calls.length, 1, "unavailable controls never send an invitation request");
@@ -69,4 +69,18 @@ test("the server's explicit unsupported file capability overrides a cached Mac d
   assert.equal(choices.Files.disabled, true);
   assert.equal(choices.Apps.disabled, false);
   assert.match(container.textContent, /Browser-agent file access requires macOS/);
+});
+
+// Off a Mac the presets aren't offered, so Command line (folders, over
+// Tailscale) is how an agent is invited there: one button, never on a Mac.
+test("off a Mac, one button opens the folder-access invite instead", async () => {
+  let opened = 0;
+  const { container } = await render("linux", { protectedFilesSupported: false, desktopAvailable: false }, { onCommandLine: () => opened++ });
+  const button = [...container.querySelectorAll("button")].find((b) => b.textContent.trim() === "Invite with folder access");
+  assert.ok(button);
+  button.click();
+  await settle();
+  assert.equal(opened, 1);
+  const mac = await render("darwin", { protectedFilesSupported: true, desktopAvailable: true }, { onCommandLine: () => opened++ });
+  assert.equal([...mac.container.querySelectorAll("button")].find((b) => b.textContent.trim() === "Invite with folder access"), undefined);
 });

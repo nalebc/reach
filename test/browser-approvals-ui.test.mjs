@@ -771,7 +771,7 @@ test("control characters cannot hide the reviewed command and a failed approval 
   await view.unmount();
 });
 
-test("Agents & people: a browser agent opens its scoped editor, and + invites through the AI browser flow", async () => {
+test("Agents & people: a browser agent opens its scoped editor, and + asks agent or person first", async () => {
   globalThis.fetch = dom.window.fetch = async (url) => {
     const route = new URL(url).pathname;
     if (route === "/api/clients")
@@ -834,19 +834,22 @@ test("Agents & people: a browser agent opens its scoped editor, and + invites th
     "cannot convert a browser grant into full or command access",
   );
   await click(sheet.querySelector('[aria-label="Close panel"]'));
-  // + opens an agent's invitation straight away; the title switches to a
-  // person, and no other Agent/Person choice is asked again.
+  // + asks who first: an agent or a person, two rows, agents first.
   await click(c.querySelector('[aria-label="Invite"]'));
-  assert.equal(c.querySelector(".ppl-invite .ppl-who .ivt-menu-button").textContent, "Invite an agent");
+  const who = () => [...c.querySelectorAll(".ppl-invite .inv-who-row")];
+  assert.deepEqual(who().map((b) => b.querySelector("strong").textContent), ["An agent", "A person"]);
+  assert.equal(c.querySelector('[aria-label="AI browser invitation"]'), null);
+  await click(who()[0]);
+  assert.match(c.querySelector(".ppl-invite h2").textContent, /Invite an agent/);
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
   await dom.waitFor(() => c.querySelector('[aria-label="Access preset"] [aria-label="Full control"]'));
-  // The title: a person instead, in one tap.
-  await click(c.querySelector(".ppl-who .ivt-menu-button"));
-  await click([...c.querySelectorAll(".ppl-who .ivt-item")].find((b) => b.textContent.includes("A person")));
-  assert.equal(c.querySelector(".ppl-who .ivt-menu-button").textContent, "Invite someone");
+  // Back, then a person instead.
+  await click(c.querySelector('.ppl-invite [aria-label="Back"]'));
+  await click(who()[1]);
+  assert.match(c.querySelector(".ppl-invite h2").textContent, /Invite a person/);
   await dom.waitFor(() => c.querySelector('.ppl-invite input[aria-label="Name"]'));
   assert.equal(c.querySelector('[aria-label="AI browser invitation"]'), null);
   await view.unmount();

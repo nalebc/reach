@@ -510,11 +510,11 @@ function ReachWorkspace() {
     };
   }, [peer?.id, peer?.url, peer?.token]);
   // Agents & people, opened with its invitation ("invite:new", from Home).
-  const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser"; at: number } | null>(null);
+  const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser" | "choose"; at: number } | null>(null);
   const navigate = (to: string, { opening = false } = {}) => {
     const id = to.startsWith("invite") ? "invite" : to;
     if (id === "invite")
-      setInviteStart(to === "invite:new" ? { kind: "browser", at: Date.now() } : null);
+      setInviteStart(to === "invite:new" ? { kind: "choose", at: Date.now() } : null);
     if (!pageAccessible(id, features)) return;
     // Re-selecting Chat is a shortcut to its root, from any nested view.
     // Keep the chosen provider and shared feed; discard only local navigation.

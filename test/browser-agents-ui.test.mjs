@@ -376,10 +376,10 @@ test("agent invite preselection opens browser permissions without advanced MCP a
   const view = await render(
     React.createElement(InviteSheet, { peer, device, initialKind: "browser" }),
   );
-  // An agent's invitation opens on its one question, connecting with Tools.
+  // An agent's invitation opens on its presets, connecting with a command (Tools).
   await dom.waitFor(() => view.container.querySelector('[aria-label="AI browser invitation"] [aria-label="Access preset"]'));
-  const connects = [...view.container.querySelectorAll(".ivt-row")].find((r) => r.textContent.includes("Connects"));
-  assert.equal(connects.querySelector(".ivt-menu-button").textContent, "Tools");
+  const command = view.container.querySelector('[aria-label="How the agent connects"] [aria-checked="true"]');
+  assert.equal(command.textContent.trim(), "Command");
   assert.doesNotMatch(
     view.container.textContent,
     /Unrestricted command access/,

@@ -150,3 +150,7 @@
   gap: 8px;
   margin-top: 10px;
 }
+/* The sheet itself holds focus when it opens (ScreenPopup): no ring. */
+.screen-popup:focus {
+  outline: none;
+}

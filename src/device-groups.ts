@@ -6,6 +6,8 @@ export type AccessRecord = {
   expiresAt?: number;
   deviceGroup?: string;
   tailscale?: { userId: string; nodeId: string };
+  // Its name on Tailscale (iphone182, or this Mac's own).
+  nodeName?: string;
 };
 export function groupDevices<T extends AccessRecord>(
   clients: T[],
@@ -22,6 +24,8 @@ export function groupDevices<T extends AccessRecord>(
     else {
       old.ids.push(c.id);
       if ((c.expiresAt || 0) > (old.expiresAt || 0)) old.expiresAt = c.expiresAt;
+      // Older pairings didn't keep the device's name: any one that did names it.
+      if (!old.nodeName && c.nodeName) old.nodeName = c.nodeName;
     }
   }
   return [...groups.values()];

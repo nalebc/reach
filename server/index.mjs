@@ -428,6 +428,9 @@ export async function createReach(overrides = {}) {
     return () => clearInterval(timer);
   };
   const presence = new DevicePresence();
+  // When each invited person and agent last used their access, in memory (a
+  // restart forgets it): the owner's list says who is active and who is idle.
+  const lastUse = new Map();
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 65536,
@@ -1828,6 +1831,9 @@ export async function createReach(overrides = {}) {
     const PAUSED_AGENT = "The owner paused this agent. It can look, not touch, until they resume it.";
     if (ownerPaused(client)) return res.status(409).json({ error: PAUSED_AGENT, kind: "paused" });
     req.client = client;
+    // Its hourly key trade isn't use: an idle agent stays idle.
+    if ((client.kind === "guest" || client.kind === "agent") && subpath !== "/device/rotate")
+      lastUse.set(client.id, Date.now());
     // A route's scope can stay the same while its folders or app policy
     // change. Never finish an old request using data from the former grant.
     const grant = (identity) => JSON.stringify([identity?.scopes, identity?.agentRoots, identity?.guestApps, identity?.policy]);
@@ -2438,7 +2444,11 @@ export async function createReach(overrides = {}) {
         const runtime = client.kind === "agent" ? agentRuntimes.statusOf(client) : undefined;
         // Its update by hand fetches exactly this runtime, by its hash.
         const sha = runtime === "one-time" ? servedRuntime() : undefined;
-        return runtime ? { ...client, runtime, ...(sha ? { runtimeSha256: sha } : {}) } : client;
+        // When it last used its access (this run of Reach).
+        const activeAt = lastUse.get(client.id);
+        return runtime || activeAt
+          ? { ...client, ...(runtime ? { runtime } : {}), ...(sha ? { runtimeSha256: sha } : {}), ...(activeAt ? { activeAt } : {}) }
+          : client;
       }),
     }),
   );
@@ -2465,6 +2475,7 @@ export async function createReach(overrides = {}) {
   };
   const endClient = (id) => {
     auth.revoke(id);
+    lastUse.delete(id);
     endSession(id);
   };
   browserAgentRoutes(app, {

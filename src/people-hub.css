@@ -147,7 +147,8 @@
 }
 
 /* Here now: their live connection, a green dot; amber while controlling. */
-.ppl-here .ppl-avatar {
+.ppl-here .ppl-avatar,
+.ppl-avatar.is-active {
   position: relative;
 }
 .ppl-live {
@@ -166,4 +167,25 @@
 /* A browser agent's live panel inside its sheet (BrowserAgents.tsx). */
 .ppl-sheet .ag-embedded {
   margin-top: 16px;
+}
+/* Active or idle, on each row (a value, as in Settings) and in its sheet:
+   green while it uses its access, muted when idle. */
+.ppl-use {
+  flex: none;
+  color: var(--muted, #93a096);
+  font-size: 13.5px;
+}
+.ppl-use.is-active {
+  color: #5fd38d;
+  font-weight: 550;
+}
+.ppl-avatar.large .ppl-live {
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  border-width: 3px;
+}
+.ppl-sheet .ppl-live {
+  border-color: #1d211f;
 }

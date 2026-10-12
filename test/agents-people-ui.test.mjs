@@ -60,6 +60,8 @@ const render = async (props = {}) => {
   return view;
 };
 const rows = (c) => [...c.querySelectorAll(".gs-row")];
+// The owner's own devices, as /api/clients lists them.
+const macWith = (clients) => mac({ clients });
 const rowNamed = (c, name) => rows(c).find((r) => r.querySelector("strong, .gs-label")?.textContent.startsWith(name));
 const click = async (element) => { assert.ok(element); element.click(); await settle(40); };
 
@@ -241,6 +243,34 @@ test("an agent waiting on you is first and amber; a working one says what it's u
   assert.match(second.textContent, /Calm.*Using Safari/);
 });
 
+// Who is using their access: active (used it in the last two minutes, or
+// holding the Mac) comes first with a green dot; the rest say Idle, and
+// their sheet says since when. Someone who hasn't joined says only that.
+test("active agents and people come first with a green dot; idle ones say since when", async () => {
+  const now = Date.now();
+  const cli = (id, name, extra = {}) => ({ id, name, kind: "agent", status: "accepted", expiresAt: later(), scopes: ["device", "files:read"], policy: { invite: true }, ...extra });
+  const quiet = cli("quiet-1", "Quiet", { activeAt: now - 3 * 3600000 });
+  const busy = cli("busy-2", "Busy", { activeAt: now - 20000 });
+  const fresh = cli("fresh-3", "Fresh", { status: "invited" });
+  const holder = browserAgent("hold-4", { name: "Holder" });
+  const sam = { id: "sam-5", name: "Sam", kind: "guest", status: "accepted", expiresAt: later(), scopes: ["screen"], activeAt: now - 600000 };
+  const alex = { id: "alex-6", name: "Alex", kind: "guest", status: "accepted", expiresAt: later(), scopes: ["screen"] };
+  mac({ clients: [quiet, busy, fresh, holder, sam, alex], sessions: [listed(holder, { holdsMac: true, using: { at: now, app: "Safari" } })] });
+  const { container: c } = await render({ here: [{ id: "client:alex-6", name: "Alex", kind: "phone", self: false, access: [{ kind: "invited", expiresAt: later() }], activity: "viewing" }] });
+  await dom.waitFor(() => c.querySelectorAll(".ppl-row").length === 6);
+  const state = (r) => [r.querySelector("strong").textContent, r.querySelector(".ppl-use")?.textContent || "", !!r.querySelector(".ppl-live")];
+  assert.deepEqual([...c.querySelectorAll(".ppl-row")].map(state), [
+    ["Busy", "Active", true],
+    ["Holder", "Active", true],
+    ["Quiet", "Idle", false],
+    ["Fresh", "", false],
+    ["Alex", "Active", true],
+    ["Sam", "Idle", false],
+  ]);
+  await click(rowNamed(c, "Quiet"));
+  assert.equal(c.querySelector(".ppl-sheet .ppl-hero .ppl-use").textContent, "Idle · last active 3 h ago");
+});
+
 test("a browser agent's sheet holds its live panel; stopped agents leave the list for Ended", async () => {
   const muse = browserAgent("muse-1");
   const stopped = browserAgent("old-2", { name: "Old helper", status: "revoked" });
@@ -292,7 +322,26 @@ test("devices with the same name say when each was paired, with the time on a sh
   await dom.waitFor(() => c.querySelectorAll(".ppl-row").length === 4);
   const lines = [...c.querySelectorAll(".ppl-row small")].map((e) => e.textContent);
   assert.equal(lines[0], "This device");
-  assert.match(lines[1], /^Paired Oct 3.*4:50/);
-  assert.match(lines[2], /^Paired Oct 3.*6:56/);
-  assert.equal(lines[3], "Paired Oct 5");
+  assert.match(lines[1], /^Unknown device · Paired Oct 3.*4:50/);
+  assert.match(lines[2], /^Unknown device · Paired Oct 3.*6:56/);
+  assert.equal(lines[3], "Unknown device · Paired Oct 5");
+});
+
+// One row per Tailscale device: its browsers together, named as Tailscale
+// names it; something on the Mac itself says so (the iPhone Simulator, say).
+test("your devices: one row per Tailscale device, named, with how many browsers", async () => {
+  const at = (iso) => new Date(iso).toISOString();
+  const phone = { userId: "u1", nodeId: "nPhone" }, mac = { userId: "u1", nodeId: "nMac" };
+  macWith([
+    { id: "me", kind: "device", name: "My iPhone", createdAt: at("2026-10-06T05:33:00"), expiresAt: later(), tailscale: phone, deviceGroup: "nPhone", nodeName: "iphone182" },
+    { id: "old", kind: "device", name: "My iPhone", createdAt: at("2026-10-04T02:36:00"), expiresAt: later(), tailscale: phone },
+    { id: "safari", kind: "device", name: "My iPhone", createdAt: at("2026-10-06T16:56:00"), expiresAt: later(), tailscale: phone, deviceGroup: "nPhone", nodeName: "iphone182" },
+    { id: "sim", kind: "device", name: "My iPhone", createdAt: at("2026-10-09T16:31:00"), expiresAt: later(), tailscale: mac, deviceGroup: "nMac", nodeName: "my-mac" },
+  ]);
+  const { container: c } = await render();
+  await dom.waitFor(() => c.querySelectorAll(".ppl-row").length === 2);
+  assert.deepEqual([...c.querySelectorAll(".ppl-row small")].map((e) => e.textContent), [
+    "iphone182 · 3 browsers · This device",
+    "On this Mac · Paired Oct 9",
+  ]);
 });

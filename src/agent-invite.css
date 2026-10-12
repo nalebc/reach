@@ -611,13 +611,7 @@
   text-align: center;
 }
 
-/* One question: what may it do? Four rows; a tap makes the invite. */
-.ag-ask {
-  margin: 2px 4px 0;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--ivt-text, #f3f3f3);
-}
+/* Choices drawn by agent-ui.tsx (the access editor) as plain rows. */
 .ag-choices .ag-choice {
   width: 100%;
   min-height: 64px;
@@ -651,29 +645,6 @@
 }
 .ag-choice.is-on .ag-choice-text strong {
   color: #fff;
-}
-.ag-choice-go {
-  flex: none;
-  margin-right: 8px;
-  color: #6f7c73;
-}
-.ag-choice-busy {
-  margin-right: 10px;
-  font-size: 13px;
-  color: var(--ivt-muted, #a5a5a5);
-}
-/* The defaults: smaller, quieter rows under the question. */
-.ag-defaults .ivt-row {
-  min-height: 46px;
-}
-.ag-defaults .ivt-setting-label,
-.ag-defaults .ivt-row .ivt-name {
-  font-size: 14.5px;
-}
-.ag-defaults .ag-rows {
-  margin: 0;
-  background: none;
-  box-shadow: none;
 }
 /* A hosted agent's connector address, to read and check. */
 .ag-done-url {
