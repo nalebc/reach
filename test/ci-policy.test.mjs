@@ -299,7 +299,7 @@ test("release retry skips npm only for the exact already-published candidate byt
   assert.notEqual(runBlock("globalThis.fetch = async () => { throw Error('network down'); };\n" + script, { VERSION: version, GITHUB_OUTPUT: output }, root).status, 0);
   const publish = steps.find(step => step.run?.includes("npm publish"));
   assert.equal(publish.if, "steps.registry.outputs.published == 'false'");
-  assert.ok(steps.indexOf(publish) < steps.findIndex(step => step.run?.includes("gh release create")));
+  assert.ok(steps.indexOf(publish) < steps.findIndex(step => step.id === "github-release"));
 });
 
 function assertPublishIsolation(publish) {

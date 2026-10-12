@@ -190,16 +190,108 @@ jobs:
           VERSION: ${{ needs.eligible.outputs.version }}
           NPM_CONFIG_IGNORE_SCRIPTS: "true"
         run: npm publish "candidate/nalebc-reach-$VERSION.tgz" --ignore-scripts --provenance --access public --registry=https://registry.npmjs.org
-      - name: Create the GitHub release from the same archives
+      - id: github-release
+        name: Create or complete the exact GitHub release without replacing assets
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.eligible.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "candidate/nalebc-reach-$VERSION.tgz" \
-            "candidate/reach-$VERSION-portable.tar.gz" \
-            candidate/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "Reach $VERSION" \
-            --notes-file candidate/NOTES.md
+          node --input-type=module <<'GITHUB_RELEASE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const { VERSION: version, GITHUB_REF_NAME: tag, GITHUB_SHA: commit, GITHUB_REPOSITORY: repository, GH_TOKEN: token } = process.env;
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || tag !== `v${version}` || !/^[a-f0-9]{40}$/.test(commit) ||
+              !/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository) || !token) throw Error('Invalid release identity.');
+          const npm = `nalebc-reach-${version}.tgz`, portable = `reach-${version}-portable.tar.gz`;
+          const receipt = JSON.parse(fs.readFileSync('candidate/candidate.json', 'utf8'));
+          if (receipt.package !== '@nalebc/reach' || receipt.version !== version || receipt.commit !== commit || receipt.npm !== npm || receipt.portable !== portable)
+            throw Error('Release receipt does not identify this verified candidate.');
+          const files = new Map([npm, portable, 'SHA256SUMS', 'candidate.json'].map(name => {
+            if (!fs.lstatSync(`candidate/${name}`).isFile()) throw Error('Release assets must be regular files.');
+            const bytes = fs.readFileSync(`candidate/${name}`);
+            return [name, { size: bytes.length, digest: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}` }];
+          }));
+          const notes = fs.readFileSync('candidate/NOTES.md', 'utf8');
+          const title = `Reach ${version}`, prerelease = version.includes('-');
+          const base = `https://api.github.com/repos/${repository}`;
+          async function request(url, { method = 'GET', body, binary = false } = {}) {
+            const response = await fetch(url, { method, redirect: 'error', signal: AbortSignal.timeout(120000),
+              headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Reach-release', 'X-GitHub-Api-Version': '2026-03-10',
+                ...(body === undefined ? {} : { 'Content-Type': binary ? 'application/octet-stream' : 'application/json' }) },
+              ...(body === undefined ? {} : { body: binary ? body : JSON.stringify(body) }) });
+            if (!response.ok) throw Error(`GitHub release request failed: ${method} ${response.status}`);
+            return response.json();
+          }
+          async function verifyTag() {
+            const ref = await request(`${base}/git/ref/tags/${encodeURIComponent(tag)}`);
+            if (ref.ref !== `refs/tags/${tag}`) throw Error('The release tag is missing or ambiguous.');
+            let object = ref.object;
+            for (let depth = 0; object?.type === 'tag' && depth < 5; depth++) {
+              if (!/^[a-f0-9]{40}$/.test(object.sha)) throw Error('Invalid annotated tag.');
+              object = (await request(`${base}/git/tags/${object.sha}`)).object;
+            }
+            if (object?.type !== 'commit' || object.sha !== commit) throw Error('The release tag no longer points to this tested commit.');
+          }
+          function validateRelease(release) {
+            if (!Number.isSafeInteger(release?.id) || release.id < 1 || release.tag_name !== tag || release.target_commitish !== commit ||
+                release.name !== title || release.body !== notes || release.prerelease !== prerelease || typeof release.draft !== 'boolean')
+              throw Error('Existing release identity, target or notes conflict with this candidate.');
+          }
+          function validateAssets(assets) {
+            if (!Array.isArray(assets) || assets.length > files.size) throw Error('Unexpected release assets.');
+            const found = new Set();
+            for (const asset of assets) {
+              const expected = files.get(asset.name);
+              if (!expected || found.has(asset.name) || asset.state !== 'uploaded' || asset.size !== expected.size || asset.digest !== expected.digest)
+                throw Error('Existing release asset does not match the verified candidate bytes.');
+              found.add(asset.name);
+            }
+            return found;
+          }
+          await verifyTag();
+          // The by-tag endpoint excludes drafts; list with the write token so a
+          // failed upload or lost create response resumes the same draft.
+          let release;
+          for (let page = 1; ; page++) {
+            if (page > 100) throw Error('Release history exceeds the bounded recovery scan.');
+            const releases = await request(`${base}/releases?per_page=100&page=${page}`);
+            if (!Array.isArray(releases)) throw Error('Invalid release listing.');
+            for (const entry of releases.filter(entry => entry.tag_name === tag)) {
+              if (release) throw Error('Multiple releases use this tag.');
+              release = entry;
+            }
+            if (releases.length < 100) break;
+          }
+          if (!release) release = await request(`${base}/releases`, { method: 'POST', body: {
+            tag_name: tag, target_commitish: commit, name: title, body: notes, draft: true, prerelease,
+          } });
+          validateRelease(release);
+          const assetURL = `${base}/releases/${release.id}/assets?per_page=100`;
+          let found = validateAssets(await request(assetURL));
+          if (!release.draft && found.size !== files.size) throw Error('Published release is incomplete; refusing to modify it.');
+          for (const [name, expected] of files) {
+            if (found.has(name)) continue;
+            // Never delete, overwrite or repoint anything. A conflicting upload
+            // fails; a lost response is checked by digest on the next run.
+            const bytes = fs.readFileSync(`candidate/${name}`);
+            if (bytes.length !== expected.size || `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}` !== expected.digest)
+              throw Error('Release candidate changed during upload.');
+            const asset = await request(`https://uploads.github.com/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`,
+              { method: 'POST', body: bytes, binary: true });
+            if (asset.name !== name) throw Error('Unexpected uploaded asset.');
+            validateAssets([asset]);
+          }
+          // Re-read both the draft and its assets before making it public.
+          // An already-published exact release is a read-only successful retry.
+          release = await request(`${base}/releases/${release.id}`);
+          validateRelease(release);
+          found = validateAssets(await request(assetURL));
+          if (found.size !== files.size) throw Error('The release assets are incomplete.');
+          await verifyTag();
+          if (release.draft) {
+            release = await request(`${base}/releases/${release.id}`, { method: 'PATCH', body: { draft: false } });
+            validateRelease(release);
+            if (release.draft) throw Error('GitHub did not publish the completed release.');
+          }
+          console.log(`Verified GitHub release ${tag} at ${commit}.`);
+          GITHUB_RELEASE
