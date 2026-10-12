@@ -361,22 +361,21 @@ export async function codexHolder(id, { run = exec, locks = LOCKS, platform = pr
 }
 
 // On Windows, the processes holding the lock file as Restart Manager names
-// them (windows-owners.mjs), told apart by program: the daemon by its
-// command, the Codex app (ChatGPT.exe) as the parent, a terminal by a shell
-// or a terminal above it. Held but not told apart, or not asked at all (the
-// helper couldn't run): "other", held by something else, never free.
+// them (windows-owners.mjs), told apart by program as a Mac tells them: the
+// daemon by its command, the Codex app (ChatGPT.exe) as the parent, a
+// terminal by a shell or a terminal above it, else "other". A lookup that
+// fails answers as a Mac's does: no holder, so chats stay in sync and a
+// message goes as it would there (owner, Oct 12).
 const SHELLS = /^(?:cmd|powershell|pwsh|bash|sh|zsh|fish|nu|windowsterminal|openconsole|conhost|wezterm-gui|alacritty|mintty)\.exe$/i;
 async function windowsHolder(file, holders) {
   let found;
   try {
     found = await holders(file);
   } catch {
-    return "other";
+    return null;
   }
-  // Gone since, or held by nothing: Codex let go (as lsof says on a Mac).
-  if (found?.error === "missing" || (Array.isArray(found?.holders) && !found.holders.length)) return null;
   const holder = Array.isArray(found?.holders) ? found.holders[0] : null;
-  if (!holder || typeof holder !== "object") return "other";
+  if (!holder || typeof holder !== "object") return null;
   const parents = Array.isArray(holder.parents) ? holder.parents.map(String) : [];
   if (/app-server-daemon/.test(`${holder.command || ""}\n${holder.image || ""}`)) return "daemon";
   if (/^chatgpt\.exe$/i.test(parents[0] || "")) return "codex-app";

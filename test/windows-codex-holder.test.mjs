@@ -9,8 +9,8 @@ import { fileHolders } from "../server/windows-owners.mjs";
 // Who holds a Codex chat on Windows (audit #46, Oct 12): a Mac asks pgrep,
 // lsof and ps, which Windows hasn't got. There Restart Manager names the
 // processes holding the chat's lock file, and their programs tell which:
-// Codex's daemon, the Codex app, a terminal. Held but not told apart, or not
-// asked at all, reads "other": held, never free.
+// Codex's daemon, the Codex app, a terminal, else "other". A lookup that
+// fails answers as a Mac's does (nobody), so delivery goes as it would there.
 const T = "019a0000-1111-7222-8333-444455556666";
 const locked = (t) => {
   const locks = fs.mkdtempSync(path.join(os.tmpdir(), "reach-locks-"));
@@ -35,7 +35,7 @@ test("on Windows a Codex chat's holder is told by its program, never pgrep, lsof
   assert.equal(await win(holding({ pid: 9, image: "C:\\Program Files\\WindowsApps\\OpenAI.ChatGPT\\app\\codex.exe", command: "codex.exe app-server", parents: ["ChatGPT.exe", "explorer.exe"] })), "codex-app");
   assert.equal(await win(holding({ pid: 9, image: "C:\\x\\codex.exe", command: "codex resume", parents: ["node.exe", "pwsh.exe", "WindowsTerminal.exe"] })), "terminal");
   assert.equal(await win(holding({ pid: 9, image: "C:\\x\\codex.exe", command: "codex", parents: ["cmd.exe"] })), "terminal");
-  // Held by something Reach can't tell apart: held all the same.
+  // Held by something Reach can't tell apart: "other", as on a Mac.
   assert.equal(await win(holding({ pid: 9, image: null, command: null, parents: [] })), "other");
   assert.equal(await win(holding({ pid: 9, image: "C:\\x\\codex.exe", command: "codex", parents: ["services.exe"] })), "other");
   // Nothing holds it, or it's gone: Codex let go, as lsof says on a Mac.
@@ -43,7 +43,10 @@ test("on Windows a Codex chat's holder is told by its program, never pgrep, lsof
   assert.equal(await win(async () => ({ error: "missing", code: 2 })), null);
 });
 
-test("on Windows a holder Reach can't ask about reads as held, never as free", async (t) => {
+// Owner, Oct 12: chats stay in sync across the agent's app, its CLI and
+// Reach, so Windows never holds back a message a Mac would deliver. A Mac's
+// failed lookup reads as nobody holding the chat; Windows' does too.
+test("on Windows a lookup that fails answers as a Mac's does: nobody holds the chat", async (t) => {
   const locks = locked(t);
   for (const [what, holders] of [
     ["the helper can't run", async () => { throw new Error("csc.exe refused"); }],
@@ -52,7 +55,9 @@ test("on Windows a holder Reach can't ask about reads as held, never as free", a
     ["a holder that isn't one", async () => ({ holders: [null] })],
     ["no answer at all", async () => null],
   ])
-    assert.equal(await codexHolder(T, { locks, platform: "win32", holders }), "other", what);
+    assert.equal(await codexHolder(T, { locks, platform: "win32", holders }), null, what);
+  // As a Mac when lsof fails.
+  assert.equal(await codexHolder(T, { locks, platform: "darwin", run: async () => { throw Object.assign(new Error("lsof failed"), { code: 1 }); } }), null);
   // No lock file: nobody holds it, and nobody is asked.
   assert.equal(await codexHolder("019a0000-1111-7222-8333-000000000000", { locks, platform: "win32", holders: async () => assert.fail("not asked") }), null);
 });
