@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appLabel, macAppPath, validAppPath, windowsAppId, windowsExePath, windowsPackageName, windowsPath } from "../server/app-identity.mjs";
+import { appLabel, macAppPath, validAppPath, windowsAppId, windowsCanonicalPath, windowsExePath, windowsFold, windowsPackageName, windowsPath } from "../server/app-identity.mjs";
 import { validAppPath as presetsValidAppPath, presetAppsFromCatalog, validPresetPolicy } from "../server/agent-presets.mjs";
 import { protectedAppReason, protectedPathReason } from "../server/agent-guard.mjs";
 
@@ -101,6 +101,46 @@ test("on Windows, a protected file is protected whatever its letters' case, on a
   assert.equal(protectedPathReason(String.raw`C:\Users\me\Documents\notes.txt`, options), null);
   assert.equal(protectedPathReason(String.raw`C:\Users\me\code\reach-notes\a.txt`, options), null, "a sibling folder isn't inside");
   assert.equal(protectedPathReason("notes.txt", options), "Give the file's full path.");
+});
+
+test("Windows names: device names whatever spaces end them, no hidden format characters", () => {
+  for (const file of [String.raw`C:\Tools\NUL .exe`, String.raw`C:\Tools\nul  .txt`, String.raw`C:\CON .d\notes.txt`, String.raw`C:\Tools\COM1 .exe`, String.raw`C:\Tools\aux .tar.gz`])
+    assert.equal(windowsPath(file), false, file);
+  assert.equal(validAppPath(String.raw`C:\Tools\NUL .exe`, win), false);
+  // Every format character (Cf), a line or paragraph separator, half a surrogate pair.
+  for (const hidden of ["\u00ad", "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u061c", "\u180e", "\u2029", "\ud800", "\udc00"]) {
+    assert.equal(windowsPath(String.raw`C:\Tools\no` + hidden + "tes.txt"), false, JSON.stringify(hidden));
+    assert.equal(validAppPath(String.raw`C:\Tools\ch` + hidden + "rome.exe", win), false, JSON.stringify(hidden));
+  }
+  // Names that merely contain a device name's letters are files.
+  for (const file of [String.raw`C:\Tools\nullable.txt`, String.raw`C:\Tools\console.exe`, String.raw`C:\Tools\com10.txt`, String.raw`C:\Users\me\Café\menu.pdf`])
+    assert.equal(windowsPath(file), true, file);
+});
+
+test("Windows paths and app names compare as Windows compares them: upper-cased, not lower-cased", () => {
+  assert.equal(windowsFold("ſ"), windowsFold("S"), "long s is S");
+  assert.equal(windowsFold("ı"), windowsFold("I"), "dotless i is I");
+  assert.equal(windowsFold("ΟΔΟΣ"), windowsFold("οδοσ"), "final and medial sigma are one letter");
+  assert.notEqual("ΟΔΟΣ".toLowerCase(), "οδοσ".toLowerCase(), "lower-casing alone keeps them apart");
+  const options = { protectedPaths: [String.raw`C:\Users\me\code\ΟΔΟΣ`], home: String.raw`C:\Users\me`, platform: "win32" };
+  for (const file of [String.raw`C:\Users\me\.ſsh\id_rsa`, String.raw`C:\Users\me\code\οδοσ\notes.txt`, String.raw`C:\Users\me\code\Οδος\notes.txt`])
+    assert.ok(protectedPathReason(file, options), file);
+  assert.ok(protectedAppReason({ id: String.raw`C:\Program Files\Bıtwarden\Bıtwarden.exe`, name: "" }, win), "dotless i");
+  assert.equal(protectedAppReason({ id: "/Applications/Bıtwarden.app", name: "" }, mac), null, "a Mac's checks are unchanged");
+});
+
+test("a Windows path is one file whatever prefix, trimmed dots or stream it's written with", () => {
+  const options = { protectedPaths: [String.raw`C:\Users\me\code\reach`], home: String.raw`C:\Users\me`, platform: "win32" };
+  for (const file of [String.raw`\\?\C:\Users\me\code\reach\server\index.mjs`, String.raw`\\.\C:\Users\me\code\reach\x`, String.raw`\??\C:\Users\me\code\reach\x`,
+    String.raw`\\localhost\c$\Users\me\code\reach\x`, String.raw`\\127.0.0.1\C$\Users\me\code\reach\x`, String.raw`\\?\UNC\localhost\c$\Users\me\code\reach\x`,
+    String.raw`C:\Users\me\code\reach.\x`, String.raw`C:\Users\me\code\reach. .\x`, String.raw`C:\Users\me\code\reach::$INDEX_ALLOCATION\x`,
+    String.raw`C:\Users\me\code\reach::$INDEX_ALLOCATION`, String.raw`C:\Users\me\code\reach\x::$DATA`, String.raw`C:\Users\me\.reach.\clients.json`, "C:/Users/me/code/reach/x"])
+    assert.ok(protectedPathReason(file, options), file);
+  assert.equal(windowsCanonicalPath(String.raw`\\?\C:\Users\Me\Code.\x::$DATA`), String.raw`c:\users\me\code\x`);
+  // A short (8.3) alias hides which folder is meant: refused, with how to fix it.
+  assert.match(protectedPathReason(String.raw`C:\Users\me\code\REACH~1\x`, options), /full name/);
+  assert.match(protectedPathReason(String.raw`C:\PROGRA~1\Tailscale\x`, options), /full name/);
+  assert.equal(protectedPathReason(String.raw`C:\Users\me\code\reach-notes\x`, options), null);
 });
 
 test("a Windows host takes Windows app ids in stored policies; a Mac never does", (t) => {

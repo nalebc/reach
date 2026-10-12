@@ -2,7 +2,7 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
 import { moneyRules } from "./money-sites.mjs";
-import { windowsAppId, windowsPackageName } from "./app-identity.mjs";
+import { windowsAppId, windowsCanonicalPath, windowsFold, windowsPackageName, windowsShortName } from "./app-identity.mjs";
 
 // What narrower presets keep off limits. Full control deliberately bypasses
 // these filters. One list, used by the owner's app picker, typed commands for
@@ -86,11 +86,13 @@ const lower = (value) => (typeof value === "string" ? value.normalize("NFKC").to
 export const mentionsReach = (value) => REACH_WORDS.some((word) => new RegExp(`(^|[^a-z])${word}([^a-z]|$)`).test(lower(value)));
 // The app's file name from its id, lowercased: a Mac bundle's name without
 // .app; on Windows an .exe's name without .exe, or a Store app's package name.
+// On Windows, names compare as Windows compares them (windowsFold).
+const folded = (value, platform) => platform === "win32" ? windowsFold(lower(value)) : lower(value);
 const appFile = (id, platform) => platform !== "win32"
   ? lower(id).split("/").at(-1)?.replace(/\.app$/, "") || ""
-  : windowsAppId(id) ? lower(windowsPackageName(id)) : lower(id).split(/[\\/]/).at(-1).replace(/\.(exe|app)$/, "");
+  : windowsAppId(id) ? folded(windowsPackageName(id), platform) : folded(id, platform).split(/[\\/]/).at(-1).replace(/\.(exe|app)$/, "");
 export function protectedAppReason(app, { platform = process.platform } = {}) {
-  const id = lower(app?.bundleId), name = lower(app?.name);
+  const id = folded(app?.bundleId, platform), name = folded(app?.name, platform);
   const file = appFile(app?.id, platform);
   const all = `${id} ${name} ${file}`;
   if (mentionsReach(all)) return "Reach and Tailscale are always protected.";
@@ -104,7 +106,7 @@ export function protectedAppReason(app, { platform = process.platform } = {}) {
 }
 const SHORT_TERMINAL_WORDS = new Set(["rio", "nova", "zed", "kitty", "hyper", "cmd", "wt", "wsl"]);
 export const terminalLikeApp = (app, { platform = process.platform } = {}) => {
-  const all = `${lower(app?.bundleId)} ${lower(app?.name)} ${lower(app?.id)}`;
+  const all = `${folded(app?.bundleId, platform)} ${folded(app?.name, platform)} ${folded(app?.id, platform)}`;
   // Short names only count as whole words ("Zed", not "Authorized"; "Rio", not "Portfolio").
   const tokens = new Set(all.split(/[^a-z0-9]+/).filter(Boolean));
   return guardData(platform).terminals.some((word) => SHORT_TERMINAL_WORDS.has(word) ? tokens.has(word) : all.includes(word));
@@ -173,6 +175,7 @@ const WINDOWS_DISK_COMMANDS = new Set(["vssadmin", "cipher", "format", "diskpart
 // Windows' security tools, opened from a command line.
 const WINDOWS_PROTECTED_PROGRAMS = new Set(["taskmgr", "regedit", "regedt32", "mmc", "gpedit", "credentialuibroker", "consent"]);
 const WINDOWS_DELETE = new Set(["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"]);
+const WINDOWS_SHORT_NAME = "Give the full name: a short name such as PROGRA~1 hides which folder is meant.";
 // Windows' own folders and every program's: the drive's root, Windows,
 // Program Files and ProgramData, by path or by their environment names.
 const WINDOWS_SYSTEM_PATH = /^(?:[a-z]:[\\/]?$|[a-z]:[\\/](?:windows|program files|program files \(x86\)|programdata)(?:[\\/]|$)|(?:%|\$\{?env:)(?:systemroot|windir|programfiles|programw6432|programdata))/i;
@@ -193,10 +196,7 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
   if (hosts.length && words(command).some((arg) => hosts.some((host) => host && commandHostSubject(lower(arg.text)).includes(lower(host)))))
     return "That's Reach's own address. The agent can't open Reach.";
   const lowered = command.normalize("NFKC").toLowerCase();
-  const canonicalPath = (value) => {
-    const resolved = paths.resolve(value);
-    return windows ? resolved.toLowerCase() : resolved;
-  };
+  const canonicalPath = (value) => windows ? windowsCanonicalPath(value) : paths.resolve(value);
   const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonicalPath);
   const protectedPath = (value) => {
     const expanded = value.replace(/^~(?=[\\/]|$)/, home || "~").replace(/^\$\{?HOME\}?(?=[\\/]|$)/, home || "~");
@@ -279,10 +279,11 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
 /** A file an agent may never open or reveal: Reach's own, the browser profiles, keychains, shell histories. */
 export function protectedPathReason(target, { protectedPaths = [], home = "", platform = process.platform } = {}) {
   // Windows paths are Windows' (whatever this host), and one file whatever
-  // the letters' case.
+  // the letters' case, prefix or trimmed dots (windowsCanonicalPath).
   const paths = platform === "win32" ? path.win32 : path.posix;
-  const canonical = (value) => platform === "win32" ? paths.resolve(value).toLowerCase() : paths.resolve(value);
+  const canonical = (value) => platform === "win32" ? windowsCanonicalPath(value) : paths.resolve(value);
   if (typeof target !== "string" || !paths.isAbsolute(target)) return "Give the file's full path.";
+  if (platform === "win32" && windowsShortName(target)) return WINDOWS_SHORT_NAME;
   const resolved = canonical(target), separators = resolved.replace(/\\/g, "/");
   const roots = protectedPaths.filter((root) => typeof root === "string" && paths.isAbsolute(root)).map(canonical);
   if (SECRET_PATH.test(separators) || PRIVATE_LIBRARY.test(separators) || (platform === "win32" && WINDOWS_PRIVATE_DATA.test(separators)) ||

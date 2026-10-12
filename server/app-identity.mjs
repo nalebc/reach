@@ -16,15 +16,40 @@ export const macAppPath = (value) =>
   !macControls(value) && !value.includes("\\") && path.posix.normalize(value) === value;
 
 // Windows names hold no control characters at all (tab and newline included),
-// and nothing here may hide or reorder text.
-const windowsControls = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
+// nothing that hides or reorders text (every format character: direction
+// marks, zero-width joiners and spaces, soft hyphens, the BOM), no line or
+// paragraph separators and no half of a surrogate pair.
+export const windowsHidden = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 // Device names: NUL, CON, COM1… open a device whatever folder or extension
-// they're given.
+// they're given, and whatever spaces end the name before its extension
+// ("NUL .exe" is NUL).
 const RESERVED = /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3]|conin\$|conout\$)$/i;
+const deviceName = (name) => RESERVED.test(name.split(".")[0].replace(/[ .]+$/, ""));
+// One spelling per name, as Windows compares them: it upper-cases each
+// letter (ſ is S, ı is I, ς and σ are Σ), where lower-casing alone keeps
+// them apart. Lower-cased after, to meet lists written in lower case.
+export const windowsFold = (value) => String(value).toUpperCase().toLowerCase();
+/**
+ * A Windows path as the one file it names, for comparing with protected
+ * folders: a device or long-path prefix (\\?\, \\.\, \??\) and an admin share
+ * (\\localhost\c$) read as the drive; each name without the dots and spaces
+ * Windows trims, or a stream (:$DATA); letters folded (windowsFold).
+ */
+export function windowsCanonicalPath(value) {
+  let text = String(value).replace(/\//g, "\\");
+  text = text.replace(/^\\\\[?.]\\(unc\\)?|^\\\?\?\\(unc\\)?/i, (_, a, b) => (a || b ? "\\\\" : ""));
+  text = text.replace(/^\\\\[^\\]+\\([a-z])\$(?=\\|$)/i, "$1:");
+  const resolved = path.win32.resolve(text);
+  const drive = /^[a-z]:/i.test(resolved) ? resolved.slice(0, 2) : "";
+  const names = resolved.slice(drive.length).split("\\").map((name) => name.replace(/:.*$/s, "").replace(/[. ]+$/, "") || name);
+  return windowsFold(drive + names.join("\\"));
+}
+/** A short (8.3) alias in a Windows path: PROGRA~1, another name for a folder that would dodge a check by name. */
+export const windowsShortName = (value) => String(value).split(/[\\/]/).some((name) => /~\d/.test(name));
 
 /** An absolute Windows path, exactly as Windows keeps it: one name for one file. */
 export function windowsPath(value) {
-  if (typeof value !== "string" || value.length > 4096 || windowsControls.test(value)) return false;
+  if (typeof value !== "string" || value.length > 4096 || windowsHidden.test(value)) return false;
   // A drive letter, then the path: never a share (\\server\share), a device
   // or long-path prefix (\\?\, \\.\), a drive-relative path (C:notes) or the
   // drive itself.
@@ -38,7 +63,7 @@ export function windowsPath(value) {
   // name for the same file); no device name; no 8.3 short alias (PROGRA~1,
   // another name that would dodge a check by name).
   return value.slice(3).split("\\").every((name) =>
-    name && name !== "." && name !== ".." && !/^\s|[. ]$/.test(name) && !RESERVED.test(name.split(".")[0]) && !/~\d/.test(name));
+    name && name !== "." && name !== ".." && !/^\s|[. ]$/.test(name) && !deviceName(name) && !/~\d/.test(name));
 }
 export const windowsExePath = (value) => windowsPath(value) && /\.exe$/i.test(value);
 
