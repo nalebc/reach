@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +13,11 @@ import { createTailscaledPeerCheck } from "../server/tailscaled-peer.mjs";
 // service in test/windows-tailscaled-peer.test.mjs.
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The check's own timers never hold Reach open (unref'd). These tests wait on
+// them, and on Windows nothing else keeps Node's loop alive meanwhile: the
+// test runner saw it empty and failed them (Oct 12, the windows-2025 lane).
+const keepAlive = setInterval(() => {}, 1000);
+after(() => clearInterval(keepAlive));
 // A helper process: what it was asked, and lines it says.
 function fakeChild() {
   const child = new EventEmitter();

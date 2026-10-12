@@ -269,7 +269,8 @@ test("two phones confirming the same install at once: only one terminal", async 
     assert.equal(body.lead, undefined); // shell text stays on the Mac
     assert.equal(created.length, 1);
     assert.match(created[0].command, process.platform === "win32"
-      ? /^\$ErrorActionPreference = 'Stop'; try \{ synthetic-installer-never-run; exit 0/
+      // The program's own exit code (only Claude Code's irm | iex installer says 0).
+      ? /^\$ErrorActionPreference = 'Stop'; try \{ synthetic-installer-never-run; exit \$LASTEXITCODE/
       : /^set -o pipefail; export PATH='\/x'/);
     // Its terminal still runs: a third confirm waits too; showing the plan doesn't.
     assert.equal((await install({ confirm: true })).status, 409);
