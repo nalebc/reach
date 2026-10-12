@@ -37,6 +37,7 @@ import { useBrowserApprovals } from "./browser-approvals";
 import { useAgentAdmissions } from "./agent-admissions";
 import { useServiceAccess } from "./service-access";
 import { usePermissionRequests } from "./permission-requests";
+import { useWaitingPeople } from "./waiting-people";
 import { useBellNeeds } from "./Notifications";
 import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
@@ -425,9 +426,11 @@ export default function HomeLive({
   );
   const serviceAccess = useServiceAccess(peer, features.owner && visible, connections[active]?.changes);
   const permissionRequests = usePermissionRequests(peer, features.owner && visible);
+  const waitingPeople = useWaitingPeople(peer, features.owner && visible, connections[active]?.changes);
   const bellNeeds = useBellNeeds(peer);
   const needItems: NeedItem[] = [
     ...bellNeeds,
+    ...waitingPeople.items,
     ...agentAdmissions.items,
     ...browserApprovals.items,
     ...serviceAccess.items,

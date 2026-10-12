@@ -43,7 +43,7 @@ import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
-import { controlIn, isPausedMessage, pausedIn } from "./pause";
+import { controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
 import "./settings-list.css";
@@ -168,6 +168,8 @@ export default function Screen({
   // both come back (control only if it was on).
   const paused = pausedIn(changes, device);
   const controlKey = controlIn(changes);
+  // Someone else on the Mac now (a person in control, an agent acting).
+  const using = usingIn(changes);
   useEffect(() => {
     setHolder((was) => {
       if (was) setError("");
@@ -822,14 +824,18 @@ export default function Screen({
           {/* Every control in one small bar floating at the bottom center:
               Control, keyboard, paste, fullscreen, and one menu (keys, apps, options). */}
           <div className="simple-screen-dock screen-bar-dock">
-            {(feedback || (control && !input.ready)) && (
+            {(feedback || (control && !input.ready)) ? (
               <span className="simple-screen-caption" role="status">
                 {feedback ||
                   (input.reconnecting
                     ? "Reconnecting controls…"
                     : "Connecting controls…")}
               </span>
-            )}
+            ) : !control && using ? (
+              <span className="simple-screen-caption" role="status">
+                {using} is using the Mac
+              </span>
+            ) : null}
             <div
               className="screen-bar"
               role="toolbar"

@@ -11,6 +11,7 @@ import {
   guestInvitationId,
   savedGuestSession,
   GuestBar,
+  WaitForOwner,
   type GuestSession,
 } from "./guest-session";
 import { keepDoorKey } from "./door-key";
@@ -142,7 +143,9 @@ function GuestRoot() {
   return (
     <>
       <GuestBar session={session} onEnd={end} />
-      <GuestWorkspace peer={session.peers[0]} onEnd={end} />
+      <WaitForOwner peer={session.peers[0]}>
+        <GuestWorkspace peer={session.peers[0]} onEnd={end} />
+      </WaitForOwner>
     </>
   );
 }

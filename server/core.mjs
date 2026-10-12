@@ -1308,8 +1308,25 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       throw fail(410, "This invitation expired before it was approved.");
     return null;
   }
-  function redeemGuest(invitation, identity) {
-    return redeemInvitation(invitation, identity);
+  // hold: an agent has Full control or Apps right now (the host guard). The
+  // person comes in, bound to their device, and waits for the owner's Allow
+  // (allowPerson) before anything else: an agent that saw the link on the
+  // Mac's screen can't use it to step outside its own limits.
+  function redeemGuest(invitation, identity, { hold = false } = {}) {
+    return redeemInvitation(invitation, identity, undefined, false, hold);
+  }
+  // The owner's Allow for a person who came in while an agent had the Mac.
+  function allowPerson(clientId) {
+    let result;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId && c.kind === "guest");
+      if (!client || client.macEntry?.status !== "waiting" || !(client.expiresAt > Date.now()))
+        throw fail(404, "This person isn't waiting any more.");
+      client.macEntry = { ...client.macEntry, status: "allowed", allowedAt: new Date().toISOString() };
+      result = { id: client.id, name: client.name };
+      return latest;
+    });
+    return result;
   }
   function redeemFunnelBrowser(invitation, keyThumbprint) {
     if (!validBrowserBinding(keyThumbprint))
@@ -1387,7 +1404,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     });
     return result;
   }
-  function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false) {
+  function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false, hold = false) {
     const funnel = keyThumbprint !== undefined;
     if (
       typeof invitation !== "string" ||
@@ -1445,12 +1462,19 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
           ...(identity.tagged ? { tagged: true } : {}),
         };
       delete client.inviteExpiresAt;
+      if (hold && client.kind === "guest")
+        client.macEntry = {
+          status: "waiting",
+          requestedAt: new Date().toISOString(),
+          ...(typeof identity?.nodeName === "string" ? { nodeName: identity.nodeName.slice(0, 160) } : {}),
+        };
       result = {
         token,
         clientId: client.id,
         expiresAt: client.expiresAt,
         kind: client.kind,
         scopes: client.scopes,
+        ...(client.macEntry?.status === "waiting" ? { waiting: true } : {}),
       };
       return latest;
     });
@@ -1975,6 +1999,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     inviteBrowser,
     changeAccess,
     redeemGuest,
+    allowPerson,
     redeemFunnelBrowser,
     reconnectFunnelBrowser,
     reopenBrowserInvitation,
@@ -2000,7 +2025,9 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
                   ? "expired"
                   : inviteHash
                     ? "invited"
-                    : "accepted",
+                    : rest.macEntry?.status === "waiting"
+                      ? "waiting"
+                      : "accepted",
             }
           : {}),
       })),

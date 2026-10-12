@@ -101,6 +101,15 @@ test("while the Mac shows one of its own dialogs, only the owner's own devices c
   dialog = false;
   control.acquire(me, false);
   assert.equal(control.acquire(ali, true).enabled, true);
+  // A person with full access answers the Mac's dialogs like you (Oct 11),
+  // and takes control from a limited guest; a limited guest can't take it back.
+  const aya = { id: "aya", name: "Aya", kind: "guest", scopes: ["admin", "screen"] };
+  dialog = true;
+  assert.equal(control.acquire(aya, true, { takeover: true }).enabled, true);
+  control.check(aya);
+  assert.deepEqual(control.holder(), { clientId: "aya", name: "Aya", guest: false, person: true });
+  dialog = false;
+  assert.throws(() => control.acquire(ali, true, { takeover: true }), (e) => e.status === 409 && e.canTakeOver === false);
 });
 
 test("invalid pointer, scroll and keyboard payloads never reach native input", async () => {
@@ -169,6 +178,13 @@ test("screen HTTP endpoints require viewing plus a separate per-client control g
       (await call("/api/screen/control", agent, { enabled: true })).status,
       403,
     );
+    // The whole, unfiltered picture is yours (and full-access people's):
+    // someone invited to watch gets the live screen without private windows.
+    const watch = reach.auth.inviteGuest({ name: "Watcher", ttlSeconds: 600, screen: "view", apps: "all" });
+    const watcher = reach.auth.redeemGuest(watch.invitation);
+    const refused = await call("/api/screen", watcher);
+    assert.equal(refused.status, 403);
+    assert.match((await refused.json()).error, /live screen/);
     assert.equal(
       (await call("/api/screen/control", owner, { enabled: true })).status,
       200,

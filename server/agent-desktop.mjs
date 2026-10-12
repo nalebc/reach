@@ -407,7 +407,12 @@ export function createAgentDesktop(config, {
   const answer = (value) => { if (!value || value.error) throw refusal(value || {}); return value; };
   const checkInputAllowed = (client) => {
     if (pausedAgents.has(client.id)) throw Object.assign(fail(409, "The owner paused this agent. It can look, not touch, until they resume it."), { kind: "paused" });
-    if (phoneControls()) throw Object.assign(fail(409, "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
+    // A person controlling from their phone: you, or someone you invited
+    // (the name it gives). The agent waits until they let go.
+    const person = phoneControls();
+    if (person) throw Object.assign(fail(409, typeof person === "string"
+      ? `${person} is controlling the Mac. The agent waits until they let go.`
+      : "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
     if (automationControls()) throw Object.assign(fail(409, "A chat is updating its desktop app. Wait for that operation to finish, then check the screen."), { kind: "busy", holder: "Desktop automation", retryInMs: 1000 });
   };
   // One agent at a time on the Mac. Holding it is short: each action extends it.
@@ -830,6 +835,15 @@ export function createAgentDesktop(config, {
         pendingInputs.delete(pending);
         finish();
       }
+    },
+    /** The agent that acted on the Mac most recently (within 20 s, not paused), by name, or "": shown on every phone watching the screen. */
+    usingNow(windowMs = 20_000) {
+      const holder = currentHolder();
+      if (holder) return holder.name;
+      let latest = null;
+      for (const [id, entry] of activity)
+        if (!pausedAgents.has(id) && entry.at > now() - windowMs && (!latest || entry.at > latest.at)) latest = entry;
+      return latest ? String(latest.name || "An agent").slice(0, 80) : "";
     },
     /** Who holds the Mac and what each agent last did, for the owner. */
     activity() {
