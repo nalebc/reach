@@ -36,6 +36,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
@@ -2787,15 +2788,20 @@ export async function createReach(overrides = {}) {
       req.reauthorize();
       return res.json({ text: data.toString("utf8"), sha256: hash(data) });
     }
-    const file = resolve(req.query.root, req.query.path || "", req.client);
-    const stat = await fsp.stat(file);
-    if (!stat.isFile()) throw fail(400, "Choose a file.");
-    if (stat.size > 1024 * 1024)
+    // Opened once and proven to be the file checked (confined-file.mjs).
+    const place = () => resolve(req.query.root, req.query.path || "", req.client);
+    const { handle, size } = await openConfined(place(), fs.constants.O_RDONLY, place);
+    let data;
+    try {
+      data = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+    } finally {
+      await handle.close();
+    }
+    if (!data)
       throw fail(
         413,
         "This file is too large to preview. Download it instead.",
       );
-    const data = await fsp.readFile(file);
     if (data.includes(0))
       throw fail(415, "Download this file to open it in a compatible app.");
     res.json({ text: data.toString("utf8"), sha256: hash(data) });
@@ -2835,7 +2841,7 @@ export async function createReach(overrides = {}) {
       .set("Cache-Control", "no-store")
       .json({ icons: Object.fromEntries(types.map((t, i) => [t, found[i]])) });
   });
-  app.put("/api/files/text", (req, res) => {
+  app.put("/api/files/text", async (req, res) => {
     if (
       typeof req.body?.text !== "string" ||
       Buffer.byteLength(req.body?.text) > 128 * 1024 ||
@@ -2846,24 +2852,26 @@ export async function createReach(overrides = {}) {
         400,
         "Send text up to 128 KiB and the sha256 from the last read.",
       );
-    const file = resolve(req.query.root, req.query.path || "", req.client);
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024)
-      throw fail(400, "Choose a text file up to 1 MiB.");
-    const previous = fs.readFileSync(file);
-    if (previous.includes(0))
-      throw fail(415, "Binary files cannot be edited as text.");
-    if (hash(previous) !== req.body?.sha256)
-      throw fail(409, "This file changed. Read it again before writing.");
-    const temporary = path.join(path.dirname(file), `.reach-edit-${id()}`);
+    // Read, compared and written through one handle, proven to be the file
+    // checked (confined-file.mjs): a link or another file put in its place
+    // meanwhile is never written. Written in place, so its links and
+    // permissions stay as they were.
+    const place = () => resolve(req.query.root, req.query.path || "", req.client);
+    const file = place();
+    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
     try {
-      fs.writeFileSync(temporary, req.body?.text, {
-        flag: "wx",
-        mode: stat.mode & 0o777,
-      });
-      fs.renameSync(temporary, file);
+      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
+      if (previous.includes(0))
+        throw fail(415, "Binary files cannot be edited as text.");
+      if (hash(previous) !== req.body?.sha256)
+        throw fail(409, "This file changed. Read it again before writing.");
+      const text = Buffer.from(req.body.text, "utf8");
+      await handle.truncate(0);
+      await handle.write(text, 0, text.length, 0);
+      await handle.sync();
     } finally {
-      fs.rmSync(temporary, { force: true });
+      await handle.close();
     }
     record("file", `Updated ${path.basename(file)}`);
     res.json({ ok: true, sha256: hash(req.body?.text) });

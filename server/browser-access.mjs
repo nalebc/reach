@@ -2,6 +2,7 @@ import { validateBrowserScript } from "./browser-scripts.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
 import { agentErrorDetails } from "./agent-transport.mjs";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -20,6 +21,7 @@ import { fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { describeScreen, normalizeAction } from "./agent-desktop.mjs";
 import { createObservations, observationOptions, waitOptions, waitForScreen } from "./desktop-observation.mjs";
 import { actionWords } from "./agent-actions.mjs";
+import { openConfined, readUpTo } from "./confined-file.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
 // New Reach APIs do not automatically become available to browser agents.
@@ -1156,15 +1158,32 @@ export function browserAccessRoutes(
       await fs.unlink(target);
     } else if (body.op === "write") {
       if (existing && !existing.isFile()) throw fail(409, "That path is not a file.");
-      const handle = await fs.open(target, "w", 0o644);
-      try { await handle.writeFile(body.content, "utf8"); } finally { await handle.close(); }
+      // Opened once and proven to be the file checked before anything is
+      // cut or written (confined-file.mjs): a link put in its place meanwhile
+      // is never followed.
+      const { handle } = await openConfined(target, constants.O_WRONLY | constants.O_CREAT, () => resolve(body.root, body.path, client));
+      try {
+        const data = Buffer.from(body.content, "utf8");
+        await handle.truncate(0);
+        await handle.write(data, 0, data.length, 0);
+      } finally { await handle.close(); }
     } else {
       const destination = resolve(body.root, body.to, client, { allowMissing: true });
       if (!existing?.isFile()) throw fail(404, "Choose an existing file to copy.");
       if (existing.size > 25 * 1048576) throw fail(403, "Choose a file no larger than 25 MiB.");
       const there = await fs.lstat(destination).catch(() => null);
       if (there?.isSymbolicLink() || there?.isDirectory()) throw fail(409, "Choose a file name for the copy.");
-      await fs.copyFile(target, destination);
+      // Both ends opened once and proven, as a write is.
+      const from = await openConfined(target, constants.O_RDONLY, () => resolve(body.root, body.path, client));
+      try {
+        const data = await readUpTo(from.handle, 25 * 1048576);
+        if (!data) throw fail(403, "Choose a file no larger than 25 MiB.");
+        const to = await openConfined(destination, constants.O_WRONLY | constants.O_CREAT, () => resolve(body.root, body.to, client), { mode: from.mode & 0o777 });
+        try {
+          await to.handle.truncate(0);
+          await to.handle.write(data, 0, data.length, 0);
+        } finally { await to.handle.close(); }
+      } finally { await from.handle.close(); }
     }
     record("agent", `${client.name} changed a file (${body.op})`);
     actions(client, { kind: "file", text: actionWords("file", body) });
