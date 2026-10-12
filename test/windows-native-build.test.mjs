@@ -18,8 +18,10 @@ const env = { SystemRoot: String.raw`C:\Windows` };
 const fx64 = String.raw`C:\Windows\Microsoft.NET\Framework64\v4.0.30319`;
 const fx86 = String.raw`C:\Windows\Microsoft.NET\Framework\v4.0.30319`;
 const win = { platform: "win32", env };
+// With a space, as most PCs' data folders have (C:\Users\First Last\…): the
+// real build then proves csc's arguments are quoted.
 const folder = async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-windows-build-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach windows build-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 };
