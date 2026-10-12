@@ -1,6 +1,7 @@
 import { object, readOnlyRpc, validateCodexResult, uncertainDelivery } from "./agent-sessions/compatibility.mjs";
 import { describePrompt, answerFor } from "./agent-sessions/codex-live.mjs";
 import { findCodexExecutable } from "./capabilities.mjs";
+import { spawnable } from "./agent-cli.mjs";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import path from "node:path";
@@ -50,7 +51,8 @@ export class Codex {
     const executable = await findCodexExecutable();
     if (!executable)
       throw fail(503, "Install Codex CLI and sign in on this computer.");
-    const child = spawn(executable, ["app-server", "--listen", "stdio://"], {
+    const run = spawnable(executable);
+    const child = spawn(run.file, [...run.args, "app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

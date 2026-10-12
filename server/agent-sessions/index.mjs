@@ -15,6 +15,7 @@ import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { findWindowsCli } from "../agent-cli.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
@@ -105,14 +106,18 @@ let claudeFound = null;
 // once when the phone checks again (forgetClaudeMiss).
 let claudeMissedAt = 0;
 const claudeMissMs = 30000;
-export function locateClaude(run = exec, { now = Date.now } = {}) {
+export function locateClaude(run = exec, { now = Date.now, platform = process.platform, env = process.env, home = os.homedir() } = {}) {
   // Gone from where it was (reinstalled elsewhere, an update that moved
   // it): looked for again rather than sent to a missing file.
   if (claudeFound && !fs.existsSync(claudeFound)) claudeAt = claudeFound = null;
   if (!claudeAt && now() - claudeMissedAt < claudeMissMs) return Promise.resolve(null);
-  claudeAt ??= run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
-    .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
-    .then((found) => (found?.startsWith("/") ? found : null))
+  claudeAt ??= (platform === "win32"
+    // No login shell to ask on Windows: PATH and the installers' folders,
+    // as Node can start it, never npm's sh shim (agent-cli.mjs).
+    ? findWindowsCli("claude", { env, home })
+    : run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
+        .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
+        .then((found) => (found?.startsWith("/") ? found : null)))
     .catch(() => null)
     .then((found) => {
       if (!found) claudeAt = null; // look again later

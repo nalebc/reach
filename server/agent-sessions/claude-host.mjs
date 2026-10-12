@@ -17,7 +17,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sweepAtRest } from "./at-rest.mjs";
-import { claudeEnvironment } from "./claude-environment.mjs";
+import { claudeEnvironment, windowsGitBash } from "./claude-environment.mjs";
+import { spawnable } from "../agent-cli.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code's permission modes as it lists them in --help, in the order and
@@ -292,6 +293,9 @@ export function createClaudeHost({
   rewindFile = null,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Git Bash, without which Claude Code on Windows won't start
+  // (claude-environment.mjs); only a real Windows Claude Code needs it.
+  gitBash = spawn === spawnChild && platform === "win32" ? () => windowsGitBash(env) : () => true,
   // More flags for a session on every launch (a team's lead: its tools and
   // standing instructions, teams.mjs); false when it must have none any more.
   extraArgs = () => null,
@@ -648,6 +652,8 @@ export function createClaudeHost({
     authorize();
     if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
+    // Said before the check, which would only fail as "couldn't check".
+    if (!gitBash()) throw bad(`Claude Code needs Git Bash on this ${computerWord(platform)}. Install Git for Windows, then try again.`, 503);
     const compatible = await check(claude);
     authorize();
     if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
@@ -688,7 +694,8 @@ export function createClaudeHost({
         return hooked === false ? [] : hooked || s.settings.extra || [];
       })()),
     ];
-    const proc = spawn(claude, args, { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
+    const cli = spawnable(claude);
+    const proc = spawn(cli.file, [...cli.args, ...args], { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
     // Starting a preview/helper does not consume a pending continuation.
     // It is cleared only after its user message is accepted below.
@@ -1068,8 +1075,9 @@ export function createClaudeHost({
       if (!cli) return [];
       const key = binaryKey(cli);
       if (modeList?.key === key) return modeList.modes;
+      const run = spawnable(cli);
       const help = await new Promise((resolve) =>
-        execFile(cli, ["--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
+        execFile(run.file, [...run.args, "--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
           resolve(String(stdout || "")),
         ),
       );
@@ -1091,8 +1099,9 @@ export function createClaudeHost({
       const key = binaryKey(claude);
       const kept = catalogs.get(where);
       if (kept && kept.key === key && now() - kept.at < 30 * 60 * 1000) return kept.value;
+      const cli = spawnable(claude);
       const value = await new Promise((resolve) => {
-        const proc = spawn(claude, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
+        const proc = spawn(cli.file, [...cli.args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
           cwd: where,
           env: clean,
           stdio: ["pipe", "pipe", "pipe"],

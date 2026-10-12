@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { codexNative, findWindowsCli } from "./agent-cli.mjs";
 
 const exec = promisify(execFile);
 
@@ -52,7 +53,6 @@ export async function findCodexExecutable({
   run = exec,
 } = {}) {
   const windows = platform === "win32";
-  const paths = windows ? path.win32 : path;
   const usable = async (file) => {
     try {
       await access(file, windows ? constants.F_OK : constants.X_OK);
@@ -64,26 +64,20 @@ export async function findCodexExecutable({
   const command = env.REACH_CODEX || "codex";
   if (!env.REACH_CODEX && platform === "darwin")
     for (const file of await bundled({ home })) if (await usable(file)) return file;
+  // Windows: what Node can start without a shell, never npm's extensionless
+  // sh shim; an npm install as its native codex.exe (agent-cli.mjs).
+  if (windows)
+    return findWindowsCli(command, { env, home, isFile: usable, native: (script) => codexNative(script, { isFile: usable }) });
   const candidates = /[/\\]/.test(command)
     ? [command]
     : (env.PATH || "")
-        .split(windows ? ";" : ":")
+        .split(":")
         .filter(Boolean)
-        .flatMap((dir) => {
-          const file = paths.join(dir, command);
-          return windows && !paths.extname(command)
-            ? [
-                file,
-                ...(env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
-                  .split(";")
-                  .map((ext) => file + ext.toLowerCase()),
-              ]
-            : [file];
-        });
+        .map((dir) => path.join(dir, command));
   for (const file of candidates) if (await usable(file)) return file;
-  if (!env.REACH_CODEX && !windows) {
+  if (!env.REACH_CODEX) {
     for (const dir of extraPaths) {
-      const file = paths.join(dir, "codex");
+      const file = path.join(dir, "codex");
       if (await usable(file)) return file;
     }
     // Services and GUI launches often inherit less PATH than Terminal. npm
@@ -91,7 +85,7 @@ export async function findCodexExecutable({
     try {
       const { stdout } = await run(env.SHELL || (platform === "darwin" ? "/bin/zsh" : "/bin/sh"), ["-lc", "command -v codex"], { env, timeout: 5000, maxBuffer: 64 * 1024 });
       const file = stdout.trim();
-      if (paths.isAbsolute(file) && !/[\0\r\n]/.test(file) && await usable(file)) return file;
+      if (path.isAbsolute(file) && !/[\0\r\n]/.test(file) && await usable(file)) return file;
     } catch { /* A missing command or broken shell is an unavailable tool. */ }
   }
   return null;

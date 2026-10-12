@@ -11,6 +11,7 @@ import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
 import { createClaudeAccountUsage } from "./account-usage.mjs";
 import { claudeEnvironment } from "./claude-environment.mjs";
+import { spawnable } from "../agent-cli.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -276,7 +277,8 @@ export function createClaudeSessions({
     } catch (e) {
       const found = e?.code === "ENOENT" && locateCli ? await locateCli() : null;
       if (!found) throw e;
-      return run(found, args, options);
+      const where = spawnable(found);
+      return run(where.file, [...where.args, ...args], options);
     }
   };
   function cleanEnv() {

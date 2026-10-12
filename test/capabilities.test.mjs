@@ -137,7 +137,9 @@ test("Chat stays in an owner's navigation without any agent; a disabled screen s
 test("Codex detection inspects executable permissions, honours overrides, and caches without spawning", async (t) => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "reach-tools-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
-  const executable = path.join(tmp, "codex");
+  // On Windows an extensionless codex is npm's sh shim, never taken
+  // (windows-agent-cli.test.mjs): the CLI there is codex.exe.
+  const executable = path.join(tmp, process.platform === "win32" ? "codex.exe" : "codex");
   await fs.writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const options = { platform: process.platform === "win32" ? "win32" : "linux", env: { PATH: tmp }, home: tmp, extraPaths: [], run: async () => ({ stdout: "" }) };
   assert.equal(await findCodexExecutable(options), executable);

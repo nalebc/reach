@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { spawnable } from "../agent-cli.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { trustedSocket } from "./trusted-socket.mjs";
 
@@ -57,7 +58,8 @@ export function codexDefaults(home = process.env.CODEX_HOME || path.join(os.home
 // and its catalog then lacks newer models the Codex app offers.
 export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
   return new Promise((resolve, reject) => {
-    const child = start(file, ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+    const cli = spawnable(file);
+    const child = start(cli.file, [...cli.args, "app-server"], { stdio: ["pipe", "pipe", "ignore"] });
     let buffer = "";
     // Whole characters: a chunk can end inside one (a model's description).
     child.stdout.setEncoding("utf8");
@@ -174,7 +176,8 @@ export function createCodexDaemon({
     if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503, code: "AGENT_NOT_INSTALLED" });
     const report = await compatibility();
     if (!["available", "degraded"].includes(report.status)) throw compatibilityError("codex", "CLI");
-    const { stdout } = await run(codex, ["app-server", "daemon", "start"], {
+    const cli = spawnable(codex);
+    const { stdout } = await run(cli.file, [...cli.args, "app-server", "daemon", "start"], {
       timeout: 20000,
       maxBuffer: 65536,
     });
