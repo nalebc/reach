@@ -163,7 +163,7 @@ test("Codex's sub-agents come from its own collab items, with their reported sta
 test("the phone shows each sub-agent where the chat started it, and how many still run", async () => {
   const dom = await startDom();
   try {
-    const { SubagentCard, SubagentStrip } = await dom.load("/src/Subagents.tsx");
+    const { SubagentCard, SubagentBadge } = await dom.load("/src/Subagents.tsx");
     const R = dom.React;
     const agents = [
       { id: "a2", toolUseId: "toolu_2", name: "Fix macOS", type: "general-purpose", background: true, status: "running", activity: "Reading platform.mjs", result: "", startedAt: 0, updatedAt: 0 },
@@ -173,26 +173,31 @@ test("the phone shows each sub-agent where the chat started it, and how many sti
       R.createElement(
         "div",
         null,
-        R.createElement(SubagentStrip, { agents }),
+        R.createElement(SubagentBadge, { agents }),
         R.createElement(SubagentCard, { item: { id: "toolu_1", role: "tool", kind: "agent", text: "Audit Claude", background: true }, agent: agents[1] }),
         R.createElement(SubagentCard, { item: { id: "toolu_2", role: "tool", kind: "agent", text: "Fix macOS", background: true }, agent: agents[0] }),
       ),
     );
     const c = view.container;
-    const head = c.querySelector(".sa-strip-head");
-    assert.match(head.textContent, /1 agent running/);
-    assert.match(head.textContent, /Reading platform\.mjs/);
-    // Open: every agent with its status.
-    dom.update(() => head.click());
+    // A small sign with how many run; the list only on a tap.
+    const badge = c.querySelector(".sa-badge");
+    assert.equal(badge.getAttribute("aria-label"), "1 agent running");
+    assert.equal(badge.querySelector("small").textContent, "1");
+    assert.equal(c.querySelector(".sa-menu"), null);
+    dom.update(() => badge.click());
     await settle();
-    assert.deepEqual([...c.querySelectorAll(".sa-strip-list .sa-status")].map((s) => s.textContent), ["Running", "Done"]);
-    // A finished one opens to what it found; a running one says what it's doing.
+    assert.deepEqual([...c.querySelectorAll(".sa-menu .sa-strip-list strong")].map((s) => s.textContent), ["Fix macOS"]);
+    assert.match(c.querySelector(".sa-menu").textContent, /Reading platform\.mjs/);
+    // Each card is one quiet line: no details until it's opened.
+    assert.equal(c.querySelector("#subagent-toolu_2").textContent, "Fix macOS");
     const done = c.querySelector("#subagent-toolu_1 .sa-card-head");
     dom.update(() => done.click());
     await settle();
     assert.match(c.querySelector("#subagent-toolu_1 .sa-result").textContent, /Found 3 problems/);
-    assert.match(c.querySelector("#subagent-toolu_2").textContent, /Agent · background · Reading platform\.mjs/);
-    assert.equal(c.querySelector("#subagent-toolu_2 .sa-card-head").disabled, true);
+    const running = c.querySelector("#subagent-toolu_2 .sa-card-head");
+    dom.update(() => running.click());
+    await settle();
+    assert.match(c.querySelector("#subagent-toolu_2").textContent, /Agent · background · Running · Reading platform\.mjs/);
     await view.unmount();
     assert.deepEqual(dom.errors, []);
   } finally {

@@ -1,12 +1,7 @@
-/* Sub-agents a chat started: a card where it started each, a strip above. */
+/* Sub-agents a chat started: one quiet line where it started each (as a
+   run of commands), a small sign with how many in the header. */
 .sa-card {
-  margin: 6px 0;
-  border-radius: 14px;
-  background: rgb(255 255 255 / 0.045);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
-}
-.sa-card.running {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
+  margin: 4px 0;
 }
 .sa-card-head,
 .sa-strip-head,
@@ -22,21 +17,43 @@
   text-align: left;
 }
 .sa-card-head {
-  min-height: 52px;
-  padding: 8px 12px;
+  gap: 6px;
+  width: auto;
+  max-width: 100%;
+  padding: 2px 0;
+  color: var(--as-muted, #93a096);
+  font-size: 14px;
 }
-.sa-card-head:disabled {
-  cursor: default;
-  opacity: 1;
+.sa-card.running .sa-card-head > svg:first-child {
+  color: var(--lime, #b9efd4);
 }
-.sa-icon {
-  display: grid;
+.sa-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sa-word {
   flex: none;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: rgb(255 255 255 / 0.08);
+  font-size: 12px;
+  font-style: normal;
+}
+.sa-word.failed {
+  color: #f1a08d;
+}
+.sa-word.quiet {
+  color: #f0c46b;
+}
+.sa-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0 6px 20px;
+}
+.sa-meta {
+  color: var(--as-muted, #93a096);
+  font-size: 12.5px;
 }
 .sa-text {
   display: flex;
@@ -58,35 +75,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sa-status {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 0.07);
-  color: var(--muted, #93a096);
-  font-size: 12px;
-  font-weight: 600;
-}
-.sa-status.running {
-  background: color-mix(in srgb, var(--lime, #b9efd4) 14%, transparent);
-  color: var(--lime, #b9efd4);
-}
-.sa-status.done {
-  color: #9fe3bb;
-}
-.sa-status.failed {
-  color: #f1a08d;
-}
-.sa-status.quiet {
-  color: #f0c46b;
-}
 .sa-result {
   max-height: 50vh;
   overflow: auto;
-  padding: 0 12px 12px 52px;
   font-size: 14px;
 }
 .sa-strip {
@@ -95,9 +86,6 @@
   border-radius: 14px;
   background: rgb(255 255 255 / 0.045);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
-}
-.sa-strip.busy {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime, #b9efd4) 35%, transparent);
 }
 .sa-strip-head {
   min-height: 38px;
@@ -165,7 +153,6 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin: 0 12px 10px 52px;
   padding: 5px 12px;
   border: 1px solid rgb(255 255 255 / 0.16);
   border-radius: 999px;
@@ -174,4 +161,30 @@
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
+}
+
+/* How many run, in the chat's header (as "Your Mac needs you"). */
+.as-page .as-bar-pill .as-icon.sa-badge {
+  position: relative;
+  color: var(--lime, #b9efd4);
+}
+.as-page .as-bar-pill .as-icon.sa-badge small {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--lime, #b9efd4);
+  color: #1b1b1b;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}
+/* Its list opens under the header (the menu's look, Chat details). */
+.as-bar .as-details.sa-menu {
+  top: calc(100% + 6px);
+}
+.sa-menu .sa-strip-list {
+  padding: 0;
 }

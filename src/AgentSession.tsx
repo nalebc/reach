@@ -54,7 +54,7 @@ import { createDraftSync } from "./draft-sync";
 import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
-import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
+import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
@@ -2795,6 +2795,8 @@ export default function AgentSessionView({
               <small>{deviceRequests}</small>
             </button>
           )}
+          {/* Its running sub-agents: how many, the list on a tap (Subagents.tsx). */}
+          {!!info.subagents?.length && <SubagentBadge agents={info.subagents} />}
           {onNew && (
             <button className="as-icon" aria-label="New chat" onClick={onNew}>
               <skin.compose size={19} />
@@ -3003,8 +3005,6 @@ export default function AgentSessionView({
         </>
       )}
       {info.rewound && <p className="as-note as-rewound">Rewound. Your next message continues from here.</p>}
-      {/* Its sub-agents at a glance, above the conversation. */}
-      {!!info.subagents?.length && <SubagentStrip agents={info.subagents} />}
       <div
         className="as-scroll"
         ref={scroller}
