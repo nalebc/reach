@@ -33,7 +33,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs } from "./file-roots.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
@@ -2671,7 +2671,7 @@ export async function createReach(overrides = {}) {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const showHidden = req.query.hidden === "1";
     const privates = privateRoots();
-    const shown = entries.filter((e) => showHidden || !e.name.startsWith("."));
+    const shown = entries.filter((e) => showHidden || !hiddenByOs(e.name, dir));
     const items = (
       await Promise.all(
         shown
