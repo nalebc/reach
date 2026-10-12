@@ -333,15 +333,12 @@ function Copyable({
 // How full the chat's context is, as both apps show it: a ring and the share.
 function ContextMeter({ used, window: size }: { used: number; window: number | null }) {
   if (!Number.isFinite(used) || used < 0) return null;
-  if (size === null || !Number.isFinite(size) || size <= 0) {
-    const label = `${used.toLocaleString()} tokens reported; context capacity unknown`;
-    return <span className="as-context unknown" title={label} aria-label={label}>{used.toLocaleString()} tokens</span>;
-  }
+  // Only the ring by the box, never a count of tokens (Oct 12): with no
+  // capacity to draw it against, nothing shows.
+  if (size === null || !Number.isFinite(size) || size <= 0) return null;
   const share = Math.min(1, used / size);
   const percent = Math.round(share * 100);
-  // A filled slice in an outline, not a ring: a ring with a gap read as a
-  // spinner on a phone, where the number is hidden (Oct 12).
-  const r = 3.5;
+  const r = 7;
   const around = 2 * Math.PI * r;
   return (
     <span
@@ -350,10 +347,9 @@ function ContextMeter({ used, window: size }: { used: number; window: number | n
       aria-label={`${percent}% of context used`}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" strokeOpacity="0.45" strokeWidth="1.5" />
-        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth={r * 2} strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
       </svg>
-      <span className="as-context-num">{percent}%</span>
     </span>
   );
 }

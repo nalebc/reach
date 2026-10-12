@@ -1699,15 +1699,11 @@ button.as-image-more {
 .as-user > .as-queued {
   display: block;
 }
-/* A narrow phone keeps one row: the context shows as its ring, Codex's
-   permission chip as its shield (the mode stays its name to a screen
+/* A narrow phone keeps one row: Codex's permission chip as its shield (the mode stays its name to a screen
    reader), and a long Claude mode gives way before the model. The effort
    stays, the model's name giving way first: hidden, a changed effort showed
    nothing (Oct 9, MODELS-2). */
 @media (max-width: 560px) {
-  .as-context-num {
-    display: none;
-  }
   .codex .as-tools > button.as-mode,
   .codex .as-tools > .as-mode-pick {
     position: relative;

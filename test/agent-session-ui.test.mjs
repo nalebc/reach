@@ -4608,16 +4608,23 @@ test("an answered Codex question stays answered when its older page is loaded", 
   assert.deepEqual(dom.errors, []);
 });
 
-for (const [context, label, text] of [
-  [{ used: 200001, window: null }, "200,001 tokens reported; context capacity unknown", "200,001 tokens"],
-  [{ used: 64000, window: 258000 }, "25% of context used", "25%"],
-]) test(`the context display reports ${label}`, async () => {
+test("the context display is a ring with no count of tokens", async () => {
+  const context = { used: 64000, window: 258000 };
   mac.pages[`claude:${CLAUDE}`].session.context = context;
   await open(claudeSession({ context }));
   const meter = await dom.waitFor(() => $(".as-context"));
-  assert.equal(meter.getAttribute("aria-label"), label);
-  assert.equal(meter.textContent, text);
-  assert.equal(!!meter.querySelector("svg"), context.window !== null);
+  assert.equal(meter.getAttribute("aria-label"), "25% of context used");
+  assert.equal(meter.textContent, "");
+  assert.ok(meter.querySelector("svg"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("with no context capacity, nothing shows by the box", async () => {
+  const context = { used: 200001, window: null };
+  mac.pages[`claude:${CLAUDE}`].session.context = context;
+  await open(claudeSession({ context }));
+  await dom.waitFor(() => $(".as-model"));
+  assert.equal($(".as-context"), null);
   assert.deepEqual(dom.errors, []);
 });
 
