@@ -19,15 +19,34 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 const exec = promisify(execFile);
 const enabled = process.platform === "darwin" && !!process.env.REACH_TEST_IOS_APP;
 
+// The CI lane's budget (ci.yml passes --test-timeout=300000; this per-test
+// value overrides it, so it must say the same). Each step is bounded on its
+// own; together a hosted macos-15 runner needed 215 s in a passing run: Reach,
+// a new simulator's cold first boot, install, then up to 100 s of the page.
 test("iOS simulator pairs through the real UI, reads files and runs native transfer/share bridges", {
-  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: 240000,
+  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: 300000,
 }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ios-smoke-"));
   const output = process.env.REACH_TEST_IOS_REPORT;
   if (output) await fs.rm(output, { force: true });
   const sim = (...args) => exec("xcrun", ["simctl", ...args], { timeout: 90000, maxBuffer: 2 << 20 });
-  let device;
+  // Where the time went, in the log as it happens and in the report. A
+  // timeout ends the test before its report: cleanup then leaves what it has.
+  const started = Date.now(), phases = [], requests = [];
+  let device, runtimeVersion, reported = false;
+  const reached = name => {
+    const seconds = Math.round((Date.now() - started) / 100) / 10;
+    phases.push({ phase: name, seconds });
+    process.stderr.write(`iOS simulator test: ${name} (${seconds} s)\n`);
+  };
   t.after(async () => {
+    if (output && !reported) {
+      const last = phases.at(-1)?.phase || "nothing";
+      await fs.mkdir(path.dirname(output), { recursive: true });
+      await fs.writeFile(output, JSON.stringify({ ok: false, error: `Did not finish. Last step reached: ${last}.`,
+        phases, requests, runtime: runtimeVersion, physicalDevice: false }, null, 2) + "\n").catch(() => {});
+      if (device) await exec("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { timeout: 15000 }).catch(() => {});
+    }
     if (device) {
       await sim("shutdown", device).catch(() => {});
       await sim("delete", device).catch(() => {});
@@ -35,6 +54,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     await fs.rm(dir, { recursive: true, force: true });
   });
   const reach = await startCleanReach(t, { pair: false, env: { REACH_NAME: "Simulator test computer" } });
+  reached("Reach started");
   const upstream = reach.output().match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
   const code = reach.output().match(/Pairing code: (\d{4}) (\d{4})/)?.slice(1).join("");
   assert.ok(upstream && code, "isolated CLI fixture provides its URL and pairing code");
@@ -69,6 +89,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     "-CAcreateserial", "-out", certificate, "-days", "1", "-sha256", "-extfile", extensions], { timeout: 10000 });
   await exec("openssl", ["verify", "-purpose", "sslserver", "-CAfile", authority, certificate], { timeout: 10000 });
   assert.equal(new crypto.X509Certificate(await fs.readFile(certificate)).checkIP("127.0.0.1"), "127.0.0.1");
+  reached("test certificate made");
   let resolveResult, rejectResult;
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   let noteDownload, allowDownload, noteResponse;
@@ -77,7 +98,6 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const downloadResponded = new Promise(resolve => { noteResponse = resolve; });
   t.after(() => allowDownload());
   let script = "";
-  const requests = [];
   const handler = async (req, res) => {
     res.on("finish", () => {
       if (req.url.startsWith("/api/")) requests.push({ path: req.url.split("?")[0], status: res.statusCode });
@@ -206,15 +226,20 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const runtime = runtimes.filter(item => item.isAvailable && item.identifier.includes("iOS")
     && (!process.env.REACH_TEST_IOS_RUNTIME || item.version === process.env.REACH_TEST_IOS_RUNTIME)).at(-1);
   assert.ok(runtime, "an iOS simulator runtime is installed");
+  runtimeVersion = runtime.version;
   const types = JSON.parse((await sim("list", "devicetypes", "-j")).stdout).devicetypes;
   const supported = new Set(runtime.supportedDeviceTypes?.map(item => item.identifier));
   const phones = types.filter(item => item.name.startsWith("iPhone") && (!supported.size || supported.has(item.identifier)));
   const type = phones.find(item => item.name === "iPhone 17") || phones[0];
   assert.ok(type, "the selected runtime supports an installed iPhone device type");
   device = (await sim("create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier)).stdout.trim();
+  reached(`simulator created (iOS ${runtime.version}, ${type.name})`);
   await sim("boot", device);
+  reached("simulator booting");
   await sim("bootstatus", device, "-b");
+  reached("simulator booted");
   await sim("keychain", device, "add-root-cert", authority);
+  reached("test certificate trusted in the simulator");
   const app = path.join(dir, "App.app");
   await fs.cp(process.env.REACH_TEST_IOS_APP, app, { recursive: true });
   const configFile = path.join(app, "capacitor.config.json");
@@ -226,28 +251,37 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true", plist]);
   const bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
   await exec("codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime", "--generate-entitlement-der", app], { timeout: 30000 });
+  reached("app copied and signed");
   await sim("install", device, app);
+  reached("app installed");
   await sim("launch", device, bundle);
+  reached("app launched");
   const timer = setTimeout(() => rejectResult(Error("iOS test page did not report within 100 seconds")), 100000);
   let report;
   let backgroundedDuringDownload = false;
   try {
     const first = await Promise.race([result.then(report => ({ report })), downloadRequested.then(() => ({ download: true }))]);
     if (first.download) {
+      reached("page paired and asked for the native download");
       // The newly created simulator has no user account. Opening its Settings
       // backgrounds only this test app; release the HTTPS response while away.
       await sim("launch", device, "com.apple.Preferences");
+      reached("app in the background");
       backgroundedDuringDownload = true;
       allowDownload();
       await Promise.race([downloadResponded, result]);
+      reached("download answered");
       await new Promise(resolve => setTimeout(resolve, 1500));
       await sim("launch", device, bundle);
+      reached("app reopened");
     }
     report = first.report || await result;
+    reached("page reported");
   } finally { clearTimeout(timer); allowDownload(); }
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
-    await fs.writeFile(output, JSON.stringify({ ...report, requests, runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+    await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+    reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("io", device, "screenshot", output.replace(/\.json$/, "") + ".png");
     if (!report.ok && /Native download/.test(report.error)) {
