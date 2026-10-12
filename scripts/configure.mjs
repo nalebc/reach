@@ -6,16 +6,47 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { atomicJson, loadJson } from "../server/core.mjs";
 import { defaultFileRoots } from "../server/file-roots.mjs";
-import { tailscaleJson, tailscaleCli } from "./tailscale.mjs";
+import { tailscaleJson, tailscaleCli, readKeyedState } from "./tailscale.mjs";
 import { stateDir, command } from "./home.mjs";
 const exec = promisify(execFile);
 export const preferencesFile = (root) =>
   path.join(stateDir(root), "preferences.json");
+// Windows' browser sign-in, until a real PC's acceptance passes
+// (docs/parity/D-public-door.md): only "1" turns it on.
+export const windowsAccount = (env = process.env) =>
+  env.REACH_WINDOWS_ACCOUNT === "1";
 // Phones approved by your Tailscale account: Tailscale reaches Reach through
 // a private Unix socket only Reach can answer, which Windows doesn't have.
-// There Reach shows a pairing code instead, and keeps no account settings.
-export const accountApproval = (platform = process.platform) =>
-  platform !== "win32";
+// There Reach shows a pairing code instead, and keeps no account settings;
+// with the flag, a keyed route only Tailscale's own process may use
+// (server/tailscaled-peer.mjs).
+export const accountApproval = (platform = process.platform, env = process.env) =>
+  platform !== "win32" || windowsAccount(env);
+// Set up for browser sign-in on Windows, then started without the flag: said
+// wherever it matters, never silently off.
+export const FLAG_MISSING =
+  "Browser sign-in was set up here; it needs REACH_WINDOWS_ACCOUNT=1 in this terminal.";
+export const flagMissing = (root, platform = process.platform, env = process.env) =>
+  platform === "win32" && !windowsAccount(env) && fs.existsSync(preferencesFile(root));
+const atLeast104 = (version) => {
+  const [major, minor] = String(version || "").split(/[.-]/).map(Number);
+  return major > 1 || (major === 1 && minor >= 104);
+};
+// Windows' keyed route was checked against Tailscale 1.104; that and every
+// newer version are accepted. It also needs Tailscale's network adapter:
+// without it (userspace networking) Tailscale forwards any allowed peer's
+// connection onto this PC's loopback ports. An exit node is allowed, as on a
+// Mac: the key keeps the route closed to whatever Tailscale forwards.
+export function keyedSupportProblem({ status, cliVersion } = {}) {
+  const daemon = String(status?.Version || "").split("-")[0];
+  if (!atLeast104(daemon))
+    return `Tailscale ${daemon || "?"} is older than 1.104; update Tailscale.`;
+  if (!atLeast104(cliVersion))
+    return `Tailscale's command line (${cliVersion || "?"}) is older than 1.104; update Tailscale.`;
+  if (status?.TUN !== true)
+    return "Tailscale runs without its network adapter here (userspace networking).";
+  return "";
+}
 export function readPreferences(root) {
   const file = preferencesFile(root);
   if (!fs.existsSync(file)) return null;
@@ -93,9 +124,11 @@ export function applyPreferences(options, preferences, args = []) {
   };
 }
 export async function configure(root, deps = {}) {
-  if (!accountApproval(deps.platform || process.platform))
+  const platform = deps.platform || process.platform;
+  const env = deps.env || process.env;
+  if (!accountApproval(platform, env))
     throw Error(
-      `On Windows, Reach has no account settings to configure: start it with ${command}. It shows a pairing code to enter on your phone, which needs the Tailscale app, signed in to the same account.`,
+      `On Windows, Reach has no account settings to configure: start it with ${command}. It shows a pairing code to enter on your phone, which needs the Tailscale app, signed in to the same account.${flagMissing(root, platform, env) ? ` ${FLAG_MISSING}` : ""}`,
     );
   if (!deps.ask && !process.stdin.isTTY)
     throw Error(
@@ -140,7 +173,14 @@ export async function configure(root, deps = {}) {
         );
       continue;
     }
-    await (deps.checkSupport || assertSocketSupport)();
+    // Windows has no Unix socket: what its keyed route needs instead.
+    await (deps.checkSupport ||
+      (platform === "win32"
+        ? async () => {
+            const problem = keyedSupportProblem(await (deps.keyedState || readKeyedState)());
+            if (problem) throw Error(`${problem} No settings changed.`);
+          }
+        : assertSocketSupport))();
     print(
       `\nTailscale account: ${promptLabel(owner.login)}\nNew browsers require approval on this computer. Approved browsers can run commands as your OS user; screen permissions stay separate.`,
     );

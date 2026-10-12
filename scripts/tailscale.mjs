@@ -43,16 +43,31 @@ export function findTailscaleCli({
 }
 // Setup can install, move or replace the app while Reach waits.
 export const tailscaleCli = () => findTailscaleCli();
+// The command line's own version ("" when it doesn't answer).
+export const tailscaleCliVersion = () =>
+  exec(tailscaleCli(), ["version"], { timeout: 5000, maxBuffer: 65536, windowsHide: true }).then(({ stdout }) => stdout.split("\n")[0].trim()).catch(() => "");
 // The command line's version and the daemon's: when they differ, say so once.
 export async function tailscaleVersions() {
   const [client, status] = await Promise.all([
-    exec(tailscaleCli(), ["version"], { timeout: 5000, maxBuffer: 65536, windowsHide: true }).then(({ stdout }) => stdout.split("\n")[0].trim()).catch(() => ""),
+    tailscaleCliVersion(),
     tailscaleJson(["status", "--json"]).catch(() => null),
   ]);
   const daemon = typeof status?.Version === "string" ? status.Version.split("-")[0] : "";
   return { client, daemon, mismatch: !!client && !!daemon && client !== daemon };
 }
-export async function tailscaleJson(args) {
+// What Windows' keyed route depends on (configure.mjs keyedSupportProblem):
+// the daemon's status and the command line's version.
+export async function readKeyedState({ redact } = {}) {
+  const [status, cliVersion] = await Promise.all([
+    tailscaleJson(["status", "--json"], { redact }),
+    tailscaleCliVersion(),
+  ]);
+  return { status, cliVersion };
+}
+// `redact`: Windows' keyed mode takes its route's key out of what Tailscale
+// said before anything is cut (server/tailscale-auth.mjs keyRedactor). Every
+// other caller gets Tailscale's words as they were.
+export async function tailscaleJson(args, { redact = (text) => text } = {}) {
   try {
     const { stdout } = await exec(tailscaleCli(), args, {
       timeout: 5000,
@@ -66,7 +81,7 @@ export async function tailscaleJson(args) {
       throw Error(
         "Tailscale is unavailable. Install and sign in to Tailscale on this computer and your phone, then rerun Reach.",
       );
-    const why = String(error?.killed || error?.signal ? "it took too long" : error?.stderr || error?.message || "")
+    const why = redact(String(error?.killed || error?.signal ? "it took too long" : error?.stderr || error?.message || ""))
       .trim()
       .split("\n")[0]
       .slice(0, 160);
