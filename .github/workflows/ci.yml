@@ -160,10 +160,12 @@ jobs:
         # GitHub's runners allow every script; a normal PC refuses them
         # (Oct 11: a first Windows user's live screen never loaded). Set
         # Windows PowerShell's default policy, then list displays and capture
-        # a real frame exactly as Reach does. cmd, so npm isn't a refused .ps1.
-        shell: cmd
+        # a real frame exactly as Reach does. PowerShell 7 (this step's shell)
+        # keeps its own policy; Reach's helpers run in Windows PowerShell.
+        shell: pwsh
         run: |
-          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List" || exit /b 1
+          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
+          if ($LASTEXITCODE) { exit 1 }
           npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs
         env:
           REACH_TEST_WINDOWS_DESKTOP: "1"

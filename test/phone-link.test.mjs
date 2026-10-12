@@ -1,17 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { phoneAppFirst, phoneLinkText } from "../scripts/phone-link.mjs";
+import { command } from "../scripts/home.mjs";
+// The launcher as this computer types it: ./reach, or .\\reach.cmd on Windows.
+const cmd = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // First-run matrix W1, W5, W6: what the terminal says under the QR.
 test("with the one address and someone at the terminal: both ways in, and how to reopen browser sign-in", () => {
   const text = phoneLinkText({ oneAddress: true, attended: true });
   assert.match(text, /With the Tailscale app on your phone, it opens straight away/);
-  assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser in the next 15 minutes \(later: \.\/reach pair\)/);
+  assert.match(text, new RegExp(`No Tailscale app\\? Sign in to Tailscale in the phone's browser in the next 15 minutes \\(later: ${cmd} pair\\)`));
   assert.match(text, /Approve new devices here/);
 });
 
 test("the background service opens no window by itself: it says ./reach pair does", () => {
-  assert.match(phoneLinkText({ oneAddress: true, attended: false }), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  assert.match(phoneLinkText({ oneAddress: true, attended: false }), new RegExp(`Run ${cmd} pair: browser sign-in then opens for 15 minutes`));
 });
 
 test("without the one address, the phone needs the Tailscale app, and the reason is given", () => {
