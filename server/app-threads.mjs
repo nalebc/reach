@@ -177,6 +177,11 @@ const rect = (r) =>
     ? { x: r.x, y: r.y, w: r.w, h: r.h }
     : undefined;
 const portrait = (p) => p.height >= p.width;
+// An app's smallest window, as the helper learned it: { w, h } or nothing.
+const minimumSize = (m) =>
+  m && Number.isFinite(m.w) && Number.isFinite(m.h) && m.w > 0 && m.h >= 0
+    ? { w: m.w, h: m.h }
+    : undefined;
 
 export class AppThreads {
   constructor({
@@ -188,7 +193,8 @@ export class AppThreads {
   }) {
     Object.assign(this, { file, listApps, startHelper, platform, onChange });
     this.threads = new Map();
-    this.minimums = {};
+    // By app ID: a Map, so an ID is only ever a key.
+    this.minimums = new Map();
     this.helper = null;
     this.starting = null;
     // Reach paused on the Mac: no app opens; running ones are held.
@@ -230,7 +236,10 @@ export class AppThreads {
           });
         }
       if (data.minimums && typeof data.minimums === "object")
-        this.minimums = data.minimums;
+        for (const [appId, saved] of Object.entries(data.minimums)) {
+          const minimum = minimumSize(saved);
+          if (minimum) this.minimums.set(appId, minimum);
+        }
     } catch {}
   }
   save() {
@@ -244,7 +253,7 @@ export class AppThreads {
           ...(held && { held, phone }),
         }),
       ),
-      minimums: this.minimums,
+      minimums: Object.fromEntries(this.minimums),
     };
     const tmp = `${this.file}.${process.pid}.tmp`;
     try {
@@ -440,7 +449,8 @@ export class AppThreads {
       size: result.size,
       scale: result.scale,
     });
-    if (result.minimum?.w > 0) this.minimums[t.appId] = result.minimum;
+    const minimum = minimumSize(result.minimum);
+    if (minimum) this.minimums.set(t.appId, minimum);
   }
   // `lend: false` (an agent while someone is at the Mac): only a window of
   // its own; the helper refuses with code "lend" rather than take theirs.
@@ -494,7 +504,7 @@ export class AppThreads {
         thread: t.id,
         path: app.id,
         phone: { w: phone.width, h: phone.height },
-        ...(this.minimums[appId] && { minimum: this.minimums[appId] }),
+        ...(this.minimums.has(appId) && { minimum: this.minimums.get(appId) }),
         ...(lend === false && { lend: false }),
       });
       this.started(t, result);
