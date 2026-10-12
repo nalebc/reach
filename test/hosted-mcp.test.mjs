@@ -8,6 +8,7 @@ import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES, hostedConnector, openPairingWindow } from "../server/core.mjs";
 import { validatePresetInvitation } from "../server/agent-presets.mjs";
+import { newIngressKey } from "../server/tailscale-auth.mjs";
 
 // Reach as an MCP server at a URL (server/hosted-mcp.mjs): a hosted agent
 // (claude.ai, ChatGPT, Muse, Grok) adds the address its invitation shows,
@@ -30,10 +31,21 @@ const clock = (t) => {
   return (ms) => { offset += ms; };
 };
 
+// Each flow runs on both private routes: a Mac's Unix socket, and Windows'
+// keyed loopback route (REACH_WINDOWS_ACCOUNT=1; docs/parity/D-public-door.md
+// §7.2), whose door and gateway are the same. Not yet on a real Windows
+// runner: its presets wait for workstream E.
+const keyedRuns = new WeakSet();
+const both = (name, options, fn) => {
+  test(name, options, fn);
+  test(`${name} (Windows keyed route)`, { ...options, skip: process.platform === "win32" ? "Windows' agent presets wait for workstream E" : options.skip }, (t) => (keyedRuns.add(t), fn(t)));
+};
+
 async function fixture(t) {
+  const keyed = keyedRuns.has(t);
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-hosted-")));
-  const socketDir = fs.mkdtempSync("/tmp/reach-hosted-");
-  const socketPath = path.join(socketDir, "s");
+  const socketDir = keyed ? "" : fs.mkdtempSync("/tmp/reach-hosted-");
+  const socketPath = keyed ? "" : path.join(socketDir, "s");
   const shared = path.join(root, "shared");
   fs.mkdirSync(path.join(shared, "work"), { recursive: true });
   fs.writeFileSync(path.join(shared, "work", "brief.txt"), "the brief");
@@ -41,22 +53,29 @@ async function fixture(t) {
     name: "Fixture Mac", roots: [shared], dataDir: path.join(root, "state"), agentPolicyFile: path.join(root, "state", "none.json"),
     publicOrigin: `${ORIGIN}:8443`, allowedOrigins: [ORIGIN], tailscaleOwner: OWNER,
     tailscaleIdentity: { lookup: async () => null },
+    ...(keyed && { platform: "win32" }),
   });
   // The inner routes a hosted agent's tool calls reach (index.mjs hostedDispatch).
   await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
-  await reach.listenPrivate(socketPath, { publicApp: (req, res) => reach.publicAgent(req, res) || (res.statusCode = 404, res.end(), true) });
+  const publicApp = (req, res) => reach.publicAgent(req, res) || (res.statusCode = 404, res.end(), true);
+  // Windows: the route's key, and a peer check that knows this process is Tailscale's.
+  const ingressKey = keyed ? newIngressKey() : "";
+  const keyedPort = keyed ? await reach.listenKeyed({ key: ingressKey, peerCheck: { check: async () => true }, publicApp }) : 0;
+  if (!keyed) await reach.listenPrivate(socketPath, { publicApp });
   reach.setFunnelController(async () => {});
   const reused = [];
   reach.auth.onCredentialReuse((client) => reused.push(client.id));
   t.after(async () => {
     await reach.close();
     fs.rmSync(root, { recursive: true, force: true });
-    fs.rmSync(socketDir, { recursive: true, force: true });
+    if (socketDir) fs.rmSync(socketDir, { recursive: true, force: true });
   });
   const host = new URL(ORIGIN).host;
+  // As Tailscale delivers it: to the socket with Host rewritten (a Mac), or
+  // to the keyed port under the key with the original Host (Windows).
   const send = ({ method = "GET", path: route, headers = {}, body, privately = false }) => new Promise((resolve, reject) => {
-    const req = http.request({ socketPath, path: route, method, headers: {
-      ...headers, Host: "localhost", "X-Forwarded-Host": privately ? `${host}:8443` : host,
+    const req = http.request({ ...(keyed ? { host: "127.0.0.1", port: keyedPort, path: `/r-${ingressKey}${route}` } : { socketPath, path: route }), method, headers: {
+      ...headers, Host: keyed ? (privately ? `${host}:8443` : host) : "localhost", "X-Forwarded-Host": privately ? `${host}:8443` : host,
       ...(privately ? { "X-Forwarded-For": "100.64.0.20" } : { "Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.7" }),
     } }, (res) => {
       const chunks = [];
@@ -121,7 +140,7 @@ async function fixture(t) {
   return { reach, send, jsonPost, form, invite, approve, pkce, register, authorizeUrl, connect, rpc, refresh, reused, root };
 }
 
-test("a new hosted connector registers immediately when credential writes share the same mtime", { skip: !posix, timeout: 30000 }, async t => {
+both("a new hosted connector registers immediately when credential writes share the same mtime", { skip: !posix, timeout: 30000 }, async t => {
   const f = await fixture(t);
   const file = path.join(f.reach.config.dataDir, "clients.json");
   const stamp = new Date("2026-01-01T00:00:00Z");
@@ -139,7 +158,7 @@ test("a new hosted connector registers immediately when credential writes share 
   assert.ok(response.json?.client_id);
 });
 
-test("a hosted agent at its own address discovers Reach, registers, connects with the owner's code and uses the preset's tools", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)", timeout: 30000 }, async (t) => {
+both("a hosted agent at its own address discovers Reach, registers, connects with the owner's code and uses the preset's tools", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)", timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const nobody = strangerId();
   // Nothing invited: no address answers, and no shared one exists.
@@ -232,7 +251,7 @@ test("a hosted agent at its own address discovers Reach, registers, connects wit
   assert.equal((await f.refresh(c, tokens.refresh_token, client.client_id)).json.error, "invalid_grant");
 });
 
-test("a refresh rotates the credential at its own address; a copy used after the trade ends the access and tells the owner; a week unused ends an Always access", { skip: !posix, timeout: 30000 }, async (t) => {
+both("a refresh rotates the credential at its own address; a copy used after the trade ends the access and tells the owner; a week unused ends an Always access", { skip: !posix, timeout: 30000 }, async (t) => {
   const advance = clock(t);
   const f = await fixture(t);
   const { connector: c } = f.invite();
@@ -275,7 +294,7 @@ test("a refresh rotates the credential at its own address; a copy used after the
   assert.ok(ended.expiresAt <= Date.now(), "ended for good, in the list too");
 });
 
-test("a refresh token replayed inside the two-minute grace mints nothing, and the real client keeps working", { skip: !posix, timeout: 30000 }, async (t) => {
+both("a refresh token replayed inside the two-minute grace mints nothing, and the real client keeps working", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const { connector: c } = f.invite();
   const { tokens: a, client } = await f.connect(c);
@@ -293,7 +312,7 @@ test("a refresh token replayed inside the two-minute grace mints nothing, and th
   assert.equal((await ping(next.access_token)).status, 200);
 });
 
-test("a confidential client's refresh needs its secret, with or without its client_id", { skip: !posix, timeout: 30000 }, async (t) => {
+both("a confidential client's refresh needs its secret, with or without its client_id", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const { connector: c } = f.invite();
   const registered = await f.jsonPost(`/mcp/${c}/oauth/register`, { client_name: "ChatGPT", redirect_uris: [CALLBACK], token_endpoint_auth_method: "client_secret_post" });
@@ -318,7 +337,7 @@ test("a confidential client's refresh needs its secret, with or without its clie
   assert.equal(again.status, 200, again.text);
 });
 
-test("while the public window is open, an address Reach never gave out still gets 404, and one address's registrations can't fill another's", { skip: !posix, timeout: 30000 }, async (t) => {
+both("while the public window is open, an address Reach never gave out still gets 404, and one address's registrations can't fill another's", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   openPairingWindow(f.reach.config.dataDir);
   assert.equal(f.reach.funnelWindow().open, true, "the window lets strangers to the start page");
@@ -337,7 +356,7 @@ test("while the public window is open, an address Reach never gave out still get
   await f.register(second, "Grok");
 });
 
-test("an unsupported MCP-Protocol-Version is refused after initialize; version negotiation still answers as before", { skip: !posix, timeout: 30000 }, async (t) => {
+both("an unsupported MCP-Protocol-Version is refused after initialize; version negotiation still answers as before", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const { connector: c } = f.invite();
   const { tokens } = await f.connect(c);
@@ -365,7 +384,7 @@ test("an unsupported MCP-Protocol-Version is refused after initialize; version n
   assert.equal((await call({ jsonrpc: "2.0", method: "notifications/initialized" }, "2026-07-28")).status, 400, "after initialize, an unsupported version is refused");
 });
 
-test("declined goes back as access_denied; PKCE must match and a code is spent by its first use; a client stays at the address it registered at; a hosted invitation is no page link", { skip: !posix, timeout: 30000 }, async (t) => {
+both("declined goes back as access_denied; PKCE must match and a code is spent by its first use; a client stays at the address it registered at; a hosted invitation is no page link", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const { connector: c } = f.invite();
   const client = await f.register(c, "ChatGPT");
