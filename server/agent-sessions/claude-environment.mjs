@@ -35,3 +35,9 @@ export function windowsGitBash(env = process.env, { isFile = fileAt } = {}) {
     if (isFile(path.join(dir, "git.exe"))) gits.push(path.dirname(dir));
   return gits.map((git) => path.join(git, "bin", "bash.exe")).find((bash) => isFile(bash)) || null;
 }
+
+// Claude Code's environment with the Git Bash Reach found, unless the owner
+// chose one: Git installed from the phone after Reach started isn't on
+// Reach's PATH, where Claude Code would look for it.
+export const withGitBash = (env, bash) =>
+  typeof bash === "string" && !envValue(env, "CLAUDE_CODE_GIT_BASH_PATH") ? { ...env, CLAUDE_CODE_GIT_BASH_PATH: bash } : env;

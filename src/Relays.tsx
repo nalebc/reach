@@ -31,7 +31,7 @@ export type RelayStarted = { relay: Relay; opened?: { agent: string; id: string 
 // docs/ACROSS_AGENTS.md).
 export const relayAgents = (health: AgentHealth[], { openclaw = true } = {}) =>
   ["codex", "claude", ...(openclaw ? ["openclaw"] : [])].filter((a) =>
-    health.some((h) => h.agent === a && h.installed && (a === "openclaw" ? h.connected === true : h.signedIn && h.usable !== false)),
+    health.some((h) => h.agent === a && h.installed && !h.needs?.length && (a === "openclaw" ? h.connected === true : h.signedIn && h.usable !== false)),
   );
 // The other agent first (the point of a second opinion), then the same one.
 const othersFirst = (agent: string, agents: string[]) => [...agents.filter((a) => a !== agent), ...agents.filter((a) => a === agent)];

@@ -34,6 +34,7 @@ export function moveBlocked(to: string, health: AgentHealth[], word = "Mac") {
   const name = agentLabel(to);
   if (!h) return "";
   if (!h.installed) return `${name} isn't installed on your ${word}.`;
+  if (h.needs?.includes("git")) return `${name} needs Git for Windows on your ${word}.`;
   // OpenClaw's own Gateway answers for it when the chat moves, if it can
   // take one (older Gateways can't add the history).
   if (to === "openclaw")

@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sweepAtRest } from "./at-rest.mjs";
-import { claudeEnvironment, windowsGitBash } from "./claude-environment.mjs";
+import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { windowsPath } from "../app-identity.mjs";
 
@@ -655,7 +655,8 @@ export function createClaudeHost({
     if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     // Said before the check, which would only fail as "couldn't check".
-    if (!gitBash()) throw bad(`Claude Code needs Git Bash on this ${computerWord(platform)}. Install Git for Windows, then try again.`, 503);
+    const bash = gitBash();
+    if (!bash) throw bad(`Claude Code needs Git Bash on this ${computerWord(platform)}. Install Git for Windows, then try again.`, 503);
     const compatible = await check(claude);
     authorize();
     if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
@@ -697,7 +698,7 @@ export function createClaudeHost({
       })()),
     ];
     const cli = spawnable(claude);
-    const proc = spawn(cli.file, [...cli.args, ...args], { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = spawn(cli.file, [...cli.args, ...args], { cwd: s.cwd || os.homedir(), env: withGitBash(clean, bash), stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
     if (proc.pid) {
       spawned.add(proc.pid);

@@ -163,6 +163,9 @@ export type AgentHealth = {
   canTakeMoves?: boolean;
   // OpenClaw: its Gateway answers (it has no sign-in of its own).
   connected?: boolean;
+  // What it needs on the computer before it can run: "git", Git for Windows
+  // for Claude Code on Windows (installed from the phone, agent "git").
+  needs?: string[];
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").

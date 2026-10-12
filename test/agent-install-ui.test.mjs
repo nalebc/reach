@@ -29,6 +29,12 @@ before(async () => {
         const plan = await installPlan("claude", { platform: "darwin", has: async () => true });
         return body.confirm ? { ...plan, terminal } : plan;
       },
+      "/api/sessions/agent-install/git": async (init) => {
+        const body = JSON.parse(init.body || "{}");
+        sent.push({ git: body });
+        const plan = await installPlan("git", { platform: "win32", has: async () => true });
+        return body.confirm ? { ...plan, terminal } : plan;
+      },
       "/api/terminals": () => (terminal ? [terminal] : []),
     },
   });
@@ -145,3 +151,39 @@ for (const [what, end] of [
     assert.deepEqual(dom.errors, []);
   });
 }
+
+// Claude Code on a Windows PC without Git for Windows (audit #7, Oct 12):
+// installed, then the first message failed. The phone says what it needs
+// before sign-in, with Windows' own installer a tap away, run as an install.
+test("Claude Code needing Git for Windows shows its install before sign-in, and nothing to start a chat with", async () => {
+  terminal = { id: "t-git", status: "running", preview: ["Downloading Git for Windows…"] };
+  sent.length = 0;
+  dom.window.localStorage.setItem("reach.chatAgent", "claude");
+  let rechecked = 0;
+  const pc = { ...peer, id: "pc", name: "PC", platform: "win32" };
+  const needsGit = [
+    { agent: "codex", installed: false, signedIn: false, supported: true },
+    { agent: "claude", installed: true, signedIn: false, supported: true, needs: ["git"] },
+  ];
+  const view = await dom.render(
+    React.createElement(EverythingChat, {
+      peer: pc,
+      feed: { sessions: [], errors: {}, health: needsGit, failure: "", reload: async () => {}, recheck: () => rechecked++ },
+    }),
+  );
+  const setup = await dom.waitFor(() => dom.document.querySelector('[aria-label="Set up Git for Windows"]'));
+  assert.match(setup.textContent, /Claude Code needs Git for Windows/);
+  assert.match(setup.textContent, /isn't on this Windows PC yet/);
+  assert.doesNotMatch(dom.document.body.textContent, /Sign in|Mac/);
+  await click(button("Install on Windows PC"));
+  const command = await dom.waitFor(() => dom.document.querySelector(".chat-setup-command"));
+  assert.equal(command.textContent, (await installPlan("git", { platform: "win32", has: async () => true })).command);
+  assert.match(setup.textContent, /Reach installs it with winget on your Windows PC\. Windows may ask you to approve it there/);
+  await click(button("Install"));
+  assert.deepEqual(sent, [{ git: { confirm: false } }, { git: { confirm: true } }]);
+  await dom.waitFor(() => /Installing Git for Windows on your Windows PC/.test(dom.document.body.textContent));
+  terminal = { ...terminal, status: "exited", exitCode: 0, preview: ["Successfully installed"] };
+  await dom.waitFor(() => rechecked > 0, 5000);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});

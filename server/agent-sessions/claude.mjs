@@ -10,7 +10,7 @@ import { claudeLines } from "./move.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
 import { createClaudeAccountUsage } from "./account-usage.mjs";
-import { claudeEnvironment } from "./claude-environment.mjs";
+import { claudeEnvironment, windowsGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { recycle as recycleFile } from "../recycle-bin.mjs";
 
@@ -60,6 +60,10 @@ export function createClaudeSessions({
   budgetBytes = Math.max(64 * 1024 * 1024, Math.min(256 * 1024 * 1024, Math.floor(os.totalmem() / 64))),
   idleMs = 10 * 60 * 1000,
   now = Date.now,
+  // Git Bash, without which Claude Code on Windows won't start a chat
+  // (claude-host.mjs); only a real Windows Claude Code needs it.
+  platform = process.platform,
+  gitBash = run === exec && platform === "win32" ? () => windowsGitBash(env) : () => true,
 } = {}) {
   // Per transcript: the conversation, and while it is being written to, where
   // reading stopped. A working session's transcript only grows (one line per
@@ -284,6 +288,21 @@ export function createClaudeSessions({
   };
   function cleanEnv() {
     return claudeEnvironment(env);
+  }
+  async function cliHealth() {
+    try {
+      // Run with Reach's own environment, never a host app's.
+      const { stdout } = await runCli(["auth", "status", "--json"], { timeout: 10000, env: cleanEnv() });
+      return await withUsage(signIn(stdout));
+    } catch (e) {
+      if (e.code === "ENOENT") return { agent: "claude", installed: false, signedIn: false };
+      // Signed out: exit code 1 with the same JSON on stdout (verified).
+      try {
+        return signIn(e.stdout);
+      } catch {
+        return { agent: "claude", installed: true, signedIn: false, error: "Could not read Claude Code's sign-in status." };
+      }
+    }
   }
   // Signed in, but out of usage until that limit resets.
   async function withUsage(health) {
@@ -644,19 +663,13 @@ export function createClaudeSessions({
       return out;
     },
     async health() {
-      try {
-        // Run with Reach's own environment, never a host app's.
-        const { stdout } = await runCli(["auth", "status", "--json"], { timeout: 10000, env: cleanEnv() });
-        return await withUsage(signIn(stdout));
-      } catch (e) {
-        if (e.code === "ENOENT") return { agent: "claude", installed: false, signedIn: false };
-        // Signed out: exit code 1 with the same JSON on stdout (verified).
-        try {
-          return signIn(e.stdout);
-        } catch {
-          return { agent: "claude", installed: true, signedIn: false, error: "Could not read Claude Code's sign-in status." };
-        }
-      }
+      const health = await cliHealth();
+      // Installed on Windows without Git for Windows: said before sign-in
+      // (and before a sign-in status that may fail for want of it), with its
+      // install a tap away on the phone; a chat would only fail.
+      if (!health.installed || gitBash()) return health;
+      const { error, ...rest } = health;
+      return { ...rest, needs: ["git"] };
     },
   };
 }

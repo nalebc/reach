@@ -744,7 +744,7 @@ export function NewChat({
 // "Install on Mac": its maker's own command, shown first and run once
 // confirmed, in a Reach terminal that ends with it (server/agent-install.mjs);
 // then a check again finds it. Its newest output line shows while it runs.
-function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { peer: Peer; agent: string; name: string; recheck: () => void; ask?: boolean }) {
+function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }: { peer: Peer; agent: string; name: string; recheck: () => void; ask?: boolean; lead?: string }) {
   const [plan, setPlan] = useState<InstallPlan | null>(null);
   const [step, setStep] = useState<"" | "confirm" | "running" | "failed" | "installed">("");
   const [problem, setProblem] = useState("");
@@ -803,7 +803,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
     <>
       {step === "confirm" && plan ? (
         <>
-          <p>Reach runs {name}'s own installer on your {word}:</p>
+          {lead ? <p>{lead}</p> : <p>Reach runs {name}'s own installer on your {word}:</p>}
           <pre className="chat-setup-command">{plan.command}</pre>
           <div className="chat-setup-actions">
             <button className="primary" disabled={launching} onClick={() => void run()}>Install</button>
@@ -933,6 +933,22 @@ function AgentStatus({
             <button onClick={recheck}>Check again</button>
           </div>
         )}
+      </section>
+    );
+  // Claude Code on Windows runs on Git Bash: Git for Windows first, from
+  // winget, before sign-in (a chat would only fail without it).
+  if (health.needs?.includes("git"))
+    return (
+      <section className="chat-setup" aria-label="Set up Git for Windows">
+        <strong>{name} needs Git for Windows</strong>
+        <p>It isn't on this {computerWord(peer.platform)} yet.</p>
+        <InstallAgent
+          peer={peer}
+          agent="git"
+          name="Git for Windows"
+          recheck={recheck}
+          lead={`Reach installs it with winget on your ${computerWord(peer.platform)}. Windows may ask you to approve it there:`}
+        />
       </section>
     );
   if (!health.signedIn)
@@ -1109,7 +1125,7 @@ export default function EverythingChat({
   // the first that can answer now (not one out of usage; unknown usage still can).
   const canAnswer = (agent: string) => {
     const h = health.find((item) => item.agent === agent);
-    return !!h && h.installed && h.signedIn && !h.error && h.usable !== false;
+    return !!h && h.installed && h.signedIn && !h.error && !h.needs?.length && h.usable !== false;
   };
   const newApp =
     startApps.find((app) => app.agent === newPick) ||
@@ -1316,7 +1332,7 @@ export default function EverythingChat({
       );
     const agent: AgentName = app.agent === "claude" || app.agent === "gemini" ? app.agent : "codex";
     const appHealth = health.find(h => h.agent === agent);
-    const needsSetup = app.supported && !!appHealth && (!appHealth.installed || !appHealth.signedIn || !!appHealth.error);
+    const needsSetup = app.supported && !!appHealth && (!appHealth.installed || !appHealth.signedIn || !!appHealth.error || !!appHealth.needs?.length);
     const pending = allNeeds.filter(item => item.key.startsWith(app.agent + ":") || (app.supported && item.key.startsWith("mac:"))).length;
     return (
       <div className="chat-workspace">
@@ -1444,7 +1460,7 @@ export default function EverythingChat({
                 logos={logos}
                 recheck={recheck}
               />
-              {(!status || (status.installed && status.signedIn && !status.error)) && (
+              {(!status || (status.installed && status.signedIn && !status.error && !status.needs?.length)) && (
                 <NewChat
                   key={newFolder + newKind}
                   folder={newFolder}

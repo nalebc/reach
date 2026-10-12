@@ -224,6 +224,35 @@ test("a Windows chat without Git Bash says so plainly; with it, Claude Code star
   assert.equal(run.file, exe);
   assert.equal(run.args[0], "-p");
   assert.equal(run.options.shell, undefined);
+  // Where Reach found it: Git installed from the phone after Reach started
+  // isn't on Reach's PATH, where Claude Code would look.
+  assert.equal(run.options.env.CLAUDE_CODE_GIT_BASH_PATH, "C:\\Program Files\\Git\\bin\\bash.exe");
+  // The owner's own choice stands.
+  const chose = fakeClaude();
+  const own = createClaudeHost({ locate: async () => exe, spawn: chose.spawn, env: { claude_code_git_bash_path: "D:\\Git\\bin\\bash.exe" }, platform: "win32", gitBash: () => "D:\\Git\\bin\\bash.exe" });
+  t.after(() => own.close());
+  await own.send(ID, { text: "hi", cwd: os.tmpdir() });
+  assert.deepEqual(Object.entries(chose.runs[0].options.env).filter(([key]) => /git_bash/i.test(key)), [["claude_code_git_bash_path", "D:\\Git\\bin\\bash.exe"]]);
+});
+
+// Claude Code installed from the phone, then the first message failed for
+// want of Git for Windows (audit #7, Oct 12). Health says so first.
+test("Claude's health on Windows says it needs Git for Windows, before sign-in and before any sign-in error", async () => {
+  const { createClaudeSessions } = await import("../server/agent-sessions/claude.mjs");
+  const signedOut = JSON.stringify({ loggedIn: false });
+  const answer = (outcome) => async () => outcome();
+  const health = (outcome, gitBash) =>
+    createClaudeSessions({ projects: os.tmpdir(), appRecords: os.tmpdir(), run: answer(outcome), accountUsage: null, gitBash }).health();
+  const exit1 = (stdout) => () => { throw Object.assign(new Error("exit 1"), { code: 1, stdout }); };
+  assert.deepEqual(await health(exit1(signedOut), () => null), { agent: "claude", installed: true, signedIn: false, usable: false, needs: ["git"] });
+  // A sign-in status Claude Code couldn't give (it may need Git Bash too): Git first.
+  assert.deepEqual(await health(exit1("not json"), () => null), { agent: "claude", installed: true, signedIn: false, needs: ["git"] });
+  // With Git Bash, or without Claude Code at all: nothing more.
+  assert.deepEqual(await health(exit1(signedOut), () => "C:\\Program Files\\Git\\bin\\bash.exe"), { agent: "claude", installed: true, signedIn: false, usable: false });
+  const absent = () => { throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }); };
+  assert.deepEqual(await health(absent, () => null), { agent: "claude", installed: false, signedIn: false });
+  // A Mac (or a Claude Code Reach didn't start) is never asked.
+  assert.deepEqual(await createClaudeSessions({ projects: os.tmpdir(), appRecords: os.tmpdir(), run: answer(exit1(signedOut)), accountUsage: null, platform: "darwin" }).health(), { agent: "claude", installed: true, signedIn: false, usable: false });
 });
 
 test("Mac and Linux are unchanged: PATH's codex as is, Claude Code from the login shell", { skip: process.platform === "win32" && "POSIX PATH and modes" }, async (t) => {
