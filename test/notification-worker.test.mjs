@@ -113,8 +113,17 @@ test("OS Deny produces a one-use intent, scoped to the same origin and never a b
     source: { url: "https://other.test/" },
   });
   assert.equal(received.length, 0);
+  // A sender the browser names as another origin is refused too, whatever
+  // page address it claims.
   await w.emit("message", {
     ...request,
+    origin: "https://other.test",
+    source: { url: "https://reach.test/" },
+  });
+  assert.equal(received.length, 0);
+  await w.emit("message", {
+    ...request,
+    origin: "https://reach.test",
     source: { url: "https://reach.test/" },
   });
   assert.equal(received[0].id, "browser:123");

@@ -33,6 +33,8 @@ const validSource = (source) => {
   }
 };
 self.addEventListener("message", (event) => {
+  // The sender's origin (browsers name it) and its page's own address.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (!validSource(event.source)) return;
   if (event.data?.type === "reach-notification-icons")
     event.waitUntil(
