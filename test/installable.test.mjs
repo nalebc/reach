@@ -153,6 +153,8 @@ test("the published package ships the app, never sources or private state, and r
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
     "buffer-crc32",
     "express",
+    // Bounds app install and update requests per device (server/index.mjs).
+    "express-rate-limit",
     // OpenClaw's config files are JSON5 (server/openclaw.mjs).
     "json5",
     "multer",
