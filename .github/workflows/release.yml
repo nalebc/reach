@@ -172,6 +172,11 @@ jobs:
           import crypto from 'node:crypto';
           const version = process.env.VERSION;
           const response = await fetch(`https://registry.npmjs.org/@nalebc%2freach/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(30000) });
+          // The package at all: a first publish can't use trusted publishing
+          // (npm needs the package to exist before a publisher is set).
+          const any = await fetch('https://registry.npmjs.org/@nalebc%2freach', { signal: AbortSignal.timeout(30000) });
+          if (any.status !== 404 && !any.ok) throw Error(`npm registry check failed: ${any.status}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `exists=${any.ok}\n`);
           let published = false;
           if (response.status !== 404) {
             if (!response.ok) throw Error(`npm registry check failed: ${response.status}`);
@@ -186,10 +191,33 @@ jobs:
         if: steps.registry.outputs.published == 'false'
         # Configure the npm trusted publisher for release.yml + npm-release.
         # No long-lived npm token, npm ci, source checkout, or npm install here.
+        # Only while the package doesn't exist yet (npm can't trust a publisher
+        # for a package it doesn't have), a one-time, short-lived token from
+        # this protected environment publishes it; once it exists, that token
+        # is refused and must be deleted (.github/MAINTAINER_SETUP.md).
         env:
           VERSION: ${{ needs.eligible.outputs.version }}
           NPM_CONFIG_IGNORE_SCRIPTS: "true"
-        run: npm publish "candidate/nalebc-reach-$VERSION.tgz" --ignore-scripts --provenance --access public --registry=https://registry.npmjs.org
+          PACKAGE_EXISTS: ${{ steps.registry.outputs.exists }}
+          FIRST_PUBLISH_TOKEN: ${{ secrets.NPM_FIRST_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$PACKAGE_EXISTS" = "true" ]; then
+            if [ -n "$FIRST_PUBLISH_TOKEN" ]; then
+              echo "::error::@nalebc/reach is on npm: delete NPM_FIRST_PUBLISH_TOKEN from the npm-release environment and the token on npmjs.com. Releases publish through trusted publishing."
+              exit 1
+            fi
+          else
+            if [ -z "$FIRST_PUBLISH_TOKEN" ]; then
+              echo "::error::First publish of @nalebc/reach: add a one-time NPM_FIRST_PUBLISH_TOKEN to the npm-release environment (.github/MAINTAINER_SETUP.md), then re-run this job."
+              exit 1
+            fi
+            # npm reads the token from the environment; it's never written out.
+            export NODE_AUTH_TOKEN="$FIRST_PUBLISH_TOKEN"
+            printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$RUNNER_TEMP/first-publish.npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/first-publish.npmrc"
+          fi
+          npm publish "candidate/nalebc-reach-$VERSION.tgz" --ignore-scripts --provenance --access public --registry=https://registry.npmjs.org
       - id: github-release
         name: Create or complete the exact GitHub release without replacing assets
         env:

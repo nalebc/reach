@@ -179,6 +179,15 @@ test("CI execution uses the guarded npm entrypoint and publishing cannot run pac
   assert.ok(!publish.steps.some(step => step.uses?.startsWith("actions/checkout@")));
   assert.doesNotMatch(commands, /(?:^|\n)\s*npm (?:ci|install|run)\b/);
   assert.doesNotMatch(JSON.stringify(publish), /secrets\.NPM_TOKEN/);
+  // The one-time first-publish token: only in the publish step, only while
+  // the package doesn't exist, and refused once it does.
+  const uses = publish.steps.filter(step => JSON.stringify(step).includes("secrets.NPM_FIRST_PUBLISH_TOKEN"));
+  assert.equal(uses.length, 1);
+  assert.match(uses[0].run, /npm publish .* --ignore-scripts --provenance/);
+  assert.match(uses[0].run, /if \[ "\$PACKAGE_EXISTS" = "true" \]; then\n\s+if \[ -n "\$FIRST_PUBLISH_TOKEN" \]; then[\s\S]*?exit 1/);
+  assert.equal(uses[0].env.PACKAGE_EXISTS, "${{ steps.registry.outputs.exists }}");
+  assert.doesNotMatch(uses[0].run, /echo[^\n]*\$(?:FIRST_PUBLISH_TOKEN|NODE_AUTH_TOKEN)/, "never printed");
+  assert.doesNotMatch(uses[0].run, /_authToken=\$\{?FIRST_PUBLISH_TOKEN|_authToken="?\$FIRST/, "never written out");
 });
 
 
@@ -300,13 +309,21 @@ test("release retry skips npm only for the exact already-published candidate byt
   const run = (status, body = good) => {
     fs.writeFileSync(output, "");
     // The registry's answer goes in as data (environment), never as code.
-    const mock = "globalThis.fetch = async (url, options) => { if (url !== 'https://registry.npmjs.org/@nalebc%2freach/0.1.0' || !options.signal) throw Error('unbounded or unexpected lookup'); const status = Number(process.env.MOCK_STATUS); return {status, ok: status === 200, json: async () => JSON.parse(process.env.MOCK_BODY)}; };\n";
-    return runBlock(mock + script, { VERSION: version, GITHUB_OUTPUT: output, MOCK_STATUS: String(status), MOCK_BODY: JSON.stringify(body) }, root);
+    // The package itself: absent before the first publish, there after.
+    const mock = "globalThis.fetch = async (url, options) => { if (!options.signal) throw Error('unbounded lookup'); if (url === 'https://registry.npmjs.org/@nalebc%2freach') { const status = Number(process.env.MOCK_PACKAGE); return {status, ok: status === 200}; } if (url !== 'https://registry.npmjs.org/@nalebc%2freach/0.1.0') throw Error('unexpected lookup'); const status = Number(process.env.MOCK_STATUS); return {status, ok: status === 200, json: async () => JSON.parse(process.env.MOCK_BODY)}; };\n";
+    return runBlock(mock + script, { VERSION: version, GITHUB_OUTPUT: output, MOCK_STATUS: String(status), MOCK_PACKAGE: String(pkg), MOCK_BODY: JSON.stringify(body) }, root);
   };
+  let pkg = 404;
   assert.equal(run(404).status, 0);
-  assert.equal(fs.readFileSync(output, "utf8"), "published=false\n");
+  assert.equal(fs.readFileSync(output, "utf8"), "exists=false\npublished=false\n", "a first publish");
+  pkg = 200;
+  assert.equal(run(404).status, 0);
+  assert.equal(fs.readFileSync(output, "utf8"), "exists=true\npublished=false\n", "a new version");
   assert.equal(run(200).status, 0);
-  assert.equal(fs.readFileSync(output, "utf8"), "published=true\n");
+  assert.equal(fs.readFileSync(output, "utf8"), "exists=true\npublished=true\n");
+  pkg = 500;
+  assert.notEqual(run(404).status, 0, "an unknown package state never counts as absent");
+  pkg = 200;
   for (const status of [401, 403, 429, 500]) assert.notEqual(run(status).status, 0);
   for (const body of [{ ...good, version: "0.2.0" }, { ...good, name: "other" }, { ...good, dist: {} }, { ...good, dist: { integrity: "different bytes" } }]) assert.notEqual(run(200, body).status, 0);
   assert.notEqual(runBlock("globalThis.fetch = async () => { throw Error('network down'); };\n" + script, { VERSION: version, GITHUB_OUTPUT: output }, root).status, 0);
