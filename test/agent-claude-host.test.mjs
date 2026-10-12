@@ -897,7 +897,7 @@ test("on Windows a reply to a chat the Claude app holds goes in as on a Mac: at 
 test("on Windows live Claude sessions come from Claude Code's registry, never ps or lsof; Reach's own are Reach's", async () => {
   const { liveClaudeSessions } = await import("../server/agent-sessions/processes.mjs");
   const ran = [];
-  const tasks = '"claude.exe","11","Console","1","90,112 K"\r\n"Claude.exe","12","Console","1","1,024 K"\r\n"node.exe","13","Console","1","50,000 K"\r\n"notepad.exe","14","Console","1","9,000 K"\r\n';
+  const tasks = `"claude.exe","11","Console","1","90,112 K"\r\n"Claude.exe","12","Console","1","1,024 K"\r\n"node.exe","13","Console","1","50,000 K"\r\n"notepad.exe","14","Console","1","9,000 K"\r\n"node.exe","${process.pid}","Console","1","80,000 K"\r\n`;
   const run = async (file, args) => {
     ran.push(file);
     if (file !== "tasklist") assert.fail("Windows must not run ps or lsof");
@@ -913,9 +913,12 @@ test("on Windows live Claude sessions come from Claude Code's registry, never ps
   const live = await liveClaudeSessions([], { run, registry, platform: "win32", ours: (pid) => pid === 13 });
   assert.deepEqual([...live].map(([id, e]) => [id, e.where, e.pid]), [["a", "terminal", 11], ["b", "claude-app", 12], ["c", "reach", 13]]);
   assert.deepEqual(ran, ["tasklist"]);
-  // tasklist failing: every record stands (a reply waits rather than going in twice).
-  const unsure = await liveClaudeSessions([], { run: async () => { throw Error("no tasklist"); }, registry, platform: "win32" });
-  assert.deepEqual([...unsure.keys()], ["a", "b", "c", "d"]);
+  // tasklist failing, or a list it can't read (Reach itself not in it): every
+  // record stands, never none (that let Reach write into held chats).
+  for (const unreadable of [async () => { throw Error("no tasklist"); }, async () => ({ stdout: "INFO: No tasks are running which match the specified criteria.\r\n" })]) {
+    const unsure = await liveClaudeSessions([], { run: unreadable, registry, platform: "win32" });
+    assert.deepEqual([...unsure.keys()], ["a", "b", "c", "d"]);
+  }
 });
 
 // Right after a turn, Reach's own process is still exiting: a message then

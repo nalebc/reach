@@ -89,16 +89,37 @@ function safeReadlink(file, files) {
 // folder's goes into a folder on PATH that's yours: ~\.local\bin (Claude
 // Code's installer puts it on PATH), else WindowsApps (on every user's PATH).
 const SHIM = /^@echo off\r?\n"(.+\\reach\.cmd)" %\*\r?\n?$/;
+// cmd reads a batch file in the console's old code page, not UTF-8, and
+// expands %…% in it. So a path under the profile is written from
+// %LOCALAPPDATA% or %USERPROFILE% (cmd expands those in Unicode: an accented
+// user name is safe), any other % doubled; what's left must be plain ASCII.
+function batchPath(target, env, home) {
+  const at = (name) => env[Object.keys(env).find((k) => k.toUpperCase() === name)];
+  const under = [[at("LOCALAPPDATA"), "%LOCALAPPDATA%"], [at("USERPROFILE") || home, "%USERPROFILE%"]].find(
+    ([dir]) => dir && target.toLowerCase().startsWith(`${dir.toLowerCase()}\\`),
+  );
+  const text = (under ? under[1] : "") + (under ? target.slice(under[0].length) : target).replace(/%/g, "%%");
+  return /^[\x20-\x7e]+$/.test(text) ? text : null;
+}
+// What a shim starts, as cmd would read it.
+function shimTarget(text, env, home) {
+  const written = SHIM.exec(text)?.[1];
+  if (!written) return null;
+  const at = (name) => env[Object.keys(env).find((k) => k.toUpperCase() === name)];
+  return written
+    .replace(/^%LOCALAPPDATA%/i, () => at("LOCALAPPDATA") || "%LOCALAPPDATA%")
+    .replace(/^%USERPROFILE%/i, () => at("USERPROFILE") || home)
+    .replace(/%%/g, "%");
+}
 function windowsCli({ root, env, home, files }) {
   const win = path.win32;
   const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
   const dirs = String((key && env[key]) || "").split(";").filter(Boolean).map((d) => win.resolve(d));
   const has = (dir) => dirs.some((d) => d.toLowerCase() === dir.toLowerCase());
   const target = win.join(root, "reach.cmd");
-  const content = `@echo off\r\n"${target}" %*\r\n`;
   const points = (file) => {
     try {
-      return SHIM.exec(files.readFileSync(file, "utf8"))?.[1] || null;
+      return shimTarget(files.readFileSync(file, "utf8"), env, home);
     } catch {
       return null;
     }
@@ -119,6 +140,12 @@ function windowsCli({ root, env, home, files }) {
       ok: false,
       text: `No folder on your PATH is yours to write. In PowerShell, run these two lines, open a new window, then run .\\reach.cmd cli again:\n  New-Item -ItemType Directory -Force "$env:USERPROFILE\\.local\\bin" | Out-Null\n  [Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\\.local\\bin;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")`,
     };
+  const batch = batchPath(target, env, home);
+  if (!batch)
+    return {
+      ok: false,
+      text: `Reach's folder (${root}) has letters a Command Prompt shortcut can't hold. Move it under your user folder or to a folder with plain letters, then run .\\reach.cmd cli again; or run .\\reach.cmd from its folder.`,
+    };
   const at = win.join(dir, "reach.cmd");
   let replaced = "";
   if (files.existsSync(at)) {
@@ -128,7 +155,11 @@ function windowsCli({ root, env, home, files }) {
       return { ok: false, text: `${at} is something else, not Reach. Reach left it alone; remove it first if you want reach there.` };
     replaced = before;
   }
-  files.writeFileSync(at, content);
+  try {
+    files.writeFileSync(at, `@echo off\r\n"${batch}" %*\r\n`);
+  } catch (e) {
+    return { ok: false, text: `Windows didn't let Reach write ${at} (${e.code || e.message}). Run .\\reach.cmd from its folder instead.` };
+  }
   const first = dirs.find((d) => files.existsSync(win.join(d, "reach.cmd")));
   const shadow = first && first.toLowerCase() !== dir.toLowerCase() ? win.join(first, "reach.cmd") : "";
   return {

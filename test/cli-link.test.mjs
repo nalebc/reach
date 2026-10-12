@@ -87,11 +87,28 @@ test("Windows: reach cli writes a reach.cmd into a PATH folder you own, and says
   const made = linkCli({ script, env, home, files, platform: "win32" });
   assert.equal(made.ok, true, made.text);
   assert.equal(made.at, `${apps}\\reach.cmd`);
-  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"C:\\Users\\Sam\\code\\reach\\reach.cmd" %*\r\n');
+  // Written from %USERPROFILE%: cmd reads the file in the old code page.
+  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"%USERPROFILE%\\code\\reach\\reach.cmd" %*\r\n');
   assert.match(made.text, /PowerShell or Command Prompt/);
   assert.equal(linkCli({ script, env, home, files, platform: "win32" }).already, true);
   // Something else named reach.cmd is left alone.
   disk.set(`${apps}\\reach.cmd`.toLowerCase(), "@echo off\r\necho mine\r\n");
   assert.match(linkCli({ script, env, home, files, platform: "win32" }).text, /something else, not Reach/);
   assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), "@echo off\r\necho mine\r\n");
+  // An accented user name is fine (cmd expands %USERPROFILE% itself); a %
+  // is doubled; accents outside the profile can't be written, so it says so.
+  disk.clear();
+  const joseApps = "C:\\Users\\José\\AppData\\Local\\Microsoft\\WindowsApps";
+  const jose = { Path: joseApps, LOCALAPPDATA: "C:\\Users\\José\\AppData\\Local", USERPROFILE: "C:\\Users\\José" };
+  dirsOn.add(joseApps.toLowerCase());
+  const mine = { script: "C:\\Users\\José\\100% done\\reach\\reach", env: jose, home: "C:\\Users\\José", files, platform: "win32" };
+  const accented = linkCli(mine);
+  assert.equal(accented.ok, true, accented.text);
+  assert.equal(disk.get(`${joseApps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"%USERPROFILE%\\100%% done\\reach\\reach.cmd" %*\r\n');
+  assert.equal(linkCli(mine).already, true);
+  disk.clear();
+  const outside = linkCli({ script: "D:\\Projets\\Été\\reach\\reach", env, home, files, platform: "win32" });
+  assert.equal(outside.ok, false);
+  assert.match(outside.text, /can't hold/);
+  assert.equal(disk.size, 0, "nothing written that wouldn't work");
 });

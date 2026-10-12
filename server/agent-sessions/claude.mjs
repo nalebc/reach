@@ -504,7 +504,6 @@ export function createClaudeSessions({
       await records();
       const record = [...recordCache.entries()].find(([, hit]) => hit.record?.cliSessionId === id)?.[0] || null;
       if (record && appOpen) throw Object.assign(new Error("The Claude app has this chat in its list: delete it there."), { status: 409 });
-      await fs.mkdir(trash, { recursive: true });
       const away = async (file) => {
         if (recycle)
           try {
@@ -512,6 +511,7 @@ export function createClaudeSessions({
           } catch {
             /* moved to the folder below instead */
           }
+        await fs.mkdir(trash, { recursive: true });
         const to = path.join(trash, `${path.basename(file, path.extname(file))} ${new Date().toISOString().replace(/[:.]/g, "-")}${path.extname(file)}`);
         try {
           await fs.rename(file, to);

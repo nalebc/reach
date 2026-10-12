@@ -13,8 +13,8 @@ using System;
 using System.Runtime.InteropServices;
 public static class ReachRecycle {
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
- struct Op { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags; public bool aborted; public IntPtr mappings; public string title; }
- [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern int SHFileOperation(ref Op op);
+ public struct Op { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags; public bool aborted; public IntPtr mappings; public string title; }
+ [DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern int SHFileOperation(ref Op op);
  // FO_DELETE; FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI.
  public static int Recycle(string file) {
   var op = new Op { wFunc = 3, pFrom = file + "\\0", fFlags = 0x0040 | 0x0010 | 0x0004 | 0x0400 };

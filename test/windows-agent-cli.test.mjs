@@ -359,4 +359,6 @@ test("Windows sign-in and terminal shortcuts start the CLI by its full path, nev
   assert.equal(powershellCall('"C:\\Users\\O\'Neil$x\\claude.exe"'), "& 'C:\\Users\\O''Neil$x\\claude.exe'");
   assert.equal(powershellCall(script), "& 'C:\\Reach\\node.exe' 'C:\\Users\\Sam\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js'");
   assert.equal(powershellCall("claude"), "claude", "a Mac command passes through");
+  // PowerShell takes curly quotes as quotes too: doubled like straight ones.
+  assert.equal(powershellCall('"C:\\Users\\Nassim’s PC\\claude.exe"'), "& 'C:\\Users\\Nassim’’s PC\\claude.exe'");
 });

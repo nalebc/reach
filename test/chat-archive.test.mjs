@@ -143,7 +143,7 @@ test("on Windows a deleted Claude chat goes to the Recycle Bin, both its files; 
   };
   assert.deepEqual(await claude.remove(ID, { trash, recycle }), { deleted: true });
   assert.deepEqual(recycled.sort(), [`${ID}.jsonl`, `local_${ID}.json`]);
-  assert.deepEqual(await fs.readdir(trash), [], "nothing in a folder Explorer never empties");
+  await assert.rejects(fs.readdir(trash), { code: "ENOENT" }, "no folder Explorer never empties");
   // Recycling refused (a policy, no Recycle Bin): deleted all the same, kept in the folder.
   assert.deepEqual(await claude.remove(CLI_ONLY, { trash, recycle: async () => { throw Error("SHFileOperation 120"); } }), { deleted: true });
   assert.equal((await fs.readdir(trash)).length, 1);

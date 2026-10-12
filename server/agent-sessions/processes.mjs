@@ -202,6 +202,8 @@ export async function liveClaudeSessions(starts, { run = exec, now = Date.now, r
         const m = line.match(/^"([^"]*)","(\d+)"/);
         if (m) images.set(Number(m[2]), m[1].toLowerCase());
       }
+      // A list without Reach itself isn't the whole list.
+      if (!images.has(process.pid)) images = null;
     } catch {
       /* unknown: every record stands */
     }

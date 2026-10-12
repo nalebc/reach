@@ -147,7 +147,7 @@ async function openWindowsTerminal({ cwd, command }) {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `Start-Process powershell -WorkingDirectory '${cwd.replace(/'/g, "''")}' -ArgumentList '-NoExit','-EncodedCommand','${encoded}'`,
+      `Start-Process powershell -WorkingDirectory '${cwd.replace(/['\u2018-\u201B]/g, "$&$&")}' -ArgumentList '-NoExit','-EncodedCommand','${encoded}'`,
     ],
     { timeout: 12000, windowsHide: true },
   );
