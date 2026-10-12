@@ -720,6 +720,50 @@ test("Full control browser tools allow Reach titles, password fields and formerl
   }
 });
 
+test("a run's inputs are kept only as a salted scrypt fingerprint: a typed password can't be guessed from the ledger, retries still match", async t => {
+  const f = setup(t);
+  f.client = { ...f.client, policy: { browser: true, preset: "full", roots: ["/"], hidden: toolApps } };
+  const tab = f.driver.add("Safari", "https://example.com/");
+  tab.dom.window.document.querySelector("input").type = "password";
+  const fill = exampleTool("sign_in_fill");
+  fill.inputs = { value: { type: "string", label: "Password" } };
+  fill.steps = [
+    { op: "navigate", url: "https://example.com/" },
+    { op: "fill", target: { role: "textbox", name: "Note" }, value: { input: "value" } },
+    { op: "assert", target: { role: "main" } },
+  ];
+  await f.tools.define(f.authorize, fill);
+  const secret = "hunter2", requestId = crypto.randomUUID();
+  const first = await f.run(fill.id, { value: secret }, "Safari", requestId);
+  assert.equal(first.status, "completed");
+  await f.run(fill.id, { value: secret }, "Safari");
+  const ledgerFile = path.join(f.dataDir, "agent-tool-runs.json");
+  const ledger = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const raw = fs.readFileSync(ledgerFile, "utf8");
+  // What the ledger kept before: an unsalted SHA-256 of these exact inputs.
+  const plain = crypto.createHash("sha256")
+    .update(JSON.stringify([fill.id, "Safari", { value: secret }])).digest("hex");
+  assert.equal(raw.includes(secret), false);
+  assert.equal(raw.includes(plain), false);
+  assert.equal(ledger.length, 2);
+  for (const entry of ledger) assert.match(entry.hash, /^s1:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(ledger[0].hash, ledger[1].hash, "the same inputs are salted apart");
+  // After a restart: the same inputs are the same run, never typed again;
+  // other inputs under that requestId are refused.
+  f.restart();
+  tab.dom.window.document.querySelector("input").value = "";
+  const again = await f.run(fill.id, { value: secret }, "Safari", requestId);
+  assert.deepEqual([again.requestId, again.status, again.resultExpired], [requestId, "completed", true]);
+  assert.equal(tab.dom.window.document.querySelector("input").value, "");
+  await assert.rejects(f.run(fill.id, { value: "hunter3" }, "Safari", requestId), /different inputs/);
+  // A run saved before fingerprints were salted is still never repeated.
+  const legacyId = crypto.randomUUID();
+  fs.writeFileSync(ledgerFile, JSON.stringify([{ ...ledger[0], requestId: legacyId, hash: plain, status: "completed" }]));
+  f.restart();
+  assert.equal((await f.run(fill.id, { value: secret }, "Safari", legacyId)).status, "completed");
+  assert.equal(tab.dom.window.document.querySelector("input").value, "");
+});
+
 test("downloads enforce the file limit; protected pages and cross-site controls cannot be used", async (t) => {
   const f = setup(t);
   const search = await f.run("builtin_gmail_find", { query: "invoice" }),

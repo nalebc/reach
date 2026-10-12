@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { actionWords } from "./agent-actions.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { promisify } from "node:util";
 import { atomicJson, browserIdleEnded, fail, isPlainRecord } from "./core.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
 import {
@@ -35,6 +36,22 @@ const fp = (client) =>
   JSON.stringify([client.id, client.policy, client.scopes, client.expiresAt]);
 const digest = (value) =>
   crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// A run's inputs, as kept in the run ledger (saved for a day) to tell a retry
+// from a reused requestId. A full-control tool may type a password into a
+// page, so they are never kept as a plain fast hash someone could guess
+// from: salted scrypt, per run, compared in constant time.
+const scrypt = promisify(crypto.scrypt);
+const INPUTS = /^s1:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$/;
+export const inputsFingerprint = async (inputs, salt = crypto.randomBytes(16)) =>
+  `s1:${salt.toString("base64url")}:${(await scrypt(inputs, salt, 32)).toString("base64url")}`;
+export const sameInputs = async (fingerprint, inputs) => {
+  const parts = INPUTS.exec(fingerprint);
+  // Saved before Reach salted them (at most a day old): those inputs can't
+  // be compared, and the run they name is still never repeated.
+  if (!parts) return true;
+  const derived = await scrypt(inputs, Buffer.from(parts[1], "base64url"), 32);
+  return crypto.timingSafeEqual(derived, Buffer.from(parts[2], "base64url"));
+};
 const safeName = (value) =>
   String(value || "attachment")
     .replace(/[\u0000-\u001f\u007f/\\]/g, "_")
@@ -633,7 +650,7 @@ export function createAgentTools(
         )?.definition;
         if (known) hashValues = toolInputs(known, hashValues);
       } catch {}
-      const hash = digest([
+      const inputs = JSON.stringify([
         input.id,
         input.browser,
         Object.fromEntries(
@@ -642,12 +659,15 @@ export function createAgentTools(
       ]);
       if (ledger.has(key)) {
         const prior = ledger.get(key);
-        if (prior.hash !== hash)
+        const same = await sameInputs(prior.hash, inputs);
+        // Checked again after comparing: access may have ended meanwhile.
+        const current = check(authorize);
+        if (!same)
           throw problem(
             "request_conflict",
             "This requestId was used with different inputs.",
           );
-        if (prior.grant !== digest(fp(client)))
+        if (prior.grant !== digest(fp(current)))
           throw fail(403, "Access changed since this tool run.");
         return copy(results.get(key) || summary(prior));
       }
@@ -682,6 +702,7 @@ export function createAgentTools(
         !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(values.to)
       )
         throw fail(400, "Supply one recipient email address.");
+      const hash = await inputsFingerprint(inputs);
       const apps = await browserApps(authorize),
         candidates = apps.filter((app) => app.name === input.browser);
       if (ledger.has(key)) return api.run(authorize, input, { signal, tab, background });
