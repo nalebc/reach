@@ -93,17 +93,19 @@ See [Agent CLI setup](AGENT_CLI.md) for owner commands, restricted tailnet grant
 
 ## Install
 
-Install from source until 0.1.0 is on npm. With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
+With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
 
 ```sh
-git clone https://github.com/nalebc/reach.git
+git clone --branch v0.1.0 https://github.com/nalebc/reach.git
 cd reach
 ./reach
 ```
 
+`--branch v0.1.0` installs the latest release. `main` carries changes that aren't released yet.
+
 On Windows, use `.\reach.cmd` in place of `./reach`, and put the Tailscale app on your phone, signed in to the same account (experimental; see [Supported platforms](#supported-platforms) and the [README's setup steps](../README.md#what-setup-walks-you-through)).
 
-Once 0.1.0 is on npm:
+Or with npm:
 
 ```sh
 npm install --global @nalebc/reach
@@ -169,7 +171,7 @@ The default uses [Tailscale Serve](https://tailscale.com/docs/features/tailscale
 **Invites.** **Invite someone** (on Home, or More → Invite someone): pick the computers, then what they may use (folders, screen watch or control, apps, terminals, AI sessions, or full access) and for how long. Run `./reach invites` once to set up invite keys: the guest then just opens the link, with no Tailscale account or app, while the start page is public (the unopened invitation keeps it up); a guest with the Tailscale app needs no start page. Their device leaves your tailnet when the invitation ends.
 
 The companion accepts only localhost and its explicitly configured device hostname. Browser requests must come from its own origin, the native app origin, or an explicitly configured `REACH_ALLOWED_ORIGINS` entry. If you use one computer's Reach interface to manage another, configure each target's allowlist with the exact trusted source origin, including port. No wildcard HTTPS or `.ts.net` trust is used.
-This launcher is ready to use from a source checkout or the portable release folder. Install from source until 0.1.0 is on npm; there is no installer URL.
+This launcher is ready to use from a source checkout or the portable release folder. There is no installer URL: install from source or with npm.
 
 ### Upgrading an existing installation
 
@@ -207,7 +209,7 @@ When you run `./reach restart` in Terminal from another checkout, Reach transfer
 
 Phone interface updates keep the same Home Screen icon. Reach checks when opened, brought to the foreground, restored or reconnected, and every minute while visible. A new interface loads automatically once typing and live streams have finished. **Settings → General → Reach updates** shows its status and offers **Check for updates**. An already-open copy from before this mechanism needs one fresh load; close it from the app switcher and reopen the same icon.
 
-Reach on the computer updates itself too, when installed with npm. It checks npm a few times a day; a new version comes to your phone once as **Update Reach to 0.2.0** under Needs you, and stays in **Settings → Reach updates**. **Update** installs exactly that version into the folder npm installed Reach in (never with sudo) and starts Reach again on it: its terminals and live screens end, phones reload onto the new interface, and agents connected to the computer pick up the new version by themselves on their next use. In Terminal, `reach update` does the same after asking. Run without a terminal (by an agent), it installs nothing and points to your phone. When Reach can't write to its own folder, it shows the command to run instead. A source checkout updates with `git pull` and a restart.
+Reach on the computer updates itself too, when installed with npm. It checks npm a few times a day; a new version comes to your phone once as **Update Reach to 0.2.0** under Needs you, and stays in **Settings → Reach updates**. **Update** installs exactly that version into the folder npm installed Reach in (never with sudo) and starts Reach again on it: its terminals and live screens end, phones reload onto the new interface, and agents connected to the computer pick up the new version by themselves on their next use. In Terminal, `reach update` does the same after asking. Run without a terminal (by an agent), it installs nothing and points to your phone. When Reach can't write to its own folder, it shows the command to run instead. A source checkout moves to a newer release with `git fetch --tags` and `git checkout v<version>` ([releases](https://github.com/nalebc/reach/releases)), then a restart.
 
 **Agents & people** shows an agent still on a runtime from before agents updated themselves as **Needs a one-time update**; **Copy update command** gives the one command to run on its machine.
 
@@ -342,7 +344,7 @@ See [the security review and remaining limitations](SECURITY.md).
 ## Current limits
 
 - Tailscale must be connected on both devices. Renaming a Tailscale device or changing the HTTPS port changes its address.
-- Install from source until 0.1.0 is on npm. There is no signed desktop installer or distributed native phone app. The one-command launcher prepares Node.js automatically from a Reach folder.
+- There is no signed desktop installer or distributed native phone app. The one-command launcher prepares Node.js automatically from a Reach folder.
 - The computer must be awake and the companion running. Reach does not wake sleeping computers.
 - Terminal output is capped at 256,000 characters for reconnect replay. Job output is capped at 256 KiB; 200 recent jobs are retained. Jobs allow up to eight concurrent executions and a maximum one-hour timeout.
 - In Files, tap **⋯** next to a file and choose **Share** (or tap the share icon in a preview) to open the phone's share sheet. In a phone browser, files up to 20 MB are fetched as soon as you open their actions or preview, so the sheet opens on the first tap; for larger files the button changes to **Tap to share** once the file is ready. On a supported phone browser, the system share sheet offers compatible installed apps such as Messages, Messenger, and Save to Files. Use the private Tailscale HTTPS link in Safari on iPhone or Chrome on Android. Reach shares the file contents, never your pairing credentials or a download link. The original file stays on the computer. Canceling does not download or send anything automatically.

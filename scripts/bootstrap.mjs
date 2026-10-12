@@ -315,7 +315,7 @@ async function update() {
   const { compareVersions } = await import("../server/versions.mjs");
   const install = reachInstall(root);
   if (install.source) {
-    console.log(`This is a source checkout. Update it with git pull, then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
+    console.log(`This is a source checkout. Move it to the newest release with git fetch --tags and git checkout v<version> (https://github.com/nalebc/reach/releases), then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
   if (install.reason === "portable") return console.log(install.manual);

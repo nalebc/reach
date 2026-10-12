@@ -6,7 +6,7 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-10-12
 
 First public release candidate. Early access: see `docs/RELEASE.md` for the
 real-device checks that are still open.

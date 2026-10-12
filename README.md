@@ -114,27 +114,29 @@ The terminal says **✔ 3. Your phone — connected** when it's in. Later, when 
 
 ### Install
 
-**From source (available now), on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
+**From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
 ```sh
-git clone https://github.com/nalebc/reach.git
+git clone --branch v0.1.0 https://github.com/nalebc/reach.git
 cd reach
 ./reach
 ```
+
+`--branch v0.1.0` installs the latest release. `main` carries changes that aren't released yet.
 
 On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
 
 **On a Windows PC (experimental, not yet verified on a physical PC).** In PowerShell:
 
 ```powershell
-git clone https://github.com/nalebc/reach.git
+git clone --branch v0.1.0 https://github.com/nalebc/reach.git
 cd reach
 .\reach.cmd
 ```
 
 Use Reach from your phone or another computer: opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
 
-**With npm (once published).** The npm package is **not published yet**. Once the first release is out, with [Node.js 22 or newer](https://nodejs.org/):
+**With npm.** With [Node.js 22 or newer](https://nodejs.org/):
 
 ```sh
 npm install --global @nalebc/reach
