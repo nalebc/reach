@@ -387,7 +387,7 @@ export function createAgentSessions({
   let liveCache = null;
   const liveNow = async () => {
     if (!liveCache || Date.now() - liveCache.at > liveMs)
-      liveCache = { at: Date.now(), value: claude.starts().then(live) };
+      liveCache = { at: Date.now(), value: claude.starts().then((starts) => live(starts, { platform, ours: (pid) => !!claudeHost.ownsProcess?.(pid) })) };
     try {
       return await liveCache.value;
     } catch (e) {
@@ -600,6 +600,9 @@ export function createAgentSessions({
   };
   // Ends the app's idle process the way its idle timeout does; false if it's still there.
   const handOver = async (holder) => {
+    // Windows has no such signal: Node would end the app's process outright.
+    // The reply waits until the app lets go of the chat itself.
+    if (platform === "win32") return false;
     try {
       kill(holder.pid, "SIGINT");
     } catch {

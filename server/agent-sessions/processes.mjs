@@ -185,7 +185,18 @@ export function readSessionRegistry({
   return found;
 }
 
-export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid } = {}) {
+export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid, platform = process.platform, ours = () => false } = {}) {
+  // Windows has no ps or lsof: Claude Code's own registry says which sessions
+  // run and where, and Reach knows its own processes (ours). Failing there
+  // read as "nobody holds it", and Reach wrote into chats a terminal or the
+  // Claude app still had open (docs/parity/AUDIT.md #8). Without start
+  // times, a record whose pid Windows gave to another program reads as
+  // held: a reply waits rather than going in twice.
+  if (platform === "win32") {
+    const live = new Map();
+    for (const [id, entry] of registry()) live.set(id, ours(entry.pid) ? { ...entry, where: "reach" } : entry);
+    return live;
+  }
   const { stdout } = await run("ps", ["-axo", "pid=,ppid=,etime=,tty=,command="], {
     maxBuffer: 8 * 1024 * 1024,
   });

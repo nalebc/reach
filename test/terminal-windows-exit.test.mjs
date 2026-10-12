@@ -50,3 +50,37 @@ test("Windows natural shell exits release their console hosts and let the parent
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /THREE_NATURAL_EXITS_RELEASED/);
 });
+
+// Claude Code and Codex start in a Reach terminal as cmd would start them:
+// each part quoted (app-shortcuts.mjs windowsCliCommand). Typed as is,
+// PowerShell echoed one quoted path and refused two (Oct 12 audit, #6).
+test("Windows: an agent's quoted command runs in a Reach terminal instead of being echoed", {
+  skip: process.platform !== "win32", timeout: 50000,
+}, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach pty call-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(directory, "agent's cli.js"), "console.log('REACH_' + 'QUOTED_CALL_OK'); process.exit(0);\n");
+  const file = path.join(directory, "probe.mjs");
+  fs.writeFileSync(file, `
+    import assert from 'node:assert/strict';
+    import { Terminals } from ${JSON.stringify(new URL("../server/terminal.mjs", import.meta.url).href)};
+    const terminals = new Terminals();
+    const command = [process.execPath, ${JSON.stringify(path.join(directory, "agent's cli.js"))}].map((part) => '"' + part + '"').join(' ') + '; exit 0';
+    const created = terminals.create({ cwd: ${JSON.stringify(directory)}, clientId: 'windows-call-fixture', command });
+    const session = terminals.get(created.id);
+    let timer;
+    try {
+      await Promise.race([session.ended, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('PowerShell did not finish: ' + session.buffer.slice(-2000))), 15000); })]);
+    } finally { clearTimeout(timer); }
+    assert.match(session.buffer, /REACH_QUOTED_CALL_OK/, session.buffer.slice(-2000));
+    await terminals.dispose();
+    console.log('QUOTED_CALL_RAN');
+  `);
+  const result = spawnSync(process.execPath, [file], {
+    cwd: directory, env: process.env, encoding: "utf8", timeout: 40000,
+    maxBuffer: 64 * 1024,
+  });
+  assert.equal(result.error, undefined, `${result.error?.message || ""}\n${result.stdout}\n${result.stderr}`);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /QUOTED_CALL_RAN/);
+});

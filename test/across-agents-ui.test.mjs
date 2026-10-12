@@ -607,6 +607,18 @@ test("a new chat can be a team: the lead and its helpers drawn as a route, start
   assert.deepEqual(dom.errors, []);
 });
 
+// No team bridge on the computer (Windows has none yet): Team is not offered,
+// rather than offered and failing with "Restart Reach" (docs/parity/AUDIT.md #14).
+test("a computer that can't run teams offers no Team in a new chat", async () => {
+  await home([codexSession(), claudeSession()], both(), { teamsReady: false });
+  await click(await dom.waitFor(() => button("New chat")));
+  await dom.waitFor(() => $(".chat-create-sheet"));
+  await click(button("Add"));
+  assert.ok($$('[role="menuitemcheckbox"]').length > 0, "the Add menu is open");
+  assert.equal($$('[role="menuitemcheckbox"]').find((b) => b.textContent.startsWith("Team")), undefined);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("the lead's chat shows its team at work, a helper's chat the way back, and Stop asks first", async (t) => {
   routes["/api/sessions/teams/team-1/stop"] = record("/api/sessions/teams/team-1/stop");
   t.after(() => delete routes["/api/sessions/teams/team-1/stop"]);

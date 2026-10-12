@@ -506,6 +506,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   // Whether the computer has said what it has (or couldn't): until then,
   // Chat neither offers to start a chat nor to install one.
   const [healthChecked, setHealthChecked] = useState(false);
+  // Whether this computer can run a team (no team bridge on Windows yet).
+  const [teamsReady, setTeamsReady] = useState(true);
   const [failure, setFailure] = useState("");
   // Bumped when the feed stops or restarts: answers to requests sent
   // before are dropped, so an old "unchanged" can't set `known` over the
@@ -567,6 +569,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     setSessions(null);
     setErrors({});
     setHealth([]);
+    setTeamsReady(true);
     setHealthChecked(false);
     setRelays([]);
     setTeams([]);
@@ -585,8 +588,9 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     let lastHealth = "";
     let healthActive = true;
     const checkHealth = (fresh = false) =>
-      request<{ agents: AgentHealth[] }>(peer, `/api/sessions/health${fresh ? "?fresh=1" : ""}`)
+      request<{ agents: AgentHealth[]; teams?: false }>(peer, `/api/sessions/health${fresh ? "?fresh=1" : ""}`)
         .then((r) => {
+          if (healthActive) setTeamsReady(r.teams !== false);
           const next = JSON.stringify(r.agents);
           if (healthActive && next !== lastHealth) {
             lastHealth = next;
@@ -622,7 +626,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     seenRevision.current = revision;
     void load();
   }, [revision, load]);
-  return { sessions, errors, health, healthChecked, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
+  return { sessions, errors, health, healthChecked, teamsReady, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>

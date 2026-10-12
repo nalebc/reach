@@ -19,6 +19,7 @@ import path from "node:path";
 import { sweepAtRest } from "./at-rest.mjs";
 import { claudeEnvironment, windowsGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
+import { windowsPath } from "../app-identity.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code's permission modes as it lists them in --help, in the order and
@@ -307,6 +308,7 @@ export function createClaudeHost({
   stopSettleMs = 3000,
 }) {
   const sessions = new Map();
+  const spawned = new Set();
   const rewinds = createClaudeRewinds({ file: rewindFile });
   const rewindUncertain = () => Object.assign(uncertainDelivery("claude"), { message: "Claude may already have continued this rewind. Check the chat in Claude, then choose a rewind again before sending." });
   let closed = false;
@@ -697,6 +699,10 @@ export function createClaudeHost({
     const cli = spawnable(claude);
     const proc = spawn(cli.file, [...cli.args, ...args], { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
+    if (proc.pid) {
+      spawned.add(proc.pid);
+      proc.once?.("exit", () => spawned.delete(proc.pid));
+    }
     // Starting a preview/helper does not consume a pending continuation.
     // It is cleared only after its user message is accepted below.
     s.launchedEffort = s.settings.effort || null;
@@ -807,6 +813,9 @@ export function createClaudeHost({
 
   return {
     drives: (id) => !!sessions.get(id)?.proc,
+    // A Claude Code process Reach started, until it exits: where Windows
+    // can't say whose child a process is (processes.mjs).
+    ownsProcess: (pid) => spawned.has(pid),
     onChange(listener) {
       changeListeners.add(listener);
       return () => changeListeners.delete(listener);
@@ -911,7 +920,9 @@ export function createClaudeHost({
       return true;
     },
     async start({ cwd, text, images, model, effort, mode, extra }) {
-      if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
+      // A full path as the computer writes it: C:\Users\me\proj on Windows.
+      const folder = platform === "win32" ? /^[A-Za-z]:\\$/.test(cwd) || windowsPath(cwd) : typeof cwd === "string" && cwd.startsWith("/");
+      if (!folder) throw bad("Choose a folder.");
       const input = claudeContent({ text, images }, readFile);
       const id = randomUUID();
       const s = state(id);

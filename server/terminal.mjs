@@ -1,6 +1,7 @@
 import { loadPty, releaseExitedPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
+import { powershellCall } from "./powershell.mjs";
 const pty = loadPty();
 // The last lines a shell printed, as plain text, for the Home cards. Full-screen
 // programs (Codex, vim) redraw with cursor moves, so they get no preview.
@@ -95,8 +96,9 @@ export class Terminals {
       for (const fn of session.listeners) fn({ type: "exit", exitCode });
     });
     this.sessions.set(session.id, session);
-    // Server-resolved agent command (never client text), run once the shell starts.
-    if (command) proc.write(`${command}\r`);
+    // Server-resolved agent command (never client text), run once the shell
+    // starts; on Windows a quoted path is called (&), as PowerShell needs.
+    if (command) proc.write(`${process.platform === "win32" ? powershellCall(command) : command}\r`);
     // Or text the person chose to run (a chat's play button), typed as they
     // would type it: each line ends with Enter.
     else if (input) proc.write(`${input.replace(/\r?\n/g, "\r")}\r`);

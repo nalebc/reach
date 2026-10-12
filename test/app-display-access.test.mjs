@@ -127,3 +127,51 @@ test("an app's hidden display streams only to its owner and to guests allowed th
     { display: "1", privateView: true },
   ]);
 });
+
+// Windows' capture can't leave password managers and Reach's windows out of
+// a guest's picture yet (docs/parity/AUDIT.md #12): a guest is refused with
+// the reason, on the old protocol too, and nothing is captured for them.
+test("on a Windows Reach a screen guest is refused the live screen; the owner still watches", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-guest-screen-win-"));
+  const prepared = [];
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, "private"),
+    screen: true,
+    platform: "win32",
+    remoteScreenFactory: async (options, { privateView }) => {
+      prepared.push(privateView);
+      return () => ({ next: async () => Buffer.from("frame"), stop() {} });
+    },
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const sockets = [];
+  t.after(async () => {
+    for (const ws of sockets) ws.terminate();
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const guest = reach.auth.redeemGuest(
+    reach.auth.inviteGuest({ name: "guest", roots: [], ttlSeconds: 600, screen: "control" }).invitation,
+  ).token;
+  const watch = async (token, protocol) => {
+    const ws = new WebSocket(url.replace("http:", "ws:") + "/ws/screen");
+    sockets.push(ws);
+    const messages = [];
+    let closed = null;
+    ws.on("error", () => {});
+    ws.on("close", (code, reason) => (closed = { code, reason: String(reason) }));
+    ws.on("message", (b, binary) => messages.push(binary ? b : JSON.parse(b)));
+    await once(ws, "open");
+    ws.send(JSON.stringify({ type: "auth", token, ...(protocol && { protocol, display: "1", format: "h264" }) }));
+    await until(() => closed || messages.some((m) => Buffer.isBuffer(m) || m.type === "error" || m.type === "ready"));
+    const error = messages.find((m) => !Buffer.isBuffer(m) && m.type === "error");
+    return error?.error || closed?.reason || "streamed";
+  };
+  assert.equal(await watch(owner.token, 2), "streamed");
+  assert.match(await watch(guest, 2), /owner can watch its screen/);
+  assert.match(await watch(guest), /owner can watch its screen/);
+  assert.deepEqual(prepared, [false], "nothing is prepared for the guest");
+});

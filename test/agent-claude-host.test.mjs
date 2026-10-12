@@ -410,6 +410,17 @@ test("a new Claude session gets its own id and the chosen settings", async () =>
   await assert.rejects(h.start({ cwd: "relative", text: "x" }), /Choose a folder/);
 });
 
+test("on Windows a new Claude session starts in a drive-letter folder, the form Reach's folder picker gives", async () => {
+  const claude = fakeClaude();
+  const h = host(claude, { platform: "win32" });
+  const { threadId } = await h.start({ cwd: "C:\\Users\\me\\proj", text: "go" });
+  assert.match(threadId, UUID);
+  assert.equal(claude.last().options.cwd, "C:\\Users\\me\\proj");
+  await h.start({ cwd: "D:\\", text: "go" });
+  for (const cwd of ["relative", "C:proj", "\\\\server\\share\\proj", "/work/app", "C:\\Users\\me\\..\\proj"])
+    await assert.rejects(h.start({ cwd, text: "x" }), /Choose a folder/, cwd);
+});
+
 const requests = (proc, subtype) => proc.lines.filter((m) => m.type === "control_request" && m.request.subtype === subtype).map((m) => m.request);
 
 test("a new Claude session is named from its first message, so the Claude app doesn't list it as General coding session", async () => {
@@ -826,6 +837,60 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   // Imported, not reloaded: the import shows it afresh.
   assert.deepEqual(refreshed, [ID, ID]);
   sessions.close();
+});
+
+// Windows has no gentle signal: Node's SIGINT there ends a process outright,
+// which could cost the Claude app its turn (docs/parity/AUDIT.md #8). The
+// reply waits until the app lets go of the chat itself, then goes in.
+test("on Windows an idle Claude app process is never ended: a reply waits for the app to let go, then goes", async (t) => {
+  const claude = fakeClaude();
+  const claudeHost = host(claude);
+  const app = { pid: 5150, alive: true, signals: [] };
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
+    codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
+    claude: {
+      list: async () => [],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true }),
+      read: async (id) => ({ session: { agent: "claude", id, cwd: "C:\\work\\site", status: "idle" }, items: [], before: null }),
+    },
+    live: async () => new Map(app.alive ? [[ID, { where: "claude-app", pid: app.pid, tty: null, exact: true, busy: false }]] : []),
+    claudeHost,
+    signIn: {},
+    liveMs: -1,
+    queueMs: 10,
+    platform: "win32",
+    kill: (pid, signal) => app.signals.push(signal),
+    alive: () => app.alive,
+    takeOverMs: 30,
+    claudeImports: { add: async () => {}, close() {} },
+  });
+  t.after(() => sessions.close());
+  assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "from the phone" })), { queued: true, delivered: false });
+  await settle(60);
+  assert.deepEqual(app.signals, [], "the app's process is never ended");
+  assert.equal(claude.runs.length, 0, "nothing writes while the app holds it");
+  // The app lets go on its own (its idle timeout): the reply goes in.
+  app.alive = false;
+  await settle(5200);
+  assert.equal(claude.last()?.lines.filter((l) => l.type === "user").at(-1)?.message.content[0].text, "from the phone");
+  assert.deepEqual(app.signals, []);
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
+  claudeHost.release(ID);
+});
+
+// Windows has no ps or lsof: Claude Code's registry says who holds a chat.
+test("on Windows live Claude sessions come from Claude Code's registry, never ps or lsof; Reach's own are Reach's", async () => {
+  const { liveClaudeSessions } = await import("../server/agent-sessions/processes.mjs");
+  const run = () => assert.fail("Windows must not run ps or lsof");
+  const registry = () => new Map([
+    ["a", { where: "terminal", pid: 11, tty: null, exact: true, busy: true }],
+    ["b", { where: "claude-app", pid: 12, tty: null, exact: true, busy: false }],
+    ["c", { where: "terminal", pid: 13, tty: null, exact: true, busy: true }],
+  ]);
+  const live = await liveClaudeSessions([], { run, registry, platform: "win32", ours: (pid) => pid === 13 });
+  assert.deepEqual([...live].map(([id, e]) => [id, e.where, e.pid]), [["a", "terminal", 11], ["b", "claude-app", 12], ["c", "reach", 13]]);
 });
 
 // Right after a turn, Reach's own process is still exiting: a message then

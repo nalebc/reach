@@ -13,6 +13,15 @@ export const powershellFile = (script, args = [], { sta = false } = {}) => [
   script,
   ...args,
 ];
+// A command as cmd would start it ("C:\\…\\claude.exe", or "node.exe"
+// "cli.js": app-shortcuts.mjs) as PowerShell runs it: a call (&) with each
+// part in single quotes ($ and backticks stay as written). Typed as it is,
+// PowerShell only echoes one quoted path and refuses two. Anything else
+// passes through.
+export const powershellCall = (command) =>
+  /^"/.test(command)
+    ? `& ${command.replace(/"([^"]*)"/g, (_, part) => `'${part.replace(/'/g, "''")}'`)}`
+    : command;
 // What PowerShell prints when policy stops a script before it runs, or when
 // application control refuses Add-Type (every helper compiles a little C#).
 const BLOCKED =

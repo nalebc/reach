@@ -5,6 +5,8 @@ import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
 import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
 import { bundledCodexPaths } from "./capabilities.mjs";
 import { codexNative, findWindowsCli, spawnable } from "./agent-cli.mjs";
+import { powershellCall } from "./powershell.mjs";
+export { powershellCall };
 
 export function shortcutUrl(value) {
   if (
@@ -108,12 +110,6 @@ export async function windowsCliCommand(name, { find = findWindowsCli, node = pr
   const { file, args } = spawnable(found, { platform: "win32", node });
   return [file, ...args].map((part) => `"${part}"`).join(" ");
 }
-// That command as PowerShell runs it: a call (&) with each part in single
-// quotes ($ and backticks stay as written).
-export const powershellCall = (command) =>
-  /^"/.test(command)
-    ? `& ${command.replace(/"([^"]*)"/g, (_, part) => `'${part.replace(/'/g, "''")}'`)}`
-    : command;
 // Where an agent CLI can be started from a terminal, or null when missing.
 // bundled: a list of paths, or a function giving one.
 async function findCli(name, bundled = []) {

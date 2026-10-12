@@ -19,6 +19,15 @@ export function screenTrouble(message, { now = Date.now, log = console.warn } = 
   return true;
 }
 
+// Guests see the screen without password managers and Reach's own windows.
+// Windows' capture can't leave them out yet (docs/parity/AUDIT.md #12): there
+// only the owner and full-access people watch, until it can. (Linux has no
+// live screen at all.)
+export const PRIVATE_VIEW_UNAVAILABLE =
+  "Only this PC's owner can watch its screen for now: Reach can't yet hide password managers and its own windows from others on Windows.";
+export const privateViewRefused = (privateView, platform = process.platform) =>
+  Boolean(privateView) && platform === "win32";
+
 export class RemoteScreenHub {
   constructor(config, prepare) {
     this.config = config;
@@ -36,8 +45,10 @@ export class RemoteScreenHub {
     ws,
     authorize,
     value,
-    { mayViewDisplay = () => true, privateView = false } = {},
+    { mayViewDisplay = () => true, privateView = false, platform = process.platform } = {},
   ) {
+    if (privateViewRefused(privateView, platform))
+      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     if (this.viewers.size >= 4)
       throw fail(429, "Four screen viewers are already connected.");
     const options = streamOptions(value);

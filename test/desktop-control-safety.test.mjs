@@ -13,7 +13,7 @@ const until = async (check, ms = 3000) => {
 const owner = { id: "owner", kind: "device", name: "Owner", scopes: ["admin", "screen"] };
 const guest = { id: "guest", kind: "guest", name: "Guest", scopes: ["screen", "screen:control"] };
 
-function connect({ client = owner, display = "primary", allowDisplay, slow = {} } = {}) {
+function connect({ client = owner, display = "primary", allowDisplay, slow = {}, platform = "darwin" } = {}) {
   const control = new ScreenControl();
   control.acquire(client, true);
   const sent = [];
@@ -42,6 +42,7 @@ function connect({ client = owner, display = "primary", allowDisplay, slow = {} 
     control,
     scanner: null,
     create: async () => helper,
+    platform,
     ...(allowDisplay && { allowDisplay }),
   });
   const message = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
@@ -122,6 +123,27 @@ test("only the owner reads a concealed clipboard: the helper is told who asks", 
     assert.deepEqual(c.sent.at(-1), { type: "clipboard-read", owner: isOwner });
     c.end();
   }
+});
+
+test("on Windows only the owner reads the clipboard: a guest's read is refused alone, before the helper, and control stays", async () => {
+  const c = connect({ client: guest, platform: "win32" });
+  await until(c.ready);
+  c.input({ type: "clipboard-read" });
+  c.input({ type: "click", x: 0.5, y: 0.5 });
+  await until(() => c.ack(2));
+  assert.equal(c.ack(1).ok, false);
+  assert.match(c.ack(1).error, /owner can read its clipboard/);
+  assert.equal(c.ack(2).ok, true);
+  assert.ok(!c.sent.some((a) => a.type === "clipboard-read"), "the helper is never asked");
+  assert.equal(c.ws.readyState, 1);
+  c.end();
+  const mine = connect({ client: owner, platform: "win32" });
+  await until(mine.ready);
+  mine.input({ type: "clipboard-read" });
+  await until(() => mine.ack(1));
+  assert.equal(mine.ack(1).ok, true);
+  assert.deepEqual(mine.sent.at(-1), { type: "clipboard-read", owner: true });
+  mine.end();
 });
 
 test("a hidden app display needs that app shared; losing it mid-control ends control", async () => {

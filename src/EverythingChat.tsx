@@ -132,6 +132,7 @@ export function NewChat({
   onAgent,
   onWorkflow,
   startAs = "",
+  teams = true,
 }: {
   peer: Peer;
   agent: AgentName;
@@ -147,6 +148,8 @@ export function NewChat({
   // A workflow planned from here (Workflows.tsx), and opening on that choice.
   onWorkflow?: (workflow: Workflow) => void;
   startAs?: "" | "workflow";
+  // Whether this computer can run a team (no team bridge on Windows yet).
+  teams?: boolean;
 }) {
   const folders = useMemo(() => chatFolders(sessions), [sessions]);
   const [cwd, setCwd] = useState(folder);
@@ -180,7 +183,7 @@ export function NewChat({
   const [panel, setPanel] = useState<"" | "folder" | "mode" | "model" | "add">("");
   // A team (docs/ACROSS_AGENTS.md): this agent leads, helpers take tasks.
   const teamAgents = relayAgents(health, { openclaw: false });
-  const canTeam = (agent === "codex" || agent === "claude") && teamAgents.length > 0;
+  const canTeam = teams && (agent === "codex" || agent === "claude") && teamAgents.length > 0;
   const [teamMode, setTeamMode] = useState(false);
   const [helpers, setHelpers] = useState<string[]>([]);
   useEffect(() => {
@@ -1454,6 +1457,7 @@ export default function EverythingChat({
                   logos={logos}
                   onAgent={pickNew}
                   startAs={newKind}
+                  teams={(shared || own).teamsReady !== false}
                   onWorkflow={(w) => {
                     setSheet("");
                     setNewKind("");

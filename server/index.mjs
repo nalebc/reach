@@ -89,7 +89,7 @@ import {
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
-import { RemoteScreenHub, screenTrouble } from "./remote-screen.mjs";
+import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
   AppThreads,
@@ -3299,6 +3299,9 @@ export async function createReach(overrides = {}) {
         ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
         ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
       })),
+      // No team bridge (Windows has none yet: team-bridge.mjs): the phone
+      // doesn't offer a Team that could only fail.
+      ...(teamBridgeOpen || overrides.teams ? {} : { teams: false }),
     }),
   );
   // Ask (or stop asking) for one notification when an agent's limit is back.
@@ -4905,6 +4908,7 @@ export async function createReach(overrides = {}) {
         },
         control: screenControl,
         create: overrides.desktopInputFactory,
+        platform: overrides.platform || process.platform,
         // A phone app's hidden display: only for those that app is shared with.
         allowDisplay: (client, display) =>
           // The same rule as watching it: every app on it must be theirs.
@@ -5030,6 +5034,10 @@ export async function createReach(overrides = {}) {
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
             notPaused();
+            // Every protocol, the old one too: guests' pictures can't be
+            // filtered off a Mac yet (remote-screen.mjs).
+            if (privateViewRefused(!actsAsOwner(client), overrides.platform || process.platform))
+              throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
             credential = message.token;
             ws.clientId = client.id;
             if (appWindow) ws.appThread = message.thread;

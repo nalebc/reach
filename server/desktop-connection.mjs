@@ -24,6 +24,7 @@ export function desktopConnection(
     // How long a stopped control keeps its connection and helper parked, so
     // Control again resumes at once instead of starting a new helper.
     parkFor = 60000,
+    platform = process.platform,
   },
 ) {
   let token,
@@ -247,10 +248,15 @@ export function desktopConnection(
             continue;
           }
           // A password manager's copied secret stays on the Mac for guests:
-          // the helper turns it down unless the owner asked.
+          // the helper turns it down unless the owner asked. Windows' helper
+          // can't tell a concealed copy yet (docs/parity/AUDIT.md #13), so
+          // there only the owner reads the clipboard.
+          const owner = client.scopes.includes("admin");
+          if (item.action.type === "clipboard-read" && !owner && platform === "win32")
+            throw Object.assign(fail(403, "Only this PC's owner can read its clipboard for now."), { refused: true });
           result = await helper.send(
             item.action.type === "clipboard-read"
-              ? { ...item.action, owner: client.scopes.includes("admin") }
+              ? { ...item.action, owner }
               : item.action,
           );
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
