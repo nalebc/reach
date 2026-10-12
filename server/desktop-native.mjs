@@ -5,7 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { buildNative, buildWindowsNative } from "./native-build.mjs";
 import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 import { windowsPath } from "./app-identity.mjs";
@@ -34,8 +34,8 @@ export function cscCandidates({ env = process.env } = {}) {
 // policy (Smart App Control, App Control for Business, AppLocker) or an
 // antivirus. Node reports those as access errors or UNKNOWN.
 const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCES", "EPERM", "UNKNOWN"].includes(error?.code);
-/** A Windows helper built from scripts/native/<kind>.cs into the data folder, named by its source's hash: its path. */
-export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform } = {}) {
+/** A Windows helper built from scripts/native/<kind>.cs into the data folder (or `dir`), named by its source's hash: its path. */
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false } = {}) {
   signal?.throwIfAborted();
   if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
   if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
@@ -43,7 +43,11 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
   // Its source and how it's built name it: any change to either rebuilds it.
   const source = await fs.readFile(sourceFile);
   const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, REFERENCES])).digest("hex").slice(0, 12);
-  const file = path.join(config.dataDir, `reach-${kind}-${hash}.exe`);
+  // `fresh`: built now under a name no file has yet, never a cached build
+  // (a checker compiled every launch: server/windows-private-folder.mjs).
+  const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
+  // A cached build its caller no longer trusts (windowsHelper): built again.
+  if (existsSync(file) && rebuild(file)) await fs.rm(file, { force: true });
   let framework = null;
   try {
     await buildWindowsNative(file, {
@@ -70,6 +74,43 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
     throw fail(503, "Reach couldn't prepare this on your PC. Try again; if it keeps failing, Reach's log says why.");
   }
   return file;
+}
+const sha256Of = async (file) => crypto.createHash("sha256").update(await fs.readFile(file)).digest("hex");
+// A helper a security check runs (docs/parity/D-public-door.md §4.5): built in
+// a folder Reach made private this launch, its SHA-256 noted beside it right
+// after the build. A cached build is used again only while it still has the
+// hash noted; one without a note, or changed since, is built again. Returns
+// { file, sha256 }: what spawnVerified checks before every start.
+export async function windowsHelper(kind, { dir, fresh = false, ...options } = {}) {
+  if (!dir) throw Error("A helper for a security check is built only in Reach's private folder.");
+  await fs.mkdir(dir, { recursive: true });
+  const noteOf = (file) => file.replace(/\.exe$/, ".sha256");
+  const noted = (file) => {
+    try {
+      return readFileSync(noteOf(file), "utf8").trim();
+    } catch {
+      return "";
+    }
+  };
+  const hashed = (file) => crypto.createHash("sha256").update(readFileSync(file)).digest("hex");
+  const file = await windowsBinary({ dataDir: dir }, kind, { ...options, dir, fresh, rebuild: (cached) => !noted(cached) || noted(cached) !== hashed(cached) });
+  const sha256 = await sha256Of(file);
+  if (!fresh && noted(file) !== sha256) await fs.writeFile(noteOf(file), `${sha256}\n`, { mode: 0o600 });
+  return { file, sha256 };
+}
+// Run only while the file still has the hash Reach noted when it built it: a
+// helper replaced on disk since is refused, restarts included.
+export function assertUnchanged(file, sha256) {
+  let actual = "";
+  try {
+    actual = crypto.createHash("sha256").update(readFileSync(file)).digest("hex");
+  } catch {}
+  if (typeof sha256 !== "string" || !sha256 || actual !== sha256)
+    throw Object.assign(Error("Reach's helper changed on disk."), { code: "ECHANGED" });
+}
+export function spawnVerified(file, sha256, args = [], options = {}, { start = spawn } = {}) {
+  assertUnchanged(file, sha256);
+  return start(file, args, options);
 }
 export async function desktopBinary(config, kind, { signal } = {}) {
   signal?.throwIfAborted();
