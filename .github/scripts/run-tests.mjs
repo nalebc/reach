@@ -22,6 +22,8 @@ export const suites = {
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // Coding agents, workstream M.
+    "windows-codex-transport",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
