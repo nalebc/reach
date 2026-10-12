@@ -263,7 +263,12 @@ export function windowsStatusText(host, { command = "reach", now } = {}) {
   if (!host) return `Reach isn't running from this folder. Start it with ${command}.`;
   const since = clock(host.startedAt, now);
   const url = host.link || host.origin;
-  return [`Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`, ...(url ? [`Link: ${url}`] : [])].join("\n");
+  return [
+    `Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`,
+    ...(url ? [`Link: ${url}`] : []),
+    // Started with REACH_WINDOWS_ACCOUNT=1, then fell back to pairing codes.
+    ...(typeof host.signInOff === "string" && host.signInOff ? [`Browser sign-in is off for now: ${host.signInOff}`] : []),
+  ].join("\n");
 }
 // Windows has no signals to ask with (Node ends a process there outright):
 // `stop` leaves this file, and the running Reach stops as Ctrl+C stops it.

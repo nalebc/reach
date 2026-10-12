@@ -2,9 +2,17 @@ import { nativeFiles, expectFileResponse } from "./helpers/protected-files.mjs";
 import nodeTest from "node:test";
 // This suite exercises the POSIX private ingress socket and its UID/mode checks.
 // Signed request, admission and scope suites also run on Windows.
-const test = (name, fn) => nodeTest(name, { skip: process.platform === "win32" ? "Unix private ingress is not implemented on Windows" : false }, fn);
+// Each flow runs again on Windows' keyed loopback route (REACH_WINDOWS_ACCOUNT=1;
+// docs/parity/D-public-door.md §7.2), whose door and gateway are the same; not
+// yet on a real Windows runner, where agent presets wait for workstream E.
+const keyedRuns = new WeakSet();
+const both = (name, skip, fn) => {
+  nodeTest(name, { skip }, fn);
+  nodeTest(`${name} (Windows keyed route)`, { skip: process.platform === "win32" ? "Windows' agent presets wait for workstream E" : skip }, (t) => (keyedRuns.add(t), fn(t)));
+};
+const test = (name, fn) => both(name, process.platform === "win32" ? "Unix private ingress is not implemented on Windows" : false, fn);
 // These connect with a preset that uses the screen: Linux refuses it, as it should.
-const macTest = (name, fn) => nodeTest(name, { skip: process.platform !== "darwin" ? "agent presets need macOS (its protected file and screen helpers)" : false }, fn);
+const macTest = (name, fn) => both(name, process.platform !== "darwin" ? "agent presets need macOS (its protected file and screen helpers)" : false, fn);
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -15,6 +23,7 @@ import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES, atomicJson } from "../server/core.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { desktopBinary } from "../server/desktop-native.mjs";
+import { newIngressKey } from "../server/tailscale-auth.mjs";
 
 // Compile the real protected-file helper before measuring HTTP requests. On a
 // cold Intel runner its first build can exceed the request's five-second
@@ -73,11 +82,12 @@ function sign(key, input) {
 // All network identity, screen capture and native input are fixtures. No real
 // Tailscale enrollment, desktop capture, shell command or mouse event is used.
 async function setup(t) {
+  const keyed = keyedRuns.has(t);
   const root = fs.realpathSync.native(
     fs.mkdtempSync(path.join(os.tmpdir(), "reach-funnel-http-")),
   );
-  const socketDir = fs.mkdtempSync("/tmp/reach-funnel-socket-");
-  const socketPath = path.join(socketDir, "s");
+  const socketDir = keyed ? "" : fs.mkdtempSync("/tmp/reach-funnel-socket-");
+  const socketPath = keyed ? "" : path.join(socketDir, "s");
   const shared = path.join(root, "shared");
   const scoped = path.join(shared, "granted");
   const outside = path.join(shared, "outside");
@@ -140,11 +150,12 @@ async function setup(t) {
       inputs.push(action);
       return { ok: true };
     },
+    ...(keyed && { platform: "win32" }),
   });
   t.after(async () => {
     await reach.close();
     fs.rmSync(root, { recursive: true, force: true });
-    fs.rmSync(socketDir, { recursive: true, force: true });
+    if (socketDir) fs.rmSync(socketDir, { recursive: true, force: true });
   });
   const owner = reach.auth.issue("Owner", ALL_SCOPES, "device", {
     tailscale: { userId: OWNER.userId, nodeId: CLIENT_IDENTITY.nodeId },
@@ -159,13 +170,19 @@ async function setup(t) {
     reach.server.once("error", reject);
     reach.server.listen(0, "127.0.0.1", resolve);
   });
-  await reach.listenPrivate(socketPath, {
-    publicApp: (req, res) => {
-      publicIdentities.push(req.reachIdentity);
-      return reach.publicAgent(req, res) || staticHandler(req, res);
-    },
-  });
+  const publicApp = (req, res) => {
+    publicIdentities.push(req.reachIdentity);
+    return reach.publicAgent(req, res) || staticHandler(req, res);
+  };
+  // Windows: the route's key, and a peer check that knows this process is Tailscale's.
+  const ingressKey = keyed ? newIngressKey() : "";
+  const keyedPort = keyed
+    ? await reach.listenKeyed({ key: ingressKey, peerCheck: { check: async () => true }, publicApp })
+    : 0;
+  if (!keyed) await reach.listenPrivate(socketPath, { publicApp });
   reach.setFunnelController(async () => {});
+  // As Tailscale delivers it: to the socket with Host rewritten (a Mac), or
+  // to the keyed port under the key with the original Host (Windows).
   const raw = (
     route,
     { target = "public", method = "GET", body, headers = {} } = {},
@@ -175,14 +192,16 @@ async function setup(t) {
         {
           ...(target === "local"
             ? { hostname: "127.0.0.1", port: reach.server.address().port }
-            : { socketPath }),
-          path: route,
+            : keyed
+              ? { hostname: "127.0.0.1", port: keyedPort }
+              : { socketPath }),
+          path: target !== "local" && keyed ? `/r-${ingressKey}${route}` : route,
           method,
           headers: {
             Host: new URL(ORIGIN).host,
             ...(target === "public"
               ? {
-                  Host: "localhost",
+                  Host: keyed ? new URL(ORIGIN).host : "localhost",
                   "X-Forwarded-Host": new URL(ORIGIN).host,
                   "Tailscale-Funnel-Request": "?1",
                 }

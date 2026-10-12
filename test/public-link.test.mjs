@@ -3,10 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EventEmitter } from "node:events";
 import {
   funnelRoute,
-  PublicLink,
   PORT_TAKEN,
   ensurePersistentFunnel,
   removePersistentFunnel,
@@ -81,85 +79,6 @@ test("recognizes exactly Reach's own Funnel route", () => {
   );
 });
 
-function fakeChild() {
-  const child = new EventEmitter();
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
-  child.exitCode = null;
-  child.signalCode = null;
-  child.kill = (signal) => {
-    child.killed = signal || "SIGTERM";
-    child.exitCode = 0;
-    queueMicrotask(() => child.emit("close"));
-  };
-  return child;
-}
-
-test("foreground link: starts once, reports Funnel setup, restarts with backoff, never fights another service", async () => {
-  let config = {};
-  let clock = 1000;
-  const spawned = [];
-  const reports = [];
-  const setup = [];
-  const link = new PublicLink({
-    origin,
-    target,
-    inspect: async () => config,
-    spawnFunnel: (args) => {
-      const child = fakeChild();
-      spawned.push({ args, child });
-      return child;
-    },
-    report: (m) => reports.push(m),
-    setupUrl: (u) => setup.push(u),
-    now: () => clock,
-  });
-  assert.equal(await link.check(), false);
-  assert.deepEqual(
-    spawned.map((s) => s.args),
-    [["funnel", "--https=443", target]],
-  );
-  spawned[0].child.stdout.emit(
-    "data",
-    "Funnel is not enabled on your tailnet.\nTo enable, visit:\n\n https://login.tailscale.com/f/funnel?node=abc\n",
-  );
-  assert.deepEqual(setup, ["https://login.tailscale.com/f/funnel?node=abc"]);
-  assert.equal(await link.check(), false, "still starting: no second process");
-  assert.equal(spawned.length, 1);
-  config = { Foreground: { x: privateReach, y: ours } };
-  assert.equal(await link.check(), true);
-  assert.equal(link.live, true);
-  // The process died and its route went with it: restart, but not in a tight loop.
-  spawned[0].child.exitCode = 1;
-  config = { Foreground: { x: privateReach } };
-  clock += 10000;
-  assert.equal(await link.check(), false);
-  assert.equal(spawned.length, 2);
-  spawned[1].child.exitCode = 1;
-  assert.equal(await link.check(), false);
-  assert.equal(spawned.length, 2, "backoff holds the next attempt");
-  clock += 60000;
-  await link.check();
-  assert.equal(spawned.length, 3);
-  // Someone else takes 443: report once, never spawn over it.
-  spawned[2].child.exitCode = 1;
-  config = {
-    Web: { [host]: { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } } },
-    TCP: { 443: { HTTPS: true } },
-  };
-  clock += 60000;
-  await link.check();
-  await link.check();
-  assert.equal(spawned.length, 3);
-  assert.deepEqual(reports, [PORT_TAKEN]);
-  config = { Foreground: { y: ours } };
-  assert.equal(await link.check(), true);
-  assert.deepEqual(reports, [PORT_TAKEN, "Public start link restored."]);
-  await link.stop();
-  assert.equal(await link.check(), true, "after stop, no more changes");
-  assert.equal(spawned.length, 3);
-});
-
 // One address: the route now points at Reach's own listener. Reach's route
 // from before (to the separate start-page socket) is replaced, as recorded
 // when Reach added it; a route Reach never recorded is never touched.
@@ -204,29 +123,6 @@ test("one address: Reach's own older route is replaced; anyone else's never", as
       );
       assert.deepEqual(ran, [], JSON.stringify(record));
     }
-
-    // Running in the foreground over an older service's recorded route: it
-    // goes, the record with it, and the one address starts.
-    config = route(target);
-    ran.length = 0;
-    fs.writeFileSync(file, JSON.stringify({ version: 1, origin, target }));
-    const spawned = [];
-    const reports = [];
-    const link = new PublicLink({
-      origin,
-      target: now,
-      file,
-      run,
-      inspect,
-      spawnFunnel: (args) => (spawned.push(args), fakeChild()),
-      report: (m) => reports.push(m),
-    });
-    assert.equal(await link.check(), false);
-    assert.deepEqual(ran, [["funnel", "--https=443", "off"]]);
-    assert.equal(fs.existsSync(file), false);
-    assert.deepEqual(spawned, [["funnel", "--https=443", now]]);
-    assert.deepEqual(reports, [], "no port-taken warning for our own route");
-    await link.stop();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

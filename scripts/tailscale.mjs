@@ -43,16 +43,31 @@ export function findTailscaleCli({
 }
 // Setup can install, move or replace the app while Reach waits.
 export const tailscaleCli = () => findTailscaleCli();
+// The command line's own version ("" when it doesn't answer).
+export const tailscaleCliVersion = () =>
+  exec(tailscaleCli(), ["version"], { timeout: 5000, maxBuffer: 65536, windowsHide: true }).then(({ stdout }) => stdout.split("\n")[0].trim()).catch(() => "");
 // The command line's version and the daemon's: when they differ, say so once.
 export async function tailscaleVersions() {
   const [client, status] = await Promise.all([
-    exec(tailscaleCli(), ["version"], { timeout: 5000, maxBuffer: 65536, windowsHide: true }).then(({ stdout }) => stdout.split("\n")[0].trim()).catch(() => ""),
+    tailscaleCliVersion(),
     tailscaleJson(["status", "--json"]).catch(() => null),
   ]);
   const daemon = typeof status?.Version === "string" ? status.Version.split("-")[0] : "";
   return { client, daemon, mismatch: !!client && !!daemon && client !== daemon };
 }
-export async function tailscaleJson(args) {
+// What Windows' keyed route depends on (configure.mjs keyedSupportProblem):
+// the daemon's status and the command line's version.
+export async function readKeyedState({ redact } = {}) {
+  const [status, cliVersion] = await Promise.all([
+    tailscaleJson(["status", "--json"], { redact }),
+    tailscaleCliVersion(),
+  ]);
+  return { status, cliVersion };
+}
+// `redact`: Windows' keyed mode takes its route's key out of what Tailscale
+// said before anything is cut (server/tailscale-auth.mjs keyRedactor). Every
+// other caller gets Tailscale's words as they were.
+export async function tailscaleJson(args, { redact = (text) => text } = {}) {
   try {
     const { stdout } = await exec(tailscaleCli(), args, {
       timeout: 5000,
@@ -66,7 +81,7 @@ export async function tailscaleJson(args) {
       throw Error(
         "Tailscale is unavailable. Install and sign in to Tailscale on this computer and your phone, then rerun Reach.",
       );
-    const why = String(error?.killed || error?.signal ? "it took too long" : error?.stderr || error?.message || "")
+    const why = redact(String(error?.killed || error?.signal ? "it took too long" : error?.stderr || error?.message || ""))
       .trim()
       .split("\n")[0]
       .slice(0, 160);
@@ -78,6 +93,42 @@ export function serveConfigs(config) {
     config,
     ...Object.values(config?.Foreground || {}).flatMap(serveConfigs),
   ];
+}
+// Windows' keyed route (docs/parity/D-public-door.md §4.6): does anything in
+// Tailscale's serve config, other than Reach's own `ownTarget`, lead to
+// Reach's loopback port? A TCP forward or a proxy to that port is a path from
+// Tailscale's own process with no key: Reach then closes its route until it's
+// gone. Whatever the host is called (127.1, LOCALHOST, [::1], the PC's name):
+// only the port counts. A target whose port can't be read counts too.
+// `ownTarget` "": every route to the port counts (Reach stopping).
+const targetPort = (value) => {
+  if (typeof value !== "string" || !value) return NaN;
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `tcp://${value}`);
+    if (url.port) return Number(url.port);
+    return { "http:": 80, "https:": 443, "https+insecure:": 443 }[url.protocol] ?? NaN;
+  } catch {
+    return NaN;
+  }
+};
+export function foreignIngressRoute(config, port, ownTarget = "") {
+  const entries = serveConfigs(config).flatMap((entry) => [entry, ...Object.values(entry?.Services || {})]);
+  for (const entry of entries) {
+    for (const tcp of Object.values(entry?.TCP || {})) {
+      if (typeof tcp?.TCPForward !== "string" || !tcp.TCPForward) continue;
+      const forwarded = tcp.TCPForward.slice(tcp.TCPForward.lastIndexOf(":") + 1);
+      if (!/^\d{1,5}$/.test(forwarded) || Number(forwarded) === port) return true;
+    }
+    for (const web of Object.values(entry?.Web || {}))
+      for (const handler of Object.values(web?.Handlers || {})) {
+        const proxy = handler?.Proxy;
+        if (typeof proxy !== "string" || !proxy || proxy.startsWith("unix:")) continue;
+        if (ownTarget && proxy === ownTarget) continue;
+        const to = targetPort(proxy);
+        if (!Number.isInteger(to) || to === port) return true;
+      }
+  }
+  return false;
 }
 export function assertPrivatePort(config, port) {
   for (const item of serveConfigs(config)) {

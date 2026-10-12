@@ -7,7 +7,9 @@ import {
   GUEST_TAG,
 } from "../server/guest-keys.mjs";
 import { tailscaleJson } from "./tailscale.mjs";
-import { accountApproval, readPreferences } from "./configure.mjs";
+import { accountApproval, flagMissing, FLAG_MISSING, readPreferences } from "./configure.mjs";
+import { ensurePrivateFolders } from "../server/windows-private-folder.mjs";
+import { fileURLToPath } from "node:url";
 import { terminalPrompts } from "./prompts.mjs";
 import { stateDir, command } from "./home.mjs";
 
@@ -24,13 +26,24 @@ export async function setupInvites(root, deps = {}) {
   const print = deps.print || console.log;
   const dataDir = process.env.REACH_DATA || path.join(stateDir(root), "quick");
   // Invite keys need phones approved by your Tailscale account (configure.mjs).
-  if (!accountApproval(deps.platform))
+  if (!accountApproval(deps.platform, deps.env))
     throw Error(
-      "Invite links for people and agents without Tailscale aren't available on Windows yet: they need phones approved by your Tailscale account, and on Windows they join with a pairing code. People already on your Tailscale can still be invited from your phone.",
+      `Invite links for people and agents without Tailscale aren't available on Windows yet: they need phones approved by your Tailscale account, and on Windows they join with a pairing code. People already on your Tailscale can still be invited from your phone.${flagMissing(root, deps.platform, deps.env) ? ` ${FLAG_MISSING}` : ""}`,
     );
   const preferences = readPreferences(root);
   if (!preferences)
     throw Error(`Run Reach once first (${command}), then set up invites.`);
+  // Windows ignores the modes that keep the client saved here (it can make
+  // keys and remove devices) to you alone: its folders made private first,
+  // and nothing saved if they can't be (server/windows-private-folder.mjs).
+  if ((deps.platform || process.platform) === "win32") {
+    const folders = await (deps.privateFolders || ensurePrivateFolders)({
+      protect: [...new Set([stateDir(root), dataDir])],
+      check: [path.resolve(fileURLToPath(new URL("..", import.meta.url)))],
+      nativeDir: path.join(stateDir(root), "native"),
+    });
+    if (!folders.ok) throw Error(`${folders.reason} Invite links weren't set up.`);
+  }
   const device = loadJson(path.join(dataDir, "device.json"), null);
   if (!device?.id)
     throw Error(`Run Reach once first (${command}), then set up invites.`);

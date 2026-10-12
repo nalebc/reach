@@ -180,7 +180,8 @@ function makeSteps(root, deps) {
         let shown = "";
         // The private socket Tailscale reaches Reach through must fit macOS's
         // path limit: a long account name is said now, not after setup.
-        if (byAccount)
+        // Windows' keyed route has no socket.
+        if (byAccount && platform !== "win32")
           (deps.socketPath || (await import("../server/tailscale-auth.mjs")).serveSocketPath)(root);
         for (;;) {
           let connection;
