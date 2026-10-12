@@ -20,6 +20,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 
 ## Rules
 
+0. Parity is measured against what the Mac code and its tests do, not against the docs (they had drifted: `docs/SECURITY.md` promised an owner-presence check the helper no longer runs).
 1. macOS behaviour stays byte-for-byte the same; every change carries unit tests (`test/helpers/as-windows.mjs`) and real-Windows CI evidence (the `windows-2025` lane, under the Restricted script policy).
 2. Fail closed: a helper that can't start, a target it can't identify, a policy it can't read → refuse, with the reason.
 3. Windows helpers are C#, compiled on first use with the `csc.exe` every Windows 10/11 ships (.NET Framework 4.8), cached by source hash, exactly as Swift helpers are on a Mac. No PowerShell in agent paths (execution policy, cold starts), no downloaded binaries.
@@ -32,11 +33,11 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | # | Workstream | Depends on | Main files |
 | --- | --- | --- | --- |
 | A | Foundation: per-agent pause store out of the desktop service; platform-neutral app ids and paths (`.exe`, AUMIDs), modifiers (cmd→Ctrl, option→Alt); Windows guard data (password managers, Credential Manager, consent.exe, CredentialUIBroker, LogonUI, Task Manager, regedit, mmc, ms-settings privacy/sign-in/network pages; runas, reg, bcdedit, netsh, sc, schtasks, icacls, takeown, Set-MpPreference); the C# helper build (`windowsBinary`) | — | `agent-desktop.mjs`, `agent-guard.mjs`, `agent-presets.mjs`, `desktop-native.mjs`, `agent-pauses.mjs`, `index.mjs` |
-| B | Windows agent desktop helper: filtered screenshot (protected windows masked), SendInput (Unicode text), held buttons released on exit, per-event target check (WindowFromPoint → process image → WinVerifyTrust), UI Automation for describe / find / press / fill / read_page / menus / windows / focus, open app / URL / file, app catalog, secret fills (IsPassword, never echoed), bank-site URL read-only, owner-presence detection (low-level hooks, injected vs physical) | A | new `scripts/native/agent-desktop.cs`, Windows adapter in `agent-desktop.mjs` |
+| B | Windows agent desktop helper: filtered screenshot (protected windows masked), SendInput (Unicode text), held buttons released on exit, per-event target check (WindowFromPoint → process image → WinVerifyTrust), UI Automation for describe / find / press / fill / read_page / menus / windows / focus, open app / URL / file, app catalog, secret fills (IsPassword, never echoed), bank-site URL read-only. No guessing the owner's presence from input timing: the Mac stopped doing that on Oct 8 (the owner pauses agents) | A | new `scripts/native/agent-desktop.cs`, Windows adapter in `agent-desktop.mjs` |
 | C | Windows sandbox: AppContainer/LPAC + Job Object runner for agents' commands, scripts and the Full-control shell (pwsh); Files helper with handle-relative I/O (no reparse points or hard links) | A | new `scripts/native/sandbox.cs`, `jobs.mjs`, `browser-scripts.mjs`, `browser-file-boundary.mjs`, `agent-shell.mjs` |
 | D | Public door on Windows: keyed Serve route + tailscaled peer check (design: `docs/WINDOWS_SIGN_IN_DESIGN.md`), behind `REACH_WINDOWS_ACCOUNT=1`: invite links, start page, agent gateway, hosted MCP, invite keys | A | `tailscale-auth.mjs`, `launch.mjs`, `configure.mjs`, `index.mjs` refusals |
 | E | Presets on Windows: lift the refusals once B/C/D pass; invite UI wording | B, C, D | `browser-access.mjs`, `BrowserInvite.tsx` |
-| F | End to end on real Windows CI: invite → admission → MCP tool calls (screenshot, click and type into a test window, guardrail refusals on a password field and a protected window), sandboxed command, Files boundary, per-agent pause, owner presence | B, C, E | `test/windows-agent-e2e.test.mjs`, `ci.yml` |
+| F | End to end on real Windows CI: invite → admission → MCP tool calls (screenshot, click and type into a test window, guardrail refusals on a password field and a protected window), sandboxed command, Files boundary, per-agent pause, phone control and Reach's pause stopping agent input | B, C, E | `test/windows-agent-e2e.test.mjs`, `ci.yml` |
 | G | Saved browser tools: Chrome/Edge extension + native messaging host (replaces JXA) | B | new |
 | H | Mac-dialog equivalents via UI Automation (SmartScreen, file security), window-only streaming (one HWND), Claude consent on Claude Desktop, permission hooks over a named pipe restricted to the user's SID | B | various |
 
@@ -44,4 +45,4 @@ Phases: 1) A built, B/C/D designed in detail and reviewed; 2) B, C, D built in p
 
 ## Owner acceptance on a real Windows PC (end of phase 5)
 
-Invite an agent with each preset over the public link and over the tailnet; the agent screenshots, clicks and types, and is refused on a password field, an administrator prompt and a protected window; Files stays inside its folders; a sandboxed command can't touch Reach's files; pausing the agent and the owner touching the mouse both stop its input at once.
+Invite an agent with each preset over the public link and over the tailnet; the agent screenshots, clicks and types, and is refused on a password field, an administrator prompt and a protected window; Files stays inside its folders; a sandboxed command can't touch Reach's files; pausing the agent, taking control from the phone and pausing Reach each stop its input at once.
