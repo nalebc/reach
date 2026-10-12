@@ -171,7 +171,18 @@ test("on a Windows Reach a screen guest is refused the live screen; the owner st
     return error?.error || closed?.reason || "streamed";
   };
   assert.equal(await watch(owner.token, 2), "streamed");
-  assert.match(await watch(guest, 2), /owner can watch its screen/);
-  assert.match(await watch(guest), /owner can watch its screen/);
+  assert.match(await watch(guest, 2), /owner can watch or control its screen/);
+  assert.match(await watch(guest), /owner can watch or control its screen/);
   assert.deepEqual(prepared, [false], "nothing is prepared for the guest");
+  // Nor control: taking it, or a single action, is refused the same way.
+  const take = await fetch(url + "/api/screen/control", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${guest}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(take.status, 403);
+  assert.match((await take.json()).error, /owner can watch or control/);
+  // Their phone shows no Screen at all.
+  const device = await fetch(url + "/api/device", { headers: { Authorization: `Bearer ${guest}` } }).then((r) => r.json());
+  assert.deepEqual([device.capabilities.screen, device.capabilities.screenSupported], [false, false]);
 });

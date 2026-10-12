@@ -773,7 +773,9 @@ export function createAgentSessions({
           }
           const holder = await holderOf(id);
           if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
-            outbox.problem(id, next.id, null);
+            // Windows never ends the app's process (handOver): said, so the
+            // phone doesn't show a queue with no reason.
+            outbox.problem(id, next.id, platform === "win32" ? "Waiting for the Claude app to let go of this chat. It goes in by itself after." : null);
             continue;
           }
           const { id: messageId, at, error, ...message } = next;

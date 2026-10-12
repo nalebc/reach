@@ -189,12 +189,27 @@ export async function liveClaudeSessions(starts, { run = exec, now = Date.now, r
   // Windows has no ps or lsof: Claude Code's own registry says which sessions
   // run and where, and Reach knows its own processes (ours). Failing there
   // read as "nobody holds it", and Reach wrote into chats a terminal or the
-  // Claude app still had open (docs/parity/AUDIT.md #8). Without start
-  // times, a record whose pid Windows gave to another program reads as
-  // held: a reply waits rather than going in twice.
+  // Claude app still had open (docs/parity/AUDIT.md #8).
   if (platform === "win32") {
+    // Windows reuses pids: a record counts while its pid still runs Claude
+    // Code (claude.exe; node.exe for npm's). If tasklist can't say, it
+    // counts.
+    let images = null;
+    try {
+      const { stdout } = await run("tasklist", ["/FO", "CSV", "/NH"], { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+      images = new Map();
+      for (const line of String(stdout).split(/\r?\n/)) {
+        const m = line.match(/^"([^"]*)","(\d+)"/);
+        if (m) images.set(Number(m[2]), m[1].toLowerCase());
+      }
+    } catch {
+      /* unknown: every record stands */
+    }
     const live = new Map();
-    for (const [id, entry] of registry()) live.set(id, ours(entry.pid) ? { ...entry, where: "reach" } : entry);
+    for (const [id, entry] of registry()) {
+      if (images && !["claude.exe", "node.exe"].includes(images.get(entry.pid))) continue;
+      live.set(id, ours(entry.pid) ? { ...entry, where: "reach" } : entry);
+    }
     return live;
   }
   const { stdout } = await run("ps", ["-axo", "pid=,ppid=,etime=,tty=,command="], {

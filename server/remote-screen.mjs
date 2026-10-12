@@ -21,10 +21,10 @@ export function screenTrouble(message, { now = Date.now, log = console.warn } = 
 
 // Guests see the screen without password managers and Reach's own windows.
 // Windows' capture can't leave them out yet (docs/parity/AUDIT.md #12): there
-// only the owner and full-access people watch, until it can. (Linux has no
-// live screen at all.)
+// only the owner and full-access people watch or control (blind control
+// could still type into them), until it can. (Linux has no live screen.)
 export const PRIVATE_VIEW_UNAVAILABLE =
-  "Only this PC's owner can watch its screen for now: Reach can't yet hide password managers and its own windows from others on Windows.";
+  "Only this PC's owner can watch or control its screen for now: Reach can't yet hide password managers and its own windows from others on Windows.";
 export const privateViewRefused = (privateView, platform = process.platform) =>
   Boolean(privateView) && platform === "win32";
 

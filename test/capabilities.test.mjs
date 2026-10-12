@@ -276,3 +276,16 @@ test("Codex discovery recovers a shortened PATH and validates login-shell result
   assert.equal(await findCodexExecutable({ ...options, env: { ...options.env, REACH_CODEX: "/missing/explicit" } }), null);
   assert.equal(calls.length, 0, "an explicit override is never replaced by a different Codex");
 });
+
+// Windows refuses invited people its screen until it can leave password
+// managers out of their picture (parity audit #12): their phone shows no
+// Screen, and the owner's invite sheet offers no screen roles there.
+test("on Windows an invited person gets no Screen; you and full-access people keep it; a Mac is unchanged", () => {
+  const watch = ["device", "screen", "screen:control"];
+  const caps = (platform, owner) => deviceCapabilities({ platform, scopes: watch, screen: true, codexInstalled: false, owner });
+  assert.deepEqual([caps("win32", false).screen, caps("win32", false).screenSupported], [false, false]);
+  assert.deepEqual([caps("win32", true).screen, caps("win32", true).screenSupported], [true, true]);
+  assert.deepEqual([caps("darwin", false).screen, caps("darwin", false).screenSupported], [true, true]);
+  assert.equal(caps("win32", true).guestScreen, false);
+  assert.equal(caps("darwin", true).guestScreen, true);
+});

@@ -870,6 +870,7 @@ test("on Windows an idle Claude app process is never ended: a reply waits for th
   assert.deepEqual(queuedReply(await sessions.send("claude", ID, { text: "from the phone" })), { queued: true, delivered: false });
   await settle(60);
   assert.deepEqual(app.signals, [], "the app's process is never ended");
+  assert.match(sessions.view("claude", ID).outbox[0]?.error || "", /Claude app to let go/, "the phone is told why it waits");
   assert.equal(claude.runs.length, 0, "nothing writes while the app holds it");
   // The app lets go on its own (its idle timeout): the reply goes in.
   app.alive = false;
@@ -883,14 +884,26 @@ test("on Windows an idle Claude app process is never ended: a reply waits for th
 // Windows has no ps or lsof: Claude Code's registry says who holds a chat.
 test("on Windows live Claude sessions come from Claude Code's registry, never ps or lsof; Reach's own are Reach's", async () => {
   const { liveClaudeSessions } = await import("../server/agent-sessions/processes.mjs");
-  const run = () => assert.fail("Windows must not run ps or lsof");
+  const ran = [];
+  const tasks = '"claude.exe","11","Console","1","90,112 K"\r\n"Claude.exe","12","Console","1","1,024 K"\r\n"node.exe","13","Console","1","50,000 K"\r\n"notepad.exe","14","Console","1","9,000 K"\r\n';
+  const run = async (file, args) => {
+    ran.push(file);
+    if (file !== "tasklist") assert.fail("Windows must not run ps or lsof");
+    return { stdout: tasks };
+  };
   const registry = () => new Map([
     ["a", { where: "terminal", pid: 11, tty: null, exact: true, busy: true }],
     ["b", { where: "claude-app", pid: 12, tty: null, exact: true, busy: false }],
     ["c", { where: "terminal", pid: 13, tty: null, exact: true, busy: true }],
+    // A record whose pid Windows gave to another program since.
+    ["d", { where: "terminal", pid: 14, tty: null, exact: true, busy: true }],
   ]);
   const live = await liveClaudeSessions([], { run, registry, platform: "win32", ours: (pid) => pid === 13 });
   assert.deepEqual([...live].map(([id, e]) => [id, e.where, e.pid]), [["a", "terminal", 11], ["b", "claude-app", 12], ["c", "reach", 13]]);
+  assert.deepEqual(ran, ["tasklist"]);
+  // tasklist failing: every record stands (a reply waits rather than going in twice).
+  const unsure = await liveClaudeSessions([], { run: async () => { throw Error("no tasklist"); }, registry, platform: "win32" });
+  assert.deepEqual([...unsure.keys()], ["a", "b", "c", "d"]);
 });
 
 // Right after a turn, Reach's own process is still exiting: a message then

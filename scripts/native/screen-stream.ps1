@@ -16,15 +16,29 @@ public class ReachScreenDpi {
  [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize,flags; public IntPtr hCursor; public POINT ptScreenPos; }
  [DllImport("wtsapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool WTSQuerySessionInformation(IntPtr server,int session,int infoClass,out IntPtr buffer,out int bytes);
  [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr memory);
- // This session locked (WTSSessionInfoEx, level 1: SessionFlags is
- // WTS_SESSIONSTATE_LOCK). Unknown reads as unlocked: capture then fails
- // as before, with its message.
- public static bool Locked() {
+ [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
+ [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+ [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr obj,int index,System.Text.StringBuilder info,int length,out int needed);
+ // WTSINFOEXW: Level, then (8-byte aligned: the struct holds LARGE_INTEGERs)
+ // WTSINFOEX_LEVEL1_W at 8: SessionId, SessionState, SessionFlags at 16;
+ // WTS_SESSIONSTATE_LOCK is 0.
+ static bool SessionLocked() {
   IntPtr buffer; int bytes;
   if (!WTSQuerySessionInformation(IntPtr.Zero, -1, 25, out buffer, out bytes)) return false;
-  try { return bytes >= 16 && Marshal.ReadInt32(buffer) == 1 && Marshal.ReadInt32(buffer, 12) == 0; }
+  try { return bytes >= 20 && Marshal.ReadInt32(buffer) == 1 && Marshal.ReadInt32(buffer, 16) == 0; }
   finally { WTSFreeMemory(buffer); }
  }
+ // Keys and clicks go to the desktop named "Default" while it's unlocked;
+ // the lock screen's is closed to Reach.
+ static bool InputOnDefault() {
+  IntPtr desk = OpenInputDesktop(0, false, 0x0001);
+  if (desk == IntPtr.Zero) return false;
+  try { var name = new System.Text.StringBuilder(64); int needed; return GetUserObjectInformation(desk, 2, name, 128, out needed) && name.ToString() == "Default"; }
+  finally { CloseDesktop(desk); }
+ }
+ // Locked only when both say so: one wrong reading can't blank a screen
+ // in use. Otherwise capture goes on, and fails as before with its message.
+ public static bool Locked() { return SessionLocked() && !InputOnDefault(); }
 }
 '@
 [ReachScreenDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null

@@ -1972,7 +1972,8 @@ export async function createReach(overrides = {}) {
         ...(req.client.policy?.browser && { browser: true }),
       },
       capabilities: deviceCapabilities({
-        platform: process.platform,
+        platform: overrides.platform || process.platform,
+        owner: actsAsOwner(req.client),
         scopes: req.client.scopes,
         screen: config.screen,
         codexInstalled: tools?.codex.installed,
@@ -3299,9 +3300,10 @@ export async function createReach(overrides = {}) {
         ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
         ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
       })),
-      // No team bridge (Windows has none yet: team-bridge.mjs): the phone
-      // doesn't offer a Team that could only fail.
-      ...(teamBridgeOpen || overrides.teams ? {} : { teams: false }),
+      // No team bridge on Windows yet (team-bridge.mjs): the phone doesn't
+      // offer a Team that could only fail. (A Mac's that failed to open says
+      // "Restart Reach" when a team starts, as before.)
+      ...((overrides.platform || process.platform) === "win32" && !teamBridgeOpen && !overrides.teams ? { teams: false } : {}),
     }),
   );
   // Ask (or stop asking) for one notification when an agent's limit is back.
@@ -4482,6 +4484,8 @@ export async function createReach(overrides = {}) {
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body?.enabled)
       throw fail(403, "Turn on screen viewing first.");
+    if (req.body?.enabled && privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
+      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     let lease;
     try {
       lease = screenControl.acquire(req.client, req.body?.enabled, {
@@ -4511,6 +4515,8 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/screen/input", async (req, res) => {
     if (!config.screen) throw fail(403, "Screen viewing is off.");
+    if (privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
+      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
@@ -4543,7 +4549,7 @@ export async function createReach(overrides = {}) {
     // A whole, unfiltered picture: yours and full-access people's only.
     // Everyone else watches the live screen, without the private windows.
     if (!actsAsOwner(req.client))
-      throw fail(403, "Open the live screen to watch this Mac.");
+      throw fail(403, `Open the live screen to watch this ${computerWord(process.platform)}.`);
     notPaused();
     // Share simultaneous captures instead of spawning a process per viewer.
     if (!captureInFlight)
@@ -4689,7 +4695,8 @@ export async function createReach(overrides = {}) {
             EACCES: 403,
             EPERM: 403,
             ENOENT: 404,
-            EBUSY: 423,
+            // Not 423: Reach says "paused" and "in use in another browser" with it.
+            EBUSY: 409,
           }[error.code] ||
           500,
       )

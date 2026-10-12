@@ -121,15 +121,19 @@ export function deviceCapabilities({
   scopes,
   screen,
   codexInstalled,
+  // You, or someone with full access: sees the whole screen.
+  owner = true,
 }) {
   const desktop = ["darwin", "win32"].includes(platform);
+  // Invited people don't watch a Windows PC yet (guestScreen below).
+  const watches = desktop && scopes.includes("screen") && (owner || platform !== "win32");
   return {
     terminal: scopes.includes("terminal"),
     files: scopes.some((s) => ["files", "files:read"].includes(s)),
     // "apps:open": an invitation to watch chosen apps' windows.
     apps: desktop && (scopes.includes("apps") || scopes.includes("apps:open")),
-    screen: desktop && scopes.includes("screen") && screen === true,
-    screenSupported: desktop && scopes.includes("screen"),
+    screen: watches && screen === true,
+    screenSupported: watches,
     // Whether invited people may watch: Windows can't yet leave password
     // managers and Reach's windows out of their picture, so it refuses them
     // (remote-screen.mjs privateViewRefused); the invite sheet doesn't offer it.
