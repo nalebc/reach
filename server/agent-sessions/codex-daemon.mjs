@@ -105,8 +105,6 @@ export async function ownSocket(file, options) {
   try {
     return await trustedSocket(file, options);
   } catch (e) {
-    // Windows: why its owner check couldn't run (trusted-socket.mjs).
-    if (e.detail) throw Object.assign(new Error(`Reach couldn't check Codex's session service. ${e.detail}`), { status: 503 });
     throw Object.assign(new Error(`Codex's session service isn't one Reach can trust here: ${e.because || "it couldn't be checked"}.`), { status: 503 });
   }
 }

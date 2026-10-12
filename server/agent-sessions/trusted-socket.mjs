@@ -18,7 +18,10 @@ import { PIPE, pipeOwner } from "../windows-owners.mjs";
 // can name: the rule there is the pipe's own (audit #17, Oct 12). It was made
 // by you, Windows or an administrator; the process serving it runs as you;
 // and no other account may serve it too (a new instance answering in its
-// place) or change who may. What Windows won't say is refused.
+// place) or change who may. What Windows won't say isn't refused: a Mac's
+// check can't fail that way, and chats stay in sync across the agent's app,
+// its CLI and Reach (owner, Oct 12). Only a pipe known to be another
+// account's is; one that couldn't be checked is said once in Reach's window.
 const MAX_LINKS = 8;
 const reasons = {
   missing: "it isn't there",
@@ -28,7 +31,6 @@ const reasons = {
   links: "it is behind too many links",
   pipe: "it isn't a named pipe",
   shared: "another account can serve it too",
-  unchecked: "it couldn't be checked",
 };
 // Windows itself and administrators, as root may own a Mac socket's folder.
 const SYSTEM = ["S-1-5-18", "S-1-5-32-544"];
@@ -81,25 +83,29 @@ export async function trustedSocket(file, { uid = process.getuid?.(), platform =
 async function trustedPipe(file, owner) {
   const refuse = (reason) => refusal(file, reason);
   if (typeof file !== "string" || !PIPE.test(file)) throw refuse("pipe");
+  const unchecked = (why) => {
+    if (!told.has(`${file}\nunchecked`)) {
+      told.add(`${file}\nunchecked`);
+      console.warn(`Reach: couldn't check who serves ${file}${why ? ` (${String(why).slice(0, 200)})` : ""}; it's used as yours, as on a Mac.`);
+    }
+    return file;
+  };
   let seen;
   try {
     seen = await owner(file);
   } catch (e) {
-    // The check couldn't run (no csc.exe, a policy that blocks it): refused
-    // with the reason windowsBinary gives, as a company-managed PC's are.
-    throw Object.assign(refuse("unchecked"), e?.status === 503 && typeof e.message === "string" ? { detail: e.message } : {});
+    return unchecked(e?.message);
   }
   if (seen?.error === "missing") throw refuse("missing");
-  if (seen?.error || !SID.test(seen?.self)) throw refuse("unchecked");
+  if (seen?.error || !SID.test(seen?.self)) return unchecked(seen?.error);
   const yours = [seen.self, ...(Array.isArray(seen.logon) ? seen.logon.filter((sid) => SID.test(sid)) : [])];
   const trusted = (sid) => yours.includes(sid) || SYSTEM.includes(sid);
   // Made by you (or Windows, or an administrator)...
-  if (!SID.test(seen.owner)) throw refuse("unchecked");
-  if (!trusted(seen.owner)) throw refuse("owner");
+  if (SID.test(seen.owner) && !trusted(seen.owner)) throw refuse("owner");
   // ...served by a process of yours...
-  if (!SID.test(seen.user)) throw refuse("unchecked");
-  if (seen.user !== seen.self) throw refuse("owner");
+  if (SID.test(seen.user) && seen.user !== seen.self) throw refuse("owner");
   // ...and no one else's to serve.
-  if (!Array.isArray(seen.serves) || !seen.serves.every((sid) => trusted(sid) || OWNER_NAMES.includes(sid))) throw refuse("shared");
+  if (Array.isArray(seen.serves) && !seen.serves.every((sid) => trusted(sid) || OWNER_NAMES.includes(sid))) throw refuse("shared");
+  if (!SID.test(seen.owner) || !SID.test(seen.user) || !Array.isArray(seen.serves)) return unchecked("part of the answer was missing");
   return file;
 }

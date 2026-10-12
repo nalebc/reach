@@ -15,8 +15,9 @@ import { createCodexDaemon, ownSocket } from "../server/agent-sessions/codex-dae
 
 // Codex's pipes on Windows are trusted as its sockets are on a Mac (audit
 // #17, Oct 12): made by you, Windows or an administrator, served by a
-// process of yours, and no one else's to serve. What Windows won't say is
-// refused, in the Mac's words.
+// process of yours, and no one else's to serve; refused in the Mac's words.
+// What Windows won't say isn't refused: a Mac's check can't fail that way,
+// and chats stay in sync across the app, its CLI and Reach (owner, Oct 12).
 const windows = process.platform === "win32";
 const ME = "S-1-5-21-1111-2222-3333-1001";
 const OTHER = "S-1-5-21-1111-2222-3333-1002";
@@ -38,22 +39,34 @@ test("a pipe of yours is trusted; one made or served by another account, or one 
     ["anyone may serve it", { ...yours, serves: [ME, "S-1-1-0"] }, "another account can serve it too"],
     ["another account may serve it", { ...yours, serves: [OTHER] }, "another account can serve it too"],
     ["an entry Windows wouldn't name", { ...yours, serves: ["unknown"] }, "another account can serve it too"],
-    ["no list of who may serve it", { ...yours, serves: undefined }, "another account can serve it too"],
     ["not there", { error: "missing", code: 2 }, "it isn't there"],
-    ["Windows wouldn't open it", { error: "unchecked", code: 5 }, "it couldn't be checked"],
-    ["its server's account unknown", { ...yours, user: null }, "it couldn't be checked"],
-    ["its owner unknown", { ...yours, owner: null }, "it couldn't be checked"],
-    ["your own account unknown", { ...yours, self: "" }, "it couldn't be checked"],
-    ["an answer that isn't one", "S-1-5-21", "it couldn't be checked"],
-    ["the check failed", () => { throw new Error("csc.exe refused"); }, "it couldn't be checked"],
+    // Known to be someone else's even where the rest is unknown.
+    ["made by another account, server unknown", { ...yours, owner: OTHER, user: null }, "it belongs to another account"],
   ])
     await assert.rejects(ownSocket(PIPE, asWindows(answer)), (e) => (assert.match(e.message, said(because), what), e.status === 503));
   // Another account's logon session isn't yours.
   await assert.rejects(ownSocket(PIPE, asWindows({ ...yours, serves: [ME, "S-1-5-5-0-999"] })), said("another account can serve it too"));
-  // A check that can't run (no csc.exe, a policy that blocks it) says why, as windowsBinary does.
-  const blocked = Object.assign(new Error("Windows refused to run its C# compiler (csc.exe) on this PC: an application control policy blocks it."), { status: 503 });
-  await assert.rejects(ownSocket(PIPE, asWindows(() => { throw blocked; })), (e) =>
-    e.message === `Reach couldn't check Codex's session service. ${blocked.message}` && e.status === 503);
+  // What Windows won't say, or a check that can't run (no csc.exe, a policy
+  // that blocks it): used as yours, as on a Mac, and said once in Reach's window.
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (line) => warned.push(line);
+  try {
+    for (const [what, answer] of [
+      ["Windows wouldn't open it", { error: "unchecked", code: 5 }],
+      ["its server's account unknown", { ...yours, user: null }],
+      ["its owner unknown", { ...yours, owner: null }],
+      ["no list of who may serve it", { ...yours, serves: undefined }],
+      ["your own account unknown", { ...yours, self: "" }],
+      ["an answer that isn't one", "S-1-5-21"],
+      ["the check failed", () => { throw Object.assign(new Error("Windows refused to run its C# compiler (csc.exe) on this PC."), { status: 503 }); }],
+    ])
+      assert.equal(await ownSocket(PIPE, asWindows(answer)), PIPE, what);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.length, 1, "said once, not on every poll");
+  assert.match(warned[0], /couldn't check who serves .*codex-ipc.*used as yours, as on a Mac/);
 });
 
 test("only a named pipe is asked about on Windows; a path isn't one", async () => {
@@ -125,7 +138,7 @@ test("on real Windows, a pipe Windows' own services serve is refused", real, asy
   const present = new Set(fs.readdirSync("\\\\.\\pipe\\").map((name) => name.toLowerCase()));
   const name = ["lsass", "ntsvcs", "epmapper", "initshutdown", "eventlog", "scerpc"].find((n) => present.has(n));
   if (!name) return t.skip("No service pipe of Windows' own was found.");
-  await assert.rejects(trustedSocket(`\\\\.\\pipe\\${name}`, { platform: "win32", dataDir }), /it belongs to another account|it couldn't be checked/);
+  await assert.rejects(trustedSocket(`\\\\.\\pipe\\${name}`, { platform: "win32", dataDir }), /it belongs to another account|another account can serve it too/);
 });
 
 test("on real Windows, a pipe any account may serve too is refused", real, async (t) => {
