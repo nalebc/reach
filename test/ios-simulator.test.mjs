@@ -6,7 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import https from "node:https";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 
@@ -19,38 +19,97 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 const exec = promisify(execFile);
 const enabled = process.platform === "darwin" && !!process.env.REACH_TEST_IOS_APP;
 
-// The CI lane's budget (ci.yml passes --test-timeout=420000; this per-test
-// value overrides it, so it must say the same). Each step is bounded on its
-// own; together a hosted macos-15 runner needed 215 s in a passing run: Reach,
-// a new simulator's cold first boot, install, then up to 100 s of the page.
-// A cold first boot alone took over 90 s on one run (Oct 12): it gets 180 s.
+// Runs one command under a hard limit. execFile's own timeout settles only
+// once the killed process closes its pipes: a killed simctl took 17-64 s more
+// on hosted runners (Oct 12), enough to sink a retry. This rejects at the
+// limit and makes sure the process goes (SIGTERM, then SIGKILL after 5 s).
+function run(command, args, limit) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { if (stdout.length < 2 << 20) stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { if (stderr.length < 1 << 16) stderr += chunk; });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5000);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(Error(`did not finish within ${limit / 1000} s`));
+    }, limit);
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(Error(`exited with ${signal || code}${stderr.trim() ? `: ${stderr.trim().slice(-400)}` : ""}`));
+    });
+  });
+}
+
+// The CI lane's budget (ci.yml passes --test-timeout=600000; this per-test
+// value overrides it, so it must say the same). A passing hosted macos-15 run
+// took 179 s: Reach, a new simulator's cold first boot (51 s), trusting the
+// test CA, install, launch, then up to 100 s of the page. Slow runs on Oct 12
+// spent 77 to over 90 s in the first boot, then hung past 90 s in
+// add-root-cert (run 38286105112) or launch (run 38279745481) right after.
+// Each simctl step now has its own limit; the ones that are harmless to
+// repeat get a few attempts; and no attempt runs past `budget`, which keeps
+// 30 s of the test's time for the evidence and cleanup.
+const testTimeout = 600000, budget = testTimeout - 30000;
 test("iOS simulator pairs through the real UI, reads files and runs native transfer/share bridges", {
-  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: 420000,
+  skip: !enabled && "set REACH_TEST_IOS_APP to a simulator App.app", timeout: testTimeout,
 }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ios-smoke-"));
   const output = process.env.REACH_TEST_IOS_REPORT;
   if (output) await fs.rm(output, { force: true });
-  const sim = (...args) => exec("xcrun", ["simctl", ...args], { timeout: 90000, maxBuffer: 2 << 20 });
-  // Where the time went, in the log as it happens and in the report. A
-  // timeout ends the test before its report: cleanup then leaves what it has.
-  const started = Date.now(), phases = [], requests = [];
-  let device, runtimeVersion, reported = false;
+  // Where the time went, in the log as it happens and in the report: phases
+  // are the milestones, steps every simctl attempt with its own time and
+  // outcome. A timeout ends the test before its report: cleanup then leaves
+  // what it has.
+  const started = Date.now(), phases = [], steps = [], requests = [];
+  let device, runtimeVersion, ready, reported = false;
+  const since = from => Math.round((Date.now() - from) / 100) / 10;
+  const left = () => started + budget - Date.now();
   const reached = name => {
-    const seconds = Math.round((Date.now() - started) / 100) / 10;
+    const seconds = since(started);
     phases.push({ phase: name, seconds });
     process.stderr.write(`iOS simulator test: ${name} (${seconds} s)\n`);
+  };
+  // One simctl step. Only steps shown harmless to repeat get more than one
+  // attempt: a second add-root-cert of the same CA succeeds and adds nothing,
+  // launching a running app returns its pid, install replaces the same app.
+  // Each retry waits 5 s longer than the last. The last failure names every
+  // attempt; a step that never succeeds fails the test.
+  const sim = async (name, args, { limit = 60000, attempts = 1 } = {}) => {
+    const tries = [];
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      if (attempt > 1) await new Promise(resolve => setTimeout(resolve, Math.min(5000 * (attempt - 1), Math.max(0, left() - 10000))));
+      if (left() < 5000) { tries.push(`attempt ${attempt}: the lane's time budget ran out`); break; }
+      const allowed = Math.min(limit, left());
+      const began = Date.now();
+      try {
+        const result = await run("xcrun", ["simctl", ...args], allowed);
+        steps.push({ step: name, attempt, seconds: since(began), ok: true });
+        process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
+        return result;
+      } catch (error) {
+        steps.push({ step: name, attempt, seconds: since(began), ok: false, error: error.message });
+        tries.push(`attempt ${attempt} ${error.message} after ${since(began)} s`);
+        process.stderr.write(`iOS simulator test:   ${name}: attempt ${attempt} of ${attempts} ${error.message} (${since(began)} s)\n`);
+      }
+    }
+    throw Error(`simctl ${name} failed: ${tries.join("; ")}`);
   };
   t.after(async () => {
     if (output && !reported) {
       const last = phases.at(-1)?.phase || "nothing";
       await fs.mkdir(path.dirname(output), { recursive: true });
       await fs.writeFile(output, JSON.stringify({ ok: false, error: `Did not finish. Last step reached: ${last}.`,
-        phases, requests, runtime: runtimeVersion, physicalDevice: false }, null, 2) + "\n").catch(() => {});
-      if (device) await exec("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { timeout: 15000 }).catch(() => {});
+        phases, steps, ready, requests, runtime: runtimeVersion, physicalDevice: false }, null, 2) + "\n").catch(() => {});
+      if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
     if (device) {
-      await sim("shutdown", device).catch(() => {});
-      await sim("delete", device).catch(() => {});
+      await run("xcrun", ["simctl", "shutdown", device], 60000).catch(() => {});
+      await run("xcrun", ["simctl", "delete", device], 60000).catch(() => {});
     }
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -223,23 +282,35 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     }
   }.toString()})(${JSON.stringify({ code, probe, downloadOrigin })});`;
 
-  const runtimes = JSON.parse((await sim("list", "runtimes", "-j")).stdout).runtimes;
+  const runtimes = JSON.parse((await sim("list runtimes", ["list", "runtimes", "-j"])).stdout).runtimes;
   const runtime = runtimes.filter(item => item.isAvailable && item.identifier.includes("iOS")
     && (!process.env.REACH_TEST_IOS_RUNTIME || item.version === process.env.REACH_TEST_IOS_RUNTIME)).at(-1);
   assert.ok(runtime, "an iOS simulator runtime is installed");
   runtimeVersion = runtime.version;
-  const types = JSON.parse((await sim("list", "devicetypes", "-j")).stdout).devicetypes;
+  const types = JSON.parse((await sim("list devicetypes", ["list", "devicetypes", "-j"])).stdout).devicetypes;
   const supported = new Set(runtime.supportedDeviceTypes?.map(item => item.identifier));
   const phones = types.filter(item => item.name.startsWith("iPhone") && (!supported.size || supported.has(item.identifier)));
   const type = phones.find(item => item.name === "iPhone 17") || phones[0];
   assert.ok(type, "the selected runtime supports an installed iPhone device type");
-  device = (await sim("create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier)).stdout.trim();
+  device = (await sim("create", ["create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier])).stdout.trim();
   reached(`simulator created (iOS ${runtime.version}, ${type.name})`);
-  await sim("boot", device);
+  await sim("boot", ["boot", device], { limit: 90000 });
   reached("simulator booting");
-  await exec("xcrun", ["simctl", "bootstatus", device, "-b"], { timeout: 180000, maxBuffer: 2 << 20 });
+  // A cold first boot is slow but progressing: 51 to over 90 s on hosted runners.
+  await sim("bootstatus", ["bootstatus", device, "-b"], { limit: 240000 });
   reached("simulator booted");
-  await sim("keychain", device, "add-root-cert", authority);
+  // bootstatus can finish while the first boot still loads the device, and
+  // the next simctl request then hung. Wait until the device runs a process
+  // on request: a harmless launchctl list inside it, retried. The PIDs of the
+  // services the next steps use are evidence only; securityd and trustd
+  // start on demand, so a missing one is not a failure.
+  const services = (await sim("readiness (launchctl list in the device)", ["spawn", device, "launchctl", "list"], { limit: 30000, attempts: 4 })).stdout;
+  ready = Object.fromEntries(["com.apple.SpringBoard", "com.apple.mobile.installd", "com.apple.securityd", "com.apple.trustd"]
+    .map(label => [label, Number(services.match(new RegExp(`^(\\d+)\\s+\\S+\\s+${label.replaceAll(".", "\\.")}$`, "m"))?.[1]) || null]));
+  reached(`simulator answers (${Object.entries(ready).map(([label, pid]) => `${label.split(".").at(-1)} ${pid ?? "not running"}`).join(", ")})`);
+  // Without this CA the native download fails its TLS check, so the step
+  // must succeed: it retries, it is never skipped.
+  await sim("keychain add-root-cert", ["keychain", device, "add-root-cert", authority], { limit: 60000, attempts: 3 });
   reached("test certificate trusted in the simulator");
   const app = path.join(dir, "App.app");
   await fs.cp(process.env.REACH_TEST_IOS_APP, app, { recursive: true });
@@ -253,11 +324,14 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
   await exec("codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime", "--generate-entitlement-der", app], { timeout: 30000 });
   reached("app copied and signed");
-  await sim("install", device, app);
+  // A slow install took 45 s; a slow launch hung past 90 s on the home
+  // screen, the app never started (run 38279745481's screenshot, no requests).
+  await sim("install", ["install", device, app], { limit: 150000, attempts: 2 });
   reached("app installed");
-  await sim("launch", device, bundle);
+  await sim("launch", ["launch", device, bundle], { limit: 75000, attempts: 2 });
   reached("app launched");
-  const timer = setTimeout(() => rejectResult(Error("iOS test page did not report within 100 seconds")), 100000);
+  const pageLimit = Math.max(0, Math.min(100000, left()));
+  const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);
   let report;
   let backgroundedDuringDownload = false;
   try {
@@ -266,14 +340,14 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       reached("page paired and asked for the native download");
       // The newly created simulator has no user account. Opening its Settings
       // backgrounds only this test app; release the HTTPS response while away.
-      await sim("launch", device, "com.apple.Preferences");
+      await sim("launch Settings", ["launch", device, "com.apple.Preferences"], { attempts: 2 });
       reached("app in the background");
       backgroundedDuringDownload = true;
       allowDownload();
       await Promise.race([downloadResponded, result]);
       reached("download answered");
       await new Promise(resolve => setTimeout(resolve, 1500));
-      await sim("launch", device, bundle);
+      await sim("reopen the app", ["launch", device, bundle], { attempts: 2 });
       reached("app reopened");
     }
     report = first.report || await result;
@@ -281,12 +355,12 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   } finally { clearTimeout(timer); allowDownload(); }
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
-    await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+    await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
-    await sim("io", device, "screenshot", output.replace(/\.json$/, "") + ".png");
+    await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });
     if (!report.ok && /Native download/.test(report.error)) {
-      const logs = await sim("spawn", device, "log", "show", "--last", "1m", "--style", "compact", "--predicate", 'process == "nsurlsessiond" AND (messageType == error OR messageType == fault)').catch(error => ({ stdout: error.message }));
+      const logs = await sim("native download log", ["spawn", device, "log", "show", "--last", "1m", "--style", "compact", "--predicate", 'process == "nsurlsessiond" AND (messageType == error OR messageType == fault)']).catch(error => ({ stdout: error.message }));
       await fs.writeFile(output.replace(/\.json$/, "") + ".native.log", logs.stdout);
     }
   }
