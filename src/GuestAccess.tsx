@@ -18,7 +18,6 @@ if (link.invites.length && window.location.pathname === "/guest")
 type Accepted = { peer: Peer; expiresAt: number };
 type ClaimReceipt = {
   origin: string;
-  sourceInvitation?: string;
   requestId: string;
   requestSecret: string;
   verificationCode: string;
@@ -34,72 +33,27 @@ type ClaimStatus = {
   token?: string;
   device?: ClaimReceipt["device"];
 };
+// A waiting agent's receipts, with the secret that collects the owner's
+// answer, live in this page's memory only, never in storage; so does the
+// invitation (CodeQL #138-#140). They outlive the waiting view being
+// unmounted and mounted again, not a reload: the link was spent when it was
+// opened, so an agent that reloads while waiting needs a new invitation from
+// the owner, and the request it left expires on the owner's side within five
+// minutes. Receipts an older Reach saved in this tab are deleted.
 export const claimStorageKey = "reach.agent-admission-receipts";
-function readReceipts(): ClaimReceipt[] {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(claimStorageKey) || "[]");
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((r) => {
-        if (
-          !r ||
-          typeof r.origin !== "string" ||
-          typeof r.requestId !== "string" ||
-          typeof r.requestSecret !== "string" ||
-          !/^\d{6}$/.test(r.verificationCode) ||
-          !Number.isFinite(r.expiresAt) ||
-          typeof r.device?.name !== "string"
-        )
-          return false;
-        const url = new URL(r.origin);
-        return (
-          url.origin === r.origin &&
-          (r.origin === homeOrigin() ||
-            (url.protocol === "https:" && url.hostname.endsWith(".ts.net")))
-        );
-      })
-      .slice(0, 10);
-  } catch {
-    return [];
-  }
-}
-// A replacement link replaces stale receipts, but reopening the exact same
-// link in this tab resumes its waiting connection instead of consuming twice.
-if (link.invites.length && window.location.pathname === "/guest") {
-  const matching = readReceipts().filter((receipt) =>
-    link.invites.some(
-      (invite) =>
-        invite.origin === receipt.origin &&
-        invite.secret === receipt.sourceInvitation,
-    ),
-  );
-  if (matching.length)
-    sessionStorage.setItem(claimStorageKey, JSON.stringify(matching));
-  else sessionStorage.removeItem(claimStorageKey);
-}
-const invitationSource = link.invites.length ? link.invites : readReceipts().flatMap(receipt =>
-  receipt.sourceInvitation ? [{ origin: receipt.origin, secret: receipt.sourceInvitation }] : []);
+try { sessionStorage.removeItem(claimStorageKey); } catch { /* no storage */ }
+let receipts: ClaimReceipt[] = [];
+const invitationSource = link.invites;
 let identityPromise: Promise<string | undefined> | undefined;
 const invitationIdentity = () => identityPromise ||= guestInvitationId(invitationSource);
 
+const other = (receipt: ClaimReceipt) => (r: ClaimReceipt) =>
+  r.origin !== receipt.origin || r.requestId !== receipt.requestId;
 function saveReceipt(receipt: ClaimReceipt) {
-  sessionStorage.setItem(
-    claimStorageKey,
-    JSON.stringify([
-      ...readReceipts().filter(
-        (r) => r.origin !== receipt.origin || r.requestId !== receipt.requestId,
-      ),
-      receipt,
-    ]),
-  );
+  receipts = [...receipts.filter(other(receipt)), receipt];
 }
 function removeReceipt(receipt: ClaimReceipt) {
-  const kept = readReceipts().filter(
-    (r) => r.origin !== receipt.origin || r.requestId !== receipt.requestId,
-  );
-  if (kept.length)
-    sessionStorage.setItem(claimStorageKey, JSON.stringify(kept));
-  else sessionStorage.removeItem(claimStorageKey);
+  receipts = receipts.filter(other(receipt));
 }
 const requestError = (response: Response, body: { error?: string }) =>
   Object.assign(Error(body.error || "This invitation could not be opened."), {
@@ -130,7 +84,6 @@ function redeem(origin: string, secret: string): Promise<Redemption> {
     if (response.status === 202 && result.status === "pending") {
       const receipt: ClaimReceipt = {
         origin,
-        sourceInvitation: secret,
         requestId: result.requestId,
         requestSecret: result.requestSecret,
         verificationCode: result.verificationCode,
@@ -259,7 +212,7 @@ export default function GuestAccess({
     const controller = new AbortController();
     const live = () => !controller.signal.aborted;
     void (async () => {
-      const saved = readReceipts();
+      const saved = [...receipts];
       if (!saved.length && !link.invites.length) return;
       setBusy(true);
       setError("");
@@ -418,7 +371,8 @@ export default function GuestAccess({
             </output>
             <small>
               Request expires {new Date(receipt.expiresAt).toLocaleTimeString()}
-              . Keep this tab open; approval appears here automatically.
+              . Keep this tab open and don’t reload it; approval appears here
+              automatically.
             </small>
           </article>
         ))}
