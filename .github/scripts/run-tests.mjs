@@ -17,6 +17,8 @@ export const suites = {
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link",
+    // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
+    "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

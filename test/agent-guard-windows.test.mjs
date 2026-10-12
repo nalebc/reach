@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { commandRefusal, nativeRules, protectedAppReason, protectedPage, protectedPathReason, protectedTitle, terminalLikeApp, typedTextRefusal } from "../server/agent-guard.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
@@ -122,6 +126,23 @@ test("on Windows, the files where Windows and its apps keep passwords are protec
     assert.ok(protectedPathReason(file, options), file);
   for (const file of [String.raw`C:\Users\me\AppData\Local\Temp\log.txt`, String.raw`C:\Users\me\AppData\Roaming\reachability-notes\a.txt`, String.raw`C:\Users\me\Documents\notes.txt`])
     assert.equal(protectedPathReason(file, options), null, file);
+});
+
+test("with no platform given, a Windows host takes Windows' data (test/helpers/as-windows.mjs)", async () => {
+  const at = (file) => pathToFileURL(path.resolve(file)).href;
+  const code = `
+    const guard = await import(${JSON.stringify(at("server/agent-guard.mjs"))});
+    const identity = await import(${JSON.stringify(at("server/app-identity.mjs"))});
+    const rules = guard.nativeRules({ preset: "apps", apps: [] }, {});
+    process.stdout.write(JSON.stringify({
+      platform: process.platform,
+      panes: rules.privatePanes.includes("sign-in options"),
+      app: identity.validAppPath("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"),
+      typed: !!guard.typedTextRefusal("reg add HKLM\\\\Software\\\\Example", { terminalLike: true }),
+      protected: !!guard.protectedAppReason({ id: "C:\\\\Program Files\\\\KeePassXC\\\\KeePassXC.exe" }),
+    }));`;
+  const { stdout } = await promisify(execFile)(process.execPath, ["--import", at("test/helpers/as-windows.mjs"), "--input-type=module", "-e", code], { timeout: 30000 });
+  assert.deepEqual(JSON.parse(stdout), { platform: "win32", panes: true, app: true, typed: true, protected: true });
 });
 
 test("the desktop hands a Windows helper Windows' rules, and a Mac's helper the Mac's", async () => {

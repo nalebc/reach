@@ -67,6 +67,39 @@ function waitForBuild(build, signal) {
 // Builds `file` with `/usr/bin/xcrun <args… -o tmp>` unless it's there. The
 // temporary file is this build's own; the result appears whole or not at all.
 export function buildNative(file, args, { timeout = 120000, signal, missing, run = exec, prune = true } = {}) {
+  return buildOnce(file, { signal, prune,
+    prepare: async (compiling) => {
+      if (!(await developerTools({ run, signal: compiling }))) {
+        throw Object.assign(
+          new Error(missing || "This needs Apple Command Line Tools. Run xcode-select --install on your Mac."),
+          { status: 503, developerTools: false },
+        );
+      }
+    },
+    compile: (tmp, compiling) => run("/usr/bin/xcrun", [...args, "-o", tmp], { timeout, maxBuffer: 1024 * 1024, signal: compiling }),
+  });
+}
+
+// Builds `file` with Windows' C# compiler, csc.exe, which `compiler()` finds
+// (its full path, or null when this PC has none): `args(tmp)` are its
+// arguments for writing the temporary file. Windows runs a program only by
+// its extension, so the temporary file ends in .exe too. Same rules as above:
+// one build per file at a time, whole or not at all, older builds removed.
+export function buildWindowsNative(file, { compiler, args, timeout = 120000, signal, run = exec, prune = true }) {
+  return buildOnce(file, { signal, prune, suffix: ".tmp.exe",
+    prepare: async () => {
+      const found = await compiler();
+      if (!found) throw Object.assign(new Error("Windows' C# compiler (csc.exe) isn't on this PC."), { status: 503, compiler: false });
+      return found;
+    },
+    compile: (tmp, compiling, csc) => run(csc, args(tmp), { timeout, maxBuffer: 1024 * 1024, signal: compiling, windowsHide: true }),
+  });
+}
+
+// One build of `file` at a time across every caller: `prepare` checks the
+// compiler is there (its answer goes to `compile`), `compile` writes the
+// temporary file, which then takes the file's name in one rename.
+function buildOnce(file, { signal, prepare, compile, prune = true, suffix = ".tmp" }) {
   if (signal?.aborted) return Promise.reject(signal.reason);
   if (existsSync(file)) return Promise.resolve(file);
   let build = building.get(file);
@@ -75,16 +108,11 @@ export function buildNative(file, args, { timeout = 120000, signal, missing, run
     const current = build;
     const compiling = build.controller.signal;
     build.promise = (async () => {
-      if (!(await developerTools({ run, signal: compiling }))) {
-        throw Object.assign(
-          new Error(missing || "This needs Apple Command Line Tools. Run xcode-select --install on your Mac."),
-          { status: 503, developerTools: false },
-        );
-      }
+      const prepared = await prepare(compiling);
       compiling.throwIfAborted();
-      const tmp = `${file}-${process.pid}-${crypto.randomBytes(4).toString("hex")}.tmp`;
+      const tmp = `${file}-${process.pid}-${crypto.randomBytes(4).toString("hex")}${suffix}`;
       try {
-        await run("/usr/bin/xcrun", [...args, "-o", tmp], { timeout, maxBuffer: 1024 * 1024, signal: compiling });
+        await compile(tmp, compiling, prepared);
         compiling.throwIfAborted();
         await fs.chmod(tmp, 0o700);
         compiling.throwIfAborted();
@@ -103,17 +131,18 @@ export function buildNative(file, args, { timeout = 120000, signal, missing, run
   return waitForBuild(build, signal);
 }
 
-// reach-<kind>-<hash>: the builds of one helper differ only in their hash.
-// Deleting a binary a process still runs is safe on macOS.
+// reach-<kind>-<hash> (reach-<kind>-<hash>.exe on Windows): the builds of
+// one helper differ only in their hash. Deleting a binary a process still
+// runs is safe on macOS; on Windows that build stays until it's free.
 export async function pruneOlder(file) {
   const dir = path.dirname(file);
-  const match = /^(reach-[a-z0-9-]+?)-([0-9a-f]{12})$/.exec(path.basename(file));
+  const match = /^(reach-[a-z0-9-]+?)-([0-9a-f]{12})(\.exe)?$/.exec(path.basename(file));
   if (!match) return;
-  const [, kind] = match;
+  const [, kind, , exe = ""] = match;
   const names = await fs.readdir(dir).catch(() => []);
   await Promise.all(
     names
-      .filter((name) => name !== path.basename(file) && new RegExp(`^${kind}-[0-9a-f]{12}$`).test(name))
+      .filter((name) => name !== path.basename(file) && new RegExp(`^${kind}-[0-9a-f]{12}${exe ? "\\.exe" : ""}$`).test(name))
       .map((name) => fs.rm(path.join(dir, name), { force: true }).catch(() => {})),
   );
 }

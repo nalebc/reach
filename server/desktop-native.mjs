@@ -5,10 +5,72 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
-import { buildNative } from "./native-build.mjs";
+import { existsSync } from "node:fs";
+import { buildNative, buildWindowsNative } from "./native-build.mjs";
 import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
+import { windowsPath } from "./app-identity.mjs";
 const exec = promisify(execFile),
   native =fileURLToPath(new URL("../scripts/native/", import.meta.url));
+
+// Windows helpers are C# (scripts/native/<kind>.cs), compiled on first use
+// with the compiler every Windows 10 and 11 has: csc.exe of the .NET
+// Framework 4.x, found from the Windows folder, never from PATH. 64-bit
+// Windows (x64, and ARM64 through its x64 emulation) keeps it in Framework64;
+// 32-bit Windows only in Framework: tried in that order, so a 32-bit Node or
+// an emulated one can't pick the wrong one by its own architecture. That
+// compiler takes C# 5. The assemblies the helpers use: UI Automation,
+// System.Drawing, Windows Forms and WindowsBase (WPF's live in WPF\).
+const FRAMEWORKS = ["Framework64", "Framework"];
+const REFERENCES = ["System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll",
+  "WPF\\UIAutomationClient.dll", "WPF\\UIAutomationTypes.dll", "WPF\\WindowsBase.dll"];
+const CSC_FLAGS = ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", "/debug-", "/codepage:65001", "/utf8output"];
+/** Where csc.exe can be on this PC, in the order tried: [] when the Windows folder isn't known. */
+export function cscCandidates({ env = process.env } = {}) {
+  const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR;
+  if (!windowsPath(root)) return [];
+  return FRAMEWORKS.map((name) => path.win32.join(root, "Microsoft.NET", name, "v4.0.30319", "csc.exe"));
+}
+// What Windows says when it won't start a program: an application control
+// policy (Smart App Control, App Control for Business, AppLocker) or an
+// antivirus. Node reports those as access errors or UNKNOWN.
+const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCES", "EPERM", "UNKNOWN"].includes(error?.code);
+/** A Windows helper built from scripts/native/<kind>.cs into the data folder, named by its source's hash: its path. */
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform } = {}) {
+  signal?.throwIfAborted();
+  if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
+  if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
+  const sourceFile = path.join(native, `${kind}.cs`);
+  // Its source and how it's built name it: any change to either rebuilds it.
+  const source = await fs.readFile(sourceFile);
+  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, REFERENCES])).digest("hex").slice(0, 12);
+  const file = path.join(config.dataDir, `reach-${kind}-${hash}.exe`);
+  let framework = null;
+  try {
+    await buildWindowsNative(file, {
+      signal, run,
+      compiler: () => {
+        const found = cscCandidates({ env }).find((candidate) => exists(candidate));
+        framework = found ? path.win32.dirname(found) : null;
+        return found || null;
+      },
+      args: (tmp) => [...CSC_FLAGS, `/out:${tmp}`, ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`), sourceFile],
+    });
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error.compiler === false)
+      throw Object.assign(fail(503, "This needs Windows' C# compiler (csc.exe, part of the .NET Framework 4.8 that comes with Windows), and it isn't on this PC. Turn on .NET Framework 4.8 in Windows Features, then try again."), { compiler: false });
+    if (refusedToStart(error))
+      throw Object.assign(fail(503, "Windows refused to run its C# compiler (csc.exe) on this PC: an application control policy (Smart App Control, App Control for Business or AppLocker) or an antivirus blocks it. Reach can't prepare this until it's allowed."), { refused: true });
+    const said = `${error.stdout || ""}\n${error.stderr || ""}`;
+    if (/error CS0016\b/.test(said))
+      throw Object.assign(fail(503, "Windows wouldn't let Reach write the helper it built (an antivirus or Controlled folder access blocks Reach's data folder)."), { refused: true });
+    const first = said.split(/\r?\n/).find((line) => /error CS\d+/.test(line)) || error.message;
+    console.warn(`Reach: building ${kind} failed: ${String(first).trim().slice(0, 300)}`);
+    throw fail(503, "Reach couldn't prepare this on your PC. Try again; if it keeps failing, Reach's log says why.");
+  }
+  return file;
+}
 export async function desktopBinary(config, kind, { signal } = {}) {
   signal?.throwIfAborted();
   // Name the cached build after its source, so any helper edit recompiles.

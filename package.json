@@ -20,6 +20,7 @@
     "!scripts/package.mjs",
     "!scripts/benchmark-desktop.mjs",
     "!scripts/compress-assets.mjs",
+    "!scripts/native/hello.cs",
     "dist/",
     "tailnet/dist/",
     "docs/*.md",
