@@ -38,7 +38,8 @@ function windowsReach(t) {
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
-  const exited = once(child, "exit");
+  // "close", not "exit": only then has all it printed arrived here.
+  const exited = once(child, "close");
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
@@ -47,8 +48,11 @@ function windowsReach(t) {
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const statusFile = path.join(state, "host-status.json");
+  // Ready once it both noted itself and printed its pairing code. The file
+  // and the pipe are separate channels: the file can be seen before the
+  // printed lines arrive here (macOS), so wait for the line we assert too.
   const ready = async () => {
-    for (const until = Date.now() + 20000; !fs.existsSync(statusFile); ) {
+    for (const until = Date.now() + 20000; !fs.existsSync(statusFile) || !/Pairing code: \d{4} \d{4}/.test(output); ) {
       if (child.exitCode !== null || Date.now() > until) throw Error(`Reach did not start:\n${output}`);
       await new Promise((r) => setTimeout(r, 50));
     }
