@@ -353,13 +353,17 @@ export function createAgentDesktop(config, {
   leaseMs = 2500,
   // The owner's pauses (agent-pauses.mjs): Reach's one store, made on every
   // computer whether or not this service exists (server/index.mjs). Without
-  // it, a store of its own, kept in pausesFile.
+  // it, a store of its own, kept in pausesFile. With neither, no desktop: a
+  // store made here, in memory only, would be one Reach's pause route never
+  // writes to, and a paused agent would keep its hands.
   pauses = null,
   pausesFile = null,
   // Whose names for apps and files the agent gives (app-identity.mjs): a
   // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
   platform = process.platform,
 } = {}) {
+  if (pauses ? !["has", "set", "list", "add", "prune"].every((name) => typeof pauses[name] === "function") : !pausesFile)
+    throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
   const windows = platform === "win32";
   // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
   // path or a Store app's id.

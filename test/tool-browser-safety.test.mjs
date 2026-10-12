@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { nativeToolProcess, createToolBrowserDriver } from '../server/tool-browser-driver.mjs';
 import { createAgentDesktop } from '../server/agent-desktop.mjs';
+import { createAgentPauses } from '../server/agent-pauses.mjs';
 import { ScreenControl } from '../server/screen.mjs';
 const marker='SYNTHETIC_PRIVATE_CONTENT_42';
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -48,7 +49,7 @@ function world({verifiedExit=true}={}){
  const control=new ScreenControl(), ended=deferred(), started=deferred(), work=deferred();
  const client={id:'synthetic-agent',kind:'agent',name:'Synthetic agent',status:'accepted',expiresAt:Date.now()+600000,policy:{browser:true,preset:'full',roots:[]},scopes:['browser:control','browser:open','browser:screen']};
  const helper={stopped:false,...(verifiedExit?{terminated:ended.promise}:{}),stop(){this.stopped=true;},async send(_request,before){before?.();if(this.stopped)throw Error('Stopped guard helper');return {ok:true};}};
- const desktop=createAgentDesktop({screen:true},{available:()=>true,verifyClient:()=>client,phoneControls:()=>!!control.holder()||control.inputStopping(),spawnHelper:async()=>helper});
+ const desktop=createAgentDesktop({screen:true},{available:()=>true,pauses:createAgentPauses(),verifyClient:()=>client,phoneControls:()=>!!control.holder()||control.inputStopping(),spawnHelper:async()=>helper});
  control.onAcquire=()=>{const barrier=desktop.yieldForOwner();if(barrier)control.retireInput(barrier);};
  const run=desktop.withBrowser(client,'/Applications/Google Chrome.app',()=>client,async guard=>{started.resolve();await work.promise;await guard();return {applied:true};}).catch(e=>e);
  return {control,ended,started,work,run,helper,desktop,close(){desktop.close();control.clear();ended.resolve();work.resolve();}};

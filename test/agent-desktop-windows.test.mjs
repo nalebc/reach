@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createAgentDesktop, normalizeAction, windowsAction, windowsModifiers } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 
 // The desktop service's own checks with Windows' names for apps, files and
 // keys (docs/WINDOWS_AGENT_PARITY.md, workstream A), against a stand-in for
@@ -16,7 +17,7 @@ function world(platform, { preset = "full" } = {}) {
   const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
   const requests = [];
   const desktop = createAgentDesktop({ screen: true }, {
-    platform, available: () => true, home, verifyClient: () => client,
+    platform, available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(),
     protectedPaths: () => [platform === "win32" ? String.raw`C:\Users\me\.reach` : "/Users/me/.reach"],
     spawnHelper: async () => ({ async send(request, beforeSend) { beforeSend?.(); requests.push(request); return { ok: true, app: "App", bundle: "" }; }, stop() {} }),
   });

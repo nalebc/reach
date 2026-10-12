@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { AgentDesktopHelper, createAgentDesktop, describeScreen, normalizeAction, reachAddresses } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 
 // The server side of an agent's screen and input, against a stand-in for the
 // native helper. Nothing here touches this computer.
@@ -46,7 +47,7 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true, hosts: () => ["mac.tail1.ts.net"], titles: () => ["reach"], protectedPaths: () => ["/Users/me/.reach"], home: "/Users/me",
     verifyClient: (id) => clients.get(id), phoneControls: () => phone, paused: () => pausedNow,
-    onActivity: (id, entry) => activity.push({ id, ...entry }), spawnHelper, now: () => clock, leaseMs,
+    onActivity: (id, entry) => activity.push({ id, ...entry }), spawnHelper, now: () => clock, leaseMs, pauses: createAgentPauses(),
   });
   return { desktop, make, helpers, activity, clients,
     setFront: (value) => { front = { ...front, ...value }; }, setAct: (fn) => { actAnswer = fn; },
@@ -623,7 +624,7 @@ function inertQueueWorld() {
   let current = client, permitted = true, phone = false;
   const authorize = () => { if (!permitted) throw Object.assign(Error("Access ended."), { status: 401 }); return current; };
   const desktop = createAgentDesktop({ screen: true }, {
-    available: () => true, spawnHelper: async () => helper, verifyClient: () => current, phoneControls: () => phone,
+    available: () => true, spawnHelper: async () => helper, verifyClient: () => current, phoneControls: () => phone, pauses: createAgentPauses(),
   });
   return { desktop, helper, writes, client, authorize,
     reply: () => child.stdout.emit("data", Buffer.from('{"ok":true,"app":"Synthetic App","title":"Synthetic"}\n')),
@@ -848,7 +849,7 @@ test("every action the Mac does or refuses is logged for the owner, in words", a
   // The log is a dependency; the world builds its desktop without one, so build another here.
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true, hosts: () => ["mac.tail1.ts.net"], titles: () => ["reach"], protectedPaths: () => ["/Users/me/.reach"], home: "/Users/me",
-    verifyClient: (id) => w.clients.get(id), spawnHelper: async (rules) => ({ rules, stopped: false,
+    verifyClient: (id) => w.clients.get(id), pauses: createAgentPauses(), spawnHelper: async (rules) => ({ rules, stopped: false,
       async send(request, before) { before?.();
         if (request.op === "front") return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "Amazon", terminalLike: false, secure: false, blocked: "" };
         if (request.op === "act") return request.action.type === "press" ? { ok: true, app: "Google Chrome", pressed: "Add to cart" } : { ok: true, app: "Google Chrome" };

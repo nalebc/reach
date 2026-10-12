@@ -104,6 +104,46 @@ test("the desktop service acts on the one store Reach gives it, never a second c
   assert.equal(fs.existsSync(path.join(folder, "other.json")), false, "no second store");
 });
 
+// Fail closed: a desktop service with a store of its own, in memory, would
+// never see the pause Reach's route keeps, and a paused agent would keep its
+// hands. Reach's own store (or a file) is required.
+test("the desktop service refuses to start without Reach's pause store", () => {
+  const options = { available: () => true, home: "/Users/me", spawnHelper: async () => ({ async send() { return { ok: true }; }, stop() {} }) };
+  assert.throws(() => createAgentDesktop({ screen: true }, options), /pause store/);
+  assert.throws(() => createAgentDesktop({ screen: true }, { ...options, pauses: { has: () => false } }), /pause store/, "half a store is no store");
+  assert.throws(() => createAgentDesktop({ screen: true }, { ...options, pauses: null, pausesFile: null }), /pause store/);
+  createAgentDesktop({ screen: true }, { ...options, pauses: createAgentPauses() }).close();
+  createAgentDesktop({ screen: true }, { ...options, pausesFile: path.join(dir(), "agent-pauses.json") }).close();
+});
+
+// Reach's real desktop service, built by Reach with Reach's options; only
+// the native helper is a stand-in. Pausing from the owner's agent list stops
+// the agent's input and opening, through the store Reach handed the service.
+test("Reach's own desktop service obeys the pause the owner sets from the agent list", privateIngressTest, async (t) => {
+  const sent = [];
+  const helper = { async send(request, beforeSend) { beforeSend?.(); sent.push(request.op); return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "", terminalLike: false, secure: false, blocked: "" }; }, stop() {} };
+  let built = null;
+  const f = await presetFixture(t, { desktopFactory: (config, options) => (built = createAgentDesktop(config, { ...options, spawnHelper: async () => helper })) });
+  assert.ok(built, "Reach built its desktop service");
+  const muse = await f.join({ name: "Muse", preset: "full" });
+  const id = muse.created.clientId;
+  const click = () => muse.as("/api/browser/desktop/input", { method: "POST", body: { action: { type: "click", x: 0.5, y: 0.5 } } });
+  const open = () => muse.as("/api/browser/desktop/open", { method: "POST", body: { app: "/Applications/Google Chrome.app" } });
+  assert.equal((await click()).status, 200);
+  assert.deepEqual(sent, ["act"]);
+  const paused = await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: true } });
+  assert.deepEqual(paused.body, { clientId: id, paused: true });
+  assert.equal(built.isPaused(id), true, "the service reads the store Reach keeps");
+  for (const refused of [await click(), await open()]) {
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.kind, "paused");
+  }
+  assert.deepEqual(sent, ["act"], "nothing reached the helper while paused");
+  assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: false } })).body.paused, false);
+  assert.equal((await open()).status, 200);
+  assert.deepEqual(sent, ["act", "open"]);
+});
+
 test("without the desktop service (as on Windows), the owner's pause is kept, enforced and shown", privateIngressTest, async (t) => {
   const f = await presetFixture(t, { withDesktop: false });
   const writer = await f.join({ name: "Writer", preset: "files", write: true, folders: [{ root: 0, path: "Desktop/Project" }] });

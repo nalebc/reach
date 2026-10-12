@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { commandRefusal, nativeRules, protectedAppReason, protectedPage, protectedPathReason, protectedTitle, terminalLikeApp, typedTextRefusal } from "../server/agent-guard.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 
 // Windows' guard data beside the Mac's, chosen by platform (docs/
 // WINDOWS_AGENT_PARITY.md, workstream A). The Mac's rules must not move: the
@@ -166,7 +167,7 @@ test("the desktop hands a Windows helper Windows' rules, and a Mac's helper the 
     const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
     let rules = null;
     const desktop = createAgentDesktop({ screen: true }, {
-      platform, available: () => true, home: macFixture.options.home, verifyClient: () => client,
+      platform, available: () => true, home: macFixture.options.home, verifyClient: () => client, pauses: createAgentPauses(),
       hosts: () => macFixture.options.hosts, titles: () => macFixture.options.titles, protectedPaths: () => macFixture.options.protectedPaths,
       spawnHelper: async (given) => { rules = given; return { async send() { return { ok: true, app: "", bundle: "", title: "" }; }, stop() {} }; },
     });
