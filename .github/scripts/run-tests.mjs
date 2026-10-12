@@ -23,7 +23,7 @@ export const suites = {
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // Coding agents, workstream M.
-    "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder",
+    "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

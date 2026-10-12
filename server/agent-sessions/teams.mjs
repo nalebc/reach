@@ -273,8 +273,6 @@ export function createTeams({
       const reason = authorized(owner);
       if (reason) throw bad(reason, 403);
       if (!keysDir || !socketPath || !script) throw bad("Teams aren't available on this computer.", 501);
-      // Windows has no team bridge yet (team-bridge.mjs): a restart can't help.
-      if (!ready() && process.platform === "win32") throw bad("Teams aren't available on Windows yet.", 501);
       if (!ready()) throw bad("Reach couldn't open the team's private socket on this computer, so a team's lead couldn't hand off work. Restart Reach and try again.", 503);
       const dir = folder(cwd);
       const token = crypto.randomBytes(32).toString("base64url");

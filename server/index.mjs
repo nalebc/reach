@@ -129,7 +129,7 @@ import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
 import { createWorkflows } from "./agent-sessions/workflows.mjs";
-import { createTeamBridge } from "./agent-sessions/team-bridge.mjs";
+import { createTeamBridge, teamPipe } from "./agent-sessions/team-bridge.mjs";
 import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
 import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
 import { createOverlaps } from "./agent-sessions/overlaps.mjs";
@@ -685,8 +685,9 @@ export async function createReach(overrides = {}) {
     });
   agentSessions.onListChange?.(() => void relays.check());
   // Team chats: a lead hands work to helpers through its tools, which reach
-  // Reach on a private socket with the team's own key (team-bridge.mjs).
-  const teamSocket = overrides.teamSocket || path.join(config.dataDir, "team.sock");
+  // Reach on a private socket with the team's own key (team-bridge.mjs); a
+  // named pipe of its own on Windows.
+  const teamSocket = overrides.teamSocket || (process.platform === "win32" ? teamPipe(config.dataDir) : path.join(config.dataDir, "team.sock"));
   teams =
     overrides.teams ||
     createTeams({
@@ -3310,9 +3311,10 @@ export async function createReach(overrides = {}) {
         ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
         ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
       })),
-      // No team bridge on Windows yet (team-bridge.mjs): the phone doesn't
-      // offer a Team that could only fail. (A Mac's that failed to open says
-      // "Restart Reach" when a team starts, as before.)
+      // No team bridge open on Windows (team-bridge.mjs: its pipe, or the
+      // owners helper a lead's check needs): the phone doesn't offer a Team
+      // that could only fail. (A Mac's that failed to open says "Restart
+      // Reach" when a team starts, as before.)
       ...((overrides.platform || process.platform) === "win32" && !teamBridgeOpen && !overrides.teams ? { teams: false } : {}),
     }),
   );
