@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentDesktop, normalizeAction, windowsAction, windowsModifiers } from "../server/agent-desktop.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
 // The desktop service's own checks with Windows' names for apps, files and
@@ -69,4 +69,35 @@ test("on Windows an agent opens a file by its drive-letter path; protected files
   for (const file of ["/Users/me/Documents/notes.txt", "notes.txt", String.raw`\\nas\share\notes.txt`, String.raw`C:\Users\me\SSH~1\id_rsa`, String.raw`C:\Users\me\notes.txt:hidden`])
     await rejects(apps.desktop.openFile(apps.client, file, {}, apps.authorize), 400, /full path/);
   assert.equal(apps.requests.filter((request) => request.op === "open-file").length, 1);
+});
+
+test("Mac modifier names become Windows keys in one place: cmd and control are Ctrl, option is Alt", () => {
+  for (const [mac, windows] of [["cmd", "ctrl"], ["command", "ctrl"], ["meta", "ctrl"], ["control", "ctrl"], ["ctrl", "ctrl"], ["option", "alt"], ["alt", "alt"], ["shift", "shift"]])
+    assert.deepEqual(windowsModifiers([mac]), [windows], mac);
+  // Each key once, in Windows' order, whatever order or names they came in.
+  assert.deepEqual(windowsModifiers(["shift", "cmd", "control", "option"]), ["ctrl", "alt", "shift"]);
+  assert.deepEqual(windowsModifiers(["cmd", "ctrl", "meta"]), ["ctrl"]);
+  assert.deepEqual(windowsModifiers([]), []);
+  // Every name normalizeAction lets through has a Windows key.
+  const accepted = normalizeAction({ type: "key", key: "a", modifiers: ["cmd", "command", "meta", "shift"] }).modifiers;
+  assert.deepEqual(windowsModifiers(accepted), ["ctrl", "shift"]);
+  // Unknown names are refused, never dropped: a dropped one would send a different shortcut.
+  for (const bad of [["win"], ["fn"], ["cmd", "super"], ["Cmd"], [1], "cmd", undefined])
+    assert.throws(() => windowsModifiers(bad), (error) => error.status === 400, JSON.stringify(bad));
+  assert.deepEqual(windowsAction({ type: "move", x: 0.5, y: 0.5 }), { type: "move", x: 0.5, y: 0.5 }, "an action without modifiers is unchanged");
+});
+
+test("on Windows the helper receives Windows modifiers; on a Mac, the agent's names as before", async (t) => {
+  for (const platform of ["win32", "darwin"]) {
+    const w = world(platform);
+    t.after(() => w.desktop.close());
+    await w.desktop.act(w.client, { type: "key", key: "c", modifiers: ["cmd"] }, w.authorize);
+    await w.desktop.act(w.client, { type: "click", x: 0.2, y: 0.4, modifiers: ["option", "shift", "control", "cmd"] }, w.authorize);
+    await w.desktop.act(w.client, { type: "scroll", x: 0.5, y: 0.5, dy: 120 }, w.authorize);
+    const sent = w.requests.filter((request) => request.op === "act").map((request) => request.action);
+    assert.deepEqual(sent.map((action) => action.modifiers), platform === "win32"
+      ? [["ctrl"], ["ctrl", "alt", "shift"], undefined]
+      : [["cmd"], ["option", "shift", "control", "cmd"], undefined], platform);
+    assert.deepEqual(sent[1], { type: "click", x: 0.2, y: 0.4, button: "left", count: 1, modifiers: platform === "win32" ? ["ctrl", "alt", "shift"] : ["option", "shift", "control", "cmd"] });
+  }
 });

@@ -25,6 +25,21 @@ const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", 
 export const SHOTS_PER_SECOND = 10;
 const MODIFIERS = new Set(["cmd", "command", "meta", "shift", "option", "alt", "control", "ctrl"]);
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+// Agents name modifiers as on a Mac. On Windows, in this one place: ⌘ (cmd,
+// command, meta) and control are Ctrl, option is Alt, shift is Shift. A Mac's
+// helper gets the names unchanged.
+const WINDOWS_MODIFIERS = { cmd: "ctrl", command: "ctrl", meta: "ctrl", control: "ctrl", ctrl: "ctrl", option: "alt", alt: "alt", shift: "shift" };
+/** Mac modifier names as Windows keys, each once, in Windows' order (Ctrl, Alt, Shift). An unknown name is refused, never dropped. */
+export function windowsModifiers(modifiers) {
+  if (!Array.isArray(modifiers)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+  const keys = modifiers.map((name) => {
+    if (typeof name !== "string" || !Object.hasOwn(WINDOWS_MODIFIERS, name)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+    return WINDOWS_MODIFIERS[name];
+  });
+  return ["ctrl", "alt", "shift"].filter((key) => keys.includes(key));
+}
+/** A normalized action as the Windows helper takes it: only its modifiers change. */
+export const windowsAction = (action) => (action.modifiers === undefined ? action : { ...action, modifiers: windowsModifiers(action.modifiers) });
 
 /** The exact action shapes an agent may send; anything else is refused before the Mac sees it. */
 /** Reach's own addresses on this Mac: the agent may never open them. */
@@ -758,7 +773,7 @@ export function createAgentDesktop(config, {
         }
         checkState(client, authorize, "browser:control", state);
         take(latest);
-        const result = answer(await dispatchInput(latest, state, { op: "act", action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
+        const result = answer(await dispatchInput(latest, state, { op: "act", action: windows ? windowsAction(action) : action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
         observe(latest);
