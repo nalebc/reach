@@ -640,7 +640,8 @@ export function createAgentSessions({
             try {
               fs.appendFileSync(path.join(dataDir, "claude-box-kept.jsonl"), `${JSON.stringify({ id, text, at: Date.now() })}\n`, { mode: 0o600 });
             } catch {
-              console.warn(text);
+              // Quoted: kept whole, and its lines can't pass for Reach's own.
+              console.warn(JSON.stringify(String(text)));
             }
           },
         }));

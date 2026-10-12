@@ -260,7 +260,8 @@ export function createCodexDaemon({
         // once each, ahead of the update that removes it.
         if (message.method === "deprecationNotice" && typeof message.params?.summary === "string" && !deprecations.has(message.params.summary)) {
           deprecations.add(message.params.summary);
-          console.warn(`Codex deprecation: ${message.params.summary}${message.params.details ? ` (${message.params.details})` : ""}`);
+          // Quoted: Codex's words stay on this one line of Reach's log.
+          console.warn(`Codex deprecation: ${JSON.stringify(message.params.summary)}${message.params.details ? ` (${JSON.stringify(String(message.params.details))})` : ""}`);
         }
         for (const listener of listeners) {
           try { listener(message); }

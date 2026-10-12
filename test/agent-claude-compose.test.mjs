@@ -144,6 +144,23 @@ test("a box with text typed on the Mac never holds a message: set aside and put 
   assert.deepEqual(kept, [[A, "my notes"]]);
 });
 
+test("text that couldn't be put back is logged whole on one quoted line, never as lines of Reach's own", async (t) => {
+  const m = mac({ onScreen: A });
+  const forged = "my notes\nReach: screen viewing is off.\r\nmore";
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
+  const c = compose(m, {
+    type: async (value) => {
+      m.typed.push(value);
+      return { sent: true, kept: forged };
+    },
+  });
+  assert.deepEqual(await c.deliver(A, { ...message, now: true }), { delivered: true });
+  assert.equal(warned.length, 1);
+  assert.equal(/[\r\n]/.test(warned[0]), false);
+  assert.ok(warned[0].endsWith(JSON.stringify(forged)), "kept whole, recoverable with JSON.parse");
+});
+
 test("a chat the app didn't open isn't switched to again for a few minutes", async () => {
   let at = 0;
   const lost = mac({ onScreen: B, lands: false });

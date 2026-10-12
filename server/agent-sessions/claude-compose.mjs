@@ -138,8 +138,9 @@ export function draftFile(file) {
 export function createClaudeCompose({
   type,
   // Text typed on the Mac that was set aside for a message and couldn't be
-  // put back in its box: saved, never lost.
-  keepText = (id, text) => console.warn(`Reach: text from the Claude app's box for ${id} couldn't be put back:\n${text}`),
+  // put back in its box: saved, never lost. Quoted, so its lines can't pass
+  // for lines of Reach's own log.
+  keepText = (id, text) => console.warn(`Reach: text from the Claude app's box for ${JSON.stringify(String(id))} couldn't be put back: ${JSON.stringify(String(text))}`),
   open,
   // Whether the chat's transcript shows the message arrived after `since`.
   arrived,
