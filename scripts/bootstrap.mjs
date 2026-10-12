@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { parseOptions } from "./launcher-options.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
+// Windows PowerShell gets its own modules, never PowerShell 7's (started from
+// a PowerShell 7 window, every helper and terminal failed to load them).
+import { cleanPowerShellEnv } from "../server/powershell.mjs";
+cleanPowerShellEnv();
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);

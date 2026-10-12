@@ -214,6 +214,7 @@ jobs:
             fi
             # npm reads the token from the environment; it's never written out.
             export NODE_AUTH_TOKEN="$FIRST_PUBLISH_TOKEN"
+            # shellcheck disable=SC2016 # literal: npm expands it, the token never lands in the file
             printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$RUNNER_TEMP/first-publish.npmrc"
             export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/first-publish.npmrc"
           fi

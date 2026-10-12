@@ -24,3 +24,32 @@ export const scriptBlocked = (text) => BLOCKED.test(String(text || ""));
 // seconds on a fast PC, tens of seconds on a slow one. The first answer gets
 // this long; later ones the usual few seconds.
 export const COLD_START_MS = 60000;
+
+// Windows PowerShell's own modules, never PowerShell 7's. Started from a
+// PowerShell 7 window (Windows Terminal's default where it's installed),
+// Reach and every child inherit 7's PSModulePath; Windows PowerShell then
+// finds 7's copies of its modules first and can't load them ("…was found in
+// the module 'Microsoft.PowerShell.Security', but the module could not be
+// loaded"): Add-Type, Get-ExecutionPolicy… fail and the screen never loads
+// (Oct 12, a real Windows runner). 7's own folders are dropped; the
+// owner's other folders stay; Windows PowerShell's defaults are kept.
+const SEVEN = /\\PowerShell\\(?:\d+(?:[.-][\w.-]+)?\\)?Modules\\?$/i;
+export function windowsPowerShellModulePath(value = "", env = process.env) {
+  const kept = String(value).split(";").map((dir) => dir.trim()).filter((dir) => dir && !SEVEN.test(dir));
+  const at = (name) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
+  const defaults = [
+    at("USERPROFILE") && `${at("USERPROFILE")}\\Documents\\WindowsPowerShell\\Modules`,
+    `${at("PROGRAMFILES") || "C:\\Program Files"}\\WindowsPowerShell\\Modules`,
+    `${at("SYSTEMROOT") || "C:\\Windows"}\\system32\\WindowsPowerShell\\v1.0\\Modules`,
+  ].filter(Boolean);
+  for (const dir of defaults) if (!kept.some((have) => have.toLowerCase() === dir.toLowerCase())) kept.push(dir);
+  return kept.join(";");
+}
+// Once, for this process and so every PowerShell it starts (helpers, the
+// owner's terminals, jobs, setup's checks).
+export function cleanPowerShellEnv(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return;
+  const key = Object.keys(env).find((name) => name.toUpperCase() === "PSMODULEPATH") || "PSModulePath";
+  env[key] = windowsPowerShellModulePath(env[key], env);
+}
+cleanPowerShellEnv();

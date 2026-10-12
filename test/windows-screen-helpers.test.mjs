@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "../server/powershell.mjs";
+import { COLD_START_MS, SCRIPT_BLOCKED, cleanPowerShellEnv, powershellFile, scriptBlocked, windowsPowerShellModulePath } from "../server/powershell.mjs";
 import { desktopDisplays } from "../server/desktop-native.mjs";
 import { screenTrouble } from "../server/remote-screen.mjs";
 import { NativeScreenSource } from "../server/screen-stream.mjs";
@@ -108,4 +108,36 @@ test("a cold Windows helper gets a minute for its first picture, then the usual 
   };
   await expectWait(true, COLD_START_MS);
   await expectWait(false, 15000);
+});
+
+test("Windows PowerShell gets its own modules, never PowerShell 7's", () => {
+  // Oct 12: started from a PowerShell 7 window (Windows Terminal's default),
+  // Windows PowerShell found 7's copies of its modules first and couldn't
+  // load them; Get-ExecutionPolicy and Add-Type failed, the screen never came.
+  const env = { USERPROFILE: "C:\\Users\\Sam", ProgramFiles: "C:\\Program Files", SystemRoot: "C:\\Windows" };
+  const inherited = [
+    "C:\\Users\\Sam\\Documents\\PowerShell\\Modules",
+    "C:\\Program Files\\PowerShell\\Modules",
+    "c:\\program files\\powershell\\7\\Modules",
+    "C:\\Program Files\\PowerShell\\7-preview\\Modules\\",
+    "C:\\Program Files\\WindowsPowerShell\\Modules",
+    "C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules",
+    "D:\\Team\\Modules",
+  ].join(";");
+  assert.deepEqual(windowsPowerShellModulePath(inherited, env).split(";"), [
+    "C:\\Program Files\\WindowsPowerShell\\Modules",
+    "C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules",
+    "D:\\Team\\Modules",
+    "C:\\Users\\Sam\\Documents\\WindowsPowerShell\\Modules",
+  ], "7's folders dropped, the owner's own kept, Windows PowerShell's defaults present");
+  assert.equal(windowsPowerShellModulePath("", env).split(";").length, 3, "nothing inherited: the defaults");
+  // Changes this process's environment (so every child's) on Windows only,
+  // whatever case the variable's name has there.
+  const win = { ...env, PSMODULEPATH: "C:\\Program Files\\PowerShell\\7\\Modules" };
+  cleanPowerShellEnv(win, "win32");
+  assert.deepEqual(Object.keys(win).filter((k) => k.toUpperCase() === "PSMODULEPATH"), ["PSMODULEPATH"]);
+  assert.doesNotMatch(win.PSMODULEPATH, /\\PowerShell\\7\\/i);
+  const mac = { PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules" };
+  cleanPowerShellEnv(mac, "darwin");
+  assert.equal(mac.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules");
 });

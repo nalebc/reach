@@ -1,4 +1,8 @@
 $ErrorActionPreference = 'Stop'
+# Started from a PowerShell 7 window, this Windows PowerShell inherits 7's
+# module folders and can't load its own commands from them: dropped first,
+# before any command loads (server/powershell.mjs does the same for Reach).
+$env:PSModulePath = (($env:PSModulePath -split ';') | Where-Object { $_ -and $_ -notmatch '\\PowerShell\\(\d+([.-][\w.-]+)?\\)?Modules\\?$' }) -join ';'
 $root = Split-Path $PSScriptRoot -Parent
 # Through bin\reach.mjs: Reach itself starts again in this window when it
 # stopped by itself (scripts\supervise.mjs); other commands run once.

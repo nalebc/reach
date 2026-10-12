@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { once } from "node:events";
+import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
@@ -405,7 +406,7 @@ test(
 test(
   "native Mac encoder produces Annex B keyframes and interframes",
   { skip: !process.env.REACH_TEST_VIDEO_HELPER, timeout: 20000 },
-  async () => {
+  async (t) => {
     const source = new NativeScreenSource(process.env.REACH_TEST_VIDEO_HELPER, [
       "--self-test",
     ]);
@@ -413,7 +414,17 @@ test(
       const keys = [];
       source.setBitrate(1500000);
       for (const command of ["key", "frame", "frame", "key"]) {
-        const packet = await source.next(command);
+        let packet;
+        try {
+          packet = await source.next(command);
+        } catch (error) {
+          // A virtual Mac (GitHub's Intel runners) has no hardware H.264
+          // encoder; real Macs do. Only that pair skips: anywhere else an
+          // unavailable encoder still fails here.
+          const vm = (() => { try { return execFileSync("/usr/sbin/sysctl", ["-n", "kern.hv_vmm_present"], { encoding: "utf8" }).trim() === "1"; } catch { return false; } })();
+          if (vm && /Video encoder unavailable/.test(error.message)) return t.skip(`virtual Mac without a hardware encoder: ${error.message}`);
+          throw error;
+        }
         // This helper receives only generated pixels. Keep diagnostics bounded
         // and distinguish JPEG/wrong-mode output from a broken JSON envelope.
         const diagnostic = `${command}: ${packet.length} bytes; prefix ${packet.subarray(0, 24).toString("hex")}; args --self-test`;
