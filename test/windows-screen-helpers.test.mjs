@@ -52,6 +52,10 @@ test("Windows lists its displays with time for a cold start, and says plainly wh
   assert.equal(list[0].id, "DISPLAY1");
   assert.equal(calls[0].file, "powershell.exe");
   assert.deepEqual(calls[0].args.slice(0, 4), ["-NoProfile", "-ExecutionPolicy", "Bypass", "-STA"]);
+  // Asked by name: a bare --list is a parameter name to PowerShell, never a
+  // value, and the helper waited for input instead (Oct 12, real Windows).
+  assert.deepEqual(calls[0].args.slice(-2), ["-Display", "list"]);
+  assert.ok(!calls[0].args.some((arg) => /^--/.test(arg)), "no double-dash argument reaches a PowerShell script");
   assert.equal(calls[0].options.timeout, COLD_START_MS);
 
   const refused = (stderr, extra = {}) => desktopDisplays({}, {

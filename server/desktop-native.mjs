@@ -13,8 +13,11 @@ export async function desktopBinary(config, kind, { signal } = {}) {
   signal?.throwIfAborted();
   // Name the cached build after its source, so any helper edit recompiles.
   const source = await fs.readFile(path.join(native, `${kind}.swift`));
+  // Tests may share one folder of builds (REACH_TEST_NATIVE_DIR): each test's
+  // own data folder rebuilt every helper, longer than a test lasts on a slow
+  // Intel runner, and its cleanup removed the build mid-link (Oct 12).
   const file = path.join(
-    config.dataDir,
+    process.env.REACH_TEST_NATIVE_DIR || config.dataDir,
     `reach-${kind}-${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`,
   );
   try {
@@ -44,7 +47,7 @@ export async function desktopDisplays(config, { run = exec, platform = process.p
   else if (platform === "win32")
     result = await run(
       "powershell.exe",
-      powershellFile(path.join(native, "desktop-input.ps1"), ["--list"], { sta: true }),
+      powershellFile(path.join(native, "desktop-input.ps1"), ["-Display", "list"], { sta: true }),
       { timeout: COLD_START_MS, maxBuffer: 65536, windowsHide: true },
     ).catch((error) => {
       // Said in words, not as PowerShell's raw command line and stack.

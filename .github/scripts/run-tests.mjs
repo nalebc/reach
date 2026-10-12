@@ -53,6 +53,7 @@ export async function run(suite) {
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=junit", `--test-reporter-destination=reports/${suite}.xml`,
     "--test-reporter=tap", `--test-reporter-destination=reports/${suite}.tap`, ...files];
+  let builds = null;
   const nativeDir = suite === "native" ? fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-native-")) : null;
   try {
     const nativeEnv = {};
@@ -70,12 +71,17 @@ export async function run(suite) {
       }
       Object.assign(nativeEnv, { REACH_TEST_APP_NATIVE: "1", REACH_TEST_FILE_BOUNDARY: "1", REACH_TEST_SCRIPT_SANDBOX: "1" });
     }
+    // One folder of native helper builds for the whole suite (named by source
+    // hash, built whole or not at all), not one per test's data folder.
+    builds = process.platform === "darwin" ? fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-builds-")) : null;
+    if (builds) nativeEnv.REACH_TEST_NATIVE_DIR = builds;
     const child = spawn(process.execPath, args, { stdio: "inherit", env: { ...process.env, ...nativeEnv } });
     child.on("error", error => { console.error(error.message); process.exitCode = 1; });
     const code = await new Promise(resolve => child.on("close", (code, signal) => resolve(signal ? 1 : code ?? 1)));
     process.exitCode = code;
   } finally {
     if (nativeDir) fs.rmSync(nativeDir, { recursive: true, force: true });
+    if (builds) fs.rmSync(builds, { recursive: true, force: true });
   }
 }
 
