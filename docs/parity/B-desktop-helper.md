@@ -1229,7 +1229,7 @@ CI wiring: the Windows lane in `ci.yml` adds `REACH_TEST_WINDOWS_NATIVE=1` and t
 
 Each decision says what this design does until the owner decides.
 
-**D1. Signing the helper** (was §3.5).
+**D1. Signing the helper** (was §3.5). **Decided by the owner, Oct 12: SignPath Foundation, product name "Reach"** (publisher shown as SignPath Foundation; rule 3 amended in `docs/WINDOWS_AGENT_PARITY.md`, policy in `docs/CODE_SIGNING.md`). The options as written:
 1. **Whether to sign at all.** The options, all from [Code signing options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options):
    - **Azure Artifact Signing**, about $9.99/month. Individuals are limited to the USA and Canada; organizations to the USA, Canada, the EU and the UK. No hardware token is needed. It requires a pay-as-you-go Azure subscription and an identity validation that takes a few business days.
    - **An OV certificate**, $150–300 a year. Since June 2023 the private key must be on an HSM or hardware token.
