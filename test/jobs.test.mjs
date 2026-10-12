@@ -46,3 +46,29 @@ test("a command still running at its deadline times out", { skip: process.platfo
   await until(() => job.status !== "running" && jobs.running.size === 0, 6000);
   assert.equal(job.status, "timed_out");
 });
+
+// The same three on a real Windows PC (Windows PowerShell 5.1), and its
+// output read back as written (parity audit #23).
+const windows = { skip: process.platform !== "win32" };
+test("Windows: a failing command that starts something in the background reports its own exit code", windows, async (t) => {
+  const jobs = fixture(t);
+  const job = jobs.start({ command: "Start-Process ping.exe -ArgumentList '-n','30','127.0.0.1' -WindowStyle Hidden; exit 3", cwd: os.tmpdir(), timeoutMs: 20000 }, "agent");
+  await until(() => job.status !== "running", 15000);
+  assert.equal(job.status, "failed");
+  assert.equal(job.exitCode, 3);
+});
+
+test("Windows: a command still running at its deadline times out, and nothing of it is left", windows, async (t) => {
+  const jobs = fixture(t);
+  const job = jobs.start({ command: "ping.exe -n 60 127.0.0.1 | Out-Null", cwd: os.tmpdir(), timeoutMs: 2000 }, "agent");
+  await until(() => job.status !== "running" && jobs.running.size === 0, 15000);
+  assert.equal(job.status, "timed_out");
+});
+
+test("Windows: what a command prints comes back exactly, accents and symbols included", windows, async (t) => {
+  const jobs = fixture(t);
+  const job = jobs.start({ command: "Write-Output 'café ✓ 日本'", cwd: os.tmpdir(), timeoutMs: 20000 }, "agent");
+  await until(() => job.status !== "running", 15000);
+  assert.equal(job.status, "completed", job.output);
+  assert.equal(job.output.trim(), "café ✓ 日本");
+});

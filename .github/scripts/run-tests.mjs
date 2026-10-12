@@ -16,7 +16,7 @@ export const suites = {
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
-    "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link",
+    "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link", "jobs",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
   ],
