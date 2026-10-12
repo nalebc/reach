@@ -72,6 +72,10 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 - #44: `reach cli` writes a `reach.cmd`.
 - #48: docs.
 
+Follow-ups the reviews left, both for a real PC:
+- **Stale Claude Code record.** One whose pid Windows gave to another `node.exe` reads as held until the record goes. Compare the process's start time (CIM `Win32_Process.CreationDate`) with the record's.
+- **Silent delete.** A file the Recycle Bin can't take is deleted for good without a word. This happens when the bin is off for that drive or the file is too big for it.
+
 The rest are in workstreams K to W below.
 
 ## Rules
