@@ -66,6 +66,11 @@ test(
       atomicJson(file, clients);
     };
     try {
+      await t.test("an invitation with no body is rejected as invalid input", async () => {
+        const response = await call("/api/guests", owner.token, undefined, "POST");
+        assert.equal(response.status, 400);
+        assert.match((await response.json()).error, /guest name/i);
+      });
       await t.test(
         "owner-selected scope and fixed deadline survive redemption and restart",
         async () => {

@@ -12,7 +12,19 @@ test("native keyboard events carry one whole character each, preserving Unicode"
   try {
     const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
     const pure = source.split("// BEGIN PURE DESKTOP TEXT")[1]?.split("// END PURE DESKTOP TEXT")[0];
+    const plainEvent = source.split("// BEGIN NATIVE PLAIN TEXT EVENT")[1]?.split("// END NATIVE PLAIN TEXT EVENT")[0];
     assert.ok(pure);
+    assert.ok(plainEvent);
+    const inert = `
+typealias CGKeyCode = UInt16
+let source = 1
+final class CGEvent {
+  var flags = Set(["command", "control", "shift", "option"])
+  let key: CGKeyCode
+  let down: Bool
+  init?(keyboardEventSource: Int, virtualKey: CGKeyCode, keyDown: Bool) { key = virtualKey; down = keyDown }
+}
+`;
     const checks = `
 func check(_ value: Bool, _ label: String) { if !value { print("FAILED: " + label); exit(1) } }
 let samples = ["", "plain text", "café — mañana", "日本語 العربية", "🙂", "👨‍👩‍👧‍👦", "e\\u{301}"]
@@ -28,10 +40,17 @@ for padding in 0...33 {
 check(keyboardChunks("").isEmpty, "empty text emits no events")
 check(keyboardChunks("7*3") == [[55], [42], [51]], "one character per event")
 check(keyboardChunks("e\u{301}x").count == 2, "a combined character stays one event")
+for key: CGKeyCode in [0, 36] {
+  for down in [true, false] {
+    let event = plainTextEvent(key, down: down)!
+    check(event.flags.isEmpty, "prose/newline does not inherit Command+A or another shortcut")
+    check(event.key == key && event.down == down, "clearing flags preserves key and direction")
+  }
+}
 print("Unicode keyboard chunks passed")
 `;
     const main = path.join(directory, "main.swift"), binary = path.join(directory, "keyboard-text");
-    await fs.writeFile(main, "import Foundation\n" + pure + checks);
+    await fs.writeFile(main, "import Foundation\n" + pure + inert + plainEvent + checks);
     const build = spawnSync("/usr/bin/xcrun", ["swiftc", "-module-cache-path", path.join(directory, "cache"), main, "-o", binary], { encoding: "utf8", timeout: 120000 });
     assert.equal(build.status, 0, build.stderr);
     const result = spawnSync(binary, [], { encoding: "utf8", timeout: 10000 });

@@ -48,20 +48,28 @@ export function exactPersistentRoute(config, origin, target) {
   const host = `${u.hostname}:${port}`;
   const tcp = config.TCP?.[port],
     web = config.Web?.[host];
+  const handler = web?.Handlers?.["/"];
   const hosts = Object.keys(config.Web || {}).filter((host) =>
     host.endsWith(`:${port}`),
   );
   return (
     !!tcp &&
     tcp.HTTPS === true &&
-    Object.keys(tcp).length === 1 &&
+    !tcp.HTTP &&
+    !tcp.TCPForward &&
+    !tcp.TerminateTLS &&
+    !tcp.ProxyProtocol &&
     hosts.length === 1 &&
     hosts[0] === host &&
     !!web &&
-    Object.keys(web).length === 1 &&
     Object.keys(web.Handlers || {}).length === 1 &&
-    web.Handlers["/"]?.Proxy === target &&
-    Object.keys(web.Handlers["/"]).length === 1
+    handler?.Proxy === target &&
+    // Tailscale serves these before Proxy, even if Proxy still matches.
+    // Extra metadata is harmless; a changed handler is no longer ours.
+    !handler.Path &&
+    !handler.Text &&
+    !handler.Redirect &&
+    !handler.AcceptAppCaps?.length
   );
 }
 export function recordedRouteMatches(file, config, origin, target) {

@@ -1763,7 +1763,7 @@ export default function AgentSessionView({
   const [choosingMode, setChoosingMode] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
   const [modeError, setModeError] = useState("");
-  const savingMode = useRef(false);
+  const savingMode = useRef<object | null>(null);
   const modeButton = useRef<HTMLButtonElement>(null);
   const pickedMode = useRef<{ mode: string; at: number } | null>(null);
   const { view: live, seenAt: liveSeenAt } = useSessionLive(peer, initial);
@@ -1856,6 +1856,11 @@ export default function AgentSessionView({
     readLife.generation++;
     savingModel.current = null;
     setModelSaving(false);
+    savingMode.current = null;
+    setModeSaving(false);
+    setModeError("");
+    setChoosingMode(false);
+    pickedMode.current = null;
     known.current = "";
     reading.current = null;
     failed.current = 0;
@@ -1901,13 +1906,15 @@ export default function AgentSessionView({
         // its acknowledgement. Keep its transcript, but never let those old
         // settings undo the selected effort; a fresh read still follows
         // later changes made in the native app or another device.
-        const staleSettings = settingsGeneration !== readLife.settingsGeneration || !!savingModel.current;
+        const staleSettings = settingsGeneration !== readLife.settingsGeneration || !!savingModel.current || !!savingMode.current;
         const session = { ...r.session };
         if (staleSettings) {
           delete session.model;
           delete session.effort;
           delete session.speed;
-          if (savingModel.current) readLife.settingsReadPending = true;
+          delete session.mode;
+          delete session.pendingMode;
+          if (savingModel.current || savingMode.current) readLife.settingsReadPending = true;
           else if (first) void again.current(false);
           else turn.again = true;
         }
@@ -1935,7 +1942,7 @@ export default function AgentSessionView({
         const keepPick = !session.pendingMode && picked && Date.now() - picked.at < 5000 && session.mode !== picked.mode;
         // The server leaves out what's off (Ultracode, where it runs, who
         // holds it, a move): gone from the read, gone here too.
-        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ultracode: undefined, live: undefined, held: undefined, movedTo: undefined, pendingMode: keepPick ? picked.mode : undefined, ...session }));
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ultracode: undefined, live: undefined, held: undefined, movedTo: undefined, pendingMode: staleSettings ? old.pendingMode : keepPick ? picked.mode : undefined, ...session }));
         setItems((current) => {
           if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
@@ -2409,7 +2416,9 @@ export default function AgentSessionView({
   // Permission modes the session can switch to: what the agent offers now, in
   // its own words (until that arrives, the ones it always has).
   const modeChoices = modesFor(
-    modes ||
+    // Custom describes an existing configuration; Codex cannot switch a
+    // loaded chat back to its config defaults through this settings call.
+    modes?.map((m) => agent === "codex" && m.id === "custom" ? { ...m, switchable: false } : m) ||
       (agent === "codex"
         ? CODEX_MODE_CHOICES.filter((m) => m.id !== "custom")
         : ["manual", "acceptEdits", "plan", "auto"].map((id) => ({
@@ -3418,13 +3427,19 @@ export default function AgentSessionView({
             onClose={() => setChoosingMode(false)}
             onPick={async (id) => {
               if (savingMode.current) return;
-              savingMode.current = true;
+              const operation = {};
+              const generation = readLife.generation;
+              const current = () => readLife.active && readLife.generation === generation && savingMode.current === operation;
+              savingMode.current = operation;
+              readLife.settingsGeneration++;
               setModeSaving(true);
               setModeError("");
               try {
                 const result = await setAgentMode(peer, initial, id);
+                if (!current()) return;
                 if (result.applied) {
-                  setInfo((old) => ({ ...old, mode: id }));
+                  pickedMode.current = null;
+                  setInfo((old) => ({ ...old, mode: id, pendingMode: undefined }));
                   setChoice((old) => ({ ...old, mode: undefined }));
                 } else if (result.next === "request") {
                   // Claude Code there takes it at its next step: the button
@@ -3435,10 +3450,17 @@ export default function AgentSessionView({
                 } else setChoice((old) => ({ ...old, mode: id }));
                 setChoosingMode(false);
               } catch (error) {
-                setModeError((error as Error).message);
+                if (current()) setModeError((error as Error).message);
               } finally {
-                savingMode.current = false;
-                setModeSaving(false);
+                if (current()) {
+                  readLife.settingsGeneration++;
+                  savingMode.current = null;
+                  setModeSaving(false);
+                  if (readLife.settingsReadPending && !savingModel.current) {
+                    readLife.settingsReadPending = false;
+                    void load(false);
+                  }
+                }
               }
             }}
           />
@@ -3511,7 +3533,7 @@ export default function AgentSessionView({
                   readLife.settingsGeneration++;
                   savingModel.current = null;
                   setModelSaving(false);
-                  if (readLife.settingsReadPending) {
+                  if (readLife.settingsReadPending && !savingMode.current) {
                     readLife.settingsReadPending = false;
                     void load(false);
                   }

@@ -19,6 +19,7 @@ import { locateClaude } from "./agent-sessions/index.mjs";
 import { findCodexExecutable } from "./capabilities.mjs";
 import { probeAgent } from "./agent-sessions/compatibility.mjs";
 import { compareVersions, parseVersion } from "./versions.mjs";
+import { boundedResponseText } from "./http-response.mjs";
 
 const exec = promisify(execFile);
 
@@ -57,8 +58,13 @@ export function managerOf(agent, file, { real = fs.realpathSync, home = os.homed
   }
   if (agent === "codex") {
     if (cask?.[1] === "codex") return { manager: "brew", cask: "codex", command: "brew upgrade --cask codex" };
-    if (target.includes("/node_modules/@openai/codex/"))
-      return { manager: "npm", package: "@openai/codex", command: "npm install -g @openai/codex@latest" };
+    const global = target.indexOf("/lib/node_modules/@openai/codex/");
+    if (global >= 0) {
+      const prefix = target.slice(0, global) || "/";
+      // The login shell may select a different Node/npm prefix than the
+      // Codex Reach discovered. Update this exact installation, not that one.
+      return { manager: "npm", package: "@openai/codex", command: `npm install -g --prefix ${quote(prefix)} @openai/codex@latest` };
+    }
     return null;
   }
   return null;
@@ -70,10 +76,7 @@ export async function readFeed(url, pick, { fetch: get = globalThis.fetch, timeo
   try {
     const res = await get(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers: { accept: "application/json, text/plain" } });
     if (!res.ok) return null;
-    const length = Number(res.headers?.get?.("content-length"));
-    if (Number.isFinite(length) && length > maxBytes) return null;
-    const text = await res.text();
-    if (text.length > maxBytes) return null;
+    const text = await boundedResponseText(res, maxBytes);
     const value = pick(text);
     return typeof value === "string" && parseVersion(value) ? parseVersion(value).text : null;
   } catch {
@@ -131,7 +134,7 @@ export function createAgentUpdates({
   const latest = async (url, pick, fresh) => {
     const kept = published.get(url);
     if (!fresh && kept && now() < kept.expires) return kept.value;
-    const value = read(url, pick);
+    const value = Promise.resolve().then(() => read(url, pick)).catch(() => null);
     const entry = { value, expires: now() + ttlMs };
     published.set(url, entry);
     value.then((v) => { if (!v) entry.expires = now() + failedTtlMs; });

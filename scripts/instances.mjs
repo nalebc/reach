@@ -10,13 +10,29 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { stateDir } from "./home.mjs";
 
-// The processes now: id, parent, terminal, command line.
-export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20 })) {
-  return String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]))
+export class ProcessInventoryError extends Error {
+  constructor(cause) {
+    super("Can't determine whether Reach is running: the system process list is unavailable. Run this command in Terminal or allow process inspection in this shell.", { cause });
+    this.code = "REACH_PROCESS_INVENTORY_UNAVAILABLE";
+  }
+}
+
+// The processes now: id, parent, terminal, command line. An unavailable
+// inventory is unknown, never evidence that it is safe to start another Reach.
+export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20, timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })) {
+  let output;
+  try {
+    output = String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]));
+  } catch (error) {
+    throw new ProcessInventoryError(error);
+  }
+  const table = output
     .split("\n")
     .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
     .filter(Boolean)
     .map(([, pid, ppid, tty, command]) => ({ pid: Number(pid), ppid: Number(ppid), tty, command }));
+  if (output.trim() && !table.length) throw new ProcessInventoryError(Error("Unrecognized process inventory."));
+  return table;
 }
 
 const SHELLS = new Set(["zsh", "bash", "sh", "fish", "tcsh", "csh", "ksh", "dash", "nu", "pwsh"]);

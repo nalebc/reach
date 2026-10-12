@@ -1,15 +1,37 @@
 // Fixed JXA transport for the two macOS browser scripting dictionaries.
 // stdin carries data; never interpolate agent input into AppleScript or a shell.
 ObjC.import("Foundation");
-function run() {
+function run(argv) {
+  if (argv && argv[0] === "--worker") return workerLoop();
+  var raw = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+  return safeRequest(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(raw, $.NSUTF8StringEncoding)));
+}
+function workerLoop() {
+  var input = $.NSFileHandle.fileHandleWithStandardInput;
+  var output = $.NSFileHandle.fileHandleWithStandardOutput;
+  var pending = $.NSMutableData.data;
+  for (;;) {
+    var chunk = input.availableData;
+    if (!chunk.length) return;
+    pending.appendData(chunk);
+    if (pending.length > 16 * 1024 * 1024) return;
+    // NSData retains incomplete UTF-8 across pipe chunks.
+    var decoded = $.NSString.alloc.initWithDataEncoding(pending, $.NSUTF8StringEncoding);
+    if (!decoded) continue;
+    var text = ObjC.unwrap(decoded), newline;
+    while ((newline = text.indexOf("\n")) >= 0) {
+      var line = text.slice(0, newline); text = text.slice(newline + 1);
+      var result = safeRequest(line) + "\n";
+      output.writeData($(result).dataUsingEncoding($.NSUTF8StringEncoding));
+    }
+    pending = $.NSMutableData.data;
+    if (text) pending.appendData($(text).dataUsingEncoding($.NSUTF8StringEncoding));
+  }
+}
+function safeRequest(raw) {
   var request;
   try {
-    var raw = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
-    request = JSON.parse(
-      ObjC.unwrap(
-        $.NSString.alloc.initWithDataEncoding(raw, $.NSUTF8StringEncoding),
-      ),
-    );
+    request = JSON.parse(raw);
     return browserRequest(request);
   } catch (error) {
     // Never let osascript turn a bridge exception into a raw file-path error.

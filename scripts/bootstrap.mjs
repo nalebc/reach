@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, reachHosts, startTimes, stateOf, statusText, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, startTimes, stateOf, statusText, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -24,22 +24,14 @@ const abort = () => {
 // Any other Reach on this computer, whichever folder it runs from.
 function othersRunning() {
   if (process.platform === "win32") return [];
-  try {
-    return reachHosts(processTable());
-  } catch {
-    return [];
-  }
+  return reachHosts(processTable());
 }
 // The Mac app this command runs inside, when it isn't Terminal: Reach started
 // here would have a terminal but no Screen Recording or Accessibility.
 function foreignApp() {
   if (process.platform !== "darwin") return "";
-  try {
-    const app = hostApp(processTable(), process.pid);
-    return outsideTerminal(app) ? app : "";
-  } catch {
-    return "";
-  }
+  const app = hostApp(processTable(), process.pid);
+  return outsideTerminal(app) ? app : "";
 }
 function lock() {
   // One Reach per computer: a second one says where the first runs instead.
@@ -88,7 +80,11 @@ function lock() {
               stdio: ["ignore", "pipe", "ignore"],
               timeout: 2000,
             });
-          } catch {}
+          } catch (error) {
+            // An inaccessible process might still own this lock. Do not
+            // remove it just because its command cannot be inspected.
+            throw new ProcessInventoryError(error);
+          }
           if (!/scripts\/bootstrap\.mjs|bin\/reach\.mjs/.test(command)) fs.unlinkSync(lockFile);
         } else throw error;
       }
@@ -107,7 +103,7 @@ function lock() {
   } catch (error) {
     if (error.code === "EEXIST")
       throw Error(
-        "Reach is already starting or running from this folder. Use its existing terminal.",
+        `Reach is already starting or running from this folder. Use its existing terminal, or run ${command} restart to start it again.`,
       );
     throw error;
   }
@@ -305,12 +301,13 @@ async function update() {
     console.log(`This is a source checkout. Update it with git pull, then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
+  if (install.reason === "portable") return console.log(install.manual);
   const found = await latestRelease();
   if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
   if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
   if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
   console.log(`Reach ${found.version} is out (you have ${install.version}).`);
-  if (install.reason) throw Error(`Reach can't install it into its own folder. Run: ${install.manual.replace("@latest", `@${found.version}`)}`);
+  if (install.reason) throw Error(`Reach can't install it into its own folder. ${install.reason === "permission" ? "" : "Run: "}${install.manual.replace("@latest", `@${found.version}`)}`);
   const plan = installCommand(install, found.version);
   if (!plan) throw Error(`npm wasn't found. Run: npm install --global ${PACKAGE}@${found.version}`);
   if (!process.stdin.isTTY || foreignApp()) {

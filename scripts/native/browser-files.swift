@@ -45,11 +45,11 @@ final class Boundary {
     let privateNames: Set<String>
     let maxBytes: Int
     init(_ input: [String: Any]) throws {
-        guard let supplied = input["root"] as? String, supplied != "/", let dev = input["rootDev"] as? String, let ino = input["rootIno"] as? String else { try deny() }
+        guard let supplied = input["root"] as? String, supplied != "/" || input["fullControl"] as? Bool == true, let dev = input["rootDev"] as? String, let ino = input["rootIno"] as? String else { try deny() }
         let parts = try components(supplied, absolute: true)
         rootPath = "/" + parts.joined(separator: "/")
         privatePaths = (input["privatePaths"] as? [String] ?? []).map { $0.precomposedStringWithCompatibilityMapping.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
-        privateNames = Set([".reach", ".ssh", ".aws", ".codex"] + (input["privateNames"] as? [String] ?? []))
+        privateNames = Set((input["fullControl"] as? Bool == true ? [] : [".reach", ".ssh", ".aws", ".codex"]) + (input["privateNames"] as? [String] ?? []))
         maxBytes = min(max((input["maxBytes"] as? Int) ?? 1048576, 1), 25 * 1024 * 1024)
         var current = try Descriptor(Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
         for part in parts { current = try Descriptor(openat(current.value, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) }
@@ -65,7 +65,7 @@ final class Boundary {
     func verify(_ fd: Int32) throws {
         guard try pathOf(root.value) == rootPath else { try deny("The shared folder moved. Request it again.") }
         let actual = try pathOf(fd)
-        guard actual == rootPath || actual.hasPrefix(rootPath + "/") else { try deny() }
+        guard actual == rootPath || actual.hasPrefix(rootPath == "/" ? "/" : rootPath + "/") else { try deny() }
         try protect(actual)
     }
     func directory(_ parts: [String]) throws -> Descriptor {

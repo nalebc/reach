@@ -4,10 +4,15 @@ import { protectedAppReason } from "./agent-guard.mjs";
 // Agent access is one of four presets. Everything an agent may do (its scopes,
 // the routes it may call, the tools it sees, the rules the native checker
 // applies) is derived from the preset on every request, never stored as a
-// list that could grow. What stays protected in every preset lives in
+// list that could grow. Restrictions for the narrower presets live in
 // agent-guard.mjs.
 export const PRESETS = ["full", "apps", "files", "readonly"];
 export const PRESET_NAMES = { full: "Full control", apps: "Apps", files: "Files", readonly: "Read only" };
+// Version 1 explicitly grants unrestricted OS-account access. Earlier Full
+// control invitations had exclusions and a shell sandbox: restarting must
+// never silently replace their terms with this broader contract.
+export const FULL_CONTROL_VERSION = 1;
+export const fullControlNeedsInvitation = (policy) => policy?.browser === true && policy.preset === "full" && policy.fullControlVersion !== FULL_CONTROL_VERSION;
 const validBrowserTerminalId = (id) => typeof id === "string" && /^(reach|desktop):[A-Za-z0-9_-]{1,128}$/.test(id);
 const invalid = (message, status = 400) => Object.assign(Error(message), { status });
 const plain = (value) => value !== null && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -20,9 +25,9 @@ export const validAppPath = (value) =>
 // created the invitation (browser-host-guard.mjs), as app sessions did.
 export const hostGuardedPreset = (policy) => policy?.browser === true && ["full", "apps"].includes(policy.preset);
 
-// "Always": the agent keeps its access until the owner ends it. Once approved,
-// its one link brings it back from any browser (core.mjs rebind), moving the
-// access and disconnecting the old browser. Only over the public link.
+// "Always": the agent keeps its access until the owner ends it. Its approved
+// browser can reconnect; a different browser must show a new code for owner
+// approval. Reopening disconnects the previous browser (core.mjs rebind).
 export const STANDING_SECONDS = 10 * 365 * 86400;
 export const standingPolicy = (policy) => policy?.browser === true && policy.standing === true;
 
@@ -52,7 +57,7 @@ const appList = (value, label) => {
 
 /** The owner's choice, checked: a preset plus what that preset needs, nothing more. */
 export function validatePresetInvitation(input, { folderCount } = {}) {
-  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds", "standing", "hosted"];
+  const fields = ["name", "ttlSeconds", "joinSeconds", "transport", "preset", "folders", "apps", "write", "hidden", "terminalIds", "standing", "hosted", "fullControlVersion"];
   if (!plain(input) || Object.keys(input).some((key) => !fields.includes(key)))
     throw invalid("This invitation contains unsupported fields.");
   const { name, ttlSeconds, joinSeconds = 900, transport = "tailnet", preset, folders = [], apps = [], write = false, hidden = [], terminalIds = [], standing, hosted } = input;
@@ -71,6 +76,10 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
       !["tailnet", "funnel"].includes(transport) || (transport === "funnel" && joinSeconds > 900) ||
       typeof write !== "boolean" || !Array.isArray(terminalIds) || terminalIds.length > 20 || terminalIds.some((id) => !validBrowserTerminalId(id)))
     throw invalid("Name the agent, pick a preset, and a duration from 1 minute to 24 hours (joining within 15 minutes).");
+  if (preset === "full" && input.fullControlVersion !== FULL_CONTROL_VERSION)
+    throw invalid("Full control now grants unrestricted access as your OS account. Reload Reach and create a new invitation to approve these terms.", 409);
+  if (preset !== "full" && input.fullControlVersion !== undefined)
+    throw invalid("Unrestricted access consent applies only to Full control.");
   if (!Array.isArray(folders) || folders.length > 20 || folders.some((folder) =>
       !plain(folder) || Object.keys(folder).some((key) => !["root", "path"].includes(key)) ||
       !Number.isSafeInteger(folder.root) || folder.root < 0 || typeof folder.path !== "string" || folder.path.length > 4096 || controls(folder.path)))
@@ -81,10 +90,11 @@ export function validatePresetInvitation(input, { folderCount } = {}) {
   if (preset === "files" && !(folderCount ?? folders.length)) throw invalid("Choose at least one folder for the Files preset.");
   if (["apps"].includes(preset) && folders.length) throw invalid("The Apps preset has no folders.");
   if (write && preset !== "files") throw invalid("Only the Files preset chooses between reading and editing.");
-  if (hiddenApps.length && !["full", "readonly"].includes(preset)) throw invalid("Hidden apps apply to Full control and Read only.");
+  // Accept legacy Full control selections; presetPolicy ignores them.
+  if (hiddenApps.length && !["full", "readonly"].includes(preset)) throw invalid("Hidden apps apply to Read only.");
   if (terminalIds.length && !["full", "readonly"].includes(preset)) throw invalid("Watching terminals applies to Full control and Read only.");
   for (const app of chosenApps) { const reason = protectedAppReason(app); if (reason) throw invalid(reason, 403); }
-  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)], ...(standing ? { standing } : {}), ...(hosted ? { hosted: true } : {}) };
+  return { name, ttlSeconds, joinSeconds, transport, preset, folders, apps: chosenApps, write: preset === "files" ? write : false, hidden: hiddenApps, terminalIds: [...new Set(terminalIds)], ...(preset === "full" ? { fullControlVersion: FULL_CONTROL_VERSION } : {}), ...(standing ? { standing } : {}), ...(hosted ? { hosted: true } : {}) };
 }
 
 /** The stored policy. `roots` are already chosen and checked against what Reach shares. */
@@ -92,11 +102,12 @@ export function presetPolicy(checked, roots) {
   const { preset, apps, write, hidden, terminalIds, standing } = checked;
   return {
     invite: true, browser: true, preset,
+    ...(preset === "full" ? { fullControlVersion: FULL_CONTROL_VERSION } : {}),
     ...(standing ? { standing: true } : {}),
-    roots: [...new Set(roots)],
+    roots: [...new Set(preset === "full" ? [...roots, path.parse(process.cwd()).root] : roots)],
     ...(preset === "apps" ? { apps } : {}),
     ...(preset === "files" && write ? { write: true } : {}),
-    ...(hidden.length ? { hidden } : {}),
+    ...(preset !== "full" && hidden.length ? { hidden } : {}),
     ...(terminalIds.length ? { terminalIds } : {}),
   };
 }
@@ -105,6 +116,8 @@ export function presetPolicy(checked, roots) {
 // here grants nothing.
 export function validPresetPolicy(policy) {
   return plain(policy) && policy.invite === true && policy.browser === true && PRESETS.includes(policy.preset) &&
+    !fullControlNeedsInvitation(policy) &&
+    (policy.fullControlVersion === undefined || (policy.preset === "full" && policy.fullControlVersion === FULL_CONTROL_VERSION)) &&
     Array.isArray(policy.roots) && policy.roots.every((root) => typeof root === "string" && path.isAbsolute(root)) &&
     (policy.apps === undefined || (policy.preset === "apps" && Array.isArray(policy.apps) && policy.apps.length > 0 && policy.apps.length <= 30 && policy.apps.every((app) => plain(app) && validAppPath(app.id) && !protectedAppReason(app)))) &&
     (policy.preset !== "apps" || policy.apps !== undefined) &&
@@ -133,8 +146,8 @@ export function presetRouteAllowed(client, method, route) {
   if (read && route === "/device/runtime") return true;
   // Its tools as Reach lists them, and the request each call makes: the
   // request itself then meets this allowlist like any other.
-  if (read && route === "/browser/mcp/tools") return has("browser:read");
-  if (method === "POST" && route === "/browser/mcp/plan") return has("browser:read");
+  if (read && ["/browser/mcp/tools", "/browser/mcp/discover"].includes(route)) return has("browser:read");
+  if (method === "POST" && ["/browser/mcp/plan", "/browser/mcp/call"].includes(route)) return has("browser:read");
   // Discovery/requesting is available to every admitted preset. Execution also
   // requires separate, owner-approved service consent in agent-services.mjs.
   if (read && route === "/browser/services") return has("browser:read");
@@ -143,7 +156,7 @@ export function presetRouteAllowed(client, method, route) {
   if (method === "POST" && route === "/browser/permissions/request") return has("browser:read");
   if (read && fileReads.includes(route)) return has("files:read") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/files/change") return has("browser:write") && policy.roots.length > 0;
-  if (read && ["/browser/desktop/screen", "/browser/desktop/front", "/browser/desktop/windows"].includes(route)) return has("browser:screen");
+  if (read && ["/browser/desktop/screen", "/browser/desktop/front", "/browser/desktop/windows", "/browser/desktop/displays"].includes(route)) return has("browser:screen");
   if (read && ["/browser/desktop/elements", "/browser/desktop/describe", "/browser/desktop/menus", "/browser/desktop/read"].includes(route)) return has("browser:control");
   if (method === "POST" && ["/browser/desktop/input", "/browser/desktop/wait", "/browser/desktop/find"].includes(route)) return has("browser:control");
   if (read && ["/browser/desktop/apps", "/browser/desktop/mac-shortcuts"].includes(route)) return has("browser:open");
@@ -188,7 +201,7 @@ export function presetAccess(client) {
     shell: scopes.includes("browser:shell"),
     write: scopes.includes("browser:write"),
     apps: (policy.apps || []).map(({ id, name, bundleId }) => ({ id, ...(name !== undefined ? { name } : {}), ...(bundleId !== undefined ? { bundleId } : {}) })),
-    hidden: (policy.hidden || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })),
+    hidden: (policy.preset === "full" ? [] : policy.hidden || []).map(({ id, name }) => ({ id, ...(name !== undefined ? { name } : {}) })),
     ...(policy.standing ? { standing: true } : {}),
   };
 }

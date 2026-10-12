@@ -1,6 +1,7 @@
 import {
   readPreferences,
   assertSocketSupport,
+  assertOwnerAccount,
   preferencesFile,
   accountApproval,
 } from "./configure.mjs";
@@ -28,7 +29,7 @@ import {
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
 import { createReach } from "../server/index.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
-import { atomicJson, loadJson, openPairingWindow } from "../server/core.mjs";
+import { atomicJson, loadJson, openPairingWindow, pairingWindowFile } from "../server/core.mjs";
 import { publicNameState } from "../server/public-dns.mjs";
 import { phoneLinkText, UNPUBLISHED } from "./phone-link.mjs";
 import {
@@ -51,6 +52,7 @@ export async function launch(options, root) {
   // not handed on to the terminals and agents Reach starts.
   const openedForYou = !!process.env.REACH_OPENED_BY;
   delete process.env.REACH_OPENED_BY;
+  const attended = !options.service && !!process.stdout.isTTY && !openedForYou;
   // When Reach was first set up here (its settings file), for the one link.
   const setupSince = () => {
     try {
@@ -76,7 +78,10 @@ export async function launch(options, root) {
   const preferences =
     !options.local && accountApproval() ? readPreferences(root) : null;
   const socketPath = preferences ? serveSocketPath(root) : null;
-  if (preferences) await assertSocketSupport();
+  if (preferences) {
+    assertOwnerAccount(await tailscaleJson(["status", "--json"]), preferences);
+    await assertSocketSupport();
+  }
   if (options.service && !options.port)
     throw Error("A service needs its saved local port.");
   const privateOrigin = options.local
@@ -126,6 +131,7 @@ export async function launch(options, root) {
   let log, monitor, approvalMonitor, recovery, power, stopWatch;
   let publicLink, publicMonitor, linkMonitor;
   let startUrl = "";
+  let phoneLinkShown = false;
   const forgetStatus = () => {
     if (loadJson(statusFile, null)?.instance === reach.instance)
       fs.rmSync(statusFile, { force: true });
@@ -368,6 +374,27 @@ export async function launch(options, root) {
             if (open) routes.public.since = Date.now();
             routes.public.open = open;
             noteRoutes();
+            if (!phoneLinkShown || stopped) return;
+            if (!open) {
+              startUrl = "";
+              noteLink(privateOrigin);
+            } else if (!startUrl) {
+              // A new tailnet can enable Funnel only after Reach has shown
+              // its private link. Update `status`/`pair` and the waiting
+              // phone now, without asking for a restart. Reuse the original
+              // window: approval or expiry must not be undone by recovery.
+              startUrl = publicStart;
+              const pairing = loadJson(pairingWindowFile(dataDir), null);
+              const remaining = Number.isFinite(pairing?.until) ? pairing.until - Date.now() : 0;
+              const link = reach.fleet?.homeLink({ start: publicStart, since: setupSince() }) || publicStart;
+              noteLink(link);
+              console.log(`\nReach: browser sign-in is now available.\n  Open on your phone: ${link}\n`);
+              if (!options.service) qr.generate(link, { small: true });
+              console.log(phoneLinkText({ oneAddress: true, attended: remaining > 0, minutes: remaining > 0 ? Math.ceil(remaining / 60000) : 15, ownLink: link !== publicStart ? publicStart : "" }));
+              void publicNameState(new URL(publicStart).hostname).then(state => {
+                if (state === "missing" && !stopped) console.log(UNPUBLISHED);
+              });
+            }
           },
         });
         await publicLink.start();
@@ -411,8 +438,9 @@ export async function launch(options, root) {
       // Tailscale app may sign in from its browser for the next minutes.
       // Not a window Reach opened by itself (a restart from the phone, at
       // sign-in: REACH_OPENED_BY, scripts/login-start.mjs).
-      const attended = !options.service && !!process.stdout.isTTY && !openedForYou;
-      if (startUrl && attended) openPairingWindow(dataDir);
+      // The request to pair starts now even if Funnel still needs enabling.
+      // It expires normally and approval on the private link closes it too.
+      if (attended) openPairingWindow(dataDir);
       // Linked computers share one link: the one where Reach started first.
       const link = startUrl
         ? reach.fleet?.homeLink({ start: startUrl, since: setupSince() }) ||
@@ -431,6 +459,7 @@ export async function launch(options, root) {
           publicProblem: publicStart && !startUrl ? publicLink?.lastError || "the public link is off." : "",
         }),
       );
+      phoneLinkShown = true;
       if (startUrl)
         void publicNameState(new URL(startUrl).hostname).then((state) => {
           if (state === "missing" && !stopped) console.log(UNPUBLISHED);

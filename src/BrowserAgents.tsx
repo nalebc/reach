@@ -258,6 +258,9 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
     const apps = policy.appAccess || [];
     return (
       <>
+          {agent.needsInvitation && (
+            <p className="ag-quiet">This older Full control grant has ended. Create a new invitation to approve unrestricted access.</p>
+          )}
           {active && agent.status === "pending" && (
             <div className="ag-ask">
               <p>
@@ -342,7 +345,7 @@ function BrowserAgentList({ peer, toast, focus }: Props) {
                 </div>
               </li>
             )}
-            {!!policy.hidden?.length && (
+            {agent.preset !== "full" && !!policy.hidden?.length && (
               <li>
                 <AppWindow size={18} />
                 <div>

@@ -1,3 +1,4 @@
+import { approvedFullPolicy } from "./helpers/full-control-policy.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
@@ -155,7 +156,7 @@ test("a build that lacks what keeps agents up to date is never handed out; the r
   assert.deepEqual(missingKeepUp(""), ["self-update", "the computer's runtime", "Reach's tool list", "Reach's call plans"]);
   assert.equal(permittedPath("GET", `/api/browser/mcp/tools?runtime=${"a".repeat(64)}`), "/browser/mcp/tools");
   assert.equal(permittedPath("POST", "/api/browser/mcp/plan"), "/browser/mcp/plan");
-  const agent = { kind: "agent", policy: { invite: true, browser: true, preset: "full", roots: [] }, scopes: ["browser:read", "browser:control", "browser:open", "browser:screen"] };
+  const agent = { kind: "agent", policy: approvedFullPolicy(), scopes: ["browser:read", "browser:control", "browser:open", "browser:screen"] };
   assert.equal(presetRouteAllowed(agent, "GET", "/browser/mcp/tools"), true);
   assert.equal(presetRouteAllowed(agent, "POST", "/browser/mcp/plan"), true);
   assert.equal(presetRouteAllowed({ ...agent, scopes: [] }, "POST", "/browser/mcp/plan"), false);

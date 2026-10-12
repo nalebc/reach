@@ -14,10 +14,11 @@ import { parseBrowserMutation, validateBrowserMutation } from "./browser-mutatio
 import { browserCommandRecords, saveBrowserCommandRecords } from "./browser-command-records.mjs";
 import { hostGuardedPreset, presetAccess, presetAppsFromCatalog, presetRouteAllowed } from "./agent-presets.mjs";
 import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
-import { browserToolRequest, savedToolName, SAVED_TOOLS_HINT } from "./browser-tools.mjs";
+import { browserToolRequest, savedToolName, SAVED_TOOLS_HINT, compactTools } from "./browser-tools.mjs";
 import { toolsFor } from "../scripts/mcp-server.mjs";
 import { fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { describeScreen, normalizeAction } from "./agent-desktop.mjs";
+import { createObservations, observationOptions, waitOptions, waitForScreen } from "./desktop-observation.mjs";
 import { actionWords } from "./agent-actions.mjs";
 
 // An explicit route allowlist is part of the credential, independent of UI.
@@ -42,10 +43,10 @@ export function browserRouteAllowed(client, method, route) {
   if ((method === "POST" && route === "/browser/terminal") || (["GET", "HEAD"].includes(method) && route === "/browser/terminal/history"))
     return client.scopes.includes("browser:request") && client.policy.restrictedTerminal === true;
   // Its tools as Reach lists them, and the request each call makes (below).
-  if (method === "POST" && route === "/browser/mcp/plan") return client.scopes.includes("browser:read");
+  if (method === "POST" && ["/browser/mcp/plan", "/browser/mcp/call"].includes(route)) return client.scopes.includes("browser:read");
   if (!["GET", "HEAD"].includes(method)) return false;
   if (route === "/device" || route === "/device/runtime") return true;
-  if (route === "/browser/mcp/tools") return client.scopes.includes("browser:read");
+  if (["/browser/mcp/tools", "/browser/mcp/discover"].includes(route)) return client.scopes.includes("browser:read");
   if (
     route === "/browser" ||
     /^\/browser\/terminals\/[^/]+$/.test(route)
@@ -226,13 +227,13 @@ export function browserAccessRoutes(
     if (input.preset === "files" && !protectedFilesSupported)
       throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
     const filePolicy = { browser: true, preset: input.preset };
+    if (input.preset === "full") { input.folders = []; input.hidden = []; }
     const shareable = (folder) => {
       try { validateBrowserRoot(resolve(folder.root, folder.path || "", { policy: filePolicy }), { policy: filePolicy }); return true; }
       catch { return false; }
     };
-    // Without chosen folders, Full and Read only get every shared folder that
-    // can be shared (Home, never the whole computer).
-    if (!input.folders.length && ["full", "readonly"].includes(input.preset)) {
+    // Read only defaults to shared folders that pass root validation.
+    if (!input.folders.length && input.preset === "readonly") {
       input.folders = config.roots.map((_, root) => ({ root, path: "" })).filter(shareable);
       if (!input.folders.length) validateBrowserRoot(config.roots[0] ?? "", { policy: filePolicy });
     }
@@ -424,7 +425,60 @@ export function browserAccessRoutes(
     const client = browser(req);
     runtimeSaid(req, client);
     const { view, offered, list } = await mcpTools(req, client);
-    res.json({ tools: offered, list, ...(view.runtime ? { runtime: view.runtime } : {}) });
+    res.json({ tools: req.query.profile === "compact" ? compactTools(offered) : offered, list, dispatch: true, ...(view.runtime ? { runtime: view.runtime } : {}) });
+  });
+  app.get("/api/browser/mcp/discover", async (req, res) => {
+    const client = browser(req);
+    if (Object.keys(req.query).some(key => !["query", "name"].includes(key)) || Object.values(req.query).some(value => typeof value !== "string" || value.length > 160)) throw fail(400, "Search by query or an exact tool name.");
+    const { offered } = await mcpTools(req, client);
+    // Match task words across the name, title and description: "read file"
+    // must find reach_read_file even when its title is "Read a file". Rank
+    // names ahead of incidental mentions in another tool's instructions.
+    const normalize = value => value.toLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const query = normalize(req.query.query || ""), words = query.split(" ").filter(Boolean);
+    const matches = req.query.name ? offered.filter(tool => tool.name === req.query.name) : offered
+      .map(tool => {
+        const label = normalize(`${tool.name} ${tool.title || ""}`);
+        const text = label + " " + normalize(tool.description || "");
+        return { tool, matches: words.every(word => text.includes(word)), score: words.filter(word => label.includes(word)).length + (query && label.includes(query) ? 2 : 0) };
+      })
+      .filter(item => item.matches).sort((a, b) => b.score - a.score).map(item => item.tool);
+    res.json({ tools: matches.slice(0, 50).map(tool => req.query.name ? tool : ({ name: tool.name, title: tool.title, description: tool.description.split(". ")[0], annotations: tool.annotations })), more: matches.length > 50 });
+  });
+  // Execute a named tool in one network request. Re-enter the ordinary
+  // middleware with the SAME request identity: no trusted headers, broader
+  // credential, or alternate implementation of a tool's authorization.
+  app.post("/api/browser/mcp/call", async (req, res) => {
+    const client = browser(req);
+    if (!isPlainRecord(req.body) || Object.keys(req.body).some(key => !["name", "arguments"].includes(key)) ||
+        typeof req.body.name !== "string" || req.body.name.length > 128 ||
+        (req.body.arguments !== undefined && !isPlainRecord(req.body.arguments))) throw fail(400, "Name one tool and its arguments.");
+    runtimeSaid(req, client);
+    const { view, offered, list } = await mcpTools(req, client);
+    if (!offered.some(tool => tool.name === req.body.name)) throw fail(400, "This tool is not available to this agent.");
+    let plan;
+    try { plan = browserToolRequest(req.body.name, req.body.arguments || {}, view); }
+    catch (error) { throw fail(400, String(error?.message || "These arguments don't fit this tool.").slice(0, 500)); }
+    if (plan.route.split("?")[0] === "/api/browser/mcp/call") throw fail(400, "Nested tool dispatch is not allowed.");
+    if (!browserRouteAllowed(browser(req), plan.method, plan.route.split("?")[0].slice(4))) throw fail(403, "This tool is no longer allowed.");
+    const started = performance.now(), json = res.json, send = res.send;
+    const restore = () => { res.json = json; res.send = send; };
+    const envelope = result => ({ result, list, ...(view.runtime ? { runtime: view.runtime } : {}), dispatchMs: Math.round(performance.now() - started) });
+    res.json = function(value) { restore(); return json.call(this, this.statusCode < 400 ? envelope(value) : value); };
+    res.send = function(value) {
+      if (plan.response === "image" && Buffer.isBuffer(value) && this.statusCode < 400) {
+        const mimeType = String(this.getHeader("Content-Type") || "").split(";")[0];
+        if (["image/jpeg", "image/png"].includes(mimeType)) {
+          restore(); this.type("json");
+          return json.call(this, envelope({ image: value.toString("base64"), mimeType }));
+        }
+      }
+      return send.call(this, value);
+    };
+    req.method = plan.method; req.url = plan.route; req.originalUrl = plan.route;
+    req.body = plan.body || {};
+    delete req._parsedUrl; delete req._parsedOriginalUrl;
+    app(req, res);
   });
   app.post("/api/browser/mcp/plan", async (req, res) => {
     const client = browser(req);
@@ -730,12 +784,43 @@ export function browserAccessRoutes(
       res.status(status).json(details);
     }
   };
+  const observations = createObservations();
+  const readOptions = body => body.observe === undefined ? {} : observationOptions(body.observe);
+  const validateAfter = body => {
+    if (body.observe !== undefined) observationOptions(body.observe);
+    if (body.waitFor !== undefined) waitOptions(body.waitFor);
+  };
+  const observeAfter = async (req, result, body) => {
+    if (!body.observe && !body.describe && !body.waitFor) return result;
+    const client = presetClient(req, "browser:control"), options = readOptions(body);
+    const authorize = () => presetClient(req, "browser:control");
+    try {
+      const read = () => desktop.elements(client, authorize, options);
+      const waited = body.waitFor ? await waitForScreen({ read, authorize, wanted: body.waitFor,
+        changed: desktop.waitForChange ? (revision, ms) => desktop.waitForChange(client, revision, ms, authorize) : null }) : null;
+      const screen = waited?.screen || await read();
+      const view = observations(authorize(), screen, options);
+      return { ...result, ...(waited ? { found: waited.found, waitedMs: waited.waitedMs } : {}),
+        screen: { snapshot: view.snapshot, app: view.app, title: view.title, displayId: view.displayId, truncated: view.truncated, outputTruncated: view.outputTruncated,
+          text: view.text, ...(body.observe && typeof body.observe === "object" && body.observe.sinceSnapshot ? { delta: view.delta, reset: view.reset, removed: view.removed } : {}) } };
+    } catch (error) {
+      // Input already completed. Preserve its receipt so a failed read never
+      // looks like permission to repeat an effect. Do not include old content.
+      if (!Object.keys(result).length) throw error;
+      const { status, ...details } = agentErrorDetails(error);
+      return { ...result, screen: details, observationFailed: true };
+    }
+  };
+  app.get("/api/browser/desktop/displays", async (req, res) => {
+    const client = presetClient(req, "browser:screen"); needDesktop();
+    await answer(res, () => desktop.displays(client, () => presetClient(req, "browser:screen")));
+  });
   app.get("/api/browser/desktop/screen", async (req, res) => {
     const client = presetClient(req, "browser:screen");
     needDesktop();
-    if (Object.keys(req.query).some((key) => key !== "maxWidth")) throw fail(400, "Choose only the image width.");
+    if (Object.keys(req.query).some((key) => !["maxWidth", "displayId"].includes(key))) throw fail(400, "Choose only the image width.");
     await answer(res, async () => {
-      const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 2560 });
+      const shot = await desktop.screenshot(client, () => presetClient(req, "browser:screen"), { maxWidth: Number(req.query.maxWidth) || 2560, ...(req.query.displayId ? { displayId: observationOptions({ displayId: req.query.displayId }).displayId } : {}) });
       res.set("Cache-Control", "no-store");
       res.set("X-Reach-Screen", JSON.stringify({ width: shot.width, height: shot.height, hidden: shot.hidden }));
       res.type("image/jpeg").send(shot.jpeg);
@@ -749,15 +834,23 @@ export function browserAccessRoutes(
   app.get("/api/browser/desktop/elements", async (req, res) => {
     const client = presetClient(req, "browser:control");
     needDesktop();
-    await answer(res, () => desktop.elements(client, () => presetClient(req, "browser:control")));
+    const options = observationOptions(req.query);
+    await answer(res, async () => {
+      const screen = await desktop.elements(client, () => presetClient(req, "browser:control"), options);
+      const { text, ...view } = observations(presetClient(req, "browser:control"), screen, options);
+      return view;
+    });
   });
   // The front window as text, controls numbered inline (reach_describe_screen).
   app.get("/api/browser/desktop/describe", async (req, res) => {
     const client = presetClient(req, "browser:control");
     needDesktop();
     await answer(res, async () => {
-      const found = await desktop.elements(client, () => presetClient(req, "browser:control"));
-      return { app: found.app, title: found.title, snapshot: found.snapshot, truncated: found.truncated, screenText: describeScreen(found) };
+      const options = observationOptions(req.query);
+      const found = await desktop.elements(client, () => presetClient(req, "browser:control"), options);
+      const view = observations(presetClient(req, "browser:control"), found, options);
+      return { snapshot: view.snapshot, app: view.app, title: view.title, truncated: view.truncated, outputTruncated: view.outputTruncated,
+        displayId: view.displayId, delta: view.delta, reset: view.reset, removed: view.removed, screenText: view.text };
     });
   });
   // One action, or several in order (actions), each checked on the Mac
@@ -772,17 +865,23 @@ export function browserAccessRoutes(
     const body = req.body;
     const keys = isPlainRecord(body) ? Object.keys(body) : [];
     if (!isPlainRecord(body) || keys.includes("action") === keys.includes("actions") ||
-        keys.some((key) => !["action", "actions", "describe"].includes(key)) || (body.describe !== undefined && body.describe !== true))
+        keys.some((key) => !["action", "actions", "describe", "observe", "waitFor"].includes(key)) || (body.describe !== undefined && body.describe !== true))
       throw fail(400, "Send one action, or actions: a list of up to 10.");
     const authorize = () => presetClient(req, "browser:control");
+    validateAfter(body);
     const act = (action) => (shortcuts || desktop).act(client, action, authorize);
-    if (keys.includes("action") && !body.describe) return answer(res, () => act(body.action));
+    if (keys.includes("action") && !body.describe && !body.observe && !body.waitFor) return answer(res, () => act(body.action));
     const list = keys.includes("action") ? [body.action] : body.actions;
     if (!Array.isArray(list) || !list.length || list.length > BATCH.actions)
       throw fail(400, "Send one action, or actions: a list of up to 10.");
-    let typed = 0, waited = 0, held = 0;
+    let typed = 0, waited = 0, held = 0, conditionWaited = 0;
     for (const item of list) {
-      if (isPlainRecord(item) && item.type === "wait") {
+      if (isPlainRecord(item) && item.type === "wait_for") {
+        const { type, displayId, ...condition } = item;
+        waitOptions(condition);
+        if (displayId !== undefined) observationOptions({ displayId });
+        conditionWaited += condition.timeoutMs ?? 8000;
+      } else if (isPlainRecord(item) && item.type === "wait") {
         if (Object.keys(item).some((key) => !["type", "ms"].includes(key)) || !Number.isInteger(item.ms) || item.ms < 50 || item.ms > BATCH.wait)
           throw fail(400, "A wait takes ms, from 50 to 2000.");
         waited += item.ms;
@@ -795,6 +894,7 @@ export function browserAccessRoutes(
         if (Array.isArray(item.fields)) for (const field of item.fields) typed += String(field?.text || "").length;
       }
     }
+    if (conditionWaited + waited > 15000) throw fail(400, "Wait at most 15 seconds for conditions in one batch.");
     if (waited > BATCH.waits) throw fail(400, "Wait at most 6 seconds in one batch.");
     if (held > BATCH.holds) throw fail(400, "Hold and drag for at most 12 seconds in one batch.");
     if (typed > BATCH.text) throw fail(400, "Type at most 2000 characters in one batch.");
@@ -808,6 +908,22 @@ export function browserAccessRoutes(
           stopped = { index, error: "The rest didn't run in time. Describe the screen, then send what's left.", kind: "retry" };
           break;
         }
+        if (item?.type === "wait_for") {
+          const { type, displayId, ...condition } = item;
+          try {
+            const waited = await waitForScreen({ authorize,
+              wanted: { ...condition, timeoutMs: Math.min(condition.timeoutMs ?? 8000, Math.max(0, BATCH.ms - (Date.now() - started))) },
+              read: () => desktop.elements(client, authorize, { displayId }),
+              changed: desktop.waitForChange ? (revision, ms) => desktop.waitForChange(client, revision, ms, authorize) : null });
+            if (!waited.found) { stopped = { index, kind: "retry", error: "The expected screen did not appear. Later actions were not run." }; break; }
+            results.push({ found: true, waitedMs: waited.waitedMs });
+          } catch (error) {
+            const { status, ...details } = agentErrorDetails(error);
+            if (status === 401 || !results.length) throw error;
+            stopped = { index, ...details }; break;
+          }
+          continue;
+        }
         if (item?.type === "wait") {
           authorize();
           await pause(item.ms);
@@ -820,25 +936,13 @@ export function browserAccessRoutes(
           // A refusal (blocked, busy, paused, retry) stops the batch and is
           // said; access that ended, or a failure, ends the request.
           const { status, ...details } = agentErrorDetails(error);
-          if (!status || !details.kind || status === 401 || status >= 500) throw error;
+          if (status === 401 || ((!status || !details.kind || status >= 500) && !results.length)) throw error;
           stopped = { index, ...details };
           break;
         }
       }
       const reply = { ok: !stopped, done: results.length, results, ...(stopped ? { stopped } : {}) };
-      if (body.describe) {
-        // What the last action changed has a moment to draw.
-        await pause(300);
-        try {
-          const found = await desktop.elements(client, authorize);
-          reply.screen = { snapshot: found.snapshot, app: found.app, title: found.title, truncated: found.truncated, text: describeScreen(found) };
-        } catch (error) {
-          const { status, ...details } = agentErrorDetails(error);
-          if (!status || status === 401 || (status >= 500 && !details.helperReason)) throw error;
-          reply.screen = { error: details.error, ...(details.kind ? { kind: details.kind } : {}) };
-        }
-      }
-      return reply;
+      return observeAfter(req, reply, stopped ? { ...body, waitFor: undefined } : body);
     });
   });
   // The Mac waits for its own screen to show some text or a control (a page
@@ -848,44 +952,25 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:control");
     needDesktop();
     const body = req.body;
-    const wanted = isPlainRecord(body) ? [body.text, body.name].filter((value) => value !== undefined) : [];
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["text", "name", "timeoutMs"].includes(key)) || wanted.length !== 1 ||
-        typeof wanted[0] !== "string" || !wanted[0].trim() || wanted[0].length > 200 || hasReviewControls(wanted[0]) ||
-        (body.timeoutMs !== undefined && (!Number.isInteger(body.timeoutMs) || body.timeoutMs < 500 || body.timeoutMs > 15000)))
-      throw fail(400, "Wait for text or a control's name, up to 15000 ms.");
-    const authorize = () => presetClient(req, "browser:control");
-    const squeeze = (value) => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
-    const target = squeeze(wanted[0]);
-    const started = Date.now(), deadline = started + (body.timeoutMs ?? 8000);
-    await answer(res, async () => {
-      for (;;) {
-        const found = await desktop.elements(client, authorize);
-        const matched = body.text !== undefined
-          ? found.texts.some((line) => squeeze(line.text).includes(target)) || squeeze(found.title).includes(target) ||
-            found.items.some((item) => squeeze(item.name).includes(target) || squeeze(item.value).includes(target))
-          : found.items.some((item) => squeeze(item.name) === target || squeeze(item.name).startsWith(target));
-        if (matched || Date.now() >= deadline)
-          return { found: matched, waitedMs: Date.now() - started,
-            screen: { snapshot: found.snapshot, app: found.app, title: found.title, truncated: found.truncated, text: describeScreen(found) } };
-        authorize();
-        await pause(Math.min(400, Math.max(0, deadline - Date.now())));
-      }
-    });
+    if (!isPlainRecord(body)) throw fail(400, "Give a wait condition.");
+    const { observe, ...condition } = body;
+    waitOptions(condition);
+    if (observe !== undefined) observationOptions(observe);
+    await answer(res, () => observeAfter(req, {}, { waitFor: condition, observe: observe ?? true }));
   });
+
   app.get("/api/browser/desktop/apps", async (req, res) => {
     const client = presetClient(req, "browser:open");
     needDesktop();
     await answer(res, async () => ({ apps: await permittedApps(client, () => presetClient(req, "browser:open")) }));
   });
-  // The apps this session may open: the chosen ones (Apps), or every app but
-  // the protected and hidden ones (Full).
+  // The apps this session may open: chosen apps, or all installed apps for Full control.
   const permittedApps = async (client, authorize) => {
     const catalog = await desktop.catalog(authorize);
     const latest = authorize();
-    const hidden = latest.policy.hidden || [];
     return latest.policy.preset === "apps"
       ? latest.policy.apps.map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: catalog.some((entry) => entry.id === app.id && entry.running) }))
-      : catalog.filter((app) => !protectedAppReason(app) && !hidden.some((entry) => entry.id === app.id || (entry.bundleId && entry.bundleId === app.bundleId)))
+      : catalog
         .map((app) => ({ id: app.id, name: app.name, bundleId: app.bundleId, running: app.running, ...(terminalLikeApp(app) ? { runsCommands: true } : {}) }));
   };
   // An app by its name ("Calculator") as well as its path: one of those.
@@ -902,18 +987,19 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "app") || typeof body.app !== "string" || !body.app.trim() || body.app.length > 4096)
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["app", "observe", "waitFor"].includes(key)) || typeof body.app !== "string" || !body.app.trim() || body.app.length > 4096)
       throw fail(400, "Choose one app by its name or path.");
     const authorize = () => presetClient(req, "browser:open");
     const target = body.app.startsWith("/") ? body.app : await appByName(client, body.app, authorize);
-    await answer(res, () => (shortcuts || desktop).open(client, target, authorize));
+    validateAfter(body);
+    await answer(res, async () => observeAfter(req, await (shortcuts || desktop).open(client, target, authorize), body));
   });
   // A website in the owner's own browser, with their sign-ins (reach_open_url).
   app.post("/api/browser/desktop/open-url", async (req, res) => {
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser"].includes(key)) || typeof body.url !== "string")
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser", "observe", "waitFor"].includes(key)) || typeof body.url !== "string")
       throw fail(400, "Give a web address, and optionally a browser.");
     const authorize = () => presetClient(req, "browser:open");
     if (body.browser !== undefined && (typeof body.browser !== "string" || !body.browser.trim()))
@@ -921,7 +1007,8 @@ export function browserAccessRoutes(
     const browser = body.browser === undefined ? undefined
       : typeof body.browser === "string" && body.browser.startsWith("/") ? body.browser
         : await appByName(client, String(body.browser || ""), authorize);
-    await answer(res, () => desktop.openUrl(client, body.url, browser, authorize));
+    validateAfter(body);
+    await answer(res, async () => observeAfter(req, await desktop.openUrl(client, body.url, browser, authorize), body));
   });
   // Every window the agent may know of, and bringing one forward (reach_windows,
   // reach_focus_window): the right window or tab in one step, no guessing.
@@ -934,8 +1021,9 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["id", "title", "tab"].includes(key))) throw fail(400, "Choose a window by id, with its title, and a tab if you like.");
-    await answer(res, () => desktop.focusWindow(client, body, () => presetClient(req, "browser:open")));
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["id", "title", "tab", "tabRef", "observe", "waitFor"].includes(key))) throw fail(400, "Choose a window by id, with its title, and a tab if you like.");
+    validateAfter(body);
+    await answer(res, async () => observeAfter(req, await desktop.focusWindow(client, body, () => presetClient(req, "browser:open")), body));
   });
   // The front app's menu bar as data (reach_menus); items are pressed with
   // reach_act {type: "menu", path}.
@@ -986,18 +1074,21 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["root", "path", "reveal"].includes(key)) || typeof body.path !== "string" || !body.path.trim() ||
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["root", "path", "reveal", "observe", "waitFor"].includes(key)) || typeof body.path !== "string" || !body.path.trim() ||
         (body.reveal !== undefined && body.reveal !== true)) throw fail(400, "Name the file inside a shared folder, and reveal: true to show it in the Finder.");
     if (!client.policy.roots?.length) throw fail(403, "This invitation shares no folders to open files from.");
     const target = resolve(body.root ?? 0, body.path, client);
-    await answer(res, () => desktop.openFile(client, target, { reveal: body.reveal === true }, () => presetClient(req, "browser:open")));
+    validateAfter(body);
+    await answer(res, async () => observeAfter(req, await desktop.openFile(client, target, { reveal: body.reveal === true }, () => presetClient(req, "browser:open")), body));
   });
-  // The Mac's own Shortcuts the owner allowed, and running one (reach_mac_shortcuts, reach_run_mac_shortcut).
+  // Full control sees every Mac Shortcut; other presets see the owner's allowed names.
   const needShortcuts = () => { if (!macShortcuts) throw fail(503, "Shortcuts for agents are unavailable on this computer."); };
-  app.get("/api/browser/desktop/mac-shortcuts", (req, res) => {
-    presetClient(req, "browser:open");
+  app.get("/api/browser/desktop/mac-shortcuts", async (req, res) => {
+    const client = presetClient(req, "browser:open");
     needShortcuts();
-    res.json(macShortcuts.agentList());
+    const result = await macShortcuts.agentList(client);
+    presetClient(req, "browser:open");
+    res.json(result);
   });
   app.post("/api/browser/desktop/mac-shortcuts/run", async (req, res) => {
     const client = presetClient(req, "browser:open");
@@ -1015,14 +1106,13 @@ export function browserAccessRoutes(
       }
     });
   });
-  // The shell (Full control): one command, as the owner, checked against the
-  // deny list and logged. Not confined: Full control is full control.
+  // The shell (Full control): one command as the owner, logged and unsandboxed.
   app.post("/api/browser/shell", async (req, res) => {
     const client = presetClient(req, "browser:shell");
     if (!shell) throw fail(503, "Commands for agents are unavailable on this computer.");
     const item = await shell.run(client, req.body, { resolve, authorize: () => presetClient(req, "browser:shell") });
     record("agent", `${client.name} ${item.status === "blocked" ? "was refused a command" : "ran a command"}`);
-    res.status(item.status === "blocked" ? 200 : 200).json(item);
+    res.json(item);
   });
   app.get("/api/browser/shell/history", async (req, res) => {
     const client = presetClient(req, "browser:shell");
@@ -1030,8 +1120,7 @@ export function browserAccessRoutes(
     res.json(await shell.history(client));
   });
   // File changes: Files with editing goes through the sandboxed helper in its
-  // chosen folders; Full control writes directly, inside what Reach shares and
-  // never into private files.
+  // chosen folders; Full control writes directly across its filesystem roots.
   const MAX_CONTENT = 1048576;
   app.post("/api/browser/files/change", async (req, res) => {
     const client = presetClient(req, "browser:write");

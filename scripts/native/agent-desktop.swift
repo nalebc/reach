@@ -12,7 +12,7 @@ import Security
 // before it is posted, in this process. The rules are data from the server
 // (server/agent-guard.mjs): the protected apps, Reach's own names and
 // addresses, the preset's app set, the owner's hidden apps.
-struct Refusal: Error { let message: String; let kind: String }
+struct Refusal: Error { let message: String; let kind: String; var candidates: [[String: String]] = [] }
 func refuse(_ message: String, _ kind: String = "blocked") throws -> Never { throw Refusal(message: message, kind: kind) }
 
 // BEGIN PURE DESKTOP POLICY — compiled directly by policy tests without macOS UI.
@@ -80,6 +80,7 @@ func settingsApp(_ bundleId: String) -> Bool {
 // Which apps the agent may touch at all: the preset's set in Apps mode, every
 // app but the protected and hidden ones in Full mode, none in view mode.
 func appReason(_ bundleId: String, _ name: String, _ path: String, _ rules: Rules) -> String? {
+  if rules.mode == "full" { return nil }
   if let reason = protectedApp(bundleId, name, path, rules) { return reason }
   if rules.hiddenApps.contains(where: { matchesApp(bundleId, path, $0) || (!($0["name"] ?? "").isEmpty && lower($0["name"]!) == lower(name)) }) { return hiddenReason }
   if rules.mode == "apps" {
@@ -93,6 +94,7 @@ func mailIdentityCandidate(_ bundleId: String, _ path: String) -> Bool {
   bundleId == "com.apple.mail" && path == "/System/Applications/Mail.app"
 }
 func titleReason(_ title: String, _ bundleId: String, _ rules: Rules, verifiedMail: Bool = false) -> String? {
+  if rules.mode == "full" { return nil }
   let value = lower(title)
   // Only the native verifier may supply this context. Mail message subjects
   // are not browser/terminal titles; failed or unknown identity stays closed.
@@ -136,6 +138,7 @@ func reachHostSubject(_ value: String) -> String {
 }
 // A page address: Reach's own, or one that reveals saved passwords or runs code.
 func urlReason(_ url: String, _ rules: Rules) -> String? {
+  if rules.mode == "full" { return nil }
   let value = lower(url).trimmingCharacters(in: .whitespacesAndNewlines)
   if value.isEmpty { return nil }
   let subject = reachHostSubject(value)
@@ -278,6 +281,7 @@ func moneyHost(_ url: String) -> String? {
   return authority.isEmpty ? nil : lower(authority)
 }
 func moneySite(_ url: String, _ rules: Rules) -> Bool {
+  if rules.mode == "full" { return false }
   guard var host = moneyHost(url), !host.isEmpty else { return false }
   if host.hasSuffix(".") { host.removeLast() }
   return rules.moneySites.contains { !$0.isEmpty && (host == $0 || host.hasSuffix("." + $0)) }
@@ -297,6 +301,7 @@ func moneyPage(_ url: String, _ title: String, _ rules: Rules) -> String {
   return ""
 }
 func moneyClickReason(_ url: String, _ title: String, _ labels: [String], _ role: String, _ rules: Rules) -> String? {
+  if rules.mode == "full" { return nil }
   let page = moneyPage(url, title, rules)
   let names = labels.map(moneyPlain).filter { !$0.isEmpty }
   let own = names.first ?? "", all = names.joined(separator: " ")
@@ -315,6 +320,7 @@ func moneyClickReason(_ url: String, _ title: String, _ labels: [String], _ role
   return moneyButtonReason
 }
 func moneyTypeReason(_ url: String, _ title: String, _ label: String, secure: Bool, secret: Bool, _ rules: Rules) -> String? {
+  if rules.mode == "full" { return nil }
   if moneyPage(url, title, rules) == "move" { return moneyPageReason }
   if secure { return secret ? nil : moneyFieldReason }
   let name = moneyPlain(label)
@@ -325,6 +331,7 @@ let moneyNavigation: Set<String> = ["tab", "escape", "esc", "up", "down", "left"
 let moneyBrowserCommands: Set<String> = ["[", "]", "l", "w", "f", "c", "a", "t"]
 func moneyKeyReason(_ url: String, _ title: String, _ key: String, command: Bool, control: Bool, field: Bool, secure: Bool,
                     labels: [String], role: String, _ rules: Rules) -> String? {
+  if rules.mode == "full" { return nil }
   let name = key.lowercased()
   let inField = { moneyTypeReason(url, title, labels.first ?? "", secure: secure, secret: true, rules) }
   if (command || control) && ["v", "y"].contains(name) { return moneyPasteReason }
@@ -336,6 +343,7 @@ func moneyKeyReason(_ url: String, _ title: String, _ key: String, command: Bool
 }
 // Account and card numbers on a bank page: only their last four digits.
 func maskAccountNumbers(_ text: String, _ rules: Rules) -> String {
+  if rules.mode == "full" { return text }
   guard let pattern = rules.money["accountNumber"] else { return text }
   var out = text
   for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
@@ -388,12 +396,97 @@ func trustedMailIdentity(_ pid: pid_t, _ bundleId: String, _ path: String) -> Bo
 }
 // END NATIVE MAIL IDENTITY
 
+// BEGIN NATIVE CURSOR IDENTITY — Foundation/Security only; no UI access.
+// The WindowServer cursor is drawn above every app and is not an input
+// surface. A window claiming its layer/name is insufficient: validate the
+// current process's Apple signature, code identifier and sealed-system path.
+// Never cache success by PID; the process can exit and its PID can be reused.
+func trustedCursorIdentity(_ pid: pid_t) -> Bool {
+  guard pid > 0 else { return false }
+  var requirement: SecRequirement?
+  guard SecRequirementCreateWithString(#"anchor apple and identifier "com.apple.WindowServer""# as CFString, [], &requirement) == errSecSuccess,
+    let requirement else { return false }
+  var code: SecCode?
+  guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: pid] as CFDictionary, [], &code) == errSecSuccess,
+    let code, SecCodeCheckValidity(code, [], requirement) == errSecSuccess else { return false }
+  var staticCode: SecStaticCode?
+  guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return false }
+  var codeURL: CFURL?
+  guard SecCodeCopyPath(staticCode, [], &codeURL) == errSecSuccess, let codeURL else { return false }
+  let expected = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer")
+    .standardizedFileURL.resolvingSymlinksInPath().path
+  return (codeURL as URL).standardizedFileURL.resolvingSymlinksInPath().path == expected
+}
+// END NATIVE CURSOR IDENTITY
+
 
 func out(_ value: [String: Any]) {
   let data = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("{}".utf8)
   FileHandle.standardOutput.write(data)
   FileHandle.standardOutput.write(Data([10]))
 }
+// Display selection is request-local; references remember the display they
+// were observed on. Never silently aim at a different monitor after unplug.
+var selectedDisplay: CGDirectDisplayID? = nil
+func displayID() -> CGDirectDisplayID { selectedDisplay ?? CGMainDisplayID() }
+func displayBounds() -> CGRect { CGDisplayBounds(displayID()) }
+func chooseDisplay(_ value: Any?) throws {
+  selectedDisplay = nil
+  if let number = value as? NSNumber {
+    guard number.doubleValue >= 1, number.doubleValue <= Double(UInt32.max), number.doubleValue.rounded() == number.doubleValue,
+      CGDisplayIsActive(number.uint32Value) != 0 else { try refuse("That display is disconnected. List displays again.", "retry") }
+    selectedDisplay = number.uint32Value
+  }
+}
+func displays() -> [String: Any] {
+  var ids = [CGDirectDisplayID](repeating: 0, count: 32), count: UInt32 = 0
+  CGGetActiveDisplayList(32, &ids, &count)
+  return ["ok": true, "displays": ids.prefix(Int(count)).map { id -> [String: Any] in
+    let r = CGDisplayBounds(id)
+    return ["id": id, "main": id == CGMainDisplayID(), "x": r.minX, "y": r.minY, "width": r.width, "height": r.height]
+  }]
+}
+var screenRevision: UInt64 = 0
+var screenObserver: AXObserver? = nil
+var observerPID: pid_t = 0
+var observerLoop: CFRunLoop? = nil
+var observedElements: [AXUIElement] = []
+let observedNotifications = [kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification, kAXWindowCreatedNotification, kAXUIElementDestroyedNotification, kAXValueChangedNotification, kAXTitleChangedNotification, kAXLayoutChangedNotification]
+func watchScreen() {
+  guard let app = NSWorkspace.shared.frontmostApplication else { return }
+  let loop = CFRunLoopGetCurrent()
+  if observerPID != app.processIdentifier || observerLoop !== loop {
+    if let observer = screenObserver, let previous = observerLoop { CFRunLoopRemoveSource(previous, AXObserverGetRunLoopSource(observer), .defaultMode) }
+    screenObserver = nil; observedElements = []; observerPID = app.processIdentifier; observerLoop = loop; screenRevision &+= 1
+    var observer: AXObserver?
+    guard AXObserverCreate(observerPID, { _, _, _, _ in screenRevision &+= 1 }, &observer) == .success, let observer else { return }
+    screenObserver = observer
+    CFRunLoopAddSource(loop, AXObserverGetRunLoopSource(observer), .defaultMode)
+  }
+  guard let observer = screenObserver else { return }
+  let ax = AXUIElementCreateApplication(observerPID)
+  let elements = [ax, elementAttr(ax, kAXFocusedWindowAttribute), elementAttr(ax, kAXFocusedUIElementAttribute)].compactMap { $0 }
+  if elements.count == observedElements.count && zip(elements, observedElements).allSatisfy({ CFEqual($0.0, $0.1) }) { return }
+  for element in observedElements {
+    for name in observedNotifications { AXObserverRemoveNotification(observer, element, name as CFString) }
+  }
+  observedElements = elements
+  for element in elements {
+    for name in observedNotifications { AXObserverAddNotification(observer, element, name as CFString, nil) }
+  }
+}
+func waitChange(_ revision: UInt64, _ ms: Int) -> [String: Any] {
+  watchScreen()
+  let end = Date().addingTimeInterval(Double(max(1, min(ms, 400))) / 1000)
+  repeat {
+    if screenRevision != revision { break }
+    let left = end.timeIntervalSinceNow
+    if left <= 0 { break }
+    CFRunLoopRunInMode(.defaultMode, min(left, 0.05), true)
+  } while Date() < end
+  return ["ok": true, "revision": screenRevision, "changed": screenRevision != revision]
+}
+
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
   AXUIElementSetMessagingTimeout(element, 0.25)
   var value: CFTypeRef?
@@ -502,6 +595,7 @@ func webAreas(_ window: AXUIElement) -> [(url: String, frame: CGRect)] {
 // whose frame holds the point decides; a bank page reached that way has no
 // readable control there, so it is refused.
 func moneyAt(_ s: inout Seen, _ point: CGPoint?, _ rules: Rules) throws -> (url: String, title: String)? {
+  if rules.mode == "full" { return nil }
   guard isBrowser(s.bundle), !rules.moneySites.isEmpty else { return nil }
   if s.web {
     // A bank's page holds the frames inside it (a payment form served from
@@ -543,6 +637,7 @@ func windowAt(_ point: CGPoint) -> Seen? {
       CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0).contains(point),
       (info[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
     let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
+    if (info[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.cursorWindow)), trustedCursorIdentity(pid) { continue }
     var s = Seen(pid: pid)
     (s.bundle, s.name, s.path) = appInfo(pid)
     if s.name.isEmpty { s.name = info[kCGWindowOwnerName as String] as? String ?? "" }
@@ -574,7 +669,7 @@ func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? 
   if let window {
     if rules.mode == "apps", systemSurfaces.contains(lower(window.bundle)) || window.bundle.isEmpty { try refuse(notAllowedReason) }
     if systemSurfaces.contains(lower(window.bundle)) {
-      if mentionsReach(window.title, rules) { try refuse(reachReason) }
+      if rules.mode != "full", mentionsReach(window.title, rules) { try refuse(reachReason) }
     } else { try check(window, rules) }
     try checkExpected(window)
   }
@@ -585,12 +680,12 @@ func checkPoint(_ point: CGPoint, _ rules: Rules, _ expected: [String: String]? 
       if rules.mode == "apps" { try refuse(notAllowedReason) }
       // A Dock item or menu of an app that hosts Reach (Reach's terminal, a Reach tab).
       let label = string(element, kAXTitleAttribute)
-      if mentionsReach(label, rules) { try refuse(reachReason) }
+      if rules.mode != "full", mentionsReach(label, rules) { try refuse(reachReason) }
       let words = lower([label, string(element, kAXDescriptionAttribute), string(element, kAXHelpAttribute)].joined(separator: " "))
-      if mentionsReach(words, rules) { try refuse(reachReason) }
+      if rules.mode != "full", mentionsReach(words, rules) { try refuse(reachReason) }
       // Control Center and menu-bar controls that cut the connection Reach
       // answers through, or change who can reach this Mac.
-      if systemGuardedWords.contains(where: { words.contains($0) }) { try refuse(systemGuardedReason) }
+      if rules.mode != "full", systemGuardedWords.contains(where: { words.contains($0) }) { try refuse(systemGuardedReason) }
       // A Dock item or Spotlight result opens an app: that app's own rules
       // apply (protected, hidden, not chosen), as when opening it directly.
       let url = string(element, kAXURLAttribute)
@@ -693,6 +788,15 @@ let keyCodes: [String: CGKeyCode] = [
   "n": 45, "m": 46, ".": 47, "`": 50,
 ]
 let source = CGEventSource(stateID: .privateState)
+// BEGIN NATIVE PLAIN TEXT EVENT
+// A prior shortcut (notably replace's Command+A) leaves modifiers in this
+// private event source. Prose and line breaks must never become shortcuts.
+func plainTextEvent(_ key: CGKeyCode, down: Bool) -> CGEvent? {
+  let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
+  event?.flags = []
+  return event
+}
+// END NATIVE PLAIN TEXT EVENT
 var lastPosted = Date.distantPast
 // What this helper holds down between a press and its release: buttons (at
 // the last point it posted for them) and keys. Stopped mid-click or mid-drag
@@ -775,6 +879,10 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     _ = try checkPoint(p, rules, expected)
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
   case "element":
+    if let ref = action["ref"] as? String {
+      let (control, screen) = try referencedControl(ref, rules)
+      return try clickControl(control, in: screen, action, display, rules, expected)
+    }
     // A numbered label, as the control is now: a fresh read of the screen
     // finds the same role and name nearest to where it was, so a redraw since
     // the agent looked changes nothing. Unnamed, or renamed since (Play →
@@ -798,7 +906,12 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     // A control by its name, as the screen describes it: no number needed.
     guard let wanted = action["name"] as? String, !wanted.isEmpty, wanted.count <= 120 else { try refuse("Name the control to press.", "invalid") }
     let screen = try readScreen(rules, text: false)
-    let control = try findControl(screen, name: wanted, role: action["role"] as? String)
+    let candidates: Screen
+    if let within = action["within"] as? String {
+      candidates = Screen(pid: screen.pid, app: screen.app, bundle: screen.bundle, title: screen.title,
+        controls: screen.controls.filter { squeezed($0.context).contains(squeezed(within)) }, values: [:], texts: [], headings: [], truncated: screen.truncated, display: screen.display)
+    } else { candidates = screen }
+    let control = try findControl(candidates, name: wanted, role: action["role"] as? String)
     return try clickControl(control, in: screen, action, display, rules, expected)
   case "fill":
     // A form in one go: each field found by its label, clicked, typed into
@@ -815,16 +928,16 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
       // Typing can change the form (a new field appears, one goes): read again.
       if index > 0 { screen = try readScreen(rules, text: false) }
       let control = try findControl(screen, name: label, fields: true)
-      if control.secure && !secret { try refuse(secureReason) }
+      if rules.mode != "full", control.secure && !secret { try refuse(secureReason) }
       _ = try clickControl(control, in: screen, [:], display, rules, expected)
       usleep(150_000)
-      if action["replace"] as? Bool == true, !control.secure {
+      if action["replace"] as? Bool == true, rules.mode == "full" || !control.secure {
         _ = try perform(["type": "key", "key": "a", "modifiers": ["cmd"]], display, rules, expected)
       }
       var typing: [String: Any] = ["type": "type", "text": text]
-      if secret { typing["secret"] = true }
+      if secret || control.secure { typing["secret"] = true }
       if let checked = action["terminalLikeChecked"] { typing["terminalLikeChecked"] = checked }
-      if action["paste"] as? Bool == true, !secret { typing["paste"] = true }
+      if action["paste"] as? Bool == true, !secret && !control.secure { typing["paste"] = true }
       _ = try perform(typing, display, rules, expected)
       filled.append(control.name)
     }
@@ -881,12 +994,12 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     // Vault values (username, email, password) may go into any field but a
     // terminal; ordinary text never goes into a password field.
     let secret = action["secret"] as? Bool == true
-    if target.element.secure && !secret { try refuse(secureReason) }
-    if secret && target.terminalLike { try refuse("Vault values don't go into a terminal. Click the sign-in field first.") }
+    if rules.mode != "full", target.element.secure && !secret { try refuse(secureReason) }
+    if rules.mode != "full", secret && target.terminalLike { try refuse("Vault values don't go into a terminal. Click the sign-in field first.") }
     var field = target.element
     if let page = try moneyAt(&field, nil, rules),
       let reason = moneyTypeReason(page.url, page.title, field.labels.first ?? "", secure: field.secure, secret: secret, rules) { try refuse(reason) }
-    if secret { rememberSecret(text) }
+    if secret || target.element.secure { rememberSecret(text) }
     // The server checked the text as prose or as a command; if the focus
     // moved to a terminal since, it must look again.
     if target.terminalLike && action["terminalLikeChecked"] as? Bool != true { try refuse("A terminal is in front now. Try again.", "retry") }
@@ -911,13 +1024,13 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     }
     for line in text.components(separatedBy: "\n").enumerated() {
       if line.offset > 0 {
-        post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true))
-        post(CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false))
+        post(plainTextEvent(36, down: true))
+        post(plainTextEvent(36, down: false))
       }
       for chunk in keyboardChunks(line.element) {
         // A character at a time, quickly: down and up, then a short breath.
         for down in [true, false] {
-          let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
+          let event = plainTextEvent(0, down: down)
           event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
           post(event, pause: down ? 0 : 3000)
         }
@@ -934,10 +1047,10 @@ func perform(_ action: [String: Any], _ display: CGRect, _ rules: Rules, _ expec
     let target = try focus(rules, appOnly: chord || ["tab", "escape", "esc", "left", "right", "up", "down", "home", "end", "pageup", "pagedown"].contains(name))
     let command = shortcut.contains(.maskCommand), option = shortcut.contains(.maskAlternate)
     // ⌘Q or ⌘W on a window holding Reach would close Reach.
-    if command, ["q", "w"].contains(name), hostsReach(target.app, rules) { try refuse(reachReason) }
+    if rules.mode != "full", command, ["q", "w"].contains(name), hostsReach(target.app, rules) { try refuse(reachReason) }
     // The developer tools read a page's passwords and run code.
-    if isBrowser(target.app.bundleIdentifier ?? ""), (command && option && ["i", "j", "c"].contains(name)) || name == "f12" { try refuse(protectedReason) }
-    if target.element.secure, !secureKeyAllowed(name, command) { try refuse(secureReason) }
+    if rules.mode != "full", isBrowser(target.app.bundleIdentifier ?? ""), (command && option && ["i", "j", "c"].contains(name)) || name == "f12" { try refuse(protectedReason) }
+    if rules.mode != "full", target.element.secure, !secureKeyAllowed(name, command) { try refuse(secureReason) }
     var focused = target.element
     if let page = try moneyAt(&focused, nil, rules),
       let reason = moneyKeyReason(page.url, page.title, name, command: command, control: shortcut.contains(.maskControl),
@@ -981,7 +1094,7 @@ func redacted(_ image: CGImage, _ rules: Rules) -> CGImage {
 @available(macOS 14.0, *)
 func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-  guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
+  guard let display = content.displays.first(where: { $0.displayID == displayID() }) else {
     try refuse("No screen to show.", "unavailable")
   }
   let filter: SCContentFilter
@@ -995,7 +1108,7 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
     // hidden there too.
     let dockOverlay = lower(app?.bundleIdentifier ?? "") == "com.apple.dock" && window.windowLayer > 0 &&
       window.frame.width >= display.frame.width * 0.9 && window.frame.height >= display.frame.height * 0.9
-    return dockOverlay || appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
+    return (rules.mode != "full" && dockOverlay) || appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
       windowTitleReason(window.title ?? "", app?.bundleIdentifier ?? "", path, app?.processID ?? 0, rules) != nil
   }
   var hidden = 0
@@ -1028,7 +1141,7 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
     try refuse("The screen couldn't be encoded.", "unavailable")
   }
   return ["ok": true, "jpeg": data.base64EncodedString(), "width": image.width, "height": image.height, "hidden": hidden,
-    "displayWidth": Int(display.width), "displayHeight": Int(display.height)]
+    "displayId": display.displayID, "displayWidth": Int(display.width), "displayHeight": Int(display.height)]
 }
 
 // Every app on this Mac: running ones first, then the Applications folders.
@@ -1120,14 +1233,15 @@ func openURL(_ text: String, _ browserPath: String, _ rules: Rules) throws -> [S
 // accessibility tree. The agent picks one by number, or names it (press,
 // fill); the click lands at its live center through the same checks as any
 // click (clickControl).
-struct Control { let element: AXUIElement; let role: String; let name: String; let secure: Bool; let frame: CGRect }
+struct Control { let element: AXUIElement; let role: String; let name: String; let secure: Bool; let frame: CGRect; var context: String = "" }
 struct Screen {
   let pid: pid_t, app: String, bundle: String, title: String
   let controls: [Control], values: [Int: String]
-  let texts: [(String, CGRect)], headings: [CGRect]
+  let texts: [(String, CGRect, String)], headings: [CGRect]
   let truncated: Bool, display: CGRect
 }
 var snapshots: [(id: String, pid: pid_t, controls: [Control])] = []
+var snapshotDisplays: [String: CGDirectDisplayID] = [:]
 let labelRoles: Set<String> = ["AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
   "AXComboBox", "AXTextField", "AXTextArea", "AXSecureTextField", "AXSearchField", "AXMenuItem", "AXMenuBarItem",
   "AXTab", "AXDisclosureTriangle", "AXIncrementor", "AXSlider", "AXSwitch", "AXToggle", "AXDockItem"]
@@ -1149,6 +1263,59 @@ func frameOf(_ element: AXUIElement) -> CGRect? {
     AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(extent as! AXValue, .cgSize, &size) else { return nil }
   return CGRect(origin: p, size: size)
 }
+struct ElementReference { let element: AXUIElement; let window: AXUIElement?; let pid: pid_t; let role: String; let name: String; let context: String; let display: CGDirectDisplayID; var at: Date }
+var elementReferences: [String: ElementReference] = [:]
+func rememberElement(_ element: AXUIElement, prefix: String, window: AXUIElement? = nil, name: String = "", context: String = "") -> String {
+  let now = Date(), pid = pidOf(element)
+  elementReferences = elementReferences.filter { now.timeIntervalSince($0.value.at) < 300 }
+  if let pair = elementReferences.first(where: { $0.key.hasPrefix(prefix + "-") && $0.value.pid == pid && CFEqual($0.value.element, element) && $0.value.name == name && $0.value.context == context && $0.value.display == displayID() && (($0.value.window == nil && window == nil) || ($0.value.window != nil && window != nil && CFEqual($0.value.window!, window!))) }) {
+    elementReferences[pair.key]?.at = now; return pair.key
+  }
+  if elementReferences.count >= 2048, let oldest = elementReferences.min(by: { $0.value.at < $1.value.at }) { elementReferences.removeValue(forKey: oldest.key) }
+  let ref = prefix + "-" + UUID().uuidString.lowercased()
+  elementReferences[ref] = ElementReference(element: element, window: window, pid: pid, role: string(element, kAXRoleAttribute), name: name, context: context, display: displayID(), at: now)
+  return ref
+}
+func referencedControl(_ ref: String, _ rules: Rules) throws -> (Control, Screen) {
+  guard let entry = elementReferences[ref], ref.hasPrefix("e-"), Date().timeIntervalSince(entry.at) < 300,
+    let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier == entry.pid else { try refuse("That control reference is stale. Observe again.", "retry") }
+  let ax = AXUIElementCreateApplication(entry.pid)
+  let secure = entry.role == "AXSecureTextField" || string(entry.element, kAXSubroleAttribute) == "AXSecureTextField"
+  guard let window = elementAttr(ax, kAXFocusedWindowAttribute), let remembered = entry.window, CFEqual(window, remembered),
+    string(entry.element, kAXRoleAttribute) == entry.role,
+    maskAccountNumbers(labelName(entry.element, entry.role, secure: secure), rules) == maskAccountNumbers(entry.name, rules),
+    let context = controlContext(entry.element, window: window), maskAccountNumbers(context, rules) == maskAccountNumbers(entry.context, rules),
+    attr(entry.element, kAXEnabledAttribute) as? Bool != false, let rect = frameOf(entry.element) else { try refuse("That control changed. Observe again.", "retry") }
+  try check(seen(entry.element), rules)
+  let title = string(window, kAXTitleAttribute)
+  let control = Control(element: entry.element, role: entry.role, name: entry.name, secure: secure, frame: rect, context: context)
+  let screen = Screen(pid: entry.pid, app: front.localizedName ?? "", bundle: front.bundleIdentifier ?? "", title: title,
+    controls: [control], values: [:], texts: [], headings: [], truncated: false, display: displayBounds())
+  return (control, screen)
+}
+func contextLabel(_ node: AXUIElement, _ role: String, _ children: [AXUIElement]) -> String {
+  guard ["AXGroup", "AXRow", "AXCell", "AXToolbar", "AXTable", "AXList", "AXTabGroup", "AXSheet"].contains(role) else { return "" }
+  let label = [string(node, kAXTitleAttribute), string(node, kAXDescriptionAttribute)].first { !$0.isEmpty } ?? ""
+  if label.isEmpty, ["AXRow", "AXCell"].contains(role) {
+    return children.prefix(4).filter { string($0, kAXRoleAttribute) == "AXStaticText" }.map { string($0, kAXValueAttribute) }.joined(separator: " ")
+  }
+  return label
+}
+func controlContext(_ element: AXUIElement, window: AXUIElement) -> String? {
+  var node = elementAttr(element, kAXParentAttribute), parts: [String] = []
+  for _ in 0..<40 {
+    guard let parent = node else { return nil }
+    let role = string(parent, kAXRoleAttribute)
+    if role == "AXWindow", !CFEqual(parent, window) { return nil }
+    if ["AXWindow", "AXApplication"].contains(role) { return hideSecrets(String(parts.reversed().joined(separator: " > ").prefix(400)), typedSecrets) }
+    let title = contextLabel(parent, role, attr(parent, kAXChildrenAttribute) as? [AXUIElement] ?? [])
+    if !title.isEmpty { parts.append(title) }
+    node = elementAttr(parent, kAXParentAttribute)
+  }
+  return nil
+}
+
+
 func labelName(_ element: AXUIElement, _ role: String, secure: Bool) -> String {
   var parts = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)]
   if role == "AXTextField" || role == "AXTextArea" || role == "AXSearchField" || role == "AXComboBox" || secure {
@@ -1161,21 +1328,22 @@ func labelName(_ element: AXUIElement, _ role: String, secure: Bool) -> String {
   if let named = known[string(element, kAXSubroleAttribute)] { parts.insert(named, at: 0) }
   parts.append(string(element, kAXHelpAttribute))
   let name = parts.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.first { !$0.isEmpty } ?? ""
-  return hideSecrets(String(name.prefix(60)), typedSecrets)
+  return hideSecrets(String(name.prefix(120)), typedSecrets)
 }
 // The front window read through accessibility: its controls, what fields
 // hold, and (unless skipped) what a person reads there. One walk, bounded.
 func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
   if rules.mode == "view" { try refuse("This agent can only look.") }
+  watchScreen()
   guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is in front.", "retry") }
   let bundle = front.bundleIdentifier ?? "", name = front.localizedName ?? "", path = front.bundleURL.map(canonical) ?? ""
   if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
   let app = AXUIElementCreateApplication(front.processIdentifier)
   // Chromium and Electron build their web trees only for assistive apps.
   AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-  let display = CGDisplayBounds(CGMainDisplayID())
+  let display = displayBounds()
   var found: [Control] = []
-  var texts: [(String, CGRect)] = [], headings: [CGRect] = [], values: [Int: String] = [:]
+  var texts: [(String, CGRect, String)] = [], headings: [CGRect] = [], values: [Int: String] = [:]
   var textChars = 0
   var bank = false
   var roots: [AXUIElement] = []
@@ -1188,10 +1356,11 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
     roots.append(window)
   }
   if let menu = elementAttr(app, kAXMenuBarAttribute) { roots.append(menu) }
-  var stack = roots.reversed() as [AXUIElement]
+  var stack = roots.reversed().map { (node: $0, context: "") }
   var visited = 0
   let deadline = Date().addingTimeInterval(0.8)
-  while let node = stack.popLast(), visited < 6000, found.count < 400, Date() < deadline {
+  while let entry = stack.popLast(), visited < 6000, found.count < 400, Date() < deadline {
+    let node = entry.node
     visited += 1
     let role = string(node, kAXRoleAttribute)
     if role == "AXWebArea", urlReason(string(node, "AXURL"), rules) != nil { continue }
@@ -1208,7 +1377,7 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
           let visible = rect.intersection(display)
           if !visible.isNull, visible.height >= 2 {
             let line = hideSecrets(String(words.prefix(300)), typedSecrets)
-            texts.append((line, visible))
+            texts.append((line, visible, entry.context))
             textChars += line.count
           }
         }
@@ -1225,19 +1394,24 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
             let value = string(node, kAXValueAttribute).split(whereSeparator: \.isWhitespace).joined(separator: " ")
             if !value.isEmpty { values[found.count] = hideSecrets(String(value.prefix(120)), typedSecrets) }
           }
-          found.append(Control(element: node, role: role, name: labelName(node, role, secure: secure), secure: secure, frame: visible))
+          found.append(Control(element: node, role: role, name: labelName(node, role, secure: secure), secure: secure, frame: visible, context: entry.context))
         }
       }
       // A control's own parts (a link's text, a button's image) are the control.
       if role != "AXMenuBarItem" { continue }
     }
-    if let children = attr(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed()) }
+    if let children = attr(node, kAXChildrenAttribute) as? [AXUIElement] {
+      var context = entry.context
+      let label = contextLabel(node, role, children)
+      if !label.isEmpty { context = String((context.isEmpty ? label : context + " > " + label).prefix(400)) }
+      stack.append(contentsOf: children.reversed().map { (node: $0, context: hideSecrets(context, typedSecrets)) })
+    }
   }
   // A bank's page: account and card numbers down to their last four digits.
   if bank {
-    found = found.map { Control(element: $0.element, role: $0.role, name: maskAccountNumbers($0.name, rules), secure: $0.secure, frame: $0.frame) }
+    found = found.map { Control(element: $0.element, role: $0.role, name: maskAccountNumbers($0.name, rules), secure: $0.secure, frame: $0.frame, context: maskAccountNumbers($0.context, rules)) }
     values = values.mapValues { maskAccountNumbers($0, rules) }
-    texts = texts.map { (maskAccountNumbers($0.0, rules), $0.1) }
+    texts = texts.map { (maskAccountNumbers($0.0, rules), $0.1, maskAccountNumbers($0.2, rules)) }
   }
   // Reading order: rows from the top, left to right inside a row.
   let order = { (a: CGRect, b: CGRect) -> Bool in
@@ -1249,7 +1423,7 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
   let keptValues = Dictionary(uniqueKeysWithValues: kept.enumerated().compactMap { position, entry in values[entry.0].map { (position, $0) } })
   texts.sort { order($0.1, $1.1) }
   return Screen(pid: front.processIdentifier, app: name, bundle: bundle, title: windowTitle, controls: kept.map { $0.1 }, values: keptValues,
-    texts: texts, headings: headings, truncated: found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000, display: display)
+    texts: texts, headings: headings, truncated: found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000 || Date() >= deadline, display: display)
 }
 func elements(_ rules: Rules) throws -> [String: Any] { snapshotPayload(try readScreen(rules)) }
 // The control the agent named, in a fresh read of the screen: the best match
@@ -1266,7 +1440,14 @@ func findControl(_ screen: Screen, name: String, role: String? = nil, fields: Bo
   let pick = pickControl(graded)
   if let index = pick.index { return screen.controls[index] }
   let what = fields ? "field" : "control", shown = String(name.prefix(60))
-  if pick.candidates > 1 { try refuse("\(pick.candidates) \(what)s match \"\(shown)\". Describe the screen and press one by its number.", "invalid") }
+  if pick.candidates > 1 {
+    let window = elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute)
+    let candidates = screen.controls.enumerated().filter { graded[$0.offset].grade > 0 }.prefix(8).map { pair -> [String: String] in
+      let control = pair.element
+      return ["ref": rememberElement(control.element, prefix: "e", window: window, name: control.name, context: control.context), "name": control.name, "role": String(control.role.dropFirst(2)), "context": control.context]
+    }
+    throw Refusal(message: "\(pick.candidates) \(what)s match \"\(shown)\". Choose one of the returned refs.", kind: "invalid", candidates: candidates)
+  }
   try refuse("No \(what) named \"\(shown)\" is on screen. Describe the screen.", "retry")
 }
 // A click at a control's live center, judged like any click. Refused when
@@ -1319,7 +1500,7 @@ func front(_ rules: Rules, detail: Bool = false) -> [String: Any] {
     if let value = attr(element, kAXSizeAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgSize, &size) }
     return "\(Int(p.x)),\(Int(p.y)),\(Int(size.width)),\(Int(size.height))"
   }
-  let display = CGDisplayBounds(CGMainDisplayID())
+  let display = displayBounds()
   layout = "\(Int(display.width)),\(Int(display.height))"
   if let window = elementAttr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute) { layout += "|" + geometry(window) }
   if let focused = elementAttr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute), pidOf(focused) == app.processIdentifier {
@@ -1332,7 +1513,7 @@ func front(_ rules: Rules, detail: Bool = false) -> [String: Any] {
     let page = windowPage(window, app.processIdentifier, rules)
     if !page.isEmpty { result["url"] = page }
     let tabs = windowTabs(window)
-    if !tabs.isEmpty { result["tabs"] = tabs.prefix(30).map { ["title": hideSecrets(String($0.title.prefix(120)), typedSecrets), "selected": $0.selected] } }
+    if !tabs.isEmpty { result["tabs"] = tabs.prefix(30).map { ["ref": rememberElement($0.element, prefix: "t", window: window, name: $0.title), "title": hideSecrets(String($0.title.prefix(120)), typedSecrets), "selected": $0.selected] } }
   }
   return result
 }
@@ -1399,11 +1580,11 @@ func windowList(_ rules: Rules) throws -> [String: Any] {
     let ax = AXUIElementCreateApplication(app.processIdentifier)
     AXUIElementSetMessagingTimeout(ax, 0.3)
     guard let list = attr(ax, kAXWindowsAttribute) as? [AXUIElement] else { continue }
-    for (index, window) in list.prefix(24).enumerated() {
+    for window in list.prefix(24) {
       guard string(window, kAXRoleAttribute) == kAXWindowRole else { continue }
       let title = string(window, kAXTitleAttribute)
       if windowTitleReason(title, bundle, path, app.processIdentifier, rules) != nil { continue }
-      var entry: [String: Any] = ["id": "\(app.processIdentifier):\(index)", "app": name, "bundle": bundle,
+      var entry: [String: Any] = ["id": rememberElement(window, prefix: "w"), "app": name, "bundle": bundle,
         "title": hideSecrets(String(title.prefix(200)), typedSecrets),
         "minimized": attr(window, kAXMinimizedAttribute) as? Bool == true,
         "front": app.processIdentifier == frontPid && attr(window, kAXMainAttribute) as? Bool == true]
@@ -1412,7 +1593,7 @@ func windowList(_ rules: Rules) throws -> [String: Any] {
         let page = windowPage(window, app.processIdentifier, rules)
         if !page.isEmpty { entry["url"] = page }
         let tabs = windowTabs(window)
-        if !tabs.isEmpty { entry["tabs"] = tabs.map { ["title": hideSecrets(String($0.title.prefix(120)), typedSecrets), "selected": $0.selected] } }
+        if !tabs.isEmpty { entry["tabs"] = tabs.map { ["ref": rememberElement($0.element, prefix: "t", window: window, name: $0.title), "title": hideSecrets(String($0.title.prefix(120)), typedSecrets), "selected": $0.selected] } }
       }
       windows.append(entry)
     }
@@ -1422,16 +1603,22 @@ func windowList(_ rules: Rules) throws -> [String: Any] {
 // One window brought forward (reach_focus_window), by the id the list gave and
 // its title checked again; unminimized if needed; a browser tab by its title,
 // chosen through accessibility (no pointer, so it runs beside the person).
-func focusWindow(_ id: String, title wanted: String, tab: String, _ rules: Rules) throws -> [String: Any] {
+func focusWindow(_ id: String, title wanted: String, tab: String, tabRef: String = "", _ rules: Rules) throws -> [String: Any] {
   if rules.mode == "view" { try refuse("This agent can only look.") }
-  let parts = id.split(separator: ":")
-  guard parts.count == 2, let pid = pid_t(parts[0]), let index = Int(parts[1]), pid > 0, index >= 0, index < 24,
-    let app = NSRunningApplication(processIdentifier: pid) else { try refuse("That window is gone. List the windows again.", "retry") }
+  let pid: pid_t, window: AXUIElement
+  if id.hasPrefix("w-"), let reference = elementReferences[id], Date().timeIntervalSince(reference.at) < 300 {
+    pid = reference.pid
+    guard let live = attr(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement], live.contains(where: { CFEqual($0, reference.element) }) else { try refuse("That window is gone. List windows again.", "retry") }
+    window = reference.element
+  } else {
+    let parts = id.split(separator: ":")
+    guard parts.count == 2, let process = pid_t(parts[0]), let index = Int(parts[1]), index >= 0, index < 24,
+      let live = attr(AXUIElementCreateApplication(process), kAXWindowsAttribute) as? [AXUIElement], index < live.count else { try refuse("That window is gone. List windows again.", "retry") }
+    pid = process; window = live[index]
+  }
+  guard let app = NSRunningApplication(processIdentifier: pid) else { try refuse("That app is gone.", "retry") }
   let bundle = app.bundleIdentifier ?? "", name = app.localizedName ?? "", path = app.bundleURL.map(canonical) ?? ""
   if let reason = appReason(bundle, name, path, rules) { try refuse(reason) }
-  let ax = AXUIElementCreateApplication(pid)
-  guard let list = attr(ax, kAXWindowsAttribute) as? [AXUIElement], index < list.count else { try refuse("That window is gone. List the windows again.", "retry") }
-  let window = list[index]
   let title = string(window, kAXTitleAttribute)
   if let reason = windowTitleReason(title, bundle, path, pid, rules) { try refuse(reason) }
   if !wanted.isEmpty, !sameTitle(title, wanted), !lower(title).hasPrefix(lower(wanted)) { try refuse("That window has changed. List the windows again.", "retry") }
@@ -1442,10 +1629,14 @@ func focusWindow(_ id: String, title wanted: String, tab: String, _ rules: Rules
   lastPosted = Date()
   let front = waitFront(bundle, app)
   var result: [String: Any] = ["ok": true, "app": name, "bundle": bundle, "front": front]
-  if !tab.isEmpty {
+  if !tab.isEmpty || !tabRef.isEmpty {
     guard isBrowser(bundle) else { try refuse("Only a browser window has tabs.", "invalid") }
     let tabs = windowTabs(window)
-    let pick = pickControl(tabs.map { (grade: nameMatch($0.title, tab), distance: Double.infinity) })
+    let reference = elementReferences[tabRef]
+    let pick = pickControl(tabs.map { candidate in
+      let exact = reference.map { Date().timeIntervalSince($0.at) < 300 && $0.pid == pid && $0.window.map { CFEqual($0, window) } == true && CFEqual($0.element, candidate.element) && $0.name == candidate.title } ?? false
+      return (grade: tabRef.isEmpty ? nameMatch(candidate.title, tab) : (exact ? 3 : 0), distance: Double.infinity)
+    })
     guard let at = pick.index else {
       if pick.candidates > 1 { try refuse("\(pick.candidates) tabs match \"\(String(tab.prefix(60)))\". Give more of the title.", "invalid") }
       try refuse("No tab named \"\(String(tab.prefix(60)))\" in that window. List the windows again.", "retry")
@@ -1519,7 +1710,7 @@ func menuBar(_ rules: Rules, menu wanted: String) throws -> [String: Any] {
   var menus: [[String: Any]] = []
   for (index, top) in tops.prefix(30).enumerated() {
     let title = string(top, kAXTitleAttribute)
-    if index == 0 || title.isEmpty || title == "Apple" { continue }
+    if title.isEmpty || (rules.mode != "full" && (index == 0 || title == "Apple")) { continue }
     if !wanted.isEmpty && !sameTitle(title, wanted) { continue }
     menus.append(["title": String(title.prefix(80)), "items": menuItems(top, depth: wanted.isEmpty ? 0 : 2, limit: 400, count: &count, deadline: deadline)])
   }
@@ -1533,12 +1724,12 @@ func pressMenu(_ names: [String], _ rules: Rules) throws -> [String: Any] {
   let target = try focus(rules, appOnly: true)
   let ax = AXUIElementCreateApplication(target.app.processIdentifier)
   guard let bar = elementAttr(ax, kAXMenuBarAttribute), let tops = attr(bar, kAXChildrenAttribute) as? [AXUIElement], tops.count > 1 else { try refuse("This app has no menu bar.", "retry") }
-  if sameTitle(names[0], "apple") || sameTitle(names[0], string(tops[0], kAXTitleAttribute)) { try refuse(appleMenuReason) }
+  if rules.mode != "full", sameTitle(names[0], "apple") || sameTitle(names[0], string(tops[0], kAXTitleAttribute)) { try refuse(appleMenuReason) }
   var level: AXUIElement = bar
   var chosen: AXUIElement?
   for (i, name) in names.enumerated() {
     var items = menuChildren(level)
-    if i == 0 { items = Array(items.dropFirst()) } // never the Apple menu
+    if i == 0 && rules.mode != "full" { items = Array(items.dropFirst()) }
     let pick = pickControl(items.map { item -> (grade: Int, distance: Double) in
       let title = string(item, kAXTitleAttribute)
       return (grade: sameTitle(title, name) ? 3 : nameMatch(title, name) == 2 ? 2 : 0, distance: Double.infinity)
@@ -1554,10 +1745,10 @@ func pressMenu(_ names: [String], _ rules: Rules) throws -> [String: Any] {
   if attr(item, kAXEnabledAttribute) as? Bool == false { try refuse("\"\(String(title.prefix(60)))\" is dimmed right now.", "retry") }
   if !(attr(item, kAXChildrenAttribute) as? [AXUIElement] ?? []).isEmpty { try refuse("\"\(String(title.prefix(60)))\" opens a submenu. Add the item inside it to the path.", "invalid") }
   // Quitting or closing where Reach lives would close Reach (as ⌘Q and ⌘W).
-  if ["quit", "close", "exit"].contains(where: { word.hasPrefix($0) }), hostsReach(target.app, rules) { try refuse(reachReason) }
-  if mentionsReach(title, rules) { try refuse(reachReason) }
+  if rules.mode != "full", ["quit", "close", "exit"].contains(where: { word.hasPrefix($0) }), hostsReach(target.app, rules) { try refuse(reachReason) }
+  if rules.mode != "full", mentionsReach(title, rules) { try refuse(reachReason) }
   // The developer tools and saved passwords, as for keys and typed addresses.
-  if rules.protectedTitleWords.contains(where: { word.contains($0) }) || word.contains("inspect element") { try refuse(protectedReason) }
+  if rules.mode != "full", rules.protectedTitleWords.contains(where: { word.contains($0) }) || word.contains("inspect element") { try refuse(protectedReason) }
   guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { try refuse("That menu item couldn't be pressed. Use its shortcut key instead.", "retry") }
   lastPosted = Date()
   return ["ok": true, "app": target.app.localizedName ?? "", "bundle": target.app.bundleIdentifier ?? "", "pressed": names.map { String($0.prefix(80)) }.joined(separator: " › ")]
@@ -1569,23 +1760,26 @@ func pressMenu(_ names: [String], _ rules: Rules) throws -> [String: Any] {
 func snapshotPayload(_ screen: Screen) -> [String: Any] {
   let id = String(UUID().uuidString.prefix(8).lowercased())
   snapshots.append((id: id, pid: screen.pid, controls: screen.controls))
-  if snapshots.count > 4 { snapshots.removeFirst(snapshots.count - 4) }
+  snapshotDisplays[id] = displayID()
+  if snapshots.count > 16 { snapshots.removeFirst(snapshots.count - 16) }
+  snapshotDisplays = snapshotDisplays.filter { pair in snapshots.contains { $0.id == pair.key } }
   let display = screen.display
   let place = { (rect: CGRect) -> [String: Any] in
     ["x": Double((rect.minX - display.minX) / display.width), "y": Double((rect.minY - display.minY) / display.height),
      "w": Double(rect.width / display.width), "h": Double(rect.height / display.height)]
   }
   let items: [[String: Any]] = screen.controls.enumerated().map { index, item in
-    var entry: [String: Any] = ["n": index + 1, "role": String(item.role.dropFirst(2)), "name": item.name, "secure": item.secure]
+    let window = elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute)
+    var entry: [String: Any] = ["ref": rememberElement(item.element, prefix: "e", window: window, name: item.name, context: item.context), "context": item.context, "n": index + 1, "role": String(item.role.dropFirst(2)), "name": item.name, "secure": item.secure]
     if let value = screen.values[index] { entry["value"] = value }
     return entry.merging(place(item.frame)) { first, _ in first }
   }
-  let lines: [[String: Any]] = screen.texts.map { text, rect in
-    var entry: [String: Any] = ["text": text]
+  let lines: [[String: Any]] = screen.texts.map { text, rect, context in
+    var entry: [String: Any] = ["text": text, "context": context]
     if screen.headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
     return entry.merging(place(rect)) { first, _ in first }
   }
-  return ["ok": true, "snapshot": id, "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
+  return ["ok": true, "snapshot": id, "windowRef": elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute).map { rememberElement($0, prefix: "w") } ?? "", "revision": screenRevision, "displayId": displayID(), "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
 }
 // Something in the front window by its words (reach_find): a control by name
 // (and role), or text, anywhere in the window, what is scrolled out of view
@@ -1633,7 +1827,7 @@ func findOnScreen(_ rules: Rules, text: String, name: String, role: String) thro
   guard let hit = best else { return ["ok": true, "found": false, "app": front.name, "title": front.title, "truncated": unfinished] }
   // Out of the window's view: scrolled to, through accessibility (no pointer).
   var scrolled = false, inView = true
-  let display = CGDisplayBounds(CGMainDisplayID())
+  let display = displayBounds()
   let shown = frameOf(window).map { $0.intersection(display) } ?? display
   let visible = { (rect: CGRect?) -> Bool in
     guard let rect, rect.width >= 1, rect.height >= 1 else { return false }
@@ -1740,10 +1934,10 @@ func openFile(_ path: String, reveal: Bool, _ rules: Rules) throws -> [String: A
   if rules.mode == "view" { try refuse("This agent can only look.") }
   guard path.hasPrefix("/"), path.utf8.count <= 4096, FileManager.default.fileExists(atPath: path) else { try refuse("That file isn't there.", "invalid") }
   let url = URL(fileURLWithPath: path)
-  if programExtensions.contains(lower(url.pathExtension)) { try refuse(programReason) }
+  if rules.mode != "full", programExtensions.contains(lower(url.pathExtension)) { try refuse(programReason) }
   var isDirectory: ObjCBool = false
   FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-  if isDirectory.boolValue, !lower(url.pathExtension).isEmpty { try refuse(programReason) } // a bundle
+  if rules.mode != "full", isDirectory.boolValue, !lower(url.pathExtension).isEmpty { try refuse(programReason) } // a bundle
   let finderPath = canonical(URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app"))
   if reveal || isDirectory.boolValue {
     if let reason = appReason("com.apple.finder", "Finder", finderPath, rules) { try refuse(reason) }
@@ -1754,7 +1948,7 @@ func openFile(_ path: String, reveal: Bool, _ rules: Rules) throws -> [String: A
   guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: url), let bundle = Bundle(url: appURL), let bundleId = bundle.bundleIdentifier else { try refuse("No app on this Mac opens that file.", "unavailable") }
   let name = bundleName(bundle), appPath = canonical(appURL)
   if let reason = appReason(bundleId, name, appPath, rules) { try refuse(reason) }
-  if runnerApps.contains(lower(bundleId)) || terminalLikeApp(bundleId, name, appPath, rules) { try refuse(programReason) }
+  if rules.mode != "full", runnerApps.contains(lower(bundleId)) || terminalLikeApp(bundleId, name, appPath, rules) { try refuse(programReason) }
   let configuration = NSWorkspace.OpenConfiguration()
   configuration.activates = true
   let done = DispatchSemaphore(value: 0)
@@ -1810,14 +2004,19 @@ func rules(from request: [String: Any]) -> Rules {
         if op == "catalog" { out(catalog()); continue }
         guard let rules = current else { try refuse("Rules come first.", "invalid") }
         guard #available(macOS 14.0, *) else { try refuse("Screen access for agents needs macOS 14 or later.", "unavailable") }
+        let action = request["action"] as? [String: Any]
+        let refDisplay = (action?["ref"] as? String).flatMap { elementReferences[$0]?.display } ?? (action?["snapshot"] as? String).flatMap { snapshotDisplays[$0] }
+        try chooseDisplay(request["displayId"] ?? action?["displayId"] ?? refDisplay.map { NSNumber(value: $0) })
         switch op {
+        case "displays": out(displays())
+        case "wait-change": out(waitChange((request["revision"] as? NSNumber)?.uint64Value ?? screenRevision, request["ms"] as? Int ?? 400))
         case "shot":
           guard CGPreflightScreenCaptureAccess() else { try refuse("Reach needs Screen Recording to show the Mac to an agent.", "unavailable") }
           out(try await shot(rules, max(320, min(3840, request["maxWidth"] as? Int ?? 2560))))
         case "act":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           guard let action = request["action"] as? [String: Any] else { try refuse("Choose an action.", "invalid") }
-          out(try perform(action, CGDisplayBounds(CGMainDisplayID()), rules, request["expected"] as? [String: String]))
+          out(try perform(action, displayBounds(), rules, request["expected"] as? [String: String]))
         case "open":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           out(try open(request["app"] as? String ?? "", rules))
@@ -1828,7 +2027,7 @@ func rules(from request: [String: Any]) -> Rules {
           out(try windowList(rules))
         case "focus":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
-          out(try focusWindow(request["id"] as? String ?? "", title: request["title"] as? String ?? "", tab: request["tab"] as? String ?? "", rules))
+          out(try focusWindow(request["id"] as? String ?? "", title: request["title"] as? String ?? "", tab: request["tab"] as? String ?? "", tabRef: request["tabRef"] as? String ?? "", rules))
         case "menus":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           out(try menuBar(rules, menu: request["menu"] as? String ?? ""))
@@ -1870,7 +2069,7 @@ func rules(from request: [String: Any]) -> Rules {
           try refuse("Unknown request.", "invalid")
         }
       } catch let refusal as Refusal {
-        out(["error": refusal.message, "kind": refusal.kind])
+        out(["error": refusal.message, "kind": refusal.kind, "candidates": refusal.candidates])
       } catch {
         out(["error": "The Mac couldn't do that.", "kind": "unavailable"])
       }

@@ -35,7 +35,9 @@ test("while an agent has Full control, a person is told someone else has the Mac
   takeControl();
   const kept = await call("/api/guest/redeem", { method: "POST", body: { invitation } });
   assert.equal(kept.status, 403);
-  assert.match(kept.body.error, /Someone else is controlling this Mac right now/);
+  assert.match(kept.body.error, /An agent has app access on this Mac/);
+  assert.match(kept.body.error, /once the owner ends that access/);
+  assert.match(kept.body.error, /Pausing the agent keeps this protection in place/);
   // Anyone else the guard keeps out reads what it always said.
   const other = await call("/api/clients", { token: owner.token });
   assert.equal(other.status, 403);
@@ -51,7 +53,7 @@ test("while an agent has Full control, a person is told someone else has the Mac
   takeControl();
   const later = await call("/api/device", { token: opened.body.token });
   assert.equal(later.status, 403);
-  assert.match(later.body.error, /Someone else is controlling this Mac right now/);
+  assert.match(later.body.error, /An agent has app access on this Mac/);
   agent = null;
   assert.equal((await told()).length, 1, "once per person every ten minutes");
   // An agent's own invitation, or an unknown one, gets no person wording.

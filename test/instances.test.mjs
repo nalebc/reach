@@ -2,7 +2,106 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { alreadyRunning, describe, reachHosts, stateOf, statusText, whereItRuns, withoutHandover } from "../scripts/instances.mjs";
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { alreadyRunning, describe, processTable, reachHosts, stateOf, statusText, whereItRuns, withoutHandover } from "../scripts/instances.mjs";
+import { stopReach } from "../scripts/stop.mjs";
+
+test("process discovery distinguishes an unavailable inventory from no running Reach", () => {
+  for (const code of ["EPERM", "EACCES", "ENOENT", "ETIMEDOUT", "ENOBUFS"]) {
+    const denied = Object.assign(Error("private process output must not become the user message"), { code });
+    assert.throws(() => processTable(() => { throw denied; }), error => {
+      assert.equal(error.code, "REACH_PROCESS_INVENTORY_UNAVAILABLE");
+      assert.equal(error.cause, denied);
+      assert.match(error.message, /Can't determine whether Reach is running/);
+      assert.match(error.message, /Terminal or allow process inspection/);
+      assert.doesNotMatch(error.message, /private process output|isn't running|Start it/);
+      return true;
+    });
+  }
+  assert.throws(() => processTable(() => "inventory denied"), { code: "REACH_PROCESS_INVENTORY_UNAVAILABLE" });
+  assert.deepEqual(processTable(() => ""), []);
+  const empty = processTable(() => "  1 0 ? /sbin/init\n  2 1 ? unrelated-process\n");
+  assert.deepEqual(reachHosts(empty), []);
+  assert.equal(statusText(reachHosts(empty)), "Reach isn't running. Start it with reach.");
+});
+
+test("stop and restart abort before signals or service operations when process discovery fails", async () => {
+  for (const restarting of [false, true]) {
+    const effects = [];
+    await assert.rejects(stopReach("/synthetic-reach", {
+      restarting, platform: "darwin", yes: true,
+      table: () => processTable(() => { throw Object.assign(Error("denied"), { code: "EPERM" }); }),
+      kill: () => effects.push("signal"), launchctl: () => effects.push("service"),
+      handoffRoute: () => effects.push("route"), print: () => effects.push("output"),
+    }), { code: "REACH_PROCESS_INVENTORY_UNAVAILABLE" });
+    assert.deepEqual(effects, []);
+  }
+});
+
+test("CLI discovery failure cannot report stopped, start another Reach, or remove an inaccessible lock", { skip: process.platform === "win32" }, t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-inventory-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, "bin"), state = path.join(dir, "state"), effects = path.join(dir, "effects");
+  fs.mkdirSync(bin);
+  fs.symlinkSync(process.execPath, path.join(bin, "node"));
+  // Satisfy the launcher's runtime check without installing anything.
+  fs.writeFileSync(path.join(bin, "npm"), "#!/bin/sh\nexit 77\n", { mode: 0o755 });
+  const preload = path.join(dir, "inventory.mjs");
+  fs.writeFileSync(preload, `
+    import cp from 'node:child_process';
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const denied = () => Object.assign(Error('sensitive fixture output'), { code: 'EPERM' });
+    const effect = action => { fs.appendFileSync(${JSON.stringify(effects)}, action + '\\n'); throw Error('unexpected effect: ' + action); };
+    cp.execFileSync = (file, args) => {
+      if (file === '/bin/ps') {
+        if (process.env.REACH_TEST_INVENTORY === 'empty' || (process.env.REACH_TEST_INVENTORY === 'lock' && args[0] === '-axo')) return '';
+        throw denied();
+      }
+      if (file === '/usr/sbin/sysctl' && process.env.REACH_TEST_INVENTORY === 'lock') return 'fixture-boot-session';
+      return effect('execFileSync');
+    };
+    for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile']) cp[method] = () => effect(method);
+    process.kill = (_pid, signal) => {
+      if (signal === 0 && process.env.REACH_TEST_INVENTORY === 'lock') throw denied();
+      return effect('signal');
+    };
+    syncBuiltinESMExports();
+  `);
+  const guard = new URL("./helpers/runaway-guard.mjs", import.meta.url).href;
+  const cli = fileURLToPath(new URL("../reach", import.meta.url));
+  const run = (args, mode = "denied") => {
+    const options = {
+      encoding: "utf8", timeout: 10000, maxBuffer: 65536, stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, REACH_HOME: state,
+        REACH_TEST_INVENTORY: mode, NODE_OPTIONS: `--import=${guard} --import=${pathToFileURL(preload).href}` },
+    };
+    try { return { status: 0, stdout: execFileSync("/bin/sh", [cli, ...args], options), stderr: "" }; }
+    catch (error) { return { status: error.status, stdout: error.stdout || "", stderr: error.stderr || "" }; }
+  };
+  for (const args of [["status"], ["stop"], ["restart"], ["--local"]]) {
+    const result = run(args);
+    assert.equal(result.status, 1, `${args}: ${result.stderr}`);
+    assert.match(result.stderr, /Can't determine whether Reach is running/);
+    assert.doesNotMatch(result.stdout + result.stderr, /sensitive fixture output|isn't running|starting in a new|Stopped Reach|already running/);
+    assert.equal(fs.existsSync(state), false, "discovery failure cannot create launch state");
+    assert.equal(fs.existsSync(effects), false, "no subprocesses, service calls, or signals");
+  }
+  const empty = run(["status"], "empty");
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.match(empty.stdout, /Reach isn't running\. Start it with \.\/reach\./);
+  for (const args of [["--help"], ["--version"]]) assert.equal(run(args).status, 0, "informational commands do not need process access");
+  fs.mkdirSync(state);
+  const lock = path.join(state, "launcher.lock"), original = JSON.stringify({ pid: 424242 });
+  fs.writeFileSync(lock, original);
+  const inaccessible = run(["--local"], "lock");
+  assert.equal(inaccessible.status, 1, inaccessible.stderr);
+  assert.match(inaccessible.stderr, /Can't determine whether Reach is running/);
+  assert.equal(fs.readFileSync(lock, "utf8"), original, "unreadable lock owner remains protected");
+  assert.equal(fs.existsSync(effects), false);
+});
 
 // One Reach per computer. Agents restarted Reach in the background three times
 // in a day (no window: no screen permissions, no device approvals), and the

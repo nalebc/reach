@@ -189,8 +189,17 @@ export const CODEX_MODES = {
   auto: { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "user" },
   "guardian-approvals": { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" },
   "full-access": { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" },
+  "read-only": { approvalPolicy: "on-request", sandbox: "read-only", approvalsReviewer: "user" },
   custom: {},
 };
+
+export const isCodexMode = (mode) => typeof mode === "string" &&
+  (Object.hasOwn(CODEX_MODES, mode) || /^profile::?[\w.-]{1,80}$/.test(mode));
+
+// Named profiles go with the first turn, through Codex's permissions API.
+export const codexStartMode = (mode) => isCodexMode(mode)
+  ? (Object.hasOwn(CODEX_MODES, mode) ? CODEX_MODES[mode] : {})
+  : null;
 
 // The Codex app's permission menu, built from what Codex offers right now:
 // its permission profiles (only those allowed here) and whether "Approve for
@@ -656,7 +665,7 @@ export function createCodexSessions({
         });
       return {
         models,
-        modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml" }],
+        modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml", switchable: false }],
         mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
       };
     },

@@ -65,7 +65,9 @@ export async function pairRunningHost(
   try {
     const link = new URL(host.link || "");
     if (link.protocol === "https:" && !link.port && link.pathname === "/" && !link.search && !link.hash && !link.username)
-      one = link.origin;
+      // `link` may be the fleet home's address. The code and window are on
+      // this host, whose one address is its private origin without the port.
+      one = origin.protocol === "https:" ? `https://${origin.hostname}` : link.origin;
   } catch {
     /* no one address: the private one */
   }

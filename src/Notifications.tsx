@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -361,11 +362,30 @@ export function NotificationCenter({
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState("");
   const handlingIntent = useRef(new Set<string>());
+  // Decisions can finish after the user switches computers or credentials.
+  // Their result belongs only to the context that sent them.
+  const requestContext = useMemo(() => ({ active: true }), [peer.url, peer.token, enabled]);
+  const currentContext = useRef(requestContext);
+  currentContext.current = requestContext;
+  const isCurrent = () => enabled && requestContext.active && currentContext.current === requestContext;
+  useEffect(() => {
+    requestContext.active = true;
+    return () => { requestContext.active = false; };
+  }, [requestContext]);
+  // A list already in flight (or the server's cached list) can still contain
+  // a request we just answered. Keep that exact revision dismissed.
+  const answered = useRef(new Set<string>());
+  const rememberAnswer = (id: string, revision: string) => {
+    answered.current.add(`${id}:${revision}`);
+    if (answered.current.size > 200) answered.current.delete(answered.current.values().next().value!);
+    setItems((items) => items.filter((item) => item.id !== id || item.revision !== revision));
+  };
   useEffect(() => {
     shareNotificationIcons(logos);
   }, [logos]);
   useEffect(() => {
     setOpen(false);
+    answered.current.clear();
     setItems([]);
     setError("");
     setLoading(true);
@@ -387,7 +407,7 @@ export function NotificationCenter({
           unavailable: string[];
         }>(peer, "/api/notifications", { signal: controller.signal });
         if (!controller.signal.aborted) {
-          setItems(result.items || []);
+          setItems((result.items || []).filter((item) => !answered.current.has(`${item.id}:${item.revision}`)));
           setError(
             result.unavailable?.some((s) => s !== "openclaw")
               ? "Some apps couldn't be checked. Showing requests we can confirm."
@@ -396,8 +416,8 @@ export function NotificationCenter({
         }
       } catch (e) {
         const status = (e as { status?: number }).status;
-        if (status === 401 || status === 403) refused.current = true;
         if (!controller.signal.aborted) {
+          if (status === 401 || status === 403) refused.current = true;
           setItems([]);
           setError(
             refused.current
@@ -441,7 +461,7 @@ export function NotificationCenter({
         return;
       handlingIntent.current.add(id);
       const action = await takeNotificationIntent(id).catch(() => null);
-      if (!action) return;
+      if (!action || !isCurrent()) return;
       setNotice("Sending your decision…");
       try {
         await post(
@@ -449,10 +469,12 @@ export function NotificationCenter({
           `/api/notifications/${encodeURIComponent(action.id)}/actions`,
           { revision: action.revision, action: action.action },
         );
+        if (!isCurrent()) return;
         setNotice("Request denied");
-        setItems((items) => items.filter((item) => item.id !== action.id));
+        rememberAnswer(action.id, action.revision);
         setRevision((value) => value + 1);
       } catch (e) {
+        if (!isCurrent()) return;
         setNotice((e as Error).message);
         if ((e as { status?: number }).status === 409) latest.current();
       }
@@ -482,6 +504,7 @@ export function NotificationCenter({
       navigator.serviceWorker?.removeEventListener("message", message);
   }, [enabled, peer.url, peer.token]);
   const act = async (item: NotificationItem, action: string) => {
+    if (!isCurrent()) return;
     if (!item.revision)
       throw Error("Refresh Reach before answering this request.");
     try {
@@ -491,12 +514,14 @@ export function NotificationCenter({
         { revision: item.revision, action },
       );
     } catch (e) {
+      if (!isCurrent()) return;
       // Answered elsewhere or changed since: look again now, so the card
       // shows what's true (or goes) instead of waiting for the next check.
       if ((e as { status?: number }).status === 409) latest.current();
       throw e;
     }
-    setItems((items) => items.filter((value) => value.id !== item.id));
+    if (!isCurrent()) return;
+    rememberAnswer(item.id, item.revision);
     setNotice(
       item.source === "update" && action === "update"
         ? "Updating Reach. It restarts when it's installed"

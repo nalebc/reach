@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
 // The Mac App Store and standalone apps carry the CLI inside the app without
 // putting `tailscale` on PATH.
-const MAC_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+const macApps = (env) => ["/Applications/Tailscale.app", path.posix.join(env.HOME || os.homedir(), "Applications/Tailscale.app")];
+const appCli = (app) => path.posix.join(app, "Contents/MacOS/Tailscale");
+export const findMacTailscaleApp = ({ env = process.env, exists = fs.existsSync } = {}) =>
+  macApps(env).find(app => exists(app) || exists(appCli(app)));
 // Windows installs it in Program Files. The installer adds it to PATH, but a
 // Reach already running (waiting for the install) keeps its old PATH.
 export const windowsTailscaleDir = (env = process.env) =>
@@ -19,17 +23,26 @@ export function findTailscaleCli({
   // On a Mac with the Tailscale app, its own command line is the one that
   // matches the running daemon; a Homebrew copy on the PATH often doesn't,
   // and long-lived sessions through a mismatched client drop.
-  if (platform === "darwin" && exists(MAC_APP_CLI)) return MAC_APP_CLI;
+  if (platform === "darwin") {
+    const app = macApps(env).map(appCli).find(exists);
+    if (app) return app;
+    // A Terminal opened before Homebrew was installed keeps its old PATH.
+    // Honor a CLI already on PATH, then check both Homebrew prefixes.
+    const candidates = [
+      ...(env.PATH || "").split(":").filter(dir => path.posix.isAbsolute(dir)).map(dir => path.posix.join(dir, "tailscale")),
+      "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
+    ];
+    const found = candidates.find(exists);
+    if (found) return found;
+  }
   if (platform === "win32") {
     const exe = path.win32.join(windowsTailscaleDir(env), "tailscale.exe");
     if (exists(exe)) return exe;
   }
   return "tailscale";
 }
-let cli;
-export const tailscaleCli = () =>
-  process.env.REACH_TAILSCALE ||
-  (cli && cli !== "tailscale" ? cli : (cli = findTailscaleCli()));
+// Setup can install, move or replace the app while Reach waits.
+export const tailscaleCli = () => findTailscaleCli();
 // The command line's version and the daemon's: when they differ, say so once.
 export async function tailscaleVersions() {
   const [client, status] = await Promise.all([
@@ -74,7 +87,7 @@ export function assertPrivatePort(config, port) {
       )
     )
       throw Error(
-        `Tailscale Funnel is enabled on port ${port}. Reach requires a private Serve port.`,
+        `Tailscale Funnel is enabled on port ${port}. Reach requires a private Serve port. Turn Funnel off on this port: tailscale funnel --https=${port} off, then run Reach again.`,
       );
   }
 }

@@ -1038,6 +1038,35 @@ test("while a reply streams in, the open chat is read from what OpenClaw last ga
   assert.equal(asked(), 2);
 });
 
+// OpenClaw 2026.9.7 (protocol v4): after the first snapshot, text comes as
+// appends (chat.deltaText, agent.data.delta). A snapshot already holds its
+// delta, replace sets the text (even empty), and chat and agent stay apart.
+test("a reply streamed as appends reads whole, from chat or agent events", async (t) => {
+  const { c, sockets } = await fixture(t);
+  await c.overview();
+  const ws = sockets[0];
+  const chat = (extra) => ws.event("chat", { sessionKey: REACH, runId: "d1", state: "delta", ...extra });
+  const streaming = async () => (await c.history(REACH)).streaming;
+  chat({ message: { role: "assistant", content: [{ type: "text", text: "Hello" }] }, deltaText: "Hello" });
+  assert.equal(await streaming(), "Hello");
+  chat({ deltaText: " world" });
+  assert.equal(await streaming(), "Hello world");
+  // The agent's view of the same reply is not added to the chat's.
+  ws.event("agent", { sessionKey: REACH, runId: "d1", stream: "assistant", data: { text: "Hello world", delta: " world" } });
+  assert.equal(await streaming(), "Hello world");
+  chat({ replace: true, deltaText: "Hey there" });
+  assert.equal(await streaming(), "Hey there");
+  chat({ replace: true, deltaText: "" });
+  assert.equal(await streaming(), "");
+
+  const agent = (data) => ws.event("agent", { sessionKey: REACH, runId: "d2", stream: "assistant", data });
+  ws.event("chat", { sessionKey: REACH, runId: "d1", state: "final" });
+  agent({ text: "Hello", delta: "Hello" });
+  assert.equal(await streaming(), "Hello");
+  agent({ delta: " world" });
+  assert.equal(await streaming(), "Hello world");
+});
+
 test("malformed Gateway envelopes close the adapter without crashing Reach", async t => {
   const { c, sockets } = await fixture(t);
   await c.overview();

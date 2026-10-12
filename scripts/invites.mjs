@@ -125,7 +125,7 @@ export async function setupInvites(root, deps = {}) {
           message: "Change the default rule?",
           choices: [
             { value: "yes", label: "Yes, limit it to my devices and people", recommended: true },
-            { value: "no", label: "No, leave my policy as it is", description: "Invite links stay off; set them up later with ./reach setup invites." },
+            { value: "no", label: "No, leave my policy as it is", description: `Invite links stay off; set them up later with ${command} setup invites.` },
           ],
         });
         if (narrow !== "yes") declined = true;
@@ -136,7 +136,7 @@ export async function setupInvites(root, deps = {}) {
     }
     // Declined: nothing changed, and setup goes on without invite links.
     if (declined || !result) {
-      print("Nothing changed. Set up invite links any time with ./reach setup invites.");
+      print(`Nothing changed. Set up invite links any time with ${command} setup invites.`);
       return { ready: false };
     }
     if (!result.added.length) print("Your policy already had Reach's rules.");

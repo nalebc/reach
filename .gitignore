@@ -31,3 +31,4 @@ work/
 .codex/
 **/xcuserdata/
 ios/build/
+reports/

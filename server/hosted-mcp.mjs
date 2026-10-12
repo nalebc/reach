@@ -23,12 +23,13 @@
 // key would (its browserBinding): the public door knows it, and keeps the
 // token and discovery endpoints up while a hosted agent has access.
 import crypto from "node:crypto";
+import { compactTools } from "./browser-tools.mjs";
 import path from "node:path";
 import { atomicJson, loadJson, sameHash } from "./core.mjs";
 import { browserRouteAllowed } from "./browser-access.mjs";
 import { permittedPath, sourceKey } from "./funnel-agent.mjs";
 import { agentErrorDetails, agentRequestError, agentRequestTimeout } from "./agent-transport.mjs";
-import { PROTOCOLS, callTool, serverInstructions, toContent, toolsFor } from "../scripts/mcp-server.mjs";
+import { PROTOCOLS, serverInstructions, toContent, toolsFor } from "../scripts/mcp-server.mjs";
 import { isScreenImageRoute } from "../scripts/agent-client.mjs";
 
 const ACCESS_SECONDS = 3600;
@@ -37,7 +38,7 @@ const PENDING_MS = 10 * 60_000;
 const OAUTH_BODY_LIMIT = 8 * 1024;
 const MCP_BODY_LIMIT = 256 * 1024;
 const RESPONSE_LIMIT = 8 * 1024 * 1024;
-const MAX_CLIENTS = 64;
+const MAX_CLIENTS = 64, MAX_CLIENTS_PER_ADDRESS = 16;
 const CLIENT_IDLE_MS = 30 * 86400_000;
 const FLOOD_PER_MINUTE = 300, FLOOD_PAUSE_MS = 5 * 60_000;
 const SCOPE = "reach";
@@ -155,6 +156,7 @@ export function createHostedMcp({
   requestHost = (req) => req.headers.host,
   available = () => true,
   computerName = "this Mac",
+  toolProfile = process.env.REACH_MCP_PROFILE === "compact" ? "compact" : "full",
   dataDir,
   // Told when an agent asks to connect (the owner's Needs you), and when a
   // flood of strangers is refused.
@@ -279,7 +281,9 @@ export function createHostedMcp({
     const current = now();
     for (const [id, client] of Object.entries(clients))
       if (!((client.usedAt || client.createdAt) > current - CLIENT_IDLE_MS)) delete clients[id];
-    if (Object.keys(clients).length >= MAX_CLIENTS) throw failure(429);
+    // Bounded overall, and per address: one address's flood never fills another's.
+    if (Object.keys(clients).length >= MAX_CLIENTS ||
+        Object.values(clients).filter((client) => client.connector === sha(connector)).length >= MAX_CLIENTS_PER_ADDRESS) throw failure(429);
     const id = token();
     const secret = method === "none" ? null : token();
     clients[id] = { name, redirectUris: uris, authMethod: method, connector: sha(connector), ...(secret ? { secretHash: sha(secret) } : {}), createdAt: current, usedAt: current };
@@ -399,7 +403,14 @@ export function createHostedMcp({
     }
     if (params.grant_type === "refresh_token") {
       if (client && !authenticated(client, secret)) throw failure(401, "invalid_client");
-      const refreshed = auth.refreshHosted(params.refresh_token, { clientId: typeof clientId === "string" ? clientId : undefined, connector });
+      // The client that connected, found from the token when it gives no id,
+      // proves itself as it registered: a secret is never skipped.
+      const authenticate = (id) => {
+        const owner = typeof id === "string" ? clients[id] : undefined;
+        if (!owner || !authenticated(owner, secret)) throw failure(401, "invalid_client");
+        return true;
+      };
+      const refreshed = auth.refreshHosted(params.refresh_token, { clientId: typeof clientId === "string" ? clientId : undefined, connector, authenticate });
       if (!refreshed) throw failure(400, "invalid_grant");
       if (client) touch(clients, clientId);
       return json(res, 200, {
@@ -444,17 +455,19 @@ export function createHostedMcp({
             // No stream back to the client here, so no change notices.
             capabilities: { tools: {} },
             serverInfo: { name: "reach", version: "0.1.0" },
-            ...serverInstructions(client.scopes),
+            ...serverInstructions(client.scopes, toolProfile),
           } };
         case "ping": return { result: {} };
-        case "tools/list": return { result: { tools: toolsFor(client.scopes, await accessOf()) } };
+        case "tools/list": {
+          const offered = toolsFor(client.scopes, await accessOf());
+          return { result: { tools: toolProfile === "compact" ? compactTools(offered) : offered } };
+        }
         case "tools/call": {
           if (typeof params.name !== "string") return { error: { code: -32602, message: "Name the tool." } };
-          const access = await accessOf();
-          if (!toolsFor(client.scopes, access).some((tool) => tool.name === params.name))
-            return { result: { isError: true, content: [{ type: "text", text: "This tool is not available to this agent." }] } };
+          if (params.arguments !== undefined && !plain(params.arguments)) return { error: { code: -32602, message: "Tool arguments must be an object." } };
           try {
-            return { result: { content: toContent(await callTool(api, params.name, plain(params.arguments) ? params.arguments : {}, access)) } };
+            const executed = await api("/api/browser/mcp/call", "POST", { name: params.name, arguments: plain(params.arguments) ? params.arguments : {} });
+            return { result: { content: toContent(executed.result) } };
           } catch (error) {
             const details = agentErrorDetails(error);
             return { result: { isError: true, content: [{ type: "text", text: details.kind ? JSON.stringify(details) : details.error }] } };
@@ -490,6 +503,14 @@ export function createHostedMcp({
     const body = parseJson(await readBody(req, MCP_BODY_LIMIT));
     const messages = Array.isArray(body) ? body : [body];
     if (!messages.length || messages.length > 20) throw failure(400);
+    // The version a client speaks after initialize (none: 2025-03-26). One
+    // Reach doesn't speak is a plain 400; version negotiation (initialize,
+    // and the server/discover newer clients try first) answers as before,
+    // which is what lets them fall back.
+    const version = req.headers["mcp-protocol-version"];
+    if (version !== undefined && !PROTOCOLS.includes(version) &&
+        messages.some((message) => !plain(message) || !["initialize", "server/discover"].includes(message.method)))
+      return json(res, 400, { error: `Unsupported MCP-Protocol-Version. Reach speaks ${PROTOCOLS.join(", ")}.` }, { "Cache-Control": "no-store" });
     const api = apiFor(client, parts[0], parts[1]);
     let access, accessRead = false;
     const accessOf = async () => {
@@ -516,9 +537,12 @@ export function createHostedMcp({
     const route = routeOf(pathname);
     if (!route) throw failure(404);
     const { kind, connector } = route;
-    if (kind === "mcp") return mcp(req, res, base, connector);
+    // The door's rule whatever opened it (a pairing window lets strangers to
+    // the start page, never to an address Reach didn't give out; audit A4).
+    if (kind === "mcp") { if (!admits(req)) throw failure(404); return mcp(req, res, base, connector); }
     const method = { resource: "GET", server: "GET", register: "POST", authorize: "GET", status: "GET", token: "POST" }[kind];
     if (req.method !== method) throw failure(405);
+    if (!admits(req)) throw failure(404);
     strangerGate(req);
     if (kind === "resource") return json(res, 200, resourceMetadata(base, connector), { "Cache-Control": "no-store" });
     if (kind === "server") return json(res, 200, serverMetadata(base, connector), { "Cache-Control": "no-store" });
@@ -529,6 +553,26 @@ export function createHostedMcp({
     return tokens(req, res, connector);
   };
   const mine = (pathname) => routeOf(pathname) !== null;
+  // The public door's rule for these paths when nothing else opens it
+  // (index.mjs listenPrivate), and every request's here: only an address
+  // Reach gave out, checked by its hash before anything is read. Registration
+  // and the authorize page only while that address's invitation waits; the
+  // endpoint, discovery and the token endpoint while its agent has access or
+  // ended lately (its refreshes, and a proper 401 for an ended one); the page
+  // of an authorization under way, while it is.
+  function admits(req) {
+    const route = routeOf(String(req.url || "").split("?")[0]);
+    if (!route) return false;
+    let known;
+    try { known = auth.hostedConnectors().get(sha(route.connector)); } catch { return false; }
+    if (!known) return false;
+    if (route.kind === "register") return req.method === "POST" && known.waiting;
+    if (route.kind === "authorize") return req.method === "GET" && known.waiting;
+    if (route.kind === "status") return req.method === "GET" && pending.get(route.pending)?.connector === route.connector;
+    if (route.kind === "token") return req.method === "POST";
+    if (route.kind === "mcp") return true;
+    return req.method === "GET";
+  }
   return {
     // Answers its own paths; false for anything else.
     handle(req, res) {
@@ -540,26 +584,7 @@ export function createHostedMcp({
       void run(req, res, pathname).catch((error) => rejection(req, res, error));
       return true;
     },
-    // The public door's rule for these paths when nothing else opens it
-    // (index.mjs listenPrivate): only an address Reach gave out, checked by
-    // its hash before anything is read. Registration and the authorize page
-    // only while that address's invitation waits; the endpoint, discovery and
-    // the token endpoint while its agent has access or ended lately (its
-    // refreshes, and a proper 401 for an ended one); the page of an
-    // authorization under way, while it is.
-    admits(req) {
-      const route = routeOf(String(req.url || "").split("?")[0]);
-      if (!route) return false;
-      let known;
-      try { known = auth.hostedConnectors().get(sha(route.connector)); } catch { return false; }
-      if (!known) return false;
-      if (route.kind === "register") return req.method === "POST" && known.waiting;
-      if (route.kind === "authorize") return req.method === "GET" && known.waiting;
-      if (route.kind === "status") return req.method === "GET" && pending.get(route.pending)?.connector === route.connector;
-      if (route.kind === "token") return req.method === "POST";
-      if (route.kind === "mcp") return true;
-      return req.method === "GET";
-    },
+    admits,
     close() { pending.clear(); },
   };
 }

@@ -36,7 +36,7 @@ function setup(t, extra = {}) {
     kind: "agent",
     status: "accepted",
     expiresAt: Date.now() + 600000,
-    policy: { browser: true, preset: "full", roots: [] },
+    policy: { browser: true, preset: "apps", apps: toolApps, roots: [] },
     scopes: [
       "browser:read",
       "browser:open",
@@ -692,6 +692,32 @@ test("declared empty results are distinguished from page drift, and hidden match
   example.dom.window.document.body.append(duplicate);
   assert.equal((await f.run("example_task", {}, "Safari")).status, "completed");
   assert.equal(f.driver.counters.clicks, 1);
+});
+
+test("Full control browser tools allow Reach titles, password fields and formerly protected sites", async t => {
+  const f = setup(t);
+  f.client = { ...f.client, policy: { browser: true, preset: "full", roots: ["/"], hidden: toolApps } };
+  await f.tools.define(f.authorize, exampleTool());
+  const tab = f.driver.add("Safari", "https://example.com/");
+  tab.dom.window.document.title = "GitHub - nalebc/reach";
+  assert.equal((await f.run("example_task", {}, "Safari")).status, "completed");
+  const secure = exampleTool("full_password");
+  secure.inputs = { value: { type: "string", label: "Password" } };
+  secure.steps = [
+    { op: "navigate", url: "https://example.com/" },
+    { op: "fill", target: { role: "textbox", name: "Note" }, value: { input: "value" } },
+    { op: "assert", target: { role: "main" } },
+  ];
+  tab.dom.window.document.querySelector("input").type = "password";
+  await f.tools.define(f.authorize, secure);
+  assert.equal((await f.run(secure.id, { value: "fixture-password" }, "Safari")).status, "completed");
+  assert.equal(tab.dom.window.document.querySelector("input").value, "fixture-password");
+  for (const [id, origin] of [["full_passwords", "https://passwords.google.com"], ["full_bank", "https://secure.chase.com"]]) {
+    const definition = exampleTool(id);
+    definition.origins = [origin]; definition.steps[0].url = origin + "/";
+    await f.tools.define(f.authorize, definition);
+    assert.equal((await f.run(id)).status, "completed");
+  }
 });
 
 test("downloads enforce the file limit; protected pages and cross-site controls cannot be used", async (t) => {

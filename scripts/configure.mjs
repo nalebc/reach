@@ -48,6 +48,13 @@ export function setupOwner(status) {
     );
   return { userId: String(self.UserID), login: user.LoginName };
 }
+export function assertOwnerAccount(status, preferences) {
+  const owner = setupOwner(status);
+  if (owner.userId !== preferences.owner.userId)
+    throw Error(
+      `Reach was set up for ${promptLabel(preferences.owner.login)}, but this computer is signed into ${promptLabel(owner.login)}. Switch Tailscale back to the original account, or run ${command} setup account to confirm the new account.`,
+    );
+}
 export async function assertSocketSupport(run = exec) {
   const result = await run(tailscaleCli(), ["serve", "--help"], {
     timeout: 5000,

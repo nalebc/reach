@@ -65,6 +65,17 @@ final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplic
 typealias AXUIElement = Int
 // Numbered labels, press and fill (perform "element", "press", "fill") read
 // the screen; none of these keyboard cases do.
+typealias CGDirectDisplayID = UInt32
+final class NSPasteboard {
+  enum PasteboardType { case string }
+  static let general = NSPasteboard()
+  func string(forType: PasteboardType) -> String? { nil }
+  func clearContents() {}
+  func setString(_ value: String, forType: PasteboardType) {}
+}
+func pressMenu(_ path: [String], _ rules: Rules) throws -> [String: Any] { fatalError("Keyboard fixtures never press menus") }
+func referencedControl(_ ref: String, _ rules: Rules) throws -> (Control, Screen) { fatalError("Keyboard fixtures never use references") }
+func squeezed(_ text: String) -> String { text.lowercased() }
 func frameOf(_ element: AXUIElement) -> CGRect? { nil }
 func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen { fatalError("Keyboard fixtures never read the screen") }
 func findControl(_ screen: Screen, name: String, role: String? = nil, fields: Bool = false, near: CGPoint? = nil) throws -> Control { fatalError("Keyboard fixtures never read the screen") }
@@ -154,21 +165,25 @@ for action in [typing,key] {
   reset(); observedPid = 99; expect(name + " PID changed during inspection", action, "retry")
   // Keys go where focus is, even when that app isn't in front: it is judged.
   reset(); focusedPid = 99; observedPid = 99; otherApp = NSRunningApplication(99, "com.1password.1password", "1Password")
-  expect(name + " focus in a protected app that isn't in front (Full)", action, "blocked")
+  expect(name + " focus in a protected app that isn't in front (Full)", action, "allowed")
   reset(); focusedPid = 99; observedPid = 99; focusedSecure = true
-  expect(name + " a password field in an app that isn't in front (Full)", action, "blocked")
+  expect(name + " a password field in an app that isn't in front (Full)", action, "allowed")
   reset(); focusedPid = 99; observedPid = 99; focusedTitle = "Reach"
-  expect(name + " Reach holding focus without being in front (Full)", action, "blocked")
+  expect(name + " Reach holding focus without being in front (Full)", action, "allowed")
   reset(); focusedTitle = "Reach"
-  expect(name + " same-PID protected title", action, "blocked")
+  expect(name + " same-PID protected title", action, "allowed")
   reset(); focusedURL = "http://localhost:8443/"
-  expect(name + " same-PID protected URL", action, "blocked")
+  expect(name + " same-PID protected URL", action, "allowed")
   reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.apple.Passwords","Passwords")
-  expect(name + " protected app", action, "blocked")
+  expect(name + " protected app", action, "allowed")
   reset(); focusedSecure = true
-  expect(name + " secure field", action, "blocked")
+  expect(name + " secure field", action, "allowed")
   reset(); expect(name + " ordinary focus", action, "allowed")
 }
+reset(); focusedTitle = "Reach"
+expect("Apps still blocks Reach titles", key, "blocked", apps)
+reset(); focusedSecure = true
+expect("Apps still blocks ordinary password typing", typing, "blocked", apps)
 reset(); focusedSecure = true
 expect("secure navigation remains allowed", ["type":"key","key":"tab"], "allowed")
 reset(); NSWorkspace.shared.frontmostApplication = NSRunningApplication(42,"com.apple.Terminal","Terminal")
@@ -184,6 +199,7 @@ print("OK focus and keyboard dispatch cases")
 `;
     const program = "import Foundation\nimport CoreGraphics\nimport Darwin\nstruct Refusal: Error { let message:String; let kind:String }\nfunc refuse(_ message:String, _ kind:String = \"blocked\") throws -> Never { throw Refusal(message:message,kind:kind) }\n"
       + policy + "\n" + text + "\n" + seen + "\n" + stubs
+      + section("// BEGIN NATIVE PLAIN TEXT EVENT", "// END NATIVE PLAIN TEXT EVENT")
       + extract("func check(_ s:", "// The window server")
       + extract("struct Focus ", "// No longer called: guessing the owner")
       + extract("let keyCodes:", "let source = CGEventSource")

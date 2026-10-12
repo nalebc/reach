@@ -1,7 +1,10 @@
 // Shared browser/Node transport contract. Longer calls remain bounded, and
 // only known scheduling fields cross an error boundary (never arbitrary data).
 export const agentRequestTimeout = (route, method = "GET") =>
-  method === "POST" && ["/api/browser/shell", "/api/browser/shortcuts/run", "/api/browser/tools/run", "/api/browser/tools/batch", "/api/browser/services/run"].includes(route) ? 70000 : 35000;
+  method === "POST" && (
+    ["/api/browser/mcp/call", "/api/browser/shell", "/api/browser/desktop/mac-shortcuts/run", "/api/browser/shortcuts/run", "/api/browser/tools/run", "/api/browser/tools/batch", "/api/browser/services/run"].includes(route) ||
+    /^\/api\/browser\/mcp\/call\?runtime=[a-f0-9]{64}$/.test(route)
+  ) ? 70000 : 35000;
 
 const kinds = new Set([
   "busy",
@@ -49,6 +52,9 @@ export function agentErrorDetails(error) {
         result.retryInMs = Math.ceil(body.retryInMs);
     }
   }
+  if (result.kind === "invalid" && Array.isArray(body.candidates)) result.candidates = body.candidates.slice(0, 8)
+    .filter(item => item && typeof item.ref === "string" && /^e-[a-f0-9-]{1,38}$/.test(item.ref))
+    .map(item => ({ ref: item.ref, name: clean(item.name, 120), role: clean(item.role, 40), context: clean(item.context, 400) }));
   // Only a complete, fixed diagnostic tuple can cross this boundary. Never
   // forward native stderr, request payloads, paths or arbitrary exit details.
   if (status === 503 && body.kind === "unavailable" && helperReasons.has(body.helperReason) &&

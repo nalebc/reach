@@ -1,0 +1,188 @@
+{
+  "kind": "real-browser-scripted-workflow",
+  "browser": "Chrome",
+  "rounds": 3,
+  "summary": {
+    "cold": {
+      "runs": 3,
+      "medianMs": 3557.53,
+      "minMs": 3206.96,
+      "maxMs": 3608.79,
+      "meanCalls": 15.33
+    },
+    "warm": {
+      "runs": 3,
+      "medianMs": 1891.17,
+      "minMs": 1727.28,
+      "maxMs": 1897.31,
+      "meanCalls": 15.33
+    }
+  },
+  "medianReductionPercent": 46.84,
+  "samples": {
+    "cold": [
+      {
+        "totalMs": 3206.96,
+        "calls": 14,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 724.29
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 923.62
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 693.08
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 445.28
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 420.6
+          }
+        ]
+      },
+      {
+        "totalMs": 3557.53,
+        "calls": 16,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 683.37
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 1324.16
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 684.04
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 443.42
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 422.51
+          }
+        ]
+      },
+      {
+        "totalMs": 3608.79,
+        "calls": 16,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 698.61
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 1349.87
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 651.7
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 440.58
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 468
+          }
+        ]
+      }
+    ],
+    "warm": [
+      {
+        "totalMs": 1897.31,
+        "calls": 16,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 365.55
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 699.54
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 341.93
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 241.82
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 248.41
+          }
+        ]
+      },
+      {
+        "totalMs": 1891.17,
+        "calls": 16,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 343.4
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 699.33
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 382.83
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 241.27
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 224.32
+          }
+        ]
+      },
+      {
+        "totalMs": 1727.28,
+        "calls": 14,
+        "steps": [
+          {
+            "name": "open_and_ready",
+            "ms": 365.69
+          },
+          {
+            "name": "search_and_wait",
+            "ms": 467.79
+          },
+          {
+            "name": "open_second_tab",
+            "ms": 373.82
+          },
+          {
+            "name": "switch_tab_and_fill",
+            "ms": 268.48
+          },
+          {
+            "name": "switch_back_and_verify",
+            "ms": 251.43
+          }
+        ]
+      }
+    ]
+  },
+  "cleanupWarnings": [],
+  "note": "Same local test pages and operations through Reach's production browser transport. Cold starts one helper per call; warm reuses it after preflight. Includes page loads, polling, tab selection and test form actions. Excludes MCP transport, model reasoning, accessibility input and external websites. Not an end-to-end agent benchmark.",
+  "measuredOn": "2026-10-11",
+  "limitations": "Three pairs on this Mac; machine load was not controlled. This exercises production Apple Events browser transport on temporary local pages, not model latency or the full invitation-to-action network path."
+}

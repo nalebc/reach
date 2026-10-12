@@ -9,14 +9,15 @@ import { spawnSync } from "node:child_process";
 // Node.js, run from a copy of it with only the tools it names (no node, so
 // it goes for its own runtime). Nothing is downloaded.
 const unix = { skip: process.platform === "win32" };
-function computer(t, { system = "Darwin", machine = "arm64", curl = null } = {}) {
+function computer(t, { system = "Darwin", machine = "arm64", curl = null, omit = [] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-launcher-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   fs.copyFileSync("reach", path.join(dir, "reach"));
   fs.chmodSync(path.join(dir, "reach"), 0o755);
-  for (const tool of ["dirname", "mkdir", "chmod", "mktemp", "rm", "readlink", "cut", "mv", "tar"]) {
+  for (const tool of ["dirname", "mkdir", "chmod", "mktemp", "rm", "readlink", "cut", "mv", "tar", "shasum", "sha256sum"]) {
+    if (omit.includes(tool)) continue;
     const found = ["/bin", "/usr/bin"].map((d) => path.join(d, tool)).find((f) => fs.existsSync(f));
     if (found) fs.symlinkSync(found, path.join(bin, tool));
   }
@@ -40,10 +41,24 @@ test("H3: no curl, or no internet: what to do, not curl's own error", unix, (t) 
   const noCurl = computer(t).run();
   assert.equal(noCurl.status, 1);
   assert.match(noCurl.stderr, /Reach needs curl to download Node\.js.*nodejs\.org/);
-  const offline = computer(t, { curl: 'echo "curl: (6) Could not resolve host: nodejs.org" >&2; exit 6' }).run();
+  const offlineComputer = computer(t, { curl: 'echo "curl: (6) Could not resolve host: nodejs.org" >&2; exit 6' });
+  const offline = offlineComputer.run();
   assert.equal(offline.status, 1);
   assert.match(offline.stderr, /Reach couldn't download Node\.js \(no internet here\?\)/);
   // Nothing half-downloaded is left as a runtime.
-  const cache = path.join(computer(t).dir, ".reach", "runtime");
+  const cache = path.join(offlineComputer.dir, ".reach", "runtime");
   assert.ok(!fs.existsSync(path.join(cache, "node-v22.23.3-darwin-arm64")));
+  assert.deepEqual(fs.readdirSync(cache), [], "the failed download's staging folder is removed too");
 });
+
+
+for (const [missing, omit] of [["tar", ["tar"]], ["shasum or sha256sum", ["shasum", "sha256sum"]]]) {
+  test(`H3: missing ${missing} is explained before any download`, unix, (t) => {
+    const machine = computer(t, { omit, curl: 'echo download-attempted >&2; exit 6' });
+    const result = machine.run();
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(`needs ${missing}`), result.stderr);
+    assert.match(result.stderr, /Install.*Node\.js 22/);
+    assert.doesNotMatch(result.stderr, /download-attempted/);
+  });
+}

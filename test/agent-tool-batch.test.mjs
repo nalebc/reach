@@ -1,3 +1,4 @@
+import { approvedFullPolicy } from "./helpers/full-control-policy.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -178,12 +179,17 @@ test("an uncertain or stopped item's tab stays open to inspect; finished items' 
   assert.deepEqual(f.driver.browsers.get("Chrome").map((tab) => tab.url), ["https://example.com/search?q=eggs"]);
 });
 
-test("bank sites never get batch tabs", async (t) => {
+test("Apps cannot define bank batches; Full control retains its explicit unrestricted access", async (t) => {
   const f = setup(t);
+  const definition = { ...searchTool, id: "bank_peek", origins: ["https://www.chase.com"], steps: [{ op: "navigate", url: "https://www.chase.com/" }, { op: "read", target: { css: "main" }, as: "x" }] };
+  const client = f.authorize();
+  client.policy = { ...client.policy, preset: "apps", apps: toolApps };
   await assert.rejects(
-    f.tools.define(f.authorize, { ...searchTool, id: "bank_peek", origins: ["https://www.chase.com"], steps: [{ op: "navigate", url: "https://www.chase.com/" }, { op: "read", target: { css: "main" }, as: "x" }] }),
+    f.tools.define(f.authorize, definition),
     /bank/,
   );
+  client.policy.preset = "full";
+  await f.tools.define(f.authorize, definition);
   assert.equal(ops(f.driver, "create").length, 0);
 });
 
@@ -213,7 +219,7 @@ test("reach_tool_batch is offered with the tools, sent to its own route with the
   assert.match(instructions, /list of items, use reach_tool_batch/);
   assert.ok(instructions.length < 120);
   assert.deepEqual(serverInstructions(["browser:read"]), {});
-  const agent = { kind: "agent", policy: { invite: true, browser: true, preset: "full", roots: [] }, scopes: ["browser:control", "browser:open", "browser:screen"] };
+  const agent = { kind: "agent", policy: approvedFullPolicy(), scopes: ["browser:control", "browser:open", "browser:screen"] };
   assert.equal(presetRouteAllowed(agent, "POST", "/browser/tools/batch"), true);
   assert.equal(presetRouteAllowed({ ...agent, policy: { invite: true, browser: true, preset: "readonly", roots: [] } }, "POST", "/browser/tools/batch"), false);
 });

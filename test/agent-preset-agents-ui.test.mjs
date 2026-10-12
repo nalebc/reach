@@ -60,7 +60,7 @@ test("the panel names the preset, what the agent is using, and pauses it", async
   const c = view.container;
   await dom.waitFor(() => /Full control/.test(c.textContent));
   assert.match(c.textContent, /Using\s*Google Chrome/);
-  assert.match(c.textContent, /Hidden from it\s*Messages/);
+  assert.doesNotMatch(c.textContent, /Hidden from it/, "legacy hidden selections do not constrain Full control");
   assert.match(c.textContent, /Reads and changes/);
   assert.doesNotMatch(c.textContent, /view-only/i);
   await click(button(c, "Pause"));
@@ -118,4 +118,29 @@ test("a Files agent has nothing to pause and cannot be raised into Full control 
   assert.equal(sheet.querySelector('[aria-label="Can edit files"]').checked, true);
 });
 
+test("Apps needs a new invitation for Full control, and Read only still reports its hidden apps", async () => {
+  const appAgent = session("apps-4", { preset: "apps", folders: [], policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] } });
+  const readonly = session("reader-5", { preset: "readonly", policy: { invite: true, browser: true, preset: "readonly", roots: ["/Users/me"], hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] } });
+  mock(() => [appAgent, readonly]);
+  const edit = await dom.render(editor(appAgent));
+  views.add(edit);
+  const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]').disabled, true);
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Apps"]').disabled, false);
+  assert.match(sheet.textContent, /Needs a new invitation from your phone/);
+  const view = await dom.render(panel("reader-5"));
+  views.add(view);
+  await dom.waitFor(() => /Hidden from it/.test(view.container.textContent));
+  assert.match(view.container.textContent, /Hidden from it\s*Messages/);
+});
+
 test("agent cards render without React warnings", () => assert.deepEqual(dom.errors, []));
+
+test("an older Full control grant explains re-invitation and offers no pause or access edit", async () => {
+  mock(() => [session("old-full", { needsInvitation: true, status: "expired" })]);
+  const view = await dom.render(panel("old-full"));
+  views.add(view);
+  await dom.waitFor(() => /Create a new invitation to approve unrestricted access/.test(view.container.textContent));
+  assert.equal(button(view.container, "Pause"), undefined);
+  assert.equal(button(view.container, "Edit access"), undefined);
+});

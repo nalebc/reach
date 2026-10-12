@@ -9,7 +9,7 @@ import {
   pageOpener,
   windowsApp,
 } from "../scripts/tailscale-connect.mjs";
-import { findTailscaleCli } from "../scripts/tailscale.mjs";
+import { findTailscaleCli, findMacTailscaleApp } from "../scripts/tailscale.mjs";
 
 const running = { BackendState: "Running", Self: { DNSName: "mac.t.ts.net." } };
 const missing = Object.assign(Error("spawn tailscale ENOENT"), {
@@ -279,6 +279,17 @@ test("finds the CLI inside the Mac app when it isn't on PATH", () => {
     }),
     "tailscale",
   );
+});
+
+test("finds a per-user Mac install and Homebrew installed while Reach's PATH is stale", () => {
+  const home = "/Users/new-person";
+  const app = home + "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+  const opts = { env: { HOME: home, PATH: "/usr/bin:/bin" }, platform: "darwin" };
+  for (const location of [app, "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"])
+    assert.equal(findTailscaleCli({ ...opts, exists: file => file === location }), location);
+  assert.equal(findMacTailscaleApp({ env: opts.env, exists: file => file === app }), home + "/Applications/Tailscale.app");
+  const custom = home + "/bin/tailscale";
+  assert.equal(findTailscaleCli({ ...opts, env: { ...opts.env, PATH: home + "/bin:/bin" }, exists: file => [custom, "/opt/homebrew/bin/tailscale"].includes(file) }), custom);
 });
 
 // First-run matrix T1, T2, T5, T6: what each computer is told, in its own

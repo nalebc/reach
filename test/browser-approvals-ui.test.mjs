@@ -1,5 +1,6 @@
 import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
 let dom,
@@ -1654,4 +1655,29 @@ test("session approval button sends a distinct reviewed owner decision and expla
     { decision: "approve-session", reviewedScript: true },
   ]);
   assert.equal(button(c, "Always approve this session").disabled, true);
+});
+
+// At 320 px, "Allow for this session" ran past the sheet's edge and
+// "Always approve this session" was cut off: decisions wrap, never clip.
+test("approval decisions wrap on a narrow phone instead of running off the sheet", () => {
+  const style = dom.document.createElement("style");
+  style.textContent = ["agent-ui.css", "agent-sheets.css"]
+    .map((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8"))
+    .join("\n");
+  const box = dom.document.createElement("div");
+  box.innerHTML = `
+    <div class="ag-sheet-actions"><button class="ag-secondary">Deny</button><button class="ag-primary">Allow for this session</button></div>
+    <div class="ag-review"><div class="browser-approval-actions"><button class="button secondary">Always approve this session</button><button class="button">Approve once</button></div></div>`;
+  dom.document.head.append(style);
+  dom.document.body.append(box);
+  try {
+    for (const b of box.querySelectorAll("button")) {
+      const css = dom.window.getComputedStyle(b);
+      assert.equal(css.whiteSpace, "normal", b.textContent);
+      assert.equal(css.minWidth, "0px", b.textContent);
+    }
+  } finally {
+    box.remove();
+    style.remove();
+  }
 });

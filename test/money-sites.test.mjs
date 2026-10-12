@@ -233,6 +233,13 @@ ${masks.map(([text, expected]) => `check(maskAccountNumbers(${swift(text)}, rule
 none.moneySites = ["chase.com"]
 check(moneyClickReason(${swift(overview)}, "Overview", ["Statements"], "AXLink", none) != nil, "missing words refuse")
 check(moneyTypeReason(${swift(overview)}, "Overview", "Search", secure: false, secret: false, none) != nil, "missing field words refuse")
+// Full control bypasses the entire financial-page policy.
+var full = rules; full.mode = "full"
+check(!moneySite(${swift(overview)}, full), "Full does not classify protected bank pages")
+check(moneyClickReason(${swift(overview)}, "Transfer", ["Confirm transfer"], "AXButton", full) == nil, "Full may press any bank control")
+check(moneyTypeReason(${swift(overview)}, "Transfer", "Amount", secure: false, secret: false, full) == nil, "Full may fill any bank field")
+check(moneyKeyReason(${swift(overview)}, "Transfer", "v", command: true, control: false, field: true, secure: false, labels: ["Amount"], role: "AXTextField", full) == nil, "Full may paste")
+check(maskAccountNumbers("1234567890123456", full) == "1234567890123456", "Full sees account numbers")
 print("OK")
 `;
     await fs.writeFile(path.join(directory, "main.swift"), `${policy}\n${checks}`);

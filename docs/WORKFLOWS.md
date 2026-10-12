@@ -26,7 +26,7 @@ A plan can set only the tasks: their names, what to do, agent, kind and steps. I
 ## Running
 
 Tap **Run**. Each task starts when its step comes, as a new chat in the folder named `Workflow · <task name>`:
-- **Build** tasks start the way relay and team builders do: Codex in **Approve for me** (or **Ask for approval** when that's off), Claude Code in **Accept edits**.
+- **Build** tasks start the way relay and team builders do: Codex in **Approve for me** (or **Ask for approval** when that's off), Claude Code in **Auto**.
 - **Review** tasks only read: Codex's read-only sandbox, Claude Code in Manual.
 - **OpenClaw** tasks start as a new OpenClaw chat of Reach's own, outside the folder, with OpenClaw's own tool rules (Reach has no mode to set there). The message says it isn't in the folder and that its reply stays here, never to a channel. It doesn't hold the folder, so it can run beside a build. See [OpenClaw in relays and workflows](ACROSS_AGENTS.md#openclaw-in-relays-and-workflows).
 - A task also gets what the steps before it finished with: the last replies and changed files, clipped like a relay's, inside a marked block introduced as material, not instructions.

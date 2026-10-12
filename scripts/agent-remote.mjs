@@ -997,6 +997,7 @@ export async function join(o) {
         `  Claude Code:  claude mcp add --scope user ${server} -- ${run}`,
         `  Codex:        codex mcp add ${server} -- ${run}`,
         `  Gemini CLI:   gemini mcp add -s user ${server} ${run}`,
+        "                Gemini uses it only in a folder you trust: trust the one you run it in when it asks, or list it in ~/.gemini/trustedFolders.json.",
         `  Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node ${quote(self())} config${several ? ` --computer ${name}` : ""}`,
         "",
       ].join("\n"),

@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { agentCommand } from "../app-shortcuts.mjs";
 import { createCodexDaemon } from "./codex-daemon.mjs";
-import { createCodexSessions } from "./codex.mjs";
+import { createCodexSessions, codexStartMode } from "./codex.mjs";
 import { createCodexLive } from "./codex-live.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
 import { createClaudeSessions } from "./claude.mjs";
@@ -1369,6 +1369,14 @@ export function createAgentSessions({
     },
     async start(agent, body) {
       if (host(agent) === codexLive) {
+        // Apply the same default for every caller, including API and team starts.
+        // Explicit modes and custom permission settings remain authoritative.
+        if (!body.modeName && !body.approvalPolicy && !body.sandbox && !body.approvalsReviewer && !body.config) {
+          const catalog = await codex.models?.();
+          const modeName = !catalog?.modes?.length || catalog.modes.some((m) => m.id === "guardian-approvals")
+            ? "guardian-approvals" : "auto";
+          body = { ...body, ...codexStartMode(modeName), modeName };
+        }
         const started = await codexLive.start(body);
         // Its next messages keep the mode it started in.
         if (body.modeName) chatModes.set(started.threadId, body.modeName);

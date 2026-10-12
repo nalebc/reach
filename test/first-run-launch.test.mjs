@@ -70,7 +70,33 @@ test("Funnel not allowed by the tailnet: the private link, and the phone needs t
   assert.match(text, /Reach: finish Tailscale setup: https:\/\/login\.tailscale\.com\/f\/funnel\?node=nMac/);
   const why = text.split("\n").find((line) => line.includes("isn't available"));
   assert.doesNotMatch(why, /Command failed|tailscale funnel|unix:/);
-  assert.equal(await exists(windowFile(reach.root)), false, "nothing to open");
+  assert.equal(await exists(windowFile(reach.root)), true, "startup records its bounded pairing window while Funnel is unavailable");
+});
+
+test("Funnel enabled later: an unattended start updates its link without opening pairing by itself", mac, async t => {
+  const reach = await start(t, { funnelDenied: true });
+  await reach.fake.setStatus({ funnelDenied: false });
+  const deadline = Date.now() + 8000;
+  // Recovery prints a heading, QR and instructions in separate writes. Wait
+  // for the final instruction, not an earlier stdout chunk.
+  while (!/Run \.\/reach pair: browser sign-in then opens for 15 minutes/.test(reach.output()) && Date.now() < deadline) await sleep(30);
+  assert.match(reach.output(), /browser sign-in is now available/);
+  assert.match(reach.output(), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  const status = JSON.parse(await fs.readFile(path.join(reach.root, ".reach", "host-status.json"), "utf8"));
+  assert.equal(status.link, `https://${HOST}`);
+  assert.equal(await exists(windowFile(reach.root)), false, "no automatic window on unattended recovery");
+});
+
+test("Funnel enabled after the original pairing window expires does not renew it", mac, async t => {
+  const reach = await start(t, { funnelDenied: true }, { FAKE_TTY: "1" });
+  const expired = { until: Date.now() - 1000 };
+  await fs.writeFile(windowFile(reach.root), JSON.stringify(expired));
+  await reach.fake.setStatus({ funnelDenied: false });
+  const deadline = Date.now() + 8000;
+  while (!/Run \.\/reach pair: browser sign-in then opens for 15 minutes/.test(reach.output()) && Date.now() < deadline) await sleep(30);
+  assert.match(reach.output(), /browser sign-in is now available/);
+  assert.match(reach.output(), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  assert.deepEqual(JSON.parse(await fs.readFile(windowFile(reach.root), "utf8")), expired);
 });
 
 test("port 443 used by another service: left alone, and the phone needs the Tailscale app", mac, async (t) => {

@@ -195,6 +195,10 @@
   font-size: 12.5px;
 }
 .ivt-toggle input {
+  -webkit-appearance: none;
+  padding: 0;
+  border: 0;
+  min-height: 0;
   appearance: none;
   flex: none;
   position: relative;

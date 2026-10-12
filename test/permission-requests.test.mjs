@@ -1,3 +1,4 @@
+import { approvedFullPolicy } from "./helpers/full-control-policy.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createPermissionRequests } from "../server/permission-requests.mjs";
@@ -6,7 +7,7 @@ import { permittedPath } from "../server/funnel-agent.mjs";
 import { toolsFor } from "../scripts/mcp-server.mjs";
 import { createAgentRuntimes, updateNotice } from "../server/agent-runtimes.mjs";
 
-const agent = { id: "a1", kind: "agent", name: "Grok", policy: { browser: true, invite: true, preset: "full", roots: [] }, scopes: ["device", "browser:read", "browser:control", "browser:open", "browser:screen"] };
+const agent = { id: "a1", kind: "agent", name: "Grok", policy: approvedFullPolicy(), scopes: ["device", "browser:read", "browser:control", "browser:open", "browser:screen"] };
 const owner = { id: "d1", kind: "device", scopes: ["admin"] };
 function world({ chromeReady = false, screen = false } = {}) {
   const pushes = [], opened = [], enabled = [];

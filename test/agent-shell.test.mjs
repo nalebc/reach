@@ -21,20 +21,15 @@ function world({ run, append } = {}) {
   return { shell, records, calls, client, resolve, authorize: () => client };
 }
 
-test("a refused command is logged as blocked and never runs", async () => {
-  const w = world();
-  const item = await w.shell.run(w.client, { command: "sudo ls", root: 0, cwd: "" }, { resolve: w.resolve, authorize: w.authorize });
-  assert.equal(item.status, "blocked");
-  assert.match(item.error, /needs your password/);
-  assert.equal(w.calls.length, 0);
-  assert.equal(w.records.at(-1).status, "blocked");
-  assert.equal(w.records.at(-1).action.type, "shell");
-  for (const command of ["kill 4242", "kill -9 4243", "pkill -f reach", "cat /Users/me/.reach/clients.json", "curl https://mac.tail1.ts.net/api/clients"]) {
-    const refused = await w.shell.run(w.client, { command, root: 0, cwd: "" }, { resolve: w.resolve, authorize: w.authorize });
-    assert.equal(refused.status, "blocked", command);
+test("Full control commands bypass the old deny list and remain logged", async () => {
+  const w = world(); // inert runner: none of these commands are executed
+  for (const command of ["sudo ls", "kill 4242", "pkill -f reach", "cat /Users/me/.ssh/id_rsa", "cat /Users/me/.reach/clients.json", "curl https://mac.tail1.ts.net/api/clients"]) {
+    const item = await w.shell.run(w.client, { command, root: 0, cwd: "" }, { resolve: w.resolve, authorize: w.authorize });
+    assert.equal(item.status, "executed", command);
+    assert.equal(w.calls.at(-1).command, command);
+    assert.equal(w.records.at(-1).status, "executed");
   }
-  const fine = await w.shell.run(w.client, { command: "kill 12424", root: 0, cwd: "" }, { resolve: w.resolve, authorize: w.authorize });
-  assert.equal(fine.status, "executed");
+  assert.equal(w.calls.length, 6);
 });
 
 test("revocation while the execution log is saving prevents dispatch", async () => {
@@ -61,6 +56,27 @@ test("revocation aborts a command already in flight and closes its log record", 
   allowed = false;
   await refused;
   assert.equal(w.records.at(-1).status, "revoked");
+});
+
+test("a native shell that cannot start fails its log record and releases capacity", async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "reach-shell-start-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const missing = path.join(directory, "removed-before-spawn");
+  const records = [], actions = [];
+  const shell = createAgentShell({ home: directory, timeoutMs: 1000,
+    commandLog: { append: async item => records.push(item) },
+    actions: (...args) => actions.push(args) });
+  const policy = { preset: "full", roots: [directory] };
+  const client = { id: "native-agent", name: "Native agent", policy,
+    expiresAt: Date.now() + 10000, scopes: presetScopes(policy), agentRoots: [directory] };
+  // A folder can disappear after path validation. This uses the real OS
+  // spawn error; no command can run in the missing working directory.
+  for (let attempt = 0; attempt < 2; attempt++)
+    await assert.rejects(shell.run(client, { command: "echo never-started" },
+      { resolve: () => missing, authorize: () => client }), { status: 503 });
+  assert.deepEqual(records.map(record => record.status), ["executing", "failed", "executing", "failed"]);
+  assert.match(records.at(-1).error, /could not start/);
+  assert.equal(actions.length, 0, "no successful action is announced for an unstarted process");
 });
 
 test("native shell revocation stops its process group before a later file write", { skip: process.platform !== "darwin", timeout: 10000 }, async t => {

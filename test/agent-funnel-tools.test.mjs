@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { join } from "../scripts/agent-remote.mjs";
-import { agentKey, funnelApi, funnelGateway, tailnetAddress } from "../scripts/agent-funnel.mjs";
+import { agentKey, funnelApi, funnelGateway, tailnetAddress, tailnetLookup } from "../scripts/agent-funnel.mjs";
 import { callTool, computerPlan, computerTools } from "../scripts/mcp-server.mjs";
 
 // Tools over the public link: an agent in a terminal outside the owner's
@@ -199,9 +199,53 @@ test("through the gateway, an agent trades its credential and the new one works;
   const fresh = funnelApi({ conn, credential: { origin: ORIGIN, token: traded.token }, key, gateway });
   assert.ok((await fresh("/api/browser")).roots, "the new credential works");
   assert.ok((await api("/api/browser")).roots, "the old one, for two minutes");
+  // The grace covers requests already in flight, not another exchange. A
+  // copied retired token must not replace the legitimate client's pending
+  // successor, even when the request has the original signing key.
+  const next = await fresh("/api/device/rotate", "POST", {});
+  const replay = await gateway.request(approved.json.token, "POST", "/api/device/rotate", {});
+  assert.equal(replay.status, 401, "a retired credential cannot mint a successor during grace");
+  const latest = funnelApi({ conn, credential: { origin: ORIGIN, token: next.token }, key, gateway });
+  assert.ok((await latest("/api/browser")).roots, "the legitimate pending successor was not displaced");
   // Another key can't trade this credential: with only a trading agent
   // holding the window, a stranger is shut out at the door, before the
   // gateway even sees the request.
   const stranger = funnelGateway(ORIGIN, agentKey(fs.mkdtempSync(path.join(f.root, "x-"))), { send: f.send });
   assert.equal((await stranger.request(traded.token, "POST", "/api/device/rotate", {})).status, 404);
+});
+
+test("an exchange whose answer was lost can retry until the successor is first used", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const conn = fs.mkdtempSync(path.join(f.root, "agent-"));
+  const key = agentKey(conn);
+  const gateway = funnelGateway(ORIGIN, key, { send: f.send });
+  const grant = f.invite();
+  const claim = await gateway.claim(grant.invitation);
+  f.reach.auth.decideAgentAdmission(claim.json.requestId, "approve");
+  const approved = await gateway.status(claim.json.requestId, claim.json.requestSecret);
+  const first = await gateway.request(approved.json.token, "POST", "/api/device/rotate", {});
+  assert.equal(first.status, 200);
+  const retried = await gateway.request(approved.json.token, "POST", "/api/device/rotate", {});
+  assert.equal(retried.status, 200, "unused successor never invalidates the current credential");
+  assert.equal((await gateway.request(retried.json.token, "GET", "/api/browser")).status, 200);
+});
+
+test("the private route's lookup answers Node's all-addresses form, and only with tailnet addresses", async (t) => {
+  // Node's connect asks with all: true (autoSelectFamily); a single address
+  // there fails as ERR_INVALID_IP_ADDRESS and every agent falls back to Funnel.
+  const dns = (await import("node:dns")).default;
+  const answers = { "mac.tail.test": "100.101.102.103", "mac.public.test": "203.0.113.7" };
+  t.mock.method(dns, "lookup", (hostname, options, callback) => {
+    const address = answers[hostname];
+    if (!address) return callback(Object.assign(Error("not found"), { code: "ENOTFOUND" }));
+    return options.all ? callback(null, [{ address, family: 4 }]) : callback(null, address, 4);
+  });
+  const ask = (hostname, options) => new Promise((resolve) => tailnetLookup(hostname, options, (error, ...found) => resolve({ error, found })));
+  const all = await ask("mac.tail.test", { all: true });
+  assert.ifError(all.error);
+  assert.deepEqual(all.found[0], [{ address: "100.101.102.103", family: 4 }]);
+  const one = await ask("mac.tail.test", {});
+  assert.deepEqual(one.found, ["100.101.102.103", 4]);
+  assert.equal((await ask("mac.public.test", { all: true })).error.code, "ENOTTAILNET");
+  assert.equal((await ask("mac.public.test", {})).error.code, "ENOTTAILNET");
 });

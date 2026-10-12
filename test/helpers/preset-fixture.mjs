@@ -82,7 +82,9 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     req.setTimeout(10000, () => req.destroy(Error("Fixture request timed out")));
     req.once("error", reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
-  const invite = (body, options = {}) => call("/api/agents/browser-invitations", { method: "POST", body: { name: "Muse", ttlSeconds: 600, ...body }, ...options });
+  // Positive fixtures represent a current owner form that explicitly accepts
+  // unrestricted Full control. Raw call() still tests stale/missing consent.
+  const invite = (body, options = {}) => call("/api/agents/browser-invitations", { method: "POST", body: { name: "Muse", ttlSeconds: 600, ...(body.preset === "full" ? { fullControlVersion: 1 } : {}), ...body }, ...options });
   // Agents redeem over the ordinary listener; the admission gate is passed with the helper.
   const join = async (body) => {
     const created = await invite(body);

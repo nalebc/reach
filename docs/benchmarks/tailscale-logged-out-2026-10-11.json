@@ -1,0 +1,56 @@
+{
+  "completedAt": "2026-10-11T20:25:22.323842+00:00",
+  "result": "passed",
+  "tests": 4,
+  "failed": 0,
+  "skipped": 0,
+  "environment": {
+    "image": "node:22-bookworm",
+    "node": "22.23.3",
+    "architecture": "arm64",
+    "memoryBytes": 805306368,
+    "cpus": 1,
+    "pidsLimit": 96,
+    "capabilitiesDropped": [
+      "ALL"
+    ],
+    "hostMounts": false,
+    "publishedPorts": false,
+    "daemonNetworkAttachments": {},
+    "observedResources": "15.78MiB / 768MiB 14"
+  },
+  "vendor": {
+    "version": "1.104.1",
+    "url": "https://pkgs.tailscale.com/stable/tailscale_1.104.1_arm64.tgz",
+    "sha256": "f60294374967f3dfd8cf57bbbd474d6cfce32d123e3a8ddeab82a87940daa806",
+    "vendorChecksumVerified": true,
+    "tlsVerification": true
+  },
+  "checks": [
+    "Reach production setup reports binary missing before installation",
+    "Reach production setup reports installed but daemon stopped",
+    "Root status reads actual NeedsLogin, matching client/daemon versions, no peers/IPs/AuthURL; setup requests sign-in and prepareTailscale refuses",
+    "Unprivileged uid1000 repeats the real logged-out status and refusal checks"
+  ],
+  "sourceSha256": {
+    "scripts/tailscale.mjs": "16a1cb2cd12fce9a1cae841528db04a23956f13fc36daf3768f6943cd9eb23a0",
+    "scripts/tailscale-connect.mjs": "8eb4823323941671f151cebd58433f93d6021b56afa68a7e42738167ee733755",
+    "test/real-tailscale.test.mjs": "07b916f42c92190e970d3c493af3abc0fc5dbe9cba36af9c38b11065b74563b7",
+    "test/helpers/runaway-guard.mjs": "fb22cc58b320c9aa30eb9ea255ecce30f7f60414d304b3c8af41c41dab5bf239"
+  },
+  "logs": [
+    "/tmp/reach-tailscale-real-install.log",
+    "/tmp/reach-tailscale-real-root.log",
+    "/tmp/reach-tailscale-real-unprivileged.log"
+  ],
+  "limitations": [
+    "Static vendor installation, not apt/systemd or a physical Linux desktop",
+    "Production setup/discovery functions tested via guarded npm, not full Reach CLI startup",
+    "No login, tailnet enrollment, real phone, Serve/Funnel, HTTPS certificate or cross-device connectivity tested",
+    "No host Tailscale or live Reach process used"
+  ],
+  "cleanup": {
+    "ownedContainer": "reach-tailscale-loggedout-20261011",
+    "removed": true
+  }
+}

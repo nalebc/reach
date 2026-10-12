@@ -42,7 +42,7 @@ export function toolPageOperation(request) {
     });
   try {
     const secure = (element) =>
-      element.closest?.(
+      request.fullControl !== true && element.closest?.(
         "input[type=password], [autocomplete=current-password], [autocomplete=new-password], [autocomplete=one-time-code]",
       );
     const visible = (element) => {
@@ -131,8 +131,9 @@ export function toolPageOperation(request) {
       button:
         'button, [role="button"], input[type="button"], input[type="submit"]',
       link: 'a[href], [role="link"]',
-      textbox:
-        'input:not([type=password]):not([type=file]):not([type=hidden]), textarea, [role="textbox"]',
+      textbox: request.fullControl === true
+        ? 'input:not([type=file]):not([type=hidden]), textarea, [role="textbox"]'
+        : 'input:not([type=password]):not([type=file]):not([type=hidden]), textarea, [role="textbox"]',
       heading: 'h1,h2,h3,h4,h5,h6,[role="heading"]',
       dialog: '[role="dialog"],dialog',
       row: '[role="row"],tr',

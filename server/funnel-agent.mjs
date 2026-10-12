@@ -127,7 +127,7 @@ export function permittedPath(method, value) {
         "/api/browser/shortcuts",
         "/api/browser/tools", "/api/browser/tools/protocol",
         // Reach's own list of the agent's tools (browser-access.mjs).
-        "/api/browser/mcp/tools",
+        "/api/browser/mcp/tools", "/api/browser/mcp/discover", "/api/browser/desktop/displays",
         "/api/browser/services",
         "/api/browser/files/search",
         "/api/files",
@@ -146,7 +146,7 @@ export function permittedPath(method, value) {
         "/api/browser/shortcuts/record", "/api/browser/shortcuts/save", "/api/browser/shortcuts/run",
         "/api/browser/tools/define", "/api/browser/tools/run", "/api/browser/tools/batch",
         // The request a tool call makes, planned by Reach (browser-access.mjs).
-        "/api/browser/mcp/plan",
+        "/api/browser/mcp/plan", "/api/browser/mcp/call",
         // The agent's credential traded for a new one (core.mjs).
         "/api/device/rotate",
         "/api/browser/services/request", "/api/browser/services/run",

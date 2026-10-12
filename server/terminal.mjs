@@ -1,6 +1,7 @@
-import * as pty from "node-pty";
+import { loadPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
+const pty = loadPty();
 // The last lines a shell printed, as plain text, for the Home cards. Full-screen
 // programs (Codex, vim) redraw with cursor moves, so they get no preview.
 export function terminalPreview(buffer, lines = 2) {
@@ -54,7 +55,7 @@ export class Terminals {
     const shell =
       process.platform === "win32"
         ? "powershell.exe"
-        : process.env.SHELL || "/bin/zsh";
+        : process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
     const proc = pty.spawn(
       shell,
       process.platform === "win32" ? ["-NoLogo"] : ["-l"],

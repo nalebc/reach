@@ -100,6 +100,7 @@ select {
   min-height: 45px;
 }
 input[type="checkbox"] {
+  padding: 0;
   width: 16px;
   height: 16px;
   accent-color: var(--lime);

@@ -83,7 +83,7 @@ export function createBrowserToolBridge(peer: Peer, onError: (error: unknown) =>
         throw agentRequestError(response.status, body);
       }
       return screenResult(response);
-    }, agentRequestTimeout(name === "reach_shell" ? "/api/browser/shell" : name.startsWith("reach_service_") && name !== "reach_service_request" ? "/api/browser/services/run" : name === "reach_tool_batch" ? "/api/browser/tools/batch" : name.startsWith("reach_tool_") ? "/api/browser/tools/run" : name.startsWith("reach_saved_") || name === "reach_run_shortcut" ? "/api/browser/shortcuts/run" : "", "POST")),
+    }, agentRequestTimeout(name === "reach_execute" ? "/api/browser/mcp/call" : name === "reach_shell" ? "/api/browser/shell" : name === "reach_run_mac_shortcut" ? "/api/browser/desktop/mac-shortcuts/run" : name.startsWith("reach_service_") && name !== "reach_service_request" ? "/api/browser/services/run" : name === "reach_tool_batch" ? "/api/browser/tools/batch" : name.startsWith("reach_tool_") ? "/api/browser/tools/run" : name.startsWith("reach_saved_") || name === "reach_run_shortcut" ? "/api/browser/shortcuts/run" : "", "POST")),
   });
   function dispose() {
     disposed = true;

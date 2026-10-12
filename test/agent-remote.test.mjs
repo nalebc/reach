@@ -196,6 +196,8 @@ test(
     );
     assert.match(joined.stdout, /codex mcp add reach -- node /);
     assert.match(joined.stdout, /gemini mcp add -s user reach node /);
+    // Gemini CLI skips MCP servers in a folder it doesn't trust: the next line says so.
+    assert.match(joined.stdout, /gemini mcp add[^\n]*\n\s+[^\n]*trust[^\n]*trustedFolders\.json/);
     assert.match(joined.stdout, /Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node \S+ config\n/);
     // Its MCP settings for any other client: JSON alone on stdout.
     const config = await run(["config", "--allow-local"], { env });

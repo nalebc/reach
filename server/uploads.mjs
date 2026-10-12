@@ -41,6 +41,10 @@ export function createUploads({
   };
   const drop = async (session) => {
     sessions.delete(session.id);
+    if (session.writing) {
+      session.writing.abort();
+      await session.writing.closed;
+    }
     await fsp.rm(session.file, { force: true });
   };
   const sweep = setInterval(
@@ -91,6 +95,7 @@ export function createUploads({
         sessions.set(id, {
           id,
           clientId: client.id,
+          folder: path.resolve(folder),
           root,
           path: relative,
           name,
@@ -114,6 +119,7 @@ export function createUploads({
     // Appends one chunk read from `body` (a stream) at `offset`.
     async write(id, client, offset, body) {
       const session = own(id, client);
+      if (session.completing) throw fail(409, "This upload is already being saved.");
       // A phone that changed networks mid-chunk sends it again while the
       // computer can still hold the old request, open and silent, for
       // minutes: the newer request replaces it. It starts once the old one's
@@ -136,6 +142,7 @@ export function createUploads({
         start: offset,
       });
       const writing = {
+        abort: () => body.destroy(),
         // A chunk that fully arrived is left to finish writing.
         stop: () => {
           if (!body.complete) body.destroy();
@@ -184,17 +191,19 @@ export function createUploads({
       const done = typeof id === "string" ? finished.get(id) : undefined;
       return done && done.clientId === client.id ? { name: done.name } : null;
     },
-    async complete(id, client, folder) {
+    async complete(id, client, folder, authorize = () => {}) {
       const done = this.done(id, client);
       if (done) return done;
       const session = own(id, client);
+      if (path.resolve(folder) !== session.folder)
+        throw fail(409, "The shared folder changed. Start this upload again.");
       // A second complete while the first moves the file: the same answer.
       if (session.completing) return session.completing;
       if (session.writing || session.received !== session.size)
         throw Object.assign(fail(409, "Some of the file hasn't arrived yet."), {
           offset: session.received,
         });
-      session.completing = finish(session, folder);
+      session.completing = finish(session, folder, authorize);
       try {
         return await session.completing;
       } finally {
@@ -202,16 +211,19 @@ export function createUploads({
       }
     },
     async cancel(id, client) {
-      await drop(own(id, client));
+      const session = own(id, client);
+      if (session.completing) throw fail(409, "This upload is already being saved.");
+      await drop(session);
       return { ok: true };
     },
     get(id) {
       return sessions.get(id);
     },
   };
-  async function finish(session, folder) {
+  async function finish(session, folder, authorize) {
     const target = path.join(folder, session.name);
     await fsp.truncate(session.file, session.size);
+    authorize();
     try {
       // Same disk: instant, and fails if the name is taken.
       await fsp.link(session.file, target);
@@ -223,6 +235,7 @@ export function createUploads({
         );
       if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"].includes(e.code))
         throw e;
+      authorize();
       await fsp.copyFile(
         session.file,
         target,

@@ -82,18 +82,24 @@ async function fixture(t) {
     const child = spawn(process.execPath, [cli, "mcp", "--credential", file, "--allow-local"], { stdio: ["pipe", "pipe", "pipe"] });
     children.add(child);
     let id = 0, stderr = "";
-    const pending = new Map();
+    const pending = new Map(), unnamed = [];
     child.stderr.on("data", chunk => { stderr += chunk; });
     readline.createInterface({ input: child.stdout }).on("line", line => {
-      const result = JSON.parse(line), handler = pending.get(result.id);
-      if (handler) { pending.delete(result.id); handler.resolve(result); }
+      const result = JSON.parse(line), handler = result.id === null ? unnamed.shift() : pending.get(result.id);
+      if (handler) { pending.delete(result.id); handler(result); }
     });
     child.on("error", error => { for (const value of pending.values()) value.reject(error); });
     child.on("exit", () => { children.delete(child); for (const value of pending.values()) value.reject(Error(stderr || "MCP exited")); });
     const request = (method, params) => new Promise((resolve, reject) => {
       const next = ++id, timer = setTimeout(() => { pending.delete(next); reject(Error("MCP response timed out: " + method)); }, 15000);
-      pending.set(next, { resolve: result => { clearTimeout(timer); resolve(result); }, reject: error => { clearTimeout(timer); reject(error); } });
+      pending.set(next, Object.assign(result => { clearTimeout(timer); resolve(result); }, { reject: error => { clearTimeout(timer); reject(error); } }));
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: next, method, ...(params ? { params } : {}) }) + "\n");
+    });
+    // A line that isn't one request: its answer carries id null.
+    const raw = line => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error("MCP response timed out: " + line)), 15000);
+      unnamed.push(result => { clearTimeout(timer); resolve(result); });
+      child.stdin.write(line + "\n");
     });
     const tool = async (name, args = {}) => {
       const response = await request("tools/call", { name, arguments: args });
@@ -101,7 +107,7 @@ async function fixture(t) {
       assert.notEqual(response.result.isError, true, JSON.stringify(response.result));
       return JSON.parse(response.result.content.find(part => part.type === "text").text);
     };
-    return { request, tool, file };
+    return { request, raw, tool, file };
   };
   const remoteCli = async (credential, args) => {
     const home = path.join(dir, "remote-" + credential.clientId);
@@ -329,6 +335,14 @@ test("MCP speaks the client's protocol revision and answers unoffered lists with
   for (const [method, key] of [["resources/list", "resources"], ["resources/templates/list", "resourceTemplates"], ["prompts/list", "prompts"]])
     assert.deepEqual((await agent.request(method, {})).result, { [key]: [] }, method);
   assert.equal((await agent.request("nothing/here", {})).error.code, -32601);
+  // A newer client's first try: today's answer, which it falls back on.
+  assert.equal((await agent.request("server/discover", {})).error.code, -32601);
+  // JSON-RPC's own errors for what isn't one request.
+  assert.deepEqual((await agent.raw("{bad")).error.code, -32700, "not JSON: a parse error");
+  assert.deepEqual((await agent.raw("[]")).error.code, -32600, "a batch: an invalid request");
+  assert.deepEqual((await agent.raw("[{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}]")).error.code, -32600);
+  assert.deepEqual((await agent.raw("null")).error.code, -32600);
+  assert.equal((await agent.request("ping")).result !== undefined, true, "the server keeps answering");
   const list = await agent.request("tools/list");
   for (const tool of list.result.tools) assert.equal(tool.inputSchema?.type, "object", tool.name);
 });

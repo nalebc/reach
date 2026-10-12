@@ -482,7 +482,7 @@ function AppsCard({
         <p className="ap-live">
           {access.preset === "apps"
             ? "Only these apps."
-            : "Password apps and Reach are never listed."}
+            : "Full control can open every app."}
         </p>
       </div>
       {pollError && (

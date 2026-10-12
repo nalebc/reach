@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { stateDir, packaged } from "../scripts/home.mjs";
 import { importState } from "../scripts/import-state.mjs";
 import {
@@ -230,4 +230,49 @@ test("source-built node-pty helpers work when prebuilds are absent, and missing 
     assert.equal(ensurePtyHelper({ platform: "darwin", arch: "arm64", resolve }), null);
     if (process.platform !== "win32") assert.equal(fs.statSync(helper).mode & 0o777, 0o755);
   } finally { fs.rmSync(pkg, { recursive: true, force: true }); }
+});
+
+
+test("npm's launcher rejects Node 20 before importing or starting Reach", () => {
+  const entry = new URL('../bin/reach.mjs', import.meta.url).href;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    Object.defineProperty(process.versions, 'node', { value: '20.0.0' });
+    process.argv = [process.execPath, 'reach', '--help'];
+    await import(${JSON.stringify(entry)});
+  `], { env: { ...process.env, REACH_SUPERVISED: '1' }, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Reach needs Node\.js 22 or newer/);
+  assert.doesNotMatch(result.stdout, /Start Reach/);
+});
+
+test("a blocked native terminal dependency names npm's script approval repair", async () => {
+  const { loadPty } = await import('../server/pty-helper.mjs');
+  const problem = Error('Cannot find module ../build/Release/pty.node');
+  assert.throws(() => loadPty({ load: () => { throw problem; } }), error => {
+    assert.match(error.message, /node-pty.*couldn't load/);
+    assert.match(error.message, /npm approve-scripts node-pty/);
+    assert.match(error.message, /npm rebuild node-pty/);
+    assert.match(error.message, /--allow-scripts=node-pty/);
+    assert.equal(error.cause, problem);
+    return true;
+  });
+  const pty = { spawn() {} };
+  assert.equal(loadPty({ load: () => pty }), pty);
+});
+
+
+test("server startup reports the native-binding repair before opening a listener", () => {
+  const entry = new URL('../server/index.mjs', import.meta.url).href;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import Module from 'node:module';
+    const original = Module._load;
+    Module._load = function(name, ...args) {
+      if (name === 'node-pty') throw Error('fixture native binding absent');
+      return original.call(this, name, ...args);
+    };
+    await import(${JSON.stringify(entry)});
+  `], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /node-pty couldn't load/);
+  assert.match(result.stderr, /npm approve-scripts node-pty/);
 });

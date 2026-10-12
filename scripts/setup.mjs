@@ -151,7 +151,7 @@ function makeSteps(root, deps) {
     {
       id: "link",
       title: "HTTPS link for your phone",
-      async run({ print }) {
+      async run({ print, select }) {
         const status =
           deps.status ||
           (async () =>
@@ -168,7 +168,17 @@ function makeSteps(root, deps) {
         if (byAccount)
           (deps.socketPath || (await import("../server/tailscale-auth.mjs")).serveSocketPath)(root);
         for (;;) {
-          const problem = linkProblem(await status());
+          let connection;
+          try { connection = await status(); } catch {}
+          // The account step may have finished on an earlier run. Signing
+          // out, quitting or uninstalling Tailscale while setup is paused
+          // must go through connection recovery before checking DNS/HTTPS.
+          if (connection?.BackendState !== "Running") {
+            const ensureTailscale = deps.ensureTailscale ||
+              (await import("./tailscale-connect.mjs")).ensureTailscale;
+            connection = await ensureTailscale(deps.tailscale || { select, print });
+          }
+          const problem = linkProblem(connection);
           if (!problem) return { note: "ready" };
           if (problem !== shown) {
             shown = problem;

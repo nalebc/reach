@@ -3,9 +3,9 @@ import { isIP } from "node:net";
 import { browserPrivateNames } from "./browser-private-paths.mjs";
 import { moneyRules } from "./money-sites.mjs";
 
-// What every agent preset keeps off limits, whatever the owner granted. One
-// list, used by the owner's app picker, the server's command and typing
-// checks, and (as plain data) the native per-event checker.
+// What narrower presets keep off limits. Full control deliberately bypasses
+// these filters. One list, used by the owner's app picker, typed commands for
+// Apps, and (as plain data) the native per-event checker.
 
 // Reach itself, in every form, and the ways around it.
 export const REACH_WORDS = ["reach", "tailscale", "tailnet"];
@@ -235,7 +235,7 @@ export function nativeRules({ preset, apps = [], hidden = [] }, { hosts = [], ti
     hosts: [...new Set(hosts.map(lower).filter(Boolean))],
     titles: [...new Set(["reach", ...titles.map(lower)].filter(Boolean))],
     allowedApps: preset === "apps" ? apps.map((app) => ({ id: app.id, bundleId: app.bundleId || "", identity: app.identity || "" })) : [],
-    hiddenApps: hidden.map((app) => ({ id: app.id, bundleId: app.bundleId || "", name: app.name || "" })),
+    hiddenApps: (preset === "full" ? [] : hidden).map((app) => ({ id: app.id, bundleId: app.bundleId || "", name: app.name || "" })),
     protectedAppIds: PROTECTED_APP_IDS,
     protectedAppNames: PROTECTED_APP_NAMES,
     reachWords: REACH_WORDS,

@@ -1,6 +1,6 @@
 # Release acceptance
 
-CI checks macOS, Linux and Windows with Node 22, builds the browser Tailscale client, stages the downloadable release, and smoke-tests its CLI. These checks do not establish physical-phone onboarding, WebAuthn interoperability or remote-desktop performance.
+The configured CI matrix runs the full guarded suite on Linux with Node 22 and 24 and on Apple Silicon and Intel macOS with Node 22. Windows has an explicit blocking portability suite on Node 22. Every lane builds the browser Tailscale client and clean-installs the npm and portable release artifacts; POSIX lanes also exercise the installed onboarding matrix. A separate iOS simulator lane covers pairing, authenticated files and native transfer bridges. Check results on the exact candidate commit: a configured lane is not a recorded pass. These checks do not establish physical-phone onboarding, WebAuthn interoperability or remote-desktop performance. See [release verification](RELEASE.md) for the complete gates and artifact checks.
 
 The [first-run matrix](FIRST_RUN_MATRIX.md) covers what a new person meets before this gate (computer, Tailscale state, agents installed, phone and browser) with the automated test for each case; its manual rows M1–M8 belong with this gate.
 
@@ -15,7 +15,7 @@ Run on a real iPhone with Safari and an Android phone with Chrome before calling
 5. With a terminal and screen open, switch Wi-Fi to cellular and back. Repeat after a brief airplane-mode interruption, after backgrounding the browser for one minute, and after phone lock/unlock. Record actual recovery time and any manual action. Check that reconnect does not duplicate devices or terminal input. Shells should survive a network interruption, not a host companion restart.
 6. From the owner browser, remove the passkey used by the second browser. Its existing stream and control must stop, API calls must be denied, and it must not regain access on reload. The separately locally approved owner browser should remain connected. Repeat explicit device revocation during a stream.
 7. Invite a guest to only the test folder. Check the guest cannot enter other roots, run commands, control the screen or manage devices. Revoke the guest while connected, then verify expiry with a separate short invitation.
-8. Restart the companion using the intended foreground/background workflow. Confirm the same address works and approved-device state persists. A terminated Reach PTY must be shown as ended, not as a silently hanging live terminal. Do not expect sessions to survive a host reboot or FileVault pre-boot.
+8. Check `./reach status`, then arrange a convenient interruption before using `./reach restart` (Windows: `.\reach.cmd restart`). Approve the pending restart on the phone when requested. Confirm the same address works and approved-device state persists. A terminated Reach PTY must be shown as ended, not as a silently hanging live terminal. Do not expect sessions to survive a host reboot or FileVault pre-boot.
 
 Also repeat ordinary owner access with the separate Tailscale app enabled. On a Windows host, exercise its supported pairing path separately; passing the Windows CI job is not an iPhone-to-Windows device test.
 
@@ -30,7 +30,7 @@ Record device results explicitly as passed, failed or not tested. Automated test
 The ordinary suite uses synthetic microphone and transcription adapters. On a supported macOS host, opt into the separate native speech test with:
 
 ```sh
-REACH_TEST_VOICE_NATIVE=1 node --test test/voice-messages.test.mjs
+REACH_TEST_VOICE_NATIVE=1 npm run test:file -- --test-timeout=300000 test/voice-messages.test.mjs
 ```
 
 This synthesizes disposable speech with the system voice, converts that sample and runs the local transcription helper. It does not record the microphone. The first run may download an Apple speech model, and the native case remains skipped in CI. Record its result separately from real microphone, phone permission and provider-message acceptance.

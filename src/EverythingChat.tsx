@@ -85,8 +85,8 @@ import "./chat-workspace.css";
 
 const AGENTS: AgentName[] = ["codex", "claude"];
 
-// Claude Code's --permission-mode choices for a new chat; "Default" leaves
-// Claude Code's own settings in charge.
+// Claude Code's --permission-mode choices for a new chat; its explicit
+// "Default" choice maps to Manual, including a model without Auto support.
 // A new chat starts on each app's auto mode (Oct 8): Claude's Auto, Codex's
 // "Approve for me". Claude falls back to Default on a model without Auto,
 // Codex to its app's own mode when Approve for me is switched off.
@@ -269,8 +269,7 @@ export function NewChat({
   useEffect(() => {
     if (agent === "claude" && mode === "auto" && current?.autoMode === false) setMode("default");
   }, [agent, mode, current?.id]);
-  // Permission modes for the new chat, as the agent offers them now. Claude
-  // Code starts in your settings' default unless you pick one.
+  // Permission modes for the new chat, as the agent offers them now.
   const modeChoices: AgentMode[] =
     agent === "codex"
       ? modes || CODEX_MODE_CHOICES
@@ -288,7 +287,15 @@ export function NewChat({
   const uploading = images.some((i) => !i.id && !i.error);
   // Out of usage: said above the box, and what you send still starts the
   // chat; it waits there to be continued once usage is back (Oct 10).
+  useEffect(() => {
+    if (flow && current?.unconfirmed) {
+      const first = models.find((m) => !m.unconfirmed && m.isDefault) || models.find((m) => !m.unconfirmed);
+      setModel(first?.id || null);
+      setEffort(first?.defaultEffort || null);
+    }
+  }, [flow, current?.unconfirmed, models]);
   const ready =
+    (!flow || (!modelsLoading && !!current && !current.unconfirmed)) &&
     !busy &&
     !uploading &&
     !!cwd &&
@@ -352,7 +359,9 @@ export function NewChat({
           : {}),
         ...(effort ? { effort } : {}),
         ...(speed ? { speed } : {}),
-        ...(mode !== "default" ? { mode } : {}),
+        // Omitted Claude mode means Auto on the server. Preserve an explicit
+        // Default choice (also the fallback for models without Auto support).
+        ...(agent === "claude" || mode !== "default" ? { mode } : {}),
       };
       if (flow) {
         // The planner reads only: no permission mode goes with it.
@@ -573,7 +582,7 @@ export function NewChat({
       {panel === "model" && (
         <ModelPicker
           agent={agent}
-          models={models}
+          models={flow ? models.filter((m) => !m.unconfirmed) : models}
           model={model}
           effort={effort}
           speed={speed}
@@ -737,6 +746,8 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
   const [step, setStep] = useState<"" | "confirm" | "running" | "failed">("");
   const [problem, setProblem] = useState("");
   const terminal = useRef("");
+  const starting = useRef(false);
+  const [launching, setLaunching] = useState(false);
   const word = computerWord(peer.platform);
   // Ended, or its terminal gone: checked again either way, so one that did
   // install shows as installed.
@@ -758,6 +769,9 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
     if (askNow) void ask();
   }, []);
   const run = async () => {
+    if (starting.current) return;
+    starting.current = true;
+    setLaunching(true);
     setProblem("");
     try {
       const started = await installAgent(peer, agent, true);
@@ -766,6 +780,9 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
     } catch (e) {
       setProblem((e as Error).message);
       setStep("");
+    } finally {
+      starting.current = false;
+      setLaunching(false);
     }
   };
   return (
@@ -775,8 +792,8 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false }: { pee
           <p>Reach runs {name}'s own installer on your {word}:</p>
           <pre className="chat-setup-command">{plan.command}</pre>
           <div className="chat-setup-actions">
-            <button className="primary" onClick={() => void run()}>Install</button>
-            <button onClick={() => setStep("")}>Cancel</button>
+            <button className="primary" disabled={launching} onClick={() => void run()}>Install</button>
+            <button disabled={launching} onClick={() => setStep("")}>Cancel</button>
           </div>
         </>
       ) : step === "running" ? (
@@ -1018,6 +1035,10 @@ export default function EverythingChat({
     active: workflows.filter((w) => w.state === "running" || w.state === "paused").length,
     paused: workflows.filter((w) => w.state === "paused").length,
     onOpen: () => setFlowsOpen(true),
+    // A folder's chats keep each workflow's together, a tap to it (ChatList.tsx).
+    list: workflows,
+    // Read in full by its page: the list's copy leaves out what each task says.
+    onOpenFlow: (w: Workflow) => setFlow({ id: w.id, first: null }),
   };
   const macPrompts = (shared || own).macPrompts || [];
   const notificationCounts = useAppNotifications(peer);
@@ -1447,7 +1468,7 @@ export default function EverythingChat({
           initial={flow.first}
           stamp={workflows.find((w) => w.id === flow.id)?.updatedAt}
           logos={logos}
-          agents={relayAgents(health).length ? relayAgents(health) : undefined}
+          agents={relayAgents(health)}
           onOpenChat={(chat) => {
             setFlow(null);
             openRef(chat);

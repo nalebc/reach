@@ -6,7 +6,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
-import { ALL_SCOPES, hostedConnector } from "../server/core.mjs";
+import { ALL_SCOPES, hostedConnector, openPairingWindow } from "../server/core.mjs";
 import { validatePresetInvitation } from "../server/agent-presets.mjs";
 
 // Reach as an MCP server at a URL (server/hosted-mcp.mjs): a hosted agent
@@ -88,8 +88,12 @@ async function fixture(t) {
     const verifier = crypto.randomBytes(32).toString("base64url");
     return { verifier, challenge: crypto.createHash("sha256").update(verifier).digest("base64url") };
   };
-  const register = async (connector, name = "Claude") =>
-    (await jsonPost(`/mcp/${connector}/oauth/register`, { client_name: name, redirect_uris: [CALLBACK], token_endpoint_auth_method: "none" })).json;
+  const register = async (connector, name = "Claude") => {
+    const response = await jsonPost(`/mcp/${connector}/oauth/register`, { client_name: name, redirect_uris: [CALLBACK], token_endpoint_auth_method: "none" });
+    assert.equal(response.status, 201, `Hosted registration: ${response.status} ${response.text}`);
+    assert.ok(response.json?.client_id, "hosted registration returns a client ID");
+    return response.json;
+  };
   const authorizeUrl = (connector, client, challenge, method = "S256") => `/mcp/${connector}/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: method, state: "xyz", scope: "reach", resource: `${ORIGIN}/mcp/${connector}` })}`;
   // The whole dance, as an MCP client does it: to the tokens, or to what the
   // token endpoint answered instead.
@@ -116,6 +120,24 @@ async function fixture(t) {
   const refresh = (connector, refreshToken, clientId) => form(`/mcp/${connector}/oauth/token`, { grant_type: "refresh_token", refresh_token: refreshToken, ...(clientId ? { client_id: clientId } : {}) });
   return { reach, send, jsonPost, form, invite, approve, pkce, register, authorizeUrl, connect, rpc, refresh, reused, root };
 }
+
+test("a new hosted connector registers immediately when credential writes share the same mtime", { skip: !posix, timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const file = path.join(f.reach.config.dataDir, "clients.json");
+  const stamp = new Date("2026-01-01T00:00:00Z");
+  const first = f.invite();
+  fs.utimesSync(file, stamp, stamp);
+  await f.register(first.connector); // Populate the public door's connector cache.
+  const mtime = fs.statSync(file).mtimeMs;
+  const second = f.invite();
+  fs.utimesSync(file, stamp, stamp);
+  assert.equal(fs.statSync(file).mtimeMs, mtime, "force the coarse-filesystem collision");
+  const response = await f.jsonPost(`/mcp/${second.connector}/oauth/register`, {
+    client_name: "Second connector", redirect_uris: [CALLBACK], token_endpoint_auth_method: "none",
+  });
+  assert.equal(response.status, 201, `A fresh invitation must not return ${response.status}: ${response.text}`);
+  assert.ok(response.json?.client_id);
+});
 
 test("a hosted agent at its own address discovers Reach, registers, connects with the owner's code and uses the preset's tools", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)", timeout: 30000 }, async (t) => {
   const f = await fixture(t);
@@ -178,6 +200,11 @@ test("a hosted agent at its own address discovers Reach, registers, connects wit
   assert.match(read.result.content[0].text, /the brief/, JSON.stringify(read));
   const shell = (await f.rpc(c, tokens.access_token, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "reach_shell", arguments: { command: "id" } } })).json;
   assert.equal(shell.result.isError, true, "nothing beyond the preset");
+  for (const args of [null, false, 0, "", [], "unexpected"]) {
+    const invalid = (await f.rpc(c, tokens.access_token, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "reach_access", arguments: args } })).json;
+    assert.equal(invalid.error?.code, -32602, "malformed arguments are never converted to an empty object");
+    assert.equal(invalid.result, undefined);
+  }
   const batch = (await f.rpc(c, tokens.access_token, [{ jsonrpc: "2.0", id: 6, method: "ping" }, { jsonrpc: "2.0", id: 7, method: "resources/list" }])).json;
   assert.deepEqual(batch.map((message) => message.id), [6, 7]);
   assert.deepEqual(batch[1].result, { resources: [] });
@@ -248,6 +275,96 @@ test("a refresh rotates the credential at its own address; a copy used after the
   assert.ok(ended.expiresAt <= Date.now(), "ended for good, in the list too");
 });
 
+test("a refresh token replayed inside the two-minute grace mints nothing, and the real client keeps working", { skip: !posix, timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const { connector: c } = f.invite();
+  const { tokens: a, client } = await f.connect(c);
+  const ping = (accessToken) => f.rpc(c, accessToken, { jsonrpc: "2.0", id: 1, method: "ping" });
+  const b = (await f.refresh(c, a.refresh_token, client.client_id)).json;
+  const cPair = (await f.refresh(c, b.refresh_token, client.client_id)).json;
+  assert.ok(cPair.refresh_token, JSON.stringify(cPair));
+  // A copy of the first refresh token, within its grace: no new pair.
+  const replay = (await f.refresh(c, a.refresh_token, client.client_id)).json;
+  assert.equal(replay.error, "invalid_grant", JSON.stringify(replay));
+  assert.equal(replay.access_token, undefined);
+  // The real client's latest pair still trades and works.
+  const next = (await f.refresh(c, cPair.refresh_token, client.client_id)).json;
+  assert.ok(next.refresh_token, JSON.stringify(next));
+  assert.equal((await ping(next.access_token)).status, 200);
+});
+
+test("a confidential client's refresh needs its secret, with or without its client_id", { skip: !posix, timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const { connector: c } = f.invite();
+  const registered = await f.jsonPost(`/mcp/${c}/oauth/register`, { client_name: "ChatGPT", redirect_uris: [CALLBACK], token_endpoint_auth_method: "client_secret_post" });
+  assert.equal(registered.status, 201, registered.text);
+  const client = registered.json;
+  assert.ok(client.client_secret);
+  const { verifier, challenge } = f.pkce();
+  const page = await f.send({ path: f.authorizeUrl(c, client, challenge) });
+  const statusPath = new RegExp(`/mcp/${c}/oauth/authorize/[A-Za-z0-9_-]+/status`).exec(page.text)[0];
+  f.approve();
+  const code = new URL((await f.send({ path: statusPath })).json.redirect).searchParams.get("code");
+  const tokens = (await f.form(`/mcp/${c}/oauth/token`, { grant_type: "authorization_code", code, redirect_uri: CALLBACK, client_id: client.client_id, client_secret: client.client_secret, code_verifier: verifier })).json;
+  assert.ok(tokens.refresh_token, JSON.stringify(tokens));
+  for (const params of [{}, { client_id: client.client_id }, { client_id: client.client_id, client_secret: "wrong" }, { client_secret: "wrong" }]) {
+    const refused = await f.form(`/mcp/${c}/oauth/token`, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, ...params });
+    assert.equal(refused.status, 401, `${JSON.stringify(Object.keys(params))}: ${refused.text}`);
+    assert.equal(refused.json.error, "invalid_client");
+  }
+  const refreshed = await f.form(`/mcp/${c}/oauth/token`, { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_secret: client.client_secret });
+  assert.equal(refreshed.status, 200, refreshed.text);
+  const again = await f.form(`/mcp/${c}/oauth/token`, { grant_type: "refresh_token", refresh_token: refreshed.json.refresh_token, client_id: client.client_id, client_secret: client.client_secret });
+  assert.equal(again.status, 200, again.text);
+});
+
+test("while the public window is open, an address Reach never gave out still gets 404, and one address's registrations can't fill another's", { skip: !posix, timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  openPairingWindow(f.reach.config.dataDir);
+  assert.equal(f.reach.funnelWindow().open, true, "the window lets strangers to the start page");
+  const nobody = strangerId();
+  for (const route of [`/mcp/${nobody}`, `/mcp/${nobody}/oauth/register`, `/mcp/${nobody}/oauth/token`])
+    assert.equal((await f.jsonPost(route, { jsonrpc: "2.0", id: 1, method: "ping", redirect_uris: [CALLBACK] })).status, 404, route);
+  for (const route of [`/.well-known/oauth-protected-resource/mcp/${nobody}`, `/.well-known/oauth-authorization-server/mcp/${nobody}`, `/mcp/${nobody}/oauth/authorize?client_id=x`])
+    assert.equal((await f.send({ path: route })).status, 404, route);
+  // A flood of registrations at one invited address stops at its own cap.
+  const { connector: first } = f.invite();
+  const statuses = [];
+  for (let i = 0; i < 20; i++)
+    statuses.push((await f.jsonPost(`/mcp/${first}/oauth/register`, { client_name: `Flood ${i}`, redirect_uris: [CALLBACK] })).status);
+  assert.deepEqual(statuses, [...Array(16).fill(201), ...Array(4).fill(429)], "one address registers 16 clients at most");
+  const { connector: second } = f.invite({ name: "Grok" });
+  await f.register(second, "Grok");
+});
+
+test("an unsupported MCP-Protocol-Version is refused after initialize; version negotiation still answers as before", { skip: !posix, timeout: 30000 }, async (t) => {
+  const f = await fixture(t);
+  const { connector: c } = f.invite();
+  const { tokens } = await f.connect(c);
+  const call = (message, version) => f.jsonPost(`/mcp/${c}`, message, { headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: "application/json, text/event-stream", ...(version ? { "MCP-Protocol-Version": version } : {}) } });
+  const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
+  const refused = await call(ping, "1999-01-01");
+  assert.equal(refused.status, 400, refused.text);
+  assert.equal(refused.json?.jsonrpc, undefined, "a plain HTTP error, not a JSON-RPC answer");
+  assert.match(refused.json.error, /2025-06-18/, "it names the versions Reach speaks");
+  assert.equal((await call([ping], "1999-01-01")).status, 400, "batches too");
+  assert.equal((await call(ping, "2025-06-18")).status, 200);
+  assert.equal((await call(ping, "2025-03-26")).status, 200);
+  assert.equal((await call(ping)).status, 200, "no header: 2025-03-26, as the spec says");
+  // A newer client's first tries, as Claude Code 2.1.296 makes them: it
+  // falls back on today's answers, so they don't change.
+  const discover = await call({ jsonrpc: "2.0", id: 2, method: "server/discover", params: {} }, "2026-07-28");
+  assert.equal(discover.status, 200, discover.text);
+  assert.equal(discover.json.error.code, -32601);
+  const init = await call({ jsonrpc: "2.0", id: 3, method: "initialize", params: { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "c", version: "1" } } }, "2026-07-28");
+  assert.equal(init.status, 200, init.text);
+  assert.equal(init.json.result.protocolVersion, "2025-06-18");
+  // Then, as task 4 logged it: initialize without a header, the rest at 2025-06-18.
+  assert.equal((await call({ jsonrpc: "2.0", id: 4, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "c", version: "1" } } })).json.result.protocolVersion, "2025-06-18");
+  assert.equal((await call({ jsonrpc: "2.0", method: "notifications/initialized" }, "2025-06-18")).status, 202);
+  assert.equal((await call({ jsonrpc: "2.0", method: "notifications/initialized" }, "2026-07-28")).status, 400, "after initialize, an unsupported version is refused");
+});
+
 test("declined goes back as access_denied; PKCE must match and a code is spent by its first use; a client stays at the address it registered at; a hosted invitation is no page link", { skip: !posix, timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   const { connector: c } = f.invite();
@@ -291,10 +408,10 @@ test("declined goes back as access_denied; PKCE must match and a code is spent b
 });
 
 test("a hosted invitation is a public-link invitation", () => {
-  assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", ttlSeconds: 3600, transport: "tailnet", hosted: true }), /public link/);
-  assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", ttlSeconds: 3600, transport: "funnel", hosted: "yes" }), /public link/);
-  assert.equal(validatePresetInvitation({ name: "Claude", preset: "full", ttlSeconds: 3600, transport: "funnel", hosted: true }).hosted, true);
-  assert.equal(validatePresetInvitation({ name: "Claude", preset: "full", ttlSeconds: 3600, transport: "funnel" }).hosted, undefined);
+  assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "tailnet", hosted: true }), /public link/);
+  assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "funnel", hosted: "yes" }), /public link/);
+  assert.equal(validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "funnel", hosted: true }).hosted, true);
+  assert.equal(validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "funnel" }).hosted, undefined);
 });
 
 test("the invitation route hands the owner the invitation's own connector address, never the invitation itself", { skip: process.platform !== "darwin", timeout: 20000 }, async (t) => {

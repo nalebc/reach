@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { createAgentClient } from "../scripts/agent-client.mjs";
 import { tailnetApi } from "../scripts/agent-remote.mjs";
 import { serveMcp } from "../scripts/mcp-server.mjs";
-import { agentErrorDetails } from "../server/agent-transport.mjs";
+import { agentErrorDetails, agentRequestTimeout } from "../server/agent-transport.mjs";
 
 const busy = {
   error: "Agent A is using the Mac.",
@@ -13,6 +13,13 @@ const busy = {
   holder: "Agent A",
   retryInMs: 1200,
 };
+test("one-call dispatch has room for long tools only on its exact route and runtime fingerprint", () => {
+  for (const route of ["/api/browser/mcp/call", "/api/browser/mcp/call?runtime=" + "a".repeat(64)])
+    assert.equal(agentRequestTimeout(route, "POST"), 70000);
+  for (const route of ["/api/browser/mcp/callback", "/api/browser/mcp/call?runtime=wrong", "/api/browser/mcp/call?other=1"])
+    assert.equal(agentRequestTimeout(route, "POST"), 35000);
+  assert.equal(agentRequestTimeout("/api/browser/mcp/call"), 35000);
+});
 const expected = { ...busy, status: 409 };
 const head = (status, body) => {
   let sent = false;
@@ -73,14 +80,15 @@ function deadlines(t) {
   };
 }
 
-test("a Full-control shell result survives the ordinary request deadline, on direct HTTP and the tailnet adapter", async (t) => {
+for (const route of ["/api/browser/shell", "/api/browser/desktop/mac-shortcuts/run"]) test(`${route} survives the ordinary request deadline, on direct HTTP and the tailnet adapter`, async (t) => {
   const clock = deadlines(t);
+  const input = route.endsWith("/shell") ? { command: "fixture", root: 0 } : { name: "Fixture" };
   const api = await local(t, (req, res) => {
     clock.passOldLimit();
     json(res, 200, { status: "executed", output: "fixture completed" });
   });
   assert.equal(
-    (await api("/api/browser/shell", "POST", { command: "fixture", root: 0 }))
+    (await api(route, "POST", input))
       .output,
     "fixture completed",
   );
@@ -104,10 +112,7 @@ test("a Full-control shell result survives the ordinary request deadline, on dir
     "https://fixture.tailnet.ts.net",
     "fixture",
   );
-  const pending = throughNode("/api/browser/shell", "POST", {
-    command: "fixture",
-    root: 0,
-  });
+  const pending = throughNode(route, "POST", input);
   clock.passOldLimit();
   finish(head(200, { status: "executed", output: "tailnet completed" }));
   assert.equal((await pending).output, "tailnet completed");

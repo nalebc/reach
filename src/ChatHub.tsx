@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, SquarePen, X } from "lucide-react";
+import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
 import { mergeHealth } from "./usage";
-import { ChatLibraryHeader, ago, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
+import { BrandCourier } from "./ReachIdentity";
+import { ChatLibraryHeader, FlowRuns, ago, chatRank, firstFew, flowFinder, foldedAway, inFlowTitle, inFlows, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
 import { quietRelay, relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
 import {
@@ -39,6 +40,7 @@ type Hit = { agent: string; id: string; role: string; at: number; snippet: strin
 // A chat's project: a Claude app worktree belongs to its project's folder.
 export { projectOf } from "./agent-sessions";
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
+const priority = (s: AgentSession) => (needsYou(s) ? 2 : s.status === "running" ? 1 : 0);
 // The chats that changed one file, each name once: two chats with the same
 // name (a chat and the one split off from it, say) are "two Claude Code chats
 // named …", never one name twice.
@@ -297,11 +299,12 @@ export default function ChatHub({
         group.list.push(s);
         map.set(key, group);
       }
-    const rank = (s: AgentSession) => (needsYou(s) ? 2 : s.status === "running" ? 1 : 0);
     return [...map.entries()]
-      .map(([key, group]) => ({ ...group, key, list: group.list.sort((a, b) => rank(b) - rank(a) || b.updatedAt - a.updatedAt) }))
+      .map(([key, group]) => ({ ...group, key, list: group.list.sort((a, b) => priority(b) - priority(a) || b.updatedAt - a.updatedAt) }))
       .sort((a, b) => Math.max(...b.list.map((s) => s.updatedAt)) - Math.max(...a.list.map((s) => s.updatedAt)));
   }, [chatLists]);
+  // This computer's workflows: each one's chats together (FlowRuns).
+  const flowsOf = useMemo(() => flowFinder(workflows?.list), [workflows?.list]);
   const changedBy = new Map(
     fleet.flatMap((computer) => {
       const chats = activityOf(computer)?.chats;
@@ -426,6 +429,9 @@ export default function ChatHub({
             const overlaps = activityOf(computer)?.overlaps;
             const warn = (Array.isArray(overlaps) ? overlaps : []).filter((o) => root && o.file.replace(/\\/g, "/").startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/"));
             const agents = [...new Set(list.map((s) => s.agent))];
+            const flowOf = (s: AgentSession) => (computer.id === peer.id ? flowsOf(s) : undefined);
+            const rows = inFlows(list, flowOf);
+            const few = firstFew(rows, flowOf, chatRank);
             return (
               <section
                 className="chat-group chat-project-group hub-project"
@@ -459,7 +465,7 @@ export default function ChatHub({
                   </details>
                 )}
                 <div className="chat-entries">
-                  {(open ? list : list.slice(0, 4)).map((s) => {
+                  <FlowRuns list={open ? rows : rows.slice(0, few)} flowOf={flowOf} rank={chatRank} onOpenFlow={workflows?.onOpenFlow} row={(s) => {
                     const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
                     return (
                       <button
@@ -472,7 +478,7 @@ export default function ChatHub({
                           <AgentLogo agent={s.agent} logos={logos} size={18} />
                         </span>
                         <span className="chat-entry-copy">
-                          <strong>{plainLine(s.title || "") || "New chat"}</strong>
+                          <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
                           <span className={`chat-card-preview ${files.length ? "hub-changed" : ""}`}>
                             {files.length
                               ? `Changed ${files
@@ -496,11 +502,11 @@ export default function ChatHub({
                         </span>
                       </button>
                     );
-                  })}
+                  }} />
                 </div>
-                {list.length > 4 && (
+                {list.length > few && (
                   <button className="chat-list-more" aria-expanded={open} onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}>
-                    {open ? "Show fewer" : `Show all ${list.length}`}
+                    {open ? "Show fewer" : `Show all ${list.length - foldedAway(rows, flowOf, chatRank)}`}
                   </button>
                 )}
               </section>
@@ -510,7 +516,7 @@ export default function ChatHub({
         </section>
       )}
       {onNew && <button className="chat-quick-new" aria-label="New chat" onClick={() => onNew()}>
-        <SquarePen size={21} />
+        <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
         <span className="chat-quick-label">New chat</span>
       </button>}
     </div>

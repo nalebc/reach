@@ -72,6 +72,7 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw error();
   const canonical = value => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
   const selected = canonical(root);
+  if (policy?.browser === true && policy.preset === 'full') return selected;
   const within = (value, parent) => value === parent || value.startsWith(parent + path.sep);
   const protectedRoots = ['/Applications', path.join(home, 'Applications'), '/Library', '/System', '/usr', '/bin', '/sbin', '/opt', '/private/etc', '/etc', path.dirname(runtime)]
     .flatMap(value => [path.resolve(value), canonical(value)]);

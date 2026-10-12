@@ -106,7 +106,9 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
   const reach = await startCleanReach(t, {
     args: { local: false, stayAwake: false },
     preloads: [AS_WINDOWS],
-    // Ready at its pairing code; pairing itself is the launcher test's.
+    // The guidance is printed after the pairing code in a separate stdout
+    // write. Wait for the line we assert, not an earlier output chunk.
+    ready: /Private Tailscale link · Connect Tailscale on your phone first/,
     pair: false,
     prepare: async (root) => {
       fake = await fakeTailscale(root);
@@ -122,4 +124,36 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
   assert.match(route, /^http:\/\/127\.0\.0\.1:\d+$/, "its local address, not a socket");
   assert.ok(!state.calls.some(([command]) => command === "funnel"), "no public link on Windows");
   assert.ok(!state.calls.some((args) => args.some((a) => String(a).startsWith("unix:"))));
+});
+
+
+test("Windows: an occupied launcher lock names restart without starting anything", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-lock-windows-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const state = path.join(home, "state");
+  fs.mkdirSync(state);
+  const lock = path.join(state, "launcher.lock");
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+  const result = await new Promise(resolve => execFile(process.execPath,
+    ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "--local"],
+    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "" }, timeout: 10000 },
+    (error, stdout, stderr) => resolve({ error, text: stdout + stderr })));
+  assert.equal(result.error?.code, 1);
+  assert.match(result.text, /already starting or running/);
+  assert.ok(result.text.includes(".\\reach.cmd restart"), result.text);
+  assert.equal(JSON.parse(fs.readFileSync(lock)).pid, process.pid);
+});
+
+test("Windows: service guidance uses the active command, and related hints have no hard-coded launcher", async () => {
+  const result = await new Promise((resolve, reject) => execFile(process.execPath,
+    ["--import", AS_WINDOWS, "--input-type=module", "-e", `
+      import { privateNodePath } from './scripts/background-service.mjs';
+      try { privateNodePath('/missing-reach-fixture'); } catch (error) { console.log(error.message); }
+    `], { env: { ...process.env, REACH_COMMAND: "" }, timeout: 10000 },
+    (error, stdout) => error ? reject(error) : resolve(stdout)));
+  assert.ok(result.includes(".\\reach.cmd install"), result);
+  for (const name of ["invites", "stop", "background-service", "link"]) {
+    const source = fs.readFileSync(`scripts/${name}.mjs`, "utf8").split("\n").filter(line => !line.trimStart().startsWith("//")).join("\n");
+    assert.doesNotMatch(source, /\.\/reach(?: |\.)|["` ]reach (?:link|setup|restart)/, name);
+  }
 });

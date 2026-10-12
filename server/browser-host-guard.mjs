@@ -9,7 +9,7 @@ export const browserHostGuardMessage =
 // What a person kept out by the guard reads (opening their invitation, or
 // with access already): someone else has the Mac, and when they can come in.
 export const personGuardMessage =
-  "Someone else is controlling this Mac right now: an agent with full control. You can come in once the owner ends or pauses it.";
+  "An agent has app access on this Mac. You can come in once the owner ends that access. Pausing the agent keeps this protection in place.";
 
 const nativeSystems = new Set(["ios", "android", "darwin", "macos", "windows", "linux", "freebsd", "openbsd"]);
 const expires = (client) => client?.expiresAt || Date.parse(client?.createdAt) + 30 * 86400000;

@@ -145,7 +145,9 @@ test("native rules carry the whole protected list and the preset's app set", () 
   assert.ok(rules.protectedPagePatterns.every((pattern) => typeof pattern === "string"));
   assert.equal(nativeRules({ preset: "full" }).mode, "full");
   assert.equal(nativeRules({ preset: "readonly" }).mode, "view");
-  assert.deepEqual(nativeRules({ preset: "full", hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] }).hiddenApps, [{ id: "/System/Applications/Messages.app", bundleId: "", name: "Messages" }]);
+  const hidden = [{ id: "/System/Applications/Messages.app", name: "Messages" }];
+  assert.deepEqual(nativeRules({ preset: "full", hidden }).hiddenApps, []);
+  assert.deepEqual(nativeRules({ preset: "readonly", hidden }).hiddenApps, [{ id: hidden[0].id, bundleId: "", name: "Messages" }]);
 });
 
 

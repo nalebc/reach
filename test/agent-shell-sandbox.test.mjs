@@ -8,10 +8,8 @@ import { createAgentShell, shellSandboxProfile } from "../server/agent-shell.mjs
 import { agentShellSandbox } from "../server/browser-private-paths.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
-// Full control commands run in a macOS sandbox (security audit, Oct 9): the
-// deny list only reads a command's text, so Reach's socket, port, data and
-// code, your browsers' data and what runs later outside the sandbox are kept
-// out at the operating-system level, however a command spells them.
+// Full control runs as the OS user. Restricted script jobs still use the
+// shared sandbox profile. All private data and listeners below are fixtures.
 
 test("the sandbox profile denies exactly what it's given, quoted", () => {
   const profile = shellSandboxProfile({ readDeny: ['/a "b"\\c'], writeDeny: ["/w"], socketDeny: ["/s"], ports: [4317] });
@@ -47,7 +45,9 @@ test("what an agent's commands can't reach", () => {
   assert.ok(!rules.readDeny.includes("/Users/me/Documents"));
 });
 
-test("without the sandbox, every command is refused", async () => {
+// Full control invitations require the macOS desktop helper. Exercise its
+// native zsh runner only on that supported platform.
+test("Full control does not require sandbox-exec", { skip: process.platform !== "darwin" }, async () => {
   const records = [], root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "reach-nosbx-")));
   const marker = path.join(root, "ran");
   const shell = createAgentShell({ commandLog: { append: async (record) => records.push(record), history: async () => records },
@@ -55,14 +55,14 @@ test("without the sandbox, every command is refused", async () => {
   const policy = { invite: true, browser: true, preset: "full", roots: [root] };
   const client = { id: "agent", kind: "agent", name: "Agent", expiresAt: Date.now() + 60000, policy, scopes: presetScopes(policy), agentRoots: [root] };
   try {
-    await assert.rejects(shell.run(client, { command: `touch ${JSON.stringify(marker)}`, root: 0, cwd: "" },
-      { resolve: () => root, authorize: () => client }), (error) => error.status === 503 && /can't sandbox/.test(error.message));
-    await assert.rejects(fs.access(marker));
-    assert.equal(records.at(-1).status, "failed");
+    await shell.run(client, { command: `touch ${JSON.stringify(marker)}`, root: 0, cwd: "" },
+      { resolve: () => root, authorize: () => client });
+    await fs.access(marker);
+    assert.equal(records.at(-1).status, "executed");
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("a sandboxed command can't reach Reach's socket, port, data or code; ordinary work still runs",
+test("Full control reaches fixture sockets, private data and code as the OS user",
   { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "reach-sbx-")));
     const sockets = await fs.realpath(await fs.mkdtemp("/tmp/reach-sbx-sock-"));
@@ -102,15 +102,15 @@ test("a sandboxed command can't reach Reach's socket, port, data or code; ordina
     };
     try {
       const S = JSON.stringify(socketPath), D = JSON.stringify(dataDir);
-      assert.doesNotMatch(await run(`curl -s --max-time 3 --unix-socket ${S} http://x/; echo " exit=$?"`), /reach-answered/);
-      assert.doesNotMatch(await run(`curl -s --max-time 3 http://127.0.0.1:${port}/; echo " exit=$?"`), /reach-answered/);
-      assert.doesNotMatch(await run(`curl -s --max-time 3 http://localhost:${port}/; echo " exit=$?"`), /reach-answered/);
-      assert.doesNotMatch(await run(`node -e 'require("http").get({socketPath:process.argv[1],path:"/"},r=>r.pipe(process.stdout)).on("error",e=>console.log(e.code))' ${S}`), /reach-answered/);
-      assert.doesNotMatch(await run(`cat ${D}/clients.json 2>&1`), /owner-secret/);
-      assert.doesNotMatch(await run(`cat ${JSON.stringify(path.join(home, "Library", "Application Support", "Google", "Chrome", "Cookies"))} 2>&1`), /browser-secret/);
+      assert.match(await run(`curl -s --max-time 3 --unix-socket ${S} http://x/; echo " exit=$?"`), /reach-answered/);
+      assert.match(await run(`curl -s --max-time 3 http://127.0.0.1:${port}/; echo " exit=$?"`), /reach-answered/);
+      assert.match(await run(`curl -s --max-time 3 http://localhost:${port}/; echo " exit=$?"`), /reach-answered/);
+      assert.match(await run(`node -e 'require("http").get({socketPath:process.argv[1],path:"/"},r=>r.pipe(process.stdout)).on("error",e=>console.log(e.code))' ${S}`), /reach-answered/);
+      assert.match(await run(`cat ${D}/clients.json 2>&1`), /owner-secret/);
+      assert.match(await run(`cat ${JSON.stringify(path.join(home, "Library", "Application Support", "Google", "Chrome", "Cookies"))} 2>&1`), /browser-secret/);
       await run(`echo planted >> ${JSON.stringify(path.join(home, ".zshrc"))} 2>&1; touch ${JSON.stringify(path.join(appRoot, "server.mjs"))} 2>&1`);
-      assert.equal(await fs.readFile(path.join(home, ".zshrc"), "utf8"), "# owner's\n");
-      await assert.rejects(fs.access(path.join(appRoot, "server.mjs")));
+      assert.equal(await fs.readFile(path.join(home, ".zshrc"), "utf8"), "# owner's\nplanted\n");
+      await fs.access(path.join(appRoot, "server.mjs"));
       // Ordinary work: its folder, the network, tools.
       assert.match(await run("echo hello > out.txt && cat out.txt && node -e 'console.log(6*7)'"), /hello\n42/);
       assert.equal(await fs.readFile(path.join(work, "out.txt"), "utf8"), "hello\n");

@@ -53,6 +53,50 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
     phone: (value) => { phone = value; }, pause: (value) => { pausedNow = value; }, tick: (ms) => { clock += ms; } };
 }
 const authorize = (client) => () => client;
+test("Full control ignores hidden apps and content filters while protecting typed credentials in logs", async t => {
+  const w = world();
+  t.after(() => w.desktop.close());
+  const client = w.make("trusted", "full", { hidden: [chrome] }), auth = authorize(client);
+  w.setFront({ title: "GitHub - nalebc/reach", path: chrome.id });
+  assert.equal((await w.desktop.front(client, auth)).title, "GitHub - nalebc/reach");
+  await w.desktop.openUrl(client, "https://mac.tail1.ts.net/", chrome.id, auth);
+  await w.desktop.act(client, { type: "type", text: "chrome://password-manager/passwords" }, auth);
+  w.setFront({ terminalLike: true, app: "Terminal" });
+  await w.desktop.act(client, { type: "type", text: "sudo echo fixture" }, auth);
+  w.setFront({ terminalLike: false, secure: true });
+  await w.desktop.act(client, { type: "type", text: "fixture-password", paste: true }, auth);
+  const last = w.helpers[0].requests.filter(r => r.op === "act").at(-1).action;
+  assert.equal(last.secret, true);
+  assert.equal(last.paste, undefined);
+  assert.doesNotMatch(JSON.stringify(w.activity), /fixture-password/);
+  assert.deepEqual(w.helpers[0].rules.hiddenApps, []);
+  w.pause(true);
+  await rejects(() => w.desktop.act(client, { type: "key", key: "enter" }, auth), 409, /paused/);
+});
+test("display-specific captures coalesce only for the same display and input keeps its display", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const w = world({ onSpawn(helper) {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => {
+      if (request.op === "shot") { entered(); await gate; }
+      return send(request, beforeSend);
+    };
+  } });
+  t.after(() => { release(); w.desktop.close(); });
+  const client = w.make("displays", "full"), auth = authorize(client);
+  const first = w.desktop.screenshot(client, auth, { displayId: 2 });
+  await started;
+  const second = w.desktop.screenshot(client, auth, { displayId: 3 });
+  const shared = w.desktop.screenshot(client, auth, { displayId: 3 });
+  release(); await Promise.all([first, second, shared]);
+  assert.deepEqual(w.helpers[0].requests.filter(r => r.op === "shot").map(r => r.displayId), [2, 3]);
+  await w.desktop.elements(client, auth, { displayId: 3 });
+  assert.equal(w.helpers[0].requests.at(-1).displayId, 3);
+  await w.desktop.act(client, { type: "click", x: .2, y: .5, displayId: 3 }, auth);
+  assert.equal(w.helpers[0].requests.at(-1).action.displayId, 3);
+});
 const rejects = async (work, status, pattern, kind) => {
   await assert.rejects(work, (error) => { assert.equal(error.status, status, error.message); if (pattern) assert.match(error.message, pattern); if (kind) assert.equal(error.kind, kind); return true; });
 };
@@ -156,7 +200,7 @@ test("a helper per session, started with the preset's rules; a changed policy re
   assert.equal(shot.jpeg[0], 0xff); assert.equal(shot.hidden, 2); assert.equal(shot.width, 100);
   assert.equal(w.helpers.length, 1);
   assert.equal(w.helpers[0].rules.mode, "full");
-  assert.deepEqual(w.helpers[0].rules.hiddenApps, [{ id: "/System/Applications/Messages.app", bundleId: "", name: "Messages" }]);
+  assert.deepEqual(w.helpers[0].rules.hiddenApps, []);
   assert.deepEqual(w.helpers[0].rules.hosts, ["mac.tail1.ts.net"]);
   assert.ok(w.helpers[0].rules.protectedAppIds.includes("com.apple.keychainaccess"));
   await w.desktop.screenshot(full, authorize(full));
@@ -190,7 +234,7 @@ test("screenshots are rate limited and need the live scope", async () => {
 
 test("typing asks what is in front first: terminals take the deny list, password fields take nothing", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   const typed = await w.desktop.act(full, { type: "type", text: "hello" }, authorize(full));
   assert.deepEqual(typed, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" });
   const sent = w.helpers[0].requests.filter((request) => request.op === "act");
@@ -216,7 +260,7 @@ test("typing asks what is in front first: terminals take the deny list, password
 // like typing; a form's vault values never go to a terminal.
 test("press and fill: named controls and a form's fields, checked like a click and typing", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   await w.desktop.act(full, { type: "press", name: "  Add to cart ", role: "Button" }, authorize(full));
   assert.deepEqual(w.helpers.at(-1).requests.filter((r) => r.op === "act").at(-1).action, { type: "press", name: "Add to cart", role: "Button" });
   for (const bad of [{ type: "press" }, { type: "press", name: "" }, { type: "press", name: "x", role: "not a role" }, { type: "press", name: "x", x: 0.5 },
@@ -253,7 +297,7 @@ test("the screen as text lists a form's fields, for one fill", () => {
 // Security audit L6: an app the owner hid is never named to the agent.
 test("an app the owner hid is in front: the agent hears only that", async () => {
   const w = world();
-  const full = w.make("muse", "full", { hidden: [{ id: "/Applications/Signal.app", name: "Signal" }] });
+  const full = w.make("muse", "readonly", { hidden: [{ id: "/Applications/Signal.app", name: "Signal" }] });
   w.setFront({ app: "Signal", bundle: "org.whispersystems.signal-desktop", title: "Chats", path: "/Applications/Signal.app", blocked: "" });
   const front = await w.desktop.front(full, authorize(full));
   assert.deepEqual([front.app, front.bundle, front.title, front.path, front.layout], ["", "", "", "", ""]);
@@ -273,7 +317,7 @@ test("numbered elements need control, come back clean, and a label click goes to
   const found = await w.desktop.elements(full, authorize(full));
   assert.equal(found.snapshot, "ab12cd34");
   assert.deepEqual(found.items.map((item) => item.n), [1, 2], "malformed entries are dropped");
-  assert.equal(found.items[1].name.length, 60);
+  assert.equal(found.items[1].name.length, 90);
   assert.deepEqual([found.items[1].x, found.items[1].y], [1, 0], "positions stay on the screen");
   await w.desktop.act(full, { type: "element", snapshot: "ab12cd34", n: 1 }, authorize(full));
   assert.deepEqual(w.helpers.at(-1).requests.find((request) => request.op === "act").action, { type: "element", snapshot: "ab12cd34", n: 1 });
@@ -283,7 +327,7 @@ test("numbered elements need control, come back clean, and a label click goes to
 
 test("websites open in the owner's browser; Reach's own pages and non-web addresses never reach the Mac", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   const opened = await w.desktop.openUrl(full, "https://www.ubereats.com/", undefined, authorize(full));
   assert.deepEqual(opened, { ok: true, app: "Google Chrome", bundle: "com.google.Chrome" });
   for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "chrome://password-manager/passwords", "https://x.test/\nmore", "not a url"])
@@ -308,7 +352,7 @@ test("requests arriving during a capture share it instead of queueing more", asy
 
 test("vault values reach sign-in fields hidden, never a terminal, and plain text never a password field", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   w.setFront({ app: "Google Chrome", bundle: "com.google.Chrome", terminalLike: false, secure: true });
   await rejects(() => w.desktop.act(full, { type: "type", text: "hunter2" }, authorize(full)), 403, /Password box/, "blocked");
   const done = await w.desktop.act(full, { type: "type", text: "hunter2", secret: true }, authorize(full));
@@ -712,7 +756,7 @@ test("menu and paste actions are exact shapes", () => {
 
 test("windows, focus, menus, find, read and open-file go through the helper under the preset's rules", async () => {
   const w = world();
-  const full = w.make("muse", "full", { hidden: [{ id: "/Applications/Messages.app", name: "Messages", bundleId: "com.apple.MobileSMS" }] });
+  const full = w.make("muse", "apps", { hidden: [{ id: "/Applications/Messages.app", name: "Messages", bundleId: "com.apple.MobileSMS" }] });
   const extra = {
     windows: { ok: true, windows: [
       { id: "42:0", app: "Google Chrome", bundle: "com.google.Chrome", title: "Inbox", minimized: false, front: true, url: "https://mail.google.com/", tabs: [{ title: "Inbox", selected: true }, { title: "Amazon", selected: false }, { junk: 1 }] },
@@ -800,7 +844,7 @@ test("the front answer carries a browser's page and tabs", async () => {
 test("every action the Mac does or refuses is logged for the owner, in words", async () => {
   const logged = [];
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   // The log is a dependency; the world builds its desktop without one, so build another here.
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true, hosts: () => ["mac.tail1.ts.net"], titles: () => ["reach"], protectedPaths: () => ["/Users/me/.reach"], home: "/Users/me",

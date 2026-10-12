@@ -280,6 +280,26 @@ test("the HTTPS link step: already on means no page and no wait; still off gives
   );
 });
 
+for (const state of ["NeedsLogin", "Stopped", "Starting", "NeedsMachineAuth", "unavailable"])
+  test(`the HTTPS link step reconnects Tailscale when ${state} before diagnosing DNS`, async t => {
+    const root = tmp(t);
+    const opened = [], printed = [];
+    let recovered = 0;
+    await runSetup(root, { only: "link", deps: deps(scene(), {
+      status: async () => {
+        if (state === "unavailable") throw Object.assign(Error("not installed"), { code: "ENOENT" });
+        return { BackendState: state };
+      },
+      ensureTailscale: async () => { recovered++; return READY; },
+      print: text => printed.push(text),
+      open: async url => opened.push(url),
+    }) });
+    assert.equal(recovered, 1);
+    assert.deepEqual(opened, []);
+    assert.doesNotMatch(printed.join("\n"), /Turn on MagicDNS|Turn on HTTPS certificates/);
+    assert.equal(readProgress(root).steps.link, "done");
+  });
+
 test("background first run ends with the phone: link, then approve by the code it shows", async (t) => {
   const { connectPhone } = await import("../scripts/setup.mjs");
   const root = tmp(t);

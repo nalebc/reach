@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFile, execFileSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import os from 'node:os';
 import { fail } from './core.mjs';
 import { terminalLocation } from './restricted-terminal.mjs';
 import { browserPrivatePaths, browserPrivateNames, isBrowserPrivatePath, validateBrowserRoot } from './browser-private-paths.mjs';
 import { stripVTControlCharacters } from 'node:util';
 import { browserOperationCoordinator } from './browser-operation-coordinator.mjs';
+import { nodeRuntimeFiles } from './node-runtime-files.mjs';
 
 // Parse one executable and its arguments, never a host shell expression. Script
 // bodies are interpreted only after the kernel sandbox has been installed.
@@ -33,28 +34,6 @@ function rejectProtectedProgram(program) {
     throw fail(403, 'Reach and Tailscale management commands are protected and cannot be approved for agents.');
 }
 let runtimeFiles;
-function nodeRuntimeFiles() {
-  if (runtimeFiles) return runtimeFiles;
-  const pending = [fs.realpathSync(process.execPath)], files = new Set(), visited = new Set();
-  while (pending.length) {
-    const file = pending.pop();
-    if (visited.has(file) || file.startsWith('/usr/lib/') || file.startsWith('/System/Library/')) continue;
-    if (files.size > 100) throw fail(503, 'The script runtime could not be isolated.');
-    files.add(file); visited.add(file);
-    const lines = execFileSync('/usr/bin/otool', ['-L', file], { encoding: 'utf8', timeout: 5000, maxBuffer: 262144 }).split('\n').slice(1);
-    for (const line of lines) {
-      let dep = line.trim().split(' (')[0];
-      if (dep.startsWith('@loader_path/')) dep = path.resolve(path.dirname(file), dep.slice(13));
-      if (dep.startsWith('@rpath/') && !dep.slice(7).includes('/')) dep = path.join(path.dirname(file), dep.slice(7));
-      if (!dep) continue;
-      if (!dep.startsWith('/')) throw fail(503, 'The script runtime uses unsupported library paths.');
-      if (dep.startsWith('/usr/lib/') || dep.startsWith('/System/Library/')) continue;
-      pending.push(fs.realpathSync(dep)); files.add(dep);
-      files.add(path.join(fs.realpathSync(path.dirname(dep)), path.basename(dep)));
-    }
-  }
-  return runtimeFiles = [...files];
-}
 // A path argument that leaves the shared folder is refused before anyone is
 // asked: the sandbox would deny it anyway, so an approval could only fail.
 // "~" is the owner's home here, as a shell would read it (the command itself
@@ -199,7 +178,7 @@ async function executeBrowserScript(action, authorize, { resolve, privatePaths =
     return client;
   };
   const guarded = await guardedFiles(plan.root);
-  const profile = scriptProfile(plan.root, privatePaths, nodeRuntimeFiles(), guarded);
+  const profile = scriptProfile(plan.root, privatePaths, runtimeFiles ||= nodeRuntimeFiles(), guarded);
   current();
   // No inherited environment, credentials, startup files, sockets, or terminal.
   const env = { PATH: `/usr/bin:/bin:${path.dirname(process.execPath)}`, HOME: plan.root, TMPDIR: plan.root, LANG: 'en_US.UTF-8', LC_ALL: 'C', NODE_PATH: '', NODE_OPTIONS: '', OPENSSL_CONF: '/dev/null' };

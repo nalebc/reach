@@ -28,6 +28,7 @@ function stand() {
       texts: [{ text: "Pampers Swaddlers", heading: true, x: 0.1, y: 0.5, w: 0.2, h: 0.02 }, { text: "$34.99", x: 0.1, y: 0.53, w: 0.05, h: 0.02 }] }; },
     activity: () => ({ holder: busy ? { clientId: busy, name: "Muse" } : null, agents: busy ? { [busy]: { at: 1, kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" } } : {}, paused: [...paused] }),
     setPaused: (id, value) => { if (value) paused.add(id); else paused.delete(id); return paused.has(id); },
+    isPaused: (id) => paused.has(id),
   };
   const paused = new Set();
   return { extras, log };
@@ -51,8 +52,8 @@ test("screen, input, open and the app list follow the preset", privateIngressTes
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   const names = listed.body.apps.map((app) => app.name);
   assert.ok(names.includes("Google Chrome") && names.includes("Notes") && names.includes("Terminal"));
-  assert.ok(!names.includes("1Password"), "always protected apps are not offered");
-  assert.ok(!names.includes("Messages"), "the owner's hidden apps are not offered");
+  assert.ok(names.includes("1Password"), "Full control lists password apps");
+  assert.ok(names.includes("Messages"), "Full control lists every app");
   assert.equal(listed.body.apps.find((app) => app.name === "Terminal").runsCommands, true);
   const opened = await full.as("/api/browser/desktop/open", { method: "POST", body: { app: chrome.id } });
   assert.equal(opened.status, 200, JSON.stringify(opened.body));
@@ -88,15 +89,15 @@ test("screen, input, open and the app list follow the preset", privateIngressTes
   assert.equal(ran.body.status, "executed"); assert.equal(ran.body.output, "ran: ls -la\n");
   assert.equal(runs[0].cwd, path.join(f.home, "Desktop"));
   const refused = await full.as("/api/browser/shell", { method: "POST", body: { command: "sudo ls", root: 0, cwd: "" } });
-  assert.equal(refused.body.status, "blocked"); assert.match(refused.body.error, /needs your password/);
-  assert.equal(runs.length, 1);
-  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: ".reach" } })).status, 403, "private folders are not working folders");
+  assert.equal(refused.body.status, "executed");
+  assert.equal(runs.length, 2);
+  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: ".reach" } })).status, 200, "Full control can use private working folders");
   const history = await full.as("/api/browser/shell/history");
   assert.equal(history.status, 200);
-  assert.deepEqual(history.body.map((item) => item.status).sort(), ["blocked", "executed"]);
+  assert.deepEqual(history.body.map((item) => item.status).sort(), ["executed", "executed", "executed"]);
   assert.equal((await grok.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "" } })).status, 403);
   const owner = await f.call("/api/agents/browser-terminal-history");
-  assert.ok(owner.body.some((item) => item.action.type === "shell" && item.action.command === "sudo ls" && item.status === "blocked"));
+  assert.ok(owner.body.some((item) => item.action.type === "shell" && item.action.command === "sudo ls" && item.status === "executed"));
 });
 
 test("agents open apps by name and websites in the owner's browser, and read the screen as text", privateIngressTest, async (t) => {
@@ -106,8 +107,8 @@ test("agents open apps by name and websites in the owner's browser, and read the
   const byName = await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "google chrome" } });
   assert.equal(byName.status, 200, JSON.stringify(byName.body));
   assert.deepEqual(log.at(-1), ["open", full.joined.clientId, chrome.id]);
-  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "1Password" } })).status, 404, "protected apps have no name to open");
-  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "Messages" } })).status, 404, "hidden apps neither");
+  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "1Password" } })).status, 200, "Full control opens password apps");
+  assert.equal((await full.as("/api/browser/desktop/open", { method: "POST", body: { app: "Messages" } })).status, 200, "Full control opens all apps");
   const site = await full.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://www.ubereats.com", browser: "Google Chrome" } });
   assert.equal(site.status, 200, JSON.stringify(site.body));
   assert.deepEqual(log.at(-1), ["open-url", full.joined.clientId, "https://www.ubereats.com", chrome.id]);
@@ -122,7 +123,7 @@ test("agents open apps by name and websites in the owner's browser, and read the
   assert.equal((await readonly.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://x.test" } })).status, 403);
 });
 
-test("file changes: Full control writes directly inside shared folders, never into private files; Read only cannot", privateIngressTest, async (t) => {
+test("file changes: Full control can edit private files; Read only cannot", privateIngressTest, async (t) => {
   const f = await presetFixture(t, { desktopExtras: stand().extras });
   const full = await f.join({ preset: "full" });
   const change = (body, as = full.as) => as("/api/browser/files/change", { method: "POST", body });
@@ -138,10 +139,8 @@ test("file changes: Full control writes directly inside shared folders, never in
   assert.equal(result.status, 200);
   assert.ok(!fs.existsSync(path.join(f.home, "Desktop", "Project", "notes.txt")));
   for (const body of [
-    { op: "write", root: 0, path: ".ssh/authorized_keys", content: "x" },
     { op: "write", root: 0, path: "../outside.txt", content: "x" },
     { op: "write", root: 0, path: "/etc/hosts", content: "x" },
-    { op: "rm", root: 0, path: ".zshrc" },
   ]) {
     const refused = await change(body);
     assert.ok([403, 404].includes(refused.status), `${JSON.stringify(body)} -> ${refused.status} ${JSON.stringify(refused.body)}`);
@@ -149,7 +148,8 @@ test("file changes: Full control writes directly inside shared folders, never in
   assert.equal((await change({ op: "write", root: 0, path: "a.txt", content: "x", nope: 1 })).status, 400);
   assert.equal((await change({ op: "move", root: 0, path: "a.txt" })).status, 400);
   assert.ok([400, 413].includes((await change({ op: "write", root: 0, path: "a.txt", content: "x".repeat(1048577) })).status), "content over 1 MiB");
-  assert.equal((await change({ op: "write", root: 0, path: ".ssh/known_hosts", content: "x" })).status, 403);
+  assert.equal((await change({ op: "write", root: 0, path: ".ssh/known_hosts", content: "x" })).status, 200);
+  assert.equal(fs.readFileSync(path.join(f.home, ".ssh", "known_hosts"), "utf8"), "x");
   assert.equal(fs.readFileSync(path.join(f.home, ".ssh", "id_rsa"), "utf8"), "secret");
   fs.symlinkSync("/etc", path.join(f.home, "Desktop", "Project", "link"));
   assert.equal((await change({ op: "write", root: 0, path: "Desktop/Project/link/hosts", content: "x" })).status, 403, "no writing through links");
@@ -348,7 +348,7 @@ test("navigation routes follow the preset and reach the desktop stand-in exactly
   assert.equal(log.at(-1)[0], "open-file");
   assert.match(log.at(-1)[2], /Desktop\/Project\/brief\.txt$/);
   assert.deepEqual(log.at(-1)[3], { reveal: true });
-  assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: ".ssh/id_rsa" } })).status, 403);
+  assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: ".ssh/id_rsa" } })).status, 200);
   assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "../x" } })).status, 403);
   assert.equal((await full.as("/api/browser/desktop/open-file", { method: "POST", body: { root: 0, path: "" } })).status, 400);
   // The owner's Mac shortcuts.
@@ -380,19 +380,53 @@ test("the owner's action log lists what an agent ran and changed", privateIngres
   const full = await f.join({ preset: "full" });
   const id = full.created.clientId;
   assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "Desktop" } })).status, 200);
-  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "sudo ls", root: 0, cwd: "Desktop" } })).body.status, "blocked");
+  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "sudo ls", root: 0, cwd: "Desktop" } })).body.status, "executed");
   assert.equal((await full.as("/api/browser/files/change", { method: "POST", body: { op: "write", root: 0, path: "Desktop/Project/notes.txt", content: "hi" } })).status, 200);
   const log = await f.call(`/api/agents/actions?${new URLSearchParams({ clientId: id })}`);
   assert.equal(log.status, 200, JSON.stringify(log.body));
   assert.deepEqual(log.body.actions.map((a) => [a.kind, a.text, a.ok]), [
     ["file", "Wrote “Desktop/Project/notes.txt”", true],
-    ["command", "Ran: sudo ls", false],
+    ["command", "Ran: sudo ls", true],
     ["command", "Ran: ls", true],
   ]);
-  assert.match(log.body.actions[1].reason, /password/);
+  assert.equal(log.body.actions[1].reason, undefined);
   assert.equal(log.body.actions[2].app, "Desktop");
   assert.equal((await f.call("/api/agents/actions?limit=0")).status, 400);
   assert.equal((await f.call("/api/agents/actions?x=1")).status, 400);
   // The agent itself cannot read the owner's log.
   assert.equal((await full.as(`/api/agents/actions?clientId=${id}`)).status, 403);
+});
+
+test("a paused agent can't run commands, change files or run Shortcuts, by any route", privateIngressTest, async (t) => {
+  const { extras } = stand();
+  const runs = [], shortcutRuns = [];
+  const macShortcuts = {
+    agentList: () => ({ shortcuts: [{ name: "Today's events" }] }),
+    run: async (client, input, authorize) => { authorize(); shortcutRuns.push(input); return { ok: true, name: input.name, output: "" }; },
+    owner: async () => ({ shortcuts: [{ name: "Today's events", allowed: true }], missing: [] }),
+    allow: async (name, allowed) => ({ name, allowed }),
+  };
+  const f = await presetFixture(t, { desktopExtras: extras, macShortcuts, agentShellRun: async (input) => { runs.push(input); return { output: "", exitCode: 0, timedOut: false }; } });
+  const full = await f.join({ preset: "full" });
+  assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: full.created.clientId, paused: true } })).body.paused, true);
+  const refusals = [
+    await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "" } }),
+    await full.as("/api/browser/files/change", { method: "POST", body: { op: "write", root: 0, path: "Desktop/Project/paused.txt", content: "x" } }),
+    await full.as("/api/browser/desktop/mac-shortcuts/run", { method: "POST", body: { name: "Today's events" } }),
+  ];
+  for (const refused of refusals) {
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.kind, "paused");
+  }
+  const viaMcp = await full.as("/api/browser/mcp/call", { method: "POST", body: { name: "reach_shell", arguments: { command: "ls", root: 0, cwd: "" } } });
+  assert.equal(viaMcp.status, 409, JSON.stringify(viaMcp.body));
+  assert.equal(viaMcp.body.kind, "paused", "the same refusal through the tool dispatch");
+  assert.equal(runs.length, 0, "no command ran");
+  assert.equal(shortcutRuns.length, 0, "no Shortcut ran");
+  assert.ok(!fs.existsSync(path.join(f.home, "Desktop", "Project", "paused.txt")), "nothing was written");
+  // Looking still works; resuming gives the hands back.
+  assert.equal((await full.as("/api/browser/desktop/screen")).status, 200);
+  await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: full.created.clientId, paused: false } });
+  assert.equal((await full.as("/api/browser/shell", { method: "POST", body: { command: "ls", root: 0, cwd: "" } })).status, 200);
+  assert.equal(runs.length, 1);
 });

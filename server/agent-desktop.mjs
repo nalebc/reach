@@ -15,7 +15,7 @@ import { createAgentPauses } from "./agent-pauses.mjs";
 // reads, serialised per agent (a second request shares or waits for the first). The owner's own hands (checked natively) and the
 // owner's phone (checked here) always come first.
 const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 };
-const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked" });
+const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked", ...(Array.isArray(value.candidates) ? { candidates: value.candidates.slice(0, 8) } : {}) });
 const number = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", "escape", "esc", "left", "right", "down", "up", "forwarddelete", "home", "end", "pageup", "pagedown",
   "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", ..."abcdefghijklmnopqrstuvwxyz0123456789", "=", "-", "]", "[", "'", ";", "\\", ",", "/", ".", "`"]);
@@ -42,8 +42,9 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 // title, then what is there in reading order, each control inline as
 // [n] Role "name" (= what a field holds), clickable by its number.
 const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
-export function describeScreen({ app = "", title = "", snapshot = "", items = [], texts = [], truncated = false } = {}) {
-  const control = (item) => `[${item.n}] ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
+  const control = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+    (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
     (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
@@ -58,7 +59,8 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
   }
   for (const row of rows) row.parts = row.parts.sort((a, b) => a.x - b.x).map((entry) => entry.line);
   const head = [`${app}${title ? ` — ${title}` : ""}`,
-    snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : "", ""];
+    (windowRef ? `Window ${windowRef}${displayId ? ` · display ${displayId}` : ""}. Controls have stable refs: reach_act {"action":{"type":"element","ref":"e-…"}}. ` : "") +
+    (snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : ""), ""];
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
   const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
   const form = fields.length
@@ -70,12 +72,13 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
 // The numbered controls and visible text as the agent receives them, bounded,
 // from what the helper read (elements, find).
 const fractionOf = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-const tabList = (tabs) => tabs.slice(0, 40).filter((tab) => plain(tab) && typeof tab.title === "string" && tab.title).map((tab) => ({ title: tab.title.slice(0, 120), selected: tab.selected === true }));
+const nativeRef = value => typeof value === "string" && /^[ewt]-[a-f0-9-]{1,38}$/.test(value);
+const tabList = (tabs) => tabs.slice(0, 40).filter((tab) => plain(tab) && typeof tab.title === "string" && tab.title).map((tab) => ({ title: tab.title.slice(0, 120), selected: tab.selected === true, ...(nativeRef(tab.ref) ? { ref: tab.ref } : {}) }));
 export function shapeElements(result) {
   const fraction = fractionOf;
   const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
     .filter((item) => Number.isInteger(item?.n))
-    .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
+    .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 120), ...(nativeRef(item.ref) ? { ref: item.ref } : {}), ...(typeof item.context === "string" ? { context: item.context.slice(0, 400) } : {}), secure: item.secure === true,
       // What a field holds is on screen already; never a password field's.
       ...(typeof item.value === "string" && item.value && item.secure !== true ? { value: item.value.slice(0, 120) } : {}),
       x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
@@ -83,17 +86,22 @@ export function shapeElements(result) {
   let budget = 20000;
   const texts = (Array.isArray(result.texts) ? result.texts : []).slice(0, 500)
     .filter((line) => typeof line?.text === "string" && line.text)
-    .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
+    .map((line) => ({ text: line.text.slice(0, 300), ...(typeof line.context === "string" ? { context: line.context.slice(0, 400) } : {}), ...(line.heading === true ? { heading: true } : {}),
       x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
     .filter((line) => (budget -= line.text.length) >= 0);
   // The form at a glance: its fields, for reach_fill in one call.
   const fields = items.filter((item) => FIELD_ROLES.has(item.role))
     .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
-  return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
+  return { ...(nativeRef(result.windowRef) ? { windowRef: result.windowRef } : {}), ...(Number.isSafeInteger(result.revision) ? { revision: result.revision } : {}), ...(Number.isInteger(result.displayId) ? { displayId: result.displayId } : {}), snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
     title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
 }
 
 export function normalizeAction(value) {
+  if (plain(value) && value.displayId !== undefined) {
+    const { displayId, ...rest } = value;
+    if (!Number.isInteger(displayId) || displayId < 1 || displayId > 4294967295) throw fail(400, "Choose a display from reach_displays.");
+    return { ...normalizeAction(rest), displayId };
+  }
   if (!plain(value) || typeof value.type !== "string") throw fail(400, "Choose one action: click, move, drag, scroll, type or key.");
   const keys = Object.keys(value);
   const only = (...allowed) => { if (keys.some((key) => !allowed.includes(key))) throw fail(400, `A ${value.type} action takes only ${allowed.join(", ")}.`); };
@@ -160,7 +168,13 @@ export function normalizeAction(value) {
     }
     // A numbered label from elements(): clicked at its live center natively.
     case "element": {
-      only("type", "snapshot", "n", "button", "count", "holdMs");
+      only("type", "snapshot", "n", "ref", "button", "count", "holdMs");
+      if (value.ref !== undefined) {
+        if (!nativeRef(value.ref) || !value.ref.startsWith("e-") || value.snapshot !== undefined || value.n !== undefined) throw fail(400, "Choose a control by ref, or snapshot and number.");
+        const normalized = normalizeAction({ ...value, ref: undefined, snapshot: "validation", n: 1 });
+        const { snapshot, n, ref, ...rest } = normalized;
+        return { ...rest, ref: value.ref };
+      }
       if (typeof value.snapshot !== "string" || !/^[a-z0-9-]{1,40}$/i.test(value.snapshot)) throw fail(400, "Look at the labels again.");
       if (!Number.isInteger(value.n) || value.n < 1 || value.n > 500) throw fail(400, "Choose a label number.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
@@ -170,13 +184,14 @@ export function normalizeAction(value) {
     // A control by its name, as the screen describes it (press), and a form's
     // fields by their labels, typed in one go (fill): found on the Mac.
     case "press": {
-      only("type", "name", "role", "button", "count", "holdMs");
+      only("type", "name", "role", "within", "button", "count", "holdMs");
+      if (value.within !== undefined && (typeof value.within !== "string" || !value.within.trim() || value.within.length > 200 || hiddenControls.test(value.within))) throw fail(400, "Name the containing region, up to 200 characters.");
       const name = typeof value.name === "string" ? value.name.trim() : "";
       if (!name || name.length > 120 || hiddenControls.test(name)) throw fail(400, "Name the control, up to 120 characters.");
       if (value.role !== undefined && (typeof value.role !== "string" || !/^[A-Za-z]{1,40}$/.test(value.role))) throw fail(400, "Give the control's role as one word, such as Button.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
-      return { type: "press", name, ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
+      return { type: "press", name, ...(value.within ? { within: value.within } : {}), ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
     }
     case "fill": {
       only("type", "fields", "submit", "replace", "paste");
@@ -203,7 +218,7 @@ const HELPER_FAILURES = {
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
-const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file"]);
+const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]);
 const helperFailure = (reason, request, dispatched = false) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
@@ -485,7 +500,7 @@ export function createAgentDesktop(config, {
       return structuredClone(apps);
     },
     /** A JPEG of the screen with Reach, protected and hidden windows left out; in Apps, only the chosen apps. */
-    async screenshot(client, authorize, { maxWidth = 2560 } = {}) {
+    async screenshot(client, authorize, { maxWidth = 2560, displayId } = {}) {
       const latest = live(client, authorize, "browser:screen");
       const width = Math.max(320, Math.min(3840, Number(maxWidth) || 2560));
       // One capture per agent at a time: a request that arrives while one
@@ -494,9 +509,9 @@ export function createAgentDesktop(config, {
       // service until no picture came back at all.
       const running = capturing.get(latest.id);
       // The look counts from when the picture was asked for, not when it came back.
-      let askedAt = running && running.width >= width ? running.askedAt : now();
+      let askedAt = running && running.width >= width && running.displayId === displayId ? running.askedAt : now();
       let result;
-      if (running && running.width >= width) result = await running.promise;
+      if (running && running.width >= width && running.displayId === displayId) result = await running.promise;
       else {
         const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
         if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
@@ -506,11 +521,11 @@ export function createAgentDesktop(config, {
           if (running) await running.promise.catch(() => {});
           const state = await session(latest);
           checkState(client, authorize, "browser:screen", state);
-          const value = answer(await state.helper.send({ op: "shot", maxWidth: width }));
+          const value = answer(await state.helper.send({ op: "shot", maxWidth: width, ...(displayId ? { displayId } : {}) }));
           checkState(client, authorize, "browser:screen", state);
           return value;
         })();
-        const entry = { width, promise, askedAt };
+        const entry = { width, displayId, promise, askedAt };
         capturing.set(latest.id, entry);
         try { result = await promise; } finally { if (capturing.get(latest.id) === entry) capturing.delete(latest.id); }
       }
@@ -519,7 +534,7 @@ export function createAgentDesktop(config, {
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
       observe(latest, askedAt);
-      return { jpeg, width: result.width, height: result.height, hidden: result.hidden || 0 };
+      return { jpeg, displayId: result.displayId, width: result.width, height: result.height, hidden: result.hidden || 0 };
     },
     /** What is in front: the app, its window title, whether it takes commands or a password, and why it is closed to the agent if it is. */
     async front(client, authorize) {
@@ -532,8 +547,8 @@ export function createAgentDesktop(config, {
       // An app the owner hid from this agent: not even its name (security
       // audit L6), whatever an older helper answers.
       const lower = (value) => String(value || "").toLowerCase();
-      if (result.blocked === "The owner hid this app from the agent." ||
-          (latest.policy?.hidden || []).some((app) => (app.id && app.id === result.path) || (app.name && lower(app.name) === lower(result.app))))
+      if (latest.policy.preset !== "full" && (result.blocked === "The owner hid this app from the agent." ||
+          (latest.policy?.hidden || []).some((app) => (app.id && app.id === result.path) || (app.name && lower(app.name) === lower(result.app)))))
         return { app: "", bundle: "", title: "", terminalLike: false, secure: false, blocked: "The owner hid this app from the agent.",
           path: "", layout: "", holder: holder && holder.clientId !== latest.id ? holder.name : "" };
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
@@ -552,10 +567,10 @@ export function createAgentDesktop(config, {
       const result = answer(await state.helper.send({ op: "windows" }));
       checkState(client, authorize, "browser:screen", state);
       observe(latest);
-      const hidden = latest.policy?.hidden || [];
+      const hidden = latest.policy.preset === "full" ? [] : latest.policy?.hidden || [];
       const lower = (value) => String(value || "").toLowerCase();
       const windows = (Array.isArray(result.windows) ? result.windows : []).slice(0, 120)
-        .filter((item) => plain(item) && typeof item.id === "string" && /^\d{1,8}:\d{1,2}$/.test(item.id))
+        .filter((item) => plain(item) && typeof item.id === "string" && /^(w-[a-f0-9-]{1,38}|\d{1,8}:\d{1,2})$/.test(item.id))
         // An app the owner hid from this agent: not even its name, whatever an older helper answers.
         .filter((item) => !hidden.some((app) => (app.bundleId && app.bundleId === item.bundle) || (app.name && lower(app.name) === lower(item.app))))
         .map((item) => ({ id: item.id, app: String(item.app || "").slice(0, 100), bundle: String(item.bundle || "").slice(0, 200), title: String(item.title || "").slice(0, 200),
@@ -566,15 +581,16 @@ export function createAgentDesktop(config, {
       return { windows, holder: holder && holder.clientId !== latest.id ? holder.name : "" };
     },
     /** One window brought forward by its id from windows(), its title checked; a browser tab by title (reach_focus_window). */
-    async focusWindow(client, { id, title, tab } = {}, authorize) {
+    async focusWindow(client, { id, title, tab, tabRef } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof id !== "string" || !/^\d{1,8}:\d{1,2}$/.test(id)) throw fail(400, "Choose a window by the id reach_windows gave.");
+      if (typeof id !== "string" || !/^(w-[a-f0-9-]{1,38}|\d{1,8}:\d{1,2})$/.test(id)) throw fail(400, "Choose a window by the id reach_windows gave.");
       if (title !== undefined && (typeof title !== "string" || title.length > 200 || hiddenControls.test(title))) throw fail(400, "Give the window's title as listed, up to 200 characters.");
+      if (tabRef !== undefined && (!nativeRef(tabRef) || !tabRef.startsWith("t-") || tab !== undefined)) throw fail(400, "Choose one tab by title or ref.");
       if (tab !== undefined && (typeof tab !== "string" || !tab.trim() || tab.length > 120 || hiddenControls.test(tab))) throw fail(400, "Name the tab by its title, up to 120 characters.");
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
-      const result = answer(await dispatchInput(latest, state, { op: "focus", id, ...(title ? { title } : {}), ...(tab ? { tab: tab.trim() } : {}) }, authorize, "browser:open"));
+      const result = answer(await dispatchInput(latest, state, { op: "focus", id, ...(title ? { title } : {}), ...(tab ? { tab: tab.trim() } : {}), ...(tabRef ? { tabRef } : {}) }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
       observe(latest);
@@ -641,7 +657,7 @@ export function createAgentDesktop(config, {
       const latest = live(client, authorize, "browser:open");
       if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
-      const reason = protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -658,16 +674,30 @@ export function createAgentDesktop(config, {
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** What can be clicked in the front window, numbered, from the accessibility tree. */
-    async elements(client, authorize) {
+    async elements(client, authorize, { displayId } = {}) {
       const latest = live(client, authorize, "browser:control");
       const askedAt = now();
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
-      const result = answer(await state.helper.send({ op: "elements" }));
+      const result = answer(await state.helper.send({ op: "elements", ...(displayId ? { displayId } : {}) }));
       checkState(client, authorize, "browser:control", state);
       // The numbered labels read the live screen: that is a look.
       observe(latest, askedAt);
       return shapeElements(result);
+    },
+    async displays(client, authorize) {
+      const latest = live(client, authorize, "browser:screen"), state = await session(latest);
+      checkState(client, authorize, "browser:screen", state);
+      const result = answer(await state.helper.send({ op: "displays" }));
+      checkState(client, authorize, "browser:screen", state);
+      return { displays: (result.displays || []).slice(0, 32).filter(item => Number.isInteger(item.id)).map(({ id, main, x, y, width, height }) => ({ id, main: main === true, x, y, width, height })) };
+    },
+    async waitForChange(client, revision, ms, authorize) {
+      const latest = live(client, authorize, "browser:control"), state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      const result = answer(await state.helper.send({ op: "wait-change", revision, ms: Math.min(400, Math.max(1, ms)) }));
+      checkState(client, authorize, "browser:control", state);
+      return result;
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {
@@ -686,13 +716,16 @@ export function createAgentDesktop(config, {
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
           for (const entry of typing) {
             if (entry.secret) {
-              // Vault values (usernames, emails, passwords) never go to a terminal,
-              // where they would run or show as a command.
-              if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
-            } else if (front.secure && action.type === "type") throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
-            // Vault values still never go to Reach's own pages or protected paths;
-            // only the shell deny list is skipped for them.
-            const reason = typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+              // Apps keeps vault values out of terminals. Full control may use
+              // any target; explicit secrets still stay out of the action log.
+              if (latest.policy.preset !== "full" && front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
+            } else if (front.secure && action.type === "type") {
+              if (latest.policy.preset !== "full") throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
+              entry.secret = true;
+              delete action.paste;
+            }
+            // Content checks apply only to narrower presets.
+            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
             if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           }
           action.terminalLikeChecked = front.terminalLike === true;
@@ -739,7 +772,7 @@ export function createAgentDesktop(config, {
         throw fail(400, "Give a web address that starts with https://.");
       if (browserPath !== undefined && (typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
         throw fail(400, "Choose the browser by its path on this Mac.");
-      const reason = typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);

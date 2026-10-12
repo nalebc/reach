@@ -44,7 +44,9 @@ test("who updates a copy is read from where it really lives; unknown places get 
   });
   assert.equal(managerOf("claude", "/opt/homebrew/bin/claude", at("/opt/homebrew/Caskroom/claude-code/2.1.286/claude")).command, "brew upgrade --cask claude-code");
   assert.equal(managerOf("claude", "/opt/homebrew/bin/claude", at("/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js")).manager, "npm");
-  assert.equal(managerOf("codex", "/opt/homebrew/bin/codex", at("/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js")).command, "npm install -g @openai/codex@latest");
+  assert.equal(managerOf("codex", "/opt/homebrew/bin/codex", at("/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js")).command, "npm install -g --prefix '/opt/homebrew' @openai/codex@latest");
+  assert.equal(managerOf("codex", "/Users/me/.nvm/versions/node/v24/bin/codex", at("/Users/me/.nvm/versions/node/v24/lib/node_modules/@openai/codex/bin/codex.js")).command, "npm install -g --prefix '/Users/me/.nvm/versions/node/v24' @openai/codex@latest");
+  assert.equal(managerOf("codex", "/work/node_modules/.bin/codex", at("/work/node_modules/@openai/codex/bin/codex.js")), null, "a project-local Codex must not update an unrelated global installation");
   assert.equal(managerOf("codex", "/opt/homebrew/bin/codex", at("/opt/homebrew/Caskroom/codex/0.162.0/codex")).command, "brew upgrade --cask codex");
   // Inside an app: the app updates it.
   assert.deepEqual(

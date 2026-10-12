@@ -104,7 +104,7 @@ Only one native terminal operation runs at a time; concurrent calls receive 409.
 - `POST /api/chats/:id/stop` — interrupt the current turn.
 - `POST /api/chats/:id/approvals/:requestId` — `{decision:"accept"}` or `{decision:"decline"}` for command/file approvals; `{answers:{questionId:"answer"}}` for user questions. Never grant an approval without the user's authorization.
 
-Unknown approval types fail closed. The MCP adapter intentionally omits approval-granting tools.
+Unknown approval types fail closed. So do turn ends Reach does not know: a Codex `turn/completed` whose status is not `completed`, `interrupted` or `failed`, or a Claude Code `result` whose subtype is not `success` or `error_*`, leaves the chat working with its approvals in place. The MCP adapter intentionally omits approval-granting tools.
 
 ## Screen — scope `screen`, viewing must be enabled
 
@@ -192,7 +192,9 @@ Presence `access.kind` is `paired`, `invited`, or `agent`, derived exclusively f
 
 ## Browser agent presets
 
-`POST /api/agents/browser-invitations` is an owner operation. It accepts `{name, preset, ttlSeconds, transport, folders?, apps?, write?, hidden?, terminalIds?, standing?}`. `preset` is `full`, `apps`, `files`, or `readonly`; `transport` is `tailnet` or `funnel`. Timed invitations last 60–86,400 seconds. Apps requires selected catalog entries; Files requires chosen folders and optionally `write:true`. Full control and Apps require a supervising owner device and available Mac desktop helpers. Consult `GET /api/agents/browser-options` for actual support and allowed durations; `standing` is the explicit Always-access choice.
+`POST /api/agents/browser-invitations` is an owner operation. It accepts `{name, preset, ttlSeconds, transport, folders?, apps?, write?, hidden?, terminalIds?, standing?, fullControlVersion?}`. `preset` is `full`, `apps`, `files`, or `readonly`; `transport` is `tailnet` or `funnel`. Timed invitations last 60–86,400 seconds. Apps requires selected catalog entries; Files requires chosen folders and optionally `write:true`. Full control and Apps require a supervising owner device and available Mac desktop helpers. Consult `GET /api/agents/browser-options` for actual support and allowed durations; `standing` is the explicit Always-access choice.
+
+Full control additionally requires `fullControlVersion:1`, confirming the unrestricted OS-account access described below. For example: `{name:"Trusted agent", preset:"full", fullControlVersion:1, ttlSeconds:900, transport:"funnel"}`. Missing, older or unknown consent versions are refused, including requests from a cached older invitation form. Existing Full control grants without this stored consent end on upgrade and appear with `needsInvitation:true`; editing, renewing or reopening one cannot widen its access. Create and approve a fresh invitation. Moving Apps into Full control also requires a new invitation; ordinary edits can retain an already consented Full grant or lower its access.
 
 Browser presets currently require macOS. `GET /api/agents/browser-options` returns `protectedFilesSupported` for the native protected file helper and `desktopAvailable` for screen presets. On Linux and Windows, a new Files invitation returns 503 before creating credentials. Existing browser credentials also receive 503 for protected file operations; owner file APIs, Reach terminals and scoped command-line credentials are separate capabilities. `protectedFilesSupported:true` identifies platform support, not a guarantee that native compilation or OS permissions will succeed.
 
@@ -213,7 +215,7 @@ Every browser operation rechecks the current grant. `GET /api/browser` returns i
 | `GET /files/search?root=0&q=term` | Find names in a shared folder. File list/read also use `/api/files` and `/api/files/text`. |
 | `GET /terminals/:id` | Output of a specifically shared terminal; never permission to type into it. |
 
-HTTP desktop refusals include `{error,kind,holder?,retryInMs?}` where `kind` can be `busy`, `paused`, `retry`, or `blocked`. Another agent's lease or a person using the Mac may require waiting; observing again resolves stale focus. Revocation invalidates access. Full control shell execution uses the owner's OS privileges; its guardrails are not an OS sandbox. Preset actions need no separate per-action approval after admission. Earlier invitations still expose restricted terminal and selected-app routes with their own approval semantics; a pending command must be polled, not resubmitted. These credentials cannot call owner approval routes.
+HTTP desktop refusals include `{error,kind,holder?,retryInMs?}` where `kind` can be `busy`, `paused`, `retry`, or `blocked`. Another agent's lease or a person using the Mac may require waiting; observing again resolves stale focus. Revocation invalidates access. Full control uses the owner's OS privileges for every app, page, file and command, including Reach itself. It has no content deny list, hidden-app exceptions or shell sandbox; its roots include the filesystem root. macOS permissions still apply. Preset actions need no separate per-action approval after admission. Earlier invitations still expose restricted terminal and selected-app routes with their own approval semantics; a pending command must be polled, not resubmitted. These credentials cannot call owner approval routes.
 
 The browser bridge, `window.reach.listTools()` and `window.reach.callTool(name,args)`, and the stdio MCP catalog describe the same available tools. MCP encodes screenshot bytes as image content. `node scripts/agent-remote.mjs tools` and `call TOOL '{...}'` refresh current access before selecting a route. The generic `reach-agent` file/job CLI is a separate scoped-credential interface; see [AGENTS.md](AGENTS.md).
 

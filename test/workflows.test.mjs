@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { checkTasks, createWorkflows, readDraft, WORKFLOW_LIMITS } from "../server/agent-sessions/workflows.mjs";
+import { checkTasks, createWorkflows, plannerMessage, readDraft, WORKFLOW_LIMITS } from "../server/agent-sessions/workflows.mjs";
 import { checkSteps, createRelays } from "../server/agent-sessions/relays.mjs";
 
 // Workflows (server/agent-sessions/workflows.mjs, docs/WORKFLOWS.md) against
@@ -14,7 +14,7 @@ const reply = (id, text) => ({ id, role: "assistant", kind: "text", text });
 const edit = (id, file, diff) => ({ id, role: "tool", kind: "file-change", text: file, detail: diff, status: "completed" });
 const plan = (tasks, title = "Passkeys") => `Here's the plan.\n\n\`\`\`json\n${JSON.stringify({ title, tasks }, null, 2)}\n\`\`\``;
 
-function stage({ authorized = () => "", offered = [], file = null } = {}) {
+function stage({ authorized = () => "", offered = [], file = null, availableAgents = null, models = null } = {}) {
   let clock = 1_000_000;
   let n = 0;
   const pages = {};
@@ -41,6 +41,8 @@ function stage({ authorized = () => "", offered = [], file = null } = {}) {
     sessions,
     relays,
     file,
+    availableAgents,
+    models,
     authorized: (owner) => authorized(owner),
     modes: async () => offered,
     notify: (m) => said.push(m),
@@ -224,7 +226,7 @@ test("a run starts each task as a relay step would, passes what finished tasks d
   await finish(w.tasks[1].chat, "Looks right; one nit in src/api.ts:3.");
   w = workflows.get(workflow.id);
   const build = started[2];
-  assert.equal(build.body.mode, "acceptEdits", "Claude Code builds in Accept edits");
+  assert.equal(build.body.mode, "auto", "Claude Code builds in Auto");
   // The stage just before in full; earlier ones in brief (no diffs).
   assert.match(build.body.text, /chat="Review the API">[\s\S]*one nit in src\/api\.ts:3/);
   assert.match(build.body.text, /chat="Build the API">[\s\S]*## What it changed\nsrc\/api\.ts\n/);
@@ -353,6 +355,27 @@ test("each start checks the phone still may and Reach isn't paused; a task that 
   assert.equal(w.problem, "“One” couldn't start: That folder doesn't exist.");
 });
 
+test("Retry keeps the earlier chat in tries, saved and in the list the phone gets", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-workflows-"));
+  const file = path.join(dir, "agent-workflows.json");
+  const first = stage({ file });
+  const { workflow } = first.workflows.create({ owner: "phone", title: "Again", cwd: "/work/app", tasks: tasks(["One", "claude", "build"]) });
+  first.workflows.run(workflow.id, "phone");
+  await first.workflows.sync();
+  const earlier = first.workflows.get(workflow.id).tasks[0].chat;
+  assert.equal(first.workflows.list()[0].tasks[0].tries, undefined, "none before a retry");
+  await first.end(earlier, { id: "err", role: "system", kind: "error", text: "Tool failed" });
+  first.workflows.retry(workflow.id, "t1", "phone");
+  await first.workflows.sync();
+  const w = first.workflows.get(workflow.id);
+  assert.notDeepEqual(w.tasks[0].chat, earlier);
+  assert.deepEqual(w.tasks[0].tries, [earlier]);
+  assert.deepEqual(first.workflows.list().find((x) => x.id === workflow.id).tasks[0].tries, [earlier]);
+  // After a restart too.
+  const again = stage({ file });
+  assert.deepEqual(again.workflows.list().find((x) => x.id === workflow.id).tasks[0].tries, [earlier]);
+});
+
 test("a task starting when Reach stopped comes back uncertain and is never started again", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-workflows-"));
   const file = path.join(dir, "agent-workflows.json");
@@ -413,4 +436,37 @@ test("while it runs only tasks after the last started one change; Stop stops the
   assert.deepEqual(copy.tasks.map((t) => [t.id, t.title, t.state]), [["t1", "One", "waiting"], ["t2", "Three", "waiting"], ["t3", "Four", "waiting"]]);
   assert.deepEqual(workflows.remove(workflow.id), { removed: true });
   assert.deepEqual(workflows.list().map((x) => x.id), [copy.id]);
+});
+
+
+test("workflow prompts name and demonstrate only currently available agents", () => {
+  for (const agent of ["codex", "claude"]) {
+    const text = plannerMessage({ text: "Ship it", agents: [agent] });
+    const draft = readDraft(text, [agent]);
+    assert.deepEqual(draft.tasks.map((t) => t.agent), [agent, agent]);
+    assert.doesNotMatch(text, agent === "codex" ? /claude|openclaw/i : /codex|openclaw/i);
+    assert.match(text, /configured default model/);
+  }
+  assert.throws(() => plannerMessage({ agents: [] }), /No workflow agents/);
+});
+
+test("planning checks live agents and confirmed models before creating a chat", async () => {
+  const s = stage({ availableAgents: async () => ["claude"], models: async () => [{ id: "available" }, { id: "preview", unconfirmed: true }] });
+  const input = { owner: "phone", cwd: "/work/app", text: "Ship it" };
+  await assert.rejects(s.workflows.plan({ ...input, agent: "codex" }), /unavailable/);
+  for (const model of ["missing", "preview"])
+    await assert.rejects(s.workflows.plan({ ...input, agent: "claude", start: { model } }), /model is unavailable/);
+  assert.equal(s.started.length, 0);
+  await s.workflows.plan({ ...input, agent: "claude", start: { model: "available" } });
+  assert.equal(s.started[0].body.model, "available");
+  assert.doesNotMatch(s.started[0].body.text, /codex|openclaw/i);
+});
+
+test("a saved task cannot launch an agent that is no longer available", async () => {
+  const s = stage({ availableAgents: async () => ["claude"] });
+  const { workflow } = s.workflows.create({ owner: "phone", cwd: "/work/app", tasks: tasks(["Build", "codex", "build"]) });
+  s.workflows.run(workflow.id, "phone");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(s.started.length, 0);
+  assert.equal(s.workflows.get(workflow.id).state, "paused");
 });

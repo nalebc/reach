@@ -1,20 +1,20 @@
 name: Verify Reach
-# Every pull request and every push to main (or a release branch) builds,
-# tests and packages Reach on macOS, Linux and Windows. A branch without a
-# pull request is not verified: open one to get the checks.
+# No path filters: the stable required check must run for every proposed merge.
 on:
   push:
     branches: [main, "release/**"]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   privacy:
-    # Keep the release privacy gate independent from platform verification.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,44 +22,45 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] no cache input: nothing is cached
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          package-manager-cache: false
+      # Never inject repository secrets into contributor code, including PRs
+      # from branches in this repository. Private-identifier review is local.
       - run: node scripts/check-release.mjs
-        env:
-          REACH_PRIVATE_IDENTIFIERS: ${{ secrets.REACH_PRIVATE_IDENTIFIERS }}
   workflows:
-    # The workflows themselves: syntax and expressions (actionlint), then the
-    # mistakes that turn a workflow into an attack surface, such as template
-    # injection or an unpinned action (zizmor).
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - name: actionlint
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
-      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          advanced-security: false
-          annotations: true
-          min-severity: low
-          persona: regular
-  go-security:
-    # The browser networking helper: formatted, vetted and free of known
-    # vulnerabilities in its dependency graph for the wasm target it ships as.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: tailnet/go.mod
-          cache-dependency-path: tailnet/go.sum
+          cache: false
+      # Go's checksum database verifies this exact release and dependencies.
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: actionlint -color
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+          annotations: true
+          min-severity: low
+          persona: regular
+  go-security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: tailnet/go.mod
+          cache: false
       - name: gofmt
         working-directory: tailnet
         run: |
@@ -75,7 +76,7 @@ jobs:
           GOOS: js
           GOARCH: wasm
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-      - name: Check the browser networking dependency graph
+      - name: Check the shipped browser networking graph
         working-directory: tailnet
         run: govulncheck ./...
         env:
@@ -88,48 +89,47 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: npm
-      - name: Known vulnerabilities in what Reach ships (blocking)
-        # The runtime dependencies are what users install. A high or critical
-        # advisory there must be dealt with before anything merges.
-        run: npm audit --omit=dev --audit-level=high
-      - name: Known vulnerabilities anywhere, including build tools (advisory)
-        # A new upstream advisory in a build tool must not block verifying
-        # Reach itself; it shows up here and in Dependabot.
-        run: npm audit --audit-level=moderate
-        continue-on-error: true
+          package-manager-cache: false
+      # Build dependencies are part of the release supply chain too.
+      - run: npm audit --audit-level=moderate
   verify:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-24.04, windows-latest]
-        node: [22]
         include:
-          # The newest Node release, on the cheapest runner.
+          - os: ubuntu-24.04
+            node: 22
+            suite: all
           - os: ubuntu-24.04
             node: 24
+            suite: all
+          - os: macos-15
+            node: 22
+            suite: all
+          - os: macos-15-intel
+            node: 22
+            suite: all
+          - os: windows-2025
+            node: 22
+            suite: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    # Windows is experimental (README): many tests still assume POSIX shells,
-    # signals and file modes. Its run is reported but doesn't fail the build
-    # until those are sorted into Windows-only and POSIX-only.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
+          package-manager-cache: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: tailnet/go.mod
-          cache-dependency-path: tailnet/go.sum
+          cache: false
       - run: npm ci
       - run: ./reach --help
         if: runner.os != 'Windows'
@@ -137,36 +137,113 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
       - run: npm run build:release
-      # Native helper and ConPTY tests share the small hosted runner.
-      - run: npm run test:ci
+      - name: Full guarded suite
+        if: matrix.suite == 'all'
+        run: npm run test:ci
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
-          REACH_TEST_SCRIPT_SANDBOX: ${{ runner.os == 'macOS' && '1' || '0' }}
+      - name: Windows contracts, HTTP, files and native terminals
+        if: matrix.suite == 'windows'
+        run: npm run test:ci:windows
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+      - name: Native policies, file/script sandboxes, generated video and PDF rendering
+        if: runner.os == 'macOS'
+        # Synthetic AX objects and inert input sinks. No actual global typing,
+        # private browser profiles, provider sign-in, or OS permission grants.
+        run: npm run test:ci:native
       - run: npm run package
       - run: npm run verify:package
+      - name: First-run and phone matrix against the installed npm artifact
+        if: runner.os != 'Windows'
+        run: npm run test:ci:installed
+      - name: Cold source install without Node, npm, Go or Tailscale
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 22
+        run: npm run test:file -- --test-timeout=240000 test/first-install-source.test.mjs
+        env:
+          REACH_TEST_SOURCE_INSTALL: "1"
+      - name: Record CLI and MCP transport timings using the same read-only fixture
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 22
+        run: npm run test:file -- test/agent-transport-benchmark.test.mjs
+        env:
+          REACH_TEST_TRANSPORT_BENCHMARK: "1"
+          REACH_TRANSPORT_BENCHMARK_OUTPUT: reports/transport-benchmark.json
+      - name: npm 12 Linux install-script diagnostics and approved native rebuild
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
+        # The pinned npm release is the compatibility subject. It runs only
+        # on this disposable, read-only runner with no publishing authority.
+        run: | # zizmor: ignore[adhoc-packages]
+          npm install --global npm@12.2.0
+          npm run test:file -- --test-timeout=180000 test/npm12-install.test.mjs
+        env:
+          REACH_TEST_NPM12_INSTALL: "1"
+      - run: node .github/scripts/package-candidate.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: reach-${{ matrix.os }}-node${{ matrix.node }}
-          path: |
-            release/reach
-            release/*.tgz
+          path: release/candidate/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve reports even after a test failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tests-${{ matrix.os }}-node${{ matrix.node }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
   ios:
-    runs-on: macos-latest
-    timeout-minutes: 25
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning] artifacts are for inspection, nothing here is published
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: npm run build
-      - run: npx cap sync ios
+      - run: npx --no-install cap sync ios
         env:
           REACH_APP_URL: https://computer.example.ts.net:8443
-      - run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+      - name: Build the simulator app with its local bundle identity
+        # Ad-hoc simulator signing needs no Apple account. URLSession's native
+        # background daemon requires the bundle identity omitted by NO signing.
+        run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
+      - name: Real iOS pairing, authenticated files and native transfer bridges
+        run: |
+          mkdir -p reports
+          npm run test:file -- --test-timeout=300000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
+        env:
+          REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
+          REACH_TEST_IOS_REPORT: reports/ios-simulator.json
+      - name: Preserve simulator evidence even after a test failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tests-ios-simulator
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+  compatibility:
+    uses: ./.github/workflows/agent-compatibility.yml # zizmor: ignore[self-repository] same-commit reference; actionlint 1.7.12 does not yet parse the equivalent $/ syntax
+    permissions:
+      contents: read
+  required:
+    name: CI required
+    if: always()
+    needs: [privacy, workflows, go-security, audit, verify, ios, compatibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify ios compatibility
+        env:
+          REACH_CI_NEEDS: ${{ toJSON(needs) }}

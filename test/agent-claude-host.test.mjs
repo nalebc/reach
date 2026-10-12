@@ -262,6 +262,22 @@ test("streamed text, what Claude is doing, and the end of a turn", async () => {
   assert.ok(done.version > v0);
 });
 
+test("a result with a subtype Reach doesn't know never reads as done", async () => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  await h.send(ID, { text: "fix it", cwd: "/work/app" });
+  const proc = claude.last();
+  assert.equal(h.view(ID).status, "running");
+  proc.print({ type: "result", subtype: "future_pending", is_error: false });
+  assert.notEqual(h.view(ID).status, "idle");
+  proc.print({ type: "result", is_error: false });
+  assert.notEqual(h.view(ID).status, "idle");
+  // A known end still finishes it.
+  proc.print({ type: "result", subtype: "success", is_error: false, result: "Done" });
+  assert.equal(h.view(ID).status, "idle");
+  h.close();
+});
+
 test("permission prompts become cards and the answer goes back on the same request", async () => {
   const claude = fakeClaude();
   const h = host(claude);
@@ -356,6 +372,16 @@ test("requests Reach can't handle are refused at once, so Claude never waits on 
   assert.deepEqual(h.view(ID).prompts, []);
 });
 
+test("a new Claude session defaults to Auto permissions", async (t) => {
+  const claude = fakeClaude();
+  const h = host(claude);
+  t.after(() => h.close());
+  const { threadId } = await h.start({ cwd: "/work/app", text: "go" });
+  const args = claude.last().args;
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "auto");
+  assert.equal(h.modeOf(threadId), "auto");
+});
+
 test("a new Claude session gets its own id and the chosen settings", async () => {
   const claude = fakeClaude();
   const h = host(claude);
@@ -388,7 +414,7 @@ test("a new Claude session is named from its first message, so the Claude app do
     { subtype: "rename_session", title: "Settings page dark mode toggle", source: "host", session_id: threadId },
   ]);
   // A reply in a session that already has its name doesn't rename it.
-  proc.print({ type: "result", is_error: false });
+  proc.print({ type: "result", subtype: "success", is_error: false });
   await h.send(threadId, { text: "and the profile page too" });
   await settle();
   assert.equal(requests(proc, "generate_session_title").length, 1);
@@ -417,7 +443,7 @@ test("Reach keeps a new Claude session until its name is written, then lets go",
   const claude = fakeClaude({ title: new Promise((resolve) => (answer = resolve)) });
   const h = host(claude, { graceMs: 20, idleMs: 120 });
   const { threadId } = await h.start({ cwd: "/w", text: "go" });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   await settle(40);
   assert.equal(h.drives(threadId), true, "held while naming");
   answer("Go");
@@ -432,11 +458,11 @@ test("the model changes in place; a new thinking level relaunches between turns"
   const h = host(claude);
   await h.send(ID, { text: "one", cwd: "/w", effort: "max" });
   const first = claude.last();
-  first.print({ type: "result", is_error: false });
+  first.print({ type: "result", subtype: "success", is_error: false });
   await h.send(ID, { text: "two", model: "sonnet" });
   assert.equal(claude.runs.length, 1);
   assert.equal(first.lines.find((l) => l.request?.subtype === "set_model").request.model, "sonnet");
-  first.print({ type: "result", is_error: false });
+  first.print({ type: "result", subtype: "success", is_error: false });
   await h.send(ID, { text: "three", effort: "low" });
   assert.equal(first.ended, true);
   assert.equal(claude.runs.length, 2);
@@ -489,7 +515,7 @@ test("an API error ends the turn with its message; a crash mid-turn says so", as
     error: "authentication_failed",
     message: { model: "<synthetic>", content: [{ type: "text", text: "Failed to authenticate: OAuth session expired" }] },
   });
-  proc.print({ type: "result", is_error: true, result: "Failed to authenticate: OAuth session expired" });
+  proc.print({ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate: OAuth session expired" });
   assert.equal(h.view(ID).error, "Failed to authenticate: OAuth session expired");
   assert.equal(h.view(ID).status, "idle");
   await h.send(ID, { text: "again" });
@@ -504,7 +530,7 @@ test("Reach lets go of a session before the Claude app takes it, never mid-turn"
   assert.equal(h.release(ID), false);
   await h.send(ID, { text: "go", cwd: "/w" });
   assert.throws(() => h.release(ID), (e) => e.status === 409);
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   assert.equal(h.release(ID), true);
   assert.equal(claude.last().ended, true);
   assert.equal(h.drives(ID), false);
@@ -664,10 +690,10 @@ test("session fixtures never read or write the host Claude import stores unless 
   });
   t.after(() => { sessions.close(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); });
   const { threadId } = await sessions.start("claude", { cwd: "/work/site", text: "new fixture" });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   h.release(threadId);
   await sessions.send("claude", ID, { text: "existing fixture" });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   h.release(ID);
   await settle();
   assert.deepEqual(touched, [], "the test default must be inert, including constructor, add and release");
@@ -753,8 +779,8 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
     ["first", "second"],
   );
   assert.equal(sessions.view("claude", ID).queued, 0);
-  claude.last().print({ type: "result", is_error: false });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   assert.deepEqual(refreshed, []);
   claudeHost.release(ID);
   // The app's window doesn't see what Reach added: it's reloaded (when nobody is at the Mac).
@@ -766,7 +792,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   await sessions.send("claude", ID, { text: "from the phone" });
   assert.deepEqual(app.signals, ["SIGINT"]);
   assert.equal(claude.last().lines.at(-1).message.content[0].text, "from the phone");
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   claudeHost.release(ID);
   where = null;
 
@@ -774,7 +800,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
   // someone is using the Mac (the import switches the app's window).
   const { threadId } = await sessions.start("claude", { cwd: "/work/site", text: "new one" });
   assert.deepEqual(opened, []);
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   claudeHost.release(threadId);
   await settle(20);
   assert.deepEqual(opened, [], "not while someone is at the Mac");
@@ -1385,7 +1411,7 @@ test("Reach lets go of Claude Code soon after a turn, later only while the phone
   const claude = fakeClaude();
   const h = host(claude, { graceMs: 20, idleMs: 120 });
   await h.send(ID, { text: "go", cwd: "/w" });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   await settle(40);
   // Nobody watching: gone after the grace, so the Claude app can take it.
   assert.equal(h.drives(ID), false);
@@ -1394,7 +1420,7 @@ test("Reach lets go of Claude Code soon after a turn, later only while the phone
   await h.send(ID, { text: "again" });
   let watching = new AbortController();
   let poll = h.changes(ID, h.view(ID).version, 60000, watching.signal);
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   await poll; // woken by the turn ending
   // The phone polls again at once, as it does while it shows the session.
   watching = new AbortController();
@@ -1414,7 +1440,7 @@ test("Reach keeps Claude Code while its background agents work, so they aren't s
   const h = host(claude, { graceMs: 20, idleMs: 120 });
   await h.send(ID, { text: "research this", cwd: "/w" });
   claude.last().print({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Research" }] });
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   await settle(40);
   assert.equal(h.drives(ID), true, "kept while an agent runs");
   assert.equal(claude.last().ended, false);
@@ -1718,7 +1744,7 @@ test("Auto picked for a chat Reach runs stays Auto on its next messages", async 
   t.after(() => { sessions.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
   await sessions.send("claude", ID, { text: "first" });
   const proc = claude.last();
-  proc.print({ type: "result", is_error: false });
+  proc.print({ type: "result", subtype: "success", is_error: false });
   // Claude Code confirms each mode change.
   const write = proc.stdin.write;
   proc.stdin.write = (text, callback) => {
@@ -1733,7 +1759,7 @@ test("Auto picked for a chat Reach runs stays Auto on its next messages", async 
   assert.ok(modes.length && modes.every((m) => m === "auto"), `never set back to Manual: ${modes}`);
   assert.equal((await sessions.read("claude", ID)).session.mode, "auto");
   // Picked between turns, after its process went: it relaunches in Auto.
-  proc.print({ type: "result", is_error: false });
+  proc.print({ type: "result", subtype: "success", is_error: false });
   claudeHost.release(ID);
   await sessions.mode("claude", ID, { mode: "acceptEdits" });
   await sessions.send("claude", ID, { text: "third" });

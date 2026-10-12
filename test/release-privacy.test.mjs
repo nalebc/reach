@@ -38,18 +38,36 @@ test("release privacy accepts the verified owner's noreply identity and retains 
   }
 });
 
-test("release privacy rejects private or unverified metadata without echoing it", (t) => {
+test("release privacy accepts contributor-chosen attribution without an owner allowlist", (t) => {
+  for (const identity of [
+    { name: "New Contributor", email: "contributor@example.invalid" },
+    { name: "New Contributor", email: "1234+contributor@users.noreply.github.com" },
+    { committerName: "Integration Bot", committerEmail: "integration@example.invalid" },
+  ]) {
+    const result = fixture(t, identity);
+    assert.equal(result.status, 0, result.stderr);
+  }
+});
+
+test("release privacy rejects configured private metadata without echoing it", (t) => {
   for (const identity of [
     { email: "FixturePrivatePerson@example.invalid" },
     { committerEmail: "FixturePrivatePerson@example.invalid" },
     { name: "FixturePrivatePerson" },
-    { email: "1234+nalebc@users.noreply.github.com" },
   ]) {
     const result = fixture(t, identity);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /not an approved public identity/);
+    assert.match(result.stderr, /private identifier in author or committer/);
     assert.doesNotMatch(result.stderr, /FixturePrivatePerson|example\.invalid|1234\+nalebc/);
   }
+});
+
+test("release privacy rejects credentials in commit attribution without echoing them", (t) => {
+  const credential = "ghp_" + "b".repeat(36);
+  const result = fixture(t, { name: credential, email: "contributor@example.invalid" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /credential in author or committer/);
+  assert.ok(!result.stderr.includes(credential));
 });
 
 test("public attribution does not bypass private-content or credential checks", (t) => {

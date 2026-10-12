@@ -880,3 +880,79 @@
   gap: 4px;
   vertical-align: -1px;
 }
+
+/* A workflow's chats, together under one quiet line (FlowRuns in
+   ChatList.tsx): its name and how far it is, a thin rail along its rows. */
+.chat-flow {
+  display: flex;
+  flex-direction: column;
+}
+.chat-library .chat-flow-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 6px 10px 2px 16px;
+  border: 0;
+  background: none;
+  color: var(--chat-faint);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.chat-flow-head > svg {
+  flex: none;
+}
+.chat-flow-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-flow-head > small {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.chat-flow-head > small.paused {
+  color: #f5c26b;
+}
+.chat-flow-rows {
+  position: relative;
+}
+.chat-flow-rows::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--chat-line);
+  pointer-events: none;
+}
+/* Its idle chats, folded: one quiet line on the rail, in line with the
+   titles above it. */
+.chat-library .chat-flow-more {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 10px 6px 47px;
+  border: 0;
+  background: none;
+  color: var(--chat-faint);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+@media (max-width: 600px) {
+  .chat-library .chat-flow-head {
+    padding-left: 10px;
+  }
+  .chat-library .chat-flow-more {
+    padding-left: 34px;
+    font-size: 13px;
+  }
+}

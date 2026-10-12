@@ -36,12 +36,12 @@ import "./agent-invite.css";
 
 // Inviting any agent: one that opens a web page, or one that runs Reach's
 // tools (command line or MCP). One choice: a preset. Everything the agent may do follows from it;
-// what stays protected never changes (server/agent-guard.mjs).
+// Full control has no content exclusions; narrower presets keep their limits.
 export type Preset = "full" | "apps" | "files" | "readonly";
 export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
   full: {
     title: "Full control",
-    detail: "Use your screen, files and commands.",
+    detail: "Use every app, file and command as you.",
   },
   apps: { title: "Apps", detail: "Work in just the apps you choose." },
   files: { title: "Files", detail: "Read or edit selected folders." },
@@ -141,16 +141,16 @@ export const agentInviteMessage = (link: string, issued: Issued) => {
     issued.folders.slice(0, 3).map(quote).join(", ") +
     (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
   const where = issued.everything ? "every folder I share" : folders;
-  const hidden = issued.hidden.length
+  const hidden = issued.preset !== "full" && issued.hidden.length
     ? ` Hidden from you: ${listWords(issued.hidden.map(quote))}.`
     : "";
   const access = {
-    full: `You get full control of my Mac: screen, apps, files in ${where} and a shell.`,
+    full: "You get full control of my Mac as my user account: all apps, files, browser pages and shell commands.",
     apps: `You get only ${listWords(issued.apps.map(quote))}, on my screen.`,
     files: `You can ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
     readonly: `You can look: my screen and files in ${where}. No clicks, no changes.`,
   }[issued.preset];
-  const hands = issued.preset === "full" || issued.preset === "apps";
+  const hands = issued.preset === "apps";
   const tools = !!issued.command || !!issued.hosted;
   const rules =
     (hands
@@ -395,16 +395,17 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
           // on your tailnet uses it at once, any other the public link.
           transport: "funnel",
           preset,
+          ...(preset === "full" ? { fullControlVersion: 1 } : {}),
           ...(connect === "hosted" ? { hosted: true } : {}),
           ...(minutes === ALWAYS
             ? { standing: true }
             : { ttlSeconds: minutes * 60 }),
-          ...(preset !== "apps" && folders.length
+          ...((preset === "files" || preset === "readonly") && folders.length
             ? { folders: folders.map(({ root, path }) => ({ root, path })) }
             : {}),
           ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
           ...(preset === "files" && write ? { write: true } : {}),
-          ...((preset === "full" || preset === "readonly") && hidden.length
+          ...(preset === "readonly" && hidden.length
             ? { hidden: hidden.map((id) => ({ id })) }
             : {}),
         }),
@@ -421,7 +422,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
         apps: chosenApps.map((app) => app.name),
         folders: folders.map((folder) => folder.full || folder.label),
         write: preset === "files" && write,
-        hidden: hiddenApps.map((app) => app.name),
+        hidden: preset === "full" ? [] : hiddenApps.map((app) => app.name),
         everything,
         always: minutes === ALWAYS,
       };
@@ -568,7 +569,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     ? ""
     : `${name.trim()} gets ${
         {
-          full: `full control of this Mac${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}`,
+          full: "full control of this Mac as your user account",
           apps: chosenApps.length
             ? `${listWords(chosenApps.slice(0, 3).map((app) => app.name))}${chosenApps.length > 3 ? ` and ${chosenApps.length - 3} more` : ""}, nothing else`
             : "the apps you pick",
@@ -850,7 +851,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
             </Menu>
           </Row>
           {/* Apps and Folders show only what they name: nothing to hide. */}
-          {preset !== "apps" && preset !== "files" && (
+          {(preset === null || preset === "readonly") && (
           <div className="ag-rows ag-hide">
             <AccessRow
               icon={<EyeOff />}
@@ -867,8 +868,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
             >
               <p className="ag-quiet">
                 Reach filters known password and Reach windows from pictures.
-                Add apps where your codes and mail arrive. This does not limit
-                Full control commands.
+                Add apps where your codes and mail arrive.
               </p>
               {suggested.length > 0 && !hidden.length && (
                 <button
@@ -897,8 +897,9 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
         </div>
         <p className="ag-note">
           <ShieldCheck size={14} />
-          You approve it before it can join. Full control runs as you: invite
-          only an agent you trust.
+          {preset === "full"
+            ? "Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within macOS permissions. Approve only an agent you trust."
+            : "You approve it before it can join. You can pause it or end its access at any time."}
         </p>
         {error && (
           <p className="ag-error" role="alert">

@@ -20,7 +20,9 @@ or `new` (New chat). The demo uses
 Home Mac, My iPhone, My iPad, and Alex as fictional devices and people. This
 fixture is for local screenshots only; do not deploy it as an operational Reach
 frontend. The Screen and terminal transports are not part of this fixture;
-`capture.mjs` supplies the Screen picture (below).
+`capture.mjs` supplies the Screen picture (below). `phone-approvals.html` shows
+the approval sheet inside a 390 × 844 phone frame; so it can, the demo server
+sends `frame-ancestors 'self'` where Reach itself sends `'none'`.
 
 ## Capture and render
 

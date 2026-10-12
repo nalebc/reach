@@ -491,6 +491,9 @@ export function createCodexLive({
       case "turn/completed": {
         const turn = p.turn || {};
         if (t.turnId && turn.id && turn.id !== t.turnId) return;
+        // Only a known end finishes the turn. A status Reach doesn't know
+        // keeps it working, with its prompts, until Codex says idle.
+        if (!["completed", "interrupted", "failed"].includes(turn.status)) return;
         if (queues && t.queue?.length) void readQueue(id);
         Object.assign(t, { status: "idle", turnId: null, streaming: null, activity: null });
         t.lastCompleted = turn.id || null;
@@ -1117,7 +1120,7 @@ export function createCodexLive({
         if (t.questionReplies.get(itemId) === "sending") t.questionReplies.delete(itemId);
       }
     },
-    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, name, developerInstructions, config }) {
+    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, modeName, name, developerInstructions, config }) {
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
       const model = await withModel(picked);
@@ -1143,6 +1146,7 @@ export function createCodexLive({
           input,
           clientUserMessageId: randomUUID(),
           ...(effort ? { effort } : {}),
+          ...codexTurnMode(modeName),
         });
       } catch (e) {
         release(threadId);

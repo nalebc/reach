@@ -17,7 +17,7 @@ import { desktopBinary } from "../server/desktop-native.mjs";
 //
 // Opens a window and needs Accessibility, so it runs only when asked, from
 // Terminal (which holds Reach's Accessibility permission):
-//   REACH_TEST_TYPING_NATIVE=1 node --test test/typing-native.test.mjs
+//   npm run test:typing
 const exec = promisify(execFile);
 const enabled = process.platform === "darwin" && process.env.REACH_TEST_TYPING_NATIVE === "1";
 

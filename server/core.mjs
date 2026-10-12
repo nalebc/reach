@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
-import { STANDING_SECONDS, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
+import { STANDING_SECONDS, fullControlNeedsInvitation, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -321,6 +321,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   const pairingFile = pairingWindowFile(config.dataDir);
   let clients = loadJson(file, []);
   let credentialStoreCreated = fs.existsSync(file);
+  let credentialGeneration = 0;
   const listStoredClients = () => {
     try {
       const stored = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -345,6 +346,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       clients = change(listStoredClients());
       atomicJson(file, clients);
       credentialStoreCreated = true;
+      credentialGeneration++;
     } finally {
       fs.closeSync(fd);
       fs.unlinkSync(lock);
@@ -425,9 +427,11 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     const current = verifyFunnel(token, keyThumbprint);
     if (!current || current.kind !== "agent") throw fail(403, "Only an agent rotates its credential, with its own key.");
     const next = crypto.randomBytes(32).toString("base64url");
-    const now = Date.now();
     changeClients((latest) => {
-      const client = latest.find((c) => c.id === current.id && holdsDigest(c, hash(token), now));
+      // Retired credentials retain a short overlap for in-flight requests,
+      // but only the current credential may exchange. Otherwise a copied
+      // retired token can displace the legitimate client's pending successor.
+      const client = latest.find((c) => c.id === current.id && sameHash(c.hash, hash(token)));
       if (!client) throw fail(401, "This browser connection has ended.");
       client.pendingHash = hash(next);
       return latest;
@@ -448,7 +452,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     if (!validBrowserBinding(binding) || !/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
     return [binding, secret];
   };
-  function refreshHosted(refreshToken, { clientId, connector } = {}) {
+  function refreshHosted(refreshToken, { clientId, connector, authenticate } = {}) {
     const parts = splitHostedToken(refreshToken);
     if (!parts) return null;
     const [binding, secret] = parts;
@@ -456,16 +460,21 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     const now = Date.now();
     const digest = hash(secret);
     if (!settleRotation(digest, now)) return null;
-    const client = clients.find((c) => c.hosted === true && c.browserBinding === binding && holdsDigest(c, digest, now));
+    // Only the current refresh token trades. One its successor already
+    // replaced (in its two minutes) mints nothing: a new pair from it would
+    // drop the real client's pending one (audit A3).
+    const client = clients.find((c) => c.hosted === true && c.browserBinding === binding && sameHash(c.hash, digest));
     if (!client || idle(client, now) || !funnelSession(client, binding, now)) return null;
     if (clientId !== undefined && client.hostedClientId && client.hostedClientId !== clientId) return null;
     // Refreshed at its own address only.
     if (connector !== undefined && !sameHash(client.connectorHash, hash(String(connector)))) return null;
+    // The OAuth client that connected authenticates, named or not (audit A6).
+    if (authenticate && !authenticate(client.hostedClientId)) return null;
     const nextRefresh = crypto.randomBytes(32).toString("base64url");
     const nextAccess = crypto.randomBytes(32).toString("base64url");
     let refreshed = false;
     changeClients((latest) => {
-      const c = latest.find((entry) => entry.id === client.id && holdsDigest(entry, digest, now));
+      const c = latest.find((entry) => entry.id === client.id && sameHash(entry.hash, digest));
       if (!c) return latest;
       c.pendingHash = hash(nextRefresh);
       if (typeof c.accessHash === "string" && c.accessUntil > now) c.accessPrevious = { hash: c.accessHash, until: c.accessUntil };
@@ -845,9 +854,9 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
     };
   }
-  // Full control and Read only without chosen folders see every folder Reach
-  // shares that agents may have (Home, never the whole computer); Files needs
-  // chosen folders; Apps has none.
+  // Keep convenient configured roots for Full control (presetPolicy adds the
+  // filesystem root). Read only defaults to shareable configured folders;
+  // Files needs chosen folders; Apps has none.
   const shareable = (preset) => config.roots.filter((root) => {
     try { validateBrowserRoot(root, { policy: { browser: true, preset } }); return true; }
     catch { return false; }
@@ -947,6 +956,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     let result;
     changeClients((latest) => {
       const client = latest.find((c) => c.id === clientId);
+      if (fullControlNeedsInvitation(client?.policy))
+        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
       if (
         !client ||
         !(
@@ -991,18 +1002,26 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         // catalog by the route; an unchanged Apps preset keeps its apps.
         const { folders: ignoredFolders, expiresAt: ignoredExpiry, roots: ignoredRoots, ...permissions } = changes;
         const preset = permissions.preset ?? client.policy.preset;
+        if ((preset === "full" && client.policy.preset !== "full") ||
+            (preset === "apps" && !hostGuardedPreset(client.policy)))
+          throw fail(409, "Full control and Apps need a new invitation from your phone.");
         const apps = permissions.apps ?? (preset === "apps" && preset === client.policy.preset ? client.policy.apps : undefined);
         const checked = validateBrowserInvitation({
           ...permissions, preset, ...(apps !== undefined ? { apps } : {}), name: client.name, ttlSeconds: 60,
+          ...(preset === "full" ? { fullControlVersion: client.policy.fullControlVersion } : {}),
           transport: client.browserTransport || "tailnet", folders: [],
           ...(permissions.hidden === undefined && ["full", "readonly"].includes(preset) && client.policy.hidden ? { hidden: client.policy.hidden } : {}),
+          // Watched terminals stay unless the edit names them (the phone's
+          // editor doesn't send them).
+          ...(permissions.terminalIds === undefined && ["full", "readonly"].includes(preset) && client.policy.terminalIds?.length ? { terminalIds: client.policy.terminalIds } : {}),
         }, { folderCount: folders.length });
         const policy = presetPolicy(checked, presetRoots(checked, folders));
         // A changed preset keeps Always access; only Stop ends it.
         if (standingPolicy(client.policy)) policy.standing = true;
         // Taking the Mac needs the phone that creates the invitation (the host
         // guard binds it); an invitation that didn't have it can't grow into it.
-        if (hostGuardedPreset(policy) && !hostGuardedPreset(client.policy))
+        if (hostGuardedPreset(policy) && (!hostGuardedPreset(client.policy) ||
+            (policy.preset === "full" && client.policy.preset !== "full")))
           throw fail(409, "Full control and Apps need a new invitation from your phone.");
         client.scopes = presetScopes(policy);
         client.policy = policy;
@@ -1082,7 +1101,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   const admissionStatus = (client, now = Date.now()) => {
     const request = client.admission;
     if (!request) return null;
-    if (client.expiresAt <= now) return "expired";
+    if (client.expiresAt <= now || fullControlNeedsInvitation(client.policy)) return "expired";
     if ((client.browserTransport === "funnel" || (client.policy?.browser === true && (client.policy.screen === "apps" || hostGuardedPreset(client.policy)))) &&
         request.grant !== admissionGrant(client)) return "expired";
     if (request.status === "collected")
@@ -1308,6 +1327,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // spent, the claimant bound (its browser key, or its tailnet node), a code
   // made for the owner to match. Shared by links and hosted agents.
   function startAdmission(latest, client, now, { funnel, keyThumbprint, identity }) {
+    if (fullControlNeedsInvitation(client.policy))
+      throw fail(410, "This older Full control grant has ended. Ask the owner for a new invitation to approve unrestricted access.");
     const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
     const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
     if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
@@ -1447,6 +1468,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       const client = latest.find((c) => c.id === clientId);
       if (!isFunnelBrowser(client) || client.policy?.preset === undefined || !client.linkHash || !(client.expiresAt > now))
         throw fail(404, "This agent's link can't be reopened. Make a new invite.");
+      if (fullControlNeedsInvitation(client.policy))
+        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
       if (rebindable(client, now)) {
         for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
         result = { clientId: client.id, joinBy: client.expiresAt };
@@ -1471,6 +1494,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       const client = latest.find((c) => c.id === clientId);
       if (!client || !["guest", "agent"].includes(client.kind) || !(client.expiresAt > now))
         throw fail(404, "That invitation has ended.");
+      if (fullControlNeedsInvitation(client.policy))
+        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
       const status = admissionStatus(client, now);
       if (!client.inviteHash || client.redeemedAt || ["pending", "approved", "accepted"].includes(status))
         throw fail(409, `${client.name} already opened the link. Nothing to send again.`);
@@ -1637,18 +1662,31 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     while (endedKeys.size > 256) endedKeys.delete(endedKeys.keys().next().value);
     endedVersion++;
   };
-  // Read again only when the store changed (its mtime) or a key ended: exact
-  // at every request, at the cost of a stat.
-  let keysMemo = { mtime: null, ended: -1, at: 0, keys: new Set() };
+  // Atomic writes can share an mtime. Include the file identity and nanosecond
+  // metadata for other writers, and a generation for successful local writes.
+  // An uninspectable store must never reuse a cached public-door admission.
+  const credentialRevision = () => {
+    try {
+      const stat = fs.statSync(file, { bigint: true });
+      if (!stat.isFile()) return null;
+      return `${credentialGeneration}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch { return null; }
+  };
+  const publicDoorClients = () => {
+    try { return listStoredClients(); } catch { return null; }
+  };
+  let keysMemo = { revision: null, ended: -1, at: 0, keys: new Set() };
   function funnelKeys() {
     const now = Date.now();
-    let mtime = 0;
-    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
-    if (keysMemo.mtime === mtime && keysMemo.ended === endedVersion && now - keysMemo.at < 60_000) return keysMemo.keys;
+    const revision = credentialRevision();
+    if (revision === null) return new Set();
+    if (keysMemo.revision === revision && keysMemo.ended === endedVersion && now - keysMemo.at < 60_000) return keysMemo.keys;
+    const stored = publicDoorClients();
+    if (stored === null) return new Set();
     for (const [key, until] of endedKeys) if (until <= now) endedKeys.delete(key);
-    const keys = new Set([...loadJson(file, []).filter((c) => isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
+    const keys = new Set([...stored.filter((c) => isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
       .flatMap((c) => [c.browserBinding, c.approvedBinding]), ...endedKeys.keys()].filter(validBrowserBinding));
-    keysMemo = { mtime, ended: endedVersion, at: now, keys };
+    keysMemo = { revision, ended: endedVersion, at: now, keys };
     return keys;
   }
   // Door keys (Oct 10): a browser that came in without the Tailscale app
@@ -1672,49 +1710,56 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     });
     return result;
   }
-  let doorMemo = { mtime: null, at: 0, keys: new Map() };
+  let doorMemo = { revision: null, at: 0, keys: new Map() };
   function doorKeyKnown(key) {
     if (typeof key !== "string" || !DOOR_KEY.test(key)) return false;
     const now = Date.now();
-    let mtime = 0;
-    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
-    if (doorMemo.mtime !== mtime || now - doorMemo.at >= 60_000)
-      doorMemo = { mtime, at: now, keys: new Map(loadJson(file, [])
+    const revision = credentialRevision();
+    if (revision === null) return false;
+    if (doorMemo.revision !== revision || now - doorMemo.at >= 60_000) {
+      const stored = publicDoorClients();
+      if (stored === null) return false;
+      doorMemo = { revision, at: now, keys: new Map(stored
         .filter((c) => doorKind(c) && !c.policy?.browser && typeof c.doorHash === "string")
         .map((c) => [c.doorHash, c.expiresAt])) };
+    }
     return (doorMemo.keys.get(hash(key)) || 0) > now;
   }
   // The connection ids of hosted agents (hosted-mcp.mjs) with access, or
   // ended lately: the door answers their bearer tokens, and keeps the token
   // and discovery endpoints up for them, when nothing else opens it.
-  let hostedMemo = { mtime: null, ended: -1, at: 0, keys: new Set() };
+  let hostedMemo = { revision: null, ended: -1, at: 0, keys: new Set() };
   function hostedKeys() {
     const now = Date.now();
-    let mtime = 0;
-    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
-    if (hostedMemo.mtime === mtime && hostedMemo.ended === endedVersion && now - hostedMemo.at < 60_000) return hostedMemo.keys;
+    const revision = credentialRevision();
+    if (revision === null) return new Set();
+    if (hostedMemo.revision === revision && hostedMemo.ended === endedVersion && now - hostedMemo.at < 60_000) return hostedMemo.keys;
+    const stored = publicDoorClients();
+    if (stored === null) return new Set();
     for (const [key, until] of endedHosted) if (until <= now) endedHosted.delete(key);
-    const keys = new Set([...loadJson(file, []).filter((c) => c.hosted === true && isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
+    const keys = new Set([...stored.filter((c) => c.hosted === true && isFunnelBrowser(c) && c.expiresAt > now - ENDED_KEYS_MS)
       .map((c) => c.browserBinding), ...endedHosted.keys()].filter(validBrowserBinding));
-    hostedMemo = { mtime, ended: endedVersion, at: now, keys };
+    hostedMemo = { revision, ended: endedVersion, at: now, keys };
     return keys;
   }
   // The address ids of hosted agents (hosted-mcp.mjs), hashed: an invitation
   // waiting at it, an agent with access, or one that ended lately. The door
   // answers a hosted agent's paths for these alone.
-  let connectorsMemo = { mtime: null, ended: -1, at: 0, map: new Map() };
+  let connectorsMemo = { revision: null, ended: -1, at: 0, map: new Map() };
   function hostedConnectors() {
     const now = Date.now();
-    let mtime = 0;
-    try { mtime = fs.statSync(file).mtimeMs; } catch { mtime = 0; }
-    if (connectorsMemo.mtime === mtime && connectorsMemo.ended === endedVersion && now - connectorsMemo.at < 60_000) return connectorsMemo.map;
+    const revision = credentialRevision();
+    if (revision === null) return new Map();
+    if (connectorsMemo.revision === revision && connectorsMemo.ended === endedVersion && now - connectorsMemo.at < 60_000) return connectorsMemo.map;
+    const stored = publicDoorClients();
+    if (stored === null) return new Map();
     for (const [key, until] of endedConnectors) if (until <= now) endedConnectors.delete(key);
     const map = new Map([...endedConnectors.keys()].map((key) => [key, { waiting: false }]));
-    for (const c of loadJson(file, [])) {
+    for (const c of stored) {
       if (c.hosted !== true || typeof c.connectorHash !== "string" || !(c.expiresAt > now - ENDED_KEYS_MS)) continue;
-      map.set(c.connectorHash, { waiting: !!c.inviteHash && !c.admission && !c.hash && c.expiresAt > now && c.inviteExpiresAt > now });
+      map.set(c.connectorHash, { waiting: !fullControlNeedsInvitation(c.policy) && !!c.inviteHash && !c.admission && !c.hash && c.expiresAt > now && c.inviteExpiresAt > now });
     }
-    connectorsMemo = { mtime, ended: endedVersion, at: now, map };
+    connectorsMemo = { revision, ended: endedVersion, at: now, map };
     return map;
   }
   function verifyFunnel(token, keyThumbprint) {
@@ -1775,12 +1820,18 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     // Opened at the computer (./reach in a terminal, setup, ./reach pair)
     // for a phone without the Tailscale app; closed by the first device that
     // gets in, or by its own deadline.
+    // Held to 15 minutes from when the file was written, whatever it asks;
+    // one written in the future (a clock or a hand set it) opens nothing.
     const pairing = loadJson(pairingFile, null);
-    if (Number.isFinite(pairing?.until) && pairing.until > now) {
-      result = { open: true, until: Math.min(pairing.until, now + PAIRING_WINDOW_MS), reason: "pairing" };
+    let written = -Infinity;
+    try { written = Math.floor(fs.statSync(pairingFile).mtimeMs); } catch { /* none */ }
+    const pairingUntil = Number.isFinite(pairing?.until) && written <= now + 2000 ? Math.min(pairing.until, written + PAIRING_WINDOW_MS) : 0;
+    if (pairingUntil > now) {
+      result = { open: true, until: pairingUntil, reason: "pairing" };
       strangers = true;
     }
     for (const client of loadJson(file, [])) {
+      if (fullControlNeedsInvitation(client.policy)) continue;
       // A person's or a CLI agent's unopened invitation needs the start page
       // too: to sign in without the Tailscale app, or to fetch agent.mjs. The
       // page closes again once the link is used or runs out.
@@ -1937,13 +1988,14 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     list: () =>
       (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ...rest }) => ({
         ...rest,
+        ...(fullControlNeedsInvitation(rest.policy) ? { needsInvitation: true } : {}),
         // The owner may reopen this agent's link (Agents & people).
         ...(linkHash && rest.expiresAt > Date.now() ? { relink: true } : {}),
         ...(rest.kind === "guest" || rest.policy?.invite
           ? {
               // An agent that never joined in time can't anymore.
               status:
-                admission ? admissionStatus({ ...rest, admission }) : rest.expiresAt <= Date.now() ||
+                fullControlNeedsInvitation(rest.policy) ? "expired" : admission ? admissionStatus({ ...rest, admission }) : rest.expiresAt <= Date.now() ||
                 (inviteHash && rest.inviteExpiresAt <= Date.now())
                   ? "expired"
                   : inviteHash

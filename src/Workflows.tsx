@@ -25,6 +25,8 @@ export type WorkflowTask = {
   task?: string;
   state: WorkflowTaskState;
   chat?: ChatRef;
+  // Its earlier chats, each try's (newest last).
+  tries?: ChatRef[];
   problem?: string;
   // What it finished with, in brief, and the files it changed.
   summary?: string;
@@ -170,6 +172,7 @@ const lockedCount = (w: Workflow) => (w.state === "draft" ? 0 : w.tasks.reduce((
 // build left for you to say. Codex and Claude Code take the code; OpenClaw,
 // when it's here, the cheap research first.
 function starters(agents: string[]) {
+  if (!agents.length) return [];
   const coders = agents.filter((x) => x !== "openclaw");
   const a = coders[0] || agents[0] || "codex";
   const b = coders.find((x) => x !== a) || a;
@@ -409,7 +412,7 @@ function Editor({
   };
   const add = () =>
     changeTasks(
-      [...tasks, { title: "", agent: tasks.at(-1)?.agent || agents[0] || "codex", kind: "build", task: "", together: false }],
+      [...tasks, { title: "", agent: agents.includes(tasks.at(-1)?.agent || "") ? tasks.at(-1)!.agent : agents[0], kind: "build", task: "", together: false }],
       locked + tasks.length,
     );
   const lockedTasks = workflow.tasks.slice(0, locked);
@@ -466,7 +469,7 @@ function Editor({
                   <AgentLogo agent={draft.agent} logos={logos} size={20} />
                   <select aria-label={`Task ${n} agent`} value={draft.agent}
                     onChange={(e) => change(i, { agent: e.target.value })}>
-                    {[...new Set([draft.agent, ...agents])].map((agent) => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}
+                    {[...new Set([draft.agent, ...agents])].map((agent) => <option key={agent} value={agent} disabled={!agents.includes(agent)}>{agentLabel(agent)}{!agents.includes(agent) ? " (unavailable)" : ""}</option>)}
                   </select>
                   <ChevronDown size={16} aria-hidden="true" />
                 </span>
@@ -514,6 +517,7 @@ function Editor({
           );
         }}
       />
+      {!agents.length && <p className="wf-problem">No agents are available. Connect or sign in to an agent to add tasks.</p>}
       {empty && workflow.state === "draft" && (
         <>
           <h3 className="wf-label">Start from</h3>
@@ -530,7 +534,7 @@ function Editor({
           ))}
         </>
       )}
-      <button className="wf-dashed add" disabled={all.length >= MAX_TASKS} onClick={add}>
+      <button className="wf-dashed add" disabled={!agents.length || all.length >= MAX_TASKS} onClick={add}>
         <span className="wf-dashed-icon" aria-hidden="true">
           <Plus size={18} />
         </span>

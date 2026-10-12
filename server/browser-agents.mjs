@@ -26,6 +26,7 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
         status: client.status === 'revoked' ? 'revoked' : client.expiresAt <= at || (client.status === 'accepted' && browserIdleEnded(client, at)) ? 'expired' : client.status,
         ...(client.policy?.standing ? { standing: true } : {}),
         ...(client.relink ? { relink: true } : {}),
+        ...(client.needsInvitation ? { needsInvitation: true } : {}),
         scopes: client.scopes, policy: client.policy, browserTransport: client.browserTransport,
         folders: client.agentRoots || client.policy?.roots || [],
         activity: current ? { state: current.stopping ? 'stopping' : current.state, folder: current.folder, kind: current.kind, queuedAt: current.queuedAt, startedAt: current.startedAt } : { state: 'idle' },

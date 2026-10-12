@@ -1,0 +1,39 @@
+{
+  "schema": "reach.native-agent-live.v1",
+  "at": "2026-10-11T19:06:39.208Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v24.21.0",
+  "sourceSha256": "a96890ebe19d94b9e0bd15c62ee67633bb788ee58d7626b84d8e993fabffb544",
+  "command": "REACH_TEST_AGENT_LIVE=1 npm run test:file -- --test-concurrency=1 --test-timeout=240000 test/native-agent-live.test.mjs",
+  "result": {
+    "tests": 1,
+    "passed": 1,
+    "skipped": 0,
+    "durationMs": 16295.6525,
+    "timings": {
+      "firstObservationIncludingHelperBuildMs": 13081,
+      "referenceClickAndFillMs": 375,
+      "followupObservationMs": 4,
+      "fixtureOnly": true,
+      "physicalPhone": false,
+      "modelInLoop": false
+    }
+  },
+  "verified": [
+    "Production native helper and Apps policy identify a temporary toy application and accessible text field.",
+    "Stable reference click and real synthetic typing reach only the fixture app and exact expected window.",
+    "Independent AppKit field-editor reads and agent Accessibility observations agree on typed content.",
+    "Owner pause and the server phone-control flag prevent subsequent input; resuming permits replacement text.",
+    "Revocation stops later input and preserves the last confirmed field value.",
+    "An Apple-signed WindowServer cursor at the exact cursor layer no longer blocks the underlying allowed app.",
+    "Plain text events clear modifiers inherited from Command+A, avoiding accidental shortcut execution."
+  ],
+  "limitations": [
+    "This is a deterministic tool/API workflow; no model was in the loop.",
+    "Phone-control state was set through the server adapter; no physical phone was used.",
+    "The toy window uses status-bar window level 25 to remain above Notification Center and Dock surfaces. Ordinary-window overlap with those surfaces remains conservatively refused and is not resolved by the cursor-only fix.",
+    "No screenshot capture or real private app content was accessed.",
+    "The first-observation time includes cold compilation of the production helper in a fresh temporary directory; later timings are local only."
+  ]
+}

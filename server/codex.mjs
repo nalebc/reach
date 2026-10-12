@@ -184,7 +184,9 @@ export class Codex {
       c.turnId = p.turn?.id;
     } else if (message.method === "turn/completed") {
       if (c.turnId && p.turn?.id !== c.turnId) return;
-      c.status = p.turn?.status === "failed" ? "error" : "idle";
+      // Only a known end finishes the turn; an unknown status keeps it.
+      if (!["completed", "interrupted", "failed"].includes(p.turn?.status)) return;
+      c.status = p.turn.status === "failed" ? "error" : "idle";
       c.error = p.turn?.error?.message || null;
       c.approvals = [];
     } else if (message.method === "error") {

@@ -115,6 +115,14 @@ if [ ! -x "$RUNTIME/bin/node" ]; then
     echo 'Reach needs curl to download Node.js. Install curl, or Node.js 22 or newer from https://nodejs.org, then run ./reach again.' >&2
     exit 1
   fi
+  if ! command -v tar >/dev/null 2>&1; then
+    echo 'Reach needs tar to unpack Node.js. Install tar, or Node.js 22 or newer from https://nodejs.org, then run ./reach again.' >&2
+    exit 1
+  fi
+  if ! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1; then
+    echo 'Reach needs shasum or sha256sum to verify Node.js. Install one, or Node.js 22 or newer from https://nodejs.org, then run ./reach again.' >&2
+    exit 1
+  fi
   if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 20 --max-time 300 \
     "https://nodejs.org/dist/v$VERSION/node-v$VERSION-$TARGET.tar.gz" -o "$STAGE/node.tar.gz"; then
     echo "Reach couldn't download Node.js (no internet here?). Connect, then run ./reach again; or install Node.js 22 or newer from https://nodejs.org." >&2

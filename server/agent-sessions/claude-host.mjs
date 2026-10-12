@@ -48,9 +48,9 @@ export const claudeMode = (mode) => (mode === "default" ? "manual" : MODES.has(m
 // models list marks the rest so the phone doesn't offer them): never Bypass,
 // nor a mode Reach doesn't know yet. A new chat may start in more.
 export const SWITCHABLE_MODES = ["manual", "default", "acceptEdits", "plan", "auto"];
-// The mode a chat runs in: its own, or Manual (asks each step) for one Reach
-// can't name to Claude Code. Without a mode Claude Code would run its own
-// default, which may allow more than the phone shows (fail-open audit, Oct 8).
+// A new Reach chat explicitly chooses Auto in start(). Resumed chats with no
+// saved mode omit the flag, leaving Claude Code's existing settings intact.
+// An explicit mode Reach cannot name falls back to Manual (asks each step).
 const runMode = (mode) => (mode ? claudeMode(mode) || "manual" : null);
 const MEDIA = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
@@ -603,6 +603,9 @@ export function createClaudeHost({
         if ((m.message?.content || []).some?.((b) => b?.type === "tool_result")) s.activity = null;
         break;
       case "result":
+        // Only a known end ("success", "error_*") finishes anything. A
+        // subtype Reach doesn't know keeps the chat working, prompts and all.
+        if (typeof m.subtype !== "string" || !/^(success$|error_)/.test(m.subtype)) return;
         // A result ends all it has picked up: a message sent mid-turn often
         // gets no result of its own (the chat read Working for good). Only
         // one it hasn't picked up yet starts another turn.
@@ -907,7 +910,7 @@ export function createClaudeHost({
       const id = randomUUID();
       const s = state(id);
       s.cwd = cwd;
-      s.settings = { model: model || null, effort: effort || null, mode: mode || null, ...(Array.isArray(extra) ? { extra } : {}) };
+      s.settings = { model: model || null, effort: effort || null, mode: mode || "auto", ...(Array.isArray(extra) ? { extra } : {}) };
       await launch(s, { resume: false });
       await turn(s, input);
       s.naming = name(s, text).finally(() => (s.naming = null));

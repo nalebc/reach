@@ -653,6 +653,10 @@ button.wf-item-main:not(:disabled):active {
 .wf-parallel strong { font-weight: 400; font-size: 14px; }
 .wf-parallel small { color: var(--as-muted); font-size: 12px; }
 .wf-parallel input {
+  position: relative;
+  -webkit-appearance: none;
+  padding: 0;
+  min-height: 0;
   appearance: none;
   flex: none;
   width: 42px;
@@ -663,7 +667,7 @@ button.wf-item-main:not(:disabled):active {
   background: #484848;
   cursor: pointer;
 }
-.wf-parallel input::before { content: ""; display: block; width: 20px; height: 20px; margin: 2px; border-radius: 50%; background: #ececec; transition: transform .15s; }
+.wf-parallel input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #ececec; transition: transform .15s; }
 .wf-parallel input:checked { background: #ececec; }
 .wf-parallel input:checked::before { transform: translateX(16px); background: #212121; }
 .wf-task-tools { display: flex; align-items: center; border-top: 1px solid var(--as-line); padding-top: 8px; font-size: 12px; color: var(--as-muted); }

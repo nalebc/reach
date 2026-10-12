@@ -30,12 +30,14 @@ test("where this Reach lives: an npm install's prefix, a checkout, or something 
   const win = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@nalebc\\reach";
   assert.equal(reachInstall(win, layout(win, { platform: "win32" })).prefix, "C:\\Users\\me\\AppData\\Roaming\\npm");
   // A checkout: git's job.
-  assert.deepEqual(reachInstall("/src/reach", layout("/src/reach", { files: { "/src/reach/src/main.tsx": 1 } })), { source: true, version: "0.1.0", name: PACKAGE });
+  assert.deepEqual(reachInstall("/src/reach", layout("/src/reach", { files: { "/src/reach/src/main.tsx": 1, "/src/reach/.git": 1 } })), { source: true, version: "0.1.0", name: PACKAGE });
   // Elsewhere, unwritable, or not Reach's package: the command, nothing run.
   assert.equal(reachInstall("/apps/reach", layout("/apps/reach")).reason, "layout");
   const locked = reachInstall(root, layout(root, { writable: false }));
   assert.equal(locked.reason, "permission");
-  assert.equal(locked.manual, `npm install --global --prefix '/opt/homebrew' ${PACKAGE}@latest`, "never sudo");
+  assert.match(locked.manual, /permission.*ownership.*prefix/i);
+  assert.match(locked.manual, /user-owned prefix/i);
+  assert.doesNotMatch(locked.manual, /^npm install|sudo/);
   assert.equal(reachInstall(root, layout(root, { files: { pkg: pkg("0.1.0", "other") } })).reason, "unknown");
   assert.equal(reachInstall(root, layout(root, { files: { pkg: pkg("not-a-version") } })).reason, "unknown");
 });
@@ -187,4 +189,20 @@ test("a restart that never happens is said, not left at Restarting…", async ()
   assert.deepEqual([updates.status().state, updates.status().error], ["installed", "Reach didn't restart. Restart it to finish."]);
   assert.equal(updates.busy(), true, "agents still wait for the new server");
   assert.equal(restarted, 1, "asked once, not again and again");
+});
+
+
+test("a portable archive with sources but no git points to the next archive without installing npm", async () => {
+  const install = reachInstall("/apps/reach", layout("/apps/reach", { files: { "/apps/reach/src/main.tsx": 1 } }));
+  assert.equal(install.source, false);
+  assert.equal(install.reason, "portable");
+  assert.match(install.manual, /archive.*github\.com\/nalebc\/reach\/releases/i);
+  assert.doesNotMatch(install.manual, /git pull/);
+  const updates = createReachUpdates({ root: "/apps/reach", install, fetch: feed("0.2.0"), spawn: () => assert.fail("portable updates must remain manual") });
+  const status = await updates.check();
+  assert.equal(status.state, "manual");
+  assert.equal(status.reason, "portable");
+  assert.equal(status.command, install.manual);
+  assert.equal(updates.offer(), null);
+  assert.throws(() => updates.start("0.2.0"), error => error.status === 409);
 });

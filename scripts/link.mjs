@@ -32,7 +32,7 @@ export async function linkComputers(root, name, deps = {}) {
   if (name) {
     const linked = await fleet.link(name);
     print(
-      `Linked ${linked.name}. Run "reach link ${new URL(host.origin).hostname.split(".")[0]}" on ${linked.name} too; then a phone approved on either works on both.`,
+      `Linked ${linked.name}. Run "${command} link ${new URL(host.origin).hostname.split(".")[0]}" on ${linked.name} too; then a phone approved on either works on both.`,
     );
     return linked;
   }
@@ -43,7 +43,7 @@ export async function linkComputers(root, name, deps = {}) {
     );
   for (const c of found)
     print(
-      `${c.linked ? "✓ linked" : "  not linked"} · ${c.name}${c.linked ? "" : ` · reach link ${c.short}`}`,
+      `${c.linked ? "✓ linked" : "  not linked"} · ${c.name}${c.linked ? "" : ` · ${command} link ${c.short}`}`,
     );
   return found;
 }

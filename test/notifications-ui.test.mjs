@@ -202,6 +202,7 @@ test("notification cards show agent identity, exact commands, and answer directl
     (button) => button.textContent === "Allow once",
   );
   allow.click();
+  assert.equal(calls.length, 1, "the first activation sends the approval immediately");
   allow.click();
   await dom.waitFor(() => view.container.textContent.includes("Allowed once"));
   assert.equal(calls.length, 1);
@@ -209,6 +210,51 @@ test("notification cards show agent identity, exact commands, and answer directl
   assert.equal(opened, false);
   await view.unmount();
   globalThis.fetch = dom.window.fetch = original;
+});
+
+test("one approval stays dismissed through stale refreshes, but a new revision remains reviewable", async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  const item = {
+    id: "chat:codex:one:prompt:race",
+    revision: "c".repeat(64),
+    title: "Run this command?",
+    sender: "Codex",
+    kind: "command",
+    actions: [{ id: "approve", label: "Allow once", tone: "primary" }],
+    target: { page: "sessions", agent: "codex", id: "one", prompt: "race" },
+  };
+  items = [item];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (new URL(url).pathname.endsWith("/actions")) {
+      calls.push(JSON.parse(init.body));
+      // The server's cached list still includes the approved request.
+      return new Response('{"ok":true}');
+    }
+    return original(url, init);
+  };
+  const view = await mount();
+  try {
+    await dom.waitFor(() => view.container.querySelector(".notification-count"));
+    view.container.querySelector(".notification-bell").click();
+    await dom.waitFor(() => view.container.querySelector(".notification-actions .primary"));
+    const before = asked;
+    view.container.querySelector(".notification-actions .primary").click();
+    await dom.waitFor(() => view.container.textContent.includes("Allowed once") && asked > before);
+    await settle(60);
+    assert.equal(calls.length, 1);
+    assert.equal(view.container.querySelector(".notification-card"), null);
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    await settle(60);
+    assert.equal(view.container.querySelector(".notification-card"), null);
+    items = [{ ...item, revision: "d".repeat(64) }];
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    await dom.waitFor(() => view.container.querySelector(".notification-card"));
+    assert.equal(calls.length, 1, "a new request must never be automatically approved");
+  } finally {
+    await view.unmount();
+    globalThis.fetch = dom.window.fetch = original;
+  }
 });
 
 test("an outdated request stays reviewable and displays the server error", async () => {
@@ -351,4 +397,80 @@ test("an update for Reach is a Needs you card on Home: Update, or Not now", asyn
   assert.deepEqual(answered[0], ["/api/notifications/update%3A0.2.0/actions", { revision: "d".repeat(64), action: "update" }]);
   await view.unmount();
   globalThis.fetch = dom.window.fetch = original;
+});
+
+for (const [context, changed] of [
+  ["computer", { id: "second", url: "https://second.test", token: "second" }],
+  ["credential", { token: "replacement" }],
+]) test(`a delayed decision cannot dismiss a matching request after switching ${context}`, async (t) => {
+  const original = globalThis.fetch;
+  let finish, switchPeer, posted = false;
+  const request = {
+    id: "update:0.2.0", source: "update", revision: "e".repeat(64),
+    title: "Update Reach to 0.2.0", kind: "permission", sender: "Reach",
+    actions: [{ id: "deny", label: "Not now", tone: "deny" }],
+    target: { page: "overview", needs: "update:0.2.0" },
+  };
+  items = [request];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    if (!new URL(url).pathname.endsWith("/actions")) return original(url, init);
+    posted = true;
+    return new Promise(resolve => { finish = () => resolve(new Response('{}', { status: 200 })); });
+  };
+  t.after(() => { globalThis.fetch = dom.window.fetch = original; finish?.(); });
+  function Host() {
+    const [current, setPeer] = React.useState(peer);
+    switchPeer = () => dom.update(() => setPeer({ ...peer, ...changed }));
+    return React.createElement(NotificationCenter, { peer: current, enabled: true, onOpen() {} }, React.createElement(NotificationBell));
+  }
+  const view = await dom.render(React.createElement(Host));
+  t.after(() => view.unmount());
+  await dom.waitFor(() => view.container.querySelector(".notification-count"));
+  view.container.querySelector(".notification-bell").click();
+  await dom.waitFor(() => view.container.querySelector(".notification-card"));
+  [...view.container.querySelectorAll("button")].find(button => button.textContent === "Not now").click();
+  await dom.waitFor(() => posted);
+  switchPeer();
+  await dom.waitFor(() => view.container.querySelector(".notification-count") && !view.container.querySelector("dialog[open]"));
+  finish();
+  await settle(80);
+  assert.equal(view.container.querySelector(".notification-count")?.textContent, "1", "the current context still needs its own decision");
+  view.container.querySelector(".notification-bell").click();
+  await dom.waitFor(() => view.container.querySelector(".notification-card"));
+  assert.match(view.container.textContent, /Update Reach to 0.2.0/);
+});
+
+test("an aborted forbidden-response body from the previous computer cannot stop current refreshes", async (t) => {
+  const original = globalThis.fetch;
+  let waitingForBody = false, switchPeer, secondRequests = 0;
+  items = [{ id: "current", title: "Current computer request", target: { page: "overview" } }];
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname !== "/api/notifications") return original(url, init);
+    if (parsed.host === "reach.test") return {
+      ok: false,
+      status: 403,
+      json: () => new Promise((resolve, reject) => {
+        waitingForBody = true;
+        init.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true });
+      }),
+    };
+    secondRequests++;
+    return original(url, init);
+  };
+  t.after(() => { globalThis.fetch = dom.window.fetch = original; });
+  function Host() {
+    const [current, setPeer] = React.useState(peer);
+    switchPeer = () => dom.update(() => setPeer({ ...peer, id: "second", url: "https://second.test", token: "second" }));
+    return React.createElement(NotificationCenter, { peer: current, enabled: true, onOpen() {} }, React.createElement(NotificationBell));
+  }
+  const view = await dom.render(React.createElement(Host));
+  t.after(() => view.unmount());
+  await dom.waitFor(() => waitingForBody);
+  await switchPeer();
+  await dom.waitFor(() => view.container.querySelector(".notification-count"));
+  const before = secondRequests;
+  document.dispatchEvent(new dom.window.Event("visibilitychange"));
+  await settle(100);
+  assert.ok(secondRequests > before, `the current computer must still refresh, had ${before}, now ${secondRequests}`);
 });

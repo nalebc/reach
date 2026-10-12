@@ -7,7 +7,7 @@ import { presetScopes } from "../server/agent-presets.mjs";
 // same tools as the agent page, with honest hints about what changes the Mac.
 const access = (preset, extra = {}) => ({ preset, screen: ["full", "apps", "readonly"].includes(preset), control: ["full", "apps"].includes(preset), open: ["full", "apps"].includes(preset),
   shell: preset === "full", write: preset === "full" || extra.write === true, roots: preset === "apps" ? [] : [{ index: 0, name: "Home", path: "/Users/me" }], terminals: [], apps: preset === "apps" ? [{ id: "/Applications/Google Chrome.app" }] : [], ...extra });
-const names = (preset, extra) => toolsFor(presetScopes({ preset, ...extra }), access(preset, extra)).map((tool) => tool.name);
+const names = (preset, extra) => toolsFor(presetScopes({ preset, ...extra }), access(preset, extra)).map((tool) => tool.name).filter(name => !["reach_discover", "reach_execute", "reach_displays"].includes(name));
 
 test("preset credentials advertise the preset's tools over MCP", () => {
   const reusable = ["reach_tools", "reach_tool_protocol", "reach_define_tool", "reach_tool_operation", "reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"];
@@ -21,13 +21,21 @@ test("preset credentials advertise the preset's tools over MCP", () => {
 });
 
 test("hints say what touches the Mac and what can't be undone", () => {
+  const accessTool = toolsFor(presetScopes({ preset: "full" }), access("full")).find(tool => tool.name === "reach_access");
+  assert.match(accessTool.description, /no command deny list, protected-window filter or shell sandbox/);
+  assert.match(accessTool.description, /confirm consequential actions/);
+  assert.doesNotMatch(accessTool.description, /anything that moves money or changes the account is refused/);
   const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "full" }), access("full")).map((tool) => [tool.name, tool.annotations]));
   for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_windows", "reach_menus", "reach_read_page", "reach_mac_shortcuts", "reach_describe_screen", "reach_elements", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);
   // Finding scrolls the window: it touches the Mac.
   for (const name of ["reach_act", "reach_press", "reach_fill", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
   for (const name of ["reach_change_file", "reach_shell", "reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
-  assert.equal(tools.reach_act.destructiveHint, false);
-  assert.ok(Object.values(tools).every((annotations) => annotations.openWorldHint === false));
+  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_run_mac_shortcut", "reach_open_file"]) assert.equal(tools[name].destructiveHint, true, name);
+  assert.equal(tools.reach_execute.readOnlyHint, false);
+  assert.equal(tools.reach_execute.destructiveHint, true);
+  assert.equal(tools.reach_execute.openWorldHint, true);
+  for (const name of ["reach_act", "reach_open_url", "reach_shell", "reach_run_mac_shortcut"]) assert.equal(tools[name].openWorldHint, true, name);
+  for (const name of ["reach_access", "reach_list_files", "reach_read_file", "reach_change_file", "reach_shortcuts"]) assert.equal(tools[name].openWorldHint, false, name);
   assert.ok(Object.values(tools).every((annotations) => !("example" in annotations)));
 });
 

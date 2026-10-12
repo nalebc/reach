@@ -441,7 +441,7 @@ test("reach link on Windows: refused with why, before anything is read or linked
 
 test("reach link: lists your Reach computers and links one from any terminal", async () => {
   const { linkComputers } = await import("../scripts/link.mjs");
-  const { stateDir } = await import("../scripts/home.mjs");
+  const { stateDir, command } = await import("../scripts/home.mjs");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-link-cli-"));
   try {
     const state = stateDir(root);
@@ -468,8 +468,8 @@ test("reach link: lists your Reach computers and links one from any terminal", a
     await linkComputers(root, "mac-b", deps);
     await linkComputers(root, undefined, deps);
     assert.deepEqual(printed, [
-      "  not linked · Mac B · reach link mac-b",
-      'Linked Mac B. Run "reach link mac-a" on Mac B too; then a phone approved on either works on both.',
+      `  not linked · Mac B · ${command} link mac-b`,
+      `Linked Mac B. Run "${command} link mac-a" on Mac B too; then a phone approved on either works on both.`,
       "✓ linked · Mac B",
     ]);
     const links = JSON.parse(await fs.readFile(path.join(dataDir, "links.json"), "utf8"));
@@ -477,4 +477,33 @@ test("reach link: lists your Reach computers and links one from any terminal", a
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("a join ticket works once, for two minutes, and at most 64 wait at a time", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-fleet-tickets-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, "links.json"), JSON.stringify({ computers: [{ nodeId: "nB", origin: "https://mac-b.t.ts.net:8443", name: "Mac B" }] }));
+  let clock = 1_000_000;
+  const fleet = createFleet({ dataDir: dir, owner, status: async () => status(), request: async () => { throw Error("offline"); }, now: () => clock });
+  const linked = () => ({ userId: owner.userId, nodeId: "nB", validUntil: clock + 60000 });
+  const phone = { userId: owner.userId, nodeId: "nPhone" };
+  // Once.
+  const once = fleet.issueTicket(phone);
+  assert.deepEqual(fleet.redeemTicket(linked(), once), { valid: true, userId: owner.userId, nodeId: "nPhone" });
+  assert.deepEqual(fleet.redeemTicket(linked(), once), { valid: false }, "spent by its first use");
+  // Two minutes.
+  const late = fleet.issueTicket(phone);
+  clock += 119_999;
+  const inTime = fleet.issueTicket(phone);
+  clock += 1;
+  assert.deepEqual(fleet.redeemTicket(linked(), late), { valid: false }, "at two minutes: refused");
+  assert.equal(fleet.redeemTicket(linked(), inTime).valid, true);
+  // Only linked computers redeem.
+  assert.throws(() => fleet.redeemTicket({ ...linked(), nodeId: "nOther" }, fleet.issueTicket(phone)), { status: 403 });
+  // 64 waiting: the 65th is refused, until they expire.
+  clock += 120_000;
+  for (let i = 0; i < 64; i++) fleet.issueTicket(phone);
+  assert.throws(() => fleet.issueTicket(phone), { status: 429 });
+  clock += 120_000;
+  assert.ok(fleet.issueTicket(phone), "expired ones make room");
 });

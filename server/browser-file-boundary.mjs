@@ -13,8 +13,8 @@ const activeClients = new Map();
 const allowed = new Set(['read', 'list', 'stat', 'mkdir', 'touch', 'rm', 'cp', 'write']);
 const relative = value => typeof value === 'string' && value.length <= 4096 && !path.isAbsolute(value) && !value.split('/').includes('..') && !/[\u0000-\u001f\u007f\\]/u.test(value);
 const literal = value => JSON.stringify(value);
-export function fileBoundaryProfile(root, privatePaths, writable = false) {
-  const namePattern = browserPrivateNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[a-z]/g, c => `[${c}${c.toUpperCase()}]`)).join('|');
+export function fileBoundaryProfile(root, privatePaths, writable = false, privateNames = browserPrivateNames) {
+  const namePattern = privateNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[a-z]/g, c => `[${c}${c.toUpperCase()}]`)).join('|');
   const ancestors = [];
   for (let p = path.dirname(root); ; p = path.dirname(p)) { ancestors.push(p); if (path.dirname(p) === p) break; }
   return `(version 1)
@@ -24,7 +24,7 @@ export function fileBoundaryProfile(root, privatePaths, writable = false) {
 (allow file-read* (subpath "/usr/lib") (subpath "/System/Library") (literal "/dev/null"))
 (allow file-read* (subpath ${literal(root)}))
 ${writable ? `(allow file-write* (subpath ${literal(root)}))` : ''}
-(deny file-read* file-write* (regex #"(^|/)(${namePattern})(/|$)"))
+${namePattern ? `(deny file-read* file-write* (regex #"(^|/)(${namePattern})(/|$)"))` : ''}
 ${privatePaths.length ? `(deny file-read* file-write* ${privatePaths.map(p => `(subpath ${literal(p)})`).join(' ')})` : ''}`;
 }
 
@@ -38,6 +38,7 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     return client;
   };
   const client = check();
+  const fullControl = client?.policy?.browser === true && client.policy.preset === 'full';
   if (typeof client?.id === 'string' && client.id) clientId = client.id;
   if (activeOperations >= 4 || (clientId && (activeClients.get(clientId) || 0) >= 2))
     throw fail(429, 'Wait for a file operation to finish before starting another.');
@@ -45,7 +46,7 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
   if (clientId) activeClients.set(clientId, (activeClients.get(clientId) || 0) + 1);
   try {
     if (!allowed.has(input?.op) || !relative(input.path ?? '') || (input.op === 'cp' && !relative(input.to)) ||
-        typeof input.root !== 'string' || !path.isAbsolute(input.root) || input.root === '/' ||
+        typeof input.root !== 'string' || !path.isAbsolute(input.root) || (!fullControl && input.root === '/') ||
         (input.maxBytes !== undefined && (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 25 * 1024 * 1024)))
       throw fail(400, 'Choose a supported operation inside the shared folder.');
     // A trusted injected runner can exercise this JS contract on other hosts;
@@ -56,13 +57,13 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     if (!root.isDirectory() || root.isSymbolicLink()) throw fail(403, 'The shared folder changed.');
     const request = { op: input.op, root: input.root, rootDev: String(root.dev), rootIno: String(root.ino), path: input.path ?? '',
       ...(input.to !== undefined ? { to: input.to } : {}), maxBytes: input.maxBytes ?? 1024 * 1024, maxEntries: input.maxEntries ?? 2000,
-      privatePaths: [...browserPrivatePaths(config), ...(input.privatePaths ?? [])], privateNames: [...browserPrivateNames] };
+      fullControl, privatePaths: fullControl ? [] : [...browserPrivatePaths(config), ...(input.privatePaths ?? [])], privateNames: fullControl ? [] : [...browserPrivateNames] };
     if (input.op === 'write') {
       if (typeof input.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.data) || input.data.length > Math.ceil(1048576 / 3) * 4)
         throw fail(413, 'Write up to 1 MiB of content.');
       request.data = input.data;
     }
-    request.sandbox = fileBoundaryProfile(request.root, request.privatePaths, ['mkdir', 'touch', 'rm', 'cp', 'write'].includes(request.op));
+    request.sandbox = fileBoundaryProfile(request.root, request.privatePaths, ['mkdir', 'touch', 'rm', 'cp', 'write'].includes(request.op), request.privateNames);
     const body = JSON.stringify(request);
     if (Buffer.byteLength(body) > 2 * 1048576) throw fail(400, 'The file request is too large.');
     const binary = run ? null : await desktopBinary(config, 'browser-files');

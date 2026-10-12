@@ -135,7 +135,7 @@ import { createAgentImages, createAgentFiles, imageSize, imageTokens } from "./a
 import { createImageRepeats, repeatNote } from "./agent-sessions/image-repeats.mjs";
 import { createSavings } from "./savings.mjs";
 import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voice.mjs";
-import { CODEX_MODES } from "./agent-sessions/codex.mjs";
+import { codexStartMode, isCodexMode } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
 import { publicNameState } from "./public-dns.mjs";
@@ -702,6 +702,15 @@ export async function createReach(overrides = {}) {
       sessions: agentSessions,
       openClaw,
       relays,
+      availableAgents: async () => {
+        const [health, claw] = await Promise.allSettled([agentSessions.health(), openClaw.overview()]);
+        const ready = health.status === "fulfilled" ? health.value.filter((h) =>
+          ["codex", "claude"].includes(h.agent) && h.installed && h.signedIn && h.usable !== false && !h.error && h.compatibility?.status !== "unavailable"
+        ).map((h) => h.agent) : [];
+        if (claw.status === "fulfilled" && claw.value.connected) ready.push("openclaw");
+        return ready;
+      },
+      models: async (agent) => (await agentSessions.models(agent)).models || [],
       file: process.env.NODE_TEST_CONTEXT && !overrides.workflowFile ? null : overrides.workflowFile || path.join(config.dataDir, "agent-workflows.json"),
       authorized: (owner) =>
         paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that ran this workflow no longer has access.",
@@ -1032,11 +1041,8 @@ export async function createReach(overrides = {}) {
     : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] }) : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
   // the other agent commands.
-  const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction, hosts: () => reachAddresses(config), protectedPaths: () => browserPaths(),
-    protectedPids: () => [process.pid, process.ppid], record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}),
-    // Every agent command runs in a macOS sandbox that keeps Reach's socket,
-    // data and code, and Tailscale's, out of reach (security audit, Oct 9).
-    sandbox: () => jobSandbox() });
+  const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1745,18 +1751,21 @@ export async function createReach(overrides = {}) {
     // An invitation that may watch chosen apps' windows reaches only those
     // routes: the app list and the app windows themselves (no quit, no typing).
     // (The path is read here: later checks run after Express restores /api.)
-    const subpath = req.path;
+    // Authorization and response guards belong to this exact request stage.
+    // Named MCP dispatch re-enters routing with another method/path; an outer
+    // response guard must keep checking the original dispatch grant.
+    const subpath = req.path, requestMethod = req.method;
     const appWindows = (identity) =>
       identity.scopes?.includes("apps:open") &&
       ((route === "screen" &&
         /^\/screen\/apps(\/[^/]+(\/activate)?)?$/.test(subpath) &&
-        ["GET", "POST", "PATCH", "DELETE"].includes(req.method)) ||
+        ["GET", "POST", "PATCH", "DELETE"].includes(requestMethod)) ||
         (route === "apps" &&
-          ((req.method === "GET" && subpath === "/apps") ||
-            (req.method === "POST" && subpath === "/apps/icons"))));
+          ((requestMethod === "GET" && subpath === "/apps") ||
+            (requestMethod === "POST" && subpath === "/apps/icons"))));
     const allowed = (identity) =>
       identity?.policy?.browser
-        ? browserRouteAllowed(identity, req.method, subpath)
+        ? browserRouteAllowed(identity, requestMethod, subpath)
         : identity &&
       !(
         identity.kind === "guest" && GUEST_BLOCKED_ROUTES.includes(route)
@@ -1771,7 +1780,7 @@ export async function createReach(overrides = {}) {
           (identity.scopes?.includes(scope) ||
             (route === "files" &&
               identity.scopes?.includes(
-                ["GET", "HEAD"].includes(req.method)
+                ["GET", "HEAD"].includes(requestMethod)
                   ? "files:read"
                   : "files:write",
               )))));
@@ -1781,12 +1790,27 @@ export async function createReach(overrides = {}) {
           ? `This credential does not grant ${scope} access.`
           : "This action is not available.",
       });
+    // The owner's pause, for every route that acts on the Mac (the desktop
+    // checks its own input): a paused agent looks but never runs or changes
+    // anything, here and before each later step of a running call.
+    const acts = client.policy?.preset !== undefined && requestMethod === "POST" &&
+      ["/browser/shell", "/browser/files/change", "/browser/desktop/mac-shortcuts/run", "/browser/shortcuts/run",
+        "/browser/tools/run", "/browser/tools/batch", "/browser/services/run"].includes(subpath);
+    const ownerPaused = (identity) => acts && agentDesktop?.isPaused?.(identity.id) === true;
+    const PAUSED_AGENT = "The owner paused this agent. It can look, not touch, until they resume it.";
+    if (ownerPaused(client)) return res.status(409).json({ error: PAUSED_AGENT, kind: "paused" });
     req.client = client;
+    // A route's scope can stay the same while its folders or app policy
+    // change. Never finish an old request using data from the former grant.
+    const grant = (identity) => JSON.stringify([identity?.scopes, identity?.agentRoots, identity?.guestApps, identity?.policy]);
+    const initialGrant = grant(client);
+    const stillAllowed = (identity) => allowed(identity) && grant(identity) === initialGrant;
     const credential = req.headers.authorization?.replace(/^Bearer /, "");
     const reauthorize = (allowFinishedResponse = false) => {
       const current = verify(req, credential);
-      if (!allowed(current) || (res.destroyed && !(allowFinishedResponse && res.writableFinished)))
+      if (!stillAllowed(current) || (res.destroyed && !(allowFinishedResponse && res.writableFinished)))
         throw fail(401, "Access expired or was revoked.");
+      if (ownerPaused(current)) throw Object.assign(fail(409, PAUSED_AGENT), { kind: "paused" });
       req.client = current;
       return current;
     };
@@ -1820,12 +1844,12 @@ export async function createReach(overrides = {}) {
     const untilExpiry = (client.expiresAt || Date.parse(client.createdAt) + 30 * 86400000) - Date.now();
     const deadline = setTimeout(
       () => {
-        if (!allowed(verify(req, credential))) disconnect();
+        if (!stillAllowed(verify(req, credential))) disconnect();
       },
       Number.isFinite(untilExpiry) ? Math.min(2147483647, Math.max(0, untilExpiry)) : 2147483647,
     );
     const check = setInterval(() => {
-      if (!allowed(verify(req, credential))) disconnect();
+      if (!stillAllowed(verify(req, credential))) disconnect();
     }, 1000);
     deadline.unref();
     check.unref();
@@ -1837,7 +1861,7 @@ export async function createReach(overrides = {}) {
     res.once("finish", cleanup);
     const json = res.json.bind(res);
     res.json = (body) => {
-      if (res.statusCode < 400 && !allowed(verify(req, credential)))
+      if (res.statusCode < 400 && !stillAllowed(verify(req, credential)))
         res.status(401);
       if (res.statusCode === 401)
         return json({
@@ -2254,7 +2278,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/guests", async (req, res) => {
     const authorize = () => invitationOwner(req);
     authorize();
-    const grant = auth.inviteGuest(req.body);
+    const grant = auth.inviteGuest(req.body || {});
     // With an invite key, the guest needs no Tailscale account or app.
     let key;
     if (req.body?.key === true) {
@@ -2446,6 +2470,7 @@ export async function createReach(overrides = {}) {
   };
   const resolve = (root, p, client, { allowMissing = false } = {}) => {
     const check = target => {
+      if (client?.policy?.browser === true && client.policy.preset === "full") return target;
       notPrivate(target);
       if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
         throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
@@ -2463,7 +2488,9 @@ export async function createReach(overrides = {}) {
   };
   // Listings check thousands of entries: same rules, without blocking.
   const resolveAsync = async (root, p, client, privates) => {
-    const target = notPrivate(await safePathAsync(client?.agentRoots || config.roots, root, p), privates);
+    const target = await safePathAsync(client?.agentRoots || config.roots, root, p);
+    if (client?.policy?.browser === true && client.policy.preset === "full") return target;
+    notPrivate(target, privates);
     if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
       throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
     return target;
@@ -2625,6 +2652,7 @@ export async function createReach(overrides = {}) {
     if (!stat.isFile()) throw fail(400, "Choose a file.");
     const token = links.issue({
       digest: req.client.hash,
+      file,
       root: req.query.root,
       path: req.query.path || "",
       mtimeMs: stat.mtimeMs,
@@ -2807,7 +2835,7 @@ export async function createReach(overrides = {}) {
   );
   app.put("/api/files/uploads/:id", async (req, res) => {
     // Chunks are raw bytes; one that was parsed as JSON lost its contents.
-    if (req.body !== undefined && Object.keys(req.body || {}).length)
+    if (req.body !== undefined)
       throw fail(415, "Send chunks as application/octet-stream.");
     const offset = Number(req.query.offset);
     if (!Number.isSafeInteger(offset) || offset < 0)
@@ -2831,6 +2859,7 @@ export async function createReach(overrides = {}) {
         req.params.id,
         req.client,
         uploadFolder(req, root, folder),
+        () => req.reauthorize(),
       );
       record("file", `Uploaded ${result.name}`);
       res.json(result);
@@ -3129,18 +3158,29 @@ export async function createReach(overrides = {}) {
     res.json({ agents: (await agentUpdates.list({ fresh: req.query.fresh === "1" })).map(({ file, ...rest }) => rest) }),
   );
   app.post("/api/sessions/agent-update/:agent", async (req, res) => {
-    const plan = await agentUpdates.plan(req.params.agent);
-    const current = req.reauthorize();
-    if (req.body?.confirm !== true) return res.json(plan);
-    notPaused();
-    const terminal = terminals.create({
-      cwd: os.homedir(),
-      name: `Update ${plan.name}`,
-      clientId: current.id,
-      command: installTerminalCommand(plan),
-    });
-    record("terminal", `Updating ${plan.name} to ${plan.to}`);
-    res.json({ ...plan, terminal });
+    const agent = String(req.params.agent);
+    const confirm = req.body?.confirm === true;
+    if (confirm && !installs.take(agent))
+      throw fail(409, "That app is already installing or updating. Wait for it to finish.");
+    let started = false;
+    try {
+      const plan = await agentUpdates.plan(agent);
+      const current = req.reauthorize();
+      if (!confirm) return res.json(plan);
+      notPaused();
+      const terminal = terminals.create({
+        cwd: os.homedir(),
+        name: `Update ${plan.name}`,
+        clientId: current.id,
+        command: installTerminalCommand(plan),
+      });
+      installs.started(agent, terminal.id);
+      started = true;
+      record("terminal", `Updating ${plan.name} to ${plan.to}`);
+      res.json({ ...plan, terminal });
+    } finally {
+      if (confirm && !started) installs.release(agent);
+    }
   });
   app.get("/api/sessions", async (req, res) =>
     versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
@@ -3278,11 +3318,11 @@ export async function createReach(overrides = {}) {
     notPaused();
     const body = req.body || {};
     const lead = String(body.lead || "");
-    const modes =
+    const modeSettings =
       lead === "codex"
-        ? CODEX_MODES
-        : Object.fromEntries(["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map((mode) => [mode, { mode }]));
-    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode)) throw fail(400, "Unknown permission mode.");
+        ? codexStartMode(body.mode)
+        : typeof body.mode === "string" && ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].includes(body.mode) ? { mode: body.mode } : null;
+    if (body.mode !== undefined && !modeSettings) throw fail(400, "Unknown permission mode.");
     const options = turnOptions(body);
     const result = await teams.create({
       owner: req.client.id,
@@ -3295,7 +3335,7 @@ export async function createReach(overrides = {}) {
         ...(options.model ? { model: options.model } : {}),
         ...(options.effort ? { effort: options.effort } : {}),
         ...(options.speed ? { speed: options.speed } : {}),
-        ...(body.mode ? modes[body.mode] : {}),
+        ...(modeSettings || {}),
         ...(lead === "codex" && body.mode ? { modeName: body.mode } : {}),
       },
     });
@@ -3341,9 +3381,10 @@ export async function createReach(overrides = {}) {
     const body = req.body || {};
     res.json(workflows.update(req.params.id, { title: body.title, cwd: body.cwd, tasks: body.tasks }));
   });
-  app.post("/api/sessions/workflows/:id/run", (req, res) => {
+  app.post("/api/sessions/workflows/:id/run", async (req, res) => {
     macOwner(req);
     notPaused();
+    await workflows.checkAvailable?.(req.params.id);
     const result = workflows.run(req.params.id, req.client.id);
     record("session", "Ran a workflow");
     res.json(result);
@@ -3466,7 +3507,7 @@ export async function createReach(overrides = {}) {
   // own and its named profiles (as its menu lists them, codex.mjs); Claude
   // Code's by id (one it doesn't list runs as Manual, claude-host.mjs).
   const REPLY_MODES = {
-    codex: (mode) => ["auto", "guardian-approvals", "full-access", "read-only", "custom"].includes(mode) || /^profile::?[\w.-]{1,80}$/.test(mode),
+    codex: isCodexMode,
     claude: (mode) => /^[A-Za-z][\w-]{0,40}$/.test(mode),
   };
   const withFiles = (text, files, agent) =>
@@ -3633,20 +3674,16 @@ export async function createReach(overrides = {}) {
     const agent = String(body.agent || "");
     // Each agent's own permission modes: the Codex app's menu (sent exactly
     // as the app sends it) or Claude Code's --permission-mode choices.
-    const modes =
+    const modeSettings =
       agent === "codex"
-        ? CODEX_MODES
-        : Object.fromEntries(
-            ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map(
-              (mode) => [mode, { mode }],
-            ),
-          );
-    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode))
+        ? codexStartMode(body.mode)
+        : typeof body.mode === "string" && ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].includes(body.mode) ? { mode: body.mode } : null;
+    if (body.mode !== undefined && !modeSettings)
       throw fail(400, "Unknown permission mode.");
     const result = await agentSessions.start(agent, {
       ...turnOptions(body),
       cwd: sessionFolder(body.cwd),
-      ...(body.mode ? modes[body.mode] : {}),
+      ...(modeSettings || {}),
       // Codex: remembered for the chat's next messages (chat-modes.mjs).
       ...(agent === "codex" && body.mode ? { modeName: body.mode } : {}),
       name: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
@@ -3783,8 +3820,8 @@ export async function createReach(overrides = {}) {
     macOwner(req);
     const mode = req.body?.mode;
     // Claude: never Bypass. Codex: its own menu's choices, as when sending.
-    const allowed = req.params.agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only", "custom"] : SWITCHABLE_MODES;
-    if (!allowed.includes(mode)) throw fail(400, "Reach can't pick that mode.");
+    const allowed = req.params.agent === "codex" ? isCodexMode(mode) : SWITCHABLE_MODES.includes(mode);
+    if (!allowed) throw fail(400, "Reach can't pick that mode.");
     res.json(await agentSessions.mode(req.params.agent, req.params.id, { mode }));
   });
   // Send now can switch the Claude app's window on the Mac: the owner's call.
@@ -4478,7 +4515,9 @@ export async function createReach(overrides = {}) {
     if (browserHostGuard.isActive()) await browserHostGuard.refresh();
     const check = () => {
       const current = auth.verifyDigest(link.digest, req.reachIdentity);
-      if (!current || current.policy?.browser || paused || !transportAvailable)
+      if (!current || current.policy?.browser || paused || !transportAvailable ||
+          !current.scopes.some(scope => scope === "files" || scope === "files:read") ||
+          resolve(link.root, link.path, current) !== link.file)
         throw fail(403, "This download link is no longer valid.");
       browserHostGuard.assertRequest(req, current);
       return current;

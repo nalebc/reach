@@ -90,18 +90,18 @@ test("one question: tapping Full control makes the invite, nothing else to fill"
   assert.equal(button(c, "Create invite link"), undefined, "no form to submit");
   assert.deepEqual(presets(c).map((b) => b.getAttribute("aria-label")), ["Full control", "Apps", "Files", "Read only"]);
   assert.ok(presets(c).every((b) => b.getAttribute("aria-checked") === "false"), "nothing chosen for you");
-  assert.match(c.textContent, /Use your screen, files and commands\./);
-  assert.match(c.textContent, /Full control runs as you: invite\s+only an agent you trust/);
+  assert.match(c.textContent, /Use every app, file and command as you\./);
   await choose(c, "Full control");
   await dom.waitFor(() => issued(calls));
-  assert.deepEqual(issued(calls), { name, transport: "funnel", ttlSeconds: 1800, preset: "full" });
+  assert.deepEqual(issued(calls), { name, transport: "funnel", ttlSeconds: 1800, preset: "full", fullControlVersion: 1 });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
+  await dom.waitFor(() => dom.document.activeElement.textContent === "Your invite is ready");
   assert.equal(dom.document.activeElement.textContent, "Your invite is ready", "focus moves to the result after creation");
   const text = message(c);
   assert.match(text, /^Open this link in your browser, then I approve the code it shows\./);
   assert.match(text, /You get full control of my Mac/);
-  assert.match(text, /stay out of password apps, Reach and Tailscale/);
-  assert.match(text, /Fill passwords from your vault with Sign in/);
+  assert.match(text, /all apps, files, browser pages and shell commands/);
+  assert.doesNotMatch(text, /stay out|except|hidden apps/);
   assert.doesNotMatch(text, /Saved tools|hands come first|One agent acts|not sandboxed/, "nothing long or outdated");
   assert.match(text, /Ask me before paying, sending or deleting anything\. Don't share this link\./);
   assert.ok(text.split(/\s+/).length <= 80, "short enough to read");
@@ -215,7 +215,7 @@ test("Tools: the same preset, one command through the public link (the private a
   assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs\.new https:\/\/mac\.tail\.ts\.net\/agent\.mjs && node -e '[^\n]*' ~\/\.reach-agent\/agent\.mjs\.new (?:ab){32} && mv ~\/\.reach-agent\/agent\.mjs\.new ~\/\.reach-agent\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#i=https%3A%2F%2Fmac\.tail\.ts\.net%3A8443[^']+&t=funnel' \| node ~\/\.reach-agent\/agent\.mjs join/, "the private address rides in the link");
   assert.doesNotMatch(text, /tskey-auth/);
   assert.match(text, /Then add Reach as an MCP server: node ~\/\.reach-agent\/agent\.mjs mcp/);
-  assert.match(text, /"secret":true/);
+  assert.match(text, /all apps, files, browser pages and shell commands/);
   assert.doesNotMatch(text, /window\.reach|Sign in:/);
 });
 

@@ -139,7 +139,7 @@ const cases = [
     screen: true,
     control: true,
     shell: true,
-    hidden: true,
+    hidden: false,
   },
   {
     preset: "apps",
@@ -231,8 +231,12 @@ for (const row of cases)
       assert.equal(text.includes("Screen control"), row.control);
       assert.equal(text.includes("View only"), row.screen && !row.control);
       assert.equal(text.includes("Shell commands"), row.shell);
-      assert.equal(text.includes("including sensitive files"), row.shell);
-      assert.equal(text.includes("not a sandbox"), row.shell);
+      assert.equal(text.includes("all files and commands"), row.shell);
+      assert.equal(text.includes("no content filters or shell sandbox"), row.shell);
+      if (row.preset === "full") {
+        assert.equal(view.container.querySelector('[aria-label="Hidden apps"]'), null);
+        assert.doesNotMatch(text, /Protected and hidden windows are excluded/);
+      }
       if (row.hidden) {
         assert.match(
           view.container.querySelector('[aria-label="Hidden apps"]')

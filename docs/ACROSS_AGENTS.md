@@ -33,7 +33,7 @@ With more than one computer, each row shows which computer it's on, and the same
 
 - **Nothing starts or sends without you.** Moves, reviews and relays begin with your tap. A relay sends only for the turn it was set up for; an enabled auto-continue watch follows usage limits for up to 24 hours.
 - **A finished turn is checked, not guessed.** Before a relay sends, Reach reads the chat. It must end with a reply that came after your last message (not an error, not a Stop), and still be idle a few seconds later.
-- **No new permission.** Reviewers read; anything more asks you. Builders start in Codex's **Approve for me** (or **Ask for approval** when that's off) or Claude Code's **Accept edits**, never Full access or Bypass. Sending to an existing chat uses the same path as typing there from the phone, including its wait while you use the Claude app.
+- **No new permission.** Reviewers read; anything more asks you. Builders start in Codex's **Approve for me** (or **Ask for approval** when that's off) or Claude Code's **Auto**, never Full access or Bypass. Sending to an existing chat uses the same path as typing there from the phone, including its wait while you use the Claude app.
 - **Another agent's words are material, not orders.** What one agent wrote reaches the next inside a marked block, introduced as material to work with, not instructions.
 - **Bounded.** Chains are at most three steps. Text is clipped to the move limits (the start and end of a long reply, a summary of large diffs).
 - **It stops when access does.** A relay checks, when it sends, that the phone that set it up is still an approved owner device and that Reach isn't paused. Otherwise it stops and says why.

@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
+import { command } from "./home.mjs";
 import { loginScript } from "./login-start.mjs";
 import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
@@ -163,7 +164,7 @@ export async function stopReach(
   const stopped = others.filter((h) => !foreign.has(h.pid)).length;
   for (const pid of foreign) print(`Reach (process ${pid}) is owned by another user; it can't be stopped from here.`);
   if (serviceRunning && !restarting)
-    print("The background service stopped; it starts again at your next sign-in, or with ./reach restart.");
+    print(`The background service stopped; it starts again at your next sign-in, or with ${command} restart.`);
   if (stopped) print(`Stopped ${stopped === 1 ? "Reach" : `${stopped} Reaches`}${terminals.length ? ` and ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} in it` : ""}.`);
   return { stopped, service: serviceRunning, terminals: terminals.length, serviceInstalled: !!service.ours };
 }

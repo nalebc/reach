@@ -13,7 +13,9 @@ import path from "node:path";
 export const HOST = "mac.example.ts.net";
 export async function fakeTailscale(dir, scenario = {}) {
   const state = path.join(dir, "fake-tailscale.json");
+  const setup = path.join(dir, "fake-tailscale-setup.json");
   const cli = path.join(dir, "tailscale");
+  await fs.writeFile(setup, JSON.stringify({ BackendState: "Running", CurrentTailnet: { MagicDNSEnabled: true }, ...scenario.setup }));
   await fs.writeFile(
     state,
     JSON.stringify({ host: HOST, login: "owner@example.test", version: "1.90.0", funnelDenied: false, serve: {}, calls: [], ...scenario }),
@@ -23,9 +25,11 @@ export async function fakeTailscale(dir, scenario = {}) {
     `#!${process.execPath}
 const fs = require("fs");
 const file = ${JSON.stringify(state)};
+const setupFile = ${JSON.stringify(setup)};
 // Several run at once (Reach asks for its version and status together):
 // written whole (a rename), so none reads another's half-written file.
 const state = JSON.parse(fs.readFileSync(file, "utf8"));
+const setup = JSON.parse(fs.readFileSync(setupFile, "utf8"));
 const args = process.argv.slice(2);
 state.calls.push(args);
 const save = () => {
@@ -38,11 +42,15 @@ const [command, ...rest] = args;
 const self = { ID: "nMac", UserID: 42, DNSName: state.host + ".", HostName: "mac", KeyExpiry: "0001-01-01T00:00:00Z", TailscaleIPs: ["100.64.0.10"] };
 save();
 if (command === "version") out(state.version + "\\n  tailscale commit: fake\\n");
-else if (command === "status") out({ BackendState: "Running", Version: (state.daemonVersion || state.version) + "-tfake", Self: self, User: { 42: { ID: 42, LoginName: state.login } }, Peer: {}, CertDomains: [state.host], MagicDNSSuffix: "example.ts.net" });
+else if (command === "status") {
+  if (setup.closed) { process.stderr.write("failed to connect to local tailscaled\\n"); process.exit(1); }
+  out({ BackendState: "Running", Version: (state.daemonVersion || state.version) + "-tfake", Self: self, User: { 42: { ID: 42, LoginName: state.login } }, Peer: {}, CertDomains: [state.host], MagicDNSSuffix: "example.ts.net", ...setup });
+}
 else if (command === "whois") {
   const ip = rest.at(-1);
-  if (ip === "100.64.0.10") out({ Node: { ...self, StableID: "nMac", Name: self.DNSName, ComputedName: "mac" }, UserProfile: { ID: 42, LoginName: state.login } });
-  else out({ Node: { ID: 7, StableID: "nPhone", Name: "owner-iphone.example.ts.net.", ComputedName: "owner-iphone", KeyExpiry: "0001-01-01T00:00:00Z" }, UserProfile: { ID: 42, LoginName: state.login } });
+  if (state.identities?.[ip]) out(state.identities[ip]);
+  else if (ip === "100.64.0.10") out({ Node: { ...self, User: 42, StableID: "nMac", Name: self.DNSName, ComputedName: "mac" }, UserProfile: { ID: 42, LoginName: state.login } });
+  else out({ Node: { ID: 7, User: 42, StableID: "nPhone", Name: "owner-iphone.example.ts.net.", ComputedName: "owner-iphone", KeyExpiry: "0001-01-01T00:00:00Z" }, UserProfile: { ID: 42, LoginName: state.login } });
 } else if (command === "serve" && rest[0] === "--help") process.stderr.write("USAGE\\n  tailscale serve [flags] <target>\\n  <target> can be a port, http://, https+insecure:// or unix:/path/to/socket\\n");
 else if (command === "serve" && rest[0] === "status") out(state.serve);
 else if (command === "serve" || command === "funnel") {
@@ -55,7 +63,7 @@ else if (command === "serve" || command === "funnel") {
     if (serve.Web) delete serve.Web[key];
     if (serve.AllowFunnel) delete serve.AllowFunnel[key];
     for (const k of ["TCP", "Web", "AllowFunnel"]) if (serve[k] && !Object.keys(serve[k]).length) delete serve[k];
-  } else if (command === "funnel" && state.funnelDenied) {
+  } else if (command === "funnel" && (setup.funnelDenied ?? state.funnelDenied)) {
     process.stderr.write("Funnel is not enabled on your tailnet.\\nTo enable, visit:\\n\\n         https://login.tailscale.com/f/funnel?node=nMac\\n");
     process.exit(1);
   } else {
@@ -64,7 +72,11 @@ else if (command === "serve" || command === "funnel") {
     if (command === "funnel") serve.AllowFunnel = { ...serve.AllowFunnel, [key]: true };
   }
   save();
-} else if (command === "login" || command === "up") process.exit(0);
+} else if (command === "login") out("https://login.tailscale.com/a/fixture-login\\n");
+else if (command === "up") {
+  const setup = JSON.parse(fs.readFileSync(setupFile, "utf8"));
+  fs.writeFileSync(setupFile, JSON.stringify({ ...setup, BackendState: "Running" }));
+} else if (command === "debug" && rest[0] === "prefs") out({});
 else { process.stderr.write("fake tailscale: unsupported " + args.join(" ") + "\\n"); process.exit(2); }
 `,
     { mode: 0o755 },
@@ -73,6 +85,12 @@ else { process.stderr.write("fake tailscale: unsupported " + args.join(" ") + "\
     cli,
     state,
     read: async () => JSON.parse(await fs.readFile(state, "utf8")),
+    setStatus: async (value) => {
+      const current = JSON.parse(await fs.readFile(setup, "utf8"));
+      const temporary = setup + ".next";
+      await fs.writeFile(temporary, JSON.stringify({ ...current, ...value }));
+      await fs.rename(temporary, setup);
+    },
   };
 }
 

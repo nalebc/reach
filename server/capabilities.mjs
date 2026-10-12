@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
 
 const APP_ROOTS = ["/Applications/ChatGPT.app", "/Applications/Codex.app"];
 // The desktop apps bundle the CLI; its location has moved between versions.
@@ -8,16 +13,18 @@ export const BUNDLED_CODEX = [
   "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
   "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
   "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+  "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
   "/Applications/ChatGPT.app/Contents/Resources/codex",
   "/Applications/Codex.app/Contents/Resources/codex",
 ];
 // Bundled CLIs, most likely first: the app's own package manifest names its
 // entry point (codex-cli/codex-package.json); the known paths follow.
-export async function bundledCodexPaths({ readFile = fs.readFile } = {}) {
+export async function bundledCodexPaths({ readFile = fs.readFile, home = os.homedir() } = {}) {
   const found = [];
   // These describe macOS bundles even when discovery is tested on another OS.
   const paths = path.posix;
-  for (const app of APP_ROOTS) {
+  const userApps = APP_ROOTS.map(app => paths.join(home, app.slice(1)));
+  for (const app of [...APP_ROOTS, ...userApps]) {
     const dir = paths.join(app, "Contents/Resources/codex-cli");
     try {
       const { entrypoint } = JSON.parse(await readFile(paths.join(dir, "codex-package.json"), "utf8"));
@@ -25,19 +32,24 @@ export async function bundledCodexPaths({ readFile = fs.readFile } = {}) {
       if (file && !paths.isAbsolute(entrypoint) && file.startsWith(dir + paths.sep)) found.push(file);
     } catch {}
   }
-  return [...new Set([...found, ...BUNDLED_CODEX])];
+  const userPaths = BUNDLED_CODEX.map(file => paths.join(home, file.slice(1)));
+  return [...new Set([...found, ...BUNDLED_CODEX, ...userPaths])];
 }
 
-// Inspect local executables only. Device discovery must not start an AI session.
+// Inspect executable paths only; the fallback asks the login shell where the
+// command lives. Discovery never runs Codex or starts an AI session.
 // REACH_CODEX first, then the CLI bundled with the desktop app (the one its
 // own daemon runs: a stale codex on PATH would talk to it across versions),
 // then PATH.
 export async function findCodexExecutable({
   platform = process.platform,
   env = process.env,
+  home = env.HOME || os.homedir(),
   access = fs.access,
   stat = fs.stat,
   bundled = bundledCodexPaths,
+  extraPaths = [path.join(home, ".local/bin"), path.join(home, ".npm-global/bin"), path.join(home, ".volta/bin"), "/opt/homebrew/bin", "/usr/local/bin"],
+  run = exec,
 } = {}) {
   const windows = platform === "win32";
   const paths = windows ? path.win32 : path;
@@ -51,7 +63,7 @@ export async function findCodexExecutable({
   };
   const command = env.REACH_CODEX || "codex";
   if (!env.REACH_CODEX && platform === "darwin")
-    for (const file of await bundled()) if (await usable(file)) return file;
+    for (const file of await bundled({ home })) if (await usable(file)) return file;
   const candidates = /[/\\]/.test(command)
     ? [command]
     : (env.PATH || "")
@@ -69,6 +81,19 @@ export async function findCodexExecutable({
             : [file];
         });
   for (const file of candidates) if (await usable(file)) return file;
+  if (!env.REACH_CODEX && !windows) {
+    for (const dir of extraPaths) {
+      const file = paths.join(dir, "codex");
+      if (await usable(file)) return file;
+    }
+    // Services and GUI launches often inherit less PATH than Terminal. npm
+    // prefixes and Node version managers can also live outside known paths.
+    try {
+      const { stdout } = await run(env.SHELL || (platform === "darwin" ? "/bin/zsh" : "/bin/sh"), ["-lc", "command -v codex"], { env, timeout: 5000, maxBuffer: 64 * 1024 });
+      const file = stdout.trim();
+      if (paths.isAbsolute(file) && !/[\0\r\n]/.test(file) && await usable(file)) return file;
+    } catch { /* A missing command or broken shell is an unavailable tool. */ }
+  }
   return null;
 }
 
