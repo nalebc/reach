@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { firstInstall, finishFirstSetup, setupMenu as menu } from "./helpers/first-install.mjs";
+import { firstInstall, finishFirstSetup, setupMenu as menu, SIGN_IN_LINK } from "./helpers/first-install.mjs";
 import { HOST } from "./helpers/fake-tailscale.mjs";
 
 const options = { skip: process.platform === "win32", timeout: 60000 };
@@ -38,11 +38,11 @@ const desktops = [
     await menu(reach, /Install Tailscale to continue/);
     await reach.until(/waiting for Tailscale to be installed/);
     await reach.installTailscale();
-    await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/);
+    await reach.until(SIGN_IN_LINK);
     await reach.fake.setStatus(ready);
   } },
   { name: "installed but signed out", status: { BackendState: "NeedsLogin" }, enter: async reach => {
-    await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/);
+    await reach.until(SIGN_IN_LINK);
     await reach.fake.setStatus(ready);
   } },
   { name: "installed but switched off", status: { BackendState: "Stopped" }, enter: reach => menu(reach, /Turn Tailscale on\?/) },
@@ -119,7 +119,7 @@ test("first install resumes after Tailscale signed out while HTTPS setup was pau
   assert.equal((await reach.read("onboarding.json")).steps.account, "done");
   await reach.fake.setStatus({ BackendState: "NeedsLogin", CertDomains: [] });
   await reach.restart();
-  await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/, 5000);
+  await reach.until(SIGN_IN_LINK, 5000);
   assert.doesNotMatch(reach.output(), /Turn on HTTPS certificates/, "sign in before diagnosing HTTPS");
   await reach.fake.setStatus({ ...ready, CertDomains: [HOST] });
   await reach.until(/Type a device request code to approve/);
@@ -176,7 +176,7 @@ test("fresh install from nothing: enabling Funnel after setup opens browser pair
   await reach.until(/waiting for Tailscale to be installed/);
   assert.deepEqual((await reach.fake.read()).serve, {});
   await reach.installTailscale();
-  await reach.until(/https:\/\/login\.tailscale\.com\/a\/fixture-login/);
+  await reach.until(SIGN_IN_LINK);
   await reach.fake.setStatus(ready);
   await finishFirstSetup(reach, { link: async () => {
     await reach.until(/Turn on MagicDNS/);

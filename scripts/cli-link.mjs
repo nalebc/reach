@@ -147,18 +147,24 @@ function windowsCli({ root, env, home, files }) {
       text: `Reach's folder (${root}) has letters a Command Prompt shortcut can't hold. Move it under your user folder or to a folder with plain letters, then run .\\reach.cmd cli again; or run .\\reach.cmd from its folder.`,
     };
   const at = win.join(dir, "reach.cmd");
+  const refused = (e) => ({ ok: false, text: `Windows didn't let Reach write ${at} (${e.code || e.message}). Run .\\reach.cmd from its folder instead.` });
+  // Written only where no reach.cmd is ("wx"), or over another Reach folder's
+  // shim just read: never over one made after Reach looked (CodeQL #251).
   let replaced = "";
-  if (files.existsSync(at)) {
+  try {
+    files.writeFileSync(at, `@echo off\r\n"${batch}" %*\r\n`, { flag: "wx" });
+  } catch (e) {
+    if (e.code !== "EEXIST") return refused(e);
     const before = points(at);
     // Another Reach folder's (an older checkout): fine to point elsewhere.
     if (!before || !files.existsSync(win.join(win.dirname(before), "scripts", "bootstrap.mjs")))
       return { ok: false, text: `${at} is something else, not Reach. Reach left it alone; remove it first if you want reach there.` };
     replaced = before;
-  }
-  try {
-    files.writeFileSync(at, `@echo off\r\n"${batch}" %*\r\n`);
-  } catch (e) {
-    return { ok: false, text: `Windows didn't let Reach write ${at} (${e.code || e.message}). Run .\\reach.cmd from its folder instead.` };
+    try {
+      files.writeFileSync(at, `@echo off\r\n"${batch}" %*\r\n`);
+    } catch (e) {
+      return refused(e);
+    }
   }
   const first = dirs.find((d) => files.existsSync(win.join(d, "reach.cmd")));
   const shadow = first && first.toLowerCase() !== dir.toLowerCase() ? win.join(first, "reach.cmd") : "";

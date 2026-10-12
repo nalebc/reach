@@ -154,3 +154,22 @@ test("a Windows host takes Windows app ids in stored policies; a Mac never does"
   assert.equal(validPresetPolicy({ ...policy, apps: [{ id: String.raw`C:\Program Files\1Password\1Password.exe`, name: "1Password" }] }), false, "never a password manager");
   assert.equal(validPresetPolicy({ ...policy, apps: [{ id: String.raw`C:\PROGRA~1\Google\Chrome\Application\chrome.exe` }] }), false);
 });
+
+// CodeQL #243: trailing dots and spaces were cut with /[. ]+$/, which retries
+// from every space of a long run. A path an agent sends (a command, a file to
+// open) held a Windows host's server for seconds (64k spaces: 2.4 s).
+test("a long run of spaces in a Windows name is trimmed in linear time, with the same result", () => {
+  for (const [file, canonical] of [
+    ["C:\\a\\..", "c:\\"], ["C:\\a\\. .\\b", "c:\\a\\b"], ["C:\\a. \\b", "c:\\a\\b"], ["C:\\a:s . \\b", "c:\\a\\b"],
+    ["C:\\a\\   \\b", "c:\\a\\b"], ["C:\\a\\b.. . ", "c:\\a\\b"], ["C:\\a\\...  ", "c:\\a\\..."], ["C:\\a\\ . x. .", "c:\\a\\ . x"],
+    ["C:\\a\\x\t. ", "c:\\a\\x\t"], ["C:\\a\\.. \\b", "c:\\b"], ["C:\\a\\ ..\\b", "c:\\a\\b"],
+  ])
+    assert.equal(windowsCanonicalPath(file), canonical, file);
+  for (const file of ["C:\\Tools\\NUL   .txt", "C:\\Tools\\nul .x", "C:\\Tools\\COM1 . .txt"]) assert.equal(windowsPath(file), false, file);
+  assert.equal(windowsPath("C:\\Tools\\null.txt"), true);
+  const started = performance.now();
+  windowsCanonicalPath("C:\\x\\" + " ".repeat(64000) + "x");
+  windowsPath("C:\\x\\NUL" + " ".repeat(4000) + "x.txt");
+  const ms = performance.now() - started;
+  assert.ok(ms < 250, `${Math.round(ms)} ms`);
+});

@@ -71,7 +71,10 @@ test("Windows: reach cli writes a reach.cmd into a PATH folder you own, and says
     existsSync: (p) => disk.has(p.toLowerCase()) || dirsOn.has(p.toLowerCase()),
     accessSync: (p) => { if (!dirsOn.has(p.toLowerCase())) throw Error("EACCES"); },
     readFileSync: (p) => { if (!disk.has(p.toLowerCase())) throw Error("ENOENT"); return disk.get(p.toLowerCase()); },
-    writeFileSync: (p, text) => disk.set(p.toLowerCase(), text),
+    writeFileSync: (p, text, { flag } = {}) => {
+      if (flag === "wx" && disk.has(p.toLowerCase())) throw Object.assign(Error("EEXIST"), { code: "EEXIST" });
+      disk.set(p.toLowerCase(), text);
+    },
   };
   const home = "C:\\Users\\Sam";
   const apps = "C:\\Users\\Sam\\AppData\\Local\\Microsoft\\WindowsApps";
@@ -111,4 +114,33 @@ test("Windows: reach cli writes a reach.cmd into a PATH folder you own, and says
   assert.equal(outside.ok, false);
   assert.match(outside.text, /can't hold/);
   assert.equal(disk.size, 0, "nothing written that wouldn't work");
+});
+
+// CodeQL #251: Reach looked for a reach.cmd, then wrote one; a reach.cmd made
+// in between (another tool's) was overwritten. Now it's written only where
+// none is, or over another Reach folder's shim it has just read.
+test("Windows: a reach.cmd made after Reach looked is left alone", () => {
+  const apps = "C:\\Users\\Sam\\AppData\\Local\\Microsoft\\WindowsApps";
+  const at = `${apps}\\reach.cmd`.toLowerCase();
+  const disk = new Map();
+  let looked = false;
+  const files = {
+    existsSync: (p) => {
+      if (p.toLowerCase() === at && !disk.has(at)) looked = true;
+      return disk.has(p.toLowerCase()) || p.toLowerCase() === apps.toLowerCase();
+    },
+    accessSync: () => {},
+    readFileSync: (p) => { if (!disk.has(p.toLowerCase())) throw Object.assign(Error("ENOENT"), { code: "ENOENT" }); return disk.get(p.toLowerCase()); },
+    writeFileSync: (p, text, { flag } = {}) => {
+      // Another tool's reach.cmd lands right after Reach found none.
+      if (looked && !disk.has(at)) disk.set(at, "@echo off\r\necho mine\r\n");
+      if (flag === "wx" && disk.has(p.toLowerCase())) throw Object.assign(Error("EEXIST"), { code: "EEXIST" });
+      disk.set(p.toLowerCase(), text);
+    },
+  };
+  const env = { Path: apps, LOCALAPPDATA: "C:\\Users\\Sam\\AppData\\Local" };
+  const result = linkCli({ script: "C:\\Users\\Sam\\code\\reach\\reach", env, home: "C:\\Users\\Sam", files, platform: "win32" });
+  assert.equal(result.ok, false);
+  assert.match(result.text, /something else, not Reach/);
+  assert.equal(disk.get(at), "@echo off\r\necho mine\r\n");
 });
