@@ -158,7 +158,7 @@ On Windows, use `.\reach.cmd` in place of `./reach`. In a source checkout, run `
 ## Security
 
 - **You control who connects.** Reach supports device approval and temporary pairing codes. The normal connection QR contains only an address; pairing QRs include a one-use code. Optional passkey sign-in is implemented, but Face ID on a real iPhone still needs testing.
-- **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. When you use the Mac yourself, agent input pauses.
+- **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. Pause an agent from your phone at any time, or pause Reach from the Mac's menu bar; while you control the Mac from your phone, agents wait.
 - **Guardrails** keep agents' clicks and typing away from Reach and Tailscale, password managers and password fields, `sudo` and security prompts, and System Settings' security panes.
 - **Full control is your account, not a sandbox.** Its shell runs as you. Give it only to agents you trust, and use **Apps** or **Files** for everything else.
 
