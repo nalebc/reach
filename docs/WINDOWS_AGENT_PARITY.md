@@ -34,8 +34,28 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Company-managed computers blocking Reach's helpers | Refused with the reason on both |
 | Protected windows covered by others | The Mac's refined rule on both |
 | File manager in the Apps picker | Offered on both (Finder, File Explorer), with the same guards |
+| One Reach per computer | Machine-wide on both (replaces the per-folder Windows behaviour `docs/FIRST_RUN_MATRIX.md` H20 accepted on Oct 10) |
+| Restarts and updates | On both, an agent's `reach restart` asks on the phone, and Reach restarts in a visible window |
+| The computer kept awake while Reach runs | On both, with the same three modes, shown by `reach status` |
+| Start at sign-in | Offered on both by `./reach setup` |
+| Guests' live screen and clipboard | Filtered on both (password managers, Reach's own windows, concealed copies); on Windows refused with the reason until its filter exists (done Oct 12) |
+| Files hides what the OS hides | Finder's rule on a Mac; hidden and system attributes on Windows |
+| OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows |
+| Reach's terminals | The owner's own shell on both: `$SHELL` on a Mac; Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell |
 
 Only what Windows itself makes impossible differs (table above): UAC prompts, hidden per-app displays, administrator windows.
+
+## Audit (Oct 12)
+
+`docs/parity/AUDIT.md`: six sweeps of all of Reach, not only agents, verified adversarially. It lists 50 items, two of which block use. Done on Oct 12:
+
+- #1: new Claude chats in drive-letter folders.
+- #6: agents started in Reach terminals through a PowerShell call.
+- #8 (first half): live Claude chats read from Claude Code's registry, and the Claude app never ended to take a chat over.
+- #12 and #13 (fail-closed halves): guests refused the Windows screen and clipboard.
+- #14 (first half): Team hidden where there's no team bridge.
+
+The rest are in workstreams K to W below.
 
 ## Rules
 
@@ -61,6 +81,13 @@ Only what Windows itself makes impossible differs (table above): UAC prompts, hi
 | T | The PC's own terminals, as the Mac's Terminal/iTerm2 tabs (`server/desktop-terminals.mjs`, `scripts/native/mac-terminals.js`, `src/Sessions.tsx` "Mac tabs", the Terminals page's default source): list the PC's open console and Windows Terminal tabs, read their text (console API for conhost, UI Automation TextPattern for Windows Terminal), type into them, focus and close them, and open a new visible one in a chosen folder from the phone (`wt.exe -d`, else a console window). Found Oct 12: a tester opened a terminal from the phone and nothing appeared on the laptop | B (helper) | `server/desktop-terminals.mjs`, new `scripts/native/windows-terminals.cs`, `src/Sessions.tsx`, `src/capabilities.ts` |
 | J | Real user journeys on real Windows and a real Mac: a headless browser drives the actual phone interface against a real Reach on GitHub's windows-2025 and macos-15 runners, page by page (Home, Chat with install and sign-in, Files, Terminals including the computer's own, Screen and control, Apps, Agents & people, invites, updates, pause), with real installers where they're free to run and no stand-in terminals or detection. Each journey runs on both platforms and must end in the same visible result; a step with no visible outcome fails. Found Oct 12: fakes let "installed but not found" and "terminal not on the PC" pass | A | new `test/journeys/*.test.mjs`, `ci.yml` |
 | S | Signing: SignPath project *Reach*; a release job builds the helpers on Windows with product metadata *Reach* and the release version, submits them for signing (manual approval), verifies the signature, and adds them and their SHA-256 to the npm package; the server prefers a verified signed helper and falls back to `windowsBinary` | B, owner's SignPath approval | `.github/workflows/release.yml`, `server/desktop-native.mjs`, `scripts/native/*.cs` |
+| K | Keep the PC reachable (audit #3, #4, #32): a keep-awake helper with the Mac's three modes; start at sign-in as a per-user Scheduled Task running the real launcher; `reach status` lines | A | `scripts/launch.mjs`, `scripts/stay-awake.mjs`, `scripts/background-service.mjs`, `scripts/setup.mjs`, `scripts/login-start.mjs`, `scripts/service.mjs`, `scripts/instances.mjs` |
+| L | Launcher lifecycle (audit #10, #11, #30, #31, #41, #44, #49): one process inventory for lock, status, stop, restart and update, shipped together with a visible-console restart; `reach cli` shim; bootstrap.ps1 download, ARM64 | — | `scripts/bootstrap.mjs`, `scripts/stop.mjs`, `scripts/instances.mjs`, `restart-requests.mjs`, `reach-updates.mjs`, `scripts/bootstrap.ps1` |
+| M | Coding agents (audit #2, #7, #8, #14, #15, #17, #33, #45, #46): Codex daemon transport, Git for Windows in health, team bridge on a SID-restricted pipe, pipe owner checks, updates, Gemini/Antigravity/Cursor detection, Codex holder, OpenClaw | — | `agent-sessions/*`, `agent-install.mjs`, `agent-updates.mjs`, `openclaw*.mjs` |
+| N | Claude desktop app on Windows (audit #9): its record folder found on a real PC, then list, archive, watching and `claude://` links | — | `agent-sessions/claude-import.mjs`, `agent-sessions/claude.mjs`, `agent-watch.mjs` |
+| P | Screen, control and guests (audit #5, #12, #13, #16, #26, #27, #47): guests' mask and concealed clipboard; locked state as the Mac's idle byte; H.264 without FFmpeg; UI Automation in the owner's input helper; tray Pause/Resume | B (classifier, UIA), S | `remote-screen.mjs`, `screen-stream.mjs`, `scripts/native/*.ps1`, `desktop-connection.mjs` |
+| W | Wording and conveniences (audit #25, #28, #29, #34–#40, #42, #43, #48): computerWord everywhere with a UI test, icons, hidden files, document text, HEIC, voice, Recycle Bin, shell choice | — | `src/*`, `computer-word.mjs`, `app-icons.mjs`, `document-text.mjs`, `terminal.mjs` |
+| U | Proof below the phone (audit #18–#24, #50): stand-in `tailscale.exe`, `reach.cmd` through ConPTY, jobs, Files escapes, `reach-agent`, a Windows `test:ci`, a standard-user run, windows-2022 | — | `.github/scripts/run-tests.mjs`, `.github/workflows/ci.yml`, `test/windows-*.test.mjs` |
 | H | Mac-dialog equivalents via UI Automation (SmartScreen, file security), window-only streaming (one HWND), Claude consent on Claude Desktop, permission hooks over a named pipe restricted to the user's SID | B | various |
 
 Phases: 1) A built, B/C/D designed in detail and reviewed; 2) B, C, D built in parallel worktrees; 3) E + F, iterate on real Windows until green; 4) G, H; 5) the owner's real-PC acceptance (public door, physical phone), then defaults on.
