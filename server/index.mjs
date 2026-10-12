@@ -107,6 +107,7 @@ import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
+import { prepareOwners } from "./windows-owners.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
@@ -708,6 +709,9 @@ export async function createReach(overrides = {}) {
   if (!process.env.NODE_TEST_CONTEXT || overrides.teamSocket)
     void teamBridge
       .listen()
+      // Windows: a lead's bridge checks Reach's pipe with the owners helper
+      // (scripts/team-mcp.mjs); Team is offered once it's built.
+      .then((open) => (process.platform === "win32" ? prepareOwners(config.dataDir).then(() => open) : open))
       .then((open) => (teamBridgeOpen = open))
       .catch(() => {});
   teams.onChange?.(() => {

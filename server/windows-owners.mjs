@@ -35,4 +35,7 @@ export async function askOwners(verb, target, { dataDir = folder, run = exec, bi
   return answer;
 }
 export const pipeOwner = (pipe, options) => askOwners("pipe", pipe, options);
+// Built ahead (csc takes seconds, longer under an antivirus), not by the
+// first Codex connection or team call that needs it.
+export const prepareOwners = (dataDir, { binary = windowsBinary } = {}) => binary({ dataDir }, "owners");
 export const fileHolders = (file, options) => askOwners("holders", file, options);

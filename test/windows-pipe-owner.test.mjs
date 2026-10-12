@@ -50,6 +50,10 @@ test("a pipe of yours is trusted; one made or served by another account, or one 
     await assert.rejects(ownSocket(PIPE, asWindows(answer)), (e) => (assert.match(e.message, said(because), what), e.status === 503));
   // Another account's logon session isn't yours.
   await assert.rejects(ownSocket(PIPE, asWindows({ ...yours, serves: [ME, "S-1-5-5-0-999"] })), said("another account can serve it too"));
+  // A check that can't run (no csc.exe, a policy that blocks it) says why, as windowsBinary does.
+  const blocked = Object.assign(new Error("Windows refused to run its C# compiler (csc.exe) on this PC: an application control policy blocks it."), { status: 503 });
+  await assert.rejects(ownSocket(PIPE, asWindows(() => { throw blocked; })), (e) =>
+    e.message === `Reach couldn't check Codex's session service. ${blocked.message}` && e.status === 503);
 });
 
 test("only a named pipe is asked about on Windows; a path isn't one", async () => {

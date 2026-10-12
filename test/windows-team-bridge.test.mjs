@@ -157,8 +157,9 @@ test("on real Windows, a lead won't hand its key to a pipe any account may serve
 });
 
 // The phone offers Team only where the bridge is open (5b81920e): the same
-// answer on a Mac's socket and a PC's pipe once Reach listens.
-test("once Reach's team bridge listens, the health check no longer says there are no teams", { timeout: 120000 }, async (t) => {
+// answer on a Mac's socket and a PC's pipe once Reach listens (on Windows,
+// once the owners helper the lead's check uses is built too).
+test("once Reach's team bridge listens, the health check no longer says there are no teams", { timeout: 240000 }, async (t) => {
   const root = folder(t, "reach team health-");
   const dataDir = path.join(root, ".reach");
   const teamSocket = windows ? teamPipe(dataDir) : path.join(root, "t.sock");
@@ -181,6 +182,6 @@ test("once Reach's team bridge listens, the health check no longer says there ar
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   const health = async () => (await fetch(`http://127.0.0.1:${reach.server.address().port}/api/sessions/health`, { headers: { Authorization: `Bearer ${owner.token}` } })).json();
   let answer;
-  for (let i = 0; i < 100 && (answer = await health()).teams === false; i++) await new Promise((r) => setTimeout(r, 20));
+  for (const until = Date.now() + 180000; (answer = await health()).teams === false && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(answer, { agents: [] });
 });

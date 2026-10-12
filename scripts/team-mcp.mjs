@@ -32,6 +32,7 @@ const reachPipe = async () => {
     await trustedSocket(key.socket, { dataDir: path.dirname(path.dirname(path.resolve(file))) });
   } catch (e) {
     if (e.reason === "missing") throw new Error("Reach isn't running, so the team can't act right now.");
+    if (e.detail) throw new Error(`Reach couldn't check its team connection, so the team can't act right now. ${e.detail}`);
     throw new Error(`Reach's team connection here isn't one the team can trust (${e.because || "it couldn't be checked"}), so the team can't act right now.`);
   }
 };

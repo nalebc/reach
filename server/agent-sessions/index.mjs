@@ -30,7 +30,7 @@ import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
-import { useOwnersFolder } from "../windows-owners.mjs";
+import { prepareOwners, useOwnersFolder } from "../windows-owners.mjs";
 import { agentName, createMoves, handoff, moveTurns, openClawNotes, resumeText } from "./move.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
 import { createAgentWatch } from "./agent-watch.mjs";
@@ -344,6 +344,7 @@ export function createAgentSessions({
   // Windows' owner checks (Codex's pipes, the files it holds) build their
   // helper in this data folder (windows-owners.mjs).
   useOwnersFolder(dataDir);
+  if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT) void prepareOwners(dataDir).catch(() => {});
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
   // never this Mac's app in tests.

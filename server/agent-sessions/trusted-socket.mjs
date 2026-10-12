@@ -84,8 +84,10 @@ async function trustedPipe(file, owner) {
   let seen;
   try {
     seen = await owner(file);
-  } catch {
-    throw refuse("unchecked");
+  } catch (e) {
+    // The check couldn't run (no csc.exe, a policy that blocks it): refused
+    // with the reason windowsBinary gives, as a company-managed PC's are.
+    throw Object.assign(refuse("unchecked"), e?.status === 503 && typeof e.message === "string" ? { detail: e.message } : {});
   }
   if (seen?.error === "missing") throw refuse("missing");
   if (seen?.error || !SID.test(seen?.self)) throw refuse("unchecked");
