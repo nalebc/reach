@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
@@ -15,14 +16,14 @@ import { fakeTailscale, tailnetPreload, HOST } from "./helpers/fake-tailscale.mj
 // stops it. Real processes; only process.platform is Windows. Stopping goes
 // through stopReach with platform "win32" and no process list, so it can never
 // reach a Reach that really runs on this computer.
-const AS_WINDOWS = path.resolve("test/helpers/as-windows.mjs");
+const AS_WINDOWS = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
 
 function windowsReach(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-as-windows-"));
   const state = path.join(dir, "state");
   fs.mkdirSync(path.join(dir, "share"));
   const env = { ...process.env, REACH_HOME: state, REACH_DATA: path.join(state, "quick") };
-  const entry = path.resolve("scripts/launch.mjs");
+  const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
   const child = spawn(
     process.execPath,
     [

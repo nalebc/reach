@@ -39,7 +39,7 @@ test('Full control file access comes only from the live policy, never request fl
  const options={config:{dataDir:f.cache},run:async request=>{observed=request;return{items:[],truncated:false};}};
  await browserFileOperation({op:'list',root:f.root,fullControl:true,privateNames:[],privatePaths:[]},()=>({id:'apps',policy:{browser:true,preset:'apps'}}),options);
  assert.equal(observed.fullControl,false);assert.ok(observed.privateNames.includes('.ssh'));
- await browserFileOperation({op:'list',root:'/'},()=>({id:'full',policy:{browser:true,preset:'full'}}),options);
+ await browserFileOperation({op:'list',root:path.parse(f.root).root},()=>({id:'full',policy:{browser:true,preset:'full'}}),options);
  assert.equal(observed.fullControl,true);assert.deepEqual(observed.privateNames,[]);assert.deepEqual(observed.privatePaths,[]);
 });
 test('native Full control reads private fixture names through the filesystem root',{skip:!native},async t=>{

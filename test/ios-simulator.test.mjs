@@ -41,9 +41,27 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   await fs.writeFile(path.join(reach.home, "simulator-proof.txt"), "Reach simulator bytes\n");
   const nonce = crypto.randomBytes(16).toString("hex"), probe = `/__simulator_${nonce}`;
   const certificate = path.join(dir, "localhost.pem"), key = path.join(dir, "localhost.key");
-  await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
-    "-out", certificate, "-days", "1", "-subj", "/CN=localhost",
-    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:TRUE"], { timeout: 10000 });
+  const authority = path.join(dir, "root.pem"), authorityKey = path.join(dir, "root.key");
+  const request = path.join(dir, "localhost.csr"), extensions = path.join(dir, "localhost.ext");
+  // URLSession requires a server-authentication leaf, not a CA reused as the
+  // endpoint certificate. Trust only this disposable CA inside our simulator;
+  // production certificate validation remains enabled throughout the test.
+  await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", authorityKey,
+    "-out", authority, "-days", "1", "-subj", `/CN=Reach simulator ${nonce}`,
+    "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"], { timeout: 10000 });
+  await exec("openssl", ["req", "-new", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout", key,
+    "-out", request, "-subj", "/CN=localhost"], { timeout: 10000 });
+  await fs.writeFile(extensions, [
+    "basicConstraints=critical,CA:FALSE",
+    "keyUsage=critical,digitalSignature,keyEncipherment",
+    "extendedKeyUsage=serverAuth",
+    "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    "authorityKeyIdentifier=keyid,issuer",
+    "subjectKeyIdentifier=hash",
+  ].join("\n"));
+  await exec("openssl", ["x509", "-req", "-in", request, "-CA", authority, "-CAkey", authorityKey,
+    "-CAcreateserial", "-out", certificate, "-days", "1", "-sha256", "-extfile", extensions], { timeout: 10000 });
+  await exec("openssl", ["verify", "-purpose", "sslserver", "-verify_ip", "127.0.0.1", "-CAfile", authority, certificate], { timeout: 10000 });
   let resolveResult, rejectResult;
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   let noteDownload, allowDownload, noteResponse;
@@ -189,7 +207,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   device = (await sim("create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier)).stdout.trim();
   await sim("boot", device);
   await sim("bootstatus", device, "-b");
-  await sim("keychain", device, "add-root-cert", certificate);
+  await sim("keychain", device, "add-root-cert", authority);
   const app = path.join(dir, "App.app");
   await fs.cp(process.env.REACH_TEST_IOS_APP, app, { recursive: true });
   const configFile = path.join(app, "capacitor.config.json");

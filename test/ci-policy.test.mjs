@@ -172,11 +172,13 @@ test("CI execution uses the guarded npm entrypoint and publishing cannot run pac
   const ci = fs.readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   assert.match(ci, /merge_group:/);
   assert.doesNotMatch(ci, /continue-on-error:|secrets\.|pull_request_target:/);
-  const release = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const publish = release.slice(release.indexOf("  publish:\n"));
-  assert.match(publish, /environment: npm-release/);
-  assert.match(publish, /npm publish .* --ignore-scripts --provenance/);
-  assert.doesNotMatch(publish, /uses: actions\/checkout|run: npm (?:ci|install|run)|secrets\.NPM_TOKEN/);
+  const publish = workflow("release").jobs.publish;
+  assert.equal(publish.environment, "npm-release");
+  const commands = publish.steps.map(step => step.run || "").join("\n");
+  assert.match(commands, /npm publish .* --ignore-scripts --provenance/);
+  assert.ok(!publish.steps.some(step => step.uses?.startsWith("actions/checkout@")));
+  assert.doesNotMatch(commands, /(?:^|\n)\s*npm (?:ci|install|run)\b/);
+  assert.doesNotMatch(JSON.stringify(publish), /secrets\.NPM_TOKEN/);
 });
 
 

@@ -5,7 +5,7 @@
 // own Node 22 leads PATH (scripts/bootstrap.mjs). "$@": every value is an
 // argument, never shell text. A secret is never an argument: `secret` names
 // the variable OpenClaw reads, set from REACH_SECRET in the env, then unset.
-import path from "node:path";
+import path from "node:path/posix";
 import { availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const quote = (value) => "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
