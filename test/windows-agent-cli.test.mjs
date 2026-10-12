@@ -235,6 +235,24 @@ test("a Windows chat without Git Bash says so plainly; with it, Claude Code star
   assert.deepEqual(Object.entries(chose.runs[0].options.env).filter(([key]) => /git_bash/i.test(key)), [["claude_code_git_bash_path", "D:\\Git\\bin\\bash.exe"]]);
 });
 
+// Oct 12 (audit #45): Gemini CLI was looked for with a login shell, which
+// Windows hasn't got, and only at a path starting with "/": found by the
+// list's own check, it then read "installed, but unsupported".
+test("Gemini CLI on Windows is found as Claude Code is: npm's .cmd as the script it runs, never a login shell", async (t) => {
+  const { createGeminiSessions } = await import("../server/agent-sessions/gemini.mjs");
+  const at = layout(t, {
+    "npm/gemini": shShim("node_modules/@google/gemini-cli/dist/index.js"),
+    "npm/gemini.cmd": progShim("node_modules/@google/gemini-cli/dist/index.js"),
+    "npm/node_modules/@google/gemini-cli/dist/index.js": "#!/usr/bin/env node\n",
+    "gemini-home/oauth_creds.json": "{}",
+  });
+  const run = async () => assert.fail("no login shell on Windows");
+  const env = { Path: at("npm"), PATHEXT: ".COM;.EXE;.BAT;.CMD", APPDATA: at("roaming"), USERPROFILE: at("home") };
+  const health = await createGeminiSessions({ home: at("gemini-home"), env, run, platform: "win32" }).health();
+  assert.deepEqual(health, { agent: "gemini", installed: true, signedIn: true, usable: true });
+  assert.deepEqual(await createGeminiSessions({ home: at("gemini-home"), env: { Path: at("none"), APPDATA: at("roaming"), USERPROFILE: at("home") }, run, platform: "win32" }).health(), { agent: "gemini", installed: false, signedIn: false });
+});
+
 // Claude Code installed from the phone, then the first message failed for
 // want of Git for Windows (audit #7, Oct 12). Health says so first.
 test("Claude's health on Windows says it needs Git for Windows, before sign-in and before any sign-in error", async () => {
