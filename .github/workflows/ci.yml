@@ -155,7 +155,7 @@ jobs:
         # Synthetic AX objects and inert input sinks. No actual global typing,
         # private browser profiles, provider sign-in, or OS permission grants.
         run: npm run test:ci:native
-      - name: Real Windows screen helpers under a normal PC's script policy
+      - name: Real Windows screen, clicks and typing under a normal PC's script policy
         if: runner.os == 'Windows'
         # GitHub's runners allow every script; a normal PC refuses them
         # (Oct 11: a first Windows user's live screen never loaded). Set
@@ -164,7 +164,7 @@ jobs:
         shell: cmd
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List" || exit /b 1
-          npm run test:file -- --test-timeout=240000 test/windows-desktop-native.test.mjs
+          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs
         env:
           REACH_TEST_WINDOWS_DESKTOP: "1"
       - run: npm run package
