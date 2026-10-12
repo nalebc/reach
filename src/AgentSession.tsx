@@ -2936,7 +2936,7 @@ export default function AgentSessionView({
                     className="as-details-delete"
                     role="menuitem"
                     onClick={async () => {
-                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
+                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
                         return;
                       try {
                         await deleteSession(peer, initial);

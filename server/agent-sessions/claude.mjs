@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { createClaudeAccountUsage } from "./account-usage.mjs";
 import { claudeEnvironment } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
+import { recycle as recycleFile } from "../recycle-bin.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -495,7 +496,9 @@ export function createClaudeSessions({
     // Deleted: its transcript (and the Claude app's record of it) to the
     // Trash, where it can still be found. appOpen: the Claude app is running;
     // a chat it lists is deleted there then (it would write it back).
-    async remove(id, { appOpen = false, trash = path.join(os.homedir(), ".Trash") } = {}) {
+    // Windows: its Recycle Bin (recycle-bin.mjs); a folder Explorer never
+    // empties only if that fails.
+    async remove(id, { appOpen = false, trash = path.join(os.homedir(), ".Trash"), recycle = process.platform === "win32" ? recycleFile : null } = {}) {
       const found = await locate(id);
       if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
       await records();
@@ -503,6 +506,12 @@ export function createClaudeSessions({
       if (record && appOpen) throw Object.assign(new Error("The Claude app has this chat in its list: delete it there."), { status: 409 });
       await fs.mkdir(trash, { recursive: true });
       const away = async (file) => {
+        if (recycle)
+          try {
+            return await recycle(file);
+          } catch {
+            /* moved to the folder below instead */
+          }
         const to = path.join(trash, `${path.basename(file, path.extname(file))} ${new Date().toISOString().replace(/[:.]/g, "-")}${path.extname(file)}`);
         try {
           await fs.rename(file, to);

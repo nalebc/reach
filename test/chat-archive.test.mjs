@@ -123,6 +123,33 @@ test("renaming a Claude chat writes Claude Code's own title line, and the Claude
   await fs.rm(root, { recursive: true, force: true });
 });
 
+// Windows has no ~/.Trash: a deleted chat goes to its Recycle Bin, and to a
+// folder only if that fails (parity audit #38).
+test("on Windows a deleted Claude chat goes to the Recycle Bin, both its files; a failed recycle still deletes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-recycle-"));
+  const projects = path.join(root, "projects", "-work-app");
+  const records = path.join(root, "records", "acct", "org");
+  const trash = path.join(root, "Trash");
+  await fs.mkdir(projects, { recursive: true });
+  await fs.mkdir(records, { recursive: true });
+  await fs.writeFile(path.join(projects, `${ID}.jsonl`), said(ID));
+  await fs.writeFile(path.join(projects, `${CLI_ONLY}.jsonl`), said(CLI_ONLY));
+  await fs.writeFile(path.join(records, `local_${ID}.json`), JSON.stringify({ sessionId: `local_${ID}`, cliSessionId: ID, isArchived: false }));
+  const claude = createClaudeSessions({ projects: path.join(root, "projects"), appRecords: path.join(root, "records") });
+  const recycled = [];
+  const recycle = async (file) => {
+    recycled.push(path.basename(file));
+    await fs.rm(file);
+  };
+  assert.deepEqual(await claude.remove(ID, { trash, recycle }), { deleted: true });
+  assert.deepEqual(recycled.sort(), [`${ID}.jsonl`, `local_${ID}.json`]);
+  assert.deepEqual(await fs.readdir(trash), [], "nothing in a folder Explorer never empties");
+  // Recycling refused (a policy, no Recycle Bin): deleted all the same, kept in the folder.
+  assert.deepEqual(await claude.remove(CLI_ONLY, { trash, recycle: async () => { throw Error("SHFileOperation 120"); } }), { deleted: true });
+  assert.equal((await fs.readdir(trash)).length, 1);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("deleting a Claude chat moves its transcript and the app's record to the Trash; while the Claude app lists it, it's deleted there", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-delete-"));
   const projects = path.join(root, "projects", "-work-app");
