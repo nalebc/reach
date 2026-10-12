@@ -24,7 +24,15 @@ export const windowsHidden = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 // they're given, and whatever spaces end the name before its extension
 // ("NUL .exe" is NUL).
 const RESERVED = /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3]|conin\$|conout\$)$/i;
-const deviceName = (name) => RESERVED.test(name.split(".")[0].replace(/[ .]+$/, ""));
+// Trailing dots and spaces cut by walking back from the end: /[. ]+$/ retries
+// from every space of a long run, and a 64k-space name an agent sent held the
+// server for seconds (CodeQL #243).
+const trimDotsSpaces = (text) => {
+  let end = text.length;
+  while (end && (text[end - 1] === "." || text[end - 1] === " ")) end--;
+  return text.slice(0, end);
+};
+const deviceName = (name) => RESERVED.test(trimDotsSpaces(name.split(".")[0]));
 // One spelling per name, as Windows compares them: it upper-cases each
 // letter (ſ is S, ı is I, ς and σ are Σ), where lower-casing alone keeps
 // them apart. Lower-cased after, to meet lists written in lower case.
@@ -44,7 +52,7 @@ export function windowsCanonicalPath(value) {
   const drive = /^[a-z]:/i.test(text) ? text.slice(0, 2) : "";
   const names = text.slice(drive.length).split("\\").map((name) => {
     const plain = name.replace(/:.*$/s, "");
-    return /^\.+ *$/.test(plain) ? plain.trimEnd() : plain.replace(/[. ]+$/, "");
+    return /^\.+ *$/.test(plain) ? plain.trimEnd() : trimDotsSpaces(plain);
   });
   const joined = drive + names.join("\\");
   // Root-relative (\Windows) stays on no drive in particular (windowsWithin),
