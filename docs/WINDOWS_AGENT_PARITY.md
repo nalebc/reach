@@ -61,9 +61,16 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
   - guests are refused the Windows screen, both viewing and control;
   - their phones show no Screen, and the invite sheet offers no screen roles.
 - #14 (first half): Team is hidden on Windows, which has no team bridge yet.
+- #23: Windows command output comes back in UTF-8, and the job tests have Windows twins.
 - #25: "Windows PC" on pages every computer shows, with a ratchet test.
+- #29: Files hides what Explorer hides.
+- #30 and #49: the launcher gets Node for ARM64 too, and its download is quiet, retried, and says so when offline.
+- #35: the voice memo mic shows only on a Mac.
+- #37: Word and RTF files offer a download off a Mac.
+- #38: deleted Claude chats go to the Recycle Bin.
 - #39: a busy file gives "open in another program".
 - #42: website shortcuts open through Start-Process.
+- #44: `reach cli` writes a `reach.cmd`.
 - #48: docs.
 
 The rest are in workstreams K to W below.
