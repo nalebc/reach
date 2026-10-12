@@ -154,6 +154,8 @@ function statusOf(g: Guest, now: number, live?: Live): { text: string; tone?: "a
     if (g.status === "denied") return { text: "Denied", tone: "off" };
     if (g.status === "expired") return { text: "Request expired", tone: "off" };
   }
+  // Came in while an agent had the Mac: Let in on Home's Needs you.
+  if (g.kind === "guest" && g.status === "waiting") return { text: "Waiting for you to let them in", tone: "attention" };
   if (g.status && g.status !== "accepted")
     return { text: `${g.kind === "agent" ? "Not joined yet" : "Not opened yet"} · ${lasts(g, now)}` };
   return { text: `${levelName(g)} · ${lasts(g, now)}` };

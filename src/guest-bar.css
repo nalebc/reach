@@ -33,6 +33,10 @@
   color: inherit;
   font: inherit;
 }
+/* The live screen, full size: the pill would sit on the Mac's menu bar. */
+html[data-guest] body:has(.screen-expanded, .screen-immersive) .guest-bar {
+  display: none;
+}
 /* Guests can't add computers. */
 html[data-guest] .fleet-add,
 html[data-guest] .sidebar-devices .icon-button {

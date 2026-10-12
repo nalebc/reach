@@ -290,3 +290,35 @@ test("revoking, expiring or changing an app invitation's creator also stops its 
   f.setClients([f.owner(), client]);
   assert.equal(f.guard.allows(request(), { ...client, browserAppApprover: { ...client.browserAppApprover, clientId: "new-owner" } }), false);
 });
+
+// Oct 11: "let them in both" — a person shares the Mac with an agent, from
+// their own device, once the owner let them in; never from this Mac's node.
+test("a person comes in beside an agent from their own device, never from the host or while waiting", async () => {
+  const f = fixture();
+  const person = (extra = {}) => ({ id: "aya", kind: "guest", scopes: ["admin", "screen"], expiresAt: 100000,
+    tailscale: { nodeId: "nGuest", userId: "" }, ...extra });
+  f.setActive(true);
+  await f.guard.refresh();
+  const fromGuest = f.request("nGuest", { trust: false, url: "/api/device", method: "GET" });
+  assert.equal(f.guard.allows(fromGuest, person()), true);
+  assert.equal(f.guard.allows(fromGuest, person({ macEntry: { status: "allowed" } })), true);
+  assert.equal(f.guard.allows(fromGuest, person({ macEntry: { status: "waiting" } })), false, "waiting for the owner's Allow");
+  assert.equal(f.guard.allows(fromGuest, person({ expiresAt: 500 })), false, "ended");
+  const fromHost = f.request("nHost", { trust: false, url: "/api/device", method: "GET" });
+  assert.equal(f.guard.onHost(fromHost), true);
+  assert.equal(f.guard.allows(fromHost, person()), false, "the agent drives this Mac");
+  // Other owner devices stay behind the guard, as before.
+  assert.equal(f.guard.allows(f.request("nOther", { url: "/api/device", method: "GET" }), f.owner("nOther")), false);
+  // A live connection before its credential: only a node a person is bound to.
+  f.setClients([f.owner(), f.grant(), person()]);
+  assert.equal(f.guard.allowsConnection(f.request("nGuest", { trust: false, url: "/ws/screen", method: "GET" })), true);
+  assert.equal(f.guard.allowsConnection(f.request("nStranger", { trust: false, url: "/ws/screen", method: "GET" })), false);
+  f.setClients([f.owner(), f.grant(), person({ tailscale: { nodeId: "nHost", userId: "" } })]);
+  assert.equal(f.guard.allowsConnection(f.request("nHost", { trust: false, url: "/ws/screen", method: "GET" })), false);
+  f.setClients([f.owner(), f.grant(), person({ macEntry: { status: "waiting" } })]);
+  assert.equal(f.guard.allowsConnection(f.request("nGuest", { trust: false, url: "/ws/screen", method: "GET" })), false);
+  // Host identity unknown (stale): a person's request is held, not let through.
+  f.setTime(7000);
+  assert.equal(f.guard.fresh(), false);
+  assert.equal(f.guard.allows(fromGuest, person()), false);
+});

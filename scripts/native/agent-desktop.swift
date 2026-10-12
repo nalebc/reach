@@ -1100,14 +1100,20 @@ func shot(_ rules: Rules, _ maxWidth: Int) async throws -> [String: Any] {
   let filter: SCContentFilter
   // A selected app can itself host Reach or a password-manager window.
   // Apply these exclusions in Apps mode as well as full-screen modes.
+  // The Dock's full-screen windows. The Dock itself is one, titled "Dock"
+  // (layer 20, display-sized on macOS 26), and stays. Mission Control, App
+  // Exposé and Launchpad add untitled ones that draw every window's preview:
+  // while any is up, all of them are left out, so what is hidden stays
+  // hidden there too (screen-stream.swift has the same rule).
+  let dockLayer = { (window: SCWindow) -> Bool in
+    lower(window.owningApplication?.bundleIdentifier ?? "") == "com.apple.dock" && window.windowLayer > 0 &&
+      window.frame.width >= display.frame.width * 0.9 && window.frame.height >= display.frame.height * 0.9
+  }
+  let overview = content.windows.contains { dockLayer($0) && $0.title != "Dock" }
   let excluded = content.windows.filter { window in
     let app = window.owningApplication
     let path = app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.bundleURL.map(canonical) } ?? ""
-    // Mission Control, App Exposé and Launchpad draw every window's preview
-    // in the Dock's own full-screen layer: left out, so what is hidden stays
-    // hidden there too.
-    let dockOverlay = lower(app?.bundleIdentifier ?? "") == "com.apple.dock" && window.windowLayer > 0 &&
-      window.frame.width >= display.frame.width * 0.9 && window.frame.height >= display.frame.height * 0.9
+    let dockOverlay = dockLayer(window) && (overview || window.title != "Dock")
     return (rules.mode != "full" && dockOverlay) || appReason(app?.bundleIdentifier ?? "", app?.applicationName ?? "", path, rules) != nil ||
       windowTitleReason(window.title ?? "", app?.bundleIdentifier ?? "", path, app?.processID ?? 0, rules) != nil
   }

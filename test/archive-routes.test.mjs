@@ -58,7 +58,7 @@ test("the paired owner extracts beside the archive without overwriting an existi
   assert.deepEqual((await fs.readdir(path.join(f.root, "nested"))).sort(), ["Bundle", "Bundle 2", "Bundle.tar"]);
 });
 
-test("archive extraction requires an owner device, admin, read and write; invited access stays restricted", async t => {
+test("archive extraction requires the owner (or a full-access person), admin, read and write; other invited access stays restricted", async t => {
   const f = await fixture(t);
   const scopedInvite = f.reach.auth.inviteAgent({ name: "Scoped writer", ttlSeconds: 600, folders: [{ root: 0, path: "nested" }], write: true });
   const scoped = admitAgent(f.reach.auth, scopedInvite.invitation);
@@ -70,7 +70,7 @@ test("archive extraction requires an owner device, admin, read and write; invite
   const browser = admitAgent(f.reach.auth, browserInvite.invitation);
   const denied = [
     [scoped, { root: 0, path: "Bundle.tar" }],
-    [guest], [fullGuest], [browser],
+    [guest], [browser],
     [f.reach.auth.issue("Service", ALL_SCOPES, "service")],
     [f.reach.auth.issue("Limited device", ["device", "files:read", "files:write"], "device")],
     [f.reach.auth.issue("Owner read only", ["admin", "files:read"], "device")],
@@ -86,6 +86,9 @@ test("archive extraction requires an owner device, admin, read and write; invite
   const listing = await read.json();
   assert.equal(read.status, 200, JSON.stringify(listing));
   assert.ok(listing.items.some(item => item.name === "Bundle.tar"));
+  // A person with full access uses the Mac like you (Oct 11).
+  const opened = await f.call(undefined, fullGuest.token);
+  assert.equal(opened.status, 200, JSON.stringify(opened));
 });
 
 test("unauthenticated, revoked and invalid extraction requests leave shared files unchanged", async t => {

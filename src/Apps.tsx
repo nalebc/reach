@@ -88,11 +88,10 @@ export default function Apps({
   const onPhone = !!screen && device.platform === "darwin";
   // Paused on the Mac: apps wait there and come back on Resume.
   const paused = pausedIn(changes, device);
-  const owner =
-    !device.access ||
-    (device.access.scopes.includes("admin") && device.access.kind !== "guest");
-  // A guest watches the apps the owner has open on their phone; they can't
-  // open others (every tile used to answer "Only the computer's owner…").
+  // You, or a person with full access (they use the Mac like you).
+  const owner = !device.access || device.access.scopes.includes("admin");
+  // Anyone else watches the apps the owner has open on their phone; they
+  // can't open others (every tile used to answer "Only the computer's owner…").
   const watchOnly = onPhone && !owner;
   const {
     threads,

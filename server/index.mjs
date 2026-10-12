@@ -1,6 +1,6 @@
 import { browserAgentRoutes } from "./browser-agents.mjs";
 import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
-import { createBrowserHostGuard, personGuardMessage } from "./browser-host-guard.mjs";
+import { createBrowserHostGuard, personOnHostMessage, personWaitingMessage } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
 import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
@@ -87,7 +87,7 @@ import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
-import { ScreenControl, pausedMessage } from "./screen.mjs";
+import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub } from "./remote-screen.mjs";
 import {
   AppThreads,
@@ -372,9 +372,15 @@ export async function createReach(overrides = {}) {
       ? context.token === token && !paused && transportAvailable &&
         auth.verifyFunnel(token, context.keyThumbprint)
       : auth.verify(token, req.reachIdentity);
+    if (client?.kind === "guest" && client.macEntry?.status === "waiting") return null;
     if (!browserHostGuard.allows(req, client)) return null;
-    return client?.policy?.browser && req.headers.upgrade?.toLowerCase() === "websocket"
-      ? null : client;
+    if (client && req.headers.upgrade?.toLowerCase() === "websocket") {
+      if (client.policy?.browser) return null;
+      // A live connection sends its credential in a message: kept, so the
+      // host guard's 2-second check (trackIdentity) knows whose it is.
+      req.reachCredential = token;
+    }
+    return client;
   };
   // Why `verify` refused a sound credential for a moment, if that's what
   // happened: Tailscale's word on the phone (whois) or on this Mac (the host
@@ -407,7 +413,9 @@ export async function createReach(overrides = {}) {
         if (!req.reachIdentity) end();
         if (browserHostGuard.isActive()) {
           await browserHostGuard.refresh();
-          browserHostGuard.assertRequest(req, verify(req, req.headers.authorization?.replace(/^Bearer /, "")));
+          const token = req.headers.authorization?.replace(/^Bearer /, "") || req.reachCredential;
+          // A live connection not signed in yet is checked when it is.
+          if (token || !req.headers.upgrade) browserHostGuard.assertRequest(req, verify(req, token));
         }
       } catch {
         req.reachIdentity = null;
@@ -437,7 +445,8 @@ export async function createReach(overrides = {}) {
     blocked: () => {
       if (paused) return "Reach is paused";
       if (!transportAvailable) return "Reach's connection is down";
-      if (screenControl.holder() || screenControl.inputStopping() || inputInFlight) return "you're controlling the Mac from your phone";
+      if (screenControl.holder() || screenControl.inputStopping() || inputInFlight)
+        return screenControl.holder()?.person ? `${screenControl.holder().name || "someone"} is controlling the Mac` : "you're controlling the Mac from your phone";
       const agent = agentDesktop ? agentDesktop.automationBusy?.() : false;
       return agent === false ? false : typeof agent === "string" ? agent : "an agent is using the Mac";
     },
@@ -908,7 +917,11 @@ export async function createReach(overrides = {}) {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(),
+    // Who controls (their name), or true while the last one's input stops.
+    phoneControls: () => {
+      const held = screenControl.holder();
+      return held?.person ? held.name || "Someone" : !!held || screenControl.inputStopping();
+    },
     // A chat waiting on an agent gets the next turn (the agent's input waits a
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
@@ -1303,35 +1316,47 @@ export async function createReach(overrides = {}) {
     res.once("finish", cleanup);
     next();
   });
-  // A person kept out while an agent has Full control or Apps (the host
-  // guard): you hear who, once per person every ten minutes, so you can end
-  // the agent's access to let them in. Pausing keeps the host guard active.
-  const keptOut = new Map();
-  const personKeptOut = (person) => {
-    const now = Date.now();
-    for (const [id, at] of keptOut) if (now - at > 600_000) keptOut.delete(id);
-    if (keptOut.has(person.id)) return;
-    keptOut.set(person.id, now);
+  // A person who came in while an agent had Full control or Apps waits for
+  // your Allow (auth.allowPerson): you hear who, once, with their device.
+  const personWaiting = (person) => {
     const name = person.name || "Someone";
-    record("agent", `${name} couldn't come in: an agent has full control of this Mac`);
-    notify({ category: "access", title: `${name} couldn't come in`, body: "An agent has full control of this Mac right now, so people are kept out. End its access in Agents & people to let them in.", icon: "agent", tag: `person-kept-out-${person.id}` });
+    const device = person.macEntry?.nodeName ? ` on ${person.macEntry.nodeName}` : "";
+    record("guest", `${name} is waiting to come in${device}`);
+    notify({ category: "access", title: `${name} wants to come in`, body: `An agent is using this Mac, so you allow each new person once${device ? ` (${person.macEntry.nodeName})` : ""}.`, icon: "agent", tag: `person-waiting-${person.id}` });
+    for (const nudge of presenceNudges) nudge();
   };
+  const redeemRoutes = ["/api/guest/redeem", "/api/invitations/redeem"];
   app.use("/api", async (req, res, next) => {
+    const route = (req.originalUrl || req.url || "").split("?", 1)[0];
+    const token = req.headers.authorization?.replace(/^Bearer /, "");
+    const context = funnelRequests.get(req);
+    const verified = () => context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+    // A person waiting for your Allow reads that, whatever else is going on.
+    if (token && !context) {
+      const client = verified();
+      if (client?.kind === "guest" && client.macEntry?.status === "waiting") {
+        // Leave, while waiting: their access ends, and your card with it.
+        if (req.method === "DELETE" && route === "/api/device/access") {
+          endClient(client.id);
+          void releaseGuest(client);
+          for (const nudge of presenceNudges) nudge();
+          return res.json({ ok: true });
+        }
+        throw Object.assign(fail(403, personWaitingMessage), { waiting: true });
+      }
+    }
     if (agentsActive()) {
       await browserHostGuard.refresh();
-      const token = req.headers.authorization?.replace(/^Bearer /, "");
-      const context = funnelRequests.get(req);
-      const client = context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+      const client = verified();
       if (!auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
-        // A person, opening their invitation or with access already: told
-        // plainly that someone else has the Mac. The rule itself is unchanged.
-        const route = (req.originalUrl || req.url || "").split("?", 1)[0];
-        const invited = req.method === "POST" && ["/api/guest/redeem", "/api/invitations/redeem"].includes(route)
+        // A person opening their invitation comes in beside the agent, and
+        // waits for your Allow (the redeem route holds them). Not on this
+        // Mac itself: the agent drives it.
+        const invited = req.method === "POST" && redeemRoutes.includes(route)
           ? auth.unopenedInvitation(req.body?.invitation) : null;
-        const person = client?.kind === "guest" ? client : invited?.kind === "guest" ? invited : null;
-        if (person) {
-          personKeptOut(person);
-          throw fail(403, personGuardMessage);
+        if (invited?.kind === "guest") {
+          if (browserHostGuard.onHost(req)) throw fail(403, personOnHostMessage);
+          return next();
         }
         browserHostGuard.assertRequest(req, client);
       }
@@ -1526,7 +1551,8 @@ export async function createReach(overrides = {}) {
     platform: process.platform,
   });
   app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) => {
-    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity);
+    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity, { hold: agentsActive() });
+    if (joined.waiting) personWaiting(auth.list().find((client) => client.id === joined.clientId) || { id: joined.clientId });
     if (joined.status === "pending") {
       record("agent", "An invited agent is waiting for connection approval");
       notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
@@ -2318,6 +2344,15 @@ export async function createReach(overrides = {}) {
       ...(key ? { key: key.key, hostname: key.hostname } : {}),
     });
   });
+  // Your Allow for a person who came in while an agent had the Mac (Deny is
+  // removing their access, DELETE /api/clients/:id).
+  app.post("/api/guests/:id/allow", (req, res) => {
+    invitationOwner(req);
+    const person = auth.allowPerson(req.params.id);
+    record("guest", `Let ${person.name || "a person"} in`);
+    for (const nudge of presenceNudges) nudge();
+    res.json({ ok: true });
+  });
   // Change what someone you invited may use, without a new link (core.mjs,
   // changeAccess). Every request checks the new access; what they lose ends
   // at once: screen control comes back to you, and their open screens and
@@ -2889,7 +2924,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/files/extract", async (req, res) => {
     const owner = () => {
       const client = req.reauthorize();
-      if (client.kind !== "device" || !client.scopes.includes("admin") || client.policy?.browser ||
+      if (!actsAsOwner(client) || !client.scopes.includes("admin") || client.policy?.browser ||
           !(client.scopes.includes("files") || ["files:read", "files:write"].every(scope => client.scopes.includes(scope))))
         throw fail(403, "Only a paired owner with file read and write access can open archives.");
       return client;
@@ -4446,6 +4481,10 @@ export async function createReach(overrides = {}) {
   app.get("/api/screen", async (req, res) => {
     if (!config.screen)
       throw fail(403, "Screen viewing is off. Turn it on in Reach first.");
+    // A whole, unfiltered picture: yours and full-access people's only.
+    // Everyone else watches the live screen, without the private windows.
+    if (!actsAsOwner(req.client))
+      throw fail(403, "Open the live screen to watch this Mac.");
     notPaused();
     // Share simultaneous captures instead of spawning a process per viewer.
     if (!captureInFlight)
@@ -4602,6 +4641,8 @@ export async function createReach(overrides = {}) {
                   ? "That name is already in use."
                   : "Could not complete this action. Check the companion console.",
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
+        // A person waiting for the owner's Allow: their page waits too.
+        ...(error.waiting === true ? { waiting: true } : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });
@@ -4618,7 +4659,9 @@ export async function createReach(overrides = {}) {
     if (browserHostGuard.isActive()) {
       try {
         await browserHostGuard.refresh();
-        browserHostGuard.assertRequest(req);
+        // A person's device comes through; their credential is checked with
+        // the guard when it arrives (verify).
+        if (!browserHostGuard.allowsConnection(req)) browserHostGuard.assertRequest(req);
       } catch (e) {
         const route = WS_ROUTES.includes(req.url) ? req.url : "a live";
         const now = Date.now();
@@ -4729,6 +4772,14 @@ export async function createReach(overrides = {}) {
             ...(scopes.includes("screen") && {
               control: digest(screenControl.holder()?.clientId ?? ""),
             }),
+            // Who else is using the Mac right now (a person in control, or
+            // an agent acting), by name: shown on the live screen, so people
+            // and agents take turns knowingly.
+            ...(scopes.includes("screen") && (() => {
+              const held = screenControl.holder();
+              const using = held && held.clientId !== client.id ? held.name || "Someone" : agentDesktop?.usingNow?.() || "";
+              return using ? { using: String(using).slice(0, 80) } : {};
+            })()),
             ...(macTerminals &&
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
@@ -4939,9 +4990,10 @@ export async function createReach(overrides = {}) {
               const mayViewDisplay = (id) =>
                 !appThreads.ownsDisplay(id) ||
                 displayAppsAllowed(verify(req, credential), id);
-              // Not one of the owner's own devices (a guest, even with full
-              // access): password managers and Reach's windows left out.
-              const privateView = client.kind !== "device";
+              // You and full-access people see the whole screen (Dock,
+              // menu bar, every window); everyone else, without the
+              // private windows (password managers, Reach, Tailscale…).
+              const privateView = !actsAsOwner(client);
               void (async () =>
                 hub.add(ws, authorized, message, {
                   mayViewDisplay,

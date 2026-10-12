@@ -70,17 +70,24 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   // as scripts/native/agent-desktop.swift leaves them out for agents.
   func hidden(_ content: SCShareableContent, _ display: SCDisplay) -> [SCWindow] {
     guard let p = privacy else { return [] }
+    // The Dock's full-screen windows. The Dock itself is one, titled "Dock"
+    // (layer 20, display-sized on macOS 26), and stays. Mission Control and
+    // App Exposé add untitled ones that draw every window's preview: while
+    // any is up, all of them are left out, so hidden stays hidden there
+    // (measured Oct 11: Mission Control adds two, at layers 20 and 18).
+    let dockLayer = { (window: SCWindow) -> Bool in
+      (window.owningApplication?.bundleIdentifier ?? "").lowercased() == "com.apple.dock"
+        && window.windowLayer > 0
+        && window.frame.width >= display.frame.width * 0.9
+        && window.frame.height >= display.frame.height * 0.9
+    }
+    let overview = content.windows.contains { dockLayer($0) && $0.title != "Dock" }
     return content.windows.filter { window in
       let app = window.owningApplication
       let id = (app?.bundleIdentifier ?? "").lowercased()
       let name = (app?.applicationName ?? "").lowercased()
       let title = (window.title ?? "").lowercased()
-      // Mission Control and App Exposé draw every window's preview in the
-      // Dock's full-screen layer: left out, so hidden stays hidden there.
-      if id == "com.apple.dock" && window.windowLayer > 0
-        && window.frame.width >= display.frame.width * 0.9
-        && window.frame.height >= display.frame.height * 0.9
-      {
+      if dockLayer(window) && (overview || window.title != "Dock") {
         return true
       }
       if p.ids.contains(where: { id == $0 || id.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") }) {

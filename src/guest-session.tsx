@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Clock, LogOut } from "lucide-react";
 import { request, type Peer } from "./api";
 import "./guest-bar.css";
@@ -131,5 +131,41 @@ export function GuestBar({
         </button>
       )}
     </div>
+  );
+}
+
+// A person who opened their invitation while an agent was using the Mac
+// waits for the owner's Allow (server: macEntry). This page waits with them
+// and comes in on its own once allowed.
+export function WaitForOwner({ peer, children }: { peer: Peer; children: ReactNode }) {
+  const [state, setState] = useState<"checking" | "waiting" | "in">("checking");
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      try {
+        await request(peer, "/api/device", { signal: controller.signal });
+        if (!controller.signal.aborted) setState("in");
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const waiting = (error as { body?: { waiting?: boolean } })?.body?.waiting === true;
+        // Anything else is the workspace's to show, as before.
+        setState(waiting ? "waiting" : "in");
+        if (waiting) timer = setTimeout(() => void check(), 3000);
+      }
+    };
+    void check();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [peer.url, peer.token]);
+  if (state === "in") return <>{children}</>;
+  return (
+    <main className="guest-workspace">
+      <p role="status">
+        {state === "waiting" ? "Waiting for the owner to let you in…" : "Opening…"}
+      </p>
+    </main>
   );
 }
