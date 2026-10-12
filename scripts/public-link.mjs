@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import { spawn } from "node:child_process";
 import { atomicJson, loadJson } from "../server/core.mjs";
-import { serveConfigs, tailscaleCli, tailscaleJson } from "./tailscale.mjs";
+import { serveConfigs, tailscaleJson } from "./tailscale.mjs";
 import { runTailscale } from "./persistent-serve.mjs";
 
 // The one address: https://<computer>.<tailnet>.ts.net (port 443) via
@@ -12,7 +11,6 @@ import { runTailscale } from "./persistent-serve.mjs";
 export const PUBLIC_PORT = 443;
 export const startOrigin = (privateOrigin) =>
   `https://${new URL(privateOrigin).hostname}`;
-const AUTH_URL = /https:\/\/(?:login|console)\.tailscale\.com\/[^\s"']+/;
 
 // "ours": exactly our Funnel route. "free": nothing on 443. "taken": anything
 // else on 443, which is never replaced.
@@ -52,6 +50,20 @@ export function exactBackgroundFunnel(config, origin, target) {
   return Object.keys(tcp).length === 1 && Object.keys(web).length === 1 && Object.keys(handler).length === 1;
 }
 
+// Windows' public route (scripts/foreground-funnel.mjs): the same exact
+// route, held as one foreground session, with nothing else on port 443.
+export function exactForegroundFunnel(config, origin, target) {
+  const entries = serveConfigs(config).filter((entry) =>
+    entry?.TCP?.[PUBLIC_PORT] || Object.keys(entry?.Web || {}).some((host) => host.endsWith(`:${PUBLIC_PORT}`)),
+  );
+  if (entries.length !== 1 || !Object.values(config?.Foreground || {}).includes(entries[0])) return false;
+  const [entry] = entries;
+  if (funnelRoute(entry, origin, target) !== "ours") return false;
+  const host = `${new URL(origin).hostname}:${PUBLIC_PORT}`;
+  const tcp = entry.TCP[PUBLIC_PORT], web = entry.Web[host], handler = web.Handlers["/"];
+  return Object.keys(tcp).length === 1 && Object.keys(web).length === 1 && Object.keys(handler).length === 1;
+}
+
 export const PORT_TAKEN =
   "Port 443 on this computer's Tailscale address is used by another service, so phones without the Tailscale app can't sign in from the browser. Phones with the app still connect.";
 
@@ -70,117 +82,6 @@ async function clearOwnOldRoute({ file, origin, target, inspect, run }) {
     return false;
   await run(["funnel", `--https=${PUBLIC_PORT}`, "off"]);
   return true;
-}
-
-// Foreground: a `tailscale funnel` process that lives as long as Reach does;
-// Tailscale removes its route when it exits.
-export class PublicLink {
-  constructor({
-    origin,
-    target,
-    inspect = () => tailscaleJson(["serve", "status", "--json"]),
-    spawnFunnel = (args) =>
-      spawn(tailscaleCli(), args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      }),
-    report = () => {},
-    setupUrl = () => {},
-    log = null,
-    now = Date.now,
-    // Where a background service records its route (to replace an old one).
-    file = "",
-    run = runTailscale,
-  }) {
-    Object.assign(this, {
-      origin,
-      target,
-      inspect,
-      spawnFunnel,
-      report,
-      setupUrl,
-      log,
-      now,
-      file,
-      run,
-    });
-    this.child = null;
-    this.stopped = false;
-    this.nextStart = 0;
-    this.attempt = 0;
-    this.live = false;
-    this.warned = "";
-  }
-  warn(message) {
-    if (message !== this.warned) this.report(message);
-    this.warned = message;
-  }
-  running() {
-    return (
-      !!this.child &&
-      this.child.exitCode === null &&
-      this.child.signalCode == null
-    );
-  }
-  async check() {
-    if (this.stopped) return this.live;
-    let state;
-    try {
-      state = funnelRoute(await this.inspect(), this.origin, this.target);
-      // A background service's route from an older Reach: this run is Reach
-      // now, at the one address; the service records its own when it starts.
-      if (state === "taken" && (await clearOwnOldRoute(this))) {
-        fs.rmSync(this.file, { force: true });
-        state = funnelRoute(await this.inspect(), this.origin, this.target);
-      }
-    } catch (error) {
-      this.live = false;
-      this.warn(error.message);
-      return false;
-    }
-    if (state === "ours") {
-      if (!this.live && this.warned) this.report("Public start link restored.");
-      this.live = true;
-      this.warned = "";
-      this.attempt = 0;
-      return true;
-    }
-    this.live = false;
-    if (state === "taken") {
-      this.warn(PORT_TAKEN);
-      return false;
-    }
-    // Free: (re)start our Funnel, with backoff if it keeps failing.
-    if (this.running() || this.now() < this.nextStart) return false;
-    this.nextStart =
-      this.now() + Math.min(60000, 5000 * 2 ** Math.min(this.attempt++, 4));
-    const child = this.spawnFunnel([
-      "funnel",
-      `--https=${PUBLIC_PORT}`,
-      this.target,
-    ]);
-    this.child = child;
-    const consume = (chunk) => {
-      this.log?.write(chunk);
-      const url = String(chunk).match(AUTH_URL)?.[0];
-      if (url) this.setupUrl(url);
-    };
-    child.stdout?.on("data", consume);
-    child.stderr?.on("data", consume);
-    child.on?.("error", () => {});
-    return false;
-  }
-  async stop() {
-    this.stopped = true;
-    const child = this.child;
-    if (!child || !this.running()) return;
-    const closed = new Promise((resolve) => child.once("close", resolve));
-    child.kill();
-    const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
-    timer.unref?.();
-    await closed;
-    clearTimeout(timer);
-  }
 }
 
 // Background service: a lasting `funnel --bg` route, recorded so uninstall

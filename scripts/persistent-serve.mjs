@@ -11,9 +11,10 @@ import {
 } from "./tailscale.mjs";
 const exec = promisify(execFile);
 // A refusal is said in Tailscale's own words (often with the page that fixes
-// it), not as "Command failed: /path/to/tailscale …".
-export const tailscaleSaid = (text) =>
-  String(text || "")
+// it), not as "Command failed: /path/to/tailscale …". `redact`: Windows'
+// keyed route takes its key out first, before anything is cut.
+export const tailscaleSaid = (text, redact = (said) => said) =>
+  String(redact(String(text || "")))
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)

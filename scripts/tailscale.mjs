@@ -94,6 +94,42 @@ export function serveConfigs(config) {
     ...Object.values(config?.Foreground || {}).flatMap(serveConfigs),
   ];
 }
+// Windows' keyed route (docs/parity/D-public-door.md §4.6): does anything in
+// Tailscale's serve config, other than Reach's own `ownTarget`, lead to
+// Reach's loopback port? A TCP forward or a proxy to that port is a path from
+// Tailscale's own process with no key: Reach then closes its route until it's
+// gone. Whatever the host is called (127.1, LOCALHOST, [::1], the PC's name):
+// only the port counts. A target whose port can't be read counts too.
+// `ownTarget` "": every route to the port counts (Reach stopping).
+const targetPort = (value) => {
+  if (typeof value !== "string" || !value) return NaN;
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `tcp://${value}`);
+    if (url.port) return Number(url.port);
+    return { "http:": 80, "https:": 443, "https+insecure:": 443 }[url.protocol] ?? NaN;
+  } catch {
+    return NaN;
+  }
+};
+export function foreignIngressRoute(config, port, ownTarget = "") {
+  const entries = serveConfigs(config).flatMap((entry) => [entry, ...Object.values(entry?.Services || {})]);
+  for (const entry of entries) {
+    for (const tcp of Object.values(entry?.TCP || {})) {
+      if (typeof tcp?.TCPForward !== "string" || !tcp.TCPForward) continue;
+      const forwarded = tcp.TCPForward.slice(tcp.TCPForward.lastIndexOf(":") + 1);
+      if (!/^\d{1,5}$/.test(forwarded) || Number(forwarded) === port) return true;
+    }
+    for (const web of Object.values(entry?.Web || {}))
+      for (const handler of Object.values(web?.Handlers || {})) {
+        const proxy = handler?.Proxy;
+        if (typeof proxy !== "string" || !proxy || proxy.startsWith("unix:")) continue;
+        if (ownTarget && proxy === ownTarget) continue;
+        const to = targetPort(proxy);
+        if (!Number.isInteger(to) || to === port) return true;
+      }
+  }
+  return false;
+}
 export function assertPrivatePort(config, port) {
   for (const item of serveConfigs(config)) {
     if (
