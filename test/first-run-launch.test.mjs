@@ -50,6 +50,10 @@ test("someone at the terminal: the one address, its QR, both ways in, and a pair
   // Its own routes, through the stand-in only.
   assert.equal(state.serve.Web[`${HOST}:8443`].Handlers["/"].Proxy.startsWith("unix:"), true);
   assert.equal(state.serve.AllowFunnel[`${HOST}:443`], true);
+  // On a Mac the private route stays Tailscale's own (a background route to
+  // its owner-only socket); only Windows holds it in the foreground.
+  assert.ok(state.calls.some((args) => args[0] === "serve" && args[1] === "--bg" && args.at(-1).startsWith("unix:")), "a background route");
+  assert.equal(state.serve.Foreground, undefined);
   const status = JSON.parse(await fs.readFile(path.join(reach.root, ".reach", "host-status.json"), "utf8"));
   assert.equal(status.link, `https://${HOST}`, "./reach status and ./reach pair know the one address");
 });

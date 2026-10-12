@@ -106,9 +106,13 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
 // route goes to its local address (no Unix socket there), phones join with
 // the pairing code, and it opens no public link.
 // (The stand-in Tailscale is a #! script: not on a real Windows runner.)
-test("Windows, Tailscale mode: the private link to its local address, and a pairing code; no socket, no public link", { skip: process.platform === "win32", timeout: 60000 }, async (t) => {
-  let fake;
-  const reach = await startCleanReach(t, {
+const tailscaleWindows = { skip: process.platform === "win32", timeout: 60000 };
+const ORIGIN = `https://${HOST}:8443`;
+const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`${HOST}:8443`]: { Handlers: { "/": { Proxy: target } } } } });
+// `serve` and `record`: what an earlier Reach or another service left.
+function windowsTailscaleReach(t, { serve, record } = {}) {
+  const seen = {};
+  const started = startCleanReach(t, {
     args: { local: false, stayAwake: false },
     preloads: [AS_WINDOWS],
     // The guidance is printed after the pairing code in a separate stdout
@@ -116,10 +120,57 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
     ready: /No public internet tunnel is enabled/,
     pair: false,
     prepare: async (root) => {
-      fake = await fakeTailscale(root);
-      return { env: { REACH_TAILSCALE: fake.cli }, preloads: [tailnetPreload(fake.state)] };
+      seen.root = root;
+      seen.fake = await fakeTailscale(root, serve ? { serve } : {});
+      if (record) {
+        fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
+        fs.writeFileSync(path.join(root, ".reach", "serve-owner.json"), JSON.stringify({ version: 1, ...record }));
+      }
+      return { env: { REACH_TAILSCALE: seen.fake.cli }, preloads: [tailnetPreload(seen.fake.state)] };
     },
   });
+  return { seen, started };
+}
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const until = async (check, what, ms = 10000) => {
+  for (const end = Date.now() + ms; !(await check()); ) {
+    if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+// Its one route on the port: a foreground session (held by its own
+// `tailscale serve`, no --bg), never a background route left in Tailscale.
+const heldRoute = async (fake) => {
+  const state = await fake.read();
+  assert.equal(state.serve.TCP?.[8443], undefined, "no background route");
+  assert.equal(state.serve.Web?.[`${HOST}:8443`], undefined, "no background route");
+  assert.ok(!state.calls.some((args) => args.includes("--bg")), "no --bg on Windows");
+  const sessions = await fake.sessions();
+  assert.equal(sessions.length, 1);
+  const [session] = sessions;
+  const target = session.config.Web[`${HOST}:8443`].Handlers["/"].Proxy;
+  assert.deepEqual(session.args, ["serve", "--https=8443", target]);
+  assert.match(target, /^http:\/\/127\.0\.0\.1:\d+$/, "its local address, not a socket");
+  return session;
+};
+const routeGone = async (fake, session) => {
+  await until(async () => !(await fake.sessions()).length && !pidAlive(session.pid), "the session to end with Reach");
+  const state = await fake.read();
+  assert.equal(state.serve.Foreground, undefined);
+  assert.equal(state.serve.TCP?.[8443], undefined, "nothing left behind on the port");
+  assert.ok(!state.calls.some((args) => args.includes("--bg")));
+};
+
+test("Windows, Tailscale mode: the private link to its local address, and a pairing code; no socket, no public link", tailscaleWindows, async (t) => {
+  const { seen, started } = windowsTailscaleReach(t);
+  const reach = await started;
   const text = reach.output();
   assert.match(text, new RegExp(`Open on your phone: https://${HOST.replace(/\./g, "\\.")}:8443\\n`));
   assert.match(text, /Pairing code: \d{4} \d{4}/);
@@ -130,11 +181,63 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
   assert.ok(first > 0 && first < text.indexOf("Code works once"), text);
   assert.match(text, /sign in as \S+@\S+ and turn it on\.\n  On Windows, phones can't sign in from the browser yet\./);
   assert.match(text, /Private Tailscale link: only your Tailscale devices open it/);
-  const state = await fake.read();
-  const route = state.serve.Web[`${HOST}:8443`].Handlers["/"].Proxy;
-  assert.match(route, /^http:\/\/127\.0\.0\.1:\d+$/, "its local address, not a socket");
+  const session = await heldRoute(seen.fake);
+  const state = await seen.fake.read();
   assert.ok(!state.calls.some(([command]) => command === "funnel"), "no public link on Windows");
   assert.ok(!state.calls.some((args) => args.some((a) => String(a).startsWith("unix:"))));
+  // `stop`, through its file: the route ends with Reach.
+  const killed = [];
+  const result = await stopReach(seen.root, {
+    platform: "win32",
+    yes: true,
+    print() {},
+    state: () => path.join(seen.root, ".reach"),
+    table: () => [],
+    launchctl: () => "",
+    windows: { taskkill: (pid) => killed.push(pid) },
+  });
+  const [code] = await reach.exited;
+  assert.equal(result.stopped, 1);
+  assert.deepEqual(killed, [], "it stopped itself");
+  assert.equal(code, 0);
+  await routeGone(seen.fake, session);
+});
+
+test("Windows, Tailscale mode: Reach ended outright (a crash), its route ends too; while it runs, a lost route comes back", tailscaleWindows, async (t) => {
+  const { seen, started } = windowsTailscaleReach(t);
+  const reach = await started;
+  const first = await heldRoute(seen.fake);
+  // Its `tailscale serve` ends by itself: Reach holds the route again.
+  process.kill(first.pid, "SIGKILL");
+  await until(async () => (await seen.fake.sessions()).some((s) => s.pid !== first.pid), "a new session", 40000);
+  const second = await heldRoute(seen.fake);
+  assert.match(reach.output(), /Private Tailscale connection restored|Private link interrupted/);
+  // No stop, no cleanup: the process is gone at once.
+  reach.child.kill("SIGKILL");
+  await reach.exited;
+  await routeGone(seen.fake, second);
+});
+
+test("Windows, Tailscale mode: an older Reach's background route, recorded as its own, is replaced by the foreground one", tailscaleWindows, async (t) => {
+  const old = "http://127.0.0.1:1";
+  const { seen, started } = windowsTailscaleReach(t, { serve: backgroundRoute(old), record: { origin: ORIGIN, target: old } });
+  await started;
+  const state = await seen.fake.read();
+  assert.deepEqual(state.calls.filter(([command, flag]) => command === "serve" && flag === "--https=8443")[0], ["serve", "--https=8443", "off"], "switched off first");
+  const session = await heldRoute(seen.fake);
+  assert.notEqual(session.config.Web[`${HOST}:8443`].Handlers["/"].Proxy, old);
+  assert.equal(fs.existsSync(path.join(seen.root, ".reach", "serve-owner.json")), false, "nothing left to record");
+});
+
+test("Windows, Tailscale mode: someone else's route on the port still refuses to start, and is left alone", tailscaleWindows, async (t) => {
+  const theirs = backgroundRoute("http://127.0.0.1:3000");
+  // Even beside a record of Reach's own (another target): not Reach's route.
+  const { seen, started } = windowsTailscaleReach(t, { serve: theirs, record: { origin: ORIGIN, target: "http://127.0.0.1:1" } });
+  await assert.rejects(started, /Tailscale port 8443 is already in use/);
+  const state = await seen.fake.read();
+  assert.deepEqual(state.serve, theirs, "never replaced");
+  assert.ok(!state.calls.some(([command, ...rest]) => (command === "serve" || command === "funnel") && rest[0] !== "status" && rest[0] !== "--help"), "nothing changed in Tailscale");
+  assert.deepEqual(await seen.fake.sessions(), []);
 });
 
 

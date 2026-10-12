@@ -12,19 +12,21 @@ import {
 const exec = promisify(execFile);
 // A refusal is said in Tailscale's own words (often with the page that fixes
 // it), not as "Command failed: /path/to/tailscale …".
+export const tailscaleSaid = (text) =>
+  String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ")
+    .slice(0, 400);
 export const runTailscale = (args) =>
   exec(tailscaleCli(), args, {
     timeout: 20000,
     maxBuffer: 1024 * 1024,
     windowsHide: true,
   }).catch((error) => {
-    const said = String(error?.stderr || error?.stdout || "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(" ")
-      .slice(0, 400);
+    const said = tailscaleSaid(error?.stderr || error?.stdout);
     if (error?.code === "ENOENT")
       throw Object.assign(new Error("Tailscale is unavailable. Install and sign in to Tailscale on this computer, then rerun Reach."), { cause: error });
     throw Object.assign(
@@ -33,18 +35,36 @@ export const runTailscale = (args) =>
     );
   });
 
+const onPort = (config, port) =>
+  serveConfigs(config).filter(
+    (c) =>
+      c.TCP?.[port] ||
+      Object.keys(c.Web || {}).some((host) => host.endsWith(`:${port}`)),
+  );
 export function exactPersistentRoute(config, origin, target) {
   const u = new URL(origin),
     port = Number(u.port || 443);
   assertPrivatePort(config, port);
   // Background config only. Extra handlers or another foreground service are
   // not ours to replace or remove, even when one proxy happens to match.
-  const entries = serveConfigs(config).filter(
-    (c) =>
-      c.TCP?.[port] ||
-      Object.keys(c.Web || {}).some((host) => host.endsWith(`:${port}`)),
-  );
+  const entries = onPort(config, port);
   if (entries.length !== 1 || entries[0] !== config) return false;
+  return exactRoute(config, u, port, target);
+}
+// Windows' route (scripts/foreground-serve.mjs): the same exact route, held
+// as one foreground session, with nothing else on the port.
+export function exactForegroundRoute(config, origin, target) {
+  const u = new URL(origin),
+    port = Number(u.port || 443);
+  assertPrivatePort(config, port);
+  const entries = onPort(config, port);
+  return (
+    entries.length === 1 &&
+    Object.values(config?.Foreground || {}).includes(entries[0]) &&
+    exactRoute(entries[0], u, port, target)
+  );
+}
+function exactRoute(config, u, port, target) {
   const host = `${u.hostname}:${port}`;
   const tcp = config.TCP?.[port],
     web = config.Web?.[host];

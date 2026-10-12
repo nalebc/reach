@@ -46,6 +46,7 @@ import { publicStartHandler } from "../server/public-start.mjs";
 import { setStartInfo } from "../server/delivery.mjs";
 import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
+import { ForegroundServe } from "./foreground-serve.mjs";
 
 export async function launch(options, root) {
   // Started for you (a restart from the phone, at sign-in): read once, and
@@ -94,6 +95,7 @@ export async function launch(options, root) {
       );
   // The one address (https://<computer>.ts.net): Reach for your devices, the
   // start page for the internet. Its page may call Reach here too.
+  // Never on Windows (no socket there), so no Funnel route is made there.
   const publicStart = socketPath && privateOrigin ? startOrigin(privateOrigin) : "";
   const reach = await createReach({
     dataDir,
@@ -135,7 +137,7 @@ export async function launch(options, root) {
     finish = resolve;
   });
   let log, monitor, approvalMonitor, recovery, power, stopWatch;
-  let publicLink, publicMonitor, linkMonitor;
+  let publicLink, publicMonitor, linkMonitor, foreground;
   let startUrl = "";
   let phoneLinkShown = false;
   const forgetStatus = () => {
@@ -168,6 +170,8 @@ export async function launch(options, root) {
       clearInterval(linkMonitor);
       await publicLink?.stop();
       recovery?.stop();
+      // Windows' route ends before Reach's listener does.
+      await foreground?.stop();
       power?.stop();
       await reach.close();
       forgetStatus();
@@ -315,9 +319,29 @@ export async function launch(options, root) {
       // The private route is Tailscale daemon state (a background Serve), in
       // every mode: it survives dropped sessions, sleeps and Reach restarts,
       // and an unchanged route is reused without a blink.
+      // Except on Windows, where it leads to a local port any user there could
+      // take once Reach is gone: held only while Reach runs (foreground-serve.mjs).
+      if (process.platform === "win32")
+        foreground = new ForegroundServe({
+          file: routeFile,
+          origin,
+          target: serveTarget,
+          output: (text) => {
+            log.write(text);
+            setupHint(text);
+          },
+          exited: (why) => {
+            log.write(`Reach: tailscale serve ended (${why}); reconnecting.`);
+            void recovery?.check();
+          },
+        });
       const startTunnel = async () => {
         if (stopped) return;
         try {
+          if (foreground) {
+            if (await foreground.start()) log.write(`Reach: private route held while Reach runs: ${origin} -> ${serveTarget}`);
+            return;
+          }
           const created = await ensurePersistentRoute({ file: routeFile, origin, target: serveTarget });
           if (created) log.write(`Reach: private route set: ${origin} -> ${serveTarget}`);
         } catch (error) {
@@ -328,7 +352,9 @@ export async function launch(options, root) {
       recovery = new PrivateLinkRecovery({
         origin,
         target: serveTarget,
-        owns: (config, address, target) => recordedRouteMatches(routeFile, config, address, target),
+        owns: foreground
+          ? (config, address, target) => foreground.owns(config, address, target)
+          : (config, address, target) => recordedRouteMatches(routeFile, config, address, target),
         inspect: () => tailscaleJson(["serve", "status", "--json"]),
         restart: startTunnel,
         available: privateUp,
