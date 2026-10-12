@@ -64,18 +64,27 @@ test("only a named pipe is asked about on Windows; a path isn't one", async () =
   assert.equal(asked, 0);
 });
 
-test("the helper is asked one question, built in Reach's data folder, and only one JSON line counts", async () => {
+test("the helper is asked one question, built in Reach's data folder, run only as built, and only one JSON line counts", async () => {
   const runs = [];
-  const helper = (stdout) => ({
-    binary: async (config, kind) => (runs.push({ config, kind }), "C:\\data\\reach-owners-abc.exe"),
+  const built = { file: "C:\\data\\reach-owners-abc.exe", sha256: "a".repeat(64) };
+  const helper = (stdout, unchanged = (file, sha256) => runs.push({ unchanged: [file, sha256] })) => ({
+    build: async (kind, options) => (runs.push({ kind, options }), built),
+    unchanged,
     run: async (file, args, options) => (runs.push({ file, args, options }), { stdout }),
   });
   assert.deepEqual(await pipeOwner(PIPE, { dataDir: "C:\\data", ...helper(`${JSON.stringify(yours)}\r\n`) }), yours);
-  assert.deepEqual(runs[0], { config: { dataDir: "C:\\data" }, kind: "owners" });
-  assert.deepEqual(runs[1].args, ["pipe", PIPE]);
-  assert.equal(runs[1].options.windowsHide, true);
+  assert.deepEqual(runs[0], { kind: "owners", options: { dir: "C:\\data" } });
+  assert.deepEqual(runs[1], { unchanged: [built.file, built.sha256] }, "its hash checked before it runs");
+  assert.equal(runs[2].file, built.file);
+  assert.deepEqual(runs[2].args, ["pipe", PIPE]);
+  assert.equal(runs[2].options.windowsHide, true);
   for (const stdout of ["", "{}\n{}\n", "[1]\n", "null\n", "not json\n"])
     await assert.rejects(askOwners("pipe", PIPE, { dataDir: "C:\\data", ...helper(stdout) }), Error, JSON.stringify(stdout));
+  // Changed on disk since it was built: never run.
+  runs.length = 0;
+  const changed = () => { throw Object.assign(new Error("Reach's helper changed on disk."), { code: "ECHANGED" }); };
+  await assert.rejects(askOwners("pipe", PIPE, { dataDir: "C:\\data", ...helper("{}", changed) }), { code: "ECHANGED" });
+  assert.equal(runs.some((r) => r.args), false);
   // Nothing but a pipe or a file on a drive is asked about, and not without a folder to build in.
   runs.length = 0;
   for (const [verb, target] of [["pipe", "C:\\x"], ["holders", "\\\\server\\share\\x"], ["holders", "relative\\x"], ["holders", "C:\\x\n"], ["other", PIPE], ["pipe", 7]])
