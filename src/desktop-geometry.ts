@@ -47,6 +47,9 @@ export function pinchView(
 
 // Keep the tapped field above the keyboard at the user's chosen zoom.
 // The anchor is normalized to the captured display, so Retina/resizing is safe.
+// A phone on its side leaves a short, wide strip above the keyboard: the
+// screen fitted into it was a thumbnail, so it spans the strip's width
+// (rows around the field, the whole width) until the keyboard closes.
 export function typingView(
   initial: View,
   point: { x: number; y: number },
@@ -55,7 +58,7 @@ export function typingView(
   width: number,
   height: number,
 ): View {
-  const scale = initial.scale;
+  const scale = Math.max(initial.scale, Math.min(4, width / Math.max(1, baseW)));
   return boundView(
     scale,
     (0.5 - point.x) * baseW * scale,

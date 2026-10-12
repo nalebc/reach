@@ -18,6 +18,7 @@ export type Device = {
     scopes: string[];
     expiresAt: number;
     profile?: string;
+    fullControlVersion?: number;
   };
   id: string;
   computerId?: string;

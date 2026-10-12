@@ -10,6 +10,7 @@ import { claudeLines } from "./move.mjs";
 import { visibleUserText } from "./message-text.mjs";
 import { randomUUID } from "node:crypto";
 import { createClaudeAccountUsage } from "./account-usage.mjs";
+import { claudeEnvironment } from "./claude-environment.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -279,7 +280,7 @@ export function createClaudeSessions({
     }
   };
   function cleanEnv() {
-    return Object.fromEntries(Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDECODE"));
+    return claudeEnvironment(env);
   }
   // Signed in, but out of usage until that limit resets.
   async function withUsage(health) {

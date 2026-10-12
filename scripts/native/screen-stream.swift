@@ -349,6 +349,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     return true
   }
   func selfTest(_ testWidth: Int = 640, _ testHeight: Int = 360) throws {
+    guard video && strictHardware else {
+      failure("H.264 self-test configuration is invalid.")
+    }
     width = testWidth
     height = testHeight
     try configureEncoder()
@@ -501,10 +504,20 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     let w = test && args.count > 1 ? Int(args[1]) ?? 640 : 640
     let h = test && args.count > 2 ? Int(args[2]) ?? 360 : 360
     guard w >= 2, h >= 2, w <= 3840, h <= 3840, w * h <= 9_000_000 else { exit(1) }
-    let capture = Capture(
-      test
-        ? ["primary", "h264", args.count > 3 ? args[3] : "30", String(w), "16000000", "hardware"]
-        : args)
+    // Swift 6.1.2 -O miscompiles a conditional array passed to this
+    // initializer: --self-test silently selected JPEG instead of H.264.
+    // Separate branches preserve the requested format on that compiler.
+    let capture: Capture
+    if test {
+      let rate = args.count > 3 ? args[3] : "30"
+      let testArgs = ["primary", "h264", rate, String(w), "16000000", "hardware"]
+      capture = Capture(testArgs)
+    } else {
+      capture = Capture(args)
+      guard capture.video == (args.count > 1 && args[1] == "h264"),
+        capture.strictHardware == (args.count > 5 && args[5] == "hardware")
+      else { capture.failure("Screen capture format could not be initialized.") }
+    }
     do {
       if test { try capture.selfTest(w, h) } else { try await capture.start() }
       while true { try await Task.sleep(nanoseconds: 60_000_000_000) }

@@ -1,4 +1,4 @@
-import { loadPty } from "./pty-helper.mjs";
+import { loadPty, releaseExitedPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
 const pty = loadPty();
@@ -59,7 +59,12 @@ export class Terminals {
     const proc = pty.spawn(
       shell,
       process.platform === "win32" ? ["-NoLogo"] : ["-l"],
-      { name: "xterm-256color", cols, rows, cwd, env },
+      {
+        name: "xterm-256color", cols, rows, cwd, env,
+        // The bundled ConPTY releases its native host on natural shell exit.
+        // Windows' inbox backend in node-pty 1.1.0 leaks that host per session.
+        ...(process.platform === "win32" ? { useConptyDll: true } : {}),
+      },
     );
     const session = {
       id: id(),
@@ -83,6 +88,7 @@ export class Terminals {
     let finished;
     session.ended = new Promise((resolve) => { finished = resolve; });
     proc.onExit(({ exitCode }) => {
+      releaseExitedPty(proc);
       finished();
       session.status = "exited";
       session.exitCode = exitCode;

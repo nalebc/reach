@@ -300,6 +300,22 @@ test("Claude out of usage: the limit Claude Code last hit, until it resets or an
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("Claude health keeps the configured Git Bash without inheriting host credentials", async () => {
+  let seen;
+  const claude = createClaudeSessions({
+    env: { PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe",
+      CLAUDE_CODE_GIT_BASH_PATH_EXTRA: "not allowed", CLAUDE_CONFIG_DIR: "/another-profile",
+      claudeCode: "nested", Anthropic_Api_Key: "secret", Reach_Pair_Token: "private" },
+    run: async (file, args, options) => {
+      assert.deepEqual(args, ["auth", "status", "--json"]);
+      seen = options.env;
+      return { stdout: '{"loggedIn":false}' };
+    },
+  });
+  assert.equal((await claude.health()).signedIn, false);
+  assert.deepEqual(seen, { PATH: "/usr/bin", CLAUDE_CODE_GIT_BASH_PATH: "C:\\Custom Git\\bin\\bash.exe" });
+});
+
 test("Claude sign-in status: signed out exits 1 with JSON on stdout", async () => {
   const signedOut = createClaudeSessions({
     run: async () => {

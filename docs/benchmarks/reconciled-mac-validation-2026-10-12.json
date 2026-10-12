@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-12T00:54:14.767620+00:00",
+  "status": "passed_snapshot_followup_security_and_platform_fixes_pending",
+  "scope": "Frozen combined source after agent watcher and initial hosted platform fixes. This is snapshot evidence, not final release approval.",
+  "environment": {
+    "os": "macOS ARM64",
+    "node": "24.21.0",
+    "testHomeAndTmp": "Independent disposable directories outside the ESM checkout",
+    "liveReachRestarted": false
+  },
+  "source": {
+    "capturedAt": "2026-10-12T00:34:35.965787+00:00",
+    "baseCommit": "babb4dec3f207c401618b81bc815f235e13292af",
+    "sourceSha256": "bfeedea64c3ee9c2a8a5e86bf3e01bf6dc7aad727195fdad51d6a2cd087b81df",
+    "productionSha256": "463c402aaee299ae8dd6baae43570cb0e0f1b5667ebf311eaee343914bc6b8b7",
+    "sourceFiles": 1251,
+    "productionFiles": 630
+  },
+  "fullSuite": {
+    "tests": 3639,
+    "passed": 3593,
+    "failed": 0,
+    "skipped": 46,
+    "durationMs": 642838.630042
+  },
+  "installed": {
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0
+  },
+  "checks": [
+    {
+      "name": "build",
+      "exit": 0,
+      "seconds": 81.111,
+      "command": [
+        "npm",
+        "run",
+        "build:release"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/build.log",
+      "logSha256": "6a1397c4845778598db5f842f880f5e71f925bc27c1483ae531664d1da7f9b8e"
+    },
+    {
+      "name": "all",
+      "exit": 0,
+      "seconds": 643.764,
+      "command": [
+        "npm",
+        "run",
+        "test:ci"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/all.log",
+      "logSha256": "574da087ab8ed024932ae7b00f83e9ffcce612c2b16c4d4244ced87d2d7f29bd"
+    },
+    {
+      "name": "package",
+      "exit": 0,
+      "seconds": 5.083,
+      "command": [
+        "npm",
+        "run",
+        "package"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/package.log",
+      "logSha256": "d631507370784beb9ffeb89502e00a23ad016c6c032d244a3f6398585c48ae69"
+    },
+    {
+      "name": "verify-package",
+      "exit": 0,
+      "seconds": 18.94,
+      "command": [
+        "npm",
+        "run",
+        "verify:package"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/verify-package.log",
+      "logSha256": "3952b6878600f369111ac1424da80b74b460c14baedd8d34c349066ed819f372"
+    },
+    {
+      "name": "installed",
+      "exit": 0,
+      "seconds": 115.064,
+      "command": [
+        "npm",
+        "run",
+        "test:ci:installed"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/installed.log",
+      "logSha256": "9c895f5293a27cb9d128ae37e5614293ada7f24501d0444d1a2d8c9ce312139b"
+    },
+    {
+      "name": "candidate",
+      "exit": 0,
+      "seconds": 0.19,
+      "command": [
+        "node",
+        ".github/scripts/package-candidate.mjs"
+      ],
+      "log": "/private/tmp/reach-reconcile-mac-i7thd7jm/logs/candidate.log",
+      "logSha256": "2f09859833c4bce11f329cc4c044f603035148dff328e928ea4cbd05df7ac60a"
+    }
+  ],
+  "artifacts": [
+    {
+      "file": "SHA256SUMS",
+      "bytes": 183,
+      "sha256": "0d50ddc47ab58e452eec124eee20d1ddce0c430ff56518c0e0e6613105833a24"
+    },
+    {
+      "file": "candidate.json",
+      "bytes": 207,
+      "sha256": "afdba4f6910a6d3ed7ff48d38c371d96205fea5813fff159ac8dacb24346d96c"
+    },
+    {
+      "file": "nalebc-reach-0.1.0.tgz",
+      "bytes": 27227862,
+      "sha256": "4c86948fc68952f891eeedb3c3d0af028edb4be28b49ff11bce227da4cdbe613"
+    },
+    {
+      "file": "reach-0.1.0-portable.tar.gz",
+      "bytes": 33970605,
+      "sha256": "4dafd7c4f7bb78ca1517b923df0acadc637fa98c5a251d9fe7461815840bbc70"
+    }
+  ],
+  "followupNotInThisSnapshot": [
+    "Swift browser-helper compiler compatibility correction",
+    "Release retry recovery and stronger native H.264 structural assertions",
+    "Public CodeQL follow-up hardening and passkey denial-of-service fix",
+    "Installer/updater per-device rate limiting and new dependency",
+    "Remaining hosted fixture diagnostics/corrections"
+  ],
+  "priorAttempts": [
+    {
+      "snapshot": "/private/tmp/reach-reconcile-mac-v5g36tha",
+      "status": "interrupted_invalid_test_environment",
+      "reason": "Extensionless CommonJS fake CLI inherited type:module because TMPDIR was inside the checkout. Corrected isolation before this full pass."
+    },
+    {
+      "snapshot": "/private/tmp/reach-reconcile-mac-dp7b_g8_",
+      "status": "build_passed_full_suite_deferred",
+      "reason": "Conservative concurrency guard detected the scoped iOS simulator test; full suite never started."
+    }
+  ]
+}

@@ -491,8 +491,8 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.appShortcuts,
   });
-  // While macOS shows one of its own dialogs, only the owner's own devices
-  // click or type on the screen (ScreenControl.ownerOnly).
+  // System-dialog input needs an owner device or explicit Full-person
+  // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
   const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
   // The Mac's Terminal windows, told by events while a phone is connected;
@@ -1336,7 +1336,15 @@ export async function createReach(overrides = {}) {
     const verified = () => context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
     // A person waiting for your Allow reads that, whatever else is going on.
     if (token && !context) {
-      const client = verified();
+      let client = verified();
+      if (client?.kind === "guest" && agentsActive()) {
+        await browserHostGuard.refresh();
+        if (browserHostGuard.needsPersonApproval(req, client)) {
+          const waiting = auth.holdPerson(client.id, req.reachIdentity);
+          if (waiting) personWaiting(waiting);
+          client = verified();
+        }
+      }
       if (client?.kind === "guest" && client.macEntry?.status === "waiting") {
         // Leave, while waiting: their access ends, and your card with it.
         if (req.method === "DELETE" && route === "/api/device/access") {
@@ -1931,6 +1939,7 @@ export async function createReach(overrides = {}) {
         scopes: req.client.scopes,
         expiresAt: req.client.expiresAt,
         profile: req.client.policy?.profile,
+        ...(req.client.kind === "guest" && req.client.fullControlVersion === 1 ? { fullControlVersion: 1 } : {}),
         ...(req.client.policy?.browser && { browser: true }),
       },
       capabilities: deviceCapabilities({
@@ -2407,13 +2416,14 @@ export async function createReach(overrides = {}) {
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
     const lost = before.scopes.filter((s) => !after.scopes.includes(s));
+    const fullControlLost = before.fullControlVersion === 1 && after.fullControlVersion !== 1;
     const narrower =
-      lost.length > 0 ||
+      fullControlLost || lost.length > 0 ||
       before.roots.some((r) => !after.roots.includes(r)) ||
       (after.scopes.includes("apps:open") &&
         Array.isArray(after.apps) &&
         (!before.apps || before.apps.some((a) => !after.apps.includes(a))));
-    if (lost.includes("screen") || lost.includes("screen:control")) {
+    if (fullControlLost || lost.includes("screen") || lost.includes("screen:control")) {
       screenControl.revoke(id);
       closeInput(id);
     }
@@ -4825,6 +4835,7 @@ export async function createReach(overrides = {}) {
             ...(["guest", "agent"].includes(client.kind) && {
               access: digest([
                 scopes,
+                client.fullControlVersion ?? null,
                 client.agentRoots || [],
                 client.guestApps || [],
               ]),

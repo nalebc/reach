@@ -16,7 +16,7 @@ export function workspaceCapabilities(
   // On the Mac itself, a full-access person is you (Oct 11): apps, windows,
   // archives, folder actions. Only managing access (and your chats) stay
   // `owner`.
-  const mac = admin;
+  const mac = admin && (device?.access?.kind !== "guest" || device.access.fullControlVersion === 1);
   const desktop = !!device && ["darwin", "win32"].includes(device.platform);
   const screenSupported =
     desktop &&

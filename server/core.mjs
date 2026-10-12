@@ -658,6 +658,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       terminal = false,
       agents = false,
       full = false,
+      fullControlVersion,
     },
     chosen,
   ) {
@@ -680,6 +681,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       typeof terminal !== "boolean" ||
       typeof agents !== "boolean" ||
       typeof full !== "boolean" ||
+      (fullControlVersion !== undefined && (!full || fullControlVersion !== 1)) ||
       (!full &&
         !roots.length &&
         !chosen.length &&
@@ -690,6 +692,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     )
       return null;
     return {
+      ...(full && fullControlVersion === 1 ? { fullControlVersion: 1 } : {}),
       scopes: full
         ? ALL_SCOPES.filter((s) => s !== "apps:drive")
         : [
@@ -951,7 +954,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // full access: those are chosen again).
   function changeAccess(clientId, changes = {}) {
     if (!isPlainRecord(changes) || Object.keys(changes).some((key) =>
-      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess", "preset", "hidden"].includes(key)))
+      !["folders", "roots", "write", "screen", "apps", "terminal", "agents", "full", "fullControlVersion", "exec", "codex", "terminalIds", "commandRequests", "restrictedTerminal", "terminalApproval", "scriptApproval", "expiresAt", "appAccess", "preset", "hidden"].includes(key)))
       throw fail(400, "Choose valid permissions and an end time.");
     let result;
     changeClients((latest) => {
@@ -994,6 +997,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       const folders = keep ? had : chooseFolders(changes.folders ?? []);
       const before = {
         scopes: [...client.scopes],
+        fullControlVersion: client.fullControlVersion,
         roots: guest ? [...(client.guestRoots || [])] : [...had],
         apps: client.guestApps,
       };
@@ -1037,14 +1041,16 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         client.scopes = access.scopes;
         client.policy = access.policy;
       } else if (guest) {
-        const { roots, write, screen, apps, terminal, agents, full } = changes;
+        const { roots, write, screen, apps, terminal, agents, full, fullControlVersion } = changes;
         const access = guestAccess(
-          { roots, write, screen, apps, terminal, agents, full },
+          { roots, write, screen, apps, terminal, agents, full, fullControlVersion },
           folders,
         );
         if (!access) throw fail(400, "Choose what they may use.");
         client.scopes = access.scopes;
         client.guestRoots = access.guestRoots;
+        if (access.fullControlVersion) client.fullControlVersion = access.fullControlVersion;
+        else delete client.fullControlVersion;
         if (access.guestApps) client.guestApps = access.guestApps;
         else delete client.guestApps;
       } else {
@@ -1074,6 +1080,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         before,
         after: {
           scopes: client.scopes,
+          fullControlVersion: client.fullControlVersion,
           roots: guest ? client.guestRoots : client.policy.roots,
           apps: client.guestApps,
         },
@@ -1315,6 +1322,21 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   function redeemGuest(invitation, identity, { hold = false } = {}) {
     return redeemInvitation(invitation, identity, undefined, false, hold);
   }
+  // A pre-existing browser person also needs explicit coexistence approval:
+  // its embedded Tailscale node does not prove a separate physical device.
+  function holdPerson(clientId, identity) {
+    let result = null;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId && c.kind === "guest");
+      if (!client || !identity?.nodeId || client.tailscale?.nodeId !== identity.nodeId ||
+          client.macEntry?.status === "waiting" || !(client.expiresAt > Date.now())) return latest;
+      client.macEntry = { status: "waiting", nodeId: identity.nodeId, requestedAt: new Date().toISOString(),
+        ...(typeof identity.nodeName === "string" ? { nodeName: identity.nodeName.slice(0, 160) } : {}) };
+      result = { id: client.id, name: client.name, macEntry: client.macEntry };
+      return latest;
+    });
+    return result;
+  }
   // The owner's Allow for a person who came in while an agent had the Mac.
   function allowPerson(clientId) {
     let result;
@@ -1466,6 +1488,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         client.macEntry = {
           status: "waiting",
           requestedAt: new Date().toISOString(),
+          ...(identity?.nodeId ? { nodeId: identity.nodeId } : {}),
           ...(typeof identity?.nodeName === "string" ? { nodeName: identity.nodeName.slice(0, 160) } : {}),
         };
       result = {
@@ -1999,6 +2022,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     inviteBrowser,
     changeAccess,
     redeemGuest,
+    holdPerson,
     allowPerson,
     redeemFunnelBrowser,
     reconnectFunnelBrowser,

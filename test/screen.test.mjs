@@ -91,7 +91,7 @@ test("while the Mac shows one of its own dialogs, only the owner's own devices c
   control.check(ali);
   dialog = true;
   // Every check before a click or key, and the live connection's own.
-  assert.throws(() => control.check(ali), (e) => e.status === 423 && /only its owner can answer/.test(e.message));
+  assert.throws(() => control.check(ali), (e) => e.status === 423 && /owner or a person explicitly given full control/.test(e.message));
   assert.throws(() => control.acquire(ali, true), (e) => e.status === 423);
   assert.throws(() => control.acquire(other, true, { takeover: true }), (e) => e.status === 423);
   assert.deepEqual(control.acquire(ali, false), { enabled: false });
@@ -103,7 +103,7 @@ test("while the Mac shows one of its own dialogs, only the owner's own devices c
   assert.equal(control.acquire(ali, true).enabled, true);
   // A person with full access answers the Mac's dialogs like you (Oct 11),
   // and takes control from a limited guest; a limited guest can't take it back.
-  const aya = { id: "aya", name: "Aya", kind: "guest", scopes: ["admin", "screen"] };
+  const aya = { id: "aya", name: "Aya", kind: "guest", scopes: ["admin", "screen"], fullControlVersion: 1 };
   dialog = true;
   assert.equal(control.acquire(aya, true, { takeover: true }).enabled, true);
   control.check(aya);

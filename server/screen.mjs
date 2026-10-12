@@ -5,17 +5,16 @@ import { computerWord } from "./computer-word.mjs";
 // aren't lent to any phone until Resume.
 export const pausedMessage = (platform = process.platform) =>
   `Reach is paused on this ${computerWord(platform)}.`;
-// The Mac's own dialogs (a privacy prompt, its password) are its owner's to
-// answer: while one is up, only the owner's own devices click or type.
+// System dialogs require an owner device or explicit current Full consent.
 export const dialogMessage =
-  "The Mac is showing one of its own dialogs, which only its owner can answer. You can watch until it's gone.";
+  "The Mac is showing one of its own dialogs. The owner or a person explicitly given full control must answer it.";
 
 // You, or a person you gave full access (Oct 11: "they should have the same
 // control as me on the Mac"): they answer the Mac's dialogs, take control
 // from anyone, and see the whole screen. Managing access stays yours (the
 // routes that check kind === "device").
 export const actsAsOwner = (client) =>
-  client?.kind === "device" || (client?.kind === "guest" && !!client.scopes?.includes("admin"));
+  client?.kind === "device" || (client?.kind === "guest" && client.fullControlVersion === 1 && !!client.scopes?.includes("admin"));
 // A person whose control others may take over (any guest without full access).
 const limitedGuest = (client) => client?.kind === "guest" && !actsAsOwner(client);
 

@@ -462,6 +462,57 @@ test("planning checks live agents and confirmed models before creating a chat", 
   assert.doesNotMatch(s.started[0].body.text, /codex|openclaw/i);
 });
 
+test("the planner picks each task's model and effort from what the agents offer, checked again at start", async () => {
+  let catalog = {
+    claude: [
+      { id: "default", name: "Default", isDefault: true, efforts: ["max", "low", "high", "medium", "xhigh"] },
+      { id: "haiku", name: "Haiku", efforts: ["low", "medium"] },
+      { id: "preview", unconfirmed: true, efforts: ["high"] },
+    ],
+    codex: [{ id: "gpt-6", name: "GPT-6", isDefault: true, efforts: ["low", "medium", "high"] }],
+  };
+  const s = stage({ models: async (agent) => catalog[agent] || [] });
+  const { workflow, threadId } = await s.workflows.plan({ owner: "phone", agent: "claude", cwd: "/work/app", text: "Ship passkeys" });
+  const text = s.started[0].body.text;
+  // The catalog and the rules: real ids, levels lowest first, nothing unconfirmed.
+  assert.match(text, /"haiku" \(Haiku\)\. Effort: low, medium\./);
+  assert.match(text, /"default" \(Default\), its default\. Effort: low, medium, high, xhigh, max\./);
+  assert.doesNotMatch(text, /preview/);
+  assert.match(text, /Highest effort its model lists/);
+  assert.match(text, /mechanical work/);
+  assert.match(text, /When unsure, take the middle/);
+  await s.finish({ agent: "claude", id: threadId }, plan([
+    { title: "Design", agent: "claude", kind: "build", model: "default", effort: "max", task: "Design the auth flow." },
+    { title: "Docs", agent: "claude", kind: "build", model: "haiku", effort: "max", task: "Update the docs." },
+    { title: "Made up", agent: "codex", kind: "review", model: "gpt-9", effort: "high", task: "Check it." },
+    { title: "Preview", agent: "claude", kind: "review", model: "preview", task: "Check it." },
+  ]));
+  const drafted = s.workflows.get(workflow.id).tasks;
+  assert.deepEqual(drafted.map((t) => [t.model, t.effort]), [["default", "max"], ["haiku", undefined], [undefined, undefined], [undefined, undefined]],
+    "an effort its model doesn't list, or a model the agent doesn't offer, is left out");
+  // Taken off on the phone, it stays off; the rest start with theirs.
+  s.workflows.update(workflow.id, { tasks: drafted.map((t, n) => (n === 1 ? { ...t, model: "" } : t)) });
+  assert.equal(s.workflows.get(workflow.id).tasks[1].model, undefined);
+  catalog = { ...catalog };
+  s.workflows.run(workflow.id, "phone");
+  await s.workflows.sync();
+  assert.equal(s.started[1].body.model, undefined, "Claude's default entry runs without --model");
+  assert.equal(s.started[1].body.effort, "max");
+  // Gone from the catalog by its turn: it stops and says why, never runs on another.
+  const second = s.workflows.create({ owner: "phone", cwd: "/work/app", tasks: [{ agent: "claude", kind: "review", model: "haiku", effort: "medium", task: "Check." }] });
+  catalog = { ...catalog, claude: catalog.claude.filter((m) => m.id !== "haiku") };
+  s.workflows.run(second.workflow.id, "phone");
+  await s.workflows.sync();
+  const stopped = s.workflows.get(second.workflow.id);
+  assert.equal(stopped.state, "paused");
+  assert.match(stopped.tasks[0].problem, /doesn't offer the model haiku/);
+  assert.equal(s.workflows.again(second.workflow.id, "phone").workflow.tasks[0].model, "haiku", "Run again keeps the pick");
+  // Shapes no agent writes are refused when the phone sends them.
+  assert.throws(() => checkTasks([{ agent: "claude", kind: "build", task: "x", model: "--dangerously" }]), /choose a model/);
+  assert.throws(() => checkTasks([{ agent: "claude", kind: "build", task: "x", effort: "High Max" }]), /choose an effort/);
+  assert.deepEqual(checkTasks([{ agent: "openclaw", kind: "build", task: "x", model: "gpt-6" }], { agents: ["openclaw"] })[0].model, undefined);
+});
+
 test("a saved task cannot launch an agent that is no longer available", async () => {
   const s = stage({ availableAgents: async () => ["claude"] });
   const { workflow } = s.workflows.create({ owner: "phone", cwd: "/work/app", tasks: tasks(["Build", "codex", "build"]) });
@@ -469,4 +520,33 @@ test("a saved task cannot launch an agent that is no longer available", async ()
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(s.started.length, 0);
   assert.equal(s.workflows.get(workflow.id).state, "paused");
+});
+
+for (const action of ["stop", "revoke"]) test(`task must not launch if ${action} happens during catalog lookup`, async () => {
+  let enter, release, denied = false;
+  const entered = new Promise(r => enter = r);
+  const held = new Promise(r => release = r);
+  const s = stage({ authorized: () => denied ? "Access ended" : "", models: async () => { enter(); await held; return [{id:"chosen",efforts:["high"]}]; } });
+  const {workflow} = s.workflows.create({owner:"phone",cwd:"/work/app",tasks:[{agent:"codex",kind:"build",task:"Run no real commands",model:"chosen",effort:"high"}]});
+  s.workflows.run(workflow.id,"phone");
+  await entered;
+  if (action === "stop") await s.workflows.stop(workflow.id); else denied = true;
+  release();
+  await s.workflows.sync();
+  assert.equal(s.started.length,0,JSON.stringify({action,launched:s.started.length,stopped:s.stopped.length,workflow:s.workflows.get(workflow.id).state}));
+});
+
+test("a revoked planner never starts after catalog discovery", async () => {
+  const entered = Promise.withResolvers(), held = Promise.withResolvers();
+  let denied = false;
+  const s = stage({ authorized: () => denied ? "Access ended" : "",
+    models: async () => { entered.resolve(); await held.promise; return []; } });
+  const planning = s.workflows.plan({ owner: "phone", agent: "codex", cwd: "/work/app", text: "Plan synthetic work" });
+  const refused = assert.rejects(planning, { status: 403 });
+  await entered.promise;
+  denied = true;
+  held.resolve();
+  await refused;
+  assert.equal(s.started.length, 0);
+  assert.equal(s.workflows.list().length, 0);
 });

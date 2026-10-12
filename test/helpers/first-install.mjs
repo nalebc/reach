@@ -89,6 +89,10 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     const exists = fs.existsSync;
     fs.existsSync = file => ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'].includes(file) ? false : exists(file);
     cp.execFile = function(file, ...args) {
+      // Hosted Linux images can provide /usr/bin/go even after PATH is
+      // restricted. This scenario explicitly represents a computer without
+      // Go: let the real spawn return ENOENT for that one optional tool.
+      if (${source} && file === 'go') file = ${JSON.stringify(path.join(temp, "no-go"))};
       if (['open', '/usr/bin/open', 'xdg-open', 'explorer.exe'].includes(file))
         return exec(process.execPath, ['-e', ''], args.find(value => typeof value === 'function'));
       return exec.call(this, file, ...args);
@@ -141,11 +145,33 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     for (;;) {
       const match = output.slice(cursor).match(pattern);
       if (match) { cursor += match.index + match[0].length; return match; }
-      if (child.exitCode !== null || child.signalCode !== null || Date.now() > deadline)
+      if (child.exitCode !== null || child.signalCode !== null || Date.now() > deadline) {
+        // Setup's dependency/build output goes to a private fixture log, not
+        // stdout. Preserve its bounded tail before cleanup removes the fresh
+        // home, otherwise a cold install timeout hides the operation that hung.
+        const diagnostics = [];
+        const logs = [path.join(state, "setup.log")];
+        if (source) {
+          const npmLogs = path.join(temp, "npm-cache", "_logs");
+          const names = await fs.readdir(npmLogs).catch(() => []);
+          logs.push(...names.filter(name => name.endsWith("-debug-0.log")).sort().slice(-2).map(name => path.join(npmLogs, name)));
+        }
+        for (const file of logs) {
+          let handle;
+          try {
+            handle = await fs.open(file, "r");
+            const size = (await handle.stat()).size;
+            const buffer = Buffer.alloc(Math.min(size, 12000));
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+            if (bytesRead) diagnostics.push(`${path.relative(temp, file)}:\n${buffer.subarray(0, bytesRead).toString("utf8")}`);
+          } catch { /* an install may not have created its log yet */ }
+          finally { await handle?.close(); }
+        }
         throw Error(`Fresh install did not reach ${pattern}:\n${JSON.stringify({
           pid: child.pid, spawned, exitCode: child.exitCode, signalCode: child.signalCode,
           elapsedMs: Date.now() - startedAt, waitBudgetMs: ms,
-        })}\n${output.slice(-12000)}`);
+        })}\n${output.slice(-12000)}\n${diagnostics.join("\n")}`);
+      }
       await sleep(20);
     }
   };

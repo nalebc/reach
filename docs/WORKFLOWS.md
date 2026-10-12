@@ -12,14 +12,22 @@ How it differs from what's already in Chat ([Working across agents](ACROSS_AGENT
 ## What a workflow holds
 
 - A **name**, and the **folder** on this computer where every task's chat starts.
-- **Tasks**, in steps. Each task has a name, **what to do** (the full instructions its agent gets), an **agent** (Codex, Claude Code, or OpenClaw when Reach has its Gateway) and a kind: **Build** (may change files) or **Review** (reads only, and reports what it found).
+- **Tasks**, in steps. Each task has a name, **what to do** (the full instructions its agent gets), an **agent** (Codex, Claude Code, or OpenClaw when Reach has its Gateway), a kind: **Build** (may change files) or **Review** (reads only, and reports what it found), and optionally a **model** and **effort** (none: the agent's default).
 - A step starts when the one above has finished. A task set **With previous** joins the step above and starts with it.
 
 ## Making one
 
 **Planned for you.** Chat → **New chat** → **Workflow** (beside Solo and Team), or **New workflow** on the Workflows page. Pick the folder, describe the work ("Add passkey sign-in, with tests") and send. The agent picked at the top plans it: a normal chat in the folder that only reads (Codex in its read-only sandbox, Claude Code in Manual). The workflow's page shows **Planning…**, then the tasks. To change the plan, edit it there, or ask in the planner's chat (**Open chat**). Its next plan replaces the draft, unless you've edited it: then **New plan · Use it** offers the swap.
 
-A plan can set only the tasks: their names, what to do, agent, kind and steps. It never picks the folder, a permission mode or a model; those stay yours. A reply with no plan Reach can use says why on the page, and the draft stays as it was.
+A plan can set only the tasks: their names, what to do, agent, kind, steps, and each task's model and effort. It never picks the folder or a permission mode; those stay yours.
+
+**Model and effort per task.** The planner is given the models each agent offers now (ids, names, and each model's effort levels, lowest first) and picks per task by how hard it is to get right, not how long it is:
+- **Highest effort, strongest model:** design or architecture choices, changes across many files, security, sign-in, permissions, money or private data, data migrations, concurrency or fragile state, a bug with no known cause, a final review meant to catch subtle mistakes.
+- **Middle:** a feature or fix with a clear goal in a few files, tests for decided behaviour, a routine review.
+- **Lowest, or a smaller, faster model:** mechanical work (renames, copy and doc updates, config or version bumps, formatting), summaries, gathering facts.
+- When unsure, the middle. A review of risky work is at least as high as the build it checks. Not every task at the top. Its summary says which tasks it set high or low, and why.
+
+Reach keeps a planned model only if the agent offers it (confirmed, not a preview) and an effort only if that model lists it; anything else is left out and the agent's default runs. Each task row shows its model and effort; open a task to change them (**Model**, **Effort**). Changing a task's agent puts it back on that agent's default. OpenClaw tasks have neither. A reply with no plan Reach can use says why on the page, and the draft stays as it was.
 
 **Written yourself.** In New chat on Workflow, **Write tasks myself**. An empty draft offers starting points (**Research, then build** when OpenClaw is here, **Build, then review**, **Build, review, fix**, **Two reviews**) or an empty task. Tap a task to edit it: its name, what to do, and chips for the agent, Build or Review, With previous, moving it and removing it. Everything is saved as you type.
 
@@ -29,6 +37,7 @@ Tap **Run**. Each task starts when its step comes, as a new chat in the folder n
 - **Build** tasks start the way relay and team builders do: Codex in **Approve for me** (or **Ask for approval** when that's off), Claude Code in **Auto**.
 - **Review** tasks only read: Codex's read-only sandbox, Claude Code in Manual.
 - **OpenClaw** tasks start as a new OpenClaw chat of Reach's own, outside the folder, with OpenClaw's own tool rules (Reach has no mode to set there). The message says it isn't in the folder and that its reply stays here, never to a channel. It doesn't hold the folder, so it can run beside a build. See [OpenClaw in relays and workflows](ACROSS_AGENTS.md#openclaw-in-relays-and-workflows).
+- A task with a model or effort starts on it. Checked again at its start: if its agent no longer offers that model or effort, the task stops and says so, never running on another.
 - A task also gets what the steps before it finished with: the last replies and changed files, clipped like a relay's, inside a marked block introduced as material, not instructions.
 
 A task is done when its chat ends with a reply and is still idle a few seconds later, the same check relays use. The next step then starts on its own: a workflow keeps going until it's finished or something goes wrong.
@@ -45,7 +54,7 @@ The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) o
 ## Rules Reach follows
 
 - **Nothing starts without you.** A planned workflow is a proposal until you tap Run, and every task's full text is on its page. Once you run it, its tasks are your instructions.
-- **The planner reads; you decide.** The planner can't change files, and its plan can't choose a folder, mode or model. A file in the project written to steer the planner can, at worst, propose tasks you see before running, and they start at the middle permission level, never Full access or Bypass.
+- **The planner reads; you decide.** The planner can't change files, and its plan can't choose a folder or mode. It may choose each task's model and effort, only from what the agent offers, and you see and can change them before Run. A file in the project written to steer the planner can, at worst, propose tasks you see before running, and they start at the middle permission level, never Full access or Bypass.
 - **No new permission.** Builders and reviewers start like relay steps. Anything more asks you on the phone.
 - **One builder in a folder at a time**, across all workflows, so two agents never edit the same files at once. Reviews and OpenClaw tasks can run together, and beside a build.
 - **Another agent's words are material, not orders.** What one task finished with reaches the next inside a marked block.

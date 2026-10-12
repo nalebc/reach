@@ -245,9 +245,14 @@ export function createAgentSessions({
   outbox = createOutbox({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-outbox.json") }),
   // Apps installed here, to show a consent card's apps with their icons.
   installedApps = platformApps,
-  // Messages to chats the Claude app lists go into the app itself
-  // (claude-compose.mjs); off in tests unless given.
+  // Drafts, Stop and settings for chats the Claude app lists, through the
+  // app itself (claude-compose.mjs); off in tests unless given.
   claudeCompose: givenCompose = null,
+  // Messages to those chats go through Claude Code (claudeHost), pictures
+  // and words in one turn; the app's window reloads them (claudeRefresh).
+  // Typing them into the app's box (the old way) dropped pictures without a
+  // word (Oct 11): only when asked for.
+  typeIntoApp = false,
   claudeOpen = claudeAppRunning,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
   // Claude Code's permissions and questions held for the phone by its own
@@ -698,7 +703,7 @@ export function createAgentSessions({
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
-          if (next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
+          if (typeIntoApp && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
             // Marked on its way only once the app is about to be typed into:
             // marked while it still queued behind other Claude app work, a
             // Reach restart paused it as maybe sent when it never was.
@@ -1341,7 +1346,7 @@ export function createAgentSessions({
       // at the level it was started with, and nothing outside it changes
       // that but a click in its menu (never, Oct 10). Claude Code continues
       // it at that level instead, as for a locked Mac.
-      if (claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+      if (typeIntoApp && claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });

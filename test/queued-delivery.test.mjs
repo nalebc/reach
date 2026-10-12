@@ -42,7 +42,7 @@ test("a message just sent is tried at once, not after the usual beat", async () 
   const start = Date.now();
   const sessions = await sessionsWith(outbox, {
     queueMs: 2000,
-    claudeCompose: { deliver: async () => (tries.push(Date.now() - start), { delivered: true }) },
+    typeIntoApp: true, claudeCompose: { deliver: async () => (tries.push(Date.now() - start), { delivered: true }) },
   });
   try {
     assert.ok(await until(() => tries.length === 1, 1500), "tried within 1.5 s");
@@ -61,7 +61,7 @@ test("a deleted chat's messages stop retrying and wait for the phone, which send
     queueMs: 10,
     claude: { exists: async (id) => id !== A },
     codexLive: { drives: () => false, send: async (id, body) => (sent.push([id, body]), { queued: true, delivered: false }) },
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         tries++;
         throw Object.assign(new Error("The Claude app doesn't list this chat."), { waiting: true, unlisted: true });
@@ -95,7 +95,7 @@ test("a chat the Claude app doesn't list but Claude Code still has isn't taken f
   const sessions = await sessionsWith(outbox, {
     queueMs: 60000,
     claude: { exists: async () => true },
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         throw Object.assign(new Error("The Claude app doesn't list this chat."), { waiting: true, unlisted: true });
       },
@@ -117,7 +117,7 @@ test("messages waiting for their Claude app chat are listed for the Mac's menu b
   const sessions = await sessionsWith(outbox, {
     queueMs: 60000,
     appShown: () => [{ id: A, session: "local_abc", at: 1 }],
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         throw Object.assign(new Error("Goes in when you open this chat in the Claude app."), { waiting: true });
       },

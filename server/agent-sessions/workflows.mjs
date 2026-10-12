@@ -31,6 +31,9 @@ export const WORKFLOW_LIMITS = {
   description: 20000,
 };
 const KINDS = ["build", "review"];
+// A model id or effort level as the agents' catalogs write them.
+const MODEL_ID = /^[A-Za-z0-9][\w.:/[\]-]{0,79}$/;
+const EFFORT = /^[a-z][a-z0-9_-]{0,23}$/;
 const BUSY = new Set(["running", "waiting"]);
 // What a finished task passes on (kept with it), and how much of an earlier
 // task the next one gets.
@@ -67,15 +70,44 @@ export function checkTasks(list, { draft = false, agents = WORKFLOW_AGENTS } = {
     if (!agents.includes(agent)) throw bad(`Task ${n + 1}: ${named}.`);
     const kind = String(t?.kind || "").toLowerCase();
     if (!KINDS.includes(kind)) throw bad(`Task ${n + 1}: a build or a review.`);
+    // Its model and effort (none: the agent's default). OpenClaw has neither
+    // in Reach. Only the shape here; whether the agent offers them is
+    // checked against its catalog when the plan is read and when it starts.
+    const model = agent === "openclaw" || t?.model == null || t?.model === "" ? "" : String(t.model);
+    const effort = agent === "openclaw" || t?.effort == null || t?.effort === "" ? "" : String(t.effort);
+    if (model && !MODEL_ID.test(model)) throw bad(`Task ${n + 1}: choose a model this agent offers.`);
+    if (effort && !EFFORT.test(effort)) throw bad(`Task ${n + 1}: choose an effort this model offers.`);
     return {
       title: oneLine(t?.title, WORKFLOW_LIMITS.title) || oneLine(task.split("\n")[0], WORKFLOW_LIMITS.title),
       agent,
       kind,
       task,
       together: n > 0 && t?.together === true,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
     };
   });
 }
+
+// An agent's catalog entry for a model (none: its default model).
+const modelEntry = (catalog, model) => (model ? catalog.find((m) => m.id === model && !m.unconfirmed) : catalog.find((m) => m.isDefault && !m.unconfirmed));
+// A task's model and effort, kept only as its agent offers them now: an id
+// or level that isn't in the catalog is left out (the default runs), never
+// passed on to the agent's command line.
+export function fitModel(task, catalog) {
+  const { model, effort, ...rest } = task;
+  if (!Array.isArray(catalog) || !catalog.length) return rest;
+  const entry = modelEntry(catalog, model);
+  if (model && !entry) return rest;
+  return { ...rest, ...(model ? { model } : {}), ...(effort && entry?.efforts?.includes(effort) ? { effort } : {}) };
+}
+// Effort levels lowest first, so "lowest" and "highest" in the planner's
+// rules read the list right (a level Reach doesn't know keeps its place).
+const EFFORT_RANK = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const ranked = (efforts) => {
+  const known = efforts.filter((e) => EFFORT_RANK.includes(e)).sort((a, b) => EFFORT_RANK.indexOf(a) - EFFORT_RANK.indexOf(b));
+  return efforts.map((e) => (EFFORT_RANK.includes(e) ? known.shift() : e));
+};
 
 // The JSON a planner's reply ends with: the last ```json block that reads
 // (the longest first, so a fence quoted inside a task doesn't cut it short).
@@ -92,38 +124,91 @@ function lastJson(text) {
   return undefined;
 }
 
-// A planner's draft: only each task's title, what to do, agent, kind and
-// whether it starts with the one above, in order (and a title). Anything
-// else in it (a folder, a mode, a model) is ignored.
-export function readDraft(text, agents = WORKFLOW_AGENTS) {
+// A planner's draft: only each task's title, what to do, agent, kind,
+// whether it starts with the one above, and its model and effort when its
+// agent's catalog (catalogs: agent → models) offers them, in order (and a
+// title). Anything else in it (a folder, a mode) is ignored, and with no
+// catalog to check against, so is a model.
+export function readDraft(text, agents = WORKFLOW_AGENTS, catalogs = {}) {
   const value = lastJson(String(text || ""));
   if (value === undefined) throw bad("there's no plan in a JSON block at the end.");
   const tasks = Array.isArray(value) ? value : value?.tasks;
   if (!Array.isArray(tasks) || !tasks.length) throw bad("the plan has no tasks.");
+  const shaped = (v, re) => (typeof v === "string" && re.test(v) ? v : undefined);
   let checked;
   try {
     checked = checkTasks(
-      tasks.map((t) => ({ title: t?.title, task: t?.task ?? t?.instructions, agent: t?.agent, kind: t?.kind, together: t?.together === true })),
+      tasks.map((t) => ({
+        title: t?.title,
+        task: t?.task ?? t?.instructions,
+        agent: t?.agent,
+        kind: t?.kind,
+        together: t?.together === true,
+        model: shaped(t?.model, MODEL_ID),
+        effort: shaped(t?.effort, EFFORT),
+      })),
       { agents },
     );
   } catch (e) {
     throw bad(String(e.message).replace(/^./, (c) => c.toLowerCase()));
   }
-  return { title: Array.isArray(value) ? "" : oneLine(value?.title, WORKFLOW_LIMITS.title), tasks: checked };
+  return {
+    title: Array.isArray(value) ? "" : oneLine(value?.title, WORKFLOW_LIMITS.title),
+    tasks: checked.map((t) => fitModel(t, catalogs[t.agent] || [])),
+  };
 }
 
+// The models each agent offers, as the planner reads them: id, name, a
+// short description and the effort levels, lowest first.
+function modelList(agents, catalogs) {
+  const lines = [];
+  for (const agent of agents) {
+    const offered = (catalogs[agent] || []).filter((m) => !m.unconfirmed && typeof m.id === "string" && MODEL_ID.test(m.id)).slice(0, 10);
+    if (!offered.length) continue;
+    lines.push(`${agentName(agent)}:`);
+    for (const m of offered) {
+      const about = oneLine(m.description, 100);
+      const efforts = ranked((m.efforts || []).filter((e) => EFFORT.test(e)));
+      lines.push(
+        `- "${m.id}"${m.name && m.name !== m.id ? ` (${oneLine(m.name, 40)})` : ""}${m.isDefault ? ", its default" : ""}${about ? `: ${about}` : ""}. Effort: ${efforts.length ? efforts.join(", ") : "none to set"}.`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+// How the planner picks each task's model and effort: by how hard the task
+// is to get right, not by how long it is.
+const modelRules = (claw) => [
+  `Pick each task's "model" and "effort" from the list above for how hard the task is to get right, not how long it is:`,
+  `- Highest effort its model lists, on the strongest model: design or architecture choices, changes that cross many files, security, sign-in, permissions, money or private data, data migrations, concurrency or state that's easy to break, a bug whose cause isn't known, and a final review meant to catch subtle mistakes.`,
+  `- Middle levels: a feature or fix with a clear goal in a few files, tests for behaviour that's already decided, a routine review of a build.`,
+  `- Lowest level, or a smaller, faster model: mechanical work (renames, copy and doc updates, config or version bumps, formatting), summaries, gathering facts.`,
+  `When unsure, take the middle. A review of risky work is at least as high as the build it checks. Don't put every task at the top: it costs the person time and usage. Use only the ids and levels listed for that task's agent (an effort must be one its model lists). Leave "model" and "effort" out to use the agent's configured default model${claw ? ", and always leave them out for OpenClaw" : ""}. In your summary, say which tasks you set high or low and why, in a few words each.`,
+].join("\n");
+
 // What the planner is asked: the work as you described it, then how to
-// answer. It reads only (it starts as a reviewer does).
-export function plannerMessage({ text, openClaw = false, agents = openClaw ? WORKFLOW_AGENTS_CLAW : WORKFLOW_AGENTS }) {
+// answer. It reads only (it starts as a reviewer does). With the agents'
+// model catalogs (agent → models), it picks a model and effort per task.
+export function plannerMessage({ text, openClaw = false, agents = openClaw ? WORKFLOW_AGENTS_CLAW : WORKFLOW_AGENTS, catalogs = {} }) {
   if (!agents.length) throw bad("No workflow agents are available on this computer.");
   const coders = agents.filter((agent) => agent !== "openclaw");
   const first = coders[0] || agents[0];
   const second = coders[1] || first;
+  const models = modelList(coders, catalogs);
+  // The example's model and effort, from the catalog: a real id, never one made up.
+  const pick = (agent, high) => {
+    const entry = modelEntry(catalogs[agent] || [], "");
+    const efforts = ranked(entry?.efforts || []);
+    // Not the very top: a planner copies its example's levels.
+    const effort = high ? efforts.at(-2) || efforts.at(-1) : efforts[Math.floor((efforts.length - 1) / 2)];
+    return models && entry ? { model: entry.id, ...(effort ? { effort } : {}) } : {};
+  };
   const example = {
     title: "A few words",
     tasks: [
-      { title: "Build the API", agent: first, kind: "build", together: false, task: "The goal, the files, what done looks like." },
-      { title: "Review the API", agent: second, kind: "review", together: false, task: "What to check." },
+      { title: "Build the API", agent: first, kind: "build", ...pick(first, false), together: false, task: "The goal, the files, what done looks like." },
+      { title: "Review the API", agent: second, kind: "review", ...pick(second, true), together: false, task: "What to check." },
     ],
   };
   return [
@@ -137,9 +222,12 @@ export function plannerMessage({ text, openClaw = false, agents = openClaw ? WOR
             `OpenClaw works outside this folder and can't see its files: give it research or writing that doesn't need the code (its reply goes on to the next task), and the code to ${coders.map(agentName).join(" or ")}.`,
           ]
         : []),
-      `Use only the agents listed above. Do not ask for other agents or specific models: each task uses its agent's configured default model.`,
+      models
+        ? `Use only the agents listed above. Each task may also have "model" and "effort", from the models below.`
+        : `Use only the agents listed above. Do not ask for other agents or specific models: each task uses its agent's configured default model.`,
       `At most ${WORKFLOW_LIMITS.tasks} tasks. The person reads and edits the plan before anything runs. If they ask you to change it, reply with the whole plan again as a new JSON block.`,
     ].join(" "),
+    ...(models ? [`Models:\n${models}`, modelRules(agents.includes("openclaw"))] : []),
   ].join("\n\n");
 }
 
@@ -235,6 +323,14 @@ export function createWorkflows({
   const sessions = agentChats(chats, openClaw);
   const agents = openClaw ? WORKFLOW_AGENTS_CLAW : WORKFLOW_AGENTS;
   const available = async () => availableAgents ? (await availableAgents()).filter((agent) => agents.includes(agent)) : [...agents];
+  // The models each coding agent offers now (agent → models); one that
+  // can't be read offers none, so nothing is picked for it.
+  const catalogs = async (list) => {
+    if (!models) return {};
+    const out = {};
+    for (const agent of list.filter((a) => WORKFLOW_AGENTS.includes(a))) out[agent] = await models(agent).then((c) => (Array.isArray(c) ? c : []), () => []);
+    return out;
+  };
   // OpenClaw's client asks again before each Gateway call.
   const allowed = (owner) => () => {
     const reason = authorized(owner);
@@ -312,12 +408,14 @@ export function createWorkflows({
     updatedAt: w.updatedAt,
     ...(w.planner ? { planner: plannerView(w) } : {}),
     // tries: the chats a retried task had before (its chat list groups them).
-    tasks: w.tasks.map(({ id, title, agent, kind, together, state, chat, tries, problem }) => ({
+    tasks: w.tasks.map(({ id, title, agent, kind, together, model, effort, state, chat, tries, problem }) => ({
       id,
       title,
       agent,
       kind,
       together: !!together,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
       state,
       ...(chat ? { chat } : {}),
       ...(tries?.length ? { tries } : {}),
@@ -336,6 +434,8 @@ export function createWorkflows({
       agent: t.agent,
       kind: t.kind,
       together: !!t.together,
+      ...(t.model ? { model: t.model } : {}),
+      ...(t.effort ? { effort: t.effort } : {}),
       task: t.task,
       state: t.state,
       ...(t.chat ? { chat: t.chat } : {}),
@@ -429,11 +529,27 @@ export function createWorkflows({
     try {
       const cwd = folder(w.cwd);
       if (!(await available()).includes(t.agent)) throw bad(`${agentName(t.agent)} is unavailable. Choose an available agent for this task.`);
+      // Its model and effort, as the agent offers them now (else it stops).
+      const picked = t.agent !== "openclaw" && (t.model || t.effort) ? fitModel(t, (await catalogs([t.agent]))[t.agent]) : {};
+      if (t.model && picked.model !== t.model) throw bad(`${agentName(t.agent)} doesn't offer the model ${plain(t.model)} now. Choose another for this task.`);
+      if (t.effort && picked.effort !== t.effort) throw bad(`The effort ${plain(t.effort)} isn't offered for this task's model now. Choose another.`);
+      const mode = await startMode({ kind: t.kind, agent: t.agent }, modes);
+      // Discovery can wait on another process. Stop/revocation during it
+      // must prevent the first provider turn, not just stop it afterwards.
+      if (w.state !== "running" || t.state !== "starting" || !workflows.includes(w)) return;
+      const denied = authorized(w.owner);
+      if (denied) {
+        t.state = "waiting";
+        return pause(w, denied);
+      }
       started = await sessions.start(t.agent, {
         cwd,
         text,
         images: [],
-        ...(await startMode({ kind: t.kind, agent: t.agent }, modes)),
+        // Claude's "default" entry is no model to name (as New chat sends it).
+        ...(picked.model && !(t.agent === "claude" && picked.model === "default") ? { model: picked.model } : {}),
+        ...(picked.effort ? { effort: picked.effort } : {}),
+        ...mode,
         ...(t.agent === "codex" ? { name } : {}),
         // Once per try: asked again (a dropped answer), the same chat.
         ...(t.agent === "openclaw" ? { requestId: `wf-${w.id}-${t.id}-${attempt}`, authorize: allowed(w.owner) } : { keepOut: true }),
@@ -450,11 +566,13 @@ export function createWorkflows({
     t.startedAt = now();
     t.updatedAt = now();
     // Stopped (or let go) while it was starting: its chat stops too.
-    if (w.state === "stopped" || !workflows.includes(w)) {
+    const denied = authorized(w.owner);
+    if (w.state !== "running" || !workflows.includes(w) || denied) {
       t.state = "stopped";
-      t.problem = "The workflow was stopped.";
+      t.problem = denied || "The workflow was stopped.";
       save();
       await sessions.stop?.(t.agent, started.threadId).catch(() => {});
+      if (denied) pause(w, denied);
       return;
     }
     t.state = "working";
@@ -539,7 +657,8 @@ export function createWorkflows({
             continue;
           }
           try {
-            const draft = readDraft(answer, await available());
+            const offered = await available();
+            const draft = readDraft(answer, offered, await catalogs(offered));
             p.problem = "";
             if (!w.edited || !w.tasks.length) useDraft(w, draft);
             else w.proposal = draft;
@@ -679,15 +798,24 @@ export function createWorkflows({
       const dir = folder(cwd);
       const title = oneLine(description.split("\n")[0], WORKFLOW_LIMITS.title) || "Workflow";
       const name = oneLine(`Plan · ${title}`, 120);
+      const catalog = await catalogs(offered);
+      const mode = await startMode({ kind: "review", agent }, modes);
+      const denied = authorized(owner);
+      if (denied) throw bad(denied, 403);
       const started = await sessions.start(agent, {
         ...start,
         cwd: dir,
-        text: plannerMessage({ text: description, agents: offered }),
+        text: plannerMessage({ text: description, agents: offered, catalogs: catalog }),
         images: Array.isArray(start.images) ? start.images : [],
         keepOut: true,
-        ...(await startMode({ kind: "review", agent }, modes)),
+        ...mode,
         ...(agent === "codex" ? { name } : {}),
       });
+      const revoked = authorized(owner);
+      if (revoked) {
+        await sessions.stop?.(agent, started.threadId).catch(() => {});
+        throw bad(revoked, 403);
+      }
       const w = {
         id: randomUUID(),
         owner,
@@ -729,7 +857,9 @@ export function createWorkflows({
         const fresh = rest.map((given, n) => {
           const old = typeof given?.id === "string" ? known.get(given.id) : undefined;
           if (old) known.delete(old.id);
-          return { ...(old || {}), ...checked[n], id: old ? old.id : nextId(w), state: "waiting", updatedAt: now() };
+          // A model or effort taken off on the phone stays off.
+          const { model: _model, effort: _effort, ...kept } = old || {};
+          return { ...kept, ...checked[n], id: old ? old.id : nextId(w), state: "waiting", updatedAt: now() };
         });
         w.tasks = [...frozen, ...fresh];
         if (w.planner) w.edited = true;
@@ -863,7 +993,18 @@ export function createWorkflows({
         createdAt: now(),
         updatedAt: now(),
       };
-      copy.tasks = w.tasks.map(({ title, agent, kind, task, together }) => ({ title, agent, kind, task, together, id: nextId(copy), state: "waiting", updatedAt: now() }));
+      copy.tasks = w.tasks.map(({ title, agent, kind, task, together, model, effort }) => ({
+        title,
+        agent,
+        kind,
+        task,
+        together,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        id: nextId(copy),
+        state: "waiting",
+        updatedAt: now(),
+      }));
       workflows.push(copy);
       save();
       return { workflow: view(copy) };

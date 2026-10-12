@@ -1,3 +1,4 @@
+import { activeSession } from "./access-list";
 import { useEffect, useRef, useState } from "react";
 import { usePageVisible } from "./page-visible";
 import {
@@ -52,10 +53,8 @@ type Props = {
   focus?: string;
 };
 const sessionCode = (id: string) => id.slice(-8);
-export const activeSession = (agent: Pick<BrowserAgentSession, "expiresAt" | "status">, now: number) =>
-  (agent.expiresAt || 0) > now &&
-  (!agent.status ||
-    ["invited", "pending", "approved", "accepted"].includes(agent.status));
+// Still going (src/access-list.ts: one reading for every list).
+export { activeSession };
 const time = (value: number | string) =>
   new Date(value).toLocaleString([], {
     month: "short",

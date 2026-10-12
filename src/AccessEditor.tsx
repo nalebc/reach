@@ -412,6 +412,7 @@ function GeneralAccessEditor({
             ? { write, exec, terminal, codex: sessions }
             : {
                 full,
+                ...(full ? { fullControlVersion: 1 } : {}),
                 write,
                 terminal,
                 agents: sessions,
@@ -629,6 +630,7 @@ function GeneralAccessEditor({
         </div>
         <fieldset disabled={busy}>
           {!agent && toggle("Full access", full, setFull)}
+          {!agent && full && <p>Includes every window, private data and system dialogs. Only give this to someone you trust with your computer.</p>}
           {!full && (
             <>
               <details className="ae-folders">

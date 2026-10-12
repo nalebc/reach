@@ -470,8 +470,16 @@ struct ClaudeCompose {
       guard value(box) == trimmed(text), showing(look(app)) else { out(["error": "Claude couldn't update this draft."]) }
       out(["drafted": true])
     }
+    // The text goes in first: setting the box's value replaces everything in
+    // it, and set after the pictures it took them out again (a message with
+    // a picture and words arrived as the words alone; a picture alone came).
+    if !text.isEmpty || !current.isEmpty {
+      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
+      else { fail("Claude couldn't update the message.") }
+      usleep(20_000)
+    }
     AXUIElementSetAttributeValue(box, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-    // Pictures: pasted one at a time, the clipboard put back after.
+    // Pictures: pasted one at a time after the text, the clipboard put back after.
     if !images.isEmpty {
       let pasteboard = NSPasteboard.general
       let saved = (pasteboard.pasteboardItems ?? []).map { item in item.types.compactMap { t in item.data(forType: t).map { (t, $0) } } }
@@ -494,14 +502,9 @@ struct ClaudeCompose {
         usleep(700_000)
       }
     }
-    // The text, then a last look that it's still the same chat before Send.
-    // The app enables Send a frame after the text goes in: looked for again
-    // at once (no fixed 300 ms pause), for up to a second.
-    if !text.isEmpty || !current.isEmpty {
-      guard AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success
-      else { fail("Claude couldn't update the message.") }
-      usleep(20_000)
-    }
+    // A last look that it's still the same chat before Send. The app enables
+    // Send a frame after the text goes in: looked for again at once (no fixed
+    // 300 ms pause), for up to a second.
     window = look(app)
     for _ in 0..<12 where showing(window) && !enabled(window.send) {
       usleep(50_000)

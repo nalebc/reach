@@ -37,6 +37,7 @@ const mac = {
   held: {},
   clock: 10,
   reset() {
+    this.models = null;
     this.sent = [];
     this.held = {};
     this.clock = 10;
@@ -46,7 +47,7 @@ const sent = (route) => mac.sent.filter((s) => s.route === route);
 const json = (init) => (init?.body ? JSON.parse(init.body) : null);
 const hold = (w) => (mac.held[w.id] = { ...w, updatedAt: ++mac.clock });
 const routes = {
-  "/api/sessions/models": () => ({ models: [{ id: "fixture-model", name: "Fixture", isDefault: true }], modes: [], mode: null }),
+  "/api/sessions/models": () => ({ models: mac.models || [{ id: "fixture-model", name: "Fixture", isDefault: true }], modes: [], mode: null }),
   "/api/sessions/health": () => ({ agents: both }),
   "/api/sessions/logos": () => ({ version: "v1", logos: { codex: LOGO, claude: LOGO } }),
   "/api/sessions/commands": () => ({ commands: [] }),
@@ -241,6 +242,37 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   await click(button("Remove task 1", page));
   await dom.waitFor(() => sent("edit").at(-1)?.body.tasks.length === 1, 3000);
   assert.equal(sent("edit").at(-1).body.tasks[0].task, "Add ?page= to /api/items.");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("each task shows its model and effort; the pickers offer only what its model lists, and a new agent starts on its default", async () => {
+  // Its own phone, so the models list isn't one fetched earlier.
+  const phone = { ...peer, token: "models-token" };
+  mac.models = [
+    { id: "default", name: "Default", isDefault: true, efforts: ["low", "medium", "high", "max"] },
+    { id: "haiku", name: "Haiku", efforts: ["low"] },
+  ];
+  hold(workflow({ tasks: [task("t1", { title: "Design", agent: "claude", model: "default", effort: "max", task: "Design the auth flow." })] }));
+  await mount(React.createElement(WorkflowSheet, { peer: phone, id: WF, logos: { codex: LOGO, claude: LOGO }, onOpenChat() {}, onClose() {} }));
+  await dom.waitFor(() => $(".workflow-sheet .wf-item-detail"));
+  assert.equal($(".workflow-sheet .wf-item-detail").textContent, "Claude Code · Make changes · max effort");
+  await click($(".workflow-sheet .wf-item > button.wf-item-main"));
+  const model = await dom.waitFor(() => $('select[aria-label="Task 1 model"]'));
+  assert.equal(model.value, "", "the default model reads as the agent's default");
+  assert.deepEqual([...$('select[aria-label="Task 1 effort"]').options].map((o) => o.value), ["", "low", "medium", "high", "max"]);
+  assert.equal($('select[aria-label="Task 1 effort"]').value, "max");
+  // Haiku doesn't offer max: the effort goes with the switch.
+  model.value = "haiku";
+  model.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[0]?.model === "haiku", 3000);
+  assert.equal(sent("edit").at(-1).body.tasks[0].effort, undefined);
+  assert.deepEqual([...$('select[aria-label="Task 1 effort"]').options].map((o) => o.value), ["", "low"]);
+  // Another agent: its default model and effort.
+  const agent = $('select[aria-label="Task 1 agent"]');
+  agent.value = "codex";
+  agent.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[0]?.agent === "codex", 3000);
+  assert.equal(sent("edit").at(-1).body.tasks[0].model, undefined);
   assert.deepEqual(dom.errors, []);
 });
 

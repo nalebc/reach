@@ -138,20 +138,27 @@ export function GuestBar({
 // waits for the owner's Allow (server: macEntry). This page waits with them
 // and comes in on its own once allowed.
 export function WaitForOwner({ peer, children }: { peer: Peer; children: ReactNode }) {
-  const [state, setState] = useState<"checking" | "waiting" | "in">("checking");
+  const key = `${peer.url}:${peer.token}`;
+  const [result, setResult] = useState<{ key: string; state: "checking" | "waiting" | "retrying" | "in" }>({ key, state: "checking" });
+  const state = result.key === key ? result.state : "checking";
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const setState = (state: typeof result.state) => setResult({ key, state });
+    setState("checking");
     const check = async () => {
       try {
         await request(peer, "/api/device", { signal: controller.signal });
         if (!controller.signal.aborted) setState("in");
       } catch (error) {
         if (controller.signal.aborted) return;
-        const waiting = (error as { body?: { waiting?: boolean } })?.body?.waiting === true;
-        // Anything else is the workspace's to show, as before.
-        setState(waiting ? "waiting" : "in");
-        if (waiting) timer = setTimeout(() => void check(), 3000);
+        const failed = error as { status?: number; body?: { waiting?: boolean } };
+        const waiting = failed?.body?.waiting === true;
+        const retry = waiting || !failed?.status || failed.status === 408 || failed.status === 429 || failed.status >= 500;
+        // A dropped response is not approval. Keep polling; permanent
+        // refusals go to the workspace's existing ended-access message.
+        setState(waiting ? "waiting" : retry ? "retrying" : "in");
+        if (retry) timer = setTimeout(() => void check(), 3000);
       }
     };
     void check();
@@ -159,12 +166,12 @@ export function WaitForOwner({ peer, children }: { peer: Peer; children: ReactNo
       controller.abort();
       clearTimeout(timer);
     };
-  }, [peer.url, peer.token]);
+  }, [key]);
   if (state === "in") return <>{children}</>;
   return (
     <main className="guest-workspace">
       <p role="status">
-        {state === "waiting" ? "Waiting for the owner to let you in…" : "Opening…"}
+        {state === "waiting" ? "Waiting for the owner to let you in…" : state === "retrying" ? "Connection interrupted. Checking access again…" : "Opening…"}
       </p>
     </main>
   );

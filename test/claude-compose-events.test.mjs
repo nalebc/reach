@@ -90,7 +90,7 @@ test("a message waiting for its chat to show tries again the moment the Claude a
     agentAsks: { close() {} },
     agentWatch: { onChange: (fn) => ((tell = fn), () => {}) },
     outbox,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         tries.push(Date.now());
         if (tries.length === 1) throw Object.assign(new Error("Goes in when you open this chat in the Claude app."), { waiting: true });
@@ -154,7 +154,7 @@ async function waitingSessions(deliver, extra = {}) {
     agentAsks: { close() {} },
     agentWatch: { onChange: () => () => {} },
     outbox,
-    claudeCompose: { deliver: async () => (tries.push(Date.now()), deliver(tries.length)) },
+    typeIntoApp: true, claudeCompose: { deliver: async () => (tries.push(Date.now()), deliver(tries.length)) },
     ...extra,
   });
   const delivered = async (ms) => {
@@ -352,7 +352,7 @@ for (const landed of [false, true]) test(`a restart mid-delivery: ${landed ? "al
     claudeImports: { add: async () => {}, close() {} },
     agentAsks: { close() {} }, agentWatch: { onChange: () => () => {} },
     outbox,
-    claudeCompose: { deliver: async (id, { begin }) => { begin(); typed.push(id); return { delivered: true }; } },
+    typeIntoApp: true, claudeCompose: { deliver: async (id, { begin }) => { begin(); typed.push(id); return { delivered: true }; } },
   });
   try {
     sessions.frontmost("com.apple.Safari");

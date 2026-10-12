@@ -47,6 +47,7 @@ import { useTerminalPeeks } from "./useTerminalPeeks";
 import { useShortcuts } from "./shortcuts";
 import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
+import { hasAccessNow, listedAccess, statusIn, type AccessSession } from "./access-list";
 import { computerWord, pausedIn } from "./pause";
 import "./home-live.css";
 
@@ -613,20 +614,35 @@ export default function HomeLive({
       return "";
     }
   })();
+  // Browser agents as the Mac lists them: one that idle-ended or was
+  // stopped keeps its end date, and only this list says it ended.
+  const [sessions, setSessions] = useState<AccessSession[]>([]);
   useEffect(() => {
     if (!features.owner || !visible) return;
     let live = true;
-    request<{ clients?: { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[] }>(peer, "/api/clients")
-      .then((r) => live && setAccess(Array.isArray(r?.clients) ? r.clients : []))
-      .catch(() => {});
+    void Promise.allSettled([
+      request<{ clients?: { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[] }>(peer, "/api/clients"),
+      request<{ agents?: AccessSession[] }>(peer, "/api/browser/agents"),
+    ]).then(([clients, agents]) => {
+      if (!live) return;
+      if (clients.status === "fulfilled") setAccess(Array.isArray(clients.value?.clients) ? clients.value.clients : []);
+      if (agents.status === "fulfilled" && Array.isArray(agents.value?.agents)) setSessions(agents.value.agents);
+    });
     return () => {
       live = false;
     };
   }, [peer.url, peer.token, features.owner, visible, hereKey, requestsKey]);
-  const invited = access.filter(
-    (c) => (c.kind === "guest" || c.kind === "agent") && (c.expiresAt || 0) > Date.now(),
-  );
-  const waiting = invited.filter((c) => c.kind === "agent" && c.status === "pending").length;
+  // The same people and agents Agents & people lists (src/access-list.ts),
+  // in the computer's order; of them, only who joined has access now.
+  const listed = listedAccess(access, sessions, Date.now());
+  const invited = access.filter((c) => listed.agents.includes(c) || listed.people.includes(c));
+  const withAccess = invited.filter((c) => hasAccessNow(c, sessions)).length;
+  const waiting = listed.agents.filter((c) => statusIn(c, sessions) === "pending").length;
+  // Not opened (or joined) yet: listed, no access until they do.
+  const unopened = invited.filter((c) => {
+    const status = statusIn(c, sessions);
+    return status === "invited" || (c.kind === "guest" && status === "expired");
+  }).length;
   // Faces: who's here first, then who else may come in.
   const faces = [
     ...here.map((d) => ({ id: d.id, here: true, agent: isAgent(d), glyph: <DeviceGlyph device={d} size={13} /> })),
@@ -643,9 +659,16 @@ export default function HomeLive({
     ? `${controlling.name} is controlling`
     : here.length
       ? `${here.length} here now`
-      : invited.length
-        ? `${invited.length} with access`
-        : "Only you";
+      : withAccess
+        ? `${withAccess} with access`
+        : invited.length
+          ? `${invited.length} invited`
+          : "Only you";
+  const accessNote = waiting
+    ? `${waiting} waiting for you`
+    : unopened && (controlling || here.length || withAccess)
+      ? `${unopened} not opened yet`
+      : "Agents & people";
   return (
     <div className="home-live">
       <section className="home-hero" ref={hero}>
@@ -727,9 +750,7 @@ export default function HomeLive({
             </span>
             <span className="home-access-text">
               <strong>{accessTitle}</strong>
-              <small className={waiting ? "waiting" : undefined}>
-                {waiting ? `${waiting} waiting for you` : "Agents & people"}
-              </small>
+              <small className={waiting ? "waiting" : undefined}>{accessNote}</small>
             </span>
             <ChevronRight className="home-access-go" size={17} />
           </button>
