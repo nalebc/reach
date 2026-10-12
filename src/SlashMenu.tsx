@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { Loader2, X } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import type { AgentName, AgentSession } from "./agent-sessions";
@@ -6,8 +6,9 @@ import "./slash-menu.css";
 
 // "/" in a chat's composer, as each agent's own app offers it: the agent's
 // own commands (Codex's skills too), filtered as you type, picked with a tap
-// or with ↑↓ and Enter/Tab, Esc to close. The list comes from the agent on
-// the Mac (server/agent-sessions/commands.mjs), never a list kept here.
+// or with ↑↓ and Enter/Tab, Esc or a tap outside it (and the box) to close.
+// The list comes from the agent on the Mac (server/agent-sessions/commands.mjs),
+// never a list kept here.
 // Claude Code runs a command as the message itself; Codex's own commands
 // run in the chat on the Mac, and a skill goes with the message, as a chip.
 export type SlashCommand = {
@@ -77,6 +78,7 @@ export function useSlashMenu({
   session,
   text,
   setText,
+  field,
   focus,
   onModel,
   onNew,
@@ -87,6 +89,7 @@ export function useSlashMenu({
   session: { agent: AgentName; id: string };
   text: string;
   setText: (text: string) => void;
+  field: RefObject<HTMLTextAreaElement | null>;
   focus: () => void;
   onModel: () => void;
   onNew?: () => void;
@@ -119,6 +122,18 @@ export function useSlashMenu({
   }, [wanted, commands, agent, id]);
   const matches = useMemo(() => (query === null || !commands ? [] : matchCommands(commands, query)), [query, commands]);
   const open = query !== null && closedAt !== text && (commands === null || matches.length > 0);
+  // A phone has no Esc: a tap anywhere but the menu or the box closes it,
+  // until the next letter typed.
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (target && (list.current?.contains(target) || field.current?.contains(target))) return;
+      setClosedAt(text);
+    };
+    document.addEventListener("pointerdown", outside, true);
+    return () => document.removeEventListener("pointerdown", outside, true);
+  }, [open, text]);
   useEffect(() => setActive(0), [query]);
   useEffect(() => {
     list.current?.querySelector(".sm-active")?.scrollIntoView?.({ block: "nearest" });

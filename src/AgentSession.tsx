@@ -2403,6 +2403,7 @@ export default function AgentSessionView({
     session: initial,
     text,
     setText,
+    field,
     focus: () => field.current?.focus({ preventScroll: true }),
     onModel: () => setPicking(true),
     onNew,
