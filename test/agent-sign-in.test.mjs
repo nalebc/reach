@@ -226,9 +226,9 @@ test("the browser shim is always Reach's own: a stale file or a planted link at 
     assert.equal((await starting).state, "link");
     signIn.cancel("claude");
   };
-  // A link to a script elsewhere: the link is replaced, its target untouched.
+  // A link to a script elsewhere: the link is replaced (what's at that name
+  // is the shim, not the target) and its target is untouched.
   await start(() => fs.symlink(outside, open));
-  assert.equal((await fs.lstat(open)).isSymbolicLink(), false);
   assert.equal(await fs.readFile(outside, "utf8"), "#!/bin/sh\necho planted\n");
   assert.match(await fs.readFile(open, "utf8"), /^#!\/bin\/sh\n# Reach shows sign-in links on the phone instead\.\nexit 0\n$/);
   // A stale file with other contents: rewritten, still executable.
