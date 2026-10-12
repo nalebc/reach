@@ -205,6 +205,40 @@ test("Claude Code signs in from the phone: link out, code in, nothing opens on t
   }
 });
 
+test("the browser shim is always Reach's own: a stale file or a planted link at its name is replaced, never followed", { skip: process.platform === "win32" && "POSIX symlinks and shell shim" }, async (t) => {
+  const dir = await dataDir();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const shimDir = path.join(dir, "sign-in"), open = path.join(shimDir, "open");
+  const outside = path.join(dir, "outside.sh");
+  await fs.mkdir(shimDir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(outside, "#!/bin/sh\necho planted\n", { mode: 0o755 });
+  const start = async (planted) => {
+    await fs.rm(open, { force: true });
+    await planted();
+    const term = fakeTerminal();
+    const signIn = createSignIn({
+      dataDir: dir, claudeCommand: async () => "claude", claudeHealth: async () => ({ signedIn: false }),
+      spawn: term.spawn, shell: "/bin/zsh", env: { PATH: "/usr/bin", HOME: "/Users/me" },
+    });
+    const starting = signIn.start("claude");
+    await settle();
+    term.print(LOGIN_OUTPUT);
+    assert.equal((await starting).state, "link");
+    signIn.cancel("claude");
+  };
+  // A link to a script elsewhere: the link is replaced, its target untouched.
+  await start(() => fs.symlink(outside, open));
+  assert.equal((await fs.lstat(open)).isSymbolicLink(), false);
+  assert.equal(await fs.readFile(outside, "utf8"), "#!/bin/sh\necho planted\n");
+  assert.match(await fs.readFile(open, "utf8"), /^#!\/bin\/sh\n# Reach shows sign-in links on the phone instead\.\nexit 0\n$/);
+  // A stale file with other contents: rewritten, still executable.
+  await start(() => fs.writeFile(open, "#!/bin/sh\necho stale\n", { mode: 0o755 }));
+  assert.match(await fs.readFile(open, "utf8"), /exit 0\n$/);
+  assert.equal(((await fs.stat(open)).mode & 0o777).toString(8), "755");
+  // No temporary file is left behind.
+  assert.deepEqual(await fs.readdir(shimDir), ["open"]);
+});
+
 test("a Claude sign-in that doesn't take says what the login said", async () => {
   const dir = await dataDir();
   const term = fakeTerminal();

@@ -8,6 +8,7 @@
 // claude 2.1.289; the Mac's `open` was replaced so nothing opened).
 // Codex: the shared daemon's device-code login returns a link and a one-time
 // code and reports when the sign-in finishes (from its protocol schema).
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,14 +78,28 @@ export function createSignIn({
           });
         });
   // A stand-in for the Mac's `open` and $BROWSER: the link goes to the phone.
+  // Written afresh for every sign-in and moved into place, so what runs is
+  // always this: whatever was at that name (an older shim, a planted link)
+  // is replaced, never followed, with no gap between looking and writing.
   const shim = () => {
     const dir = path.join(dataDir, "sign-in");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const open = path.join(dir, platform === "win32" ? "open.cmd" : "open");
-    if (!fs.existsSync(open))
-      fs.writeFileSync(open, platform === "win32"
-        ? "@echo off\r\nrem Reach shows sign-in links on the phone instead.\r\nexit /b 0\r\n"
-        : "#!/bin/sh\n# Reach shows sign-in links on the phone instead.\nexit 0\n", { mode: 0o755 });
+    const content = platform === "win32"
+      ? "@echo off\r\nrem Reach shows sign-in links on the phone instead.\r\nexit /b 0\r\n"
+      : "#!/bin/sh\n# Reach shows sign-in links on the phone instead.\nexit 0\n";
+    const temp = `${open}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    fs.writeFileSync(temp, content, { mode: 0o755, flag: "wx" });
+    try {
+      fs.renameSync(temp, open);
+    } catch (error) {
+      fs.rmSync(temp, { force: true });
+      // Windows can refuse to replace a script another sign-in is running:
+      // that one is fine when it is already exactly this.
+      let current = null;
+      try { current = fs.readFileSync(open, "utf8"); } catch {}
+      if (current !== content) throw error;
+    }
     return { dir, open };
   };
 
