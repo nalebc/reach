@@ -75,18 +75,22 @@ test("the team pipe's name is the data folder's own: kept across restarts, new f
 });
 
 test("on Windows the lead's bridge hands nothing to a connection that isn't a named pipe", async (t) => {
-  // Played on any computer: the bridge script believes it's on Windows.
+  // Played on any computer: the bridge script believes it's on Windows. Off
+  // Windows something listens there, which the key must still never reach.
   const dir = folder(t);
-  const calls = [];
   const socketPath = path.join(dir, "t.sock");
-  const bridge = createTeamBridge({ socketPath, call: async (...args) => (calls.push(args), { tasks: [] }) });
-  await bridge.listen();
-  t.after(() => bridge.close());
+  const heard = [];
+  if (!windows) {
+    const listener = net.createServer((socket) => socket.on("data", (chunk) => heard.push(String(chunk))));
+    listener.listen(socketPath);
+    await once(listener, "listening");
+    t.after(() => listener.close());
+  }
   const ask = lead(t, { REACH_TEAM_FILE: keyFile(path.join(dir, "data"), socketPath) }, ["--import", AS_WINDOWS]);
   const result = await roster(ask);
   assert.equal(result.isError, true);
   assert.equal(result.content[0].text, "Reach's team connection here isn't one the team can trust (it isn't a named pipe), so the team can't act right now.");
-  assert.deepEqual(calls, [], "the team's key went nowhere");
+  assert.deepEqual(heard, [], "the team's key went nowhere");
 });
 
 // Real Windows: Reach's pipe, a lead calling team_roster through it.
