@@ -18,11 +18,11 @@ const b64u = (buf) => Buffer.from(buf).toString("base64url");
 const unb64u = (s) => {
   if (
     typeof s !== "string" ||
-    !/^[A-Za-z0-9_-]*={0,2}$/.test(s) ||
-    s.length > 16384
+    s.length > 16384 ||
+    !/^[A-Za-z0-9_-]*={0,2}$/.test(s)
   )
     throw fail(400, "That Face ID response isn't readable.");
-  return Buffer.from(s.replace(/=+$/, ""), "base64url");
+  return Buffer.from(s, "base64url");
 };
 const sha256 = (data) => crypto.createHash("sha256").update(data).digest();
 
@@ -419,10 +419,9 @@ export function createPasskeys({
   function check(challenge, credential, { handle = false } = {}) {
     const response = fields(credential);
     const s = read();
-    const id =
-      typeof credential.id === "string"
-        ? credential.id.replace(/=+$/, "")
-        : "";
+    // Bound and validate before normalizing padding: an unanchored padding
+    // replacement can spend quadratic time on an attacker-supplied ID.
+    const id = unb64u(credential.id).toString("base64url");
     const known = s?.credentials.find((c) => c.id === id);
     if (!known)
       throw fail(401, "That passkey isn't set up on this computer.");

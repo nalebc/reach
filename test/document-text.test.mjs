@@ -86,6 +86,31 @@ test("document conversion fails safely", async () => {
   );
 });
 
+test("document conversions share a process-wide cap and release it after success or failure", async () => {
+  const pending = [];
+  const run = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  const convert = () => readDocumentText("/fixture/Shared.docx", { run, platform: "darwin" });
+  const first = convert(), second = convert();
+  const third = convert().then(value => ({ value }), error => ({ error }));
+  let fourth, fifth;
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pending.length, 2, "a burst must not start an unbounded number of native converters");
+    assert.equal((await third).error?.status, 429);
+    pending[0].resolve({ stdout: "first" });
+    assert.equal(await first, "first");
+    fourth = convert();
+    assert.equal(pending.length, 3, "a successful conversion releases one slot");
+    pending[1].reject(Error("converter failed"));
+    await assert.rejects(second, error => error.status === 415);
+    fifth = convert();
+    assert.equal(pending.length, 4, "a failed conversion releases its slot");
+  } finally {
+    for (const item of pending) item.resolve({ stdout: "done" });
+    await Promise.allSettled([first, second, third, fourth, fifth]);
+  }
+});
+
 test(
   "Word, RTF and OpenDocument files become plain text on a Mac",
   { skip: process.platform !== "darwin" },

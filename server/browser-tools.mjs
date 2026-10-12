@@ -298,9 +298,12 @@ function validate(schema, value, label = "arguments") {
     }
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) invalid(`${label}.${key} is required.`);
   } else if (schema.type === "array") {
-    if (!Array.isArray(value) || value.length < schema.minItems || value.length > schema.maxItems) invalid(`${label} must contain ${schema.minItems} to ${schema.maxItems} items.`);
+    if (!Array.isArray(value) || value.length > 24 || value.length < schema.minItems || value.length > schema.maxItems) invalid(`${label} must contain ${schema.minItems} to ${schema.maxItems} items.`);
     if (Reflect.ownKeys(value).some((key) => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))) invalid(`${label} contains unsupported array fields.`);
-    for (let index = 0; index < value.length; index++) {
+    // Schemas narrow this further, but caller-controlled lengths never set
+    // the loop bound, even if a future definition omits its maximum.
+    for (let index = 0; index < 24; index++) {
+      if (index >= value.length) break;
       const descriptor = Object.getOwnPropertyDescriptor(value, index);
       if (!descriptor || !Object.hasOwn(descriptor, "value")) invalid(`${label} must contain plain actions.`);
       validate(schema.items, descriptor.value, `${label}[${index}]`);
