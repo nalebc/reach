@@ -14,6 +14,7 @@ import { codexWaitingApproval } from "./codex-asks.mjs";
 import { codexUsage } from "./account-usage.mjs";
 import { olderVersion } from "./codex-daemon.mjs";
 import { readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
+import { fileHolders } from "../windows-owners.mjs";
 export { questionKey, questionReply, readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
 
 const exec = promisify(execFile);
@@ -334,8 +335,10 @@ export function withTurnNotes(items, turns, { olderPage = false, runningTurn = n
 // Which engine holds a thread right now. A hint for the phone ("open in the
 // Codex app"); sending finds out for real. Codex removes the lock file when
 // it lets go (verified), so most threads cost one stat.
-export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
+export async function codexHolder(id, { run = exec, locks = LOCKS, platform = process.platform, holders = fileHolders } = {}) {
   if (!UUID.test(id) || !fs.existsSync(path.join(locks, `${id}.lock`))) return null;
+  // Windows has no pgrep, lsof or ps (audit #46).
+  if (platform === "win32") return windowsHolder(path.join(locks, `${id}.lock`), holders);
   try {
     // Only Codex's own processes can hold it (the app's, its daemon, a
     // terminal's): lsof asked about those few, not about every process on the
@@ -355,6 +358,29 @@ export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
   } catch {
     return null; // lsof exits 1 when nothing holds the file
   }
+}
+
+// On Windows, the processes holding the lock file as Restart Manager names
+// them (windows-owners.mjs), told apart by program: the daemon by its
+// command, the Codex app (ChatGPT.exe) as the parent, a terminal by a shell
+// or a terminal above it. Held but not told apart, or not asked at all (the
+// helper couldn't run): "other", held by something else, never free.
+const SHELLS = /^(?:cmd|powershell|pwsh|bash|sh|zsh|fish|nu|windowsterminal|openconsole|conhost|wezterm-gui|alacritty|mintty)\.exe$/i;
+async function windowsHolder(file, holders) {
+  let found;
+  try {
+    found = await holders(file);
+  } catch {
+    return "other";
+  }
+  // Gone since, or held by nothing: Codex let go (as lsof says on a Mac).
+  if (found?.error === "missing" || (Array.isArray(found?.holders) && !found.holders.length)) return null;
+  const holder = Array.isArray(found?.holders) ? found.holders[0] : null;
+  if (!holder || typeof holder !== "object") return "other";
+  const parents = Array.isArray(holder.parents) ? holder.parents.map(String) : [];
+  if (/app-server-daemon/.test(`${holder.command || ""}\n${holder.image || ""}`)) return "daemon";
+  if (/^chatgpt\.exe$/i.test(parents[0] || "")) return "codex-app";
+  return parents.some((name) => SHELLS.test(name)) ? "terminal" : "other";
 }
 
 // Threads the Codex app (or a terminal) is running read "notLoaded" from the
