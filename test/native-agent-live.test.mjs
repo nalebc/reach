@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
 const exec = promisify(execFile);
@@ -125,7 +126,7 @@ test(
     };
     desktop = createAgentDesktop(
       { dataDir: dir, screen: true },
-      { verifyClient: () => current, phoneControls: () => phone },
+      { verifyClient: () => current, phoneControls: () => phone, pauses: createAgentPauses() },
     );
     const expected = { bundle, title },
       timings = {};

@@ -68,6 +68,7 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
@@ -924,6 +925,11 @@ export async function createReach(overrides = {}) {
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
   });
+  // The owner's pause of one agent ("it can look, not touch"), on every
+  // computer: it used to live in the Mac-only desktop service below, so off a
+  // Mac pausing an agent did nothing. One store, kept across restarts; the
+  // desktop service, where there is one, acts on it.
+  const agentPauses = overrides.agentPauses || createAgentPauses({ file: path.join(config.dataDir, "agent-pauses.json") });
   // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
   // Tests inject a stand-in; null means this Mac can't offer them, and the
   // screen presets refuse to be created.
@@ -940,19 +946,28 @@ export async function createReach(overrides = {}) {
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
     screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record, actions: logAction,
-    pausesFile: path.join(config.dataDir, "agent-pauses.json"),
+    pauses: agentPauses,
   }) : null);
   // Agents that can see or use this Mac (Full control, Apps, Read-only).
   const screenAgentIds = () => auth.list()
     .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
     .map((client) => client.id);
+  // The owner pauses (or resumes) one agent: the desktop, where there is one,
+  // lets go of what the agent holds first, then the pause is kept. A pause
+  // that can't be saved still holds now (507, agent-pauses.mjs).
+  const pauseAgent = (id, value) => {
+    if (value) agentDesktop?.letGo?.(id);
+    return agentPauses.set(id, value);
+  };
+  const agentPaused = (id) => agentPauses.has(id);
   // Every such agent paused at once, and the owner told why: who was paused
   // is unknown (the saved pauses unreadable) or Reach ended unexpectedly.
   const pauseScreenAgents = (why) => {
-    if (!agentDesktop?.pauseAll) return [];
     let added = [];
     try {
-      added = agentDesktop.pauseAll(screenAgentIds());
+      const ids = screenAgentIds();
+      for (const id of ids) agentDesktop?.letGo?.(id);
+      added = agentPauses.add(ids);
     } catch (error) {
       console.warn(`Reach: ${error.message}`);
     }
@@ -962,10 +977,8 @@ export async function createReach(overrides = {}) {
     }
     return added;
   };
-  if (agentDesktop?.forgetPauses) {
-    agentDesktop.forgetPauses((id) => auth.list().some((client) => client.id === id));
-    if (agentDesktop.pausesUnreadable()) pauseScreenAgents("Reach couldn't read which agents you had paused, so it paused them all.");
-  }
+  agentPauses.prune((id) => auth.list().some((client) => client.id === id));
+  if (agentPauses.unreadable) pauseScreenAgents("Reach couldn't read which agents you had paused, so it paused them all.");
   // Logs capped, old command histories cleared, files sent from the phone
   // cleared when the disk runs low, at start and every 6 hours
   // (server/tidy.mjs). Tests opt in.
@@ -1010,7 +1023,7 @@ export async function createReach(overrides = {}) {
       return client ? applyAgentPolicy(client, config) : null;
     },
     available: () => !paused && transportAvailable,
-    paused: (id) => agentDesktop?.isPaused?.(id) === true,
+    paused: agentPaused,
     ...(overrides.serviceOptions || {}),
   });
   const browserCapture = async (authorize, fresh = false) => {
@@ -1846,7 +1859,7 @@ export async function createReach(overrides = {}) {
     const acts = client.policy?.preset !== undefined && requestMethod === "POST" &&
       ["/browser/shell", "/browser/files/change", "/browser/desktop/mac-shortcuts/run", "/browser/shortcuts/run",
         "/browser/tools/run", "/browser/tools/batch", "/browser/services/run"].includes(subpath);
-    const ownerPaused = (identity) => acts && agentDesktop?.isPaused?.(identity.id) === true;
+    const ownerPaused = (identity) => acts && agentPaused(identity.id);
     const PAUSED_AGENT = "The owner paused this agent. It can look, not touch, until they resume it.";
     if (ownerPaused(client)) return res.status(409).json({ error: PAUSED_AGENT, kind: "paused" });
     req.client = client;
@@ -2506,6 +2519,7 @@ export async function createReach(overrides = {}) {
   };
   browserAgentRoutes(app, {
     auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions,
+    pauses: { has: agentPaused, set: pauseAgent },
     onStopped: (client) => {
       void releaseGuest(client);
       record("agent", "Stopped a browser agent session");

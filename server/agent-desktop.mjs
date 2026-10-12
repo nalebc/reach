@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import { desktopBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
-import { hiddenControls, nativeRules, protectedPathReason, typedTextRefusal } from "./agent-guard.mjs";
+import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typedTextRefusal, windowsProgramFile } from "./agent-guard.mjs";
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
 // (scripts/native/agent-desktop.swift): one helper process per agent session,
@@ -24,6 +25,21 @@ const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", 
 export const SHOTS_PER_SECOND = 10;
 const MODIFIERS = new Set(["cmd", "command", "meta", "shift", "option", "alt", "control", "ctrl"]);
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+// Agents name modifiers as on a Mac. On Windows, in this one place: ⌘ (cmd,
+// command, meta) and control are Ctrl, option is Alt, shift is Shift. A Mac's
+// helper gets the names unchanged.
+const WINDOWS_MODIFIERS = { cmd: "ctrl", command: "ctrl", meta: "ctrl", control: "ctrl", ctrl: "ctrl", option: "alt", alt: "alt", shift: "shift" };
+/** Mac modifier names as Windows keys, each once, in Windows' order (Ctrl, Alt, Shift). An unknown name is refused, never dropped. */
+export function windowsModifiers(modifiers) {
+  if (!Array.isArray(modifiers)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+  const keys = modifiers.map((name) => {
+    if (typeof name !== "string" || !Object.hasOwn(WINDOWS_MODIFIERS, name)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+    return WINDOWS_MODIFIERS[name];
+  });
+  return ["ctrl", "alt", "shift"].filter((key) => keys.includes(key));
+}
+/** A normalized action as the Windows helper takes it: only its modifiers change. */
+export const windowsAction = (action) => (action.modifiers === undefined ? action : { ...action, modifiers: windowsModifiers(action.modifiers) });
 
 /** The exact action shapes an agent may send; anything else is refused before the Mac sees it. */
 /** Reach's own addresses on this Mac: the agent may never open them. */
@@ -335,9 +351,25 @@ export function createAgentDesktop(config, {
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
-  // Where the owner's pauses are kept across restarts (agent-pauses.mjs).
+  // The owner's pauses (agent-pauses.mjs): Reach's one store, made on every
+  // computer whether or not this service exists (server/index.mjs). Without
+  // it, a store of its own, kept in pausesFile. With neither, no desktop: a
+  // store made here, in memory only, would be one Reach's pause route never
+  // writes to, and a paused agent would keep its hands.
+  pauses = null,
   pausesFile = null,
+  // Whose names for apps and files the agent gives (app-identity.mjs): a
+  // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
+  platform = process.platform,
 } = {}) {
+  if (pauses ? !["has", "set", "list", "add", "prune"].every((name) => typeof pauses[name] === "function") : !pausesFile)
+    throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
+  const windows = platform === "win32";
+  // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
+  // path or a Store app's id.
+  const appTarget = (value) => windows
+    ? windowsExePath(value) || windowsAppId(value)
+    : typeof value === "string" && value.startsWith("/") && value.endsWith(".app") && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
   // When each agent last looked at the screen. Looking never holds the Mac:
@@ -348,7 +380,7 @@ export function createAgentDesktop(config, {
   const capturing = new Map(); // clientId -> { width, promise } of the capture running now
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
-  const pausedAgents = createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
+  const pausedAgents = pauses || createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
   const start = async (rules) => {
@@ -380,7 +412,7 @@ export function createAgentDesktop(config, {
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
     if (!state) {
-      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home });
+      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
       const helper = await start(rules);
       state = { helper, fingerprint: fp, rules };
       // The policy may have changed while the helper started.
@@ -429,6 +461,14 @@ export function createAgentDesktop(config, {
   };
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
+  // The owner paused this agent: it lets go of the Mac. A hold or slow drag
+  // already sent lets go now (the helper releases what it holds on stop),
+  // rather than seconds after the owner paused it. Queued input is refused by
+  // its own dispatch check.
+  const letGo = (clientId) => {
+    release(clientId);
+    for (const entry of pendingInputs) if (entry.sent && entry.client.id === clientId) try { entry.helper.stop(); } catch {}
+  };
   const dispatchInput = async (client, state, request, authorize, scope) => {
     const pending = { client, helper: state.helper, sent: false };
     pendingInputs.add(pending);
@@ -660,9 +700,12 @@ export function createAgentDesktop(config, {
     /** A file opened in the app that owns it, or shown in the Finder (reach_open_file): never a program, never a protected path. */
     async openFile(client, filePath, { reveal = false } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
+      if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
-      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
+      // On Windows a program or script is refused here first, before the
+      // helper's own check (as the Mac's helper refuses them itself).
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform }) ||
+        (windows && windowsProgramFile(filePath) ? PROGRAM_REASON : null);
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -730,14 +773,14 @@ export function createAgentDesktop(config, {
               delete action.paste;
             }
             // Content checks apply only to narrower presets.
-            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home, platform });
             if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           }
           action.terminalLikeChecked = front.terminalLike === true;
         }
         checkState(client, authorize, "browser:control", state);
         take(latest);
-        const result = answer(await dispatchInput(latest, state, { op: "act", action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
+        const result = answer(await dispatchInput(latest, state, { op: "act", action: windows ? windowsAction(action) : action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
         observe(latest);
@@ -755,8 +798,7 @@ export function createAgentDesktop(config, {
     /** Open or bring forward one app, within the preset. */
     async open(client, appPath, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof appPath !== "string" || !appPath.startsWith("/") || !appPath.endsWith(".app") || appPath.length > 4096 || /[\u0000-\u001f\u007f]/.test(appPath))
-        throw fail(400, "Choose an app by its path on this Mac.");
+      if (!appTarget(appPath)) throw fail(400, "Choose an app by its path on this Mac.");
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
@@ -775,9 +817,9 @@ export function createAgentDesktop(config, {
       try { parsed = new URL(url); } catch { parsed = null; }
       if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
         throw fail(400, "Give a web address that starts with https://.");
-      if (browserPath !== undefined && (typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
+      if (browserPath !== undefined && (windows ? !appTarget(browserPath) : typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
         throw fail(400, "Choose the browser by its path on this Mac.");
-      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home, platform });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
@@ -828,7 +870,7 @@ export function createAgentDesktop(config, {
           await guard();
         });
         await guard();
-        note(latest, "tool", { app: appPath.split("/").pop().replace(/\.app$/, "") });
+        note(latest, "tool", { app: windows ? appLabel(appPath, { platform }) : appPath.split("/").pop().replace(/\.app$/, "") });
         return result;
       } finally {
         if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
@@ -852,13 +894,12 @@ export function createAgentDesktop(config, {
     },
     /** The owner's pause: the agent keeps looking, but every action waits until resumed. Kept across restarts. */
     setPaused(id, paused) {
-      if (paused) release(id);
-      // A hold or slow drag already sent lets go now (the helper releases what
-      // it holds on stop), rather than seconds after the owner paused it.
-      // Queued input is refused by its own dispatch check.
-      if (paused) for (const entry of pendingInputs) if (entry.sent && entry.client.id === id) try { entry.helper.stop(); } catch {}
+      if (paused) letGo(id);
       return pausedAgents.set(id, paused);
     },
+    // What pausing one agent does here, before the pause is kept (Reach's
+    // pause route keeps it in the shared store, server/index.mjs).
+    letGo,
     isPaused: (id) => pausedAgents.has(id),
     // Every one of these agents, at once: after Reach ended unexpectedly, or
     // when the saved pauses couldn't be read (who was paused is unknown).

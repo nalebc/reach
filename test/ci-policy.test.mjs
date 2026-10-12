@@ -212,6 +212,10 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /REACH_TEST_WINDOWS_DESKTOP: "1"/);
   for (const name of ["windows-screen-helpers", "phone-link"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  // Windows helpers are compiled with the PC's own csc.exe: built and run for real there.
+  assert.match(ci, /test\/windows-native-build\.test\.mjs/);
+  for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
+    assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 
 test("installed CI covers a real portable first launch and npm 12 on Linux", () => {

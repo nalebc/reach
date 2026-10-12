@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createDesktopAutomation } from "../server/desktop-automation.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 import { ScreenControl } from "../server/screen.mjs";
 
@@ -128,6 +129,7 @@ function desktopWorld() {
   const automation = known({ blocked: () => desktop.automationBusy(), now: () => clock });
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true,
+    pauses: createAgentPauses(),
     now: () => clock,
     verifyClient: id => clients.get(id),
     automationControls: () => automation.active() || automation.wanted(),
