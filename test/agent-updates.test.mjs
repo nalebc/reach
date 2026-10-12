@@ -54,14 +54,70 @@ test("who updates a copy is read from where it really lives; unknown places get 
     { manager: "app", app: "ChatGPT" },
   );
   // Somewhere else, a path that can't be quoted, a link that can't be
-  // followed, Windows: nothing.
+  // followed: nothing.
   assert.equal(managerOf("claude", "/usr/local/bin/claude", at("/usr/local/bin/claude")), null);
   assert.equal(managerOf("codex", "/Users/me/bin/codex", at("/Users/me/bin/codex")), null);
   assert.equal(managerOf("claude", "/Users/me/it's/claude", at("/Users/me/.local/share/claude/versions/2.1.291")), null);
   assert.equal(managerOf("claude", "relative/claude", at("/Users/me/.local/share/claude/versions/2.1.291")), null);
   assert.equal(managerOf("claude", "/Users/me/.local/bin/claude", { real: () => { throw new Error("ENOENT"); }, home, platform: "darwin" }), null);
-  assert.equal(managerOf("claude", "C:\\claude.exe", { ...at("C:\\claude.exe"), platform: "win32" }), null);
   assert.equal(managerOf("gemini", "/opt/homebrew/bin/gemini", at("/opt/homebrew/lib/node_modules/@google/gemini-cli/x.js")), null);
+});
+
+// Oct 12 (audit #33): Windows offered no update and said nothing. The same
+// decisions as a Mac's, as PowerShell (Reach's terminals there) runs them.
+test("on Windows, Claude Code's native and npm copies update themselves and npm's global Codex updates in place", () => {
+  const home = "C:\\Users\\me";
+  const env = { AppData: "C:\\Users\\me\\AppData\\Roaming" };
+  const node = "C:\\Program Files\\nodejs\\node.exe";
+  const win = (file, target = file) => ({ real: () => target, home, env, node, platform: "win32" });
+  const npm = "C:\\Users\\me\\AppData\\Roaming\\npm";
+  assert.deepEqual(managerOf("claude", "C:\\Users\\me\\.local\\bin\\claude.exe", win("C:\\Users\\me\\.local\\bin\\claude.exe")), {
+    manager: "native",
+    channelFeed: true,
+    command: "& 'C:\\Users\\me\\.local\\bin\\claude.exe' update",
+  });
+  // Found in another case, as Windows names don't care.
+  assert.equal(managerOf("claude", "c:\\users\\ME\\.local\\bin\\CLAUDE.EXE", win("c:\\users\\ME\\.local\\bin\\CLAUDE.EXE")).manager, "native");
+  assert.equal(managerOf("claude", "C:\\Users\\me\\.local\\bin\\claude.exe", win("C:\\Users\\me\\.local\\bin\\claude.exe", "C:\\Users\\me\\.local\\share\\claude\\versions\\2.1.291")).manager, "native");
+  // npm's: its own claude.exe, or its script started with Reach's Node (never Windows' script host).
+  const exe = `${npm}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+  assert.deepEqual(managerOf("claude", exe, win(exe)), { manager: "npm", channelFeed: true, command: `& '${exe}' update` });
+  const script = `${npm}\\node_modules\\@anthropic-ai\\claude-code\\cli.js`;
+  assert.equal(managerOf("claude", script, win(script)).command, `& '${node}' '${script}' update`);
+  // Codex from npm's global folder: its script, the native codex.exe in its package or beside it.
+  const update = { manager: "npm", package: "@openai/codex", command: `npm.cmd install -g --prefix '${npm}' '@openai/codex@latest'` };
+  for (const found of [
+    `${npm}\\node_modules\\@openai\\codex\\bin\\codex.js`,
+    `${npm}\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe`,
+    `${npm}\\node_modules\\@openai\\codex-win32-arm64\\vendor\\aarch64-pc-windows-msvc\\bin\\codex.exe`,
+  ])
+    assert.deepEqual(managerOf("codex", found, win(found)), update, found);
+  // No APPDATA: the folder Windows gives it.
+  assert.deepEqual(managerOf("codex", `${npm}\\node_modules\\@openai\\codex\\bin\\codex.js`, { ...win(`${npm}\\node_modules\\@openai\\codex\\bin\\codex.js`), env: {} }), update);
+  // Anywhere else nothing: a project's node_modules (the same layout on
+  // Windows), a copy Reach can't tell, a path PowerShell's quotes can't
+  // hold, a link that can't be followed, a share.
+  for (const [agent, file, target] of [
+    ["codex", "D:\\work\\node_modules\\@openai\\codex\\bin\\codex.js"],
+    ["codex", `${npm}\\node_modules\\@openai\\codex-other\\codex.exe`],
+    ["codex", `${npm}\\codex.exe`],
+    ["claude", "C:\\claude.exe"],
+    ["claude", "C:\\Users\\me\\.local\\bin\\other.exe"],
+    ["claude", "C:\\Users\\O'Brien\\.local\\bin\\claude.exe"],
+    ["claude", "C:\\Users\\me\\.local\\bin\\claude.exe", "C:\\Users\\me’s\\claude.exe"],
+    ["claude", "\\\\server\\share\\claude.exe"],
+    ["claude", "relative\\claude.exe"],
+    ["gemini", `${npm}\\node_modules\\@google\\gemini-cli\\dist\\index.js`],
+  ])
+    assert.equal(managerOf(agent, file, win(file, target ?? file)), null, `${agent} ${file}`);
+  assert.equal(managerOf("claude", "C:\\Users\\me\\.local\\bin\\claude.exe", { ...win("x"), real: () => { throw new Error("ENOENT"); } }), null);
+  assert.equal(managerOf("claude", script, { ...win(script), node: "C:\\it's\\node.exe" }), null, "a Node PowerShell can't quote");
+  // As PowerShell runs it in a Reach terminal: the program's own exit code.
+  assert.equal(
+    installTerminalCommand({ agent: "codex", ...update }, "win32"),
+    `$ErrorActionPreference = 'Stop'; try { npm.cmd install -g --prefix '${npm}' '@openai/codex@latest'; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+  );
+  assert.match(installTerminalCommand({ agent: "claude", command: `& '${exe}' update` }, "win32"), /update; exit \$LASTEXITCODE \}/);
 });
 
 test("Claude's channel is its setting's, latest unless set; an unknown one isn't guessed", () => {
