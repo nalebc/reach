@@ -188,11 +188,9 @@ test(
     const joined = await joining.done;
     assert.equal(joined.code, 0, joined.stderr);
     assert.match(joined.stdout, /Connected to /);
-    assert.match(
+    assert.ok(
+      joined.stdout.includes(`claude mcp add --scope user reach -- node ${runtime} mcp`),
       joined.stdout,
-      new RegExp(
-        `claude mcp add --scope user reach -- node ${runtime.replace(/[/.]/g, "\\$&")} mcp`,
-      ),
     );
     assert.match(joined.stdout, /codex mcp add reach -- node /);
     assert.match(joined.stdout, /gemini mcp add -s user reach node /);

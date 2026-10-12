@@ -37,7 +37,8 @@ test("where this Reach lives: an npm install's prefix, a checkout, or something 
   assert.equal(locked.reason, "permission");
   assert.match(locked.manual, /permission.*ownership.*prefix/i);
   assert.match(locked.manual, /user-owned prefix/i);
-  assert.doesNotMatch(locked.manual, /^npm install|sudo/);
+  assert.doesNotMatch(locked.manual, /^npm install/);
+  assert.doesNotMatch(locked.manual, /sudo/);
   assert.equal(reachInstall(root, layout(root, { files: { pkg: pkg("0.1.0", "other") } })).reason, "unknown");
   assert.equal(reachInstall(root, layout(root, { files: { pkg: pkg("not-a-version") } })).reason, "unknown");
 });
@@ -196,7 +197,8 @@ test("a portable archive with sources but no git points to the next archive with
   const install = reachInstall("/apps/reach", layout("/apps/reach", { files: { "/apps/reach/src/main.tsx": 1 } }));
   assert.equal(install.source, false);
   assert.equal(install.reason, "portable");
-  assert.match(install.manual, /archive.*github\.com\/nalebc\/reach\/releases/i);
+  assert.match(install.manual, /portable archive/i);
+  assert.ok(install.manual.includes("https://github.com/nalebc/reach/releases"), install.manual);
   assert.doesNotMatch(install.manual, /git pull/);
   const updates = createReachUpdates({ root: "/apps/reach", install, fetch: feed("0.2.0"), spawn: () => assert.fail("portable updates must remain manual") });
   const status = await updates.check();

@@ -121,7 +121,7 @@ async function phone(t, reach, { platform, ip, browser = false, wrongAccount = f
     node.cb.authURL("https://login.tailscale.com/a/phone-login");
     assert.equal(dom.document.querySelector(".start-action").href, "https://login.tailscale.com/a/phone-login");
     const appLink = dom.document.querySelector(".start-hint a").href;
-    assert.match(appLink, platform === "iPhone" ? /apps.apple.com/ : /play.google.com/);
+    assert.equal(new URL(appLink).hostname, platform === "iPhone" ? "apps.apple.com" : "play.google.com");
     if (wrongAccount) {
       node.current = { self: { state: "Running", login: "other@example.test" }, peers: [] };
       node.cb.state("Running");

@@ -298,8 +298,9 @@ test("release retry skips npm only for the exact already-published candidate byt
   const good = { name: "@nalebc/reach", version, dist: { integrity: `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}` } };
   const run = (status, body = good) => {
     fs.writeFileSync(output, "");
-    const mock = `globalThis.fetch = async (url, options) => { if (url !== 'https://registry.npmjs.org/@nalebc%2freach/0.1.0' || !options.signal) throw Error('unbounded or unexpected lookup'); return {status: ${status}, ok: ${status === 200}, json: async () => (${JSON.stringify(body)})}; };\n`;
-    return runBlock(mock + script, { VERSION: version, GITHUB_OUTPUT: output }, root);
+    // The registry's answer goes in as data (environment), never as code.
+    const mock = "globalThis.fetch = async (url, options) => { if (url !== 'https://registry.npmjs.org/@nalebc%2freach/0.1.0' || !options.signal) throw Error('unbounded or unexpected lookup'); const status = Number(process.env.MOCK_STATUS); return {status, ok: status === 200, json: async () => JSON.parse(process.env.MOCK_BODY)}; };\n";
+    return runBlock(mock + script, { VERSION: version, GITHUB_OUTPUT: output, MOCK_STATUS: String(status), MOCK_BODY: JSON.stringify(body) }, root);
   };
   assert.equal(run(404).status, 0);
   assert.equal(fs.readFileSync(output, "utf8"), "published=false\n");

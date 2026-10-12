@@ -172,7 +172,7 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
   const { seen, started } = windowsTailscaleReach(t);
   const reach = await started;
   const text = reach.output();
-  assert.match(text, new RegExp(`Open on your phone: https://${HOST.replace(/\./g, "\\.")}:8443\\n`));
+  assert.ok(text.includes(`Open on your phone: https://${HOST}:8443\n`), text);
   assert.match(text, /Pairing code: \d{4} \d{4}/);
   // What the phone needs comes before the code and its QR, where a first-time
   // user looks (Oct 11: scanned without the app, "can't connect"), with the

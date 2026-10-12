@@ -41,7 +41,7 @@ const exists = (file) => fs.access(file).then(() => true, () => false);
 test("someone at the terminal: the one address, its QR, both ways in, and a pairing window", mac, async (t) => {
   const reach = await start(t, {}, { FAKE_TTY: "1" });
   const text = reach.output();
-  assert.match(text, new RegExp(`Open on your phone: https://${HOST.replace(/\./g, "\\.")}\\n`));
+  assert.ok(text.includes(`Open on your phone: https://${HOST}\n`), text);
   assert.match(text, /With the Tailscale app on your phone, it opens straight away/);
   assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser in the next 15 minutes/);
   assert.match(text, /▄|█/, "a QR");
@@ -67,7 +67,7 @@ test("nobody at the terminal (piped, or the background service): no window by it
 test("Funnel not allowed by the tailnet: the private link, and the phone needs the Tailscale app", mac, async (t) => {
   const reach = await start(t, { funnelDenied: true }, { FAKE_TTY: "1" });
   const text = reach.output();
-  assert.match(text, new RegExp(`Open on your phone: https://${HOST.replace(/\./g, "\\.")}:8443\\n`));
+  assert.ok(text.includes(`Open on your phone: https://${HOST}:8443\n`), text);
   assert.match(text, /Your phone needs the Tailscale app/);
   // Tailscale's own words and the page that allows it; no internal paths.
   assert.match(text, /isn't available: Funnel is not enabled on your tailnet\./);

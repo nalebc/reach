@@ -61,7 +61,7 @@ for (const desktop of desktops) test(`fresh install: desktop ${desktop.name}, ev
   const reach = await firstInstall(t, desktop);
   await desktop.enter(reach);
   await finishFirstSetup(reach);
-  assert.match(reach.output(), new RegExp(`Open on your phone: https://${HOST.replaceAll(".", "\\.")}`));
+  assert.ok(reach.output().includes(`Open on your phone: https://${HOST}`), reach.output());
   const publicConfig = await reach.request("/reach-start.json", { public: true });
   assert.equal(publicConfig.status, 200);
   assert.ok(publicConfig.json.tailnet?.wasm, "a phone without Tailscale has the browser client in the package");
