@@ -46,6 +46,13 @@ $out = [Console]::OpenStandardOutput()
 $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 $params = New-Object System.Drawing.Imaging.EncoderParameters(1)
 $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]65)
+# A picture identical to the last one sent goes as one byte (0), as the
+# Mac's helper says "unchanged", so a still screen costs the phone almost
+# nothing; a real one still goes at least every second (the phone's
+# watchdog) and whenever one is asked for to start a picture ('key').
+$sha = [System.Security.Cryptography.SHA1]::Create()
+$lastHash = ''
+$lastSent = [DateTime]::MinValue
 try {
     while ($null -ne ($line = [Console]::ReadLine())) {
         if ($line -notin 'frame','key') { continue }
@@ -87,6 +94,15 @@ try {
             $resize.DrawImage($bitmap, 0, 0, $scaled.Width, $scaled.Height)
             $scaled.Save($memory, $codec, $params)
             $data = $memory.ToArray()
+            $hash = [BitConverter]::ToString($sha.ComputeHash($data))
+            if ($line -eq 'frame' -and $hash -eq $lastHash -and ([DateTime]::UtcNow - $lastSent).TotalMilliseconds -lt 900) {
+                $out.Write([BitConverter]::GetBytes([System.Net.IPAddress]::HostToNetworkOrder([int]1)), 0, 4)
+                $out.WriteByte(0)
+                $out.Flush()
+                continue
+            }
+            $lastHash = $hash
+            $lastSent = [DateTime]::UtcNow
             $length = [BitConverter]::GetBytes([System.Net.IPAddress]::HostToNetworkOrder([int]$data.Length))
             $out.Write($length, 0, 4)
             $out.Write($data, 0, $data.Length)
@@ -100,4 +116,4 @@ try {
 } catch {
     [Console]::Error.WriteLine('Windows could not stream the desktop. Keep the computer signed in and unlocked, and run Reach in your desktop session.')
     exit 1
-} finally { $params.Dispose(); $out.Dispose() }
+} finally { $params.Dispose(); $sha.Dispose(); $out.Dispose() }

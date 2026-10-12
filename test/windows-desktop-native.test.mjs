@@ -76,6 +76,27 @@ test("Reach lists the displays and captures a real, non-black frame under that p
   assert.ok(colors > 4, `the picture shows something (${colors} colors on a 40×40 grid)`);
 });
 
+// Without FFmpeg, Windows streamed a full JPEG 20 times a second even when
+// nothing moved (parity audit #26). A picture identical to the last one is
+// now the Mac's one-byte "unchanged", and a real one still goes at least
+// every second and whenever a picture is asked to start.
+test("a still Windows screen answers unchanged instead of the same picture again", { skip: !run, timeout: 120000 }, async (t) => {
+  const displays = await desktopDisplays({});
+  const primary = displays.find((d) => d.primary) || displays[0];
+  const source = new NativeScreenSource("powershell.exe", powershellFile(path.join(native, "screen-stream.ps1"), [primary.id, "1600"]));
+  t.after(() => source.stop());
+  const first = await source.next("key");
+  assert.deepEqual([...first.subarray(0, 2)], [0xff, 0xd8]);
+  const answers = [];
+  for (let i = 0; i < 8; i++) answers.push(await source.next("frame"));
+  const unchanged = answers.filter((a) => a.length === 1).length;
+  note({ unchangedOfEight: unchanged });
+  assert.ok(answers.every((a) => (a.length === 1 && a[0] === 0) || (a[0] === 0xff && a[1] === 0xd8)), "each is a picture or unchanged");
+  assert.ok(unchanged >= 1, "a still desktop repeats itself as unchanged");
+  // Asked to start a picture, it always sends one.
+  assert.deepEqual([...(await source.next("key")).subarray(0, 2)], [0xff, 0xd8]);
+});
+
 // A locked PC ended the live screen (parity audit #5): the helper now says
 // "locked" as the Mac's does, one byte (2), and keeps answering. Locking the
 // runner itself would end every later desktop test, so the lock is told.
