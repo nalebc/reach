@@ -242,9 +242,9 @@ async function prepare(options, { say, step, signal }) {
       mode: 0o600,
     });
   // The browser sign-in client, for phones without the Tailscale app. Not on
-  // Windows: its start page needs account approval, which Windows can't do
-  // yet (configure.mjs accountApproval), and it cost a first run 2 minutes.
-  if (!packaged && !options.local && process.platform !== "win32") {
+  // Windows without REACH_WINDOWS_ACCOUNT=1: its start page needs account
+  // approval (configure.mjs accountApproval), and it cost a first run 2 minutes.
+  if (!packaged && !options.local && (await import("./configure.mjs")).accountApproval()) {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {

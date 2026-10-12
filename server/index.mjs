@@ -10,6 +10,8 @@ import { DevicePresence, presenceConnection } from "./presence.mjs";
 import {
   createIdentityResolver,
   listenPrivateIngress,
+  listenKeyedIngress,
+  thisComputerRequest,
   trustedRequest,
   serveRequestHost,
   ownerIdentity,
@@ -170,6 +172,8 @@ export async function createReach(overrides = {}) {
   let browserResponseCount = 0;
   let prepareFunnel;
   let publicAgent = () => false;
+  // The computer Reach serves (tests run a Windows one anywhere).
+  const hostPlatform = overrides.platform || process.platform;
   const config = getConfig(overrides);
   config.roots = config.roots.map((p) => fs.realpathSync.native(p));
   if (config.agentPolicyRequired || fs.existsSync(config.agentPolicyFile))
@@ -266,8 +270,9 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
+  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin
+    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -292,7 +297,7 @@ export async function createReach(overrides = {}) {
   // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
   // before this computer is set up. Said the same way wherever it's asked.
   const noInviteKeys =
-    (overrides.platform || process.platform) === "win32"
+    hostPlatform === "win32" && !config.tailscaleOwner
       ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
       : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
@@ -304,9 +309,10 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up.
+  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
+  // on Windows yet, even with browser sign-in: its own acceptance first.
   const faceJoin =
-    passkeys && guestKeys
+    passkeys && guestKeys && hostPlatform !== "win32"
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -1427,6 +1433,10 @@ export async function createReach(overrides = {}) {
       req.reachIdentity,
       req.body?.name,
       config.tailscaleOwner,
+      // From this PC itself, through Windows' keyed route: anyone signed in
+      // to Windows here could have asked as you, so its prompt says so
+      // (docs/parity/D-public-door.md §0.8).
+      hostPlatform === "win32" && thisComputerRequest(req) ? { thisComputer: true } : undefined,
     );
     if (from)
       try {
@@ -2634,8 +2644,8 @@ export async function createReach(overrides = {}) {
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
     prepareFunnel: async () => {
-      // A Windows Reach has no public link (no Funnel without the socket).
-      if (!prepareFunnel && (overrides.platform || process.platform) === "win32")
+      // A Windows Reach has no public link without browser sign-in.
+      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -5389,6 +5399,48 @@ export async function createReach(overrides = {}) {
     : null;
   const gatewayAgent = publicAgent;
   publicAgent = hostedMcp ? (req, res) => gatewayAgent(req, res) || hostedMcp.handle(req, res) : gatewayAgent;
+  // Keys Reach knows (agents with access, or ended lately): the door's
+  // check before anything is parsed (core.mjs reads the store again only
+  // when it changed).
+  const knownKey = (value) => { try { return auth.funnelKeys().has(value); } catch { return false; } };
+  const doorKeyKnown = (value) => { try { return auth.doorKeyKnown(value); } catch { return false; } };
+  // The one cookie the door reads (its value checked before anything else).
+  const doorCookie = (req) => {
+    const header = req.headers.cookie;
+    if (typeof header !== "string" || header.length > 4096) return null;
+    const match = /(?:^|;\s*)reach-door=([A-Za-z0-9_-]{43})(?:;|$)/.exec(header);
+    return match ? match[1] : null;
+  };
+  // What the internet gets at the one address (`publicApp`, the start page),
+  // behind the public door: the same on a Mac's socket and Windows' keyed route.
+  const publicDoor = (publicApp) => publicApp && ((req, res) => {
+    // Paused or between Tailscale blips: come back later (an agent's page
+    // keeps retrying).
+    if (paused || !transportAvailable) {
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Unavailable.");
+    }
+    // The public door (Oct 10): open to everyone only while something
+    // needs a stranger to come in (a pairing, an invitation waiting, an
+    // agent's page). Otherwise a request is answered only when it names
+    // a key Reach knows (an agent's own, or one that ended lately, so
+    // it hears that it ended): the signed gateway and the agent runtime
+    // download. Anything else gets 404 before a byte is parsed.
+    const window = auth.funnelWindow();
+    const key = req.headers["reach-key"];
+    const known = typeof key === "string" && key.length <= 64 && knownKey(key);
+    const forAgents = (req.method === "POST" && req.url === "/agent-gateway") ||
+      (req.method === "GET" && (req.url === "/agent.mjs" || /^\/agent-runtimes\/[0-9a-f]{64}\.mjs$/.test(req.url || "")));
+    // A hosted agent's bearer token, and the OAuth token and discovery
+    // endpoints while a hosted agent has access (hosted-mcp.mjs).
+    const hosted = hostedMcp?.admits(req) === true;
+    // Someone who came in through the browser and still has access: their
+    // page and its code, by their own door key (a cookie; core.mjs).
+    const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
+    if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found.");
+  });
   return {
     app,
     server,
@@ -5421,52 +5473,22 @@ export async function createReach(overrides = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
       privateSocket = socketPath;
-      // Keys Reach knows (agents with access, or ended lately): the door's
-      // check before anything is parsed (core.mjs reads the store again only
-      // when it changed).
-      const knownKey = (value) => { try { return auth.funnelKeys().has(value); } catch { return false; } };
-      const doorKeyKnown = (value) => { try { return auth.doorKeyKnown(value); } catch { return false; } };
-      // The one cookie the door reads (its value checked before anything else).
-      const doorCookie = (req) => {
-        const header = req.headers.cookie;
-        if (typeof header !== "string" || header.length > 4096) return null;
-        const match = /(?:^|;\s*)reach-door=([A-Za-z0-9_-]{43})(?:;|$)/.exec(header);
-        return match ? match[1] : null;
-      };
       privateServer = await listenPrivateIngress({
         socketPath,
         app,
         upgrade,
         resolveIdentity,
-        publicApp: publicApp && ((req, res) => {
-          // Paused or between Tailscale blips: come back later (an agent's page
-          // keeps retrying).
-          if (paused || !transportAvailable) {
-            res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
-            return res.end("Unavailable.");
-          }
-          // The public door (Oct 10): open to everyone only while something
-          // needs a stranger to come in (a pairing, an invitation waiting, an
-          // agent's page). Otherwise a request is answered only when it names
-          // a key Reach knows (an agent's own, or one that ended lately, so
-          // it hears that it ended): the signed gateway and the agent runtime
-          // download. Anything else gets 404 before a byte is parsed.
-          const window = auth.funnelWindow();
-          const key = req.headers["reach-key"];
-          const known = typeof key === "string" && key.length <= 64 && knownKey(key);
-          const forAgents = (req.method === "POST" && req.url === "/agent-gateway") ||
-            (req.method === "GET" && (req.url === "/agent.mjs" || /^\/agent-runtimes\/[0-9a-f]{64}\.mjs$/.test(req.url || "")));
-          // A hosted agent's bearer token, and the OAuth token and discovery
-          // endpoints while a hosted agent has access (hosted-mcp.mjs).
-          const hosted = hostedMcp?.admits(req) === true;
-          // Someone who came in through the browser and still has access: their
-          // page and its code, by their own door key (a cookie; core.mjs).
-          const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
-          if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
-          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Not found.");
-        }),
+        publicApp: publicDoor(publicApp),
       });
+    },
+    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
+    // keyed loopback route only Tailscale's own process may use
+    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
+      if (!config.tailscaleOwner)
+        throw Error("Configure Tailscale identity first.");
+      privateServer = await listenKeyedIngress({ key, peerCheck, refuse, onRefused, selfIps, app, upgrade, resolveIdentity, publicApp: publicDoor(publicApp) });
+      return privateServer.address().port;
     },
     setTransportAvailable(value) {
       if (transportAvailable === value) return;

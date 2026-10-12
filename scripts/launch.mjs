@@ -4,8 +4,17 @@ import {
   assertOwnerAccount,
   preferencesFile,
   accountApproval,
+  flagMissing,
+  keyedSupportProblem,
 } from "./configure.mjs";
-import { serveSocketPath } from "../server/tailscale-auth.mjs";
+import {
+  keyRedactor,
+  keyedTarget,
+  newIngressKey,
+  serveSocketPath,
+} from "../server/tailscale-auth.mjs";
+import { createTailscaledPeerCheck } from "../server/tailscaled-peer.mjs";
+import { ensurePrivateFolders } from "../server/windows-private-folder.mjs";
 import {
   describeApproval,
   decideApproval,
@@ -39,6 +48,8 @@ import {
   tailscaleJson,
   ownsServeRoute,
   tailscaleVersions,
+  foreignIngressRoute,
+  readKeyedState,
 } from "./tailscale.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
 import { watchStopRequest, windowsBootTime } from "./instances.mjs";
@@ -47,7 +58,8 @@ import { publicStartHandler } from "../server/public-start.mjs";
 import { setStartInfo } from "../server/delivery.mjs";
 import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
-import { ForegroundServe } from "./foreground-serve.mjs";
+import { ForegroundServe, createLock } from "./foreground-serve.mjs";
+import { ForegroundFunnel } from "./foreground-funnel.mjs";
 
 export async function launch(options, root) {
   // Started for you (a restart from the phone, at sign-in): read once, and
@@ -72,18 +84,59 @@ export async function launch(options, root) {
   // Set by ./reach for this run only, not handed on to terminals and agents.
   const supervised = !!options.service || process.env.REACH_SUPERVISED === "1";
   delete process.env.REACH_SUPERVISED;
-  installCrashGuard({ dataDir, supervised });
+  // Windows' keyed route: its key is taken out of a crash's words too, once
+  // there is one.
+  let crashRedact = (text) => text;
+  installCrashGuard({ dataDir, supervised, redact: (text) => crashRedact(text) });
   const httpsPort = options.httpsPort || 8443;
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
-  const preferences =
+  let preferences =
     !options.local && accountApproval() ? readPreferences(root) : null;
-  const socketPath = preferences ? serveSocketPath(root) : null;
+  // Set up for browser sign-in, started without the flag: said, never silently.
+  if (!preferences && process.platform === "win32" && !options.local && flagMissing(root))
+    console.log("Reach: browser sign-in is off: REACH_WINDOWS_ACCOUNT=1 isn't set in this terminal. Phones join with a pairing code and need the Tailscale app.");
+  // Windows has no Unix socket: with REACH_WINDOWS_ACCOUNT=1 a keyed loopback
+  // route only Tailscale's own process may use (docs/parity/D-public-door.md).
+  const keyedDoor = !!preferences && process.platform === "win32";
+  const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
+  let peerCheck = null,
+    ingressKey = "",
+    keyedState = null,
+    signInOff = "";
   if (preferences) {
-    assertOwnerAccount(await tailscaleJson(["status", "--json"]), preferences);
-    await assertSocketSupport();
+    const status = await tailscaleJson(["status", "--json"]);
+    assertOwnerAccount(status, preferences);
+    if (!keyedDoor) await assertSocketSupport();
+    else {
+      // Its folders private first (Windows ignores 0700), then Tailscale's
+      // own needs, then its check that a connection is Tailscale's. Anything
+      // missing: pairing codes, with the reason. `privateFolders` and
+      // `peerCheck` are code-only options (tests), never read from argv.
+      const folders = await (options.privateFolders || ensurePrivateFolders)({
+        protect: [...new Set([privateDir, dataDir])],
+        check: [root],
+        nativeDir: path.join(privateDir, "native"),
+        helpers: ["tailscaled-peer"],
+      });
+      if (folders.ok) {
+        keyedState = await readKeyedState().catch(() => ({ status }));
+        peerCheck = options.peerCheck || createTailscaledPeerCheck({ helper: folders.helper("tailscaled-peer") });
+      }
+      const problem = folders.reason || keyedSupportProblem(keyedState) || (await peerCheck.ready()).reason || "";
+      if (problem) {
+        signInOff = problem;
+        console.log(`Reach: browser sign-in is off on this PC for now: ${problem} Phones join with a pairing code and need the Tailscale app.`);
+        await peerCheck?.close();
+        peerCheck = null;
+        preferences = null;
+      } else ingressKey = newIngressKey();
+    }
   }
+  // Everything Reach says or keeps about Tailscale, without the route's key.
+  const redact = ingressKey ? keyRedactor(ingressKey) : (text) => text;
+  if (ingressKey) crashRedact = redact;
   if (options.service && !options.port)
     throw Error("A service needs its saved local port.");
   const privateOrigin = options.local
@@ -96,8 +149,8 @@ export async function launch(options, root) {
       );
   // The one address (https://<computer>.ts.net): Reach for your devices, the
   // start page for the internet. Its page may call Reach here too.
-  // Never on Windows (no socket there), so no Funnel route is made there.
-  const publicStart = socketPath && privateOrigin ? startOrigin(privateOrigin) : "";
+  // On Windows only with its keyed route, so no Funnel route is made otherwise.
+  const publicStart = (socketPath || ingressKey) && privateOrigin ? startOrigin(privateOrigin) : "";
   const reach = await createReach({
     dataDir,
     port: options.port,
@@ -142,6 +195,9 @@ export async function launch(options, root) {
   });
   let log, monitor, approvalMonitor, recovery, power, stopWatch;
   let publicLink, publicMonitor, linkMonitor, foreground;
+  // Windows' keyed route: its port, and its watch on Tailscale's settings.
+  let ingressPort = 0,
+    keyedMonitor;
   let startUrl = "";
   let phoneLinkShown = false;
   const forgetStatus = () => {
@@ -154,9 +210,24 @@ export async function launch(options, root) {
     if (current?.instance === reach.instance && current.link !== link)
       atomicJson(statusFile, { ...current, link });
   };
+  // Windows' keyed route: tailscaled drops a session a moment after its
+  // command ends. Until neither session leads to the keyed port, its
+  // listener stays, so nobody who takes the port next gets a request.
+  const routesGone = async (port, until) => {
+    while (Date.now() < until) {
+      try {
+        if (!foreignIngressRoute(await tailscaleJson(["serve", "status", "--json"], { redact }), port, "")) return;
+      } catch {}
+      await delay(100);
+    }
+    const line = "Reach: Tailscale still listed Reach's private route; closing anyway.";
+    console.warn(line);
+    log?.write(line);
+  };
   const stop = () => {
     if (stopPromise) return stopPromise;
     stopped = true;
+    const stopStartedAt = Date.now();
     // Whatever still holds on (a stuck helper, a socket nobody closed), Reach
     // is gone within seconds of being asked to stop.
     const deadline = setTimeout(() => {
@@ -174,10 +245,14 @@ export async function launch(options, root) {
       clearInterval(linkMonitor);
       await publicLink?.stop();
       recovery?.stop();
+      clearInterval(keyedMonitor);
       // Windows' route ends before Reach's listener does.
       await foreground?.stop();
+      // At most 1.5 s, and never past 4 s into stopping: the 5 s deadline holds.
+      if (ingressPort) await routesGone(ingressPort, Math.min(Date.now() + 1500, stopStartedAt + 4000));
       power?.stop();
       await reach.close();
+      await peerCheck?.close();
       forgetStatus();
       log?.end();
       finish();
@@ -211,26 +286,25 @@ export async function launch(options, root) {
     // tailnet (server/fleet.mjs); the public start page answers only Funnel.
     if (privateOrigin)
       setStartInfo(() => ({ product: "Reach", origin: privateOrigin, name: reach.config.name, instance: reach.instance, since: setupSince() }));
+    const startPage = publicStart
+      ? publicStartHandler({
+          dist: path.join(root, "dist"),
+          tailnetDir: path.join(root, "tailnet", "dist"),
+          privateOrigin,
+          home: publicStart,
+          name: reach.config.name,
+          instance: reach.instance,
+          since: setupSince(),
+          faceId: reach.faceIdAvailable,
+        })
+      : null;
+    // The start page, and its Face ID sign-in (its only requests that
+    // reach Reach itself).
+    const publicApp = startPage
+      ? (req, res) => reach.publicAgent(req, res) || reach.publicFaceId(req, res) || startPage(req, res)
+      : undefined;
     if (socketPath) {
-      const startPage = publicStart
-        ? publicStartHandler({
-            dist: path.join(root, "dist"),
-            tailnetDir: path.join(root, "tailnet", "dist"),
-            privateOrigin,
-            home: publicStart,
-            name: reach.config.name,
-            instance: reach.instance,
-            since: setupSince(),
-            faceId: reach.faceIdAvailable,
-          })
-        : null;
-      await reach.listenPrivate(socketPath, {
-        // The start page, and its Face ID sign-in (its only requests that
-        // reach Reach itself).
-        publicApp: startPage
-          ? (req, res) => reach.publicAgent(req, res) || reach.publicFaceId(req, res) || startPage(req, res)
-          : undefined,
-      });
+      await reach.listenPrivate(socketPath, { publicApp });
       // Older Reach's separate start-page socket, if one was left behind.
       const old = path.join(path.dirname(socketPath), "p");
       try {
@@ -238,7 +312,41 @@ export async function launch(options, root) {
         if (stat.isSocket() && stat.uid === process.getuid()) fs.rmSync(old);
       } catch {}
     }
-    const serveTarget = socketPath ? `unix:${socketPath}` : localUrl;
+    // Windows with browser sign-in: the keyed route. Closed while another
+    // Tailscale route leads to its port, or Tailscale's settings no longer
+    // allow it; a refusal said at most once a minute (never the key, nor
+    // the path it was asked for).
+    let foreignRoute = false,
+      routeProblem = "";
+    let selfIps = keyedState?.status?.Self?.TailscaleIPs || [];
+    const refusals = { key: 0, peer: 0, route: 0, settings: 0 };
+    let refusedSaidAt = 0;
+    const noteRefusal = (kind) => {
+      refusals[kind]++;
+      if (Date.now() - refusedSaidAt < 60000) return;
+      refusedSaidAt = Date.now();
+      const why = {
+        peer: "not from Tailscale's own process",
+        key: "without its key",
+        route: "another route leads to it",
+        settings: "Tailscale's settings on this PC don't allow it now",
+      }[kind];
+      const line = `Reach: refused a connection to its private route (${why}).`;
+      console.warn(line);
+      log?.write(line);
+    };
+    if (ingressKey)
+      ingressPort = await reach.listenKeyed({
+        key: ingressKey,
+        peerCheck,
+        publicApp,
+        refuse: () => (foreignRoute ? "route" : routeProblem ? "settings" : ""),
+        onRefused: noteRefusal,
+        selfIps: () => selfIps,
+      });
+    const serveTarget = socketPath ? `unix:${socketPath}` : ingressKey ? keyedTarget(ingressPort, ingressKey) : localUrl;
+    // How the route is named in what Reach says or keeps: never with its key.
+    const routeLabel = ingressKey ? `http://127.0.0.1:${ingressPort}/r-…` : serveTarget;
     atomicJson(path.join(dataDir, "agent-host.json"), {
       roots: reach.config.roots,
       agentPolicyFile: reach.config.agentPolicyFile,
@@ -258,6 +366,8 @@ export async function launch(options, root) {
       dataDir: reach.config.dataDir,
       service: !!options.service,
       tailscaleApproval: !!preferences,
+      // Started for browser sign-in, back on pairing codes: why (`status`).
+      ...(process.platform === "win32" && signInOff && { signInOff }),
     });
     // Windows: `stop` asks through a file, as there are no signals to ask with.
     if (process.platform === "win32")
@@ -328,6 +438,10 @@ export async function launch(options, root) {
       // and an unchanged route is reused without a blink.
       // Except on Windows, where it leads to a local port any user there could
       // take once Reach is gone: held only while Reach runs (foreground-serve.mjs).
+      // With browser sign-in, it and the public route change Tailscale's
+      // serve config one at a time, and everything Tailscale says about them
+      // loses the route's key first.
+      const serveLock = ingressKey ? createLock() : null;
       if (process.platform === "win32")
         foreground = new ForegroundServe({
           file: routeFile,
@@ -341,20 +455,34 @@ export async function launch(options, root) {
             log.write(`Reach: tailscale serve ended (${why}); reconnecting.`);
             void recovery?.check();
           },
+          ...(ingressKey && { redact, lock: serveLock, inspect: () => tailscaleJson(["serve", "status", "--json"], { redact }) }),
         });
       const startTunnel = async () => {
         if (stopped) return;
         try {
           if (foreground) {
-            if (await foreground.start()) log.write(`Reach: private route held while Reach runs: ${origin} -> ${serveTarget}`);
+            if (await foreground.start()) log.write(`Reach: private route held while Reach runs: ${origin} -> ${routeLabel}`);
             return;
           }
           const created = await ensurePersistentRoute({ file: routeFile, origin, target: serveTarget });
-          if (created) log.write(`Reach: private route set: ${origin} -> ${serveTarget}`);
+          if (created) log.write(`Reach: private route set: ${origin} -> ${routeLabel}`);
         } catch (error) {
+          if (ingressKey && error instanceof Error) error.message = redact(error.message);
           setupHint(error.message);
           throw error;
         }
+      };
+      // Another Tailscale route to the keyed port (a TCP forward, a proxy):
+      // a path from Tailscale's own process without the key. Closed until
+      // it's gone; said once.
+      const noteForeign = (config) => {
+        const was = foreignRoute;
+        foreignRoute = foreignIngressRoute(config, ingressPort, serveTarget);
+        if (!foreignRoute || was) return;
+        privateUp(false);
+        const line = "Reach: Another Tailscale route leads to Reach's private port; Reach refuses it until it's removed (tailscale serve status).";
+        console.log(line);
+        log.write(line);
       };
       recovery = new PrivateLinkRecovery({
         origin,
@@ -362,11 +490,56 @@ export async function launch(options, root) {
         owns: foreground
           ? (config, address, target) => foreground.owns(config, address, target)
           : (config, address, target) => recordedRouteMatches(routeFile, config, address, target),
-        inspect: () => tailscaleJson(["serve", "status", "--json"]),
+        inspect: async () => {
+          const config = await tailscaleJson(["serve", "status", "--json"], { redact });
+          if (ingressKey) noteForeign(config);
+          return config;
+        },
         restart: startTunnel,
-        available: privateUp,
-        report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); setupHint(message); },
+        available: (value) => privateUp(value && !foreignRoute && !routeProblem),
+        report: (message) => {
+          const said = redact(message);
+          console.log(`Reach: ${said}`);
+          log.write(`Reach: ${said}`);
+          setupHint(said);
+        },
       });
+      // Tailscale's own settings for the keyed route, read again every 15 s:
+      // its adapter gone (userspace networking) or an older version closes
+      // it until they're back. One failed read says nothing; two do.
+      if (ingressKey) {
+        const say = (line) => {
+          console.log(`Reach: ${line}`);
+          log.write(`Reach: ${line}`);
+        };
+        const setRouteProblem = (problem) => {
+          if (problem === routeProblem) return;
+          routeProblem = problem;
+          if (problem) {
+            privateUp(false);
+            say(`Browser sign-in paused on this PC: ${problem} It resumes by itself once that changes.`);
+          } else {
+            say("Browser sign-in restored on this PC.");
+            void recovery?.check();
+          }
+        };
+        let misses = 0;
+        keyedMonitor = setInterval(async () => {
+          let state = null;
+          try {
+            state = await readKeyedState({ redact });
+            misses = 0;
+          } catch {
+            misses++;
+          }
+          if (stopped) return;
+          if (state) {
+            selfIps = state.status?.Self?.TailscaleIPs || [];
+            setRouteProblem(keyedSupportProblem(state));
+          } else if (misses >= 2) setRouteProblem("Reach couldn't read Tailscale's settings on this PC.");
+        }, options.keyedEveryMs || 15000);
+        keyedMonitor.unref();
+      }
       reach.setTransportAvailable(false);
       await startTunnel();
       recovery.nextRestart = Date.now() + 15000;
@@ -375,7 +548,7 @@ export async function launch(options, root) {
       while (!stopped && Date.now() < deadline) {
         await recovery.check();
         try {
-          const config = await tailscaleJson(["serve", "status", "--json"]);
+          const config = await tailscaleJson(["serve", "status", "--json"], { redact });
           if (ownsServeRoute(config, origin, serveTarget)) {
             const response = await fetch(`${origin}/api/health`, {
               signal: AbortSignal.timeout(4000),
@@ -390,6 +563,12 @@ export async function launch(options, root) {
         await delay(1000);
       }
       if (stopped) return;
+      // Windows' keyed route answered nothing it was asked: Tailscale's
+      // connections weren't recognised as its own, so it stays closed.
+      if (!healthy && ingressKey && refusals.peer > 0)
+        throw Error(
+          "Reach couldn't confirm that its private route comes from Tailscale's own service on this PC, so it stays closed. Start without REACH_WINDOWS_ACCOUNT=1 to use pairing codes.",
+        );
       if (!healthy)
         throw Error(
           "The private phone link could not connect. Check Tailscale and HTTPS setup, then rerun Reach. No public tunnel was opened.",
@@ -397,19 +576,15 @@ export async function launch(options, root) {
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
       if (publicStart && !stopped) {
-        // Public access: a background Funnel route held on while Reach runs,
-        // answered only while an invitation/admission/session is alive; a
-        // janitor process holds a five-second lease on it.
-        publicLink = new EphemeralFunnel({
-          origin: publicStart,
-          target: serveTarget,
-          file: funnelFile,
-          window: reach.funnelWindow,
-          log,
-          // Funnel not allowed for this computer yet: Tailscale's answer
-          // carries the page that allows it, printed and opened like setup's.
-          report: (message) => { console.log(`Reach: ${message}`); log.write(`Reach: ${message}`); setupHint(message); },
-          changed: (open) => {
+        // Funnel not allowed for this computer yet: Tailscale's answer
+        // carries the page that allows it, printed and opened like setup's.
+        const report = (message) => {
+          const said = redact(message);
+          console.log(`Reach: ${said}`);
+          log.write(`Reach: ${said}`);
+          setupHint(said);
+        };
+        const changed = (open) => {
             if (open) routes.public.since = Date.now();
             routes.public.open = open;
             noteRoutes();
@@ -434,8 +609,32 @@ export async function launch(options, root) {
                 if (state === "missing" && !stopped) console.log(UNPUBLISHED);
               });
             }
-          },
-        });
+          };
+        // Public access, answered only while an invitation/admission/session
+        // is alive. A Mac: a background Funnel route held on while Reach
+        // runs, a janitor process holding a five-second lease on it. Windows
+        // with browser sign-in: a foreground Funnel session, gone with Reach,
+        // as its private route is (the route's key never stays in Tailscale).
+        publicLink = ingressKey
+          ? new ForegroundFunnel({
+              origin: publicStart,
+              target: serveTarget,
+              window: reach.funnelWindow,
+              log,
+              redact,
+              lock: serveLock,
+              report,
+              changed,
+            })
+          : new EphemeralFunnel({
+              origin: publicStart,
+              target: serveTarget,
+              file: funnelFile,
+              window: reach.funnelWindow,
+              log,
+              report,
+              changed,
+            });
         await publicLink.start();
         reach.setFunnelController(() => publicLink.ensure());
       }

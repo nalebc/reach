@@ -3,7 +3,7 @@ import { terminalPrompts } from "./prompts.mjs";
 import { loadJson } from "../server/core.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
 import { stateDir, command } from "./home.mjs";
-import { accountApproval } from "./configure.mjs";
+import { accountApproval, flagMissing, FLAG_MISSING } from "./configure.mjs";
 export const safeLabel = (value) =>
   String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 export function pendingApprovals(dataDir) {
@@ -11,8 +11,12 @@ export function pendingApprovals(dataDir) {
     .list()
     .filter((r) => r.status === "pending");
 }
+// From this PC itself (Windows' keyed route): anyone signed in to Windows
+// here could have asked as you (docs/parity/D-public-door.md §0.8).
+export const THIS_COMPUTER =
+  "From this PC itself: anyone signed in to Windows here could have asked. Approve only if you just asked from this PC's browser.";
 export function describeApproval(r) {
-  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}\n  Grants owner access (including terminals and files); screen control stays separately enabled.`;
+  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}\n  Grants owner access (including terminals and files); screen control stays separately enabled.${r.thisComputer === true ? `\n  ${THIS_COMPUTER}` : ""}`;
 }
 export function decideApproval(dataDir, value) {
   const deny = value.startsWith("deny ");
@@ -38,9 +42,12 @@ export async function approveDevice(root, deps = {}) {
   const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.tailscaleApproval || !host.dataDir)
     throw Error(
-      accountApproval(deps.platform)
+      // Windows, started for browser sign-in, then back on pairing codes.
+      typeof host?.signInOff === "string" && host.signInOff
+        ? `Browser sign-in is off on this PC for now: ${host.signInOff} A phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`
+        : accountApproval(deps.platform, deps.env)
         ? `Start Reach with ${command} configure completed, then request access on your phone.`
-        : `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`,
+        : `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair${flagMissing(root, deps.platform, deps.env) ? ` ${FLAG_MISSING}` : ""}`,
     );
   const pending = pendingApprovals(host.dataDir);
   if (!pending.length) {

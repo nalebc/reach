@@ -92,9 +92,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `prepare(root, home)` runs before it starts (settings, a fake Tailscale);
 // `preloads` add to what it starts with; `ready` is the line it waits for;
 // `pair: false` leaves the phone out (Tailscale mode has no pairing code).
+// `launchCode`: more launch options, as source evaluated in Reach's process
+// (code-only options such as a stand-in peer check), `prepare` may add some.
 export async function startCleanReach(
   t,
-  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true } = {},
+  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true, launchCode = "" } = {},
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-clean-"));
   const home = path.join(root, "home");
@@ -127,7 +129,7 @@ export async function startCleanReach(
       "--input-type=module",
       "-e",
       // Stops itself if the test runner dies.
-      `setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch(${JSON.stringify({ local: true, folders: [home], port: 0, ...args })}, ${JSON.stringify(root)});`,
+      `setInterval(() => process.ppid === 1 && process.kill(process.pid, "SIGTERM"), 500).unref(); import { launch } from ${JSON.stringify(entry)}; await launch({ ...${JSON.stringify({ local: true, folders: [home], port: 0, ...args })}, ${[launchCode, prepared.launchCode].filter(Boolean).join(", ")} }, ${JSON.stringify(root)});`,
     ],
     { env, stdio: ["pipe", "pipe", "pipe"] },
   );

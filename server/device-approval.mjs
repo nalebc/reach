@@ -69,7 +69,9 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
   };
   return {
     list: () => list().map(({ secretHash, token, ...rest }) => rest),
-    request(identity, name, owner) {
+    // `thisComputer`: asked from this computer itself (Windows' keyed route,
+    // server/tailscale-auth.mjs thisComputerRequest), kept so the prompt says so.
+    request(identity, name, owner, { thisComputer = false } = {}) {
       if (!ownerIdentity(identity, owner))
         throw fail(
           403,
@@ -101,6 +103,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         secretHash: hash(secret),
         expiresAt: now() + 300000,
         status: "pending",
+        ...(thisComputer === true && { thisComputer: true }),
       };
       atomicJson(file(request.id), request);
       return {

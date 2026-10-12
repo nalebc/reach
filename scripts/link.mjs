@@ -21,6 +21,9 @@ export async function linkComputers(root, name, deps = {}) {
     throw Error(
       "Linking computers isn't available on Windows yet: it needs phones approved by your Tailscale account, and on Windows they join with a pairing code.",
     );
+  // With browser sign-in (REACH_WINDOWS_ACCOUNT=1) too: its own acceptance first.
+  if ((deps.platform || process.platform) === "win32")
+    throw Error("Linking computers isn't available on Windows yet.");
   if (!preferences || !host?.origin?.startsWith("https://"))
     throw Error(`Start Reach on this computer first (${command}), then link.`);
   const fleet = createFleet({
