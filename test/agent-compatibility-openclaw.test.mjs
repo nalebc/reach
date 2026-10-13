@@ -43,15 +43,21 @@ test("methods: extra ones are fine, gaps are named by kind, and a probed method 
     methods: ALL.length + 1,
     missingRequired: [],
     missingOptional: [],
+    unchecked: [],
   });
   const without = ALL.filter((m) => !["chat.send", "cron.runs", "chat.inject"].includes(m));
   assert.deepEqual(compareMethods(without), {
     methods: without.length,
     missingRequired: ["chat.send"],
     missingOptional: ["chat.inject", "cron.runs"],
+    unchecked: [],
   });
   assert.deepEqual(compareMethods(without, ["chat.inject"]).missingOptional, ["cron.runs"]);
   assert.equal(compareMethods(["health", "health"]).methods, 1);
+  // WhatsApp's login methods come with its plugin: with no channels, unknown.
+  const channelless = compareMethods(ALL.filter((m) => !m.startsWith("web.login.")));
+  assert.deepEqual(channelless.missingOptional, []);
+  assert.deepEqual(channelless.unchecked, ["web.login.start", "web.login.wait"]);
 });
 
 const helpText = (words, flags) =>
@@ -223,6 +229,7 @@ test("a Gateway of its own: Reach's handshake, its method list, no model turn, n
     methods: ALL.length - 1,
     missingRequired: [],
     missingOptional: [],
+    unchecked: [],
     modelTurns: 0,
   });
   assert.deepEqual(result.cleanup, { gateway: "stopped", state: "removed" });
@@ -303,6 +310,8 @@ test("never available without a method list, a handshake, a running Gateway or a
   const cases = [
     [{ methods: null }, "unavailable", /did not list its methods/],
     [{ refuse: "protocol mismatch: server speaks 9" }, "incompatible", /incompatible connection versions/],
+    // OpenClaw 2026.2.25 and older: only v1/v2 device payloads.
+    [{ refuse: "device signature invalid (server speaks 9)" }, "incompatible", /refused Reach's signed device identity/],
     [{ exitEarly: true, refusedAttempts: 1000 }, "unavailable", /stopped before Reach could connect \(78\)/],
     [{ version: Error("ENOENT") }, "unavailable", /did not report its version/],
     [{ refusedAttempts: 1000 }, "unavailable", /did not answer Reach in time/, { readyMs: 100 }],

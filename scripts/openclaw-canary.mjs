@@ -42,12 +42,18 @@ export const OPTIONAL_METHODS = [
 // change anything: chat.inject without a chat is refused.
 const PROBED = { "chat.inject": {}, "sessions.usage": { limit: 0 } };
 
+// Listed only while a channel plugin that has them is loaded (the WhatsApp
+// plugin's gatewayMethodDescriptors, 2026.10.2); core never lists them. A
+// Gateway with no channels can't say: unchecked, not missing.
+export const CHANNEL_METHODS = ["web.login.start", "web.login.wait"];
+
 export function compareMethods(advertised, probed = []) {
   const has = new Set([...advertised, ...probed]);
   return {
     methods: new Set(advertised).size,
     missingRequired: REQUIRED_METHODS.filter((m) => !has.has(m)),
-    missingOptional: OPTIONAL_METHODS.filter((m) => !has.has(m)),
+    missingOptional: OPTIONAL_METHODS.filter((m) => !has.has(m) && !CHANNEL_METHODS.includes(m)),
+    unchecked: CHANNEL_METHODS.filter((m) => !has.has(m)),
   };
 }
 
@@ -127,9 +133,10 @@ export function sandboxEnv(dir, { port, token, source = process.env } = {}) {
     TMPDIR: tmp, TMP: tmp, TEMP: tmp, CI: "1", NO_COLOR: "1",
   });
 }
-// The least a Gateway needs to start here, without secrets: local mode (no
-// config at all needs --allow-unconfigured). logging.file in case a version
-// logs despite the silent level. No heartbeat: nothing may start a model turn.
+// The least a Gateway needs to start here, without secrets: local mode
+// (without it 2026.10.2 starts under --allow-unconfigured, 2026.1.29 not at
+// all). logging.file: 2026.1.29 still files console errors when silent. No
+// heartbeat: nothing may start a model turn.
 export const throwawayConfig = (dir) => ({
   gateway: { mode: "local" },
   logging: { file: path.join(dir, "logs", "openclaw.log") },
@@ -137,15 +144,18 @@ export const throwawayConfig = (dir) => ({
 });
 
 // Records the Gateway's answer to Reach's connect (its hello: methods,
-// protocol), which createOpenClaw keeps to itself.
-function recording(Socket, hellos) {
+// protocol), which createOpenClaw keeps to itself, and whether a refusal was
+// about the signed device identity (never its words).
+function recording(Socket, hellos, refusals) {
   return class extends Socket {
     constructor(...args) {
       super(...args);
       this.on("message", (buffer) => {
         let frame;
         try { frame = JSON.parse(String(buffer)); } catch { return; }
-        if (frame?.type === "res" && frame.ok && frame.id === this.reachConnect) hellos.push(frame.payload);
+        if (frame?.type !== "res" || frame.id !== this.reachConnect) return;
+        if (frame.ok) hellos.push(frame.payload);
+        else refusals.push(/signature/i.test(String(frame.error?.message)) ? "signature" : "other");
       });
     }
     send(data, ...rest) {
@@ -240,11 +250,11 @@ export async function openClawCanary(executable = "openclaw", {
     });
     child.once("exit", (code, sig) => (exited = { code, signal: sig }));
     child.once("error", () => (exited ??= { code: null, signal: "spawn" }));
-    const hellos = [];
+    const hellos = [], refusals = [];
     client = createOpenClaw({
       dataDir: path.join(dir, "reach"),
       configuration: async () => ({ url: `ws://127.0.0.1:${port}`, token }),
-      Socket: recording(Socket, hellos),
+      Socket: recording(Socket, hellos, refusals),
       timeoutMs,
     });
     // Ready when Reach's own connect succeeds. A refusal can be the Gateway
@@ -265,8 +275,12 @@ export async function openClawCanary(executable = "openclaw", {
             refused.message = String(error?.message || "");
             if (Date.now() - refused.at >= refusedMs) {
               // Reach's own fixed words for the refusal, never the Gateway's.
+              // OpenClaw before 2026.2.26 checks only v1/v2 device payloads;
+              // Reach signs v3.
               result.status = "incompatible";
-              result.reason = `OpenClaw's Gateway refused Reach's connection: ${refused.message}`;
+              result.reason = refusals.at(-1) === "signature"
+                ? "OpenClaw's Gateway refused Reach's signed device identity (Reach signs the v3 device payload)."
+                : `OpenClaw's Gateway refused Reach's connection: ${refused.message}`;
               return result;
             }
           } else refused = null;
