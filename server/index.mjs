@@ -74,6 +74,7 @@ import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
+import { createAgentTimings } from "./agent-timings.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
 import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
@@ -91,7 +92,7 @@ import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
-import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
+import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
@@ -191,6 +192,8 @@ export async function createReach(overrides = {}) {
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
   const agentActions = overrides.agentActions || createAgentActions({ file: path.join(config.dataDir, "agent-actions.jsonl") });
   const logAction = (client, entry) => { try { agentActions.add(client, entry); } catch { /* the log never stops an action */ } };
+  // Reach's time and the agent's for each call, beside that log.
+  const agentTimings = overrides.agentTimings || createAgentTimings({ file: path.join(config.dataDir, "agent-timings.jsonl") });
   const settings = { screen: config.screen, ...loadJson(settingsFile, {}) };
   config.screen = settings.screen === true;
   // Written by the Mac app, which owns the macOS privacy permissions.
@@ -455,6 +458,10 @@ export async function createReach(overrides = {}) {
   const terminalPingMs = overrides.terminalPingMs || 30000;
   let refusedFullAt = 0;
   const screenControl = new ScreenControl();
+  // You using the Mac through Reach's screen holds agents off it, looks
+  // included, until 2 minutes after your last input (server/screen.mjs).
+  // Never part of blocked() below: chats' Claude app messages don't wait on it.
+  const ownerHold = overrides.ownerHold || new OwnerHold();
   let agentDesktop = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
     // Why chats' Claude app work waits, named on the waiting message.
@@ -942,6 +949,7 @@ export async function createReach(overrides = {}) {
     screenAvailable: () => browserScreenAvailable() && !paused && transportAvailable,
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
+    ownerUsing: () => ownerHold.active(), platform: overrides.platform || process.platform,
   });
   // The owner's pause of one agent ("it can look, not touch"), on every
   // computer: it used to live in the Mac-only desktop service below, so off a
@@ -960,6 +968,7 @@ export async function createReach(overrides = {}) {
       const held = screenControl.holder();
       return held?.person ? held.name || "Someone" : !!held || screenControl.inputStopping();
     },
+    ownerUsing: () => ownerHold.active(),
     // A chat waiting on an agent gets the next turn (the agent's input waits a
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
@@ -970,6 +979,17 @@ export async function createReach(overrides = {}) {
   const screenAgentIds = () => auth.list()
     .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
     .map((client) => client.id);
+  // Agents that look at the screen at all: these presets, and those shown
+  // only chosen app windows.
+  const screenAgentsPresent = () => auth.list().some((client) => client.kind === "agent" &&
+    client.policy?.browser === true && (client.policy.preset !== undefined || client.policy.screen === "apps") && client.expiresAt > Date.now());
+  // Your input went through Reach's screen (a tap, a key, a scroll): agents
+  // wait. Input on one of Reach's hidden app displays doesn't touch the
+  // screen agents use, so it doesn't hold them. The phones hear at once.
+  const ownerUsed = (client, display) => {
+    if (display && display !== "primary" && appThreads.ownsDisplay(display)) return;
+    if (ownerHold.note(client)) for (const nudge of presenceNudges) nudge();
+  };
   // The owner pauses (or resumes) one agent: the desktop, where there is one,
   // lets go of what the agent holds first, then the pause is kept. A pause
   // that can't be saved still holds now (507, agent-pauses.mjs).
@@ -1964,6 +1984,9 @@ export async function createReach(overrides = {}) {
     };
     next();
   });
+  // How long each of an agent's calls takes here, and the agent between
+  // them (agent-timings.mjs): no content, only kinds and times.
+  app.use("/api", (req, res, next) => agentTimings.middleware(req, res, next));
   app.get("/api/device", async (req, res) => {
     agentRuntimes.note(req.client, req.query.runtime, { program: !fromBrowserPage(req) });
     const tools = req.client.scopes.includes("codex")
@@ -2567,7 +2590,7 @@ export async function createReach(overrides = {}) {
     endSession(id);
   };
   browserAgentRoutes(app, {
-    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions,
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions, timings: agentTimings,
     pauses: { has: agentPaused, set: pauseAgent },
     onStopped: (client) => {
       void releaseGuest(client);
@@ -2683,6 +2706,8 @@ export async function createReach(overrides = {}) {
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
+    // Screen text an agent didn't read again (savings.mjs, "screen-diff").
+    savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
       // A Windows Reach has no public link without browser sign-in.
       if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
@@ -4591,22 +4616,30 @@ export async function createReach(overrides = {}) {
       throw fail(409, "Wait for the previous screen action to finish.");
     inputInFlight = true;
     try {
-      res.json(
-        await screenInput(config, req.body, () => {
-          if (
-            res.destroyed ||
-            !config.screen ||
-            !verify(req, req.headers.authorization?.replace(/^Bearer /, ""))
-          )
-            throw fail(403, "Screen access was turned off or revoked.");
-          screenControl.check(req.client);
-          if (screenControl.inputStopping())
-            throw fail(409, "Wait for the previous desktop input helper to stop.");
-        }),
-      );
+      const done = await screenInput(config, req.body, () => {
+        if (
+          res.destroyed ||
+          !config.screen ||
+          !verify(req, req.headers.authorization?.replace(/^Bearer /, ""))
+        )
+          throw fail(403, "Screen access was turned off or revoked.");
+        screenControl.check(req.client);
+        if (screenControl.inputStopping())
+          throw fail(409, "Wait for the previous desktop input helper to stop.");
+      });
+      ownerUsed(req.client);
+      res.json(done);
     } finally {
       inputInFlight = false;
     }
+  });
+  // "Let them back": agents have the screen again now, not 2 minutes after
+  // your last input. Yours and full-access people's only.
+  app.post("/api/screen/agents-back", (req, res) => {
+    if (!actsAsOwner(req.client))
+      throw fail(403, "Only the owner can let agents back on the screen.");
+    if (ownerHold.release()) for (const nudge of presenceNudges) nudge();
+    res.json({ ok: true });
   });
   app.get("/api/screen", async (req, res) => {
     if (!config.screen)
@@ -4785,6 +4818,10 @@ export async function createReach(overrides = {}) {
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
         // A person waiting for the owner's Allow: their page waits too.
         ...(error.waiting === true ? { waiting: true } : {}),
+        // An agent held off while you use the Mac: who, and when to look again.
+        ...(error.kind === "paused" && Number.isFinite(error.retryInMs)
+          ? { kind: "paused", holder: String(error.holder || ""), retryInMs: error.retryInMs }
+          : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });
@@ -4922,6 +4959,12 @@ export async function createReach(overrides = {}) {
               const using = held && held.clientId !== client.id ? held.name || "Someone" : agentDesktop?.usingNow?.() || "";
               return using ? { using: String(using).slice(0, 80) } : {};
             })()),
+            // Agents wait while you use the screen (server/screen.mjs
+            // OwnerHold): one quiet pill with "Let them back", for you and
+            // full-access people, only when an agent could look. A flag, not
+            // a countdown, so it changes only when the hold starts or ends.
+            ...(scopes.includes("screen") && actsAsOwner(client) &&
+              ownerHold.active() && screenAgentsPresent() && { agentsWait: true }),
             ...(macTerminals &&
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
@@ -4992,6 +5035,8 @@ export async function createReach(overrides = {}) {
         control: screenControl,
         create: overrides.desktopInputFactory,
         platform: overrides.platform || process.platform,
+        // Each input that reached the Mac: agents wait while you use it.
+        used: ownerUsed,
         // A phone app's hidden display: only for those that app is shared with.
         allowDisplay: (client, display) =>
           // The same rule as watching it: every app on it must be theirs.

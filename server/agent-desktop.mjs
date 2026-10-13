@@ -6,6 +6,7 @@ import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typed
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { ownerHoldRefusal } from "./screen.mjs";
 import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
@@ -58,10 +59,12 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 // title, then what is there in reading order, each control inline as
 // [n] Role "name" (= what a field holds), clickable by its number.
 const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
+// One control as the screen text shows it (and its changes, desktop-observation.mjs).
+export const controlLine = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+  (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
+  (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
 export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
-  const control = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
-    (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
-    (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+  const control = controlLine;
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
     ...texts.map((line) => ({ x: line.x, mid: line.y + line.h / 2, line: line.heading ? `# ${line.text}` : line.text })),
@@ -339,6 +342,10 @@ export function createAgentDesktop(config, {
   home = os.homedir(),
   verifyClient = () => undefined,
   phoneControls = () => false,
+  // You (or a full-access person) using the Mac through Reach's screen:
+  // { name, retryInMs } while agents wait (server/screen.mjs OwnerHold).
+  // Every look and every action waits, not only input.
+  ownerUsing = () => null,
   automationControls = () => false,
   // When a chat last drove the Mac (desktop-automation.mjs changedAt): an
   // agent's picture from before then may show the wrong window.
@@ -404,6 +411,10 @@ export function createAgentDesktop(config, {
         !Number.isFinite(latest.expiresAt) || latest.expiresAt <= now() || !presetScopes(latest.policy).includes(scope) || !latest.scopes?.includes(scope))
       throw fail(403, "This agent's access to the Mac has changed or ended.");
     if (paused()) throw fail(409, "Reach is paused. The Mac waits until it resumes.");
+    // Checked on every call and again after each native answer (checkState):
+    // a picture taken as the owner started is dropped, not handed over.
+    const hold = ownerUsing();
+    if (hold) throw ownerHoldRefusal(hold, platform);
     return latest;
   };
   const session = async (client) => {
@@ -431,6 +442,8 @@ export function createAgentDesktop(config, {
         throw fail(403, "This agent's access changed. Refresh before using the Mac again.");
       return current;
     } catch (error) {
+      // The owner's hold is a wait, not a changed grant: the helper stays.
+      if (error?.kind === "paused") throw error;
       state.helper.stop();
       if (sessions.get(client.id) === state) sessions.delete(client.id);
       throw error;

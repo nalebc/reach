@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { agentGuide } from "../server/agent-guide.mjs";
+import { GO_FAST } from "../server/browser-tools.mjs";
 import { serveMcp } from "../scripts/mcp-server.mjs";
 import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
@@ -10,13 +11,16 @@ import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/pr
 // rules come when it connects (join, MCP initialize, reach_device and
 // reach_access, its page), from its access as it is then.
 const RULES = "Ask me before paying, sending or deleting anything.\nDon't share your Reach credentials.";
+// Oct 12: the agents that act on the screen are told how to go fast, as
+// every tool that acts says it (browser-tools.mjs).
+const FAST = `${GO_FAST}\n`;
 const preset = (policy, extra = {}) => ({ kind: "agent", scopes: [], policy: { invite: true, browser: true, ...policy }, ...extra });
 
 test("each preset says what it may do, in plain words, then the rules", () => {
   assert.equal(agentGuide(preset({ preset: "full" }), { word: "Mac", folders: ["Home", "Computer"] }),
-    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${RULES}`);
+    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }, { id: "/System/Applications/Notes.app" }] }), { word: "Mac" }),
-    `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${RULES}`);
+    `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files", write: true }), { word: "Mac", folders: ["Project"] }),
     `You can read and change files in "Project". No screen, no commands.\n${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files" }), { word: "Mac", folders: ["Project", "Notes", "Taxes", "Photos", "Music"] }),
@@ -69,7 +73,7 @@ test("presets: the guide follows the agent's current access, for that agent only
   const agent = await f.join({ preset: "apps", apps: [{ id: apps.chrome.id }] });
   let view = await agent.as("/api/browser");
   assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(view.body.guide, `You get only "Google Chrome", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${RULES}`);
+  assert.equal(view.body.guide, `You get only "Google Chrome", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${FAST}${RULES}`);
   const device = await agent.as("/api/device");
   assert.equal(device.body.guide, view.body.guide);
   // Its page (a browser) signs in with Sign in.

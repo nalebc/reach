@@ -74,6 +74,22 @@
   opacity: 0.38;
   cursor: default;
 }
+/* The desktop switcher: three smaller icons held together by a faint pill. */
+.screen-bar .screen-bar-group {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 1;
+  min-width: 0;
+  margin: 0 2px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.05);
+}
+.screen-bar .screen-bar-group button {
+  width: 36px;
+  min-width: 30px;
+  height: 36px;
+  color: #c9d6d1;
+}
 .screen-bar .screen-bar-text {
   width: auto;
   padding: 0 14px;
@@ -87,6 +103,47 @@
   background: rgb(11 16 18 / 0.74);
   color: #e9f2ef;
   font-size: 12px;
+}
+
+/* Agents wait while you use the screen: one quiet pill, its one action. */
+.screen-agents-wait {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 0 4px 0 10px;
+  border-radius: 999px;
+  background: rgb(11 16 18 / 0.74);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  color: var(--muted, #93a096);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.screen-agents-wait > svg {
+  flex: none;
+  color: var(--lime, #b9efd4);
+}
+.screen-agents-wait > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.screen-agents-wait button {
+  flex: none;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.08);
+  color: #e9f2ef;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.screen-agents-wait button:active {
+  background: rgb(255 255 255 / 0.16);
 }
 
 /* Setup card (screen viewing off) and the app launcher under Actions. */

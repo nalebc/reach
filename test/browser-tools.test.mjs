@@ -166,7 +166,7 @@ test("legacy desktop modes never advertise or execute unrestricted screen tools"
 test("navigation tools map to their routes with exact bodies", () => {
   const full = access({ preset: "full", screen: true, control: true, open: true, roots: [{ index: 0, name: "Home", path: "/Users/me" }] });
   assert.deepEqual(browserToolRequest("reach_windows", {}, full), { method: "GET", route: "/api/browser/desktop/windows", response: "json" });
-  assert.deepEqual(browserToolRequest("reach_focus_window", { id: "42:0", title: "Inbox", tab: "Amazon" }, full), { route: "/api/browser/desktop/focus", method: "POST", body: { id: "42:0", title: "Inbox", tab: "Amazon" }, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_focus_window", { id: "42:0", title: "Inbox", tab: "Amazon" }, full), { route: "/api/browser/desktop/focus", method: "POST", body: { id: "42:0", title: "Inbox", tab: "Amazon", describe: true }, response: "json" });
   assert.throws(() => browserToolRequest("reach_focus_window", { id: "abc" }, full), /Invalid tool arguments/);
   assert.deepEqual(browserToolRequest("reach_menus", { menu: "File & Edit" }, full), { method: "GET", route: "/api/browser/desktop/menus?menu=File+%26+Edit", response: "json" });
   assert.deepEqual(browserToolRequest("reach_menus", {}, full), { method: "GET", route: "/api/browser/desktop/menus", response: "json" });
@@ -174,13 +174,15 @@ test("navigation tools map to their routes with exact bodies", () => {
   assert.deepEqual(browserToolRequest("reach_find", { text: "Order total" }, full), { route: "/api/browser/desktop/find", method: "POST", body: { text: "Order total" }, response: "json" });
   assert.throws(() => browserToolRequest("reach_find", { text: "a", name: "b" }, full), /Invalid tool arguments/);
   assert.throws(() => browserToolRequest("reach_find", { text: "a", role: "Button" }, full), /Invalid tool arguments/);
-  assert.deepEqual(browserToolRequest("reach_open_file", { root: 0, path: "Invoices/march.pdf", reveal: true }, full), { route: "/api/browser/desktop/open-file", method: "POST", body: { root: 0, path: "Invoices/march.pdf", reveal: true }, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_open_file", { root: 0, path: "Invoices/march.pdf", reveal: true }, full), { route: "/api/browser/desktop/open-file", method: "POST", body: { root: 0, path: "Invoices/march.pdf", reveal: true, describe: true }, response: "json" });
   assert.throws(() => browserToolRequest("reach_open_file", { root: 0, path: "../x.pdf" }, full), /Invalid tool arguments/);
   assert.throws(() => browserToolRequest("reach_open_file", { root: 7, path: "x.pdf" }, full), /Invalid tool arguments/);
   assert.deepEqual(browserToolRequest("reach_mac_shortcuts", {}, full), { method: "GET", route: "/api/browser/desktop/mac-shortcuts", response: "json" });
   assert.deepEqual(browserToolRequest("reach_run_mac_shortcut", { name: "Today", input: "x" }, full), { route: "/api/browser/desktop/mac-shortcuts/run", method: "POST", body: { name: "Today", input: "x" }, response: "json" });
-  assert.deepEqual(browserToolRequest("reach_act", { action: { type: "menu", path: ["File", "Print…"] } }, full).body, { action: { type: "menu", path: ["File", "Print…"] } });
-  assert.deepEqual(browserToolRequest("reach_act", { action: { type: "type", text: "long", paste: true } }, full).body, { action: { type: "type", text: "long", paste: true } });
+  // Every tool that acts answers with the screen unless told not to.
+  assert.deepEqual(browserToolRequest("reach_act", { action: { type: "menu", path: ["File", "Print…"] } }, full).body, { action: { type: "menu", path: ["File", "Print…"] }, describe: true });
+  assert.deepEqual(browserToolRequest("reach_act", { action: { type: "type", text: "long", paste: true }, describe: false }, full).body, { action: { type: "type", text: "long", paste: true } });
+  assert.deepEqual(browserToolRequest("reach_open_url", { url: "https://example.test", describe: false }, full).body, { url: "https://example.test" });
   // No shared folder: no file to open.
   const apps = access({ preset: "apps", screen: true, control: true, open: true, roots: [] });
   assert.ok(!browserToolsFor(apps).some((tool) => tool.name === "reach_open_file"));

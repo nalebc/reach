@@ -18,6 +18,56 @@ export const actsAsOwner = (client) =>
 // A person whose control others may take over (any guest without full access).
 const limitedGuest = (client) => client?.kind === "guest" && !actsAsOwner(client);
 
+// The owner first (Oct 12: "it should stop him and stop him the screen share
+// while im using it, once i stop and idle for sometime they can get it
+// back"). Input through Reach's screen from you or a full-access person
+// holds every agent off the screen, its looks included, until nothing has
+// come through Reach's screen for 2 minutes or you let them back. Only input
+// through Reach counts (deterministic): guessing at hands on the Mac's own
+// keyboard paused an agent while nobody was there (Oct 8). Kept apart from
+// the control lease on purpose: chats' Claude app messages wait only on the
+// lease (server/index.mjs blocked()), never on this hold.
+export const OWNER_IDLE_MS = 120000;
+export class OwnerHold {
+  constructor(now = Date.now, idleMs = OWNER_IDLE_MS) {
+    this.now = now;
+    this.idleMs = idleMs;
+  }
+  at = 0;
+  name = "";
+  // One input through Reach's screen; true when this starts the hold.
+  note(client) {
+    if (!actsAsOwner(client)) return false;
+    const started = !this.active();
+    this.at = this.now();
+    // You are "the owner" to an agent; a person by the name you gave them.
+    this.name = client.kind === "guest" ? String(client.name || "").slice(0, 80) : "";
+    return started;
+  }
+  // Who holds agents off and for how long, or null.
+  active() {
+    if (!this.at) return null;
+    const retryInMs = this.at + this.idleMs - this.now();
+    return retryInMs > 0 ? { name: this.name, retryInMs } : null;
+  }
+  // "Let them back": the hold ends now. True when there was one.
+  release() {
+    const held = !!this.active();
+    this.at = 0;
+    this.name = "";
+    return held;
+  }
+}
+// What an agent is told while the hold lasts: who, that it is temporary,
+// and when to look again (kind "paused": wait, don't stop).
+export function ownerHoldRefusal(hold, platform = process.platform) {
+  const who = hold.name || "The owner";
+  return Object.assign(
+    fail(409, `${who} is using the ${computerWord(platform)}. The agent waits until they're done.`),
+    { kind: "paused", holder: who, retryInMs: Math.max(1000, Math.ceil(hold.retryInMs)) },
+  );
+}
+
 // Control is a short-lived grant for one paired browser, never a saved setting.
 // The Mac has one pointer and one keyboard: one person controls, everyone
 // else watches. Control never moves silently (two phones used to take it

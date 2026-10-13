@@ -131,3 +131,9 @@
   display: block;
   opacity: 0.7;
 }
+/* A stretch's pace: Reach's time and the agent's, quiet. */
+.ba-did li.ba-pace {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  border-left-color: transparent;
+}

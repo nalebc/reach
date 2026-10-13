@@ -41,7 +41,16 @@ function agentMcp(t, agent, profile = "compact") {
     call: async (name, args = {}) => {
       const result = await rpc("tools/call", { name, arguments: args });
       assert.equal(result.isError, undefined, JSON.stringify(result));
-      return JSON.parse(result.content.find(item => item.type === "text").text);
+      const text = result.content.find(item => item.type === "text").text;
+      // The screen after acting comes after a blank line as plain text, not
+      // escaped inside the JSON (toContent); pretty JSON has no blank line.
+      const split = text.indexOf("\n\n");
+      const value = JSON.parse(split < 0 ? text : text.slice(0, split));
+      if (split >= 0) {
+        assert.equal(value.screen.text, undefined, "not inside the JSON too");
+        value.screen.text = text.slice(split + 2);
+      }
+      return value;
     },
   };
 }
