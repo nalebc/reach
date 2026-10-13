@@ -301,6 +301,40 @@ test("a browser agent's sheet holds its live panel; stopped agents leave the lis
   await dom.waitFor(() => c.querySelector(".ppl-head"));
 });
 
+// Oct 13 (owner: "only small, compact modals"): someone's access is a long
+// form, so their sheet's "Edit access" chevron opens a page in place, not a
+// second sheet over the first. Back, or Save, brings their sheet back.
+test("Edit access opens as a page in place; back and Save return to the agent's sheet", async () => {
+  const muse = browserAgent("muse-1");
+  const calls = mac({ clients: [muse], responses: {
+    "/api/agents/browser-options": () => reply({ terminals: [], presetApps: [] }),
+    "/api/guests/muse-1/access": () => reply({ ok: true }),
+  } });
+  const { container: c } = await render();
+  await dom.waitFor(() => c.querySelector(".ppl-row"));
+  const edit = () => [...c.querySelectorAll(".ppl-sheet button")].find((b) => b.textContent.trim() === "Edit access");
+  await click(c.querySelector(".ppl-row"));
+  await click(edit());
+  const page = await dom.waitFor(() => c.querySelector(".ppl-page .sub-page"));
+  assert.equal(c.querySelector(".ppl-sheet"), null, "the sheet gives way to the page");
+  assert.equal(c.querySelector(".ppl-head"), null, "a page in place of the list");
+  assert.equal(page.querySelector("h1").textContent, "Edit access");
+  assert.equal(page.closest("dialog"), null, "not a sheet");
+  assert.ok(page.querySelector('[aria-label="Edit agent access"]'));
+  // Back: Muse's sheet again.
+  await click(page.querySelector('[aria-label="Back to Muse"]'));
+  await dom.waitFor(() => c.querySelector(".ppl-sheet"));
+  assert.ok(c.querySelector(".ppl-head"));
+  // Save: back to the sheet, which says so.
+  await click(edit());
+  await dom.waitFor(() => c.querySelector('.ppl-page [aria-label="Edit agent access"]'));
+  await click([...c.querySelectorAll(".ppl-page button")].find((b) => b.textContent.trim() === "Save"));
+  await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/guests/muse-1/access"));
+  await dom.waitFor(() => c.querySelector(".ppl-sheet"));
+  assert.match(c.querySelector(".ppl-sheet").textContent, /Access updated\./);
+  assert.equal(c.querySelector(".ppl-page"), null);
+});
+
 test("Shortcuts and Services are rows only when an agent saved or was given one", async () => {
   mac({
     shortcuts: [{ id: "s1", name: "Morning mail", enabled: true, steps: [{ type: "open", app: "/Applications/Mail.app" }] }],

@@ -18,6 +18,34 @@ const join = (base: string, rel: string) =>
 const homeFolder = (folder: string) =>
   /^\/(Users|home)\/[^/]+\/?$|^[A-Za-z]:\\Users\\[^\\]+\\?$/.test(folder);
 
+// A full path as the shared folder that holds it (the deepest one) and the
+// folder inside it, "/"-separated as /api/files names it; null outside every
+// shared folder. Windows paths match whatever their case or slashes.
+export function placeFolder(
+  full: string,
+  roots: { id: number; path: string }[],
+): { root: number; path: string } | null {
+  const normalized = (value: string) =>
+    /^[A-Za-z]:[\\/]/.test(value)
+      ? value.replaceAll("\\", "/").toLowerCase()
+      : value;
+  const root = [...roots]
+    .sort((a, b) => b.path.length - a.path.length)
+    .find(
+      (r) =>
+        normalized(full) === normalized(r.path) ||
+        normalized(full).startsWith(normalized(r.path).replace(/\/$/, "") + "/"),
+    );
+  if (!root) return null;
+  return {
+    root: root.id,
+    path: full
+      .slice(root.path.replace(/[\\/]$/, "").length)
+      .replace(/^[\\/]/, "")
+      .replaceAll("\\", "/"),
+  };
+}
+
 // One folder for a new chat: start in Home, go into any folder, use the one
 // you're in. onNavigate selects each opened folder immediately for new chats;
 // other callers can keep the explicit Use action. New chats start only inside

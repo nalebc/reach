@@ -177,16 +177,6 @@ select:focus {
   background: #25352e;
   border-color: #6f9b7d66;
 }
-.modal {
-  background: #1b2124;
-  border-color: #ffffff24;
-  border-radius: 22px;
-  box-shadow: 0 40px 120px #0008;
-}
-.modal::backdrop {
-  background: #080c0f99;
-  backdrop-filter: blur(9px);
-}
 .sheet {
   background: #1b2124;
 }

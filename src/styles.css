@@ -556,43 +556,6 @@ svg {
   color: var(--muted);
   font-size: 14px;
 }
-.modal {
-  background: transparent;
-  border: 0;
-  padding: 24px;
-  width: 500px;
-  max-width: 100vw;
-  color: inherit;
-  max-height: 95dvh;
-}
-.modal.wide {
-  width: 850px;
-}
-.modal::backdrop {
-  background: #050a07b8;
-  backdrop-filter: blur(7px);
-}
-.modal-inner {
-  padding: 27px;
-  background: #1b241d;
-  border: 1px solid #43513c;
-  border-radius: 18px;
-  box-shadow: 0 30px 100px #0007;
-}
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 22px;
-}
-.modal-header h2 {
-  font-size: 21px;
-}
-.modal-description {
-  font-size: 14px;
-  color: var(--muted);
-  margin-bottom: 23px;
-}
 .form-note {
   font-size: 11px;
   line-height: 1.7;
@@ -1134,16 +1097,6 @@ svg {
     font-size: 12px;
     padding: 13px 16px;
   }
-  .modal {
-    padding: 14px;
-    max-height: 93dvh;
-  }
-  .modal-inner {
-    padding: 23px 19px;
-  }
-  .modal-header h2 {
-    font-size: 20px;
-  }
   input,
   textarea,
   select {
@@ -1273,9 +1226,6 @@ svg {
   text-decoration: underline;
   text-underline-offset: 4px;
   text-decoration-color: #4d6340;
-}
-.modal .scan-button {
-  margin-bottom: 20px;
 }
 .welcome-stage {
   flex: 1;

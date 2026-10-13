@@ -94,6 +94,7 @@ import MascotIntro from "./MascotIntro";
 import MoreSheet from "./MoreSheet";
 import WaitingComputerSheet, { type WaitingComputer } from "./WaitingComputer";
 import MobileNav from "./MobileNav";
+import NewSessionSheet from "./NewSessionSheet";
 import { MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
@@ -1104,7 +1105,11 @@ function ReachWorkspace() {
         />
       )}
       {pairing && (
-        <Modal title="Add a computer" onClose={() => setPairing(false)}>
+        <Modal
+          title="Add a computer"
+          className="pair-sheet"
+          onClose={() => setPairing(false)}
+        >
           {isNative && (
             <button
               className="button primary full big scan-button"
@@ -1117,10 +1122,10 @@ function ReachWorkspace() {
               Scan to connect
             </button>
           )}
-          <p className="modal-description">
+          <p className="sheet-line sheet-hint">
             {isNative
-              ? "Or enter the address and code shown by Reach on the computer."
-              : "Run Reach on the other computer, then enter the link and pairing code it shows."}
+              ? "Or enter the address and code Reach shows on the computer."
+              : "Run Reach on the other computer, then enter the link and code it shows."}
           </p>
           <PairForm onPaired={paired} initialUrl={error ? peer?.url : ""} />
         </Modal>
@@ -1157,12 +1162,15 @@ function ReachWorkspace() {
         (newSession.kind === "terminal"
           ? features.terminal
           : features.codex) && (
-          <SessionModal
+          <NewSessionSheet
             kind={newSession.kind}
             initialPath={newSession.path}
             initialRoot={newSession.root}
             peer={peer}
             device={device}
+            recent={[...terminals, ...chats]
+              .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+              .map((s) => s.cwd)}
             close={() => setNewSession(null)}
             created={(s) => {
               if (currentPeerKey.current !== peerKey) return;
@@ -1284,52 +1292,67 @@ function AuthorizeSheet({
   const [error, setError] = useState("");
   if (!link.code)
     return (
-      <Modal title={`Connect to ${link.name}`} onClose={onClose}>
+      <Modal
+        title={`Connect to ${link.name}`}
+        className="pair-sheet"
+        onClose={onClose}
+      >
         <PairForm initialUrl={link.url} onPaired={onPaired} />
       </Modal>
     );
+  const connect = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onPaired(await pairWith(link.url, link.code, deviceLabel()));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // What connecting gives this phone: three rows, then one Connect.
   return (
     <Modal
       title={`Connect to ${link.name}?`}
       onClose={() => {
         if (!busy) onClose();
       }}
+      footer={
+        <button
+          className="button primary full"
+          disabled={busy}
+          onClick={() => void connect()}
+        >
+          {busy ? "Connecting…" : "Connect"}
+        </button>
+      }
     >
-      <p className="sheet-sub">{new URL(link.url).hostname}</p>
-      <ul className="grant-list">
-        <li>
-          <Folder size={18} /> Browse, upload and download files
-        </li>
-        <li>
-          <Terminal size={18} /> Run terminals and Codex conversations
-        </li>
-        <li>
-          <Monitor size={18} /> Open apps; screen access stays off unless
-          enabled
-        </li>
-      </ul>
-      <p className="form-note">
-        Only connect to a computer you own or are allowed to use. Commands run
-        with its user account’s permissions.
+      <p className="sheet-line">
+        <Link2 size={14} />
+        <span>{new URL(link.url).hostname}</span>
+      </p>
+      <div className="gs-group grant-rows">
+        <div className="gs-row">
+          <Folder size={21} />
+          <span className="gs-label">Files</span>
+          <span className="gs-value">Browse, upload, download</span>
+        </div>
+        <div className="gs-row">
+          <Terminal size={21} />
+          <span className="gs-label">Terminals and Codex</span>
+        </div>
+        <div className="gs-row">
+          <Monitor size={21} />
+          <span className="gs-label">Apps</span>
+          <span className="gs-value">Screen off unless enabled</span>
+        </div>
+      </div>
+      <p className="sheet-note">
+        Only connect to a computer you own or may use. Commands run with its
+        account’s permissions.
       </p>
       <ErrorLine error={error} />
-      <button
-        className="button primary full"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          setError("");
-          try {
-            onPaired(await pairWith(link.url, link.code, deviceLabel()));
-          } catch (e) {
-            setError((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? "Connecting…" : "Connect"}
-      </button>
     </Modal>
   );
 }
@@ -1506,110 +1529,6 @@ function LegacyPairForm({
         code.
       </p>
     </form>
-  );
-}
-function SessionModal({
-  kind,
-  initialPath,
-  initialRoot,
-  peer,
-  device,
-  close,
-  created,
-}: {
-  kind: string;
-  initialPath: string;
-  initialRoot: number;
-  peer: Peer;
-  device: Device;
-  close: () => void;
-  created: (s: Session) => void;
-}) {
-  const [name, setName] = useState(""),
-    [root, setRoot] = useState(initialRoot),
-    [path, setPath] = useState(initialPath),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  return (
-    <Modal
-      title={
-        kind === "terminal" ? "Start a terminal" : "Start a Codex conversation"
-      }
-      onClose={close}
-    >
-      <p className="modal-description">
-        Runs on {device.name}. You can reconnect from any paired device.
-      </p>
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setBusy(true);
-          setError("");
-          try {
-            created(
-              await post(
-                peer,
-                kind === "terminal" ? "/api/terminals" : "/api/chats",
-                { name: name || undefined, root, path },
-              ),
-            );
-          } catch (e) {
-            setError((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <label>
-          Name
-          <input
-            autoFocus
-            placeholder={
-              kind === "terminal"
-                ? "e.g. Website development"
-                : "e.g. Build my next idea"
-            }
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <label>
-          Shared folder
-          <select
-            value={root}
-            onChange={(e) => setRoot(Number(e.target.value))}
-          >
-            {device.roots.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.path}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Subfolder <span className="muted">(optional)</span>
-          <input
-            placeholder="Documents/my-project"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-          />
-        </label>
-        {kind === "chat" && (
-          <p className="form-note">
-            Codex must be installed and signed in on this computer. It will ask
-            for approval when needed.
-          </p>
-        )}
-        <ErrorLine error={error} />
-        <button className="button primary full" disabled={busy}>
-          {busy
-            ? "Starting…"
-            : kind === "terminal"
-              ? "Open terminal"
-              : "Start conversation"}
-        </button>
-      </form>
-    </Modal>
   );
 }
 export function SettingsPage({
