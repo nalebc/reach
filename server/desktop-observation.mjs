@@ -66,14 +66,16 @@ const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.i
 export async function settleScreen({ read, changed, authorize, capMs, minMs = 0, quietMs = SETTLE.quietMs, now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const start = now(), end = start + capMs;
-  let revision, moved = false, fresh = false, screen = null, last = null;
+  let revision, moved = false, fresh = false, screen = null, last = null, watch = changed;
   const still = () => moved || now() - start >= minMs;
   while (now() < end) {
     authorize();
-    if (changed) {
+    if (watch) {
       let result;
-      // A helper that can't wait for changes: the screen as it is.
-      try { result = await changed(revision, Math.max(1, Math.min(quietMs, end - now()))); } catch { break; }
+      // A helper that can't wait for changes (an older one, or one that
+      // refuses): reads compared by what they show, as with no signal at
+      // all. A read refused is said as any refusal is.
+      try { result = await watch(revision, Math.max(1, Math.min(quietMs, end - now()))); } catch { watch = null; continue; }
       authorize();
       if (Number.isSafeInteger(result?.revision)) revision = result.revision;
       if (result?.changed) { moved = true; fresh = false; continue; }

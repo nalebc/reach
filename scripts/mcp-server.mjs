@@ -343,14 +343,15 @@ async function appAction(api, a) {
 }
 // A result as MCP content: a picture as an image, the screen described as
 // plain text, the rest as JSON text. An action's answer with the screen
-// after it: what was done as JSON, then the screen as plain text, as a look
-// gives it (not escaped inside the JSON).
+// after it: what was done as JSON, a blank line, then the screen as plain
+// text as a look gives it (not escaped inside the JSON), in the one block
+// every client hands its model.
 export function toContent(result) {
   if (result && typeof result.screenText === "string")
     return [{ type: "text", text: result.screenText }];
   if (result && result.screen && typeof result.screen === "object" && typeof result.screen.text === "string") {
     const { screen: { text, ...screen }, ...rest } = result;
-    return [{ type: "text", text: JSON.stringify({ ...rest, screen }, null, 2) }, { type: "text", text }];
+    return [{ type: "text", text: `${JSON.stringify({ ...rest, screen }, null, 2)}\n\n${text}` }];
   }
   if (
     result &&

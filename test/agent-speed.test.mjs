@@ -41,9 +41,15 @@ test("the screen settles after one still window, bounded, read once", async () =
   const quiet = await settleScreen({ read, changed: async (revision, ms) => { clock += ms; return { revision: 1, changed: false }; }, authorize() {}, capMs: SETTLE.openMs, minMs: SETTLE.openMinMs, now });
   assert.ok(quiet.settledMs >= SETTLE.openMinMs && quiet.settledMs < SETTLE.openMs, `${quiet.settledMs} ms`);
   assert.equal(reads, 1);
-  // A helper that can't wait: the screen as it is (the caller reads it).
-  const unable = await settleScreen({ read, changed: async () => { throw Error("unknown op"); }, authorize() {}, capMs: SETTLE.openMs, now });
-  assert.equal(unable.screen, null);
+  // A helper that can't wait for changes (an older one, another platform's):
+  // reads compared by what they show instead, the same bounds.
+  clock = 0; reads = 0;
+  let asked = 0;
+  const unable = await settleScreen({ read: async () => { reads++; return screenOf(reads < 2 ? "loading" : "ready"); }, changed: async () => { asked++; throw Error("unknown op"); },
+    authorize() {}, capMs: SETTLE.actMs, now, sleep: async (ms) => { clock += ms; } });
+  assert.equal(asked, 1, "not asked again");
+  assert.equal(unable.screen.title, "ready");
+  assert.equal(reads, 3, "two the same in a row");
   // Access gone mid-wait: no more waiting, no read.
   reads = 0;
   await assert.rejects(settleScreen({ read, changed: async () => ({ changed: true }), authorize: () => { throw Object.assign(Error("Access expired or was revoked."), { status: 401 }); }, capMs: 1000, now }), /revoked/);
@@ -183,6 +189,33 @@ test("where the screen can't be read as text, acting answers as it always did", 
   const result = await call(agent, "reach_act", { action: { type: "key", key: "tab" } });
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.deepEqual(result.body.result, { ok: true, done: 1, results: [{ ok: true, app: "Notes", bundle: "com.apple.Notes" }] });
+});
+
+// The same on every computer: a helper with no wait-change (an older one, or
+// Windows' before it has one) settles by reads compared, not by none.
+test("a helper that can't wait for changes still answers with the screen the action made", privateIngressTest, async (t) => {
+  const mac = standIn({ pages: [screenOf("Search"), screenOf("Results")] });
+  mac.extras.waitForChange = async (client, since, ms, authorize) => { authorize(); throw Object.assign(Error("Unknown operation."), { status: 400, kind: "invalid" }); };
+  const f = await presetFixture(t, { desktopExtras: mac.extras });
+  const agent = await f.join({ preset: "full" });
+  const result = await call(agent, "reach_act", { action: { type: "key", key: "enter" } });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.match(result.body.result.screen.text, /^Browser — Results/);
+  assert.ok(mac.reads() >= 2, "read until two looked the same");
+});
+
+test("over MCP an action's answer is one text: what was done as JSON, then the screen as plain text", async () => {
+  const { toContent } = await import("../scripts/mcp-server.mjs");
+  const text = 'Browser — Cart\n~ [6] Link "Cart, 1 items"';
+  const [content, ...more] = toContent({ ok: true, done: 1, results: [{ ok: true }], screen: { snapshot: "s2", app: "Browser", title: "Cart", diff: true, text } });
+  assert.deepEqual(more, []);
+  assert.equal(content.type, "text");
+  const [json, screen] = [content.text.slice(0, content.text.indexOf("\n\n")), content.text.slice(content.text.indexOf("\n\n") + 2)];
+  assert.deepEqual(JSON.parse(json), { ok: true, done: 1, results: [{ ok: true }], screen: { snapshot: "s2", app: "Browser", title: "Cart", diff: true } });
+  assert.equal(screen, text, "not escaped");
+  // A failed read keeps the receipt as JSON alone; a look is its text alone.
+  assert.deepEqual(JSON.parse(toContent({ ok: true, screen: { error: "x", kind: "unavailable" }, observationFailed: true })[0].text).observationFailed, true);
+  assert.deepEqual(toContent({ screenText: "Browser — Cart" }), [{ type: "text", text: "Browser — Cart" }]);
 });
 
 // Agents find tools from their descriptions (Oct 10: Grok missed a listed
