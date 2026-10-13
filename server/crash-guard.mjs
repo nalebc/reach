@@ -18,8 +18,6 @@ export const CRASH_EXIT = 70;
 const RUN = "run.json";
 const CRASH = "last-crash.json";
 const clean = (text, max) => String(text ?? "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").slice(0, max);
-const firstLine = (error) => clean(String(error?.message ?? error ?? "an unknown error").split("\n")[0], 300);
-const stackOf = (error) => clean(error instanceof Error ? error.stack || error.message : String(error), 8000);
 
 export function installCrashGuard({
   dataDir,
@@ -29,7 +27,12 @@ export function installCrashGuard({
   write = (text) => process.stderr.write(text),
   now = Date.now,
   target = process,
+  // Windows' keyed route: its key taken out before anything is cut, said or
+  // kept (server/tailscale-auth.mjs keyRedactor). Otherwise words as they are.
+  redact = (text) => text,
 } = {}) {
+  const firstLine = (error) => clean(String(redact(String(error?.message ?? error ?? "an unknown error"))).split("\n")[0], 300);
+  const stackOf = (error) => clean(redact(error instanceof Error ? error.stack || error.message : String(error)), 8000);
   let stopping = false;
   const fatal = (error, origin) => {
     if (stopping) return;

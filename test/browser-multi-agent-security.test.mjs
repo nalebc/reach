@@ -127,3 +127,23 @@ test("stopping one agent leaves another agent's pending approval and command his
   assert.ok(records.some(item => item.id === second.id));
   assert.ok(records.every(item => item.clientId === two.clientId));
 });
+
+test("clear forgets only ended browser agents and leaves live ones connected", async t => {
+  const f = await fixture(t), live = f.join("Muse"), lapsed = f.join("Lapsed agent");
+  const store = path.join(f.dataDir, "clients.json"), clients = JSON.parse(fs.readFileSync(store));
+  clients.find(client => client.id === lapsed.clientId).expiresAt = Date.now() - 1000;
+  atomicJson(store, clients);
+  const clear = (clientIds, token) => f.call("/api/browser/agents/clear", { token, method: "POST", body: { clientIds } });
+  assert.equal((await clear([lapsed.clientId], live.token)).status, 403, "an agent can't clear the list");
+  for (const clientIds of [[], [lapsed.clientId, lapsed.clientId], [lapsed.clientId, 17]])
+    assert.equal((await clear(clientIds)).status, 400, JSON.stringify(clientIds));
+  const cleared = await clear([lapsed.clientId, live.clientId, f.owner.clientId, "gone"]);
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.body.cleared, [lapsed.clientId]);
+  assert.deepEqual(new Set(cleared.body.kept), new Set([live.clientId, f.owner.clientId]));
+  assert.ok(f.reach.auth.verify(live.token), "a live agent stays connected");
+  assert.ok(f.reach.auth.verify(f.owner.token));
+  const listed = (await f.call("/api/browser/agents")).body.agents.map(agent => agent.id);
+  assert.ok(listed.includes(live.clientId));
+  assert.ok(!listed.includes(lapsed.clientId), "the ended agent is gone from the list");
+});

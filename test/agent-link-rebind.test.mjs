@@ -291,7 +291,7 @@ test("the owner can change an agent's access while it moves between browsers", (
 test("a change the owner never approved (another supervising phone) is never re-approved by a reconnect", (t) => {
   const f = fixture(t);
   const approver = { nodeId: "owner-phone", userId: "real-owner", clientId: "owner-client" };
-  const grant = f.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "full", ttlSeconds: 3600 }, approver);
+  const grant = f.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "full", fullControlVersion: 1, ttlSeconds: 3600 }, approver);
   const key = binding();
   const access = f.join(grant, key);
   assert.ok(f.auth.verifyFunnel(access.token, key));

@@ -26,6 +26,7 @@ import {
   Copy,
   Ellipsis,
   Laptop,
+  Clock,
   Loader2,
   Mic,
   Monitor,
@@ -54,7 +55,7 @@ import { createDraftSync } from "./draft-sync";
 import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
 import AgentAccess from "./AgentAccess";
-import { SubagentCard, SubagentStrip, TodoStrip } from "./Subagents";
+import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
@@ -332,10 +333,9 @@ function Copyable({
 // How full the chat's context is, as both apps show it: a ring and the share.
 function ContextMeter({ used, window: size }: { used: number; window: number | null }) {
   if (!Number.isFinite(used) || used < 0) return null;
-  if (size === null || !Number.isFinite(size) || size <= 0) {
-    const label = `${used.toLocaleString()} tokens reported; context capacity unknown`;
-    return <span className="as-context unknown" title={label} aria-label={label}>{used.toLocaleString()} tokens</span>;
-  }
+  // Only the ring by the box, never a count of tokens (Oct 12): with no
+  // capacity to draw it against, nothing shows.
+  if (size === null || !Number.isFinite(size) || size <= 0) return null;
   const share = Math.min(1, used / size);
   const percent = Math.round(share * 100);
   const r = 7;
@@ -350,7 +350,6 @@ function ContextMeter({ used, window: size }: { used: number; window: number | n
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={`${around * share} ${around}`} transform="rotate(-90 9 9)" strokeLinecap="round" />
       </svg>
-      <span className="as-context-num">{percent}%</span>
     </span>
   );
 }
@@ -956,7 +955,7 @@ function ImageViewer({
       ) : current.url ? (
         <img src={current.url} alt="" />
       ) : (
-        <span className="as-viewer-gone">This picture isn't on the Mac anymore.</span>
+        <span className="as-viewer-gone">This picture isn't there anymore.</span>
       )}
       {at > 0 && (
         <button type="button" className="as-viewer-arrow left" aria-label="Previous image" onClick={() => move(-1)}>
@@ -1763,7 +1762,7 @@ export default function AgentSessionView({
   const [choosingMode, setChoosingMode] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
   const [modeError, setModeError] = useState("");
-  const savingMode = useRef(false);
+  const savingMode = useRef<object | null>(null);
   const modeButton = useRef<HTMLButtonElement>(null);
   const pickedMode = useRef<{ mode: string; at: number } | null>(null);
   const { view: live, seenAt: liveSeenAt } = useSessionLive(peer, initial);
@@ -1856,6 +1855,11 @@ export default function AgentSessionView({
     readLife.generation++;
     savingModel.current = null;
     setModelSaving(false);
+    savingMode.current = null;
+    setModeSaving(false);
+    setModeError("");
+    setChoosingMode(false);
+    pickedMode.current = null;
     known.current = "";
     reading.current = null;
     failed.current = 0;
@@ -1901,13 +1905,15 @@ export default function AgentSessionView({
         // its acknowledgement. Keep its transcript, but never let those old
         // settings undo the selected effort; a fresh read still follows
         // later changes made in the native app or another device.
-        const staleSettings = settingsGeneration !== readLife.settingsGeneration || !!savingModel.current;
+        const staleSettings = settingsGeneration !== readLife.settingsGeneration || !!savingModel.current || !!savingMode.current;
         const session = { ...r.session };
         if (staleSettings) {
           delete session.model;
           delete session.effort;
           delete session.speed;
-          if (savingModel.current) readLife.settingsReadPending = true;
+          delete session.mode;
+          delete session.pendingMode;
+          if (savingModel.current || savingMode.current) readLife.settingsReadPending = true;
           else if (first) void again.current(false);
           else turn.again = true;
         }
@@ -1935,7 +1941,7 @@ export default function AgentSessionView({
         const keepPick = !session.pendingMode && picked && Date.now() - picked.at < 5000 && session.mode !== picked.mode;
         // The server leaves out what's off (Ultracode, where it runs, who
         // holds it, a move): gone from the read, gone here too.
-        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ultracode: undefined, live: undefined, held: undefined, movedTo: undefined, pendingMode: keepPick ? picked.mode : undefined, ...session }));
+        setInfo((old) => ({ ...old, asking: undefined, context: undefined, ultracode: undefined, live: undefined, held: undefined, movedTo: undefined, pendingMode: staleSettings ? old.pendingMode : keepPick ? picked.mode : undefined, ...session }));
         setItems((current) => {
           if (!current || first) return withQuestionReplies(r.items);
           // Keep older pages already loaded; replace the newest page.
@@ -2396,6 +2402,7 @@ export default function AgentSessionView({
     session: initial,
     text,
     setText,
+    field,
     focus: () => field.current?.focus({ preventScroll: true }),
     onModel: () => setPicking(true),
     onNew,
@@ -2409,7 +2416,9 @@ export default function AgentSessionView({
   // Permission modes the session can switch to: what the agent offers now, in
   // its own words (until that arrives, the ones it always has).
   const modeChoices = modesFor(
-    modes ||
+    // Custom describes an existing configuration; Codex cannot switch a
+    // loaded chat back to its config defaults through this settings call.
+    modes?.map((m) => agent === "codex" && m.id === "custom" ? { ...m, switchable: false } : m) ||
       (agent === "codex"
         ? CODEX_MODE_CHOICES.filter((m) => m.id !== "custom")
         : ["manual", "acceptEdits", "plan", "auto"].map((id) => ({
@@ -2785,6 +2794,8 @@ export default function AgentSessionView({
               <small>{deviceRequests}</small>
             </button>
           )}
+          {/* Its running sub-agents: how many, the list on a tap (Subagents.tsx). */}
+          {!!info.subagents?.length && <SubagentBadge agents={info.subagents} />}
           {onNew && (
             <button className="as-icon" aria-label="New chat" onClick={onNew}>
               <skin.compose size={19} />
@@ -2926,7 +2937,7 @@ export default function AgentSessionView({
                     className="as-details-delete"
                     role="menuitem"
                     onClick={async () => {
-                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : "Delete this chat? It goes to the Trash on your " + word + "."))
+                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
                         return;
                       try {
                         await deleteSession(peer, initial);
@@ -2993,8 +3004,6 @@ export default function AgentSessionView({
         </>
       )}
       {info.rewound && <p className="as-note as-rewound">Rewound. Your next message continues from here.</p>}
-      {/* Its sub-agents at a glance, above the conversation. */}
-      {!!info.subagents?.length && <SubagentStrip agents={info.subagents} />}
       <div
         className="as-scroll"
         ref={scroller}
@@ -3418,13 +3427,19 @@ export default function AgentSessionView({
             onClose={() => setChoosingMode(false)}
             onPick={async (id) => {
               if (savingMode.current) return;
-              savingMode.current = true;
+              const operation = {};
+              const generation = readLife.generation;
+              const current = () => readLife.active && readLife.generation === generation && savingMode.current === operation;
+              savingMode.current = operation;
+              readLife.settingsGeneration++;
               setModeSaving(true);
               setModeError("");
               try {
                 const result = await setAgentMode(peer, initial, id);
+                if (!current()) return;
                 if (result.applied) {
-                  setInfo((old) => ({ ...old, mode: id }));
+                  pickedMode.current = null;
+                  setInfo((old) => ({ ...old, mode: id, pendingMode: undefined }));
                   setChoice((old) => ({ ...old, mode: undefined }));
                 } else if (result.next === "request") {
                   // Claude Code there takes it at its next step: the button
@@ -3435,10 +3450,17 @@ export default function AgentSessionView({
                 } else setChoice((old) => ({ ...old, mode: id }));
                 setChoosingMode(false);
               } catch (error) {
-                setModeError((error as Error).message);
+                if (current()) setModeError((error as Error).message);
               } finally {
-                savingMode.current = false;
-                setModeSaving(false);
+                if (current()) {
+                  readLife.settingsGeneration++;
+                  savingMode.current = null;
+                  setModeSaving(false);
+                  if (readLife.settingsReadPending && !savingModel.current) {
+                    readLife.settingsReadPending = false;
+                    void load(false);
+                  }
+                }
               }
             }}
           />
@@ -3511,7 +3533,7 @@ export default function AgentSessionView({
                   readLife.settingsGeneration++;
                   savingModel.current = null;
                   setModelSaving(false);
-                  if (readLife.settingsReadPending) {
+                  if (readLife.settingsReadPending && !savingMode.current) {
                     readLife.settingsReadPending = false;
                     void load(false);
                   }
@@ -3725,7 +3747,9 @@ export default function AgentSessionView({
                 }}
               >
                 {agent === "codex" && <ShieldCheck size={14} />}
-                {pendingMode && <Loader2 size={14} className="as-mode-wait" aria-hidden />}
+                {/* Waiting for Claude's next step, which may be a while off
+                    in an idle chat: a still clock, not a spinner (Oct 12). */}
+                {pendingMode && <Clock size={13} className="as-mode-wait" aria-hidden />}
                 <span>{pendingMode ? modeName(pendingMode) : modeShown ? modeName(modeShown) : "Default"}</span>
               </button>
             )}
@@ -3764,7 +3788,9 @@ export default function AgentSessionView({
                 <X size={16} />
               </button>
             )}
-            {(canRecord() || memo.state !== "idle") && (
+            {/* Only a Mac makes words of a memo (server/agent-sessions/voice.mjs);
+                elsewhere it would only attach a recording agents can't read. */}
+            {((peer.platform === "darwin" && canRecord()) || memo.state !== "idle") && (
               <button
                 className={`as-icon as-mic ${memo.state}`}
                 aria-label={memo.state === "recording" ? "Stop recording" : memo.state === "working" ? "Transcribing" : "Record a voice memo"}

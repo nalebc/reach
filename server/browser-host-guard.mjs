@@ -6,10 +6,15 @@ import { hostGuardedPreset } from "./agent-presets.mjs";
 
 export const browserHostGuardMessage =
   "An agent has app access on this Mac. Manage Reach from the trusted device that created its invitation.";
-// What a person kept out by the guard reads (opening their invitation, or
-// with access already): someone else has the Mac, and when they can come in.
-export const personGuardMessage =
-  "Someone else is controlling this Mac right now: an agent with full control. You can come in once the owner ends or pauses it.";
+// What a person reads while the owner hasn't let them in yet: they came in
+// while an agent had the Mac, so the owner allows them once (Oct 11: "let
+// them in both").
+export const personWaitingMessage =
+  "Waiting for the owner to let you in. An agent is using this Mac, so the owner allows each new person once.";
+// What a person reads opening their invitation on this Mac itself while an
+// agent has it: the agent sees this screen.
+export const personOnHostMessage =
+  "Open this invitation on your own phone or computer. An agent is using this Mac.";
 
 const nativeSystems = new Set(["ios", "android", "darwin", "macos", "windows", "linux", "freebsd", "openbsd"]);
 const expires = (client) => client?.expiresAt || Date.parse(client?.createdAt) + 30 * 86400000;
@@ -55,6 +60,8 @@ function apiPath(req) {
 
 /**
  * Guard the host's ordinary Reach access while an agent can drive its apps.
+ * People (guest grants) still come in from their own devices beside the
+ * agent, once the owner let them in (personIn, allowsConnection).
  * A browser on that host may contain an owner bearer, or acquire one through
  * same-node admission. It must not reach owner APIs, including read-only APIs.
  *
@@ -68,7 +75,9 @@ function apiPath(req) {
  *
  * A different node ID alone does not mean a different physical device: a host
  * browser can run its own Tailscale/WASM node. Only the specifically pinned
- * native Tailscale issuer(s) can reach ordinary APIs during the session. OS is
+ * native Tailscale issuer(s) can reach owner APIs during the session. People
+ * have a separate node-bound grant; embedded/browser nodes need explicit
+ * owner approval for coexistence. OS is
  * enrollment metadata, not hardware attestation; this assumes an agent cannot
  * enroll/configure a native Tailscale node or proxy through the approved phone.
  */
@@ -165,9 +174,46 @@ export function createBrowserHostGuard({
     const route = apiPath(req);
     return route !== null && browserRouteAllowed(client, req.method, route);
   };
+  // A person, from their own device, beside an agent (Oct 11: "let them in
+  // both; one of them controls the screen at a time"). Their screen and input
+  // share the Mac with the agent through ScreenControl: a person's control
+  // makes agents wait. Never from this Mac's own node (the agent drives this
+  // Mac and could open a person's link here), and never while they wait for
+  // the owner's Allow (a link that reached the Mac's screen stops there).
+  const onHost = (req) => {
+    const identity = req?.reachIdentity;
+    if (!identity) return true;
+    return !fresh() || typeof identity.nodeId !== "string" || !identity.nodeId || identity.nodeId === self;
+  };
+  const personIdentity = (req, client) => client?.kind === "guest" &&
+    trusted(req) === true && !onHost(req) && expires(client) > now() &&
+    Number.isFinite(req.reachIdentity?.validUntil) && req.reachIdentity.validUntil > now() &&
+    client.tailscale?.nodeId === req.reachIdentity.nodeId &&
+    (client.tailscale?.userId || "") === (req.reachIdentity.userId || "");
+  const coexistenceApproved = (req, client) => client.macEntry?.status === "allowed" &&
+    client.macEntry.nodeId === req.reachIdentity.nodeId;
+  const needsPersonApproval = (req, client) => personIdentity(req, client) &&
+    client.macEntry?.status !== "waiting" && !nativeRemote(req) && !coexistenceApproved(req, client);
+  const personIn = (req, client) =>
+    personIdentity(req, client) && client.macEntry?.status !== "waiting" &&
+    (nativeRemote(req) || coexistenceApproved(req, client));
   const allows = (req, verifiedClient = null) => {
     const current = state();
-    return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current);
+    return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current) ||
+      personIn(req, verifiedClient);
+  };
+  // A live connection, before its credential arrives in its first message:
+  // let through a device a person's access is bound to; the credential is
+  // checked (allows, with the client) when it comes.
+  const allowsConnection = (req) => {
+    if (allows(req)) return true;
+    const node = req?.reachIdentity?.nodeId;
+    if (typeof node !== "string" || !node || onHost(req)) return false;
+    try {
+      const all = clients();
+      return Array.isArray(all) && all.some((client) => client?.tailscale?.nodeId === node &&
+        personIn(req, client));
+    } catch { return false; }
   };
   const assertRequest = (req, verifiedClient = null) => {
     if (!allows(req, verifiedClient)) throw fail(403, browserHostGuardMessage);
@@ -197,5 +243,5 @@ export function createBrowserHostGuard({
       return release;
     } catch (error) { release(); throw error; }
   };
-  return { isActive, fresh, refresh, invalidate, allows, assertRequest, beginInvitation };
+  return { isActive, fresh, refresh, invalidate, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, beginInvitation };
 }

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
+import { applyAgentPolicy } from "../server/agent-policy.mjs";
 import {
   PRESETS, presetScopes, validatePresetInvitation, presetPolicy, validPresetPolicy,
   presetRouteAllowed, presetAccess, presetAppsFromCatalog, hostGuardedPreset, validAppPath,
@@ -8,7 +10,8 @@ import {
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" };
 const base = { name: "Muse", ttlSeconds: 900 };
 const client = (preset, extra = {}) => {
-  const policy = { invite: true, browser: true, preset, roots: preset === "apps" ? [] : ["/Users/me/Desktop"], ...(preset === "apps" ? { apps: [chrome] } : {}), ...extra };
+  const fullConsent = preset === "full" ? presetPolicy(validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full" }), []) : {};
+  const policy = { ...fullConsent, invite: true, browser: true, preset, roots: preset === "apps" ? [] : ["/Users/me/Desktop"], ...(preset === "apps" ? { apps: [chrome] } : {}), ...extra };
   return { scopes: presetScopes(policy), policy };
 };
 
@@ -31,8 +34,8 @@ test("each preset derives a fixed scope set and nothing else", () => {
 });
 
 test("validation accepts exactly what each preset needs", () => {
-  const full = validatePresetInvitation({ ...base, preset: "full" });
-  assert.deepEqual(full, { name: "Muse", ttlSeconds: 900, joinSeconds: 900, transport: "tailnet", preset: "full", folders: [], apps: [], write: false, hidden: [], terminalIds: [] });
+  const full = validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full" });
+  assert.deepEqual(full, { fullControlVersion: 1, name: "Muse", ttlSeconds: 900, joinSeconds: 900, transport: "tailnet", preset: "full", folders: [], apps: [], write: false, hidden: [], terminalIds: [] });
   const apps = validatePresetInvitation({ ...base, preset: "apps", apps: [chrome] });
   assert.deepEqual(apps.apps, [chrome]);
   const files = validatePresetInvitation({ ...base, preset: "files", folders: [{ root: 0, path: "Desktop" }], write: true });
@@ -40,10 +43,10 @@ test("validation accepts exactly what each preset needs", () => {
   const readonly = validatePresetInvitation({ ...base, preset: "readonly", hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }], terminalIds: ["reach:one", "reach:one"] });
   assert.deepEqual(readonly.terminalIds, ["reach:one"]);
   assert.equal(readonly.hidden.length, 1);
-  const funnel = validatePresetInvitation({ ...base, preset: "full", transport: "funnel", ttlSeconds: 3600 });
+  const funnel = validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full", transport: "funnel", ttlSeconds: 3600 });
   assert.equal(funnel.transport, "funnel");
   const refused = (input, pattern, status = 400) => {
-    assert.throws(() => validatePresetInvitation(input), (error) => { assert.equal(error.status, status); assert.match(error.message, pattern); return true; });
+    assert.throws(() => validatePresetInvitation({ ...(input.preset === "full" ? { fullControlVersion: 1 } : {}), ...input }), (error) => { assert.equal(error.status, status); assert.match(error.message, pattern); return true; });
   };
   refused({ ...base, preset: "owner" }, /Full control, Apps, Files or Read only/);
   refused({ ...base }, /Full control, Apps, Files or Read only/);
@@ -60,7 +63,7 @@ test("validation accepts exactly what each preset needs", () => {
   refused({ ...base, preset: "apps", apps: [{ id: "/Applications/Tailscale.app", name: "Tailscale" }] }, /always protected/, 403);
   refused({ ...base, preset: "apps", apps: [{ id: "Chrome.app" }] }, /up to 30 apps/);
   refused({ ...base, preset: "apps", apps: [chrome, chrome] }, /once/);
-  assert.equal(validatePresetInvitation({ ...base, preset: "full", transport: "funnel", ttlSeconds: 86400 }).ttlSeconds, 86400, "a day over the public link");
+  assert.equal(validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full", transport: "funnel", ttlSeconds: 86400 }).ttlSeconds, 86400, "a day over the public link");
   refused({ ...base, preset: "full", transport: "funnel", ttlSeconds: 86401 }, /duration/);
   refused({ ...base, preset: "full", transport: "funnel", joinSeconds: 1200 }, /duration/, 400);
   refused({ ...base, preset: "full", ttlSeconds: 30 }, /duration/);
@@ -68,11 +71,26 @@ test("validation accepts exactly what each preset needs", () => {
   refused({ ...base, preset: "full", terminalIds: ["bogus"] }, /duration/);
 });
 
+test("explicitly approved unrestricted Full control includes the filesystem and ignores hidden-app selections", () => {
+  const root = path.parse(process.cwd()).root;
+  const original = { ...client("full", { hidden: [chrome] }), kind: "agent" };
+  const full = applyAgentPolicy(original, { roots: [] });
+  assert.deepEqual(full.agentRoots, ["/Users/me/Desktop", root]);
+  assert.deepEqual(full.policy.hidden, []);
+  assert.deepEqual(presetAccess(original).hidden, []);
+  const issued = presetPolicy(validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full", hidden: [chrome] }), []);
+  assert.deepEqual(issued.roots, [root]);
+  assert.equal(issued.hidden, undefined);
+  const readonly = applyAgentPolicy({ ...client("readonly", { hidden: [chrome] }), kind: "agent" }, { roots: [] });
+  assert.deepEqual(readonly.agentRoots, []);
+  assert.deepEqual(readonly.policy.hidden, [chrome]);
+});
+
 test("stored policies are re-checked: legacy fields, protected apps and bad shapes grant nothing", () => {
   const good = presetPolicy(validatePresetInvitation({ ...base, preset: "apps", apps: [chrome] }), []);
   assert.deepEqual(good, { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] });
   assert.ok(validPresetPolicy(good));
-  assert.ok(validPresetPolicy(presetPolicy(validatePresetInvitation({ ...base, preset: "full" }), ["/Users/me"])));
+  assert.ok(validPresetPolicy(presetPolicy(validatePresetInvitation({ ...base, fullControlVersion: 1, preset: "full" }), ["/Users/me"])));
   assert.ok(validPresetPolicy({ invite: true, browser: true, preset: "files", roots: ["/Users/me/Desktop"], write: true }));
   for (const bad of [
     { ...good, screen: "apps" },

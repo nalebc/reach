@@ -93,11 +93,11 @@ test("OpenClaw is a task agent only when Reach has its Gateway; plans may name i
   const one = [{ agent: "openclaw", kind: "build", task: "Compare passkey libraries" }];
   assert.throws(() => checkTasks(one), /choose Codex or Claude Code/);
   assert.equal(checkTasks(one, { agents: WORKFLOW_AGENTS_CLAW })[0].agent, "openclaw");
-  assert.throws(() => checkTasks([{ agent: "gemini", kind: "build", task: "x" }], { agents: WORKFLOW_AGENTS_CLAW }), /choose Codex, Claude Code or OpenClaw/);
+  assert.throws(() => checkTasks([{ agent: "gemini", kind: "build", task: "x" }], { agents: WORKFLOW_AGENTS_CLAW }), /choose Codex or Claude Code or OpenClaw/);
   const draft = readDraft("```json\n" + JSON.stringify({ tasks: [{ agent: "OpenClaw", kind: "review", task: "Research" }, { agent: "claude", kind: "build", task: "Build" }] }) + "\n```", WORKFLOW_AGENTS_CLAW);
   assert.deepEqual(draft.tasks.map((t) => t.agent), ["openclaw", "claude"]);
   assert.throws(() => readDraft("```json\n" + JSON.stringify({ tasks: [{ agent: "openclaw", kind: "build", task: "x" }] }) + "\n```"), /choose Codex or Claude Code/);
-  assert.match(plannerMessage({ text: "Ship it", openClaw: true }), /"codex", "claude" or "openclaw"/);
+  assert.match(plannerMessage({ text: "Ship it", openClaw: true }), /"codex" or "claude" or "openclaw"/);
   assert.match(plannerMessage({ text: "Ship it", openClaw: true }), /can't see its files/);
   assert.doesNotMatch(plannerMessage({ text: "Ship it" }), /openclaw/i);
   const { workflows } = stage();
@@ -140,7 +140,7 @@ test("OpenClaw researches, Claude Code builds on it: a Reach chat, a request id 
   assert.equal(w.tasks[0].state, "done");
   assert.match(w.tasks[0].summary, /SimpleWebAuthn/);
   const build = started.find((s) => s.agent === "claude");
-  assert.equal(build.body.mode, "acceptEdits");
+  assert.equal(build.body.mode, "auto");
   assert.match(build.body.text, /from="OpenClaw"/);
   assert.match(build.body.text, /SimpleWebAuthn is the one/);
 });
@@ -188,4 +188,17 @@ test("lost access pauses before OpenClaw's client is called", async () => {
   await workflows.sync();
   assert.equal(calls.length, 0);
   assert.equal(workflows.get(workflow.id).state, "paused");
+});
+
+test("a late task's message fits the agents' 50,000-character limit, however much came before", () => {
+  const workflow = { title: "W", cwd: "/work/app" };
+  const before = Array.from({ length: 12 }, (_, i) => ({ agent: i % 2 ? "codex" : "claude", title: `Task ${i + 1}`, task: "Do it. ".repeat(400), answer: `Answer ${i + 1}. `.repeat(1200), changes: "diff ".repeat(3000) }));
+  const text = taskMessage({ workflow, task: { agent: "claude", kind: "review", task: "Audit it. ".repeat(1900) }, n: 13, total: 13, before });
+  assert.ok(text.length <= 50000, `${text.length} characters`);
+  assert.match(text, /^Audit it\./);
+  assert.match(text, /Task 12/);
+  assert.match(text, /material to work with/);
+  const short = taskMessage({ workflow, task: { agent: "codex", kind: "build", task: "Fix it." }, n: 2, total: 2, before: [{ agent: "claude", title: "Look", task: "Look", answer: "Found it.", changes: "" }] });
+  assert.match(short, /Found it\./);
+  assert.doesNotMatch(short, /left out/);
 });

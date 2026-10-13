@@ -129,6 +129,10 @@ const pages = [
 ];
 // Bottom bar on phones; everything else is under More.
 const mobileOrder = ["overview", "sessions", "screen", "terminal"];
+// Off the menus for now (Oct 11): Apps opens only for an app an agent handed
+// you (Home, notifications).
+const offMenus = new Set(["apps"]);
+const menuPages = pages.filter((p) => !offMenus.has(p.id));
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
   // Signed in from the browser: works anywhere, but the app connects device
@@ -248,7 +252,7 @@ function ReachWorkspace() {
     agent: AgentName | "openclaw";
     id: string;
   } | null>(null);
-  const visiblePages = pages.filter((p) => pageAccessible(p.id, features));
+  const visiblePages = menuPages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
     .filter((p) => mobileOrder.includes(p.id))
     .sort((a, b) => mobileOrder.indexOf(a.id) - mobileOrder.indexOf(b.id));
@@ -510,11 +514,11 @@ function ReachWorkspace() {
     };
   }, [peer?.id, peer?.url, peer?.token]);
   // Agents & people, opened with its invitation ("invite:new", from Home).
-  const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser"; at: number } | null>(null);
+  const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser" | "choose"; at: number } | null>(null);
   const navigate = (to: string, { opening = false } = {}) => {
     const id = to.startsWith("invite") ? "invite" : to;
     if (id === "invite")
-      setInviteStart(to === "invite:new" ? { kind: "browser", at: Date.now() } : null);
+      setInviteStart(to === "invite:new" ? { kind: "choose", at: Date.now() } : null);
     if (!pageAccessible(id, features)) return;
     // Re-selecting Chat is a shortcut to its root, from any nested view.
     // Keep the chosen provider and shared feed; discard only local navigation.
@@ -1068,7 +1072,7 @@ function ReachWorkspace() {
           peer={peer}
           device={device}
           {...morePlaces(
-            pages.map((p) => p.id),
+            menuPages.map((p) => p.id),
             mobileOrder,
             features,
             codexStatus,

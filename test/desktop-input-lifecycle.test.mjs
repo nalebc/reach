@@ -9,6 +9,7 @@ import { DesktopInput } from "../server/desktop-native.mjs";
 import { desktopConnection } from "../server/desktop-connection.mjs";
 import { ScreenControl } from "../server/screen.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
@@ -206,7 +207,7 @@ test("revoking a phone grant does not let an agent overlap its retiring native h
   const policy = { invite: true, browser: true, preset: "full", roots: [] };
   const client = { id: "agent", kind: "agent", name: "Fixture agent", policy, scopes: presetScopes(policy), expiresAt: Date.now() + 60000 };
   const agent = createAgentDesktop({ screen: true }, {
-    available: () => true, verifyClient: () => client,
+    available: () => true, verifyClient: () => client, pauses: createAgentPauses(),
     phoneControls: () => !!w.control.holder() || w.control.inputStopping(),
     spawnHelper: async () => ({ async send(request, beforeSend) { beforeSend?.(); calls.push(request); return { ok: true }; }, stop() {} }),
   });

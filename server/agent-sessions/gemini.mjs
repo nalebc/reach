@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { partLabels } from "./message-parts.mjs";
+import { findWindowsCli } from "../agent-cli.mjs";
 
 const exec = promisify(execFile);
 
@@ -135,12 +136,17 @@ export function createGeminiSessions({
   home = path.join(os.homedir(), ".gemini"),
   env = process.env,
   run = exec,
-  // The gemini executable as the owner's login shell finds it.
-  locate = () =>
-    run(env.SHELL || "/bin/zsh", ["-lc", "command -v gemini"], { timeout: 8000 })
-      .then(({ stdout }) => String(stdout).trim().split("\n").pop() || null)
-      .then((found) => (found?.startsWith("/") ? found : null))
-      .catch(() => null),
+  platform = process.platform,
+  // The gemini executable as the owner's login shell finds it; on Windows,
+  // which has none, as Node can start it from PATH or npm's global folder
+  // (agent-cli.mjs), as Claude Code is found (audit #45).
+  locate = platform === "win32"
+    ? () => findWindowsCli("gemini", { env }).catch(() => null)
+    : () =>
+        run(env.SHELL || "/bin/zsh", ["-lc", "command -v gemini"], { timeout: 8000 })
+          .then(({ stdout }) => String(stdout).trim().split("\n").pop() || null)
+          .then((found) => (found?.startsWith("/") ? found : null))
+          .catch(() => null),
 } = {}) {
   const cache = new Map(); // file -> { mtimeMs, size, parsed }
   const sha = (value) => crypto.createHash("sha256").update(value).digest("hex");

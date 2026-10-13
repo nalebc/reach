@@ -14,6 +14,7 @@ import { codexWaitingApproval } from "./codex-asks.mjs";
 import { codexUsage } from "./account-usage.mjs";
 import { olderVersion } from "./codex-daemon.mjs";
 import { readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
+import { fileHolders } from "../windows-owners.mjs";
 export { questionKey, questionReply, readQuestionReply, withQuestionReplies } from "./codex-questions.mjs";
 
 const exec = promisify(execFile);
@@ -189,8 +190,17 @@ export const CODEX_MODES = {
   auto: { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "user" },
   "guardian-approvals": { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" },
   "full-access": { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" },
+  "read-only": { approvalPolicy: "on-request", sandbox: "read-only", approvalsReviewer: "user" },
   custom: {},
 };
+
+export const isCodexMode = (mode) => typeof mode === "string" &&
+  (Object.hasOwn(CODEX_MODES, mode) || /^profile::?[\w.-]{1,80}$/.test(mode));
+
+// Named profiles go with the first turn, through Codex's permissions API.
+export const codexStartMode = (mode) => isCodexMode(mode)
+  ? (Object.hasOwn(CODEX_MODES, mode) ? CODEX_MODES[mode] : {})
+  : null;
 
 // The Codex app's permission menu, built from what Codex offers right now:
 // its permission profiles (only those allowed here) and whether "Approve for
@@ -325,8 +335,10 @@ export function withTurnNotes(items, turns, { olderPage = false, runningTurn = n
 // Which engine holds a thread right now. A hint for the phone ("open in the
 // Codex app"); sending finds out for real. Codex removes the lock file when
 // it lets go (verified), so most threads cost one stat.
-export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
+export async function codexHolder(id, { run = exec, locks = LOCKS, platform = process.platform, holders = fileHolders } = {}) {
   if (!UUID.test(id) || !fs.existsSync(path.join(locks, `${id}.lock`))) return null;
+  // Windows has no pgrep, lsof or ps (audit #46).
+  if (platform === "win32") return windowsHolder(path.join(locks, `${id}.lock`), holders);
   try {
     // Only Codex's own processes can hold it (the app's, its daemon, a
     // terminal's): lsof asked about those few, not about every process on the
@@ -346,6 +358,28 @@ export async function codexHolder(id, { run = exec, locks = LOCKS } = {}) {
   } catch {
     return null; // lsof exits 1 when nothing holds the file
   }
+}
+
+// On Windows, the processes holding the lock file as Restart Manager names
+// them (windows-owners.mjs), told apart by program as a Mac tells them: the
+// daemon by its command, the Codex app (ChatGPT.exe) as the parent, a
+// terminal by a shell or a terminal above it, else "other". A lookup that
+// fails answers as a Mac's does: no holder, so chats stay in sync and a
+// message goes as it would there (owner, Oct 12).
+const SHELLS = /^(?:cmd|powershell|pwsh|bash|sh|zsh|fish|nu|windowsterminal|openconsole|conhost|wezterm-gui|alacritty|mintty)\.exe$/i;
+async function windowsHolder(file, holders) {
+  let found;
+  try {
+    found = await holders(file);
+  } catch {
+    return null;
+  }
+  const holder = Array.isArray(found?.holders) ? found.holders[0] : null;
+  if (!holder || typeof holder !== "object") return null;
+  const parents = Array.isArray(holder.parents) ? holder.parents.map(String) : [];
+  if (/app-server-daemon/.test(`${holder.command || ""}\n${holder.image || ""}`)) return "daemon";
+  if (/^chatgpt\.exe$/i.test(parents[0] || "")) return "codex-app";
+  return parents.some((name) => SHELLS.test(name)) ? "terminal" : "other";
 }
 
 // Threads the Codex app (or a terminal) is running read "notLoaded" from the
@@ -404,17 +438,31 @@ export function sniffImage(data) {
   if (data.length >= 12 && data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
   return null;
 }
-export async function codexImageData(source, { readFile = fs.promises.readFile, stat = fs.promises.stat, maxBytes = 25 * 1024 * 1024 } = {}) {
+export async function codexImageData(source, { maxBytes = 25 * 1024 * 1024 } = {}) {
   let data = null;
   if (source?.type === "image" && typeof source.url === "string") {
     const m = /^data:(image\/[\w.+-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(source.url);
     if (m && IMAGE_TYPES.includes(m[1])) data = Buffer.from(m[2], "base64");
   } else if (source?.type === "localImage" && typeof source.path === "string" && path.isAbsolute(source.path)) {
-    const info = await stat(source.path).catch(() => null);
-    if (info?.isFile() && info.size <= maxBytes) data = await readFile(source.path).catch(() => null);
+    data = await imageFile(source.path, maxBytes).catch(() => null);
   }
   const type = data && data.length <= maxBytes ? sniffImage(data) : null;
   return type ? { type, data } : null;
+}
+// The file opened once, then measured and read as that open file: swapped or
+// grown after it's measured, it can't make Reach read past the limit or wait
+// on a pipe (CodeQL #163).
+async function imageFile(file, maxBytes) {
+  const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maxBytes) return null;
+    const chunks = [];
+    for await (const chunk of handle.createReadStream({ start: 0, end: maxBytes, autoClose: false })) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function createCodexSessions({
@@ -656,7 +704,7 @@ export function createCodexSessions({
         });
       return {
         models,
-        modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml" }],
+        modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml", switchable: false }],
         mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
       };
     },

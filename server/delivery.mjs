@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { rateLimit } from "express-rate-limit";
+import { agentSteps, agentStepsPage, wantsPage } from "./agent-steps.mjs";
 
 const accepts = (req, encoding) =>
   new RegExp(`(?:^|[\\s,])${encoding}(?:[\\s,;]|$)`).test(
@@ -18,7 +20,9 @@ export function setStartInfo(read) {
 // The built interface. Files under /assets carry a content hash in their name,
 // so they never change: cache them for a year and serve the copy precompressed
 // at build time. The page itself is revalidated on every open.
-export function serveBuild(app, express, dist) {
+// `agentStart`: this computer's public start page, where agent links point
+// (none: not on Tailscale, and /agent is the app as before).
+export function serveBuild(app, express, dist, { agentStart = () => "", platform = process.platform } = {}) {
   const send = (res, next, file, options = {}) =>
     res.sendFile(file, { root: dist, ...options }, (error) => {
       if (!error) return;
@@ -37,6 +41,28 @@ export function serveBuild(app, express, dist) {
   app.get("/agent-browser", (req, res, next) =>
     send(res, next, "agent.html", { headers: { "Cache-Control": "no-store" } }),
   );
+  // An agent's link opened from the tailnet (the same address as the public
+  // start page): its steps as text to a program, the start page with them in
+  // it to a browser, as public-start.mjs does for the internet.
+  // A page anyone on the tailnet can open: it reads start.html each time
+  // (the interface rebuilds while Reach runs), so at most 120 a minute.
+  const stepsLimit = rateLimit({
+    windowMs: 60_000, limit: 120, keyGenerator: () => "agent-steps",
+    standardHeaders: "draft-8", legacyHeaders: false, identifier: "agent-steps",
+    message: "Too many requests for this page. Try again in a minute.",
+  });
+  app.get("/agent", stepsLimit, (req, res, next) => {
+    const start = agentStart();
+    if (!start) return next();
+    const text = agentSteps(start, { platform });
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Vary", "Accept");
+    if (!wantsPage(req.headers.accept)) return res.type("text/plain; charset=utf-8").send(text);
+    fs.readFile(path.join(dist, "start.html"), "utf8", (error, html) => {
+      if (error) return next();
+      res.type("text/html; charset=utf-8").send(agentStepsPage(html, text));
+    });
+  });
   const exists = new Map();
   // Only found files are remembered: a miss (any name a client tries) is
   // looked up again, so the map can't grow without bound.

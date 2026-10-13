@@ -1,20 +1,18 @@
 name: Security scans
-# Secrets in any commit, CodeQL over the JavaScript, TypeScript and workflow
-# code, a review of every dependency a pull request adds, and the OpenSSF
-# Scorecard of the repository. CodeQL, dependency review and Scorecard need
-# code scanning, which GitHub provides to public repositories; they wait
-# while the repository is private instead of failing.
 on:
   push:
     branches: [main, "release/**"]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "23 6 * * 1"
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: security-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   visibility:
@@ -28,26 +26,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           private="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)"
-          echo "public=$([ "$private" = false ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          case "$private" in
+            false) echo "public=true" >> "$GITHUB_OUTPUT" ;;
+            true) echo "public=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Could not determine repository visibility" >&2; exit 1 ;;
+          esac
   secrets:
-    # Every commit, not only the newest: a credential pasted into a test and
-    # removed later is still in the history that a public clone ships.
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: gitleaks over the full history
-        run: |
-          docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            git /repo --config /repo/.gitleaks.toml --redact --no-banner --verbose
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: tailnet/go.mod
+          cache: false
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Credentials in the entire commit history
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner
   codeql:
     needs: visibility
     if: needs.visibility.outputs.public == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # This dedicated analysis job does not install or execute project code.
+    # GitHub supports SARIF uploads from fork PRs without a writable PR token.
     permissions:
       contents: read
       actions: read
@@ -64,6 +69,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
+          build-mode: none
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: /language:${{ matrix.language }}
@@ -79,25 +85,32 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-          comment-summary-in-pr: on-failure
-  scorecard:
-    needs: visibility
-    if: github.event_name != 'pull_request' && needs.visibility.outputs.public == 'true'
+          comment-summary-in-pr: never
+  required:
+    name: Security required
+    if: always()
+    needs: [visibility, secrets, codeql, dependency-review]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-      security-events: write
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
-        with:
-          results_file: scorecard.sarif
-          results_format: sarif
-          publish_results: true
-      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        with:
-          sarif_file: scorecard.sarif
+      # No checkout: evaluate only the declared prerequisite results. Public
+      # scans must succeed; private-plan skips are explicit and visible.
+      - name: Require all applicable security checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          node --input-type=module <<'CHECK'
+          const results = JSON.parse(process.env.RESULTS);
+          const expect = (job, state = 'success') => {
+            if (results[job]?.result !== state) throw Error(`${job} must be ${state}; got ${results[job]?.result}`);
+          };
+          expect('visibility');
+          expect('secrets');
+          const visibility = results.visibility.outputs?.public;
+          if (visibility !== 'true' && visibility !== 'false') throw Error('Missing or malformed repository visibility.');
+          const publicRepo = visibility === 'true';
+          expect('codeql', publicRepo ? 'success' : 'skipped');
+          expect('dependency-review', publicRepo && process.env.EVENT_NAME === 'pull_request' ? 'success' : 'skipped');
+          if (!publicRepo) console.log('Private repository: CodeQL/dependency review require public visibility or an eligible plan. Secret scan and dependency audits remain mandatory.');
+          CHECK

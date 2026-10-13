@@ -72,3 +72,18 @@ test("unsupported browser file invitations fail before credentials; owner and sc
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.text, "The owner's files still work.");
 });
+
+test("desktop agent presets require native desktop capability before issuing access", async t => {
+  const f = await fixture(t);
+  const before = f.reach.auth.list();
+  for (const preset of ["full", "apps", "readonly"]) {
+    const result = await f.call("/api/agents/browser-invitations", {
+      name: "Unavailable desktop", preset, ttlSeconds: 600, transport: "tailnet",
+      ...(preset === "full" ? { fullControlVersion: 1 } : {}),
+      ...(preset === "apps" ? { apps: [{ id: "/Applications/Safari.app" }] } : {}),
+    });
+    assert.equal(result.status, 503, JSON.stringify(result.body));
+    assert.match(result.body.error, /Screen access for agents/);
+    assert.deepEqual(f.reach.auth.list(), before, `${preset} must issue no credential without the native capability`);
+  }
+});

@@ -100,13 +100,13 @@ after(async () => {
   await dom?.close();
 });
 
-async function watch() {
+async function watch(platform = "darwin") {
   FakeSocket.all.length = 0;
   FakeDecoder.all.length = 0;
   let stream;
   function Host() {
     stream = useRemoteScreen(
-      { url: "https://reach.test", token: "t" },
+      { url: "https://reach.test", token: "t", platform },
       true,
       true,
       "primary",
@@ -460,6 +460,22 @@ test("a sleeping or locked Mac keeps the last picture, says why, and never count
     await dom.waitFor(() => !state().connecting);
     assert.equal(state().idle, "");
     assert.equal(state().cause, "");
+  } finally {
+    await view.unmount();
+  }
+});
+
+test("a locked Windows PC is said as one", async () => {
+  const { view, state } = await watch("win32");
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  socket.frame(1, keyframe);
+  FakeDecoder.all[0].shows();
+  await dom.waitFor(() => state().ready);
+  try {
+    socket.says({ type: "status", idle: "locked" });
+    await settle(5);
+    assert.equal(state().cause, "Windows PC locked");
   } finally {
     await view.unmount();
   }

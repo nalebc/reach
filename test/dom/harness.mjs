@@ -132,6 +132,9 @@ export async function startDom({
     update: (change) => flushSync(change),
     // A module as the app sees it: "/src/Screen.tsx".
     load: (file) => vite.ssrLoadModule(file),
+    // Inspect an entry that imported itself without starting a new import.
+    // Cleanup must still find its React root when a later assertion fails.
+    loadedModule: (file) => vite.moduleGraph.getModuleById(path.join(root, file).split(path.sep).join("/"))?.ssrModule ?? undefined,
     async render(element) {
       const container = window.document.createElement("div");
       window.document.body.append(container);

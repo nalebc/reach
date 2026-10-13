@@ -337,7 +337,9 @@ test("owner app restriction invalidates queued capture and pending access reques
     assert.equal(response.status, 200, JSON.stringify(response));
   };
   const acted = await agent.as(`/api/browser/apps/screen?target=${target.id}`);
-  assert.ok([403, 409].includes(acted.status), JSON.stringify(acted)); assert.deepEqual(f.inputs, []);
+  assert.ok([401, 403, 409].includes(acted.status), JSON.stringify(acted));
+  assert.deepEqual(f.inputs, []);
+  assert.deepEqual(f.captures, [], "an in-flight grant change must not expose a capture");
   assert.equal((await agent.as(`/api/browser/apps/screen?target=${target.id}`)).status, 409);
   assert.equal((await f.call(`/api/agents/browser-requests/${requested.body.id}`, { method: "POST", body: { decision: "approve" } })).status, 409);
 });

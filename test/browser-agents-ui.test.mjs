@@ -95,6 +95,8 @@ function mock({
   requests = [],
   history = [],
   admissions = [],
+  actions = [],
+  responses = {},
   mutate,
   fail,
 } = {}) {
@@ -107,6 +109,7 @@ function mock({
       body: init.body && JSON.parse(init.body),
       host: new URL(url).hostname,
     });
+    if (responses[route]) return responses[route](new URL(url), init);
     if (init.method === "POST")
       return (
         mutate?.(route, JSON.parse(init.body), init) ||
@@ -122,6 +125,7 @@ function mock({
     if (route === "/api/agents/browser-requests") return reply(requests);
     if (route === "/api/agents/browser-terminal-history") return reply(history);
     if (route === "/api/agents/admissions") return reply(admissions);
+    if (route === "/api/agents/actions") return reply({ actions: typeof actions === "function" ? actions(new URL(url)) : actions, more: false });
     return reply({}, 404);
   };
   return calls;
@@ -134,6 +138,94 @@ const element = (props = {}) =>
     ...props,
   });
 const panel = (view) => view.container.querySelector(".ag-embedded");
+const historyWarning = /Some activity or connection requests could not be loaded/;
+
+test("successful activity responses show the agent's actions without a load warning", async () => {
+  mock({
+    agents: [session("one")],
+    actions: [{ id: "action-one", at: Date.now(), kind: "open", text: "Opened Google Chrome", app: "Google Chrome", ok: true }],
+  });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => view.container.querySelector(".ba-did"));
+  assert.match(view.container.textContent, /Opened Google Chrome/);
+  assert.equal(view.container.querySelector(".ag-fold-count").textContent, "1");
+  assert.doesNotMatch(view.container.textContent, historyWarning);
+});
+
+test("empty activity and an older computer without an action log show no load warning", async () => {
+  for (const responses of [{}, { "/api/agents/actions": () => reply({}, 404) }]) {
+    mock({ agents: [session("one")], responses });
+    const view = await render(element({ focus: "one" }));
+    await dom.waitFor(() => view.container.querySelector(".ag-facts"));
+    assert.match(view.container.textContent, /Nothing yet/);
+    assert.doesNotMatch(view.container.textContent, historyWarning);
+    await view.unmount();
+    views.delete(view);
+  }
+});
+
+test("failed or malformed history, requests, admissions and actions still show a load warning", async () => {
+  for (const route of ["/api/agents/browser-requests", "/api/agents/browser-terminal-history", "/api/agents/admissions", "/api/agents/actions"]) {
+    for (const response of [() => reply({ error: "Unavailable" }, 503), () => reply(null)]) {
+      mock({ agents: [session("one")], responses: { [route]: response } });
+      const view = await render(element({ focus: "one" }));
+      await dom.waitFor(() => view.container.querySelector(".ag-facts"));
+      assert.match(view.container.textContent, historyWarning, route);
+      await view.unmount();
+      views.delete(view);
+    }
+  }
+});
+
+test("the load warning clears when the next refresh succeeds", async () => {
+  mock({ agents: [session("one")], responses: { "/api/agents/actions": () => reply({}, 503) } });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => historyWarning.test(view.container.textContent));
+  const calls = mock({ agents: [session("one")] });
+  await dom.waitFor(() => calls.some((call) => call.route === "/api/agents/actions"), 5000);
+  await dom.waitFor(() => !historyWarning.test(view.container.textContent));
+});
+
+test("a stalled activity request times out and the next poll recovers", async (t) => {
+  const deadlines = [], polls = [];
+  const realTimeout = globalThis.setTimeout, realInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 35000) deadlines.push(callback);
+    return realTimeout(callback, ms, ...args);
+  });
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 3000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  mock({ agents: [session("one")], responses: {
+    "/api/agents/actions": (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }),
+  } });
+  const view = await render(element({ focus: "one" }));
+  assert.equal(deadlines.length, 1, "the view's cancellation signal must not disable the request deadline");
+  deadlines[0]();
+  await dom.waitFor(() => historyWarning.test(view.container.textContent));
+  mock({ agents: [session("one")] });
+  polls[0]();
+  await dom.waitFor(() => !historyWarning.test(view.container.textContent));
+  assert.equal(deadlines.length, 2, "retry has a fresh deadline");
+});
+
+test("a null sessions response reports a failure and recovers instead of leaving the panel loading", async (t) => {
+  const polls = [], realInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 3000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  mock({ responses: { "/api/browser/agents": () => reply(null) } });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => /Agent sessions could not be loaded/.test(view.container.textContent));
+  mock({ agents: [session("one")] });
+  polls[0]();
+  await dom.waitFor(() => view.container.querySelector(".ag-facts"));
+  assert.doesNotMatch(view.container.textContent, /could not be loaded/);
+});
 
 // One agent's panel inside its sheet on Agents & people.
 test("same-name agents keep their own folders, requests and activity; a review names its session", async () => {
@@ -216,6 +308,47 @@ test("switching computers drops the old computer's review and shows the new one'
   assert.doesNotMatch(dom.document.body.textContent, /Allow Muse/);
 });
 
+test("switching agents on the same computer drops the previous activity and review", async () => {
+  let changeFocus;
+  const calls = mock({
+    agents: [session("first"), session("second")], requests: [approval("first")],
+    actions: (url) => [{ id: "action", at: Date.now(), kind: "open", text: `${url.searchParams.get("clientId")} activity`, ok: true }],
+  });
+  function Host() {
+    const [focus, setFocus] = React.useState("first");
+    changeFocus = setFocus;
+    return element({ focus });
+  }
+  const view = await render(React.createElement(Host));
+  await dom.waitFor(() => /first activity/.test(view.container.textContent));
+  await click(button(view.container, "Review"));
+  dom.update(() => changeFocus("second"));
+  assert.doesNotMatch(view.container.textContent, /first activity/);
+  assert.doesNotMatch(dom.document.body.textContent, /Allow Muse/);
+  await dom.waitFor(() => /second activity/.test(view.container.textContent), 1000);
+  assert.equal(calls.filter((call) => call.route === "/api/agents/actions").length, 2);
+});
+
+test("history cannot supply an actionable approval when the live queue is missing or unavailable", async () => {
+  for (const responses of [{}, { "/api/agents/browser-requests": () => reply({}, 503) }]) {
+    mock({ agents: [session("one")], history: [approval("one")], responses });
+    const view = await render(element({ focus: "one" }));
+    await dom.waitFor(() => view.container.querySelector(".ag-facts"));
+    assert.equal(!!button(view.container, "Review"), false, "only the live queue can offer approval");
+    await view.unmount(); views.delete(view);
+  }
+});
+
+test("losing the live approval queue closes its review even if history still has the request", async () => {
+  mock({ agents: [session("one")], requests: [approval("one")] });
+  const view = await render(element({ focus: "one" }));
+  await click(await dom.waitFor(() => button(view.container, "Review")));
+  mock({ agents: [session("one")], history: [approval("one")], responses: { "/api/agents/browser-requests": () => reply({}, 503) } });
+  await dom.waitFor(() => historyWarning.test(view.container.textContent), 5000);
+  assert.doesNotMatch(dom.document.body.textContent, /Allow Muse/);
+  assert.equal(!!button(view.container, "Review"), false);
+});
+
 test("a failed refresh says so and disables the panel's actions", async () => {
   mock({ agents: [session("one", { preset: "full", policy: { ...session("one").policy, preset: "full" } })] });
   const view = await render(element({ focus: "one" }));
@@ -243,10 +376,10 @@ test("agent invite preselection opens browser permissions without advanced MCP a
   const view = await render(
     React.createElement(InviteSheet, { peer, device, initialKind: "browser" }),
   );
-  // An agent's invitation opens on its one question, connecting with Tools.
+  // An agent's invitation opens on its presets, connecting with a command (Tools).
   await dom.waitFor(() => view.container.querySelector('[aria-label="AI browser invitation"] [aria-label="Access preset"]'));
-  const connects = [...view.container.querySelectorAll(".ivt-row")].find((r) => r.textContent.includes("Connects"));
-  assert.equal(connects.querySelector(".ivt-menu-button").textContent, "Tools");
+  const command = view.container.querySelector('[aria-label="How the agent connects"] [aria-checked="true"]');
+  assert.equal(command.textContent.trim(), "Command");
   assert.doesNotMatch(
     view.container.textContent,
     /Unrestricted command access/,
@@ -278,7 +411,7 @@ test("a pending connection is reviewed from its panel, with its session code", a
   assert.match(review.textContent, /ABCD-1234/);
 });
 
-test("without a focus: only ended agents, newest first, each opening to what it could use", async () => {
+test("without a focus: the Ended page lists only ended agents, newest first, each opening its own page", async () => {
   mock({
     agents: [
       session("aaaaaaaa1111", { name: "Muse" }),
@@ -291,19 +424,108 @@ test("without a focus: only ended agents, newest first, each opening to what it 
       }),
     ],
   });
-  const view = await render(element());
+  const opened = [], back = [];
+  const view = await render(element({ onOpen: (id) => opened.push(id), onBack: () => back.push(1) }));
   const c = view.container;
   await dom.waitFor(() => c.querySelector('[data-agent-id="cccccccc3333"]'));
-  const names = [...c.querySelectorAll(".ag-agent-title strong")].map((e) => e.textContent);
+  assert.doesNotMatch(c.textContent, historyWarning);
+  assert.equal(c.querySelector(".sub-page h1").textContent, "Ended");
+  const names = [...c.querySelectorAll(".ag-ended-row .gs-label strong")].map((e) => e.textContent);
   assert.deepEqual(names, ["Researcher", "Older"]);
   const researcher = c.querySelector('[data-agent-id="cccccccc3333"]');
-  assert.match(researcher.querySelector(".ag-pill").textContent, /Expired/);
-  assert.match(c.querySelector('[data-agent-id="bbbbbbbb2222"] .ag-pill').textContent, /Stopped/);
-  assert.doesNotMatch(researcher.querySelector(".ag-agent-title small").textContent, /cccc3333/);
-  assert.equal(researcher.querySelector(".ag-agent-body").hidden, true);
-  await click(researcher.querySelector(".ag-agent-head"));
-  assert.match(researcher.querySelector(".ag-facts").textContent, /\/Users\/me\/Notes/);
-  assert.equal(button(researcher, "Pause"), undefined);
+  assert.match(researcher.querySelector(".gs-label small").textContent, /^Expired · /);
+  assert.match(c.querySelector('[data-agent-id="bbbbbbbb2222"] .gs-label small').textContent, /^Stopped/);
+  assert.doesNotMatch(researcher.querySelector(".gs-label small").textContent, /cccc3333/);
+  await click(researcher);
+  assert.deepEqual(opened, ["cccccccc3333"]);
+  await click([...c.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back to Agents & people"));
+  assert.equal(back.length, 1);
+});
+
+test("an ended agent's page shows who it was, what it could use and did, and no Pause", async () => {
+  mock({
+    agents: [session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000, folders: ["/Users/me/Notes"] })],
+  });
+  const view = await render(element({ focus: "cccccccc3333", ended: true }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector(".ag-facts"));
+  assert.equal(c.querySelector(".ppl-hero h1").textContent, "Researcher");
+  assert.match(c.querySelector(".ppl-hero small").textContent, /^Expired · /);
+  assert.match(c.querySelector(".ag-facts").textContent, /\/Users\/me\/Notes/);
+  assert.match(c.textContent, /No activity recorded\./);
+  assert.equal(c.querySelector("details.ba-history"), null, "activity shows open, no fold");
+  assert.equal(button(c, "Pause"), undefined);
+  assert.ok(c.querySelector('[aria-label="Back to Ended"]'));
+});
+
+test("Clear all asks in Reach's own sheet and clears only what the Mac cleared", async () => {
+  let list = [
+    session("aaaaaaaa1111", { name: "Muse" }),
+    session("bbbbbbbb2222", { name: "Older", status: "revoked", expiresAt: Date.now() - 3600000 }),
+    session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000 }),
+  ];
+  const calls = mock({
+    agents: () => list,
+    // The Mac keeps one: it came back while you were asked.
+    mutate: (route, body) => {
+      list = list.filter((agent) => agent.id !== "cccccccc3333");
+      return reply({ cleared: ["cccccccc3333"], kept: ["bbbbbbbb2222"] });
+    },
+  });
+  const toasts = [];
+  dom.window.confirm = globalThis.confirm = () => assert.fail("no browser confirm");
+  const view = await render(element({ toast: (t) => toasts.push(t) }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector('[data-agent-id="cccccccc3333"]'));
+  await click(button(c, "Clear all"));
+  const sheet = dom.document.querySelector(".confirm-sheet");
+  assert.match(sheet.textContent, /Clear 2 ended agents\?/);
+  assert.match(sheet.textContent, /Their activity goes too\./);
+  assert.equal(dom.document.activeElement?.textContent, "Cancel", "Cancel takes focus");
+  await click(button(sheet, "Cancel"));
+  assert.equal(dom.document.querySelector(".confirm-sheet"), null);
+  assert.equal(calls.filter((x) => x.method === "POST").length, 0);
+  await click(button(c, "Clear all"));
+  await click(button(dom.document.querySelector(".confirm-sheet"), "Clear all"));
+  assert.deepEqual(calls.filter((x) => x.method === "POST").map((x) => [x.route, x.body]), [
+    ["/api/browser/agents/clear", { clientIds: ["cccccccc3333", "bbbbbbbb2222"] }],
+  ]);
+  await dom.waitFor(() => !c.querySelector('[data-agent-id="cccccccc3333"]'));
+  assert.ok(c.querySelector('[data-agent-id="bbbbbbbb2222"]'), "one the Mac kept stays listed");
+  assert.deepEqual(toasts, ["1 wasn’t cleared. It’s active again."]);
+});
+
+test("Clear on an ended agent's page asks, clears it and goes back to Ended", async () => {
+  let list = [session("cccccccc3333", { name: "Researcher", status: "expired", expiresAt: Date.now() - 60000 })];
+  mock({
+    agents: () => list,
+    mutate: (route, body) => {
+      list = [];
+      return reply({ cleared: body.clientIds, kept: [] });
+    },
+  });
+  const toasts = [], back = [];
+  const view = await render(element({ focus: "cccccccc3333", ended: true, toast: (t) => toasts.push(t), onBack: () => back.push(1) }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector(".ag-facts"));
+  await click(button(c, "Clear"));
+  const sheet = dom.document.querySelector(".confirm-sheet");
+  assert.match(sheet.textContent, /Clear Researcher\?/);
+  assert.match(sheet.textContent, /Its activity goes too\./);
+  await click(button(sheet, "Clear"));
+  await dom.waitFor(() => back.length === 1);
+  await settle(50);
+  assert.equal(back.length, 1, "back once, not twice");
+  assert.deepEqual(toasts, ["Researcher cleared"]);
+});
+
+test("an empty Ended page says so, without Clear all", async () => {
+  mock({ agents: [session("aaaaaaaa1111", { name: "Muse" })] });
+  const view = await render(element());
+  const c = view.container;
+  await dom.waitFor(() => /No ended agents/.test(c.textContent));
+  assert.match(c.textContent, /Agents show up here when their access ends\./);
+  assert.equal(button(c, "Clear all"), undefined);
 });
 
 test("agent session UI emits no React warnings", () =>

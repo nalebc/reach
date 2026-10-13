@@ -108,3 +108,24 @@ test("computer-wide browsing still blocks Reach state and confines guests and ag
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
+
+// Files hides what the computer's own browser hides (parity audit #29):
+// Finder's dot-names on a Mac; on Windows what Explorer hides, by name and
+// place, since Node can't read the hidden and system attributes.
+test("Files hides what Finder or Explorer hides, and only there", async () => {
+  const { hiddenByOs } = await import("../server/file-roots.mjs");
+  const mac = (name, dir = "/Users/sam") => hiddenByOs(name, dir, { platform: "darwin", home: "/Users/sam" });
+  assert.equal(mac(".git"), true);
+  assert.equal(mac("Library"), false);
+  assert.equal(mac("AppData"), false, "a Mac keeps its own rule");
+  const win = (name, dir) => hiddenByOs(name, dir, { platform: "win32", home: "C:\\Users\\Sam" });
+  for (const name of ["AppData", "NTUSER.DAT", "ntuser.dat.LOG1", "NTUSER.DAT{016888bd-6c6f-11de-8d1d-001e0bcde3ec}.TM.blf", "ntuser.ini", "Application Data", "Start Menu"])
+    assert.equal(win(name, "C:\\Users\\sam"), true, name);
+  for (const name of ["$Recycle.Bin", "System Volume Information", "ProgramData", "pagefile.sys", "Documents and Settings"])
+    assert.equal(win(name, "D:\\"), true, name);
+  assert.equal(win("desktop.ini", "C:\\Users\\Sam\\Pictures"), true);
+  assert.equal(win(".env", "C:\\Users\\Sam\\code"), true);
+  // The same names elsewhere are someone's own.
+  for (const [name, dir] of [["Templates", "C:\\Users\\Sam\\code"], ["Recovery", "C:\\Users\\Sam\\Documents"], ["ProgramData", "C:\\Users\\Sam"], ["Documents", "C:\\Users\\Sam"], ["Program Files", "C:\\"]])
+    assert.equal(win(name, dir), false, `${dir}\\${name}`);
+});

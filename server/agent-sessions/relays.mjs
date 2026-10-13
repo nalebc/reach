@@ -111,7 +111,7 @@ export function agentChats(sessions, openClaw) {
 // reads only: Codex's read-only sandbox, Claude Code in Manual (it asks you
 // before any edit or command). A builder works at each app's middle setting:
 // Codex's Approve for me when it's on (else Ask for approval), Claude Code's
-// Accept edits. Never Full access or Bypass.
+// Auto. Never Full access or Bypass.
 export const REVIEW_MODES = {
   codex: { approvalPolicy: "on-request", sandbox: "read-only", approvalsReviewer: "user", modeName: "read-only" },
   claude: { mode: "manual" },
@@ -120,7 +120,7 @@ export async function startMode(step, offered = async () => []) {
   // OpenClaw has no mode Reach sets: its own tool rules and approvals apply.
   if (step.agent === "openclaw") return {};
   if (step.kind === "review") return REVIEW_MODES[step.agent];
-  if (step.agent === "claude") return { mode: "acceptEdits" };
+  if (step.agent === "claude") return { mode: "auto" };
   const ids = await Promise.resolve()
     .then(() => offered("codex"))
     .catch(() => []);

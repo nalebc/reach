@@ -10,13 +10,29 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { stateDir } from "./home.mjs";
 
-// The processes now: id, parent, terminal, command line.
-export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20 })) {
-  return String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]))
+export class ProcessInventoryError extends Error {
+  constructor(cause) {
+    super("Can't determine whether Reach is running: the system process list is unavailable. Run this command in Terminal or allow process inspection in this shell.", { cause });
+    this.code = "REACH_PROCESS_INVENTORY_UNAVAILABLE";
+  }
+}
+
+// The processes now: id, parent, terminal, command line. An unavailable
+// inventory is unknown, never evidence that it is safe to start another Reach.
+export function processTable(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20, timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })) {
+  let output;
+  try {
+    output = String(run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="]));
+  } catch (error) {
+    throw new ProcessInventoryError(error);
+  }
+  const table = output
     .split("\n")
     .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
     .filter(Boolean)
     .map(([, pid, ppid, tty, command]) => ({ pid: Number(pid), ppid: Number(ppid), tty, command }));
+  if (output.trim() && !table.length) throw new ProcessInventoryError(Error("Unrecognized process inventory."));
+  return table;
 }
 
 const SHELLS = new Set(["zsh", "bash", "sh", "fish", "tcsh", "csh", "ksh", "dash", "nu", "pwsh"]);
@@ -206,18 +222,53 @@ const pidAlive = (pid) => {
     return error.code === "EPERM";
   }
 };
-export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive } = {}) {
+// When Windows last started, in seconds (it has no boot id to read, as macOS
+// and Linux do). Two readings within two minutes are the same boot.
+export const windowsBootTime = (now = Date.now(), uptime = os.uptime()) => Math.round(now / 1000 - uptime);
+export const sameBoot = (a, b) =>
+  typeof a === "number" && typeof b === "number" ? Math.abs(a - b) <= 120 : a === b;
+// A Windows process's program ("node.exe"), from tasklist: "" when no process
+// has that id, null when tasklist can't say. Windows hands a finished
+// process's id to the next one within minutes, so an id alone names nothing.
+export function windowsImage(
+  pid,
+  run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true }),
+) {
+  let out;
+  try {
+    out = String(run("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]));
+  } catch {
+    return null;
+  }
+  const row = out.match(/^"([^"]+)","(\d+)"/m);
+  return row && Number(row[2]) === pid ? row[1].toLowerCase() : "";
+}
+// Whether a recorded Windows Reach still runs: its process lives, in the same
+// boot, and is still Node (Oct 12: after a crash or reboot, an unrelated
+// program with a reused id was "Reach", and stop would have ended it).
+export function windowsReachAlive(record, { alive = pidAlive, image = windowsImage, boot = windowsBootTime } = {}) {
+  if (!Number.isInteger(record?.pid) || record.pid <= 0 || !alive(record.pid)) return false;
+  if (typeof record.boot === "number" && !sameBoot(record.boot, boot())) return false;
+  const name = image(record.pid);
+  return name === null || name === "node.exe";
+}
+export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive, image = windowsImage, boot = windowsBootTime } = {}) {
   let host = null;
   try {
     host = JSON.parse(read(path.join(state, "host-status.json")));
   } catch {}
-  return Number.isInteger(host?.pid) && host.pid > 0 && alive(host.pid) ? host : null;
+  return windowsReachAlive(host, { alive, image, boot }) ? host : null;
 }
 export function windowsStatusText(host, { command = "reach", now } = {}) {
   if (!host) return `Reach isn't running from this folder. Start it with ${command}.`;
   const since = clock(host.startedAt, now);
   const url = host.link || host.origin;
-  return [`Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`, ...(url ? [`Link: ${url}`] : [])].join("\n");
+  return [
+    `Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`,
+    ...(url ? [`Link: ${url}`] : []),
+    // Started with REACH_WINDOWS_ACCOUNT=1, then fell back to pairing codes.
+    ...(typeof host.signInOff === "string" && host.signInOff ? [`Browser sign-in is off for now: ${host.signInOff}`] : []),
+  ].join("\n");
 }
 // Windows has no signals to ask with (Node ends a process there outright):
 // `stop` leaves this file, and the running Reach stops as Ctrl+C stops it.

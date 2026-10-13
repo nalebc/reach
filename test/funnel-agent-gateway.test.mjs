@@ -449,7 +449,7 @@ test("a public request can reach only explicitly granted browser APIs, with no a
   // their screen, input, apps, shell and file changes pass; nothing else new does.
   // The gateway still applies each invitation's own allowlist, so a Full
   // control invitation is claimed and admitted here.
-  const presetReceipt = await f.claim(f.auth.inviteBrowser({ name: "Muse", ttlSeconds: 600, preset: "full", transport: "funnel" }));
+  const presetReceipt = await f.claim(f.auth.inviteBrowser({ name: "Muse", ttlSeconds: 600, preset: "full", fullControlVersion: 1, transport: "funnel" }));
   f.auth.decideAgentAdmission(presetReceipt.requestId, "approve");
   const admitted = await f.call(signed(f.key, { operation: "status", requestId: presetReceipt.requestId, secret: presetReceipt.requestSecret }));
   assert.equal(admitted.body.status, "approved");

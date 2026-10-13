@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import { desktopBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
-import { hiddenControls, nativeRules, protectedPathReason, typedTextRefusal } from "./agent-guard.mjs";
+import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typedTextRefusal, windowsProgramFile } from "./agent-guard.mjs";
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
 // (scripts/native/agent-desktop.swift): one helper process per agent session,
@@ -15,7 +16,7 @@ import { createAgentPauses } from "./agent-pauses.mjs";
 // reads, serialised per agent (a second request shares or waits for the first). The owner's own hands (checked natively) and the
 // owner's phone (checked here) always come first.
 const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 };
-const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked" });
+const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked", ...(Array.isArray(value.candidates) ? { candidates: value.candidates.slice(0, 8) } : {}) });
 const number = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", "escape", "esc", "left", "right", "down", "up", "forwarddelete", "home", "end", "pageup", "pagedown",
   "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", ..."abcdefghijklmnopqrstuvwxyz0123456789", "=", "-", "]", "[", "'", ";", "\\", ",", "/", ".", "`"]);
@@ -24,6 +25,21 @@ const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", 
 export const SHOTS_PER_SECOND = 10;
 const MODIFIERS = new Set(["cmd", "command", "meta", "shift", "option", "alt", "control", "ctrl"]);
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+// Agents name modifiers as on a Mac. On Windows, in this one place: ⌘ (cmd,
+// command, meta) and control are Ctrl, option is Alt, shift is Shift. A Mac's
+// helper gets the names unchanged.
+const WINDOWS_MODIFIERS = { cmd: "ctrl", command: "ctrl", meta: "ctrl", control: "ctrl", ctrl: "ctrl", option: "alt", alt: "alt", shift: "shift" };
+/** Mac modifier names as Windows keys, each once, in Windows' order (Ctrl, Alt, Shift). An unknown name is refused, never dropped. */
+export function windowsModifiers(modifiers) {
+  if (!Array.isArray(modifiers)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+  const keys = modifiers.map((name) => {
+    if (typeof name !== "string" || !Object.hasOwn(WINDOWS_MODIFIERS, name)) throw fail(400, "Modifiers are cmd, shift, option or control.");
+    return WINDOWS_MODIFIERS[name];
+  });
+  return ["ctrl", "alt", "shift"].filter((key) => keys.includes(key));
+}
+/** A normalized action as the Windows helper takes it: only its modifiers change. */
+export const windowsAction = (action) => (action.modifiers === undefined ? action : { ...action, modifiers: windowsModifiers(action.modifiers) });
 
 /** The exact action shapes an agent may send; anything else is refused before the Mac sees it. */
 /** Reach's own addresses on this Mac: the agent may never open them. */
@@ -42,8 +58,9 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 // title, then what is there in reading order, each control inline as
 // [n] Role "name" (= what a field holds), clickable by its number.
 const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
-export function describeScreen({ app = "", title = "", snapshot = "", items = [], texts = [], truncated = false } = {}) {
-  const control = (item) => `[${item.n}] ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
+  const control = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+    (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
     (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
@@ -58,7 +75,8 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
   }
   for (const row of rows) row.parts = row.parts.sort((a, b) => a.x - b.x).map((entry) => entry.line);
   const head = [`${app}${title ? ` — ${title}` : ""}`,
-    snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : "", ""];
+    (windowRef ? `Window ${windowRef}${displayId ? ` · display ${displayId}` : ""}. Controls have stable refs: reach_act {"action":{"type":"element","ref":"e-…"}}. ` : "") +
+    (snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : ""), ""];
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
   const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
   const form = fields.length
@@ -70,12 +88,13 @@ export function describeScreen({ app = "", title = "", snapshot = "", items = []
 // The numbered controls and visible text as the agent receives them, bounded,
 // from what the helper read (elements, find).
 const fractionOf = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-const tabList = (tabs) => tabs.slice(0, 40).filter((tab) => plain(tab) && typeof tab.title === "string" && tab.title).map((tab) => ({ title: tab.title.slice(0, 120), selected: tab.selected === true }));
+const nativeRef = value => typeof value === "string" && /^[ewt]-[a-f0-9-]{1,38}$/.test(value);
+const tabList = (tabs) => tabs.slice(0, 40).filter((tab) => plain(tab) && typeof tab.title === "string" && tab.title).map((tab) => ({ title: tab.title.slice(0, 120), selected: tab.selected === true, ...(nativeRef(tab.ref) ? { ref: tab.ref } : {}) }));
 export function shapeElements(result) {
   const fraction = fractionOf;
   const items = (Array.isArray(result.items) ? result.items : []).slice(0, 250)
     .filter((item) => Number.isInteger(item?.n))
-    .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 60), secure: item.secure === true,
+    .map((item) => ({ n: item.n, role: String(item.role || "").slice(0, 40), name: String(item.name || "").slice(0, 120), ...(nativeRef(item.ref) ? { ref: item.ref } : {}), ...(typeof item.context === "string" ? { context: item.context.slice(0, 400) } : {}), secure: item.secure === true,
       // What a field holds is on screen already; never a password field's.
       ...(typeof item.value === "string" && item.value && item.secure !== true ? { value: item.value.slice(0, 120) } : {}),
       x: fraction(item.x), y: fraction(item.y), w: fraction(item.w), h: fraction(item.h) }));
@@ -83,17 +102,22 @@ export function shapeElements(result) {
   let budget = 20000;
   const texts = (Array.isArray(result.texts) ? result.texts : []).slice(0, 500)
     .filter((line) => typeof line?.text === "string" && line.text)
-    .map((line) => ({ text: line.text.slice(0, 300), ...(line.heading === true ? { heading: true } : {}),
+    .map((line) => ({ text: line.text.slice(0, 300), ...(typeof line.context === "string" ? { context: line.context.slice(0, 400) } : {}), ...(line.heading === true ? { heading: true } : {}),
       x: fraction(line.x), y: fraction(line.y), w: fraction(line.w), h: fraction(line.h) }))
     .filter((line) => (budget -= line.text.length) >= 0);
   // The form at a glance: its fields, for reach_fill in one call.
   const fields = items.filter((item) => FIELD_ROLES.has(item.role))
     .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
-  return { snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
+  return { ...(nativeRef(result.windowRef) ? { windowRef: result.windowRef } : {}), ...(Number.isSafeInteger(result.revision) ? { revision: result.revision } : {}), ...(Number.isInteger(result.displayId) ? { displayId: result.displayId } : {}), snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
     title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
 }
 
 export function normalizeAction(value) {
+  if (plain(value) && value.displayId !== undefined) {
+    const { displayId, ...rest } = value;
+    if (!Number.isInteger(displayId) || displayId < 1 || displayId > 4294967295) throw fail(400, "Choose a display from reach_displays.");
+    return { ...normalizeAction(rest), displayId };
+  }
   if (!plain(value) || typeof value.type !== "string") throw fail(400, "Choose one action: click, move, drag, scroll, type or key.");
   const keys = Object.keys(value);
   const only = (...allowed) => { if (keys.some((key) => !allowed.includes(key))) throw fail(400, `A ${value.type} action takes only ${allowed.join(", ")}.`); };
@@ -160,7 +184,13 @@ export function normalizeAction(value) {
     }
     // A numbered label from elements(): clicked at its live center natively.
     case "element": {
-      only("type", "snapshot", "n", "button", "count", "holdMs");
+      only("type", "snapshot", "n", "ref", "button", "count", "holdMs");
+      if (value.ref !== undefined) {
+        if (!nativeRef(value.ref) || !value.ref.startsWith("e-") || value.snapshot !== undefined || value.n !== undefined) throw fail(400, "Choose a control by ref, or snapshot and number.");
+        const normalized = normalizeAction({ ...value, ref: undefined, snapshot: "validation", n: 1 });
+        const { snapshot, n, ref, ...rest } = normalized;
+        return { ...rest, ref: value.ref };
+      }
       if (typeof value.snapshot !== "string" || !/^[a-z0-9-]{1,40}$/i.test(value.snapshot)) throw fail(400, "Look at the labels again.");
       if (!Number.isInteger(value.n) || value.n < 1 || value.n > 500) throw fail(400, "Choose a label number.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
@@ -170,13 +200,14 @@ export function normalizeAction(value) {
     // A control by its name, as the screen describes it (press), and a form's
     // fields by their labels, typed in one go (fill): found on the Mac.
     case "press": {
-      only("type", "name", "role", "button", "count", "holdMs");
+      only("type", "name", "role", "within", "button", "count", "holdMs");
+      if (value.within !== undefined && (typeof value.within !== "string" || !value.within.trim() || value.within.length > 200 || hiddenControls.test(value.within))) throw fail(400, "Name the containing region, up to 200 characters.");
       const name = typeof value.name === "string" ? value.name.trim() : "";
       if (!name || name.length > 120 || hiddenControls.test(name)) throw fail(400, "Name the control, up to 120 characters.");
       if (value.role !== undefined && (typeof value.role !== "string" || !/^[A-Za-z]{1,40}$/.test(value.role))) throw fail(400, "Give the control's role as one word, such as Button.");
       if (value.button !== undefined && !["left", "right"].includes(value.button)) throw fail(400, "Click with the left or right button.");
       if (value.count !== undefined && ![1, 2, 3].includes(value.count)) throw fail(400, "Click once, twice or three times.");
-      return { type: "press", name, ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
+      return { type: "press", name, ...(value.within ? { within: value.within } : {}), ...(value.role ? { role: value.role } : {}), ...(value.button ? { button: value.button } : {}), ...(value.count ? { count: value.count } : {}), ...hold() };
     }
     case "fill": {
       only("type", "fields", "submit", "replace", "paste");
@@ -203,7 +234,7 @@ const HELPER_FAILURES = {
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
-const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file"]);
+const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]);
 const helperFailure = (reason, request, dispatched = false) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
@@ -320,9 +351,25 @@ export function createAgentDesktop(config, {
   spawnHelper,
   now = Date.now,
   leaseMs = 2500,
-  // Where the owner's pauses are kept across restarts (agent-pauses.mjs).
+  // The owner's pauses (agent-pauses.mjs): Reach's one store, made on every
+  // computer whether or not this service exists (server/index.mjs). Without
+  // it, a store of its own, kept in pausesFile. With neither, no desktop: a
+  // store made here, in memory only, would be one Reach's pause route never
+  // writes to, and a paused agent would keep its hands.
+  pauses = null,
   pausesFile = null,
+  // Whose names for apps and files the agent gives (app-identity.mjs): a
+  // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
+  platform = process.platform,
 } = {}) {
+  if (pauses ? !["has", "set", "list", "add", "prune"].every((name) => typeof pauses[name] === "function") : !pausesFile)
+    throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
+  const windows = platform === "win32";
+  // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
+  // path or a Store app's id.
+  const appTarget = (value) => windows
+    ? windowsExePath(value) || windowsAppId(value)
+    : typeof value === "string" && value.startsWith("/") && value.endsWith(".app") && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
   // When each agent last looked at the screen. Looking never holds the Mac:
@@ -333,7 +380,7 @@ export function createAgentDesktop(config, {
   const capturing = new Map(); // clientId -> { width, promise } of the capture running now
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
-  const pausedAgents = createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
+  const pausedAgents = pauses || createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
   const start = async (rules) => {
@@ -365,7 +412,7 @@ export function createAgentDesktop(config, {
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
     if (!state) {
-      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home });
+      const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
       const helper = await start(rules);
       state = { helper, fingerprint: fp, rules };
       // The policy may have changed while the helper started.
@@ -392,7 +439,12 @@ export function createAgentDesktop(config, {
   const answer = (value) => { if (!value || value.error) throw refusal(value || {}); return value; };
   const checkInputAllowed = (client) => {
     if (pausedAgents.has(client.id)) throw Object.assign(fail(409, "The owner paused this agent. It can look, not touch, until they resume it."), { kind: "paused" });
-    if (phoneControls()) throw Object.assign(fail(409, "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
+    // A person controlling from their phone: you, or someone you invited
+    // (the name it gives). The agent waits until they let go.
+    const person = phoneControls();
+    if (person) throw Object.assign(fail(409, typeof person === "string"
+      ? `${person} is controlling the Mac. The agent waits until they let go.`
+      : "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
     if (automationControls()) throw Object.assign(fail(409, "A chat is updating its desktop app. Wait for that operation to finish, then check the screen."), { kind: "busy", holder: "Desktop automation", retryInMs: 1000 });
   };
   // One agent at a time on the Mac. Holding it is short: each action extends it.
@@ -409,6 +461,14 @@ export function createAgentDesktop(config, {
   };
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
+  // The owner paused this agent: it lets go of the Mac. A hold or slow drag
+  // already sent lets go now (the helper releases what it holds on stop),
+  // rather than seconds after the owner paused it. Queued input is refused by
+  // its own dispatch check.
+  const letGo = (clientId) => {
+    release(clientId);
+    for (const entry of pendingInputs) if (entry.sent && entry.client.id === clientId) try { entry.helper.stop(); } catch {}
+  };
   const dispatchInput = async (client, state, request, authorize, scope) => {
     const pending = { client, helper: state.helper, sent: false };
     pendingInputs.add(pending);
@@ -485,7 +545,7 @@ export function createAgentDesktop(config, {
       return structuredClone(apps);
     },
     /** A JPEG of the screen with Reach, protected and hidden windows left out; in Apps, only the chosen apps. */
-    async screenshot(client, authorize, { maxWidth = 2560 } = {}) {
+    async screenshot(client, authorize, { maxWidth = 2560, displayId } = {}) {
       const latest = live(client, authorize, "browser:screen");
       const width = Math.max(320, Math.min(3840, Number(maxWidth) || 2560));
       // One capture per agent at a time: a request that arrives while one
@@ -494,9 +554,9 @@ export function createAgentDesktop(config, {
       // service until no picture came back at all.
       const running = capturing.get(latest.id);
       // The look counts from when the picture was asked for, not when it came back.
-      let askedAt = running && running.width >= width ? running.askedAt : now();
+      let askedAt = running && running.width >= width && running.displayId === displayId ? running.askedAt : now();
       let result;
-      if (running && running.width >= width) result = await running.promise;
+      if (running && running.width >= width && running.displayId === displayId) result = await running.promise;
       else {
         const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
         if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
@@ -506,11 +566,11 @@ export function createAgentDesktop(config, {
           if (running) await running.promise.catch(() => {});
           const state = await session(latest);
           checkState(client, authorize, "browser:screen", state);
-          const value = answer(await state.helper.send({ op: "shot", maxWidth: width }));
+          const value = answer(await state.helper.send({ op: "shot", maxWidth: width, ...(displayId ? { displayId } : {}) }));
           checkState(client, authorize, "browser:screen", state);
           return value;
         })();
-        const entry = { width, promise, askedAt };
+        const entry = { width, displayId, promise, askedAt };
         capturing.set(latest.id, entry);
         try { result = await promise; } finally { if (capturing.get(latest.id) === entry) capturing.delete(latest.id); }
       }
@@ -519,7 +579,7 @@ export function createAgentDesktop(config, {
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
       observe(latest, askedAt);
-      return { jpeg, width: result.width, height: result.height, hidden: result.hidden || 0 };
+      return { jpeg, displayId: result.displayId, width: result.width, height: result.height, hidden: result.hidden || 0 };
     },
     /** What is in front: the app, its window title, whether it takes commands or a password, and why it is closed to the agent if it is. */
     async front(client, authorize) {
@@ -532,8 +592,8 @@ export function createAgentDesktop(config, {
       // An app the owner hid from this agent: not even its name (security
       // audit L6), whatever an older helper answers.
       const lower = (value) => String(value || "").toLowerCase();
-      if (result.blocked === "The owner hid this app from the agent." ||
-          (latest.policy?.hidden || []).some((app) => (app.id && app.id === result.path) || (app.name && lower(app.name) === lower(result.app))))
+      if (latest.policy.preset !== "full" && (result.blocked === "The owner hid this app from the agent." ||
+          (latest.policy?.hidden || []).some((app) => (app.id && app.id === result.path) || (app.name && lower(app.name) === lower(result.app)))))
         return { app: "", bundle: "", title: "", terminalLike: false, secure: false, blocked: "The owner hid this app from the agent.",
           path: "", layout: "", holder: holder && holder.clientId !== latest.id ? holder.name : "" };
       return { app: String(result.app || ""), bundle: String(result.bundle || ""), title: String(result.title || "").slice(0, 200),
@@ -552,10 +612,10 @@ export function createAgentDesktop(config, {
       const result = answer(await state.helper.send({ op: "windows" }));
       checkState(client, authorize, "browser:screen", state);
       observe(latest);
-      const hidden = latest.policy?.hidden || [];
+      const hidden = latest.policy.preset === "full" ? [] : latest.policy?.hidden || [];
       const lower = (value) => String(value || "").toLowerCase();
       const windows = (Array.isArray(result.windows) ? result.windows : []).slice(0, 120)
-        .filter((item) => plain(item) && typeof item.id === "string" && /^\d{1,8}:\d{1,2}$/.test(item.id))
+        .filter((item) => plain(item) && typeof item.id === "string" && /^(w-[a-f0-9-]{1,38}|\d{1,8}:\d{1,2})$/.test(item.id))
         // An app the owner hid from this agent: not even its name, whatever an older helper answers.
         .filter((item) => !hidden.some((app) => (app.bundleId && app.bundleId === item.bundle) || (app.name && lower(app.name) === lower(item.app))))
         .map((item) => ({ id: item.id, app: String(item.app || "").slice(0, 100), bundle: String(item.bundle || "").slice(0, 200), title: String(item.title || "").slice(0, 200),
@@ -566,15 +626,16 @@ export function createAgentDesktop(config, {
       return { windows, holder: holder && holder.clientId !== latest.id ? holder.name : "" };
     },
     /** One window brought forward by its id from windows(), its title checked; a browser tab by title (reach_focus_window). */
-    async focusWindow(client, { id, title, tab } = {}, authorize) {
+    async focusWindow(client, { id, title, tab, tabRef } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof id !== "string" || !/^\d{1,8}:\d{1,2}$/.test(id)) throw fail(400, "Choose a window by the id reach_windows gave.");
+      if (typeof id !== "string" || !/^(w-[a-f0-9-]{1,38}|\d{1,8}:\d{1,2})$/.test(id)) throw fail(400, "Choose a window by the id reach_windows gave.");
       if (title !== undefined && (typeof title !== "string" || title.length > 200 || hiddenControls.test(title))) throw fail(400, "Give the window's title as listed, up to 200 characters.");
+      if (tabRef !== undefined && (!nativeRef(tabRef) || !tabRef.startsWith("t-") || tab !== undefined)) throw fail(400, "Choose one tab by title or ref.");
       if (tab !== undefined && (typeof tab !== "string" || !tab.trim() || tab.length > 120 || hiddenControls.test(tab))) throw fail(400, "Name the tab by its title, up to 120 characters.");
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
-      const result = answer(await dispatchInput(latest, state, { op: "focus", id, ...(title ? { title } : {}), ...(tab ? { tab: tab.trim() } : {}) }, authorize, "browser:open"));
+      const result = answer(await dispatchInput(latest, state, { op: "focus", id, ...(title ? { title } : {}), ...(tab ? { tab: tab.trim() } : {}), ...(tabRef ? { tabRef } : {}) }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
       observe(latest);
@@ -639,9 +700,12 @@ export function createAgentDesktop(config, {
     /** A file opened in the app that owns it, or shown in the Finder (reach_open_file): never a program, never a protected path. */
     async openFile(client, filePath, { reveal = false } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
+      if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
-      const reason = protectedPathReason(filePath, { protectedPaths: protectedPaths(), home });
+      // On Windows a program or script is refused here first, before the
+      // helper's own check (as the Mac's helper refuses them itself).
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform }) ||
+        (windows && windowsProgramFile(filePath) ? PROGRAM_REASON : null);
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -658,16 +722,30 @@ export function createAgentDesktop(config, {
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** What can be clicked in the front window, numbered, from the accessibility tree. */
-    async elements(client, authorize) {
+    async elements(client, authorize, { displayId } = {}) {
       const latest = live(client, authorize, "browser:control");
       const askedAt = now();
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
-      const result = answer(await state.helper.send({ op: "elements" }));
+      const result = answer(await state.helper.send({ op: "elements", ...(displayId ? { displayId } : {}) }));
       checkState(client, authorize, "browser:control", state);
       // The numbered labels read the live screen: that is a look.
       observe(latest, askedAt);
       return shapeElements(result);
+    },
+    async displays(client, authorize) {
+      const latest = live(client, authorize, "browser:screen"), state = await session(latest);
+      checkState(client, authorize, "browser:screen", state);
+      const result = answer(await state.helper.send({ op: "displays" }));
+      checkState(client, authorize, "browser:screen", state);
+      return { displays: (result.displays || []).slice(0, 32).filter(item => Number.isInteger(item.id)).map(({ id, main, x, y, width, height }) => ({ id, main: main === true, x, y, width, height })) };
+    },
+    async waitForChange(client, revision, ms, authorize) {
+      const latest = live(client, authorize, "browser:control"), state = await session(latest);
+      checkState(client, authorize, "browser:control", state);
+      const result = answer(await state.helper.send({ op: "wait-change", revision, ms: Math.min(400, Math.max(1, ms)) }));
+      checkState(client, authorize, "browser:control", state);
+      return result;
     },
     /** One input action, checked here (shape, typed text) and natively (its exact target). */
     async act(client, input, authorize, { expected } = {}) {
@@ -686,20 +764,23 @@ export function createAgentDesktop(config, {
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
           for (const entry of typing) {
             if (entry.secret) {
-              // Vault values (usernames, emails, passwords) never go to a terminal,
-              // where they would run or show as a command.
-              if (front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
-            } else if (front.secure && action.type === "type") throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
-            // Vault values still never go to Reach's own pages or protected paths;
-            // only the shell deny list is skipped for them.
-            const reason = typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home });
+              // Apps keeps vault values out of terminals. Full control may use
+              // any target; explicit secrets still stay out of the action log.
+              if (latest.policy.preset !== "full" && front.terminalLike === true) throw Object.assign(fail(403, "Vault values don't go into a terminal. Click the sign-in field first."), { kind: "blocked" });
+            } else if (front.secure && action.type === "type") {
+              if (latest.policy.preset !== "full") throw Object.assign(fail(403, "That's a password field. Use the Password box so the password stays hidden."), { kind: "blocked" });
+              entry.secret = true;
+              delete action.paste;
+            }
+            // Content checks apply only to narrower presets.
+            const reason = latest.policy.preset === "full" ? null : typedTextRefusal(entry.text, { terminalLike: front.terminalLike === true, hosts: hosts(), protectedPaths: protectedPaths(), home, platform });
             if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
           }
           action.terminalLikeChecked = front.terminalLike === true;
         }
         checkState(client, authorize, "browser:control", state);
         take(latest);
-        const result = answer(await dispatchInput(latest, state, { op: "act", action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
+        const result = answer(await dispatchInput(latest, state, { op: "act", action: windows ? windowsAction(action) : action, ...(expected ? { expected } : {}) }, authorize, "browser:control"));
         checkState(client, authorize, "browser:control", state);
         extend(latest);
         observe(latest);
@@ -717,8 +798,7 @@ export function createAgentDesktop(config, {
     /** Open or bring forward one app, within the preset. */
     async open(client, appPath, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (typeof appPath !== "string" || !appPath.startsWith("/") || !appPath.endsWith(".app") || appPath.length > 4096 || /[\u0000-\u001f\u007f]/.test(appPath))
-        throw fail(400, "Choose an app by its path on this Mac.");
+      if (!appTarget(appPath)) throw fail(400, "Choose an app by its path on this Mac.");
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
@@ -737,9 +817,9 @@ export function createAgentDesktop(config, {
       try { parsed = new URL(url); } catch { parsed = null; }
       if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
         throw fail(400, "Give a web address that starts with https://.");
-      if (browserPath !== undefined && (typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
+      if (browserPath !== undefined && (windows ? !appTarget(browserPath) : typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
         throw fail(400, "Choose the browser by its path on this Mac.");
-      const reason = typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home });
+      const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home, platform });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
@@ -790,13 +870,22 @@ export function createAgentDesktop(config, {
           await guard();
         });
         await guard();
-        note(latest, "tool", { app: appPath.split("/").pop().replace(/\.app$/, "") });
+        note(latest, "tool", { app: windows ? appLabel(appPath, { platform }) : appPath.split("/").pop().replace(/\.app$/, "") });
         return result;
       } finally {
         if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
         pendingInputs.delete(pending);
         finish();
       }
+    },
+    /** The agent that acted on the Mac most recently (within 20 s, not paused), by name, or "": shown on every phone watching the screen. */
+    usingNow(windowMs = 20_000) {
+      const holder = currentHolder();
+      if (holder) return holder.name;
+      let latest = null;
+      for (const [id, entry] of activity)
+        if (!pausedAgents.has(id) && entry.at > now() - windowMs && (!latest || entry.at > latest.at)) latest = entry;
+      return latest ? String(latest.name || "An agent").slice(0, 80) : "";
     },
     /** Who holds the Mac and what each agent last did, for the owner. */
     activity() {
@@ -805,13 +894,12 @@ export function createAgentDesktop(config, {
     },
     /** The owner's pause: the agent keeps looking, but every action waits until resumed. Kept across restarts. */
     setPaused(id, paused) {
-      if (paused) release(id);
-      // A hold or slow drag already sent lets go now (the helper releases what
-      // it holds on stop), rather than seconds after the owner paused it.
-      // Queued input is refused by its own dispatch check.
-      if (paused) for (const entry of pendingInputs) if (entry.sent && entry.client.id === id) try { entry.helper.stop(); } catch {}
+      if (paused) letGo(id);
       return pausedAgents.set(id, paused);
     },
+    // What pausing one agent does here, before the pause is kept (Reach's
+    // pause route keeps it in the shared store, server/index.mjs).
+    letGo,
     isPaused: (id) => pausedAgents.has(id),
     // Every one of these agents, at once: after Reach ended unexpectedly, or
     // when the saved pauses couldn't be read (who was paused is unknown).

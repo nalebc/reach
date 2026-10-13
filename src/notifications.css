@@ -14,8 +14,10 @@
   color: var(--text, #e7eeea);
   cursor: pointer;
 }
-.notification-bell:hover {
-  background: #a5c4b410;
+@media (hover: hover) and (pointer: fine) {
+  .notification-bell:hover {
+    background: #a5c4b410;
+  }
 }
 .notification-bell:focus-visible {
   outline: 2px solid var(--lime);
@@ -275,8 +277,15 @@
   border: 0;
   color: var(--muted, #99aaa0);
 }
-.notification-actions button:hover {
-  filter: brightness(1.12);
+/* Touch must activate the button, without Safari's emulated hover step. */
+.notification-center button,
+.notification-bell {
+  touch-action: manipulation;
+}
+@media (hover: hover) and (pointer: fine) {
+  .notification-actions button:hover {
+    filter: brightness(1.12);
+  }
 }
 .notification-actions button:disabled {
   opacity: 0.6;
@@ -465,6 +474,10 @@
   font-size: 12.5px;
 }
 .ns input[role="switch"] {
+  -webkit-appearance: none;
+  padding: 0;
+  border: 0;
+  min-height: 0;
   appearance: none;
   position: relative;
   flex: none;

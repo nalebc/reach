@@ -18,6 +18,7 @@ export type Device = {
     scopes: string[];
     expiresAt: number;
     profile?: string;
+    fullControlVersion?: number;
   };
   id: string;
   computerId?: string;
@@ -40,11 +41,16 @@ export type Device = {
     apps: boolean;
     screen: boolean;
     screenSupported?: boolean;
+    // Invited people may watch the screen here (false on Windows for now).
+    guestScreen?: boolean;
     codex: boolean;
   };
   tools?: { codex?: { installed: boolean } };
   // Reach is paused on the computer (src/pause.ts).
   paused?: boolean;
+  // This browser runs on the computer itself: its screen would only show
+  // itself (server/platform.mjs sameComputer).
+  sameComputer?: boolean;
   host?: {
     screenRecording: boolean;
     accessibility: boolean;
@@ -306,7 +312,8 @@ export async function request<T = any>(
   const response = await peerFetch(peer, route, options).catch((e: Error) => {
     // The browser's own words ("Failed to fetch", "Load failed") said
     // nothing; a cancel stays a cancel.
-    const where = peer.platform === "darwin" ? "Mac" : "computer";
+    // pause.ts computerWord, here without importing what imports this.
+    const where = peer.platform === "darwin" ? "Mac" : peer.platform === "win32" ? "Windows PC" : "computer";
     if (e?.name === "TimeoutError") throw Object.assign(Error(`Your ${where} didn't answer in time. Try again.`), { cause: e });
     if (e?.name === "TypeError") throw Object.assign(Error(`Couldn't reach your ${where}. Check the connection and try again.`), { cause: e });
     throw e;

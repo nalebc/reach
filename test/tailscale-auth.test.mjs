@@ -23,6 +23,7 @@ import {
 import {
   configure,
   setupOwner,
+  assertOwnerAccount,
   readPreferences,
   applyPreferences,
   assertSocketSupport,
@@ -51,6 +52,15 @@ const whois = (node = "nPhone", user = 42) => ({
   },
 });
 const temp = () => fs.mkdtemp(path.join(os.tmpdir(), "reach-auth-"));
+
+test("saved owner is checked by identity before starting, including tagged and signed-out computers", () => {
+  const status = { BackendState: "Running", Self: { UserID: 42 }, User: { 42: { LoginName: owner.login } } };
+  assert.doesNotThrow(() => assertOwnerAccount(status, { owner }));
+  assert.doesNotThrow(() => assertOwnerAccount({ ...status, User: { 42: { LoginName: "renamed@example.test" } } }, { owner }));
+  assert.throws(() => assertOwnerAccount({ ...status, Self: { UserID: 99 }, User: { 99: { LoginName: "other@example.test" } } }, { owner }), /set up for owner@example.test.*other@example.test.*setup account/);
+  assert.throws(() => assertOwnerAccount({ ...status, Self: { UserID: 42, Tags: ["tag:server"] } }, { owner }), /personal Tailscale account/);
+  assert.throws(() => assertOwnerAccount({ ...status, BackendState: "NeedsLogin" }, { owner }), /personal Tailscale account/);
+});
 
 test("setup confirms a personal Tailscale identity, saves privately, honors CLI overrides and refuses silent fallback", async () => {
   const root = await temp();

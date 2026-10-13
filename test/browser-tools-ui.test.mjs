@@ -53,7 +53,7 @@ test("bridge aborts outstanding calls on disposal and expires on server revocati
 
 test("tool bridge produces no React warnings", () => { assert.deepEqual(dom.errors, []); });
 
-test("Full-control shell results can arrive after the ordinary request deadline", async (t) => {
+for (const name of ["reach_shell", "reach_run_mac_shortcut"]) test(`${name} results can arrive after the ordinary request deadline`, async (t) => {
   const timers = [], realTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
     if (ms === 35000 || ms === 70000) {
@@ -71,7 +71,7 @@ test("Full-control shell results can arrive after the ordinary request deadline"
   };
   const session = installBrowserTools(peer);
   try {
-    const result = await session.bridge.callTool("reach_shell", { root: 0, command: "fixture" });
+    const result = await session.bridge.callTool(name, name === "reach_shell" ? { root: 0, command: "fixture" } : { name: "Fixture" });
     assert.equal(result.output, "late fixture success");
     assert.ok(timers.every(timer => timer.ms > 60000));
   } finally { session.dispose(); }

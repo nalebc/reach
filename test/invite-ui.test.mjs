@@ -90,8 +90,13 @@ function computers({ keyed = true, failOn = "", guests = [], policyBlock = false
     }
     if (u.pathname === "/api/agents/invitations" && init.method === "POST")
       return reply(201, { invitation: secret("z"), clientId: `agent-${host}`, expiresAt: Date.now() + body.ttlSeconds * 1000, joinBy: Date.now() + 900000, scopes: ["device", "files:read"], runtime: RUNTIME });
-    if (/^\/api\/guests\/[^/]+\/link$/.test(u.pathname) && init.method === "POST")
-      return reply(200, { invitation: secret("n"), clientId: u.pathname.split("/")[3], expiresAt: Date.now() + 3600000 });
+    if (/^\/api\/guests\/[^/]+\/link$/.test(u.pathname) && init.method === "POST") {
+      const id = u.pathname.split("/")[3];
+      // A browser agent through the public link: its page, and the runtime its tools pin.
+      const funnel = guests.find((g) => g.id === id)?.browserTransport === "funnel";
+      return reply(200, { invitation: secret("n"), clientId: id, expiresAt: Date.now() + 3600000,
+        ...(funnel ? { url: `https://${host}.t.ts.net/agent-browser#invite=${secret("n")}`, transport: "funnel", runtime: RUNTIME } : {}) });
+    }
     if (u.pathname.startsWith("/api/clients/") && init.method === "DELETE") return reply(200, { ok: true });
     return reply(404, { error: "This action does not exist." });
   };
@@ -108,7 +113,11 @@ const name = async (c, value) => {
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await settle();
 };
-const menu = (c, i) => c.querySelectorAll(".ivt-menu-button")[i];
+// A row's menu, by the row's name (Computer, Expires, Connects).
+const menu = (c, label) => [...c.querySelectorAll(".ivt-row")].find((r) => r.querySelector(".ivt-setting-label")?.textContent.trim() === label)?.querySelector(".ivt-menu-button");
+// What they may do: a list with a check, chosen with one tap.
+const access = (c, label) => [...c.querySelectorAll('.inv-choices [role="radio"]')].find((b) => b.getAttribute("aria-label") === label);
+const chosen = (c) => c.querySelector('.inv-choices [role="radio"][aria-checked="true"]')?.getAttribute("aria-label");
 const item = (c, text) => [...c.querySelectorAll(".ivt-item")].find((b) => b.textContent.startsWith(text));
 const toggle = (c, text) => [...c.querySelectorAll(".ivt-toggle")].find((t) => t.textContent.startsWith(text)).querySelector("input");
 const inviteButton = (c) => c.querySelector(".ivt-submit");
@@ -137,7 +146,7 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
   const view = await render();
   const c = view.container;
   assert.equal(inviteButton(c).disabled, true, "needs a name");
-  assert.equal(menu(c, 0).textContent, "Can watch");
+  assert.equal(chosen(c), "Can watch");
   await name(c, "Sam");
   assert.equal(c.querySelector(".ivt-summary").textContent, "Sam can watch your screen and watch the apps you open on Mac A for 4 hours.");
   await click(inviteButton(c));
@@ -150,9 +159,25 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
     ...KEY,
     invites: [{ origin: macA.url, secret: secret("a") }],
   });
-  assert.match(c.querySelector(".ivt-link").textContent, /Sam’s invite link/);
+  assert.match(c.querySelector(".ivt-link").textContent, /Sam is invited/);
+  assert.match(c.querySelector(".ivt-link").textContent, /Can watch · 4 hours/);
   assert.match(c.querySelector(".ivt-link").textContent, /Nothing to install/);
   assert.equal(c.querySelector(".ivt-name").value, "", "ready for the next person");
+  await view.unmount();
+});
+
+// Windows refuses invited people its screen until it can leave password
+// managers out of their picture (parity audit #12): nothing offers it there.
+test("on a Windows PC nobody is invited to watch or control the screen", async () => {
+  computers();
+  const pc = { ...device("Mac A", "mac-a"), platform: "win32" };
+  pc.capabilities = { ...pc.capabilities, guestScreen: false };
+  const view = await render({ peer: { ...macA, platform: "win32" }, device: pc });
+  const c = view.container;
+  assert.equal(access(c, "Can watch"), undefined);
+  assert.equal(access(c, "Can control"), undefined);
+  assert.ok(access(c, "Can use files"), "the other roles stay");
+  assert.notEqual(chosen(c), "Can watch");
   await view.unmount();
 });
 
@@ -161,9 +186,8 @@ test("Custom on two computers: control, folders on each, terminal, editable, 1 d
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
   await name(c, "Alex");
-  await click(menu(c, 0));
-  await click(item(c, "Custom"));
-  await click(menu(c, 1)); // On: computers
+  await click(access(c, "Custom"));
+  await click(menu(c, "Computer"));
   await click(item(c, "Mac B"));
   await click(toggle(c, "Control the screen"));
   await click(toggle(c, "Folders"));
@@ -181,7 +205,7 @@ test("Custom on two computers: control, folders on each, terminal, editable, 1 d
   await click(c.querySelector('[aria-label="Share Projects"]'));
   await click(toggle(c, "Can edit"));
   await click(toggle(c, "Terminal"));
-  await click(menu(c, 2)); // For
+  await click(menu(c, "Expires"));
   await click(item(c, "1 day"));
   assert.equal(c.querySelector(".ivt-summary").textContent, "Alex can control your screen, edit client and Projects and use a terminal on Mac A and Mac B for 1 day.");
   await click(inviteButton(c));
@@ -207,7 +231,7 @@ test("inviting only to another computer still gets an invite key", async () => {
   const view = await render({ peers: [macA, macB] });
   const c = view.container;
   await name(c, "Kim");
-  await click(menu(c, 1));
+  await click(menu(c, "Computer"));
   await click(item(c, "Mac B"));
   await click(item(c, "Mac A")); // untick the one you're on
   await click(inviteButton(c));
@@ -230,19 +254,17 @@ test("Full access sends just that; files need a folder; nothing is left half-mad
   let view = await render();
   let c = view.container;
   await name(c, "Ali");
-  await click(menu(c, 0));
-  await click(item(c, "Full access"));
+  await click(access(c, "Full access"));
   await click(inviteButton(c));
   await settle(80);
-  assert.deepEqual(posts(log)[0], ["mac-a", "/api/guests", { name: "Ali", ttlSeconds: 14400, full: true }]);
+  assert.deepEqual(posts(log)[0], ["mac-a", "/api/guests", { name: "Ali", ttlSeconds: 14400, full: true, fullControlVersion: 1 }]);
   await view.unmount();
 
   computers();
   view = await render();
   c = view.container;
   await name(c, "Lee");
-  await click(menu(c, 0));
-  await click(item(c, "Can use files"));
+  await click(access(c, "Can use files"));
   assert.equal(inviteButton(c).disabled, true);
   assert.equal(c.querySelector(".ivt-summary").textContent, "Lee can open the folders you choose on Mac A for 4 hours.");
   await view.unmount();
@@ -251,7 +273,7 @@ test("Full access sends just that; files need a folder; nothing is left half-mad
   view = await render({ peers: [macA, macB] });
   c = view.container;
   await name(c, "Sam");
-  await click(menu(c, 1));
+  await click(menu(c, "Computer"));
   await click(item(c, "Mac B"));
   await click(inviteButton(c));
   await settle(80);
@@ -282,12 +304,12 @@ test("without invite keys: one slim line, never in the way; Tailscale sharing on
   );
   assert.equal(c.querySelector(".ivt-fallback summary").textContent, "They already use Tailscale");
   assert.equal(c.querySelector(".ivt-link-field"), null, "no link until they can reach it");
+  assert.equal(c.querySelector(".ivt-setup-line"), null, "the link's own button, not a second line");
   // Setup opens from the link card too, and folds back with ×.
   await click([...c.querySelectorAll(".ivt-tailscale > button")].find((b) => b.textContent === "Set up invite links"));
   assert.ok(c.querySelector(".ivt-setup"));
   await click(c.querySelector('.ivt-setup [aria-label="Close"]'));
   assert.equal(c.querySelector(".ivt-setup"), null);
-  assert.ok(c.querySelector(".ivt-setup-line"));
   // The fallback: they already use Tailscale.
   await click(toggle(c, "They’re already on my Tailscale"));
   assert.equal(parseGuestLink(new URL(link(c)).hash).key, "");
@@ -524,6 +546,33 @@ test("someone who hasn't opened their link: a new one, the old one stops working
   assert.equal(link.key, KEY.key);
   await view.unmount();
 });
+
+// A Tools agent's new link explains itself (its /agent steps), so it carries
+// the runtime's SHA-256 the steps check the download against.
+test("a Tools agent's new link carries the runtime it pins", async () => {
+  const later = Date.now() + 2 * 3600 * 1000;
+  computers({
+    guests: [{ id: "g4", kind: "agent", name: "Otter", status: "invited", expiresAt: later, scopes: ["device", "browser:read"], browserTransport: "funnel", policy: { browser: true, preset: "readonly", invite: true } }],
+  });
+  localStorage.setItem("reach.invite-forms", JSON.stringify({ g4: "tools" }));
+  const view = await hub({ toast: () => {} });
+  const c = view.container;
+  await settle(40);
+  await openRow(c, "Otter");
+  await click(c.querySelector('[aria-label="New invite link for Otter"]'));
+  await settle(40);
+  let copied = "";
+  Object.defineProperty(dom.window.navigator, "clipboard", { value: { writeText: async (t) => { copied = t; } }, configurable: true });
+  await click(c.querySelector('[aria-label="Copy Otter’s link"]'));
+  const url = new URL(copied);
+  assert.equal(url.pathname, "/agent");
+  const params = new URLSearchParams(url.hash.slice(1));
+  assert.equal(params.get("t"), "funnel");
+  assert.equal(params.get("r"), RUNTIME);
+  assert.equal(params.get("i"), `https://mac-a.t.ts.net:8443~${secret("n")}`);
+  localStorage.removeItem("reach.invite-forms");
+  await view.unmount();
+});
 test("access names", () => {
   assert.equal(accessLabel(["admin", "device"]), "Full access");
   assert.equal(accessLabel(["device", "screen"]), "Watches screen");
@@ -540,8 +589,7 @@ test("the folder browser: go in and back up, share from the list or from inside"
   const view = await render();
   const c = view.container;
   await name(c, "Lee");
-  await click(menu(c, 0));
-  await click(item(c, "Can use files"));
+  await click(access(c, "Can use files"));
   const crumbs = () => [...c.querySelectorAll(".fb-crumbs button")].map((b) => b.textContent.trim());
   assert.deepEqual(crumbs(), ["Mac A"]);
   await click(c.querySelector('[aria-label="Open Projects"]'));
@@ -603,39 +651,35 @@ test("set up after inviting: the waiting link gets its key, so they just open it
   dom.window.localStorage.clear();
 });
 
-// Inviting an agent: the same dialog, then one command it runs to join.
-// An agent's invitation opens on Tools; Command line is one of its Connects.
-const connects = (c) => [...c.querySelectorAll(".ivt-row")].find((r) => r.querySelector(".ivt-setting-label")?.textContent.trim() === "Connects")?.querySelector(".ivt-menu-button");
+// Inviting an agent with Command line (folders, over Tailscale): where agent
+// presets aren't offered (a computer that isn't a Mac), the same dialog, then
+// one command it runs to join.
 const chooseAgent = async (c) => {
-  await dom.waitFor(() => connects(c));
-  await click(connects(c));
-  await click(item(c, "Command line"));
+  await dom.waitFor(() => c.querySelector('.inv-choices [aria-label="Can edit"]'));
   await settle(40);
 };
-const commandLink = (command) => command.match(/printf '%s\\n' '([^']+)' \| node ~\/\.reach-agent\/agent\.mjs join$/)[1];
 
 test("an agent: one computer, a folder, what it may do, then one command to give it", async () => {
   const log = computers();
-  const view = await render({ peers: [macA, macB], initialKind: "browser" });
+  const view = await render({ peers: [macA, macB], initialKind: "agent" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);
-  assert.equal(connects(c).textContent, "Command line");
   assert.equal(c.querySelector(".ivt-name").placeholder, "Name the agent");
+  assert.match(c.querySelector(".ivt-name").value, /^[A-Z][a-z]+ [A-Z][a-z]+$/, "a fresh silly name to start");
   await name(c, "Claude on my server");
-  assert.equal(menu(c, 0).textContent, "Can edit");
+  assert.equal(chosen(c), "Can edit");
   assert.equal(c.querySelector(".ivt-summary").textContent, "Claude on my server can read and edit the folders you choose on Mac A for 1 week.");
   assert.equal(inviteButton(c).disabled, true, "a folder first");
   // One computer: picking Mac B replaces Mac A.
-  await click(menu(c, 1));
+  await click(menu(c, "Computer"));
   await click(item(c, "Mac B"));
-  assert.equal(menu(c, 1).textContent, "Mac B");
+  assert.equal(menu(c, "Computer").textContent, "Mac B");
   await settle(40);
   await click(c.querySelector('[aria-label="Share Projects"]'));
-  await click(menu(c, 0));
-  assert.match(item(c, "Can run commands").textContent, /Commands run as you, so they can reach beyond those folders/);
-  await click(item(c, "Can run commands"));
-  await click(menu(c, 2));
+  assert.match(access(c, "Can run commands").textContent, /Commands run as you, so they can reach beyond those folders/);
+  await click(access(c, "Can run commands"));
+  await click(menu(c, "Expires"));
   await click(item(c, "30 days"));
   assert.equal(c.querySelector(".ivt-summary").textContent, "Claude on my server can edit and run commands in Projects on Mac B for 30 days.");
   await click(inviteButton(c));
@@ -656,25 +700,24 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   assert.equal(sent.length, 2);
   const card = c.querySelector('[aria-label="Agent invitation"]');
   assert.match(card.textContent, /Claude on my server is invited/);
-  assert.match(card.textContent, /Needs Node 18 or later, nothing else/);
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  assert.ok(
-    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new https://mac-b.t.ts.net/agent.mjs && node -e ") &&
-      command.includes(`~/.reach-agent/agent.mjs.new ${RUNTIME} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && printf '%s\\n' 'https://mac-b.t.ts.net/agent#`),
-    command,
-  );
-  const agentLink = new URL(commandLink(command));
+  assert.match(card.textContent, /Can run commands · 30 days/);
+  assert.match(card.textContent, /Needs Node\.js 22 or later, nothing else/);
+  // A line and a link (Oct 12): the link explains itself and pins the
+  // runtime its computer named (r=), as an invite from Agents does.
+  const link = c.querySelector('[aria-label="Link for the agent"]').value;
+  const agentLink = new URL(link);
+  assert.equal(agentLink.origin, "https://mac-b.t.ts.net");
   assert.equal(agentLink.pathname, "/agent", "never a link a browser would use");
   assert.deepEqual(parseGuestLink(agentLink.hash), { ...KEY, invites: [{ origin: macB.url, secret: secret("z") }] });
+  assert.equal(new URLSearchParams(agentLink.hash.slice(1)).get("r"), RUNTIME);
   let copied = "";
   dom.window.navigator.clipboard = { writeText: async (t) => (copied = t) };
   await click([...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "Copy"));
-  assert.equal(copied, `Join my computer with Reach, then add the MCP server it prints:\n${command}`);
-  // Back to Tools: the agent's preset form.
-  await click(connects(c));
-  await click(item(c, "Tools"));
-  assert.ok(c.querySelector('[aria-label="AI browser invitation"]'));
-  assert.equal(connects(c).textContent, "Tools");
+  assert.equal(copied, `Connect to my Mac with Reach: open this link and follow its steps, then I approve the code it shows. Keep the link to yourself.\n\n${link}`);
+  // Another: the form again, with a new name.
+  await click([...card.querySelectorAll("button")].find((b) => b.textContent === "Invite another agent"));
+  assert.equal(c.querySelector(".inv-form").hidden, false);
+  assert.notEqual(c.querySelector(".ivt-name").value, "Claude on my server");
   await view.unmount();
 });
 
@@ -682,12 +725,12 @@ test("an agent: one computer, a folder, what it may do, then one command to give
 // agent's access ends there, so its device would outlive it. None is made.
 test("an agent on a computer without the setup: no key from a linked one, a command for your tailnet", async () => {
   const log = computers({ keyed: ["mac-a"] });
-  const view = await render({ peers: [macA, macB], initialKind: "browser" });
+  const view = await render({ peers: [macA, macB], initialKind: "agent" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);
   await name(c, "Codex");
-  await click(menu(c, 1));
+  await click(menu(c, "Computer"));
   await click(item(c, "Mac B"));
   await settle(40);
   await click(c.querySelector('[aria-label="Share Projects"]'));
@@ -700,8 +743,8 @@ test("an agent on a computer without the setup: no key from a linked one, a comm
       ["mac-b", "/api/guests/key", ["agent-mac-b"]],
     ],
   );
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  assert.equal(parseGuestLink(new URL(commandLink(command)).hash).key || "", "");
+  const link = c.querySelector('[aria-label="Link for the agent"]').value;
+  assert.equal(parseGuestLink(new URL(link).hash).key || "", "");
   await view.unmount();
 });
 
@@ -750,7 +793,7 @@ test("agent invitations show waiting, approved, denied, joined and expired conne
 test("an agent without invite links: still a command (for a machine on your tailnet); setup adds its key", async () => {
   dom.window.localStorage.clear();
   const log = computers({ keyed: false });
-  const view = await render({ initialKind: "browser" });
+  const view = await render({ initialKind: "agent" });
   const c = view.container;
   await settle(40);
   await chooseAgent(c);
@@ -761,7 +804,7 @@ test("an agent without invite links: still a command (for a machine on your tail
   assert.deepEqual(posts(log).map(([h, p]) => p), ["/api/agents/invitations"]);
   const card = c.querySelector('[aria-label="Agent invitation"]');
   assert.match(card.textContent, /Without invite links, its machine needs Tailscale on your tailnet/);
-  assert.equal(parseGuestLink(new URL(commandLink(c.querySelector('[aria-label="Command for the agent"]').value)).hash).key, "");
+  assert.equal(parseGuestLink(new URL(c.querySelector('[aria-label="Link for the agent"]').value).hash).key, "");
   await click([...card.querySelectorAll(".ivt-tailscale > button")].find((b) => b.textContent === "Set up invite links"));
   const setup = c.querySelector(".ivt-setup");
   const type = async (el, v) => {
@@ -776,8 +819,7 @@ test("an agent without invite links: still a command (for a machine on your tail
   assert.deepEqual(keyCall[3].clientIds, ["agent-mac-a"]);
   assert.ok(keyCall[3].ttlSeconds > 7 * 86400 - 100 && keyCall[3].ttlSeconds <= 7 * 86400);
   assert.ok(keyCall[3].keySeconds > 880 && keyCall[3].keySeconds <= 900);
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  const fixed = new URL(commandLink(command));
+  const fixed = new URL(c.querySelector('[aria-label="Link for the agent"]').value);
   assert.equal(fixed.pathname, "/agent");
   assert.deepEqual(parseGuestLink(fixed.hash), { ...KEY, invites: [{ origin: macA.url, secret: secret("z") }] }, "the same invitation, now with a key");
   assert.match(c.querySelector('[aria-label="Agent invitation"]').textContent, /nothing else/);

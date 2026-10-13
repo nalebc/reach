@@ -72,6 +72,8 @@ test("exact batches cap count, bytes, fields and action families and cannot beco
   const customArray = [{ type: "key", key: "tab" }];
   customArray.toJSON = () => [{ type: "command", command: "sudo true" }];
   assert.throws(() => browserToolRequest("reach_request_batch", batch(customArray), access()), /array fields/);
+  for (const actions of [{ 0: { type: "terminal", root: 2, command: "pwd" }, length: 4294967295 }, new Array(4294967295)])
+    assert.throws(() => browserToolRequest("reach_request_batch", batch(actions), access()), /must contain/);
   const restricted = access({ screen: "off", restrictedTerminal: true });
   assert.equal(browserToolRequest("reach_request_batch", batch([{ type: "terminal", root: 2, cwd: "src", command: "ls" }]), restricted).body.actions[0].cwd, "src");
   assert.throws(() => browserToolRequest("reach_request_batch", batch([{ type: "terminal", root: 2, command: "pwd" }, { type: "key", key: "tab" }]), restricted), /Invalid tool/);

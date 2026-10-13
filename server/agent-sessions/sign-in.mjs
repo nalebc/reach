@@ -8,11 +8,14 @@
 // claude 2.1.289; the Mac's `open` was replaced so nothing opened).
 // Codex: the shared daemon's device-code login returns a link and a one-time
 // code and reports when the sign-in finishes (from its protocol schema).
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as pty from "node-pty";
 import { computerWord } from "../computer-word.mjs";
+import { releaseExitedPty } from "../pty-helper.mjs";
+import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 
 const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g;
 export const plainText = (text) => String(text).replace(ANSI, "").replace(/\r/g, "");
@@ -41,13 +44,15 @@ export function createSignIn({
   claudeHealth, // async () => { signedIn }
   daemon, // the shared Codex daemon
   spawn = pty.spawn,
-  shell = process.env.SHELL || "/bin/zsh",
+  shell,
   env = process.env,
   now = Date.now,
   timeoutMs = 15 * 60 * 1000,
   linkMs = 10000,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Git Bash for a real Windows Claude Code (claude-environment.mjs).
+  gitBash = spawn === pty.spawn && platform === "win32" ? () => windowsGitBash(env) : () => null,
 }) {
   const flows = new Map();
   const view = (flow) =>
@@ -75,12 +80,28 @@ export function createSignIn({
           });
         });
   // A stand-in for the Mac's `open` and $BROWSER: the link goes to the phone.
+  // Written afresh for every sign-in and moved into place, so what runs is
+  // always this: whatever was at that name (an older shim, a planted link)
+  // is replaced, never followed, with no gap between looking and writing.
   const shim = () => {
     const dir = path.join(dataDir, "sign-in");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const open = path.join(dir, "open");
-    if (!fs.existsSync(open))
-      fs.writeFileSync(open, "#!/bin/sh\n# Reach shows sign-in links on the phone instead.\nexit 0\n", { mode: 0o755 });
+    const open = path.join(dir, platform === "win32" ? "open.cmd" : "open");
+    const content = platform === "win32"
+      ? "@echo off\r\nrem Reach shows sign-in links on the phone instead.\r\nexit /b 0\r\n"
+      : "#!/bin/sh\n# Reach shows sign-in links on the phone instead.\nexit 0\n";
+    const temp = `${open}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    fs.writeFileSync(temp, content, { mode: 0o755, flag: "wx" });
+    try {
+      fs.renameSync(temp, open);
+    } catch (error) {
+      fs.rmSync(temp, { force: true });
+      // Windows can refuse to replace a script another sign-in is running:
+      // that one is fine when it is already exactly this.
+      let current = null;
+      try { current = fs.readFileSync(open, "utf8"); } catch {}
+      if (current !== content) throw error;
+    }
     return { dir, open };
   };
 
@@ -94,17 +115,31 @@ export function createSignIn({
 
   async function startClaude(flow) {
     const command = await claudeCommand();
+    if (flow.state !== "starting") return;
     if (!command) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
     const { dir, open } = shim();
     // Reach's own environment, never a host app's; the shim goes first even
     // after the login shell rebuilds PATH.
-    const clean = Object.fromEntries(
-      Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|REACH_)/.test(k) && k !== "CLAUDECODE"),
-    );
+    const clean = claudeEnvironment(env);
+    const windows = platform === "win32";
+    if (windows) {
+      // Windows environment names are case-insensitive. Avoid duplicate PATH
+      // or BROWSER entries, and use cmd so npm's .cmd launcher works even when
+      // PowerShell script execution is disabled. No shell profile is loaded.
+      const previousPath = Object.entries(clean).find(([key]) => /^path$/i.test(key))?.[1] || "";
+      for (const key of Object.keys(clean)) if (/^(path|browser)$/i.test(key)) delete clean[key];
+      clean.PATH = `${dir};${previousPath}`;
+      clean.BROWSER = open;
+      // The Git Bash Reach found: Git installed from the phone after Reach
+      // started isn't on its PATH.
+      Object.assign(clean, withGitBash(clean, gitBash()));
+    }
     const proc = spawn(
-      shell,
-      ["-lc", `PATH=${quote(dir)}:"$PATH" BROWSER=${quote(open)} exec ${command} auth login`],
-      { name: "xterm-256color", cols: 400, rows: 40, cwd: os.homedir(), env: { ...clean, TERM: "xterm-256color" } },
+      shell || (windows ? env.ComSpec || env.COMSPEC || "cmd.exe" : env.SHELL || (platform === "darwin" ? "/bin/zsh" : "/bin/sh")),
+      windows
+        ? `/d /s /c "${command} auth login"`
+        : ["-lc", `PATH=${quote(dir)}:"$PATH" BROWSER=${quote(open)} exec ${command} auth login`],
+      { name: "xterm-256color", cols: 400, rows: 40, cwd: os.homedir(), env: { ...clean, TERM: "xterm-256color" }, ...(windows ? { useConptyDll: true } : {}) },
     );
     flow.proc = proc;
     flow.output = "";
@@ -120,6 +155,8 @@ export function createSignIn({
       }
     });
     proc.onExit(async ({ exitCode }) => {
+      releaseExitedPty(proc, platform);
+      flow.proc = null;
       if (["done", "failed", "cancelled"].includes(flow.state)) return;
       const health = await claudeHealth().catch(() => null);
       if (health?.signedIn) finish(flow, "done");
@@ -130,6 +167,10 @@ export function createSignIn({
   async function startCodex(flow) {
     if (!daemon) throw bad(`Codex isn't available on this ${computerWord(platform)}.`, 404);
     const r = await daemon.rpc("account/login/start", { type: "chatgptDeviceCode" });
+    if (flow.state !== "starting") {
+      if (r.loginId) await daemon.rpc("account/login/cancel", { loginId: r.loginId }).catch(() => {});
+      return;
+    }
     flow.loginId = r.loginId;
     flow.url = r.verificationUrl;
     flow.code = r.userCode;

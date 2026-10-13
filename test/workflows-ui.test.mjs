@@ -37,6 +37,7 @@ const mac = {
   held: {},
   clock: 10,
   reset() {
+    this.models = null;
     this.sent = [];
     this.held = {};
     this.clock = 10;
@@ -46,7 +47,7 @@ const sent = (route) => mac.sent.filter((s) => s.route === route);
 const json = (init) => (init?.body ? JSON.parse(init.body) : null);
 const hold = (w) => (mac.held[w.id] = { ...w, updatedAt: ++mac.clock });
 const routes = {
-  "/api/sessions/models": () => ({ models: [], modes: [], mode: null }),
+  "/api/sessions/models": () => ({ models: mac.models || [{ id: "fixture-model", name: "Fixture", isDefault: true }], modes: [], mode: null }),
   "/api/sessions/health": () => ({ agents: both }),
   "/api/sessions/logos": () => ({ version: "v1", logos: { codex: LOGO, claude: LOGO } }),
   "/api/sessions/commands": () => ({ commands: [] }),
@@ -153,7 +154,7 @@ test("New chat → Workflow: the planner drafts the tasks, you edit one, and Run
   await typeInto(sheet.querySelector('textarea[aria-label="Workflow planned by Codex"]'), "Add passkey sign-in, with tests");
   await click(button("Plan workflow", sheet));
   await dom.waitFor(() => sent("plan").length === 1);
-  assert.deepEqual(sent("plan")[0].body, { cwd: "/work/app", text: "Add passkey sign-in, with tests", images: [], agent: "codex" });
+  assert.deepEqual(sent("plan")[0].body, { cwd: "/work/app", text: "Add passkey sign-in, with tests", images: [], agent: "codex", model: "fixture-model" });
   // Its page: planning, a tap from the planner's chat.
   const page = await dom.waitFor(() => $(".workflow-sheet"));
   assert.equal($(".chat-create-sheet"), null);
@@ -244,6 +245,37 @@ test("writing the tasks yourself: add, choose agent, build or review, with previ
   assert.deepEqual(dom.errors, []);
 });
 
+test("each task shows its model and effort; the pickers offer only what its model lists, and a new agent starts on its default", async () => {
+  // Its own phone, so the models list isn't one fetched earlier.
+  const phone = { ...peer, token: "models-token" };
+  mac.models = [
+    { id: "default", name: "Default", isDefault: true, efforts: ["low", "medium", "high", "max"] },
+    { id: "haiku", name: "Haiku", efforts: ["low"] },
+  ];
+  hold(workflow({ tasks: [task("t1", { title: "Design", agent: "claude", model: "default", effort: "max", task: "Design the auth flow." })] }));
+  await mount(React.createElement(WorkflowSheet, { peer: phone, id: WF, logos: { codex: LOGO, claude: LOGO }, onOpenChat() {}, onClose() {} }));
+  await dom.waitFor(() => $(".workflow-sheet .wf-item-detail"));
+  assert.equal($(".workflow-sheet .wf-item-detail").textContent, "Claude Code · Make changes · max effort");
+  await click($(".workflow-sheet .wf-item > button.wf-item-main"));
+  const model = await dom.waitFor(() => $('select[aria-label="Task 1 model"]'));
+  assert.equal(model.value, "", "the default model reads as the agent's default");
+  assert.deepEqual([...$('select[aria-label="Task 1 effort"]').options].map((o) => o.value), ["", "low", "medium", "high", "max"]);
+  assert.equal($('select[aria-label="Task 1 effort"]').value, "max");
+  // Haiku doesn't offer max: the effort goes with the switch.
+  model.value = "haiku";
+  model.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[0]?.model === "haiku", 3000);
+  assert.equal(sent("edit").at(-1).body.tasks[0].effort, undefined);
+  assert.deepEqual([...$('select[aria-label="Task 1 effort"]').options].map((o) => o.value), ["", "low"]);
+  // Another agent: its default model and effort.
+  const agent = $('select[aria-label="Task 1 agent"]');
+  agent.value = "codex";
+  agent.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await dom.waitFor(() => sent("edit").at(-1)?.body.tasks[0]?.agent === "codex", 3000);
+  assert.equal(sent("edit").at(-1).body.tasks[0].model, undefined);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("a run that paused: each row says how it stands, the stopped one offers Retry, Skip or Mark done, Stop asks first", async () => {
   const opened = [];
   hold(
@@ -329,6 +361,56 @@ test("the Workflows icon opens them all: Active (waiting on you first), Drafts a
   await click(button("New chat"));
   newChat = await dom.waitFor(() => $(".chat-create-sheet"));
   assert.equal(kind(newChat), "", "one chat");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a workflow's chats sit together under its line, in All and each agent's list, a tap to its page", async () => {
+  dom.window.localStorage.setItem("reach.chatAgent", "all");
+  const now = Date.now();
+  const flow = workflow({
+    state: "running",
+    title: "Verify Reach",
+    updatedAt: now,
+    planner: { agent: "claude", id: "c-plan", title: "Plan", working: false },
+    tasks: [
+      task("t1", { state: "done", chat: { agent: "codex", id: "x-snap", title: "Workflow · Snapshot" } }),
+      // Claude's chat keeps its own name: known by its id, not its name.
+      task("t2", { agent: "claude", state: "working", chat: { agent: "claude", id: "c-run", title: "Workflow · First run" } }),
+      task("t3"),
+    ],
+  });
+  hold(flow);
+  const chats = [
+    session({ agent: "claude", id: "c-run", title: "First-run path verification", status: "running", updatedAt: now }),
+    session({ id: "x-plain", title: "Fix login", updatedAt: now - 1000 }),
+    session({ id: "x-snap", title: "Workflow · Snapshot", updatedAt: now - 2000 }),
+    session({ agent: "claude", id: "c-plan", title: "Open source readiness", updatedAt: now - 3000 }),
+    session({ id: "x-old", title: "Old chat", updatedAt: now - 4000 }),
+  ];
+  await home({ sessions: chats, workflows: [flow] });
+  const titles = () => $$(".chat-projects .chat-card strong").map((b) => b.textContent);
+  await dom.waitFor(() => $(".chat-flow"));
+  // One group, with the working chats; its idle ones folded under one line.
+  assert.deepEqual(titles(), ["First-run path verification", "Fix login", "Old chat"]);
+  assert.equal($$(".chat-flow").length, 1);
+  assert.equal(button("Show all 5"), undefined);
+  const line = $(".chat-flow");
+  assert.equal(line.getAttribute("aria-label"), "Workflow Verify Reach, 1 of 3");
+  await click(button("2 more chats", line));
+  assert.deepEqual(titles(), ["First-run path verification", "Snapshot", "Open source readiness", "Fix login", "Old chat"]);
+  await click(button("Show fewer", line));
+  assert.equal(line.querySelectorAll(".chat-card").length, 1);
+  await click(line.querySelector(".chat-flow-head"));
+  const sheet = await dom.waitFor(() => $(".workflow-sheet:not(.workflows-page) .wf-step") && $(".workflow-sheet:not(.workflows-page)"));
+  assert.equal(sheet.querySelector("h2").textContent, "Verify Reach");
+  await click(button("Close verify reach", sheet));
+  // One agent's list: its chats of the workflow under the same line.
+  dom.window.localStorage.setItem("reach.chatAgent", "codex");
+  for (const view of views.splice(0)) await view.unmount();
+  await home({ sessions: chats, workflows: [flow] });
+  await dom.waitFor(() => $(".chat-flow"));
+  assert.deepEqual(titles(), ["Fix login", "Snapshot", "Old chat"]);
+  assert.equal($(".chat-flow").querySelectorAll(".chat-card").length, 1);
   assert.deepEqual(dom.errors, []);
 });
 

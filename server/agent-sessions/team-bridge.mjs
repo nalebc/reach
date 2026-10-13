@@ -3,12 +3,42 @@
 // request per line, { id, token, tool, args }, answered { id, result } or
 // { id, error }. The key in each request names the team; nothing here is
 // reachable from the network.
+//
+// Windows has no socket files: there it's a named pipe (audit #14, Oct 12),
+// with the access Windows gives a new pipe (only its maker's account,
+// Windows and administrators may write to it or serve it), under a name of
+// its own kept in the data folder. Pipe names are one namespace every
+// account sees, so the lead's bridge checks the pipe is Reach's before the
+// team's key goes to it (scripts/team-mcp.mjs), and Reach can't listen on a
+// name another program took first (Node makes the first instance or none).
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 
 const LONGEST = 64 * 1024;
+const NAME = /^reach-team-[0-9a-f]{32}$/;
 
-export function createTeamBridge({ socketPath, call }) {
+// The team pipe for this data folder: the same across restarts (a team's
+// key file names it), and not one other accounts could guess.
+export function teamPipe(dataDir) {
+  const file = path.join(dataDir, "team-pipe");
+  let name = "";
+  try {
+    name = fs.readFileSync(file, "utf8").trim();
+  } catch {}
+  if (!NAME.test(name)) {
+    name = `reach-team-${crypto.randomBytes(16).toString("hex")}`;
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, name, { mode: 0o600 });
+    fs.renameSync(temp, file);
+  }
+  return `\\\\.\\pipe\\${name}`;
+}
+
+export function createTeamBridge({ socketPath, call, platform = process.platform }) {
+  const pipe = platform === "win32";
   const serve = (socket) => {
     let buffer = "";
     socket.setEncoding("utf8");
@@ -45,8 +75,7 @@ export function createTeamBridge({ socketPath, call }) {
   return {
     socketPath,
     async listen() {
-      if (process.platform === "win32") return false;
-      fs.rmSync(socketPath, { force: true });
+      if (!pipe) fs.rmSync(socketPath, { force: true });
       await new Promise((resolve, reject) => {
         server.once("error", reject);
         server.listen(socketPath, () => {
@@ -54,14 +83,14 @@ export function createTeamBridge({ socketPath, call }) {
           resolve();
         });
       });
-      fs.chmodSync(socketPath, 0o600);
+      if (!pipe) fs.chmodSync(socketPath, 0o600);
       listening = true;
       return true;
     },
     close() {
       if (!listening) return;
       server.close();
-      fs.rmSync(socketPath, { force: true });
+      if (!pipe) fs.rmSync(socketPath, { force: true });
       listening = false;
     },
   };

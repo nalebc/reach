@@ -1,6 +1,6 @@
 import { browserAgentRoutes } from "./browser-agents.mjs";
 import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
-import { createBrowserHostGuard, personGuardMessage } from "./browser-host-guard.mjs";
+import { createBrowserHostGuard, personOnHostMessage, personWaitingMessage } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
 import { BrowserAppNative } from "./browser-app-native.mjs";
 import { runBrowserScript } from "./browser-scripts.mjs";
@@ -10,6 +10,8 @@ import { DevicePresence, presenceConnection } from "./presence.mjs";
 import {
   createIdentityResolver,
   listenPrivateIngress,
+  listenKeyedIngress,
+  thisComputerRequest,
   trustedRequest,
   serveRequestHost,
   ownerIdentity,
@@ -26,13 +28,15 @@ import {
   createAppShortcuts,
 } from "./app-shortcuts.mjs";
 import express from "express";
+import { rateLimit, MemoryStore } from "express-rate-limit";
 import net from "node:net";
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
@@ -67,6 +71,7 @@ import { computerIdentity } from "./computer-identity.mjs";
 import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
+import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
@@ -86,8 +91,9 @@ import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
-import { ScreenControl, pausedMessage } from "./screen.mjs";
-import { RemoteScreenHub } from "./remote-screen.mjs";
+import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
+import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { computerWord } from "./computer-word.mjs";
 import {
   AppThreads,
   AppScreenHub,
@@ -101,13 +107,15 @@ import { createNotifications, readAttention } from "./notifications.mjs";
 import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
-import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
+import { DesktopInput, desktopBinary, desktopDisplays } from "./desktop-native.mjs";
+import { prepareOwners } from "./windows-owners.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
-import { ScreenBroadcast, createScreenSource, hostAppName } from "./screen-stream.mjs";
+import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
 import { createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
 import { createAgentRuntimes, fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
+import { agentGuide } from "./agent-guide.mjs";
 import { agentAskSocket } from "./agent-sessions/agent-asks.mjs";
 import { keepRuntime } from "./runtime-archive.mjs";
 import { startInTerminal } from "../scripts/stop.mjs";
@@ -124,7 +132,7 @@ import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
 import { createWorkflows } from "./agent-sessions/workflows.mjs";
-import { createTeamBridge } from "./agent-sessions/team-bridge.mjs";
+import { createTeamBridge, teamPipe } from "./agent-sessions/team-bridge.mjs";
 import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
 import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
 import { createOverlaps } from "./agent-sessions/overlaps.mjs";
@@ -135,7 +143,7 @@ import { createAgentImages, createAgentFiles, imageSize, imageTokens } from "./a
 import { createImageRepeats, repeatNote } from "./agent-sessions/image-repeats.mjs";
 import { createSavings } from "./savings.mjs";
 import { audioKind, createVoice, memoName, readHead } from "./agent-sessions/voice.mjs";
-import { CODEX_MODES } from "./agent-sessions/codex.mjs";
+import { codexStartMode, isCodexMode } from "./agent-sessions/codex.mjs";
 import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
 import { publicNameState } from "./public-dns.mjs";
@@ -150,6 +158,7 @@ import { saveBrowserCommandRecords } from "./browser-command-records.mjs";
 import {
   apps,
   launchApp,
+  sameComputer,
   tailscaleInfo,
   screenCapture,
   screenInput,
@@ -166,6 +175,8 @@ export async function createReach(overrides = {}) {
   let browserResponseCount = 0;
   let prepareFunnel;
   let publicAgent = () => false;
+  // The computer Reach serves (tests run a Windows one anywhere).
+  const hostPlatform = overrides.platform || process.platform;
   const config = getConfig(overrides);
   config.roots = config.roots.map((p) => fs.realpathSync.native(p));
   if (config.agentPolicyRequired || fs.existsSync(config.agentPolicyFile))
@@ -194,6 +205,7 @@ export async function createReach(overrides = {}) {
   // full control"). Control still takes macOS's own permissions.
   const auth = createAuth(config, {
     firstDevice: () => {
+      overrides.onFirstDevice?.();
       if (settings.screenChosen || config.screen) return;
       settings.screen = config.screen = true;
       atomicJson(settingsFile, settings);
@@ -261,8 +273,9 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
+  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin
+    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -287,7 +300,7 @@ export async function createReach(overrides = {}) {
   // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
   // before this computer is set up. Said the same way wherever it's asked.
   const noInviteKeys =
-    (overrides.platform || process.platform) === "win32"
+    hostPlatform === "win32" && !config.tailscaleOwner
       ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
       : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
@@ -299,9 +312,10 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up.
+  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
+  // on Windows yet, even with browser sign-in: its own acceptance first.
   const faceJoin =
-    passkeys && guestKeys
+    passkeys && guestKeys && hostPlatform !== "win32"
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -371,9 +385,15 @@ export async function createReach(overrides = {}) {
       ? context.token === token && !paused && transportAvailable &&
         auth.verifyFunnel(token, context.keyThumbprint)
       : auth.verify(token, req.reachIdentity);
+    if (client?.kind === "guest" && client.macEntry?.status === "waiting") return null;
     if (!browserHostGuard.allows(req, client)) return null;
-    return client?.policy?.browser && req.headers.upgrade?.toLowerCase() === "websocket"
-      ? null : client;
+    if (client && req.headers.upgrade?.toLowerCase() === "websocket") {
+      if (client.policy?.browser) return null;
+      // A live connection sends its credential in a message: kept, so the
+      // host guard's 2-second check (trackIdentity) knows whose it is.
+      req.reachCredential = token;
+    }
+    return client;
   };
   // Why `verify` refused a sound credential for a moment, if that's what
   // happened: Tailscale's word on the phone (whois) or on this Mac (the host
@@ -391,7 +411,7 @@ export async function createReach(overrides = {}) {
       !browserHostGuard.fresh() &&
       auth.verify(token, req.reachIdentity)
     )
-      return "Checking this Mac's connection. Reconnecting…";
+      return `Checking this ${computerWord(process.platform)}'s connection. Reconnecting…`;
     return "";
   };
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
@@ -406,7 +426,9 @@ export async function createReach(overrides = {}) {
         if (!req.reachIdentity) end();
         if (browserHostGuard.isActive()) {
           await browserHostGuard.refresh();
-          browserHostGuard.assertRequest(req, verify(req, req.headers.authorization?.replace(/^Bearer /, "")));
+          const token = req.headers.authorization?.replace(/^Bearer /, "") || req.reachCredential;
+          // A live connection not signed in yet is checked when it is.
+          if (token || !req.headers.upgrade) browserHostGuard.assertRequest(req, verify(req, token));
         }
       } catch {
         req.reachIdentity = null;
@@ -419,6 +441,9 @@ export async function createReach(overrides = {}) {
     return () => clearInterval(timer);
   };
   const presence = new DevicePresence();
+  // When each invited person and agent last used their access, in memory (a
+  // restart forgets it): the owner's list says who is active and who is idle.
+  const lastUse = new Map();
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: 65536,
@@ -436,7 +461,8 @@ export async function createReach(overrides = {}) {
     blocked: () => {
       if (paused) return "Reach is paused";
       if (!transportAvailable) return "Reach's connection is down";
-      if (screenControl.holder() || screenControl.inputStopping() || inputInFlight) return "you're controlling the Mac from your phone";
+      if (screenControl.holder() || screenControl.inputStopping() || inputInFlight)
+        return screenControl.holder()?.person ? `${screenControl.holder().name || "someone"} is controlling the Mac` : "you're controlling the Mac from your phone";
       const agent = agentDesktop ? agentDesktop.automationBusy?.() : false;
       return agent === false ? false : typeof agent === "string" ? agent : "an agent is using the Mac";
     },
@@ -464,6 +490,13 @@ export async function createReach(overrides = {}) {
   // (node --test) never reach for the real agents.
   if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => agentSessions.warm?.());
+  // The helper agents' file requests go through on a Mac, compiled once per
+  // version of its source: at start, not inside an agent's first request,
+  // which has 30 seconds (a cold Intel Mac compiles it for longer).
+  // Stopped when Reach stops, as its other start-time builds are.
+  const warming = new AbortController();
+  if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void desktopBinary(config, "browser-files", { signal: warming.signal }).catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
@@ -478,8 +511,8 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.appShortcuts,
   });
-  // While macOS shows one of its own dialogs, only the owner's own devices
-  // click or type on the screen (ScreenControl.ownerOnly).
+  // System-dialog input needs an owner device or explicit Full-person
+  // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
   const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
   // The Mac's Terminal windows, told by events while a phone is connected;
@@ -662,8 +695,9 @@ export async function createReach(overrides = {}) {
     });
   agentSessions.onListChange?.(() => void relays.check());
   // Team chats: a lead hands work to helpers through its tools, which reach
-  // Reach on a private socket with the team's own key (team-bridge.mjs).
-  const teamSocket = overrides.teamSocket || path.join(config.dataDir, "team.sock");
+  // Reach on a private socket with the team's own key (team-bridge.mjs); a
+  // named pipe of its own on Windows.
+  const teamSocket = overrides.teamSocket || (process.platform === "win32" ? teamPipe(config.dataDir) : path.join(config.dataDir, "team.sock"));
   teams =
     overrides.teams ||
     createTeams({
@@ -684,6 +718,9 @@ export async function createReach(overrides = {}) {
   if (!process.env.NODE_TEST_CONTEXT || overrides.teamSocket)
     void teamBridge
       .listen()
+      // Windows: a lead's bridge checks Reach's pipe with the owners helper
+      // (scripts/team-mcp.mjs); Team is offered once it's built.
+      .then((open) => (process.platform === "win32" ? prepareOwners(config.dataDir).then(() => open) : open))
       .then((open) => (teamBridgeOpen = open))
       .catch(() => {});
   teams.onChange?.(() => {
@@ -702,6 +739,15 @@ export async function createReach(overrides = {}) {
       sessions: agentSessions,
       openClaw,
       relays,
+      availableAgents: async () => {
+        const [health, claw] = await Promise.allSettled([agentSessions.health(), openClaw.overview()]);
+        const ready = health.status === "fulfilled" ? health.value.filter((h) =>
+          ["codex", "claude"].includes(h.agent) && h.installed && h.signedIn && h.usable !== false && !h.error && h.compatibility?.status !== "unavailable"
+        ).map((h) => h.agent) : [];
+        if (claw.status === "fulfilled" && claw.value.connected) ready.push("openclaw");
+        return ready;
+      },
+      models: async (agent) => (await agentSessions.models(agent)).models || [],
       file: process.env.NODE_TEST_CONTEXT && !overrides.workflowFile ? null : overrides.workflowFile || path.join(config.dataDir, "agent-workflows.json"),
       authorized: (owner) =>
         paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that ran this workflow no longer has access.",
@@ -803,6 +849,8 @@ export async function createReach(overrides = {}) {
   // puts the apps back on the phone; screens reconnect by themselves.
   let paused = settings.paused === true;
   screenControl.paused = appThreads.paused = paused;
+  // Started paused: the Mac dialog watcher stays off too.
+  if (paused) agentSessions.pauseMacPrompts?.(true);
   const PAUSED = pausedMessage();
   const notPaused = () => {
     if (paused) throw fail(423, PAUSED);
@@ -830,7 +878,13 @@ export async function createReach(overrides = {}) {
         browserScreenSnapshots.stop(PAUSED);
         remoteScreens.stop(PAUSED, true);
         appScreens.stop(PAUSED, true);
+        // Nothing on a paused Mac captures its screen (Oct 12: the Mac's
+        // screen-sharing mark stayed on, so Netflix wouldn't play): the
+        // dialog watcher stops, and a screen helper an earlier Reach left
+        // running is ended.
+        (overrides.sweepScreenHelpers || sweepScreenHelpers)({ dataDir: config.dataDir });
       }
+      agentSessions.pauseMacPrompts?.(value);
       for (const nudge of presenceNudges) nudge();
       // The menu bar's helper hears it before resuming apps (it refuses to
       // lend windows while it thinks Reach is paused), after holding them.
@@ -891,6 +945,11 @@ export async function createReach(overrides = {}) {
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
   });
+  // The owner's pause of one agent ("it can look, not touch"), on every
+  // computer: it used to live in the Mac-only desktop service below, so off a
+  // Mac pausing an agent did nothing. One store, kept across restarts; the
+  // desktop service, where there is one, acts on it.
+  const agentPauses = overrides.agentPauses || createAgentPauses({ file: path.join(config.dataDir, "agent-pauses.json") });
   // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
   // Tests inject a stand-in; null means this Mac can't offer them, and the
   // screen presets refuse to be created.
@@ -898,24 +957,37 @@ export async function createReach(overrides = {}) {
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
-    phoneControls: () => !!screenControl.holder() || screenControl.inputStopping(),
+    // Who controls (their name), or true while the last one's input stops.
+    phoneControls: () => {
+      const held = screenControl.holder();
+      return held?.person ? held.name || "Someone" : !!held || screenControl.inputStopping();
+    },
     // A chat waiting on an agent gets the next turn (the agent's input waits a
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
     screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record, actions: logAction,
-    pausesFile: path.join(config.dataDir, "agent-pauses.json"),
+    pauses: agentPauses,
   }) : null);
   // Agents that can see or use this Mac (Full control, Apps, Read-only).
   const screenAgentIds = () => auth.list()
     .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
     .map((client) => client.id);
+  // The owner pauses (or resumes) one agent: the desktop, where there is one,
+  // lets go of what the agent holds first, then the pause is kept. A pause
+  // that can't be saved still holds now (507, agent-pauses.mjs).
+  const pauseAgent = (id, value) => {
+    if (value) agentDesktop?.letGo?.(id);
+    return agentPauses.set(id, value);
+  };
+  const agentPaused = (id) => agentPauses.has(id);
   // Every such agent paused at once, and the owner told why: who was paused
   // is unknown (the saved pauses unreadable) or Reach ended unexpectedly.
   const pauseScreenAgents = (why) => {
-    if (!agentDesktop?.pauseAll) return [];
     let added = [];
     try {
-      added = agentDesktop.pauseAll(screenAgentIds());
+      const ids = screenAgentIds();
+      for (const id of ids) agentDesktop?.letGo?.(id);
+      added = agentPauses.add(ids);
     } catch (error) {
       console.warn(`Reach: ${error.message}`);
     }
@@ -925,10 +997,8 @@ export async function createReach(overrides = {}) {
     }
     return added;
   };
-  if (agentDesktop?.forgetPauses) {
-    agentDesktop.forgetPauses((id) => auth.list().some((client) => client.id === id));
-    if (agentDesktop.pausesUnreadable()) pauseScreenAgents("Reach couldn't read which agents you had paused, so it paused them all.");
-  }
+  agentPauses.prune((id) => auth.list().some((client) => client.id === id));
+  if (agentPauses.unreadable) pauseScreenAgents("Reach couldn't read which agents you had paused, so it paused them all.");
   // Logs capped, old command histories cleared, files sent from the phone
   // cleared when the disk runs low, at start and every 6 hours
   // (server/tidy.mjs). Tests opt in.
@@ -973,7 +1043,7 @@ export async function createReach(overrides = {}) {
       return client ? applyAgentPolicy(client, config) : null;
     },
     available: () => !paused && transportAvailable,
-    paused: (id) => agentDesktop?.isPaused?.(id) === true,
+    paused: agentPaused,
     ...(overrides.serviceOptions || {}),
   });
   const browserCapture = async (authorize, fresh = false) => {
@@ -1032,11 +1102,8 @@ export async function createReach(overrides = {}) {
     : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] }) : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
   // the other agent commands.
-  const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction, hosts: () => reachAddresses(config), protectedPaths: () => browserPaths(),
-    protectedPids: () => [process.pid, process.ppid], record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}),
-    // Every agent command runs in a macOS sandbox that keeps Reach's socket,
-    // data and code, and Tailscale's, out of reach (security audit, Oct 9).
-    sandbox: () => jobSandbox() });
+  const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1296,35 +1363,55 @@ export async function createReach(overrides = {}) {
     res.once("finish", cleanup);
     next();
   });
-  // A person kept out while an agent has Full control or Apps (the host
-  // guard): you hear who, once per person every ten minutes, so you can end
-  // or pause the agent to let them in.
-  const keptOut = new Map();
-  const personKeptOut = (person) => {
-    const now = Date.now();
-    for (const [id, at] of keptOut) if (now - at > 600_000) keptOut.delete(id);
-    if (keptOut.has(person.id)) return;
-    keptOut.set(person.id, now);
+  // A person who came in while an agent had Full control or Apps waits for
+  // your Allow (auth.allowPerson): you hear who, once, with their device.
+  const personWaiting = (person) => {
     const name = person.name || "Someone";
-    record("agent", `${name} couldn't come in: an agent has full control of this Mac`);
-    notify({ category: "access", title: `${name} couldn't come in`, body: "An agent has full control of this Mac right now, so people are kept out. End or pause it in Agents & people to let them in.", icon: "agent", tag: `person-kept-out-${person.id}` });
+    const device = person.macEntry?.nodeName ? ` on ${person.macEntry.nodeName}` : "";
+    record("guest", `${name} is waiting to come in${device}`);
+    notify({ category: "access", title: `${name} wants to come in`, body: `An agent is using this Mac, so you allow each new person once${device ? ` (${person.macEntry.nodeName})` : ""}.`, icon: "agent", tag: `person-waiting-${person.id}` });
+    for (const nudge of presenceNudges) nudge();
   };
+  const redeemRoutes = ["/api/guest/redeem", "/api/invitations/redeem"];
   app.use("/api", async (req, res, next) => {
+    const route = (req.originalUrl || req.url || "").split("?", 1)[0];
+    const token = req.headers.authorization?.replace(/^Bearer /, "");
+    const context = funnelRequests.get(req);
+    const verified = () => context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+    // A person waiting for your Allow reads that, whatever else is going on.
+    if (token && !context) {
+      let client = verified();
+      if (client?.kind === "guest" && agentsActive()) {
+        await browserHostGuard.refresh();
+        if (browserHostGuard.needsPersonApproval(req, client)) {
+          const waiting = auth.holdPerson(client.id, req.reachIdentity);
+          if (waiting) personWaiting(waiting);
+          client = verified();
+        }
+      }
+      if (client?.kind === "guest" && client.macEntry?.status === "waiting") {
+        // Leave, while waiting: their access ends, and your card with it.
+        if (req.method === "DELETE" && route === "/api/device/access") {
+          endClient(client.id);
+          void releaseGuest(client);
+          for (const nudge of presenceNudges) nudge();
+          return res.json({ ok: true });
+        }
+        throw Object.assign(fail(403, personWaitingMessage), { waiting: true });
+      }
+    }
     if (agentsActive()) {
       await browserHostGuard.refresh();
-      const token = req.headers.authorization?.replace(/^Bearer /, "");
-      const context = funnelRequests.get(req);
-      const client = context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+      const client = verified();
       if (!auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
-        // A person, opening their invitation or with access already: told
-        // plainly that someone else has the Mac. The rule itself is unchanged.
-        const route = (req.originalUrl || req.url || "").split("?", 1)[0];
-        const invited = req.method === "POST" && ["/api/guest/redeem", "/api/invitations/redeem"].includes(route)
+        // A person opening their invitation comes in beside the agent, and
+        // waits for your Allow (the redeem route holds them). Not on this
+        // Mac itself: the agent drives it.
+        const invited = req.method === "POST" && redeemRoutes.includes(route)
           ? auth.unopenedInvitation(req.body?.invitation) : null;
-        const person = client?.kind === "guest" ? client : invited?.kind === "guest" ? invited : null;
-        if (person) {
-          personKeptOut(person);
-          throw fail(403, personGuardMessage);
+        if (invited?.kind === "guest") {
+          if (browserHostGuard.onHost(req)) throw fail(403, personOnHostMessage);
+          return next();
         }
         browserHostGuard.assertRequest(req, client);
       }
@@ -1356,10 +1443,17 @@ export async function createReach(overrides = {}) {
         : await fleet?.ticketApproval(req.reachIdentity, ticket);
     if (ticket !== undefined && !from)
       throw fail(403, "Your other computer didn't vouch for this device.");
+    // From this computer itself (its own Tailscale address, as tailscaled
+    // says): anyone signed in to it could have asked as you. Its prompt says
+    // so, on a Mac as on Windows, and only the code typed there approves it:
+    // Face ID on the phone would skip the warning (docs/parity/D-public-door.md
+    // §0.8, D1).
+    const fromHere = thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps());
     const created = approvals.request(
       req.reachIdentity,
       req.body?.name,
       config.tailscaleOwner,
+      fromHere ? { thisComputer: true } : undefined,
     );
     if (from)
       try {
@@ -1367,7 +1461,7 @@ export async function createReach(overrides = {}) {
       } catch {}
     res
       .status(202)
-      .json({ ...created, ...(passkeys?.has() ? { passkey: true } : {}) });
+      .json({ ...created, ...(passkeys?.has() && !fromHere ? { passkey: true } : {}) });
   });
   app.post("/api/auth/requests/:id", (req, res) => {
     if (!approvals) throw fail(404, "Device approval is not configured.");
@@ -1397,12 +1491,14 @@ export async function createReach(overrides = {}) {
   // issues the credential exactly as approving here does.
   const passkeyRequest = (req) => {
     if (!passkeys) throw fail(404, "Face ID isn't available on this computer.");
-    approvals.pending(
+    const pending = approvals.pending(
       req.params.id,
       req.body?.secret,
       req.reachIdentity,
       config.tailscaleOwner,
     );
+    if (pending.thisComputer)
+      throw fail(403, `This request came from this ${computerWord(hostPlatform)} itself: type its code in Reach on the ${computerWord(hostPlatform)} instead.`);
     return `${req.params.id}:${req.reachIdentity.nodeId}`;
   };
   app.post("/api/auth/requests/:id/passkey/options", (req, res) => {
@@ -1519,7 +1615,8 @@ export async function createReach(overrides = {}) {
     platform: process.platform,
   });
   app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) => {
-    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity);
+    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity, { hold: agentsActive() });
+    if (joined.waiting) personWaiting(auth.list().find((client) => client.id === joined.clientId) || { id: joined.clientId });
     if (joined.status === "pending") {
       record("agent", "An invited agent is waiting for connection approval");
       notify({ category: "access", ...notificationPush(admissionNotification(auth.listAgentAdmissions().find((item) => item.requestId === joined.requestId) || { requestId: joined.requestId })), tag: `agent-admission-${joined.requestId}` });
@@ -1566,12 +1663,13 @@ export async function createReach(overrides = {}) {
     if (fs.existsSync(config.agentPolicyFile))
       throw fail(
         403,
-        "This Mac uses agent profiles. Ask its owner for a scoped CLI credential.",
+        `This ${computerWord(process.platform)} uses agent profiles. Ask its owner for a scoped CLI credential.`,
       );
-    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    // Only the verified private transport can assign a device identity.
+    // Ordinary callers may supply forwarding headers, so never use them
+    // to select a fresh request budget.
     const address =
       req.reachIdentity?.nodeId ||
-      (forwarded && net.isIP(forwarded) ? forwarded : "") ||
       req.socket.remoteAddress ||
       "unknown";
     const now = Date.now();
@@ -1717,7 +1815,7 @@ export async function createReach(overrides = {}) {
           "Access expired or was revoked. Ask the laptop owner for a new invitation, or pair your own device again.",
       });
     const route = req.path.split("/")[1].toLowerCase();
-    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause", "/browser/agents/reopen"].includes(req.path) ? "admin" : {
+    const scope = ["/browser/agents", "/browser/agents/stop", "/browser/agents/pause", "/browser/agents/reopen", "/browser/agents/clear"].includes(req.path) ? "admin" : {
       files: "files",
       terminals: "terminal",
       apps: "apps",
@@ -1745,18 +1843,21 @@ export async function createReach(overrides = {}) {
     // An invitation that may watch chosen apps' windows reaches only those
     // routes: the app list and the app windows themselves (no quit, no typing).
     // (The path is read here: later checks run after Express restores /api.)
-    const subpath = req.path;
+    // Authorization and response guards belong to this exact request stage.
+    // Named MCP dispatch re-enters routing with another method/path; an outer
+    // response guard must keep checking the original dispatch grant.
+    const subpath = req.path, requestMethod = req.method;
     const appWindows = (identity) =>
       identity.scopes?.includes("apps:open") &&
       ((route === "screen" &&
         /^\/screen\/apps(\/[^/]+(\/activate)?)?$/.test(subpath) &&
-        ["GET", "POST", "PATCH", "DELETE"].includes(req.method)) ||
+        ["GET", "POST", "PATCH", "DELETE"].includes(requestMethod)) ||
         (route === "apps" &&
-          ((req.method === "GET" && subpath === "/apps") ||
-            (req.method === "POST" && subpath === "/apps/icons"))));
+          ((requestMethod === "GET" && subpath === "/apps") ||
+            (requestMethod === "POST" && subpath === "/apps/icons"))));
     const allowed = (identity) =>
       identity?.policy?.browser
-        ? browserRouteAllowed(identity, req.method, subpath)
+        ? browserRouteAllowed(identity, requestMethod, subpath)
         : identity &&
       !(
         identity.kind === "guest" && GUEST_BLOCKED_ROUTES.includes(route)
@@ -1771,7 +1872,7 @@ export async function createReach(overrides = {}) {
           (identity.scopes?.includes(scope) ||
             (route === "files" &&
               identity.scopes?.includes(
-                ["GET", "HEAD"].includes(req.method)
+                ["GET", "HEAD"].includes(requestMethod)
                   ? "files:read"
                   : "files:write",
               )))));
@@ -1781,12 +1882,30 @@ export async function createReach(overrides = {}) {
           ? `This credential does not grant ${scope} access.`
           : "This action is not available.",
       });
+    // The owner's pause, for every route that acts on the Mac (the desktop
+    // checks its own input): a paused agent looks but never runs or changes
+    // anything, here and before each later step of a running call.
+    const acts = client.policy?.preset !== undefined && requestMethod === "POST" &&
+      ["/browser/shell", "/browser/files/change", "/browser/desktop/mac-shortcuts/run", "/browser/shortcuts/run",
+        "/browser/tools/run", "/browser/tools/batch", "/browser/services/run"].includes(subpath);
+    const ownerPaused = (identity) => acts && agentPaused(identity.id);
+    const PAUSED_AGENT = "The owner paused this agent. It can look, not touch, until they resume it.";
+    if (ownerPaused(client)) return res.status(409).json({ error: PAUSED_AGENT, kind: "paused" });
     req.client = client;
+    // Its hourly key trade isn't use: an idle agent stays idle.
+    if ((client.kind === "guest" || client.kind === "agent") && subpath !== "/device/rotate")
+      lastUse.set(client.id, Date.now());
+    // A route's scope can stay the same while its folders or app policy
+    // change. Never finish an old request using data from the former grant.
+    const grant = (identity) => JSON.stringify([identity?.scopes, identity?.agentRoots, identity?.guestApps, identity?.policy]);
+    const initialGrant = grant(client);
+    const stillAllowed = (identity) => allowed(identity) && grant(identity) === initialGrant;
     const credential = req.headers.authorization?.replace(/^Bearer /, "");
     const reauthorize = (allowFinishedResponse = false) => {
       const current = verify(req, credential);
-      if (!allowed(current) || (res.destroyed && !(allowFinishedResponse && res.writableFinished)))
+      if (!stillAllowed(current) || (res.destroyed && !(allowFinishedResponse && res.writableFinished)))
         throw fail(401, "Access expired or was revoked.");
+      if (ownerPaused(current)) throw Object.assign(fail(409, PAUSED_AGENT), { kind: "paused" });
       req.client = current;
       return current;
     };
@@ -1820,12 +1939,12 @@ export async function createReach(overrides = {}) {
     const untilExpiry = (client.expiresAt || Date.parse(client.createdAt) + 30 * 86400000) - Date.now();
     const deadline = setTimeout(
       () => {
-        if (!allowed(verify(req, credential))) disconnect();
+        if (!stillAllowed(verify(req, credential))) disconnect();
       },
       Number.isFinite(untilExpiry) ? Math.min(2147483647, Math.max(0, untilExpiry)) : 2147483647,
     );
     const check = setInterval(() => {
-      if (!allowed(verify(req, credential))) disconnect();
+      if (!stillAllowed(verify(req, credential))) disconnect();
     }, 1000);
     deadline.unref();
     check.unref();
@@ -1837,7 +1956,7 @@ export async function createReach(overrides = {}) {
     res.once("finish", cleanup);
     const json = res.json.bind(res);
     res.json = (body) => {
-      if (res.statusCode < 400 && !allowed(verify(req, credential)))
+      if (res.statusCode < 400 && !stillAllowed(verify(req, credential)))
         res.status(401);
       if (res.statusCode === 401)
         return json({
@@ -1852,6 +1971,8 @@ export async function createReach(overrides = {}) {
     const tools = req.client.scopes.includes("codex")
       ? await detectTools()
       : undefined;
+    const people = !["agent", "guest"].includes(req.client.kind);
+    const net = people ? await getNetwork() : { connected: !!config.publicOrigin, peers: [] };
     res.json({
       ...device,
       name: config.name,
@@ -1865,18 +1986,23 @@ export async function createReach(overrides = {}) {
       })),
       memory: { total: os.totalmem(), free: await availableMemory() },
       uptime: os.uptime(),
-      network: ["agent", "guest"].includes(req.client.kind)
-        ? { connected: !!config.publicOrigin, peers: [] }
-        : await getNetwork(),
+      network: net,
+      // This browser runs on the computer itself (Oct 11: a Windows user
+      // opened the link on the PC, and Screen showed the PC watching
+      // itself). Only for the Screen page's notice: on Windows any local
+      // program can write X-Forwarded-For, so it never decides access.
+      ...(people && sameComputer(req, net.ips) && { sameComputer: true }),
       access: {
         kind: req.client.kind,
         scopes: req.client.scopes,
         expiresAt: req.client.expiresAt,
         profile: req.client.policy?.profile,
+        ...(req.client.kind === "guest" && req.client.fullControlVersion === 1 ? { fullControlVersion: 1 } : {}),
         ...(req.client.policy?.browser && { browser: true }),
       },
       capabilities: deviceCapabilities({
-        platform: process.platform,
+        platform: overrides.platform || process.platform,
+        owner: actsAsOwner(req.client),
         scopes: req.client.scopes,
         screen: config.screen,
         codexInstalled: tools?.codex.installed,
@@ -1887,6 +2013,8 @@ export async function createReach(overrides = {}) {
       // The runtime this computer serves agents: one on an older copy
       // fetches it below and offers the new tools (scripts/agent-remote.mjs).
       ...(req.client.kind === "agent" && agentRuntime() && { runtime: agentRuntime() }),
+      // What it may do and the rules, for the agent itself (reach_device).
+      ...(req.client.kind === "agent" && { guide: guideFor(req.client, { page: fromBrowserPage(req) }) }),
       // A copy too old to update itself: how to replace it, once.
       ...updateNotice({ client: req.client, req, served: servedRuntime(), host: (() => { try { return new URL(config.publicOrigin).hostname; } catch { return ""; } })() }),
     });
@@ -2021,6 +2149,18 @@ export async function createReach(overrides = {}) {
   // tailnet (this computer and the linked ones, on Reach's port).
   const readStatus =
     overrides.tailscaleStatus || (() => tailscaleJson(["status", "--json"]));
+  // This computer's own Tailscale addresses: the last ones Tailscale gave, so
+  // a status read that fails doesn't forget them.
+  let ownIpsSeen = [];
+  const ownTailscaleIps = async () => {
+    try {
+      const ips = (await readStatus())?.Self?.TailscaleIPs;
+      if (Array.isArray(ips) && ips.length) ownIpsSeen = ips;
+    } catch {
+      /* the last known ones */
+    }
+    return ownIpsSeen;
+  };
   app.get("/api/guests/keys", async (req, res) => {
     let policy = null;
     try {
@@ -2082,6 +2222,13 @@ export async function createReach(overrides = {}) {
   };
   // The runtime each command-line agent says it runs (agent-runtimes.mjs).
   const agentRuntimes = createAgentRuntimes({ current: () => agentRuntime() });
+  // What an agent is told about its own access when it connects and when it
+  // asks (agent-guide.mjs): from the access it has now, its folders by name.
+  // `page`: its browser page, which signs in with Sign in.
+  function guideFor(client, { page = false } = {}) {
+    const name = (folder) => { try { return fileRootName(folder); } catch { return path.basename(folder) || folder; } };
+    return agentGuide(client, { word: computerWord(hostPlatform), folders: (client?.agentRoots || []).map(name), page });
+  }
   // Where guests may go: Reach's port on your Reach computers.
   const guestReach = async () => {
     const st = await readStatus();
@@ -2254,7 +2401,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/guests", async (req, res) => {
     const authorize = () => invitationOwner(req);
     authorize();
-    const grant = auth.inviteGuest(req.body);
+    const grant = auth.inviteGuest(req.body || {});
     // With an invite key, the guest needs no Tailscale account or app.
     let key;
     if (req.body?.key === true) {
@@ -2291,6 +2438,15 @@ export async function createReach(overrides = {}) {
       url: url.toString(),
       ...(key ? { key: key.key, hostname: key.hostname } : {}),
     });
+  });
+  // Your Allow for a person who came in while an agent had the Mac (Deny is
+  // removing their access, DELETE /api/clients/:id).
+  app.post("/api/guests/:id/allow", (req, res) => {
+    invitationOwner(req);
+    const person = auth.allowPerson(req.params.id);
+    record("guest", `Let ${person.name || "a person"} in`);
+    for (const nudge of presenceNudges) nudge();
+    res.json({ ok: true });
   });
   // Change what someone you invited may use, without a new link (core.mjs,
   // changeAccess). Every request checks the new access; what they lose ends
@@ -2340,13 +2496,14 @@ export async function createReach(overrides = {}) {
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
     const lost = before.scopes.filter((s) => !after.scopes.includes(s));
+    const fullControlLost = before.fullControlVersion === 1 && after.fullControlVersion !== 1;
     const narrower =
-      lost.length > 0 ||
+      fullControlLost || lost.length > 0 ||
       before.roots.some((r) => !after.roots.includes(r)) ||
       (after.scopes.includes("apps:open") &&
         Array.isArray(after.apps) &&
         (!before.apps || before.apps.some((a) => !after.apps.includes(a))));
-    if (lost.includes("screen") || lost.includes("screen:control")) {
+    if (fullControlLost || lost.includes("screen") || lost.includes("screen:control")) {
       screenControl.revoke(id);
       closeInput(id);
     }
@@ -2377,7 +2534,11 @@ export async function createReach(overrides = {}) {
         const runtime = client.kind === "agent" ? agentRuntimes.statusOf(client) : undefined;
         // Its update by hand fetches exactly this runtime, by its hash.
         const sha = runtime === "one-time" ? servedRuntime() : undefined;
-        return runtime ? { ...client, runtime, ...(sha ? { runtimeSha256: sha } : {}) } : client;
+        // When it last used its access (this run of Reach).
+        const activeAt = lastUse.get(client.id);
+        return runtime || activeAt
+          ? { ...client, ...(runtime ? { runtime } : {}), ...(sha ? { runtimeSha256: sha } : {}), ...(activeAt ? { activeAt } : {}) }
+          : client;
       }),
     }),
   );
@@ -2404,10 +2565,12 @@ export async function createReach(overrides = {}) {
   };
   const endClient = (id) => {
     auth.revoke(id);
+    lastUse.delete(id);
     endSession(id);
   };
   browserAgentRoutes(app, {
     auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions,
+    pauses: { has: agentPaused, set: pauseAgent },
     onStopped: (client) => {
       void releaseGuest(client);
       record("agent", "Stopped a browser agent session");
@@ -2446,6 +2609,7 @@ export async function createReach(overrides = {}) {
   };
   const resolve = (root, p, client, { allowMissing = false } = {}) => {
     const check = target => {
+      if (client?.policy?.browser === true && client.policy.preset === "full") return target;
       notPrivate(target);
       if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
         throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
@@ -2463,7 +2627,9 @@ export async function createReach(overrides = {}) {
   };
   // Listings check thousands of entries: same rules, without blocking.
   const resolveAsync = async (root, p, client, privates) => {
-    const target = notPrivate(await safePathAsync(client?.agentRoots || config.roots, root, p), privates);
+    const target = await safePathAsync(client?.agentRoots || config.roots, root, p);
+    if (client?.policy?.browser === true && client.policy.preset === "full") return target;
+    notPrivate(target, privates);
     if (client?.policy?.browser && isBrowserPrivatePath(target, browserPaths()))
       throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
     return target;
@@ -2511,6 +2677,7 @@ export async function createReach(overrides = {}) {
   permissionRoutes(app, permissionRequests);
   browserAccessRoutes(app, {
     agentRuntime,
+    guide: guideFor,
     servedRuntime,
     noteAgentRuntime: (client, value) => agentRuntimes.note(client, value),
     toolsStandingAllowed: () => !!guestKeys?.configured(),
@@ -2519,8 +2686,8 @@ export async function createReach(overrides = {}) {
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
     prepareFunnel: async () => {
-      // A Windows Reach has no public link (no Funnel without the socket).
-      if (!prepareFunnel && (overrides.platform || process.platform) === "win32")
+      // A Windows Reach has no public link without browser sign-in.
+      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -2555,7 +2722,7 @@ export async function createReach(overrides = {}) {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const showHidden = req.query.hidden === "1";
     const privates = privateRoots();
-    const shown = entries.filter((e) => showHidden || !e.name.startsWith("."));
+    const shown = entries.filter((e) => showHidden || !hiddenByOs(e.name, dir));
     const items = (
       await Promise.all(
         shown
@@ -2625,6 +2792,7 @@ export async function createReach(overrides = {}) {
     if (!stat.isFile()) throw fail(400, "Choose a file.");
     const token = links.issue({
       digest: req.client.hash,
+      file,
       root: req.query.root,
       path: req.query.path || "",
       mtimeMs: stat.mtimeMs,
@@ -2638,15 +2806,20 @@ export async function createReach(overrides = {}) {
       req.reauthorize();
       return res.json({ text: data.toString("utf8"), sha256: hash(data) });
     }
-    const file = resolve(req.query.root, req.query.path || "", req.client);
-    const stat = await fsp.stat(file);
-    if (!stat.isFile()) throw fail(400, "Choose a file.");
-    if (stat.size > 1024 * 1024)
+    // Opened once and proven to be the file checked (confined-file.mjs).
+    const place = () => resolve(req.query.root, req.query.path || "", req.client);
+    const { handle, size } = await openConfined(place(), fs.constants.O_RDONLY, place);
+    let data;
+    try {
+      data = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+    } finally {
+      await handle.close();
+    }
+    if (!data)
       throw fail(
         413,
         "This file is too large to preview. Download it instead.",
       );
-    const data = await fsp.readFile(file);
     if (data.includes(0))
       throw fail(415, "Download this file to open it in a compatible app.");
     res.json({ text: data.toString("utf8"), sha256: hash(data) });
@@ -2686,7 +2859,7 @@ export async function createReach(overrides = {}) {
       .set("Cache-Control", "no-store")
       .json({ icons: Object.fromEntries(types.map((t, i) => [t, found[i]])) });
   });
-  app.put("/api/files/text", (req, res) => {
+  app.put("/api/files/text", async (req, res) => {
     if (
       typeof req.body?.text !== "string" ||
       Buffer.byteLength(req.body?.text) > 128 * 1024 ||
@@ -2697,24 +2870,26 @@ export async function createReach(overrides = {}) {
         400,
         "Send text up to 128 KiB and the sha256 from the last read.",
       );
-    const file = resolve(req.query.root, req.query.path || "", req.client);
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024)
-      throw fail(400, "Choose a text file up to 1 MiB.");
-    const previous = fs.readFileSync(file);
-    if (previous.includes(0))
-      throw fail(415, "Binary files cannot be edited as text.");
-    if (hash(previous) !== req.body?.sha256)
-      throw fail(409, "This file changed. Read it again before writing.");
-    const temporary = path.join(path.dirname(file), `.reach-edit-${id()}`);
+    // Read, compared and written through one handle, proven to be the file
+    // checked (confined-file.mjs): a link or another file put in its place
+    // meanwhile is never written. Written in place, so its links and
+    // permissions stay as they were.
+    const place = () => resolve(req.query.root, req.query.path || "", req.client);
+    const file = place();
+    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
     try {
-      fs.writeFileSync(temporary, req.body?.text, {
-        flag: "wx",
-        mode: stat.mode & 0o777,
-      });
-      fs.renameSync(temporary, file);
+      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
+      if (previous.includes(0))
+        throw fail(415, "Binary files cannot be edited as text.");
+      if (hash(previous) !== req.body?.sha256)
+        throw fail(409, "This file changed. Read it again before writing.");
+      const text = Buffer.from(req.body.text, "utf8");
+      await handle.truncate(0);
+      await handle.write(text, 0, text.length, 0);
+      await handle.sync();
     } finally {
-      fs.rmSync(temporary, { force: true });
+      await handle.close();
     }
     record("file", `Updated ${path.basename(file)}`);
     res.json({ ok: true, sha256: hash(req.body?.text) });
@@ -2807,7 +2982,7 @@ export async function createReach(overrides = {}) {
   );
   app.put("/api/files/uploads/:id", async (req, res) => {
     // Chunks are raw bytes; one that was parsed as JSON lost its contents.
-    if (req.body !== undefined && Object.keys(req.body || {}).length)
+    if (req.body !== undefined)
       throw fail(415, "Send chunks as application/octet-stream.");
     const offset = Number(req.query.offset);
     if (!Number.isSafeInteger(offset) || offset < 0)
@@ -2831,6 +3006,7 @@ export async function createReach(overrides = {}) {
         req.params.id,
         req.client,
         uploadFolder(req, root, folder),
+        () => req.reauthorize(),
       );
       record("file", `Uploaded ${result.name}`);
       res.json(result);
@@ -2858,7 +3034,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/files/extract", async (req, res) => {
     const owner = () => {
       const client = req.reauthorize();
-      if (client.kind !== "device" || !client.scopes.includes("admin") || client.policy?.browser ||
+      if (!actsAsOwner(client) || !client.scopes.includes("admin") || client.policy?.browser ||
           !(client.scopes.includes("files") || ["files:read", "files:write"].every(scope => client.scopes.includes(scope))))
         throw fail(403, "Only a paired owner with file read and write access can open archives.");
       return client;
@@ -2908,9 +3084,14 @@ export async function createReach(overrides = {}) {
     // Your own devices run as you; anyone else's job runs in the sandbox
     // Full control agents' commands do.
     const own = req.client.kind === "device" && req.client.scopes.includes("admin");
-    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, {
-      sandbox: own ? null : jobSandbox(),
-    });
+    const sandbox = own ? null : jobSandbox();
+    // No sandbox here yet (Windows and Linux): an agent's or invited
+    // person's command would run as you, free to rewrite Reach's own files
+    // and so its own access. It doesn't run, as without sandbox-exec on a
+    // Mac (jobs.mjs). Oct 12: Windows and Linux had run them unsandboxed.
+    if (!own && !sandbox)
+      throw fail(503, `Commands from agents and invited people run only in a sandbox, which this ${computerWord(process.platform)} doesn't have yet. Your own devices can run commands.`);
+    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });
@@ -3095,7 +3276,21 @@ export async function createReach(overrides = {}) {
   const installs = installLock((id) => {
     try { return terminals.get(id)?.status !== "exited"; } catch { return false; }
   });
-  app.post("/api/sessions/agent-install/:agent", async (req, res) => {
+  // Plans probe installed binaries, and fresh status checks query publishers.
+  // Authenticate first, then bound that work across all maintenance routes.
+  // Device identity survives IP/header changes without grouping other phones.
+  const maintenanceStore = new MemoryStore();
+  const maintenanceLimit = rateLimit({
+    windowMs: 60_000, limit: 30, store: maintenanceStore,
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this device first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "agent-maintenance",
+    message: { error: "Too many app installation or update requests. Try again in one minute." },
+  });
+  app.post("/api/sessions/agent-install/:agent", maintenanceLimit, async (req, res) => {
     const agent = String(req.params.agent);
     const confirm = req.body?.confirm === true;
     if (confirm && !installs.take(agent))
@@ -3125,22 +3320,33 @@ export async function createReach(overrides = {}) {
   // newer version is certain, as Install: its command shown, then run once
   // confirmed. A copy inside an app updates with the app.
   const agentUpdates = overrides.agentUpdates || createAgentUpdates();
-  app.get("/api/sessions/agent-updates", async (req, res) =>
+  app.get("/api/sessions/agent-updates", maintenanceLimit, async (req, res) =>
     res.json({ agents: (await agentUpdates.list({ fresh: req.query.fresh === "1" })).map(({ file, ...rest }) => rest) }),
   );
-  app.post("/api/sessions/agent-update/:agent", async (req, res) => {
-    const plan = await agentUpdates.plan(req.params.agent);
-    const current = req.reauthorize();
-    if (req.body?.confirm !== true) return res.json(plan);
-    notPaused();
-    const terminal = terminals.create({
-      cwd: os.homedir(),
-      name: `Update ${plan.name}`,
-      clientId: current.id,
-      command: installTerminalCommand(plan),
-    });
-    record("terminal", `Updating ${plan.name} to ${plan.to}`);
-    res.json({ ...plan, terminal });
+  app.post("/api/sessions/agent-update/:agent", maintenanceLimit, async (req, res) => {
+    const agent = String(req.params.agent);
+    const confirm = req.body?.confirm === true;
+    if (confirm && !installs.take(agent))
+      throw fail(409, "That app is already installing or updating. Wait for it to finish.");
+    let started = false;
+    try {
+      const plan = await agentUpdates.plan(agent);
+      const current = req.reauthorize();
+      if (!confirm) return res.json(plan);
+      notPaused();
+      const terminal = terminals.create({
+        cwd: os.homedir(),
+        name: `Update ${plan.name}`,
+        clientId: current.id,
+        command: installTerminalCommand(plan),
+      });
+      installs.started(agent, terminal.id);
+      started = true;
+      record("terminal", `Updating ${plan.name} to ${plan.to}`);
+      res.json({ ...plan, terminal });
+    } finally {
+      if (confirm && !started) installs.release(agent);
+    }
   });
   app.get("/api/sessions", async (req, res) =>
     versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
@@ -3152,6 +3358,11 @@ export async function createReach(overrides = {}) {
         ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
         ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
       })),
+      // No team bridge open on Windows (team-bridge.mjs: its pipe, or the
+      // owners helper a lead's check needs): the phone doesn't offer a Team
+      // that could only fail. (A Mac's that failed to open says "Restart
+      // Reach" when a team starts, as before.)
+      ...((overrides.platform || process.platform) === "win32" && !teamBridgeOpen && !overrides.teams ? { teams: false } : {}),
     }),
   );
   // Ask (or stop asking) for one notification when an agent's limit is back.
@@ -3278,11 +3489,11 @@ export async function createReach(overrides = {}) {
     notPaused();
     const body = req.body || {};
     const lead = String(body.lead || "");
-    const modes =
+    const modeSettings =
       lead === "codex"
-        ? CODEX_MODES
-        : Object.fromEntries(["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map((mode) => [mode, { mode }]));
-    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode)) throw fail(400, "Unknown permission mode.");
+        ? codexStartMode(body.mode)
+        : typeof body.mode === "string" && ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].includes(body.mode) ? { mode: body.mode } : null;
+    if (body.mode !== undefined && !modeSettings) throw fail(400, "Unknown permission mode.");
     const options = turnOptions(body);
     const result = await teams.create({
       owner: req.client.id,
@@ -3295,7 +3506,7 @@ export async function createReach(overrides = {}) {
         ...(options.model ? { model: options.model } : {}),
         ...(options.effort ? { effort: options.effort } : {}),
         ...(options.speed ? { speed: options.speed } : {}),
-        ...(body.mode ? modes[body.mode] : {}),
+        ...(modeSettings || {}),
         ...(lead === "codex" && body.mode ? { modeName: body.mode } : {}),
       },
     });
@@ -3341,9 +3552,10 @@ export async function createReach(overrides = {}) {
     const body = req.body || {};
     res.json(workflows.update(req.params.id, { title: body.title, cwd: body.cwd, tasks: body.tasks }));
   });
-  app.post("/api/sessions/workflows/:id/run", (req, res) => {
+  app.post("/api/sessions/workflows/:id/run", async (req, res) => {
     macOwner(req);
     notPaused();
+    await workflows.checkAvailable?.(req.params.id);
     const result = workflows.run(req.params.id, req.client.id);
     record("session", "Ran a workflow");
     res.json(result);
@@ -3466,7 +3678,7 @@ export async function createReach(overrides = {}) {
   // own and its named profiles (as its menu lists them, codex.mjs); Claude
   // Code's by id (one it doesn't list runs as Manual, claude-host.mjs).
   const REPLY_MODES = {
-    codex: (mode) => ["auto", "guardian-approvals", "full-access", "read-only", "custom"].includes(mode) || /^profile::?[\w.-]{1,80}$/.test(mode),
+    codex: isCodexMode,
     claude: (mode) => /^[A-Za-z][\w-]{0,40}$/.test(mode),
   };
   const withFiles = (text, files, agent) =>
@@ -3476,7 +3688,7 @@ export async function createReach(overrides = {}) {
       throw fail(400, "Unknown model.");
     if (body.effort !== undefined && body.effort !== null && !(typeof body.effort === "string" && EFFORT.test(body.effort)))
       throw fail(400, "Unknown thinking level.");
-    if (agent && body.mode !== undefined && body.mode !== null && !(typeof body.mode === "string" && REPLY_MODES[agent]?.(body.mode)))
+    if (agent && body.mode !== undefined && body.mode !== null && !(typeof body.mode === "string" && Object.hasOwn(REPLY_MODES, agent) && REPLY_MODES[agent](body.mode)))
       throw fail(400, "Unknown permission mode.");
     // Codex's speed (a service tier id from its model list, e.g. "default").
     if (body.speed !== undefined && body.speed !== null && (typeof body.speed !== "string" || !/^[A-Za-z0-9._-]{1,40}$/.test(body.speed)))
@@ -3633,20 +3845,16 @@ export async function createReach(overrides = {}) {
     const agent = String(body.agent || "");
     // Each agent's own permission modes: the Codex app's menu (sent exactly
     // as the app sends it) or Claude Code's --permission-mode choices.
-    const modes =
+    const modeSettings =
       agent === "codex"
-        ? CODEX_MODES
-        : Object.fromEntries(
-            ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].map(
-              (mode) => [mode, { mode }],
-            ),
-          );
-    if (body.mode !== undefined && !Object.hasOwn(modes, body.mode))
+        ? codexStartMode(body.mode)
+        : typeof body.mode === "string" && ["auto", "manual", "acceptEdits", "plan", "bypassPermissions", "dontAsk"].includes(body.mode) ? { mode: body.mode } : null;
+    if (body.mode !== undefined && !modeSettings)
       throw fail(400, "Unknown permission mode.");
     const result = await agentSessions.start(agent, {
       ...turnOptions(body),
       cwd: sessionFolder(body.cwd),
-      ...(body.mode ? modes[body.mode] : {}),
+      ...(modeSettings || {}),
       // Codex: remembered for the chat's next messages (chat-modes.mjs).
       ...(agent === "codex" && body.mode ? { modeName: body.mode } : {}),
       name: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
@@ -3783,8 +3991,8 @@ export async function createReach(overrides = {}) {
     macOwner(req);
     const mode = req.body?.mode;
     // Claude: never Bypass. Codex: its own menu's choices, as when sending.
-    const allowed = req.params.agent === "codex" ? ["auto", "guardian-approvals", "full-access", "read-only", "custom"] : SWITCHABLE_MODES;
-    if (!allowed.includes(mode)) throw fail(400, "Reach can't pick that mode.");
+    const allowed = req.params.agent === "codex" ? isCodexMode(mode) : SWITCHABLE_MODES.includes(mode);
+    if (!allowed) throw fail(400, "Reach can't pick that mode.");
     res.json(await agentSessions.mode(req.params.agent, req.params.id, { mode }));
   });
   // Send now can switch the Claude app's window on the Mac: the owner's call.
@@ -4335,6 +4543,8 @@ export async function createReach(overrides = {}) {
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body?.enabled)
       throw fail(403, "Turn on screen viewing first.");
+    if (req.body?.enabled && privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
+      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     let lease;
     try {
       lease = screenControl.acquire(req.client, req.body?.enabled, {
@@ -4364,6 +4574,8 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/screen/input", async (req, res) => {
     if (!config.screen) throw fail(403, "Screen viewing is off.");
+    if (privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
+      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
@@ -4393,6 +4605,10 @@ export async function createReach(overrides = {}) {
   app.get("/api/screen", async (req, res) => {
     if (!config.screen)
       throw fail(403, "Screen viewing is off. Turn it on in Reach first.");
+    // A whole, unfiltered picture: yours and full-access people's only.
+    // Everyone else watches the live screen, without the private windows.
+    if (!actsAsOwner(req.client))
+      throw fail(403, `Open the live screen to watch this ${computerWord(process.platform)}.`);
     notPaused();
     // Share simultaneous captures instead of spawning a process per viewer.
     if (!captureInFlight)
@@ -4478,7 +4694,9 @@ export async function createReach(overrides = {}) {
     if (browserHostGuard.isActive()) await browserHostGuard.refresh();
     const check = () => {
       const current = auth.verifyDigest(link.digest, req.reachIdentity);
-      if (!current || current.policy?.browser || paused || !transportAvailable)
+      if (!current || current.policy?.browser || paused || !transportAvailable ||
+          !current.scopes.some(scope => scope === "files" || scope === "files:read") ||
+          resolve(link.root, link.path, current) !== link.file)
         throw fail(403, "This download link is no longer valid.");
       browserHostGuard.assertRequest(req, current);
       return current;
@@ -4505,12 +4723,20 @@ export async function createReach(overrides = {}) {
     const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
     res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
   });
-  serveBuild(app, express, dist);
+  serveBuild(app, express, dist, {
+    // Its agent links' start page: the one address, without Reach's port.
+    agentStart: () => (config.publicOrigin?.startsWith("https://") ? `https://${new URL(config.publicOrigin).hostname}` : ""),
+    platform: hostPlatform,
+  });
   // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,
   // a disk: macOS's privacy settings, per app). "Your computer has not
   // granted access" read on the phone as Reach refusing its owner (Oct 7):
   // it names what to allow, and where.
   const privacyRefusal = () => {
+    // Windows says EPERM for a file another program holds as well as for
+    // its permissions and Controlled folder access (parity audit #39).
+    if (process.platform === "win32")
+      return "Windows didn't let Reach open this. Another program may have it open, or Windows Security (Controlled folder access) or its permissions keep it from Reach.";
     if (process.platform !== "darwin")
       return "Your computer has not granted access to this location.";
     let host = "";
@@ -4532,6 +4758,8 @@ export async function createReach(overrides = {}) {
             EACCES: 403,
             EPERM: 403,
             ENOENT: 404,
+            // Not 423: Reach says "paused" and "in use in another browser" with it.
+            EBUSY: 409,
           }[error.code] ||
           500,
       )
@@ -4545,8 +4773,12 @@ export async function createReach(overrides = {}) {
                 ? privacyRefusal()
                 : error.code === "EEXIST"
                   ? "That name is already in use."
-                  : "Could not complete this action. Check the companion console.",
+                  : error.code === "EBUSY"
+                    ? "This file is open in another program. Close it there, then try again."
+                    : "Could not complete this action. Check the companion console.",
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
+        // A person waiting for the owner's Allow: their page waits too.
+        ...(error.waiting === true ? { waiting: true } : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });
@@ -4563,7 +4795,9 @@ export async function createReach(overrides = {}) {
     if (browserHostGuard.isActive()) {
       try {
         await browserHostGuard.refresh();
-        browserHostGuard.assertRequest(req);
+        // A person's device comes through; their credential is checked with
+        // the guard when it arrives (verify).
+        if (!browserHostGuard.allowsConnection(req)) browserHostGuard.assertRequest(req);
       } catch (e) {
         const route = WS_ROUTES.includes(req.url) ? req.url : "a live";
         const now = Date.now();
@@ -4674,6 +4908,14 @@ export async function createReach(overrides = {}) {
             ...(scopes.includes("screen") && {
               control: digest(screenControl.holder()?.clientId ?? ""),
             }),
+            // Who else is using the Mac right now (a person in control, or
+            // an agent acting), by name: shown on the live screen, so people
+            // and agents take turns knowingly.
+            ...(scopes.includes("screen") && (() => {
+              const held = screenControl.holder();
+              const using = held && held.clientId !== client.id ? held.name || "Someone" : agentDesktop?.usingNow?.() || "";
+              return using ? { using: String(using).slice(0, 80) } : {};
+            })()),
             ...(macTerminals &&
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
@@ -4708,6 +4950,7 @@ export async function createReach(overrides = {}) {
             ...(["guest", "agent"].includes(client.kind) && {
               access: digest([
                 scopes,
+                client.fullControlVersion ?? null,
                 client.agentRoots || [],
                 client.guestApps || [],
               ]),
@@ -4742,6 +4985,7 @@ export async function createReach(overrides = {}) {
         },
         control: screenControl,
         create: overrides.desktopInputFactory,
+        platform: overrides.platform || process.platform,
         // A phone app's hidden display: only for those that app is shared with.
         allowDisplay: (client, display) =>
           // The same rule as watching it: every app on it must be theirs.
@@ -4867,6 +5111,10 @@ export async function createReach(overrides = {}) {
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
             notPaused();
+            // Every protocol, the old one too: guests' pictures can't be
+            // filtered off a Mac yet (remote-screen.mjs).
+            if (privateViewRefused(!actsAsOwner(client), overrides.platform || process.platform))
+              throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
             credential = message.token;
             ws.clientId = client.id;
             if (appWindow) ws.appThread = message.thread;
@@ -4884,16 +5132,22 @@ export async function createReach(overrides = {}) {
               const mayViewDisplay = (id) =>
                 !appThreads.ownsDisplay(id) ||
                 displayAppsAllowed(verify(req, credential), id);
-              // Not one of the owner's own devices (a guest, even with full
-              // access): password managers and Reach's windows left out.
-              const privateView = client.kind !== "device";
+              // You and full-access people see the whole screen (Dock,
+              // menu bar, every window); everyone else, without the
+              // private windows (password managers, Reach, Tailscale…).
+              const privateView = !actsAsOwner(client);
               void (async () =>
                 hub.add(ws, authorized, message, {
                   mayViewDisplay,
                   privateView,
-                }))().catch(
-                (e) => reject(e.message, e.status || 503),
-              );
+                }))().catch((e) => {
+                // The computer's own trouble (no displays, helper refused)
+                // shows in Reach's window too; a refusal for this viewer
+                // doesn't. Retrying can't fix a permanent one (Windows
+                // policy): the phone stops and says why.
+                if (!e.status || e.status >= 500) screenTrouble(e.message);
+                reject(e.message, e.permanent ? 403 : e.status || 503);
+              });
             } else {
               screenStreams.add(ws, authorized);
               ws.send(
@@ -5210,6 +5464,8 @@ export async function createReach(overrides = {}) {
         available: () => !paused && transportAvailable,
         computerName: config.name,
         dataDir: config.dataDir,
+        // Told at initialize: a hosted agent is a program, never its page.
+        guide: (client) => guideFor(client),
         claimed: agentClaimed,
         dispatch: hostedDispatch,
         onFlood: (count) => {
@@ -5220,6 +5476,48 @@ export async function createReach(overrides = {}) {
     : null;
   const gatewayAgent = publicAgent;
   publicAgent = hostedMcp ? (req, res) => gatewayAgent(req, res) || hostedMcp.handle(req, res) : gatewayAgent;
+  // Keys Reach knows (agents with access, or ended lately): the door's
+  // check before anything is parsed (core.mjs reads the store again only
+  // when it changed).
+  const knownKey = (value) => { try { return auth.funnelKeys().has(value); } catch { return false; } };
+  const doorKeyKnown = (value) => { try { return auth.doorKeyKnown(value); } catch { return false; } };
+  // The one cookie the door reads (its value checked before anything else).
+  const doorCookie = (req) => {
+    const header = req.headers.cookie;
+    if (typeof header !== "string" || header.length > 4096) return null;
+    const match = /(?:^|;\s*)reach-door=([A-Za-z0-9_-]{43})(?:;|$)/.exec(header);
+    return match ? match[1] : null;
+  };
+  // What the internet gets at the one address (`publicApp`, the start page),
+  // behind the public door: the same on a Mac's socket and Windows' keyed route.
+  const publicDoor = (publicApp) => publicApp && ((req, res) => {
+    // Paused or between Tailscale blips: come back later (an agent's page
+    // keeps retrying).
+    if (paused || !transportAvailable) {
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Unavailable.");
+    }
+    // The public door (Oct 10): open to everyone only while something
+    // needs a stranger to come in (a pairing, an invitation waiting, an
+    // agent's page). Otherwise a request is answered only when it names
+    // a key Reach knows (an agent's own, or one that ended lately, so
+    // it hears that it ended): the signed gateway and the agent runtime
+    // download. Anything else gets 404 before a byte is parsed.
+    const window = auth.funnelWindow();
+    const key = req.headers["reach-key"];
+    const known = typeof key === "string" && key.length <= 64 && knownKey(key);
+    const forAgents = (req.method === "POST" && req.url === "/agent-gateway") ||
+      (req.method === "GET" && (req.url === "/agent.mjs" || /^\/agent-runtimes\/[0-9a-f]{64}\.mjs$/.test(req.url || "")));
+    // A hosted agent's bearer token, and the OAuth token and discovery
+    // endpoints while a hosted agent has access (hosted-mcp.mjs).
+    const hosted = hostedMcp?.admits(req) === true;
+    // Someone who came in through the browser and still has access: their
+    // page and its code, by their own door key (a cookie; core.mjs).
+    const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
+    if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found.");
+  });
   return {
     app,
     server,
@@ -5252,52 +5550,22 @@ export async function createReach(overrides = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
       privateSocket = socketPath;
-      // Keys Reach knows (agents with access, or ended lately): the door's
-      // check before anything is parsed (core.mjs reads the store again only
-      // when it changed).
-      const knownKey = (value) => { try { return auth.funnelKeys().has(value); } catch { return false; } };
-      const doorKeyKnown = (value) => { try { return auth.doorKeyKnown(value); } catch { return false; } };
-      // The one cookie the door reads (its value checked before anything else).
-      const doorCookie = (req) => {
-        const header = req.headers.cookie;
-        if (typeof header !== "string" || header.length > 4096) return null;
-        const match = /(?:^|;\s*)reach-door=([A-Za-z0-9_-]{43})(?:;|$)/.exec(header);
-        return match ? match[1] : null;
-      };
       privateServer = await listenPrivateIngress({
         socketPath,
         app,
         upgrade,
         resolveIdentity,
-        publicApp: publicApp && ((req, res) => {
-          // Paused or between Tailscale blips: come back later (an agent's page
-          // keeps retrying).
-          if (paused || !transportAvailable) {
-            res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
-            return res.end("Unavailable.");
-          }
-          // The public door (Oct 10): open to everyone only while something
-          // needs a stranger to come in (a pairing, an invitation waiting, an
-          // agent's page). Otherwise a request is answered only when it names
-          // a key Reach knows (an agent's own, or one that ended lately, so
-          // it hears that it ended): the signed gateway and the agent runtime
-          // download. Anything else gets 404 before a byte is parsed.
-          const window = auth.funnelWindow();
-          const key = req.headers["reach-key"];
-          const known = typeof key === "string" && key.length <= 64 && knownKey(key);
-          const forAgents = (req.method === "POST" && req.url === "/agent-gateway") ||
-            (req.method === "GET" && (req.url === "/agent.mjs" || /^\/agent-runtimes\/[0-9a-f]{64}\.mjs$/.test(req.url || "")));
-          // A hosted agent's bearer token, and the OAuth token and discovery
-          // endpoints while a hosted agent has access (hosted-mcp.mjs).
-          const hosted = hostedMcp?.admits(req) === true;
-          // Someone who came in through the browser and still has access: their
-          // page and its code, by their own door key (a cookie; core.mjs).
-          const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
-          if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
-          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Not found.");
-        }),
+        publicApp: publicDoor(publicApp),
       });
+    },
+    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
+    // keyed loopback route only Tailscale's own process may use
+    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
+      if (!config.tailscaleOwner)
+        throw Error("Configure Tailscale identity first.");
+      privateServer = await listenKeyedIngress({ key, peerCheck, refuse, onRefused, selfIps, app, upgrade, resolveIdentity, publicApp: publicDoor(publicApp) });
+      return privateServer.address().port;
     },
     setTransportAvailable(value) {
       if (transportAvailable === value) return;
@@ -5312,6 +5580,8 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      warming.abort();
+      maintenanceStore.shutdown();
       // Asked to stop: the next start isn't after an unexpected end, even if
       // what follows takes too long and the launcher exits anyway.
       if (runMarker) markStopped(config.dataDir);

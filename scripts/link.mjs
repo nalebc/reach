@@ -21,6 +21,9 @@ export async function linkComputers(root, name, deps = {}) {
     throw Error(
       "Linking computers isn't available on Windows yet: it needs phones approved by your Tailscale account, and on Windows they join with a pairing code.",
     );
+  // With browser sign-in (REACH_WINDOWS_ACCOUNT=1) too: its own acceptance first.
+  if ((deps.platform || process.platform) === "win32")
+    throw Error("Linking computers isn't available on Windows yet.");
   if (!preferences || !host?.origin?.startsWith("https://"))
     throw Error(`Start Reach on this computer first (${command}), then link.`);
   const fleet = createFleet({
@@ -32,7 +35,7 @@ export async function linkComputers(root, name, deps = {}) {
   if (name) {
     const linked = await fleet.link(name);
     print(
-      `Linked ${linked.name}. Run "reach link ${new URL(host.origin).hostname.split(".")[0]}" on ${linked.name} too; then a phone approved on either works on both.`,
+      `Linked ${linked.name}. Run "${command} link ${new URL(host.origin).hostname.split(".")[0]}" on ${linked.name} too; then a phone approved on either works on both.`,
     );
     return linked;
   }
@@ -43,7 +46,7 @@ export async function linkComputers(root, name, deps = {}) {
     );
   for (const c of found)
     print(
-      `${c.linked ? "✓ linked" : "  not linked"} · ${c.name}${c.linked ? "" : ` · reach link ${c.short}`}`,
+      `${c.linked ? "✓ linked" : "  not linked"} · ${c.name}${c.linked ? "" : ` · ${command} link ${c.short}`}`,
     );
   return found;
 }

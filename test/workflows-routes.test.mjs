@@ -24,11 +24,14 @@ test("workflows are written, planned, run and stopped by the owner's devices onl
   const started = [];
   const stopped = [];
   let n = 0;
+  let available = ["codex", "claude"];
   const reach = await createReach({
     roots: [root],
+    openClaw: { overview: async () => ({ connected: false }), close() {} },
     dataDir: path.join(root, ".reach"),
     agentSessions: {
       list: async () => ({ sessions: [], errors: {} }),
+      health: async () => available.map((agent) => ({ agent, installed: true, signedIn: true })),
       read: async () => ({ session: { status: "running" }, items: [] }),
       start: async (agent, body) => (started.push({ agent, body }), { threadId: `${agent}-${++n}` }),
       send: async () => ({ turnId: "t" }),
@@ -101,6 +104,16 @@ test("workflows are written, planned, run and stopped by the owner's devices onl
     assert.equal(started.at(-1).body.mode, "manual");
     assert.match(started.at(-1).body.text, /^Plan pagination\n\nPlan this as a workflow in Reach/);
     assert.equal((await call("/api/sessions/workflows/plan", { agent: "gemini", cwd: home, text: "x" })).status, 400);
+    available = ["codex"];
+    const count = started.length;
+    assert.equal((await call("/api/sessions/workflows/plan", { agent: "claude", cwd: home, text: "x" })).status, 400);
+    assert.equal((await call("/api/sessions/workflows/plan", { agent: "codex", cwd: home, text: "x", model: "missing" })).status, 400);
+    assert.equal(started.length, count);
+    assert.equal((await call("/api/sessions/workflows/plan", { agent: "codex", cwd: home, text: "Ship it" })).status, 200);
+    assert.doesNotMatch(started.at(-1).body.text, /claude|openclaw/i);
+    const unavailable = (await (await call("/api/sessions/workflows", { cwd: home, tasks })).json()).workflow;
+    assert.equal((await call(`/api/sessions/workflows/${unavailable.id}/run`, {})).status, 400);
+    assert.equal((await (await call(`/api/sessions/workflows/${unavailable.id}`)).json()).state, "draft");
   } finally {
     reach.server.close();
     await reach.close?.();

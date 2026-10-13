@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
+import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 import { hostApp, outsideTerminal, processTable } from "../scripts/instances.mjs";
 import {
   PROTECTED_APP_IDS,
@@ -25,6 +26,7 @@ export const privateWindows = () =>
   });
 const native = fileURLToPath(new URL("../scripts/native/", import.meta.url));
 const MAX_FRAME = 8 * 1024 * 1024;
+const KILL_AFTER_MS = 5000;
 const PERMISSION = /Screen Recording/i;
 // Why the screen helper has no Screen Recording, and what to do. The
 // permission belongs to the app Reach runs inside, never to the helper: run
@@ -74,14 +76,18 @@ export class NativeScreenSource {
     );
     this.child.on("exit", () => {
       const said = diagnostic.trim();
-      // No permission: retrying can't help, so the phone stops and says why
-      // instead of "Connecting…" forever.
+      // No permission (macOS) or scripts refused by policy (Windows):
+      // retrying can't help, so the phone stops and says why instead of
+      // "Connecting…" forever.
+      const blocked = process.platform === "win32" && scriptBlocked(said);
       const error = Error(
-        (PERMISSION.test(said) && process.platform === "darwin"
-          ? permissionHint()
-          : said) || "Screen capture stopped. Reconnect to try again.",
+        (blocked
+          ? SCRIPT_BLOCKED
+          : PERMISSION.test(said) && process.platform === "darwin"
+            ? permissionHint()
+            : said) || "Screen capture stopped. Reconnect to try again.",
       );
-      if (PERMISSION.test(said)) error.permanent = true;
+      if (blocked || PERMISSION.test(said)) error.permanent = true;
       this.stop(error);
     });
     this.child.stdout.on("data", (chunk) => {
@@ -100,6 +106,7 @@ export class NativeScreenSource {
       this.buffer = Buffer.alloc(0);
       const pending = this.pending;
       this.pending = null;
+      this.answered = true;
       clearTimeout(pending.timer);
       pending.resolve(frame);
     });
@@ -119,6 +126,10 @@ export class NativeScreenSource {
     if (this.failure) return Promise.reject(this.failure);
     if (this.pending)
       return Promise.reject(Error("Screen capture is already pending."));
+    // A cold Windows helper compiles before its first picture
+    // (server/powershell.mjs); retried at 15 s, it would only start cold again.
+    const wait =
+      !this.answered && process.platform === "win32" ? COLD_START_MS : 15000;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
         () =>
@@ -127,7 +138,7 @@ export class NativeScreenSource {
               "Live screen capture didn’t answer in time. Reconnecting…",
             ),
           ),
-        15000,
+        wait,
       );
       this.pending = { resolve, reject, timer };
       this.child.stdin.write(command + "\n");
@@ -144,7 +155,47 @@ export class NativeScreenSource {
     }
     this.child.stdin.destroy();
     this.child.kill();
+    // The helper stops its capture and exits within a couple of seconds
+    // (scripts/native/screen-stream.swift finish); one that doesn't is ended
+    // outright, so no capture outlives what it was for (Oct 12: a stream
+    // left running kept the Mac's screen-sharing mark on for hours).
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      const force = setTimeout(() => {
+        if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGKILL");
+      }, KILL_AFTER_MS);
+      force.unref?.();
+      this.child.once("exit", () => clearTimeout(force));
+    }
   }
+}
+// Screen helpers an earlier Reach left running (it was killed, or crashed
+// mid-stream): this data folder's own helper binaries whose parent isn't this
+// Reach. Ended on start and on Pause, so a paused Mac captures nothing.
+export function sweepScreenHelpers({
+  dataDir,
+  self = process.pid,
+  table = processTable,
+  kill = (pid, signal) => process.kill(pid, signal),
+  platform = process.platform,
+} = {}) {
+  if (platform !== "darwin" || !dataDir) return [];
+  const prefix = path.join(dataDir, "reach-screen-stream-");
+  let rows;
+  try {
+    rows = table();
+  } catch {
+    return [];
+  }
+  const ended = [];
+  for (const row of rows) {
+    if (row.pid === self || row.ppid === self) continue;
+    if (!row.command.startsWith(prefix)) continue;
+    try {
+      kill(row.pid, "SIGTERM");
+      ended.push(row.pid);
+    } catch {}
+  }
+  return ended;
 }
 
 export async function createScreenSource(config) {
@@ -182,11 +233,10 @@ export async function createScreenSource(config) {
   }
   if (process.platform === "win32")
     return () =>
-      new NativeScreenSource("powershell.exe", [
-        "-NoProfile",
-        "-File",
-        path.join(native, "screen-stream.ps1"),
-      ]);
+      new NativeScreenSource(
+        "powershell.exe",
+        powershellFile(path.join(native, "screen-stream.ps1")),
+      );
   throw fail(501, "Live screen currently supports macOS and Windows.");
 }
 

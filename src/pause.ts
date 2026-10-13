@@ -15,6 +15,17 @@ export function controlIn(changes?: string): string {
   }
 }
 
+// Who else is using the Mac right now (a person in control, or an agent
+// acting), by name: "" when nobody.
+export function usingIn(changes?: string): string {
+  if (!changes) return "";
+  try {
+    return String(JSON.parse(changes).using ?? "");
+  } catch {
+    return "";
+  }
+}
+
 export function pausedIn(
   changes?: string,
   device?: { paused?: boolean } | null,

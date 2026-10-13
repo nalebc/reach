@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { actionWords } from "./agent-actions.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { promisify } from "node:util";
 import { atomicJson, browserIdleEnded, fail, isPlainRecord } from "./core.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
 import {
@@ -35,6 +36,32 @@ const fp = (client) =>
   JSON.stringify([client.id, client.policy, client.scopes, client.expiresAt]);
 const digest = (value) =>
   crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// A run's inputs, as kept in the run ledger (saved for a day) to tell a retry
+// from a reused requestId. A full-control tool may type a password into a
+// page, so they are never kept as a plain fast hash someone could guess
+// from: salted scrypt, per run, compared in constant time.
+// One at a time, all agents together: each is ~30 ms of one of libuv's four
+// threads, worked out before any run budget, and an agent replaying a
+// requestId (or naming a browser it can't use) as fast as it could kept all
+// four busy, stalling Reach's file, zlib and crypto work (CodeQL #67).
+const derive = promisify(crypto.scrypt);
+let deriving = Promise.resolve();
+const scrypt = (...args) => {
+  const turn = deriving.then(() => derive(...args));
+  deriving = turn.catch(() => {});
+  return turn;
+};
+const INPUTS = /^s1:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$/;
+export const inputsFingerprint = async (inputs, salt = crypto.randomBytes(16)) =>
+  `s1:${salt.toString("base64url")}:${(await scrypt(inputs, salt, 32)).toString("base64url")}`;
+export const sameInputs = async (fingerprint, inputs) => {
+  const parts = INPUTS.exec(fingerprint);
+  // Saved before Reach salted them (at most a day old): those inputs can't
+  // be compared, and the run they name is still never repeated.
+  if (!parts) return true;
+  const derived = await scrypt(inputs, Buffer.from(parts[1], "base64url"), 32);
+  return crypto.timingSafeEqual(derived, Buffer.from(parts[2], "base64url"));
+};
 const safeName = (value) =>
   String(value || "attachment")
     .replace(/[\u0000-\u001f\u007f/\\]/g, "_")
@@ -80,7 +107,7 @@ export function createAgentTools(
   config,
   {
     desktop,
-    driver = createToolBrowserDriver(),
+    driver = null,
     record = () => {},
     // The owner's log of what each agent did (agent-actions.mjs add).
     actions = () => {},
@@ -104,6 +131,8 @@ export function createAgentTools(
       ),
   } = {},
 ) {
+  const ownsDriver = driver === null;
+  driver ??= createToolBrowserDriver();
   const definitionsFile = path.join(config.dataDir, "agent-tools.json");
   const ledgerFile = path.join(config.dataDir, "agent-tool-runs.json");
   const artifactDir = path.join(config.dataDir, "agent-tool-files");
@@ -303,9 +332,9 @@ export function createAgentTools(
   };
   const allowed = (client, app) =>
     !!TOOL_BROWSERS[app.name] &&
-    !(client.policy.hidden || []).some(
+    (client.policy.preset === "full" || !(client.policy.hidden || []).some(
       (hidden) => hidden.id === app.id || hidden.bundleId === app.bundleId,
-    ) &&
+    )) &&
     (client.policy.preset === "full" ||
       (client.policy.apps || []).some(
         (chosen) => chosen.id === app.id && chosen.bundleId === app.bundleId,
@@ -432,7 +461,7 @@ export function createAgentTools(
       expiresAt: file.until,
     };
   };
-  const checkURL = (value, definition) => {
+  const checkURL = (value, definition, client) => {
     const origin = toolOrigin(value);
     if (!definition.origins.includes(origin))
       throw problem(
@@ -441,6 +470,7 @@ export function createAgentTools(
       );
     const url = new URL(value),
       key = `${url.hostname.toLowerCase()}:${url.port}`;
+    if (client?.policy?.preset === "full") return url.href;
     if (
       protectedPage(value, hosts()) ||
       /(^|\.)(passwords\.google\.com|vault\.bitwarden\.(com|eu)|start\.1password\.com)$/.test(
@@ -531,7 +561,7 @@ export function createAgentTools(
     async define(authorize, value) {
       const client = check(authorize),
         definition = validateToolDefinition(value);
-      definition.origins.forEach((origin) => checkURL(origin, definition));
+      definition.origins.forEach((origin) => checkURL(origin, definition, client));
       if (!(await browserApps(authorize)).length)
         throw fail(
           403,
@@ -630,7 +660,7 @@ export function createAgentTools(
         )?.definition;
         if (known) hashValues = toolInputs(known, hashValues);
       } catch {}
-      const hash = digest([
+      const inputs = JSON.stringify([
         input.id,
         input.browser,
         Object.fromEntries(
@@ -639,12 +669,15 @@ export function createAgentTools(
       ]);
       if (ledger.has(key)) {
         const prior = ledger.get(key);
-        if (prior.hash !== hash)
+        const same = await sameInputs(prior.hash, inputs);
+        // Checked again after comparing: access may have ended meanwhile.
+        const current = check(authorize);
+        if (!same)
           throw problem(
             "request_conflict",
             "This requestId was used with different inputs.",
           );
-        if (prior.grant !== digest(fp(client)))
+        if (prior.grant !== digest(fp(current)))
           throw fail(403, "Access changed since this tool run.");
         return copy(results.get(key) || summary(prior));
       }
@@ -667,7 +700,7 @@ export function createAgentTools(
       for (const [name, field] of Object.entries(definition.inputs)) {
         if (field.type === "handle" && values[name]) {
           const handle = getHandle(values[name], client, input.browser);
-          checkURL(handle.target.url, definition);
+          checkURL(handle.target.url, definition, client);
         }
         if (field.type === "file" && values[name]) {
           context.filename = getFile(values[name], client).name;
@@ -679,6 +712,7 @@ export function createAgentTools(
         !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(values.to)
       )
         throw fail(400, "Supply one recipient email address.");
+      const hash = await inputsFingerprint(inputs);
       const apps = await browserApps(authorize),
         candidates = apps.filter((app) => app.name === input.browser);
       if (ledger.has(key)) return api.run(authorize, input, { signal, tab, background });
@@ -758,7 +792,7 @@ export function createAgentTools(
         if (definition.steps[0].op === "navigate")
           checkURL(
             resolveToolValue(definition.steps[0].url, values, context),
-            definition,
+            definition, client,
           );
         await desktop.withBrowser(
           client,
@@ -793,7 +827,8 @@ export function createAgentTools(
                 target,
                 {
                   origins: definition.origins,
-                  protectedTitles: privateTitles,
+                  protectedTitles: client.policy.preset === "full" ? [] : privateTitles,
+                  fullControl: client.policy.preset === "full",
                   document,
                   root,
                   ...request,
@@ -822,7 +857,7 @@ export function createAgentTools(
                   "stale",
                   "The browser returned a different document.",
                 );
-              checkURL(result.url, definition);
+              checkURL(result.url, definition, client);
               return result;
             };
             const retryRead = async (work) => {
@@ -844,8 +879,8 @@ export function createAgentTools(
             const bind = async (url) => {
               await retryRead(async () => {
                 const info = await transport({ op: "info", target });
-                checkURL(info.url, definition);
-                if (
+                checkURL(info.url, definition, client);
+                if (client.policy.preset !== "full" &&
                   /\/(login|signin|sign-in|challenge|captcha)(\/|$)/i.test(
                     new URL(info.url).pathname,
                   )
@@ -854,13 +889,13 @@ export function createAgentTools(
                     "login_required",
                     "The browser needs you to sign in or complete a verification challenge.",
                   );
-                if (
+                if (client.policy.preset !== "full" && (
                   protectedTitle(info.title) ||
                   privateTitles.some((word) =>
                     String(info.title || "")
                       .toLowerCase()
                       .includes(word),
-                  )
+                  ))
                 )
                   throw problem(
                     "protected",
@@ -880,7 +915,8 @@ export function createAgentTools(
                   {
                     op: "bind",
                     origins: definition.origins,
-                    protectedTitles: privateTitles,
+                    protectedTitles: client.policy.preset === "full" ? [] : privateTitles,
+                    fullControl: client.policy.preset === "full",
                     expectedURL: url,
                     document: crypto.randomUUID(),
                   },
@@ -922,7 +958,7 @@ export function createAgentTools(
                 // one this run is already on. Never another of the owner's tabs.
                 const url = checkURL(
                   resolveToolValue(step.url, values, context),
-                  definition,
+                  definition, client,
                 );
                 const own = target || tab;
                 if (!own)
@@ -949,7 +985,7 @@ export function createAgentTools(
               } else if (step.op === "navigate") {
                 const url = checkURL(
                     resolveToolValue(step.url, values, context),
-                    definition,
+                    definition, client,
                   ),
                   dest = new URL(url);
                 let tabs;
@@ -1082,7 +1118,7 @@ export function createAgentTools(
                   root = null;
                   if (result.nextUrl) {
                     try {
-                      checkURL(result.nextUrl, definition);
+                      checkURL(result.nextUrl, definition, client);
                       await bind(result.nextUrl);
                     } catch (error) {
                       // The click already happened; count it and report uncertainty
@@ -1357,6 +1393,7 @@ export function createAgentTools(
     },
     close() {
       closed = true;
+      if (ownsDriver) driver.close?.();
       // Tabs still open stay saved: the next start closes them.
       clearTimeout(sweepTimer);
       if (running) {
@@ -1450,7 +1487,7 @@ export function createAgentTools(
               toolInputs(definition, values),
               {},
             ),
-            definition,
+            definition, client,
           );
           opening.push({ index, url });
         } catch (error) {
@@ -1698,9 +1735,12 @@ export function agentToolRoutes(app, { tools }) {
       throw fail(403, "Only the owner can manage saved tools.");
   };
   app.get("/api/browser/tools", async (req, res) => {
-    if (Object.keys(req.query).some((key) => key !== "query"))
+    if (Object.keys(req.query).some((key) => !["query", "detail", "id"].includes(key)) || (req.query.detail !== undefined && !["true", "false"].includes(req.query.detail)) || (req.query.id !== undefined && (typeof req.query.id !== "string" || req.query.id.length > 48)))
       throw fail(400, "Search only by task name.");
-    res.json(await tools.catalog(agent(req), req.query.query || ""));
+    const result = await tools.catalog(agent(req), req.query.query || "");
+    if (req.query.id) result.tools = result.tools.filter(tool => tool.id === req.query.id);
+    if (req.query.detail !== "true" && !req.query.id) result.tools = result.tools.map(({ protocol, id, title, description, inputs }) => ({ protocol, id, title, description, inputs, tool: `reach_tool_${id}` }));
+    res.json(result);
   });
   app.get("/api/browser/tools/protocol", (req, res) =>
     res.json(tools.protocol(agent(req))),

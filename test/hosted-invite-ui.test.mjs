@@ -2,8 +2,9 @@ import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// A hosted agent (claude.ai, ChatGPT, Muse, Grok) under Connects: the invite
-// asks for a hosted public-link invitation and shows the connector address.
+// A hosted agent (claude.ai, ChatGPT, Muse, Grok), the Connector tile: the
+// invite asks for a hosted public-link invitation and shows the connector
+// address.
 let dom, React, BrowserInvite;
 const peer = { id: "mac", name: "My Mac", url: "https://mac.tail.ts.net:8443", token: "owner", platform: "darwin" };
 const device = { name: "My Mac", roots: [{ id: 0, name: "Project", path: "/Users/me/Project" }] };
@@ -16,13 +17,10 @@ after(async () => dom?.close());
 const views = new Set();
 afterEach(async () => { for (const view of views) await view.unmount(); views.clear(); });
 const click = async (element) => { assert.ok(element, "element exists"); element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); await settle(40); };
-const rowMenu = (c, label) => [...c.querySelectorAll(".ivt-row")].find((r) => r.querySelector(".ivt-setting-label")?.textContent.trim() === label)?.querySelector(".ivt-menu-button");
-const openMenu = async (c, label) => { const menu = rowMenu(c, label); if (menu?.getAttribute("aria-expanded") !== "true") await click(menu); return c.querySelector(".ivt-menu-list"); };
-const item = (list, label) => [...list.querySelectorAll(".ivt-item")].find((b) => b.querySelector("strong").textContent === label);
 const preset = (c, title) => [...c.querySelectorAll('[aria-label="Access preset"] [role="radio"]')].find((b) => b.getAttribute("aria-label") === title);
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-test("Connects: Hosted makes a hosted public-link invitation and shows the connector address", async () => {
+test("Connector makes a hosted public-link invitation and shows the connector address", async () => {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
@@ -37,23 +35,24 @@ test("Connects: Hosted makes a hosted public-link invitation and shows the conne
   views.add(view);
   const c = view.container;
   await settle(80);
-  const list = await openMenu(c, "Connects");
-  assert.match(item(list, "Hosted").textContent, /claude\.ai, ChatGPT, Muse or Grok/);
-  await click(item(list, "Hosted"));
-  assert.equal(rowMenu(c, "Connects").textContent, "Hosted");
+  const connector = [...c.querySelectorAll('[aria-label="How the agent connects"] [role="radio"]')].find((b) => b.textContent.trim() === "Connector");
+  await click(connector);
+  assert.equal(connector.getAttribute("aria-checked"), "true");
+  assert.match(c.textContent, /You add a link as a custom connector in its settings/);
   await click(preset(c, "Full control"));
+  await click([...c.querySelectorAll("button")].find((b) => b.textContent.trim() === "Create invite"));
   await settle(150);
   const post = calls.find(([method, route]) => method === "POST" && route === "/api/agents/browser-invitations");
   assert.ok(post, "the invitation was asked for");
   assert.equal(post[2].hosted, true);
   assert.equal(post[2].transport, "funnel");
   assert.equal(post[2].preset, "full");
-  assert.match(c.textContent, /Your invite is ready/);
+  assert.match(c.textContent, / is invited/);
   assert.equal(c.querySelector(".ag-done-url").textContent, "https://mac.tail.ts.net/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   assert.match(c.textContent, /custom MCP connector/);
+  // A line and the address: what it may do and the rules come at connect.
   const message = c.querySelector("textarea.browser-invite-message").value;
-  assert.match(message, /https:\/\/mac\.tail\.ts\.net\/mcp\/a{43}/);
-  assert.match(message, /custom MCP connector/);
-  assert.match(message, /You get full control of my Mac/);
+  assert.equal(message, `Add this as a custom MCP connector, then I approve the code it shows. Keep the address to yourself.\n\nhttps://mac.tail.ts.net/mcp/${"a".repeat(43)}`);
+  assert.doesNotMatch(message, /full control/);
   assert.equal(made[1], "https://mac.tail.ts.net/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 });

@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ChevronLeft,
   ChevronRight,
   Copy,
   History,
@@ -10,21 +11,25 @@ import {
   Smartphone,
   Sparkles,
   Trash2,
-  UserRound,
   Zap,
 } from "lucide-react";
 import { usePageVisible } from "./page-visible";
 import type { ConnectedDevice } from "./useFleetConnections";
 import { post, request, type Device, type Peer } from "./api";
+import { computerWord } from "./pause";
+import { requestDeadline } from "./request-deadline";
 import { workspaceCapabilities } from "./capabilities";
 import { groupDevices } from "./device-groups";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import ScreenPopup from "./ScreenPopup";
-import BrowserAgents, { activeSession, type BrowserAgentSession } from "./BrowserAgents";
+import SubPage from "./SubPage";
+import BrowserAgents, { type BrowserAgentSession } from "./BrowserAgents";
+import { listedAccess } from "./access-list";
 import AgentShortcuts from "./AgentShortcuts";
 import { ServiceAccessPanel } from "./service-access";
 import ToolBrowserSetup from "./ToolBrowserSetup";
 import AgentFaceIdSetting from "./AgentFaceId";
+import { ErrorLine } from "./ui";
 import AccessEditor, { accessSummary, appScopedAccess, canEditAccess } from "./AccessEditor";
 import {
   AGENT_LEVELS,
@@ -43,6 +48,7 @@ import {
   type MadeLink,
 } from "./InviteSheet";
 import { guestLinkUrl } from "./start-flow";
+import { InviteChooser } from "./invite-menu";
 import "./settings-list.css";
 import "./invite-sheet.css";
 import "./people-hub.css";
@@ -56,10 +62,17 @@ import "./people-hub.css";
 
 type Client = Guest & {
   createdAt?: string;
+  // When it last used its access: this run of Reach (activeAt), or the
+  // stamp an Always access keeps (usedAt, every ten minutes at most).
+  activeAt?: number;
+  usedAt?: number;
+  // The Tailscale device it was paired from, by name.
+  nodeName?: string;
   deviceGroup?: string;
   tailscale?: { userId: string; nodeId: string };
 };
-type Start = "person" | "browser";
+// "choose": the invitation's first screen, an agent or a person.
+type Start = "person" | "browser" | "choose";
 // What POST /api/guests/:id/link answers: a fresh secret for an
 // invitation not used yet (the old link stops working).
 type Renewed = {
@@ -129,17 +142,17 @@ export const runtimeUpdateCommand = (g: Runtimed, peer: Peer) => {
 };
 // A browser agent's live state, from the Mac's list of agent sessions.
 type Live = Pick<BrowserAgentSession, "status" | "pendingApprovals" | "paused" | "holdsMac" | "using" | "activity">;
-function sessionWords(s: Live): { text: string; tone?: "attention" } | null {
+function sessionWords(s: Live, word: string): { text: string; tone?: "attention" } | null {
   if (s.status === "pending") return { text: "Waiting for your approval", tone: "attention" };
   if (s.pendingApprovals)
     return { text: `${s.pendingApprovals} ${s.pendingApprovals === 1 ? "request" : "requests"} waiting`, tone: "attention" };
   if (s.paused) return { text: "Paused" };
-  if (s.holdsMac) return { text: `Using ${s.using?.app || "the Mac"}` };
+  if (s.holdsMac) return { text: `Using ${s.using?.app || `the ${word}`}` };
   if (s.activity?.state === "running") return { text: "Working" };
   return null;
 }
-function statusOf(g: Guest, now: number, live?: Live): { text: string; tone?: "attention" | "off" } {
-  const words = live && sessionWords(live);
+function statusOf(g: Guest, now: number, live?: Live, word = "computer"): { text: string; tone?: "attention" | "off" } {
+  const words = live && sessionWords(live, word);
   if (words) return words;
   const runtime = (g as Runtimed).runtime;
   if (g.kind === "agent" && (!g.status || g.status === "accepted") && runtime === "one-time")
@@ -152,10 +165,33 @@ function statusOf(g: Guest, now: number, live?: Live): { text: string; tone?: "a
     if (g.status === "denied") return { text: "Denied", tone: "off" };
     if (g.status === "expired") return { text: "Request expired", tone: "off" };
   }
+  // Came in while an agent had the Mac: Let in on Home's Needs you.
+  if (g.kind === "guest" && g.status === "waiting") return { text: "Waiting for you to let them in", tone: "attention" };
   if (g.status && g.status !== "accepted")
     return { text: `${g.kind === "agent" ? "Not joined yet" : "Not opened yet"} · ${lasts(g, now)}` };
   return { text: `${levelName(g)} · ${lasts(g, now)}` };
 }
+// Active: it used its access in the last two minutes (a request, the Mac's
+// screen, a tool), or it's connected to the Mac right now. Idle otherwise.
+const ACTIVE_MS = 120_000;
+// Ended, Shortcuts and Services open as pages in place; an ended agent opens
+// one more page under Ended.
+type Page = { kind: "ended" | "shortcuts" | "services"; agent?: string };
+const depth = (p: Page | null) => (p ? (p.agent ? 2 : 1) : 0);
+const pageIn = (state: unknown): Page | null => {
+  const p = (state as { reachPeople?: Page } | null)?.reachPeople;
+  return p && ["ended", "shortcuts", "services"].includes(p.kind) ? p : null;
+};
+// What scrolls the hub: the nearest scrolling ancestor, else the page.
+const scrollerOf = (el: HTMLElement | null) => {
+  for (let at = el?.parentElement; at; at = at.parentElement)
+    if (/(auto|scroll)/.test(getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) return at;
+  return document.scrollingElement as HTMLElement | null;
+};
+const ago = (at: number, now: number) => {
+  const min = Math.max(1, Math.round((now - at) / 60000));
+  return min < 60 ? `${min} min ago` : min < 2880 ? `${Math.round(min / 60)} h ago` : `${Math.round(min / 1440)} days ago`;
+};
 // Who's on the computer right now, in a word.
 const doing: Record<ConnectedDevice["activity"], string> = {
   connected: "Connected",
@@ -166,10 +202,11 @@ const doing: Record<ConnectedDevice["activity"], string> = {
 const initial = (name: string) => name.trim().slice(0, 1).toUpperCase() || "?";
 const isPhone = (name: string) => /iphone|android|phone|pixel|galaxy/i.test(name);
 
-function Avatar({ client, large = false }: { client: Client; large?: boolean }) {
+function Avatar({ client, large = false, active = false }: { client: Client; large?: boolean; active?: boolean }) {
   const size = large ? 26 : 18;
   return (
-    <span className={`ppl-avatar ${client.kind || "device"}${large ? " large" : ""}`} aria-hidden="true">
+    <span className={`ppl-avatar ${client.kind || "device"}${large ? " large" : ""}${active ? " is-active" : ""}`} aria-hidden="true">
+      {active && <i className="ppl-live" />}
       {client.kind === "agent" ? (
         <Sparkles size={size} />
       ) : client.kind === "guest" ? (
@@ -213,14 +250,26 @@ export default function PeopleHub({
   const [clients, setClients] = useState<Client[]>([]);
   const [current, setCurrent] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [loadErrors, setLoadErrors] = useState({ clients: "", sessions: "" });
+  const activeLoad = useRef<AbortController | null>(null);
+  const ending = useRef(false);
   const [now, setNow] = useState(Date.now);
   const [inviting, setInviting] = useState<Start | null>(start?.kind || null);
   // Browser agents as the Mac lists them: live state, and the ended ones.
   const [sessions, setSessions] = useState<BrowserAgentSession[]>([]);
-  // Saved shortcuts and shared services, counted; a sheet for each.
-  const [extras, setExtras] = useState({ shortcuts: 0, services: 0 });
+  // Saved shortcuts and shared services, counted (and services waiting for
+  // you); a page for each.
+  const [extras, setExtras] = useState({ shortcuts: 0, services: 0, waiting: 0 });
   const [extrasAt, setExtrasAt] = useState(0);
-  const [panel, setPanel] = useState<"" | "ended" | "shortcuts" | "services">("");
+  // The page open in place of the list. Each one pushed is a history entry,
+  // so the back chevron (history.back), Safari's swipe and Android's back
+  // are one path; leaving Agents & people takes its entries back.
+  const [page, setPage] = useState<Page | null>(null);
+  const pushed = useRef(0);
+  const pushing = useRef(false);
+  const hub = useRef<HTMLDivElement>(null);
+  const hubScroll = useRef(0);
+  const opener = useRef<HTMLElement | null>(null);
   const [openId, setOpenId] = useState("");
   const [editing, setEditing] = useState<Guest | null>(null);
   // Links made here, by invitation (a computer never keeps them).
@@ -242,26 +291,42 @@ export default function PeopleHub({
   useEffect(() => {
     if (start) setInviting(start.kind);
   }, [start?.at]);
-  const load = () =>
-    Promise.all([
-      request<{ clients: Client[]; current?: string }>(peer, "/api/clients")
-        .then((r) => {
-          setClients(Array.isArray(r?.clients) ? r.clients : []);
-          setCurrent(r?.current || "");
-          setNow(Date.now());
-        })
-        .catch(() => {}),
-      request<{ agents: BrowserAgentSession[] }>(peer, "/api/browser/agents")
-        .then((r) => Array.isArray(r?.agents) && setSessions(r.agents))
-        .catch(() => {}),
-    ]).finally(() => setLoaded(true));
+  const load = async (force = false) => {
+    // Polls never overlap. A change to access supersedes an older snapshot.
+    if (activeLoad.current && !force) return;
+    activeLoad.current?.abort();
+    const controller = new AbortController();
+    activeLoad.current = controller;
+    const deadline = requestDeadline(controller.signal);
+    const [access, live] = await Promise.allSettled([
+      request<{ clients: Client[]; current?: string }>(peer, "/api/clients", { signal: deadline.signal }),
+      request<{ agents: BrowserAgentSession[] }>(peer, "/api/browser/agents", { signal: deadline.signal }),
+    ]);
+    deadline.dispose();
+    if (controller.signal.aborted || activeLoad.current !== controller) return;
+    activeLoad.current = null;
+    const errors = { clients: "", sessions: "" };
+    if (access.status === "fulfilled" && Array.isArray(access.value?.clients)) {
+      setClients(access.value.clients);
+      setCurrent(access.value.current || "");
+    } else errors.clients = access.status === "rejected" ? access.reason.message : "The access list could not be loaded.";
+    if (live.status === "fulfilled" && Array.isArray(live.value?.agents)) setSessions(live.value.agents);
+    else errors.sessions = live.status === "rejected" ? live.reason.message : "Agent sessions could not be loaded.";
+    setLoadErrors(errors);
+    setNow(Date.now());
+    setLoaded(true);
+  };
   const visible = usePageVisible();
   useEffect(() => {
     // In the background, nothing is asked; back on screen, at once.
     if (!visible) return;
     void load();
-    const refresh = setInterval(load, 5000);
-    return () => clearInterval(refresh);
+    const refresh = setInterval(() => void load(), 5000);
+    return () => {
+      clearInterval(refresh);
+      activeLoad.current?.abort();
+      activeLoad.current = null;
+    };
   }, [peer.url, peer.token, visible]);
   // Counted on arrival, back on screen and when a sheet closes; their own
   // sheets keep them current while open.
@@ -273,7 +338,9 @@ export default function PeopleHub({
       request<{ access: { status: string; expiresAt: number }[] }>(peer, "/api/agents/services", { signal: controller.signal }),
     ]).then(([shortcuts, services]) => {
       if (controller.signal.aborted) return;
+      const access = services.status === "fulfilled" && Array.isArray(services.value?.access) ? services.value.access : [];
       setExtras({
+        waiting: access.filter((e) => e.expiresAt > Date.now() && e.status === "pending").length,
         shortcuts: shortcuts.status === "fulfilled" && Array.isArray(shortcuts.value?.shortcuts) ? shortcuts.value.shortcuts.length : 0,
         services:
           services.status === "fulfilled" && Array.isArray(services.value?.access)
@@ -284,6 +351,48 @@ export default function PeopleHub({
     return () => controller.abort();
   }, [peer.url, peer.token, visible, extrasAt]);
   useEffect(() => {
+    // A reload keeps the entry's state: it starts on the list, unmarked.
+    if (pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
+    const onPop = () => {
+      const next = pageIn(window.history.state);
+      pushed.current = depth(next);
+      pushing.current = false;
+      setPage(next);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (pushed.current) window.history.go(-pushed.current);
+    };
+  }, []);
+  const goTo = (next: Page) => {
+    if (!pushed.current) {
+      hubScroll.current = scrollerOf(hub.current)?.scrollTop || 0;
+      opener.current = document.activeElement as HTMLElement | null;
+    }
+    window.history.pushState({ ...window.history.state, reachPeople: next }, "");
+    pushed.current = depth(next);
+    pushing.current = true;
+    setPage(next);
+  };
+  const goBack = () => window.history.back();
+  // A page opens at its top; back on the list, where it was, focus on the
+  // row that opened it, and the counts read again.
+  const shown = useRef<Page | null>(null);
+  useLayoutEffect(() => {
+    const was = shown.current;
+    shown.current = page;
+    const scroller = scrollerOf(hub.current);
+    if (page && depth(page) > depth(was)) {
+      if (scroller) scroller.scrollTop = 0;
+    } else if (!page && was) {
+      if (scroller) scroller.scrollTop = hubScroll.current;
+      opener.current?.focus?.({ preventScroll: true });
+      void load(true);
+      setExtrasAt(Date.now());
+    }
+  }, [page]);
+  useEffect(() => {
     for (const p of peers)
       if (picking?.need.includes(p.id) && !devices[p.id])
         request<Device>(p, "/api/device")
@@ -292,35 +401,49 @@ export default function PeopleHub({
   }, [picking?.need.join(",")]);
 
   const session = (c: Client) => sessions.find((s) => s.id === c.id);
-  // Live: not past its end, and not stopped (or idle-ended, as the Mac says).
-  const live = (c: Client) => {
+  const word = computerWord(peer.platform);
+  const asks = (c: Client) => statusOf(c, now, session(c), word).tone === "attention";
+  // Live: not past its end, and not stopped (or idle-ended, as the Mac
+  // says); Home's Access card reads the same (src/access-list.ts).
+  const listed = listedAccess(clients, sessions, now);
+  // Active or idle, for those who joined (the others' line says where they
+  // are): connected now, holding or working on the Mac, or a recent use.
+  const connected = (c: Client) =>
+    here.some((d) => d.id === `client:${c.id}` || (d.name === c.name && !!d.access?.some((a) => a.kind === (c.kind === "agent" ? "agent" : "invited"))));
+  const lastUse = (c: Client) => Math.max(c.activeAt || 0, c.usedAt || 0, session(c)?.using?.at || 0);
+  const use = (c: Client): { active: boolean; since: number } | null => {
+    if (c.status && c.status !== "accepted") return null;
     const s = session(c);
-    return s ? activeSession(s, now) : (c.expiresAt || 0) > now && c.status !== "revoked";
+    const active = connected(c) || !!s?.holdsMac || s?.activity?.state === "running" || now - lastUse(c) < ACTIVE_MS;
+    return { active, since: lastUse(c) };
   };
-  const asks = (c: Client) => statusOf(c, now, session(c)).tone === "attention";
-  // What needs you first.
-  const agents = clients
-    .filter((c) => c.kind === "agent" && live(c))
-    .sort((a, b) => Number(asks(b)) - Number(asks(a)));
-  const people = clients.filter((c) => c.kind === "guest" && live(c));
+  const activeNow = (c: Client) => !!use(c)?.active;
+  // What needs you first, then who is active.
+  const agents = listed.agents.sort((a, b) => Number(asks(b)) - Number(asks(a)) || Number(activeNow(b)) - Number(activeNow(a)));
+  const people = listed.people.sort((a, b) => Number(activeNow(b)) - Number(activeNow(a)));
   const own = groupDevices(clients.filter((c) => c.kind !== "guest" && c.kind !== "agent"));
-  const ended = sessions.filter((s) => !activeSession(s, now)).length;
+  const ended = listed.ended;
   const opened = [...agents, ...people].find((c) => c.id === openId);
   const openedDevice = own.find((c) => c.id === openId);
 
   // Their invitation on this computer, and on your other computers it covers.
-  const sameInvitation = async (g: Guest) => {
+  const sameInvitation = async (g: Guest, unavailable?: string[]) => {
     const all = [{ peer, guest: g }];
     if (g.group)
       for (const p of peers) {
         if (p.id === peer.id) continue;
         try {
           const r = await request<{ clients: Guest[] }>(p, "/api/clients");
-          const twin = (r.clients || []).find(
-            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now(),
+          if (!Array.isArray(r?.clients)) throw Error("The access list could not be loaded.");
+          const twin = r.clients.find(
+            (c) => c.group === g.group && (c.expiresAt || 0) > Date.now() && c.status !== "revoked",
           );
           if (twin) all.push({ peer: p, guest: twin });
-        } catch {}
+        } catch (failure) {
+          const message = `${p.name}: ${(failure as Error).message}`;
+          if (unavailable) unavailable.push(message);
+          else throw Error(message);
+        }
       }
     return all;
   };
@@ -378,7 +501,7 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const savePicked = async () => {
@@ -392,27 +515,33 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const end = async (g: Guest) => {
-    if (!confirm(`End ${g.name}’s access now?`)) return;
-    const ours = links[g.id]?.created;
-    if (ours)
-      await Promise.allSettled(
-        ours.map((c) =>
-          request(c.peer, `/api/clients/${c.clientId}`, { method: "DELETE" }),
-        ),
-      );
-    else
-      // The same invitation on your other computers ends too, as when it
-      // was made here (after a reload the link's record is gone).
-      for (const x of await sameInvitation(g))
-        await request(x.peer, `/api/clients/${x.guest.id}`, {
-          method: "DELETE",
-        }).catch(() => {});
-    setOpenId("");
-    void load();
+    if (busy || ending.current || !confirm(`End ${g.name}’s access now?`)) return;
+    ending.current = true;
+    setBusy(true);
+    setError("");
+    setChanged("");
+    const failures: string[] = [];
+    try {
+      const targets = links[g.id]?.created || (await sameInvitation(g, failures)).map((x) => ({ peer: x.peer, clientId: x.guest.id }));
+      // Revoke every reachable copy even if another computer is unavailable.
+      for (const target of targets) {
+        try {
+          await request(target.peer, `/api/clients/${encodeURIComponent(target.clientId)}`, { method: "DELETE" });
+        } catch (failure) {
+          failures.push(`${target.peer.name}: ${(failure as Error).message}`);
+        }
+      }
+      if (failures.length) setError(`Access may still be active on ${failures.join("; ")}`);
+      else setOpenId("");
+    } finally {
+      ending.current = false;
+      setBusy(false);
+      void load(true);
+    }
   };
   // One of your devices: every browser on it.
   const revoke = async (c: (typeof own)[number]) => {
@@ -421,7 +550,7 @@ export default function PeopleHub({
       for (const id of c.ids)
         await request(peer, `/api/clients/${id}`, { method: "DELETE" });
       setOpenId("");
-      void load();
+      void load(true);
     } catch (e) {
       toast((e as Error).message);
     }
@@ -483,6 +612,8 @@ export default function PeopleHub({
                     hostname: "",
                     invites: [{ origin: new URL(peer.url).origin, secret: r.invitation }],
                     funnel: true,
+                    // Its steps check the download against this.
+                    runtime: r.runtime,
                   }, "/agent")
                 : r.url,
             keyed: true,
@@ -519,7 +650,7 @@ export default function PeopleHub({
       setError((e as Error).message);
     } finally {
       setBusy(false);
-      void load();
+      void load(true);
     }
   };
   const copy = async (text: string, what = "link") => {
@@ -543,97 +674,135 @@ export default function PeopleHub({
     const paired = c.createdAt
       ? `Paired ${new Date(c.createdAt).toLocaleString([], { month: "short", day: "numeric", ...(twin ? { hour: "numeric", minute: "2-digit" } : {}) })}`
       : "Paired";
-    const status = c.kind === "guest" || c.kind === "agent" ? statusOf(c, now, session(c)) : { text: self ? "This device" : paired };
+    // Which device: its Tailscale name (browsers on it are one row), this Mac
+    // itself (something on the Mac, the iPhone Simulator say), or unknown
+    // (paired before Reach kept the device).
+    const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const count = (c as Client & { ids?: string[] }).ids?.length || 1;
+    const where = [
+      c.nodeName ? (slug(c.nodeName) === slug(device.name) ? `On this ${word}` : c.nodeName) : c.tailscale || self ? "" : "Unknown device",
+      count > 1 ? `${count} browsers` : "",
+    ].filter(Boolean);
+    const status = c.kind === "guest" || c.kind === "agent" ? statusOf(c, now, session(c), word) : { text: [...where, self ? "This device" : paired].join(" · ") };
+    const using = c.kind === "guest" || c.kind === "agent" ? use(c) : null;
     return (
-      <button key={c.id} className="gs-row ppl-row" aria-label={`${c.name}, ${status.text}`} onClick={() => open(c.id)}>
-        <Avatar client={c} />
+      <button key={c.id} className="gs-row ppl-row" aria-label={`${c.name}, ${using ? `${using.active ? "active" : "idle"}, ` : ""}${status.text}`} onClick={() => open(c.id)}>
+        <Avatar client={c} active={!!using?.active} />
         <span className="gs-label">
           <strong>{c.name}</strong>
           <small className={status.tone ? `ppl-${status.tone}` : undefined}>{status.text}</small>
         </span>
+        {using && (
+          <span className={`gs-value ppl-use${using.active ? " is-active" : ""}`}>
+            {using.active ? "Active" : "Idle"}
+          </span>
+        )}
         <ChevronRight className="gs-chevron" size={18} />
       </button>
     );
   };
 
-  function extraRow(id: typeof panel, icon: ReactNode, label: string, count: number) {
+  function extraRow(kind: Page["kind"], icon: ReactNode, label: string, value: ReactNode, attention = false) {
     return (
-      <button className="gs-row" onClick={() => setPanel(id)}>
+      <button className="gs-row" onClick={() => goTo({ kind })}>
         <span className="ppl-avatar plain" aria-hidden="true">
           {icon}
         </span>
         <span className="gs-label">{label}</span>
-        <span className="gs-value">{count}</span>
+        <span className={`gs-value${attention ? " ppl-attention" : ""}`}>{value}</span>
         <ChevronRight className="gs-chevron" size={18} />
       </button>
     );
   }
   function invitationSheet() {
-    const who = inviting || "browser";
-    const title = who === "person" ? "Invite someone" : "Invite an agent";
+    // First who (an agent or a person, two rows), then that one's form with
+    // a way back, as ChatGPT steps through a choice.
+    const title =
+      inviting === "person"
+        ? "Invite a person"
+        : inviting === "browser"
+          ? "Invite an agent"
+          : "Invite";
     return (
       <ScreenPopup
         title={title}
         className="ppl-invite"
         onClose={() => setInviting(null)}
-        // Who is in the title, as ChatGPT's model picker: the way in
-        // already chose, and the other one is a tap away.
         heading={
-          <Menu label={title} wide className="ppl-who">
-            {(close) => (
-              <>
-                <Item
-                  icon={<Sparkles size={19} />}
-                  on={who === "browser"}
-                  label="An agent"
-                  description="Claude, Codex or any AI."
-                  onClick={() => {
-                    close();
-                    setInviting("browser");
-                  }}
-                />
-                <Item
-                  icon={<UserRound size={19} />}
-                  on={who === "person"}
-                  label="A person"
-                  description="Someone you trust, on their phone or computer."
-                  onClick={() => {
-                    close();
-                    setInviting("person");
-                  }}
-                />
-              </>
-            )}
-          </Menu>
+          inviting === "choose" ? undefined : (
+            <span className="ppl-invite-head">
+              <button
+                type="button"
+                className="ppl-back"
+                aria-label="Back"
+                onClick={() => setInviting("choose")}
+              >
+                <ChevronLeft size={22} />
+              </button>
+              {title}
+            </span>
+          )
         }
       >
-        <InviteSheet
-          key={who}
-          peer={peer}
-          device={device}
-          peers={peers}
-          initialKind={who}
-          onCreated={(id, made) => {
-            rememberForm(id, made.link);
-            setLinks((old) => ({ ...old, [id]: made }));
-            void load();
-          }}
-        />
+        {inviting === "choose" ? (
+          <InviteChooser onPick={setInviting} />
+        ) : (
+          <InviteSheet
+            key={inviting}
+            peer={peer}
+            device={device}
+            peers={peers}
+            initialKind={inviting || "browser"}
+            onCreated={(id, made) => {
+              rememberForm(id, made.link);
+              setLinks((old) => ({ ...old, [id]: made }));
+              void load(true);
+            }}
+          />
+        )}
       </ScreenPopup>
     );
   }
 
   return (
-    <div className="settings-workspace gs ppl">
+    <div className="settings-workspace gs ppl" ref={hub}>
+      {page ? (
+        <div className={pushing.current ? "ppl-page is-pushed" : "ppl-page"} key={`${page.kind}:${page.agent || ""}`}>
+          {page.kind === "ended" ? (
+            <BrowserAgents
+              peer={peer}
+              device={device}
+              toast={toast}
+              focus={page.agent}
+              ended={!!page.agent}
+              onOpen={(agent) => goTo({ kind: "ended", agent })}
+              onBack={goBack}
+              onCleared={() => void load(true)}
+            />
+          ) : (
+            <SubPage
+              title={page.kind === "shortcuts" ? "Shortcuts" : "Services"}
+              backLabel="Back to Agents & people"
+              onBack={goBack}
+            >
+              {page.kind === "shortcuts" ? <AgentShortcuts peer={peer} toast={toast} bare /> : <ServiceAccessPanel peer={peer} bare />}
+            </SubPage>
+          )}
+        </div>
+      ) : (
+        <>
       <header className="ppl-head">
         <div>
           <h1>Agents &amp; people</h1>
           <p>Who can use {device.name}</p>
         </div>
-        <button className="ppl-add" aria-label="Invite" onClick={() => setInviting("browser")}>
+        <button className="ppl-add" aria-label="Invite" onClick={() => setInviting("choose")}>
           <Plus size={22} />
         </button>
       </header>
+
+      <ErrorLine error={[...new Set(Object.values(loadErrors))].filter(Boolean).join(" ")} />
+      {!opened && <ErrorLine error={error} />}
 
       {here.length > 0 && (
         <Group title="Here now">
@@ -662,10 +831,11 @@ export default function PeopleHub({
       {/* One way to invite on this screen: the + above. Empty lists say
           so in a line, without another button. */}
       <Group title="Agents">
+        {extras.waiting > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", `${extras.waiting} waiting`, true)}
         {agents.map((c) => row(c))}
-        {loaded && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
+        {loaded && !loadErrors.clients && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
         {extras.shortcuts > 0 && extraRow("shortcuts", <Zap size={19} />, "Shortcuts", extras.shortcuts)}
-        {extras.services > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
+        {extras.services > 0 && !extras.waiting && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
         {ended > 0 && extraRow("ended", <History size={19} />, "Ended", ended)}
       </Group>
       <AgentFaceIdSetting peer={peer} />
@@ -680,13 +850,25 @@ export default function PeopleHub({
         </Group>
       )}
 
+        </>
+      )}
+
       {opened && (
         <ScreenPopup title={opened.name} className="gs-sheet ppl-sheet" onClose={() => setOpenId("")}>
           <div className="ppl-hero">
-            <Avatar client={opened} large />
-            <small className={statusOf(opened, now, session(opened)).tone ? `ppl-${statusOf(opened, now, session(opened)).tone}` : undefined}>
-              {opened.kind === "agent" ? "Agent" : "Guest"} · {statusOf(opened, now, session(opened)).text}
+            <Avatar client={opened} large active={activeNow(opened)} />
+            <small className={statusOf(opened, now, session(opened), word).tone ? `ppl-${statusOf(opened, now, session(opened), word).tone}` : undefined}>
+              {opened.kind === "agent" ? "Agent" : "Guest"} · {statusOf(opened, now, session(opened), word).text}
             </small>
+            {(() => {
+              const using = use(opened);
+              if (!using) return null;
+              return (
+                <small className={`ppl-use${using.active ? " is-active" : ""}`}>
+                  {using.active ? "Active now" : using.since ? `Idle · last active ${ago(using.since, now)}` : "Idle"}
+                </small>
+              );
+            })()}
           </div>
           {changed && (
             <p className="ppl-note" role="status">
@@ -781,7 +963,7 @@ export default function PeopleHub({
                 </button>
               )
             )}
-            <button className="gs-row gs-danger" aria-label={`End ${opened.name}’s access`} onClick={() => void end(opened)}>
+            <button className="gs-row gs-danger" aria-label={`End ${opened.name}’s access`} disabled={busy} onClick={() => void end(opened)}>
               <Trash2 size={20} />
               <span className="gs-label">Remove access</span>
             </button>
@@ -863,25 +1045,6 @@ export default function PeopleHub({
         </ScreenPopup>
       )}
 
-      {panel && (
-        <ScreenPopup
-          title={panel === "ended" ? "Ended" : panel === "shortcuts" ? "Shortcuts" : "Services"}
-          className="gs-sheet ppl-sheet"
-          onClose={() => {
-            setPanel("");
-            setExtrasAt(Date.now());
-          }}
-        >
-          {panel === "ended" ? (
-            <BrowserAgents peer={peer} device={device} toast={toast} />
-          ) : panel === "shortcuts" ? (
-            <AgentShortcuts peer={peer} toast={toast} bare />
-          ) : (
-            <ServiceAccessPanel peer={peer} bare />
-          )}
-        </ScreenPopup>
-      )}
-
       {inviting && invitationSheet()}
       {editing && (
         <AccessEditor
@@ -894,7 +1057,7 @@ export default function PeopleHub({
             setEditing(null);
             if (removed) setOpenId("");
             setChanged(removed ? "" : "Access updated.");
-            void load();
+            void load(true);
           }}
         />
       )}

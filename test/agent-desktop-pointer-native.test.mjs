@@ -21,7 +21,7 @@ test("pointer actions use the checked target and clicks report that identity", a
 
 // Compile the actual window/point policy with inert CG and AX fixtures. This
 // never reads a screen, queries a real app, or posts native input events.
-test("native pointer targets fail closed when only a compositor or no app is identified", {
+test("native pointer policy distinguishes Full control, selected apps and recorded target identity", {
   skip: process.platform !== "darwin" || process.env.REACH_TEST_APP_NATIVE !== "1",
 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "reach-pointer-policy-"));
@@ -55,6 +55,8 @@ full.patterns = compile(${list(full.protectedPagePatterns)})
 var apps = full
 apps.mode = "apps"
 apps.allowedApps = [["id": "/Applications/Safari.app", "bundleId": "com.apple.Safari"]]
+var restricted = apps
+restricted.allowedApps += [["id": "/Applications/Chrome.app", "bundleId": "com.google.Chrome"], ["id": "/System/Applications/Messages.app", "bundleId": "com.apple.MobileSMS"]]
 `;
     const stubs = String.raw`
 // Bank sites are judged by moneyAt (test/money-sites.test.mjs).
@@ -63,6 +65,9 @@ func isBrowser(_ bundle: String) -> Bool { false }
 func moneyAt(_ s: inout Seen, _ point: CGPoint?, _ rules: Rules) throws -> (url: String, title: String)? { nil }
 let kCGNullWindowID: UInt32 = 0
 let kCGWindowBounds = "bounds", kCGWindowAlpha = "alpha", kCGWindowOwnerPID = "pid", kCGWindowOwnerName = "name", kCGWindowName = "title"
+let kCGWindowLayer = "layer"
+var trustedCursorPID: pid_t = 0
+func trustedCursorIdentity(_ pid: pid_t) -> Bool { pid > 0 && pid == trustedCursorPID }
 let kAXTitleAttribute = "title", kAXDescriptionAttribute = "description", kAXHelpAttribute = "help", kAXURLAttribute = "url"
 enum WindowOptions { case optionOnScreenOnly }
 var windows = [[String: Any]]()
@@ -98,6 +103,7 @@ func windowTitleReason(_ title: String, _ bundle: String, _ path: String, _ pid:
 `;
     const harness = String.raw`
 func window(_ pid: pid_t, _ title: String = "") -> [String: Any] { [kCGWindowBounds: ["X":CGFloat(0),"Y":CGFloat(0),"Width":CGFloat(500),"Height":CGFloat(500)], kCGWindowAlpha:Double(1), kCGWindowOwnerPID:pid, kCGWindowName:title, kCGWindowOwnerName:appInfo(pid).1] }
+func cursor(_ pid: pid_t, _ layer: Int = Int(CGWindowLevelForKey(.cursorWindow))) -> [String: Any] { var value = window(pid); value[kCGWindowLayer] = layer; return value }
 func expect(_ label: String, _ entries: [[String:Any]], _ element: Int?, _ rules: Rules, _ status: String, _ app: String = "", _ expected: [String:String]? = nil) {
   windows = entries; ax = element
   do {
@@ -108,13 +114,17 @@ func expect(_ label: String, _ entries: [[String:Any]], _ element: Int?, _ rules
   } catch { print("FAILED: " + label + " unexpected error"); exit(1) }
 }
 expect("compositor with verified Safari AX", [window(1),window(3)], 3, full, "allowed", "Safari")
-expect("protected CG remains authoritative", [window(2)], 3, full, "blocked")
-expect("Reach title on CG remains protected", [window(3,"Reach")], 3, full, "blocked")
-expect("protected AX behind compositor", [window(1),window(2)], 2, full, "blocked")
-expect("hidden CG", [window(4)], 3, full, "blocked")
-expect("hidden AX", [window(1)], 4, full, "blocked")
+expect("Apps: protected CG remains authoritative", [window(2)], 3, restricted, "blocked")
+expect("Apps: Reach title on CG remains protected", [window(3,"Reach")], 3, restricted, "blocked")
+expect("Apps: protected AX behind compositor", [window(1),window(2)], 2, restricted, "blocked")
+expect("Apps: hidden CG", [window(4)], 3, restricted, "blocked")
+expect("Apps: hidden AX", [window(1)], 4, restricted, "blocked")
+expect("Full: Reach is usable", [window(2)], 2, full, "allowed", "Reach")
+expect("Full: Reach titles are usable", [window(3,"Reach")], 3, full, "allowed", "Safari")
+expect("Full: old hidden-app lists impose no restriction", [window(4)], 4, full, "allowed", "Messages")
 axURL = "http://localhost:8443/"
-expect("protected AX URL", [window(1),window(3)], 3, full, "blocked")
+expect("Apps: protected AX URL", [window(3)], 3, restricted, "blocked")
+expect("Full: Reach URL is usable", [window(3)], 3, full, "allowed", "Safari")
 axURL = ""
 axTitle = ""
 appHostsReach = true
@@ -122,7 +132,7 @@ expect("Full: missing title no longer closes the whole app", [window(1),window(3
 expect("untitled content in a named window of an app with a Reach tab", [window(5,"Uber Eats")], 5, full, "allowed", "Chrome")
 expect("Full: untitled content in an unnamed window of an app with a Reach tab", [window(5)], 5, full, "allowed", "Chrome")
 expect("Full: another app's named window over an app with a Reach tab", [window(3,"Interaction Lab")], 5, full, "allowed", "Chrome")
-expect("a named window that shows Reach stays closed", [window(5,"Reach")], 5, full, "blocked")
+expect("Apps: a named window that shows Reach stays closed", [window(5,"Reach")], 5, restricted, "blocked")
 appHostsReach = false
 axTitle = "Interaction Lab"
 expect("compositor with failed AX still shows protected CG", [window(1),window(2)], nil, full, "allowed", "Window Server")
@@ -134,6 +144,15 @@ expect("known checked CG fallback", [window(3)], nil, full, "allowed", "Safari")
 expect("AX without CG", [], 3, full, "allowed", "Safari")
 expect("selected app", [window(3)], 3, apps, "allowed", "Safari")
 expect("selected apps retain unknown compositor refusal", [window(1),window(3)], 3, apps, "blocked")
+expect("unverified cursor-level overlay stays blocked", [cursor(1),window(3)], 3, apps, "blocked")
+trustedCursorPID = 1
+expect("verified WindowServer cursor does not obscure selected app", [cursor(1),window(3)], 3, apps, "allowed", "Safari")
+expect("verified cursor still exposes protected underlying window", [cursor(1),window(2)], 3, apps, "blocked")
+expect("verified cursor cannot authorize protected AX", [cursor(1),window(3)], 2, apps, "blocked")
+expect("verified cursor without any input target", [cursor(1)], nil, apps, "retry")
+expect("WindowServer at another layer is not exempt", [cursor(1,20),window(3)], 3, apps, "blocked")
+expect("another process at cursor layer is not exempt", [cursor(4),window(3)], 3, apps, "blocked")
+trustedCursorPID = 0
 let recorded = ["bundle":"com.apple.Safari", "title":"Interaction Lab"]
 expect("recorded Full target through compositor", [window(1),window(3)], 3, full, "allowed", "Safari", recorded)
 expect("recorded Apps retains compositor refusal", [window(1),window(3)], 3, apps, "blocked", "", recorded)
@@ -145,14 +164,16 @@ expect("recorded changed CG title", [window(3,"Different window")], 3, full, "re
 axTitle = "Different window"
 expect("recorded changed AX title", [window(1)], 3, full, "retry", "", recorded)
 axTitle = "Interaction Lab"
-expect("recorded protected CG never bypassed", [window(2)], 3, full, "blocked", "", recorded)
-expect("recorded protected AX never bypassed", [window(1)], 2, full, "blocked", "", recorded)
-// System surfaces in Full control: the connection Reach answers through and
-// apps the agent may not open stay closed, whichever surface is clicked.
+expect("recorded Full target refuses a different CG app", [window(2)], 3, full, "retry", "", recorded)
+expect("recorded Full target refuses a different AX app", [window(1)], 2, full, "retry", "", recorded)
+expect("recorded Apps protected CG never bypassed", [window(2)], 3, restricted, "blocked", "", recorded)
+// Full control can reach system surfaces; selected-app grants cannot.
 axTitle = ""; axLabel = "Wi-Fi"
-expect("Control Center's Wi-Fi switch", [window(6)], 6, full, "blocked")
+expect("Full: Control Center's Wi-Fi switch", [window(6)], 6, full, "allowed", "Control Center")
+expect("Apps: Control Center's Wi-Fi switch", [window(6)], 6, restricted, "blocked")
 axLabel = "Activity Monitor"; axDockURL = "file:///System/Applications/Utilities/Activity%20Monitor.app/"
-expect("a Dock item that opens a protected app", [window(7)], 7, full, "blocked")
+expect("Full: a Dock item can open any app", [window(7)], 7, full, "allowed", "Dock")
+expect("Apps: a Dock item cannot open another app", [window(7)], 7, restricted, "blocked")
 axLabel = "Safari"; axDockURL = "file:///Applications/Safari.app/"
 expect("a Dock item that opens an ordinary app", [window(7)], 7, full, "allowed", "Dock")
 axLabel = ""; axDockURL = ""; axTitle = "Interaction Lab"

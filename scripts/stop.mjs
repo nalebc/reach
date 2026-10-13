@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
+import { command } from "./home.mjs";
 import { loginScript } from "./login-start.mjs";
 import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
@@ -16,7 +17,7 @@ import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // The processes and every Reach among them (instances.mjs): one Reach per
 // computer, so stop and restart reach it whichever folder it came from.
-import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost } from "./instances.mjs";
+import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost, windowsImage } from "./instances.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -163,7 +164,7 @@ export async function stopReach(
   const stopped = others.filter((h) => !foreign.has(h.pid)).length;
   for (const pid of foreign) print(`Reach (process ${pid}) is owned by another user; it can't be stopped from here.`);
   if (serviceRunning && !restarting)
-    print("The background service stopped; it starts again at your next sign-in, or with ./reach restart.");
+    print(`The background service stopped; it starts again at your next sign-in, or with ${command} restart.`);
   if (stopped) print(`Stopped ${stopped === 1 ? "Reach" : `${stopped} Reaches`}${terminals.length ? ` and ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} in it` : ""}.`);
   return { stopped, service: serviceRunning, terminals: terminals.length, serviceInstalled: !!service.ours };
 }
@@ -192,6 +193,7 @@ async function stopWindows(
     },
     taskkill = (pid) =>
       execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }),
+    image = windowsImage,
     graceMs = 15000,
   },
 ) {
@@ -217,6 +219,10 @@ async function stopWindows(
   };
   try {
     if (!(await gone(graceMs))) {
+      // Ended outright only while that id is still Node: never a program
+      // that got Reach's old id after it ended.
+      if (image(host.pid) !== "node.exe")
+        throw Error(`Reach (process ${host.pid}) did not stop by itself. Close its PowerShell window, or end it in Task Manager.`);
       try {
         taskkill(host.pid);
       } catch {}

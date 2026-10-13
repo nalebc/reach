@@ -6,6 +6,8 @@ import path from "node:path";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
 import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
+import { createReach } from "../server/index.mjs";
+import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
 
 // The owner's pause of one agent outlives a restart (reliability audit, Oct
 // 10: it lived only in memory, so a crash or restart resumed the agent).
@@ -78,4 +80,111 @@ test("a pause that can't be saved still holds now, and says a restart would end 
   assert.equal(pauses.has("muse"), true);
   // Resuming can't be saved either: it holds, and a restart would pause again.
   assert.equal(pauses.set("muse", false), false);
+});
+
+// Oct 12: the pause lived in the Mac-only desktop service, so off a Mac
+// (Windows) pausing an agent did nothing. Reach now keeps one store on every
+// computer; the desktop service, where there is one, acts on that same store.
+test("the desktop service acts on the one store Reach gives it, never a second copy", () => {
+  const folder = dir();
+  const store = createAgentPauses({ file: path.join(folder, "agent-pauses.json") });
+  const clients = new Map([["muse", agent("muse")], ["grok", agent("grok")]]);
+  const d = createAgentDesktop({ screen: true }, {
+    available: () => true, home: "/Users/me", verifyClient: (id) => clients.get(id), pauses: store, pausesFile: path.join(folder, "other.json"),
+    spawnHelper: async () => ({ async send() { return { ok: true }; }, stop() {} }),
+  });
+  assert.equal(d.setPaused("muse", true), true);
+  assert.equal(store.has("muse"), true);
+  store.set("grok", true);
+  assert.equal(d.isPaused("grok"), true);
+  assert.deepEqual(d.activity().paused, ["muse", "grok"]);
+  store.set("muse", false);
+  assert.equal(d.isPaused("muse"), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, "agent-pauses.json"), "utf8")).paused, ["grok"]);
+  assert.equal(fs.existsSync(path.join(folder, "other.json")), false, "no second store");
+});
+
+// Fail closed: a desktop service with a store of its own, in memory, would
+// never see the pause Reach's route keeps, and a paused agent would keep its
+// hands. Reach's own store (or a file) is required.
+test("the desktop service refuses to start without Reach's pause store", () => {
+  const options = { available: () => true, home: "/Users/me", spawnHelper: async () => ({ async send() { return { ok: true }; }, stop() {} }) };
+  assert.throws(() => createAgentDesktop({ screen: true }, options), /pause store/);
+  assert.throws(() => createAgentDesktop({ screen: true }, { ...options, pauses: { has: () => false } }), /pause store/, "half a store is no store");
+  assert.throws(() => createAgentDesktop({ screen: true }, { ...options, pauses: null, pausesFile: null }), /pause store/);
+  createAgentDesktop({ screen: true }, { ...options, pauses: createAgentPauses() }).close();
+  createAgentDesktop({ screen: true }, { ...options, pausesFile: path.join(dir(), "agent-pauses.json") }).close();
+});
+
+// Reach's real desktop service, built by Reach with Reach's options; only
+// the native helper is a stand-in. Pausing from the owner's agent list stops
+// the agent's input and opening, through the store Reach handed the service.
+test("Reach's own desktop service obeys the pause the owner sets from the agent list", privateIngressTest, async (t) => {
+  const sent = [];
+  const helper = { async send(request, beforeSend) { beforeSend?.(); sent.push(request.op); return { ok: true, app: "Google Chrome", bundle: "com.google.Chrome", title: "", terminalLike: false, secure: false, blocked: "" }; }, stop() {} };
+  let built = null;
+  const f = await presetFixture(t, { desktopFactory: (config, options) => (built = createAgentDesktop(config, { ...options, spawnHelper: async () => helper })) });
+  assert.ok(built, "Reach built its desktop service");
+  const muse = await f.join({ name: "Muse", preset: "full" });
+  const id = muse.created.clientId;
+  const click = () => muse.as("/api/browser/desktop/input", { method: "POST", body: { action: { type: "click", x: 0.5, y: 0.5 } } });
+  const open = () => muse.as("/api/browser/desktop/open", { method: "POST", body: { app: "/Applications/Google Chrome.app" } });
+  assert.equal((await click()).status, 200);
+  assert.deepEqual(sent, ["act"]);
+  const paused = await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: true } });
+  assert.deepEqual(paused.body, { clientId: id, paused: true });
+  assert.equal(built.isPaused(id), true, "the service reads the store Reach keeps");
+  for (const refused of [await click(), await open()]) {
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.kind, "paused");
+  }
+  assert.deepEqual(sent, ["act"], "nothing reached the helper while paused");
+  assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: false } })).body.paused, false);
+  assert.equal((await open()).status, 200);
+  assert.deepEqual(sent, ["act", "open"]);
+});
+
+test("without the desktop service (as on Windows), the owner's pause is kept, enforced and shown", privateIngressTest, async (t) => {
+  const f = await presetFixture(t, { withDesktop: false });
+  const writer = await f.join({ name: "Writer", preset: "files", write: true, folders: [{ root: 0, path: "Desktop/Project" }] });
+  const id = writer.created.clientId;
+  // Its one folder is its root 0.
+  const change = (name) => writer.as("/api/browser/files/change", { method: "POST", body: { op: "write", root: 0, path: name, content: "x" } });
+  const pausedNow = await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: true } });
+  assert.equal(pausedNow.status, 200, JSON.stringify(pausedNow.body));
+  assert.deepEqual(pausedNow.body, { clientId: id, paused: true });
+  const saved = path.join(path.dirname(f.home), "private", "agent-pauses.json");
+  assert.deepEqual(JSON.parse(fs.readFileSync(saved, "utf8")).paused, [id], "kept across restarts");
+  assert.equal((await f.call("/api/browser/agents")).body.agents.find((entry) => entry.id === id).paused, true);
+  const refused = await change("paused.txt");
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.kind, "paused");
+  assert.ok(!fs.existsSync(path.join(f.home, "Desktop", "Project", "paused.txt")), "nothing was written");
+  // Agents can't pause anyone; resuming gives the hands back.
+  assert.equal((await writer.as("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: false } })).status, 403);
+  assert.equal((await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: id, paused: false } })).body.paused, false);
+  assert.equal((await f.call("/api/browser/agents")).body.agents.find((entry) => entry.id === id).paused, undefined);
+  const resumed = await change("resumed.txt");
+  assert.notEqual(resumed.body?.kind, "paused", JSON.stringify(resumed.body));
+  // Agents' file writes need the Mac's protected file helper (Linux has none,
+  // Windows waits for workstream C): past the pause, only a Mac writes.
+  if (process.platform !== "darwin") return assert.equal(resumed.status, 503, JSON.stringify(resumed.body));
+  assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
+  assert.equal(fs.readFileSync(path.join(f.home, "Desktop", "Project", "resumed.txt"), "utf8"), "x");
+});
+
+test("without the desktop service, saved pauses that can't be read pause every agent that can use the computer", async () => {
+  const root = dir();
+  const dataDir = path.join(root, "data");
+  fs.mkdirSync(dataDir, { mode: 0o700 });
+  const entry = (id, policy) => ({ id, kind: "agent", name: id, scopes: ["screen"], createdAt: Date.now(), expiresAt: Date.now() + 864e5, hash: "x".repeat(64), policy });
+  fs.writeFileSync(path.join(dataDir, "clients.json"), JSON.stringify([
+    entry("muse", { invite: true, browser: true, preset: "full", roots: [] }),
+    entry("files-only", { invite: true, roots: [] }),
+  ]), { mode: 0o600 });
+  const file = path.join(dataDir, "agent-pauses.json");
+  fs.writeFileSync(file, "{ torn");
+  const reach = await createReach({ roots: [root], dataDir, port: 0, publicOrigin: "", previousRun: null, agentDesktop: null });
+  await reach.close();
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).paused, ["muse"]);
 });

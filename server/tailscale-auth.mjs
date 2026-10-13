@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import net from "node:net";
 import http from "node:http";
+import crypto from "node:crypto";
 import { tailscaleJson } from "../scripts/tailscale.mjs";
 import { fail, hash } from "./core.mjs";
 
@@ -208,4 +209,162 @@ export async function listenPrivateIngress({
 }
 export function trustedRequest(req) {
   return trusted.has(req);
+}
+
+// Windows (REACH_WINDOWS_ACCOUNT=1; docs/parity/D-public-door.md): no Unix
+// socket there, so Tailscale Serve proxies to a loopback port any local user
+// can reach too. Its target carries a key as its path (/r-<key>), which
+// tailscaled puts in front of every request it sends: a request counts as
+// Tailscale's only with the key AND from Tailscale's own process (the peer
+// check, server/tailscaled-peer.mjs). Made for each launch, never written down.
+export const INGRESS_KEY = /^[A-Za-z0-9_-]{43}$/; // 256 bits, base64url
+export const newIngressKey = () => crypto.randomBytes(32).toString("base64url");
+export const keyedTarget = (port, key) => `http://127.0.0.1:${port}/r-${key}`;
+// Takes the key out of anything Reach says or keeps: the key itself, any
+// /r-<43 characters>, and any run of 12 or more of its characters, so a key
+// cut anywhere is still gone. Made only in keyed mode: nothing else (a Mac's
+// socket folder is r-<hash> too) ever changes.
+export const keyRedactor = (key) => (text) =>
+  String(text ?? "")
+    .replaceAll(key, "…")
+    .replace(/\/r-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "/r-…")
+    .replace(/[A-Za-z0-9_-]{12,}/g, (run) => {
+      for (let i = 0; i + 12 <= run.length; i++)
+        if (key.includes(run.slice(i, i + 12))) return "…";
+      return run;
+    });
+const thisComputer = new WeakSet();
+// A keyed request whose source, as tailscaled sets it (never the client:
+// X-Forwarded-For is replaced), is one of this PC's own Tailscale addresses:
+// tailscaled serves the PC's own connections too, so any Windows user here
+// could have sent it as the owner (docs/parity/D-public-door.md §0.8).
+export const thisComputerRequest = (req) => thisComputer.has(req);
+export async function listenKeyedIngress({
+  key,
+  app,
+  upgrade,
+  resolveIdentity,
+  publicApp,
+  peerCheck,
+  // "" or why the route is closed now: "route" (another route leads to the
+  // port) or "settings" (Tailscale's own no longer allow it).
+  refuse = () => "",
+  onRefused = () => {},
+  selfIps = () => [],
+  port = 0,
+}) {
+  if (typeof key !== "string" || !INGRESS_KEY.test(key))
+    throw Error("Reach's private route key is malformed.");
+  if (typeof peerCheck?.check !== "function")
+    throw Error("Reach's private route needs Tailscale's connection check.");
+  // Go's proxy always sends "/r-<key>/…": 47 bytes, compared in constant time.
+  const expected = Buffer.from(`/r-${key}/`, "latin1");
+  const keyed = (req) => {
+    if (typeof req.url !== "string" || req.url.length < expected.length) return false;
+    // UTF-8: anything but ASCII changes the length, never the comparison.
+    const given = Buffer.from(req.url.slice(0, expected.length), "utf8");
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  };
+  // Before Express sees it: originalUrl, redirects and logs never carry the key.
+  const strip = (req) => {
+    req.url = req.url.slice(expected.length - 1);
+  };
+  const acceptedAt = new WeakMap(); // socket -> when this listener accepted it
+  const verified = new WeakMap(); // socket -> Promise<boolean>, until it closes
+  const fromTailscaled = (socket) => {
+    let answer = verified.get(socket);
+    if (!answer) {
+      answer = Promise.resolve()
+        .then(() => peerCheck.check(socket, acceptedAt.get(socket)))
+        .then(
+          (ok) => ok === true,
+          () => false,
+        );
+      verified.set(socket, answer);
+      socket.once("close", () => verified.delete(socket));
+    }
+    return answer;
+  };
+  // Still the socket that was checked: a client that reset it meanwhile freed
+  // its address pair for somebody else's connection.
+  const open = (socket) => !socket.destroyed && socket.readable && socket.writable;
+  const markSource = (req) => {
+    const from = req.headers["x-forwarded-for"];
+    if (typeof from === "string" && selfIps().includes(from)) thisComputer.add(req);
+  };
+  const prepare = async (req) => {
+    trusted.add(req);
+    req.reachIdentity = await resolveIdentity(req);
+  };
+  // No key: nothing else is asked (no peer check, no WhoIs), and the
+  // connection ends with the answer.
+  const notFound = (req, res) => {
+    onRefused("key");
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
+    res.end("Not found.", () => req.socket.destroy());
+  };
+  // continued: the client sent "Expect: 100-continue", answered only once
+  // every check has passed (Node would answer it before any).
+  const handle = async (req, res, continued = false) => {
+    const why = refuse();
+    if (why) {
+      onRefused(why);
+      return req.socket.destroy();
+    }
+    if (!keyed(req)) return notFound(req, res);
+    // Not Tailscale's own process: not a byte back.
+    if (!(await fromTailscaled(req.socket))) {
+      onRefused("peer");
+      return req.socket.destroy();
+    }
+    if (!open(req.socket) || refuse()) return req.socket.destroy();
+    if (continued) res.writeContinue();
+    strip(req);
+    ingress.add(req);
+    if (fromInternet(req)) {
+      if (publicApp) return publicApp(req, res);
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Not found.");
+    }
+    markSource(req);
+    prepare(req)
+      .then(() => app(req, res))
+      .catch(() => {
+        res.writeHead(503);
+        res.end();
+      });
+  };
+  const server = http.createServer((req, res) => handle(req, res));
+  server.on("checkContinue", (req, res) => handle(req, res, true));
+  server.on("connection", (socket) => acceptedAt.set(socket, Date.now()));
+  server.on("upgrade", async (req, socket, head) => {
+    const why = refuse() || (keyed(req) ? "" : "key");
+    if (why) {
+      onRefused(why);
+      return socket.destroy();
+    }
+    if (!(await fromTailscaled(socket))) {
+      onRefused("peer");
+      return socket.destroy();
+    }
+    if (!open(socket) || refuse()) return socket.destroy();
+    strip(req);
+    if (fromInternet(req)) return socket.destroy();
+    markSource(req);
+    prepare(req)
+      .then(() => upgrade(req, socket, head))
+      .catch(() => socket.destroy());
+  });
+  // Unparseable: no bytes to a peer nobody checked.
+  server.on("clientError", (_error, socket) => socket.destroy());
+  // Serve keeps idle connections to its backend for 90 s: kept longer here, so
+  // they're reused, not reopened (each new one is a peer check). This server
+  // only; Reach's other listeners keep Node's defaults.
+  server.keepAliveTimeout = 100000;
+  server.headersTimeout = 105000;
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  return server;
 }

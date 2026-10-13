@@ -195,6 +195,10 @@
   font-size: 12.5px;
 }
 .ivt-toggle input {
+  -webkit-appearance: none;
+  padding: 0;
+  border: 0;
+  min-height: 0;
   appearance: none;
   flex: none;
   position: relative;
@@ -789,9 +793,9 @@
   margin-top: 8px;
 }
 
-/* The invitation, in its sheet (PeopleHub.tsx): Agent | Person as pills,
-   then a short list (a name, one row per choice, each a menu, as ChatGPT
-   lays out its share settings) and one white pill. Few words. */
+/* The invitation, in its sheet (PeopleHub.tsx): short lists (a name, one
+   row per choice, each a menu, as ChatGPT lays out its share settings) and
+   one white pill (invite-flow.css has its steps). Few words. */
 .ppl-invite .ivt {
   max-width: none;
   margin: 0;
@@ -800,27 +804,6 @@
   display: grid;
   gap: 16px;
   min-width: 0;
-}
-.ivt-kind {
-  display: flex;
-  gap: 8px;
-}
-.ivt-kind button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 0.06);
-  color: var(--ivt-muted);
-  font-size: 14.5px;
-  font-weight: 500;
-}
-.ivt-kind button[aria-pressed="true"] {
-  background: #ededed;
-  color: #111 !important;
 }
 .ivt-rows {
   overflow: visible;
@@ -994,26 +977,4 @@
   color: var(--ivt-muted);
   font-size: 12.5px;
   font-weight: 400;
-}
-
-/* Who is invited, in the sheet's title: "Invite an agent ⌄". */
-.ppl-who .ivt-menu-button {
-  height: auto;
-  gap: 6px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  letter-spacing: inherit;
-}
-.ppl-who .ivt-menu-button svg {
-  color: var(--ivt-muted);
-}
-.ppl-who .ivt-menu-list {
-  left: 0;
-  right: auto;
-  font-size: 15px;
-  font-weight: 400;
-  letter-spacing: normal;
 }

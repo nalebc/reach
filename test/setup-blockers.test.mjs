@@ -261,3 +261,18 @@ test("H10: Ctrl+C during a setup wait says Paused, exits 130 and releases the lo
   on.emit("SIGINT");
   assert.deepEqual(said, []);
 });
+
+
+test("H13: a node-gyp download failure asks for internet before build tools", async () => {
+  const { setupFailureHint } = await import("../scripts/setup-failure.mjs");
+  for (const code of ["ENOTFOUND", "EAI_AGAIN"]) {
+    const hint = setupFailureHint(`gyp ERR! stack Error: getaddrinfo ${code} nodejs.org\nnode-gyp rebuild`, "linux");
+    assert.match(hint, /couldn't reach the internet/);
+    assert.doesNotMatch(hint, /build-essential/);
+  }
+});
+
+test("T11: Funnel on the private port names the command that turns it off", async () => {
+  const { assertPrivatePort } = await import("../scripts/tailscale.mjs");
+  assert.throws(() => assertPrivatePort({ AllowFunnel: { "computer.example.ts.net:8443": true } }, 8443), /tailscale funnel --https=8443 off/);
+});

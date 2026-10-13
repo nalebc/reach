@@ -1,0 +1,835 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-11",
+  "status": "validated_frozen_candidate_waiting_for_external_feature_completion",
+  "generatedAt": "2026-10-11T20:36:58.582101+00:00",
+  "environment": {
+    "isolation": "Disposable Ubuntu 24.04 containers inside Docker Desktop LinuxKit VM on an ARM64 Mac",
+    "kernel": "6.12.76-linuxkit",
+    "node": "22.23.3",
+    "npm": "10.9.9",
+    "nodeDownloadChecksumVerified": true,
+    "arm64": {
+      "execution": "native ARM64 Linux",
+      "cpus": 4,
+      "memoryGiB": 5,
+      "pidLimit": 512
+    },
+    "amd64": {
+      "execution": "x86-64 CPU emulation on ARM64, not native x86 hardware",
+      "cpus": 2,
+      "memoryGiB": 3,
+      "pidLimit": 256
+    },
+    "testExecution": "npm guarded test entrypoints; full suite at most two file workers; individual runaway guard remains enabled"
+  },
+  "finalSourceSnapshot": {
+    "capturedAt": "2026-10-11T19:06:55.463589+00:00",
+    "sourceFiles": 1232,
+    "sourceSha256": "3b2f81f4af466d5883a78d5047e4b799d6ad1f422f0550bce750b6d609fdea99",
+    "label": "Second full suite before onboarding harness fixes; failed results preserved"
+  },
+  "sourceHashMethod": "SHA-256 of compact JSON array of sorted relative source paths and their SHA-256 digests; generated dependencies/assets/reports excluded. Full manifest retained in the log directory.",
+  "package": {
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "893d4aa6120099c58d3711930ff9c331c8d4869824fe1a846399acf77496e3bd",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local"
+    },
+    "bytes": 28215673,
+    "files": 641,
+    "published": false,
+    "verifiedDigestMatchesArchiveAtTestTime": true,
+    "receiptLog": "/tmp/reach-linux-bash-h7d72qjx/logs/frozen-package-verification.json"
+  },
+  "runs": {
+    "arm64InitialFullSuite": {
+      "status": "failed_then_investigated",
+      "counts": {
+        "tests": 3494,
+        "pass": 3408,
+        "fail": 9,
+        "cancelled": 0,
+        "skipped": 77,
+        "todo": 0,
+        "duration_ms": 850064.576177
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/full-suite.log"
+    },
+    "arm64FinalFullSuite": {
+      "status": "failed_onboarding_timeouts",
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-full-final.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/frozen-all.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/frozen-all.xml",
+      "counts": {
+        "tests": 3533,
+        "pass": 3447,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 82,
+        "todo": 0,
+        "duration_ms": 834427.239296
+      }
+    },
+    "arm64InstalledPackageOnboarding": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 70,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 120553.489013
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-installed-helper.log",
+      "externalTailscaleState": "simulated"
+    },
+    "arm64SourceColdBoot": {
+      "status": "passed",
+      "counts": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 36115.02935
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/source-first-install.log",
+      "coverage": "Actual private Node download/checksum, npm ci and source build with Node/npm/Go absent from PATH, then setup, approval and file read; external Tailscale identity simulated"
+    },
+    "arm64NonRootPackage": {
+      "status": "passed",
+      "uid": 1001,
+      "counts": {
+        "tests": 17,
+        "pass": 17,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 3181.65246
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/nonroot-tests.log",
+      "coverage": "Clean npm install as disposable unprivileged user, authenticated files, real PTY/disconnect/reconnect, no-SHELL default and unsupported agent preset admission"
+    },
+    "amd64EmulatedPlatform": {
+      "status": "passed",
+      "counts": {
+        "tests": 34,
+        "pass": 33,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 14797.53909
+      },
+      "log": "/tmp/reach-linux-x64-bash-uira0d5p/logs/platform-suite-final.log",
+      "coverage": "Clean native binary package install, CLI/UI/assets/files/PTY smoke, integration, detection, admission, Windows branch contracts, shell startup error; this is Linux, not native Windows"
+    },
+    "amd64EmulatedInstalledOnboarding": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 70,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 205846.446177
+      },
+      "log": "/tmp/reach-linux-x64-bash-uira0d5p/logs/ci-installed-helper.log",
+      "externalTailscaleState": "simulated"
+    },
+    "macShellAndAppRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 34,
+        "pass": 34,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 13774.045708
+      },
+      "log": "/tmp/reach-platform-fixes-mac.log"
+    },
+    "macDesktopPolicyRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 20,
+        "pass": 20,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 833.131583
+      },
+      "log": "/tmp/reach-platform-desktop-final.log"
+    },
+    "arm64OnboardingDiagnosticFollowup": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 70,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 39931.492726
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/onboarding-diagnostic-followup.log",
+      "note": "Added diagnostics only; original unchanged budgets. A targeted pass does not make the failed full suite green."
+    },
+    "arm64OnboardingCleanupFix": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 70,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 40729.096227
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/onboarding-cleanup-fix.log",
+      "note": "Real entry modules and setup/approval/file paths with deterministic external Tailscale fixtures; readonly loadedModule cleanup, startup uses existing15s helper default."
+    },
+    "arm64DualArtifactCiPolicy": {
+      "status": "passed",
+      "counts": {
+        "tests": 6,
+        "pass": 6,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 1030.306834
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-policy-dual-archive-final.log",
+      "initialFollowupFailure": "CI list referenced newly added Mac-only ios-background-transfer-native test not present in frozen snapshot. Copying the source fixture fixed the harness; previous5/6 result retained separately."
+    },
+    "arm64CleanFullSuiteAfterHarnessFix": {
+      "status": "failed_stale_claude_default_assertion",
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-full-clean.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/cleanup-full-all.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/cleanup-full-all.xml",
+      "counts": {
+        "tests": 3537,
+        "pass": 3453,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 83,
+        "todo": 0,
+        "duration_ms": 636669.603914
+      }
+    },
+    "arm64FinalFocusedRegressions": {
+      "status": "passed",
+      "counts": {
+        "tests": 135,
+        "pass": 135,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 40372.716893
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/final-focused-regressions.log",
+      "coverage": [
+        "process inventory failure does not start/stop/restart or remove protected lock",
+        "actual first-install iPhone and Android DOM entry/approval/file flow",
+        "readonly Vite entry lookup and cleanup of auto-imported React roots",
+        "explicit Claude Default remains explicit and omitted mode stays Auto",
+        "Claude host and OpenClaw transitions"
+      ],
+      "initialHarnessAssertionFailure": {
+        "counts": {
+          "tests": 135,
+          "pass": 132,
+          "fail": 3,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "duration_ms": 40020.795894
+        },
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/final-focused-regressions-initial.log",
+        "cause": "Vite uses null for an existing but unevaluated module and undefined for an absent one. The test-only readonly accessor now consistently returns undefined for either unloaded state; lifecycle assertions remain."
+      }
+    },
+    "arm64FinalReleaseCandidateFullSuite": {
+      "status": "failed_hosted_connector_registration",
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-full-release-candidate.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/pre-cache-fix-all.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/pre-cache-fix-all.xml",
+      "counts": {
+        "tests": 3547,
+        "pass": 3463,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 83,
+        "todo": 0,
+        "duration_ms": 622771.152532
+      }
+    },
+    "arm64CacheAuthRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 89,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 6,
+        "todo": 0,
+        "duration_ms": 5421.522419,
+        "pass": 83
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/auth-cache-final-regressions.log",
+      "skipReason": "macOS-only native agent preset and public gateway flows",
+      "coverage": "Credential-cache same-mtime replacement, local-generation invalidation, revoked/rotated credentials, corrupt/missing/uninspectable stores, transient-read recovery, hosted connector registration and CI policy"
+    },
+    "arm64CacheFixedFullSuite": {
+      "status": "failed_windows_setup_stdout_race",
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-full-cache-fixed.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/cache-fixed-baseline-all.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/cache-fixed-baseline-all.xml",
+      "counts": {
+        "tests": 3553,
+        "pass": 3469,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 83,
+        "todo": 0,
+        "duration_ms": 703782.947362
+      }
+    },
+    "arm64WindowsSetupSynchronization": {
+      "status": "passed",
+      "normal": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 4343.768377,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/windows-guidance-after.log"
+      },
+      "delayedOutput": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 993.593126,
+        "log": "/tmp/reach-linux-bash-h7d72qjx/logs/windows-guidance-delayed-after.log"
+      },
+      "testOnlySourceOverlay": "test/windows-commands.test.mjs"
+    },
+    "arm64CombinedFullSuite": {
+      "status": "passed",
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/ci-full-combined.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/combined-all.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/combined-all.xml",
+      "counts": {
+        "tests": 3564,
+        "pass": 3481,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 83,
+        "todo": 0,
+        "duration_ms": 663836.788591
+      }
+    },
+    "arm64CombinedFocused": {
+      "status": "passed",
+      "counts": {
+        "tests": 26,
+        "pass": 26,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 16203.719633
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/combined-focused.log"
+    },
+    "arm64RealTailscaleLoggedOut": {
+      "status": "passed",
+      "counts": {
+        "tests": 4,
+        "pass": 4,
+        "fail": 0,
+        "skipped": 0
+      },
+      "evidence": "docs/benchmarks/tailscale-logged-out-2026-10-11.json",
+      "coverage": [
+        "Reach production setup reports binary missing before installation",
+        "Reach production setup reports installed but daemon stopped",
+        "Root status reads actual NeedsLogin, matching client/daemon versions, no peers/IPs/AuthURL; setup requests sign-in and prepareTailscale refuses",
+        "Unprivileged uid1000 repeats the real logged-out status and refusal checks"
+      ],
+      "version": "1.104.1",
+      "vendorChecksumVerified": true,
+      "limitations": [
+        "Static vendor installation, not apt/systemd or a physical Linux desktop",
+        "Production setup/discovery functions tested via guarded npm, not full Reach CLI startup",
+        "No login, tailnet enrollment, real phone, Serve/Funnel, HTTPS certificate or cross-device connectivity tested",
+        "No host Tailscale or live Reach process used"
+      ],
+      "ownedContainerRemoved": true
+    },
+    "arm64CombinedInstalledPackage": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 70,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 81394.517369
+      },
+      "log": "/tmp/reach-linux-bash-h7d72qjx/logs/combined-installed.log",
+      "tap": "/tmp/reach-linux-bash-h7d72qjx/reports/combined-installed.tap",
+      "junit": "/tmp/reach-linux-bash-h7d72qjx/reports/combined-installed.xml",
+      "packageSha256": "a62fe98bc97f39a22b98bdd11b5e4a67222c7a84a41f44f9669636c3c198b4c5",
+      "externalTailscaleState": "simulated",
+      "skipReason": "macOS-only ~/Applications discovery"
+    }
+  },
+  "publishedCliCanaries": {
+    "codex": {
+      "agent": "codex",
+      "version": "0.162.1",
+      "status": "available",
+      "checkedAt": 1791744604125,
+      "protocol": {
+        "schema": "passed",
+        "contracts": 7,
+        "modelTurns": 0
+      }
+    },
+    "claude": {
+      "agent": "claude",
+      "version": "2.1.296",
+      "status": "available",
+      "checkedAt": 1791744604476,
+      "protocol": {
+        "initialize": "passed",
+        "modelTurns": 0
+      }
+    },
+    "scope": "Fresh published npm installation in isolated Linux configuration; zero model turns, no account sign-in"
+  },
+  "productionFixes": [
+    {
+      "file": "server/terminal.mjs",
+      "problem": "Linux with SHELL unset selected /bin/zsh, which a minimal Ubuntu install lacks; the package smoke previously masked this with SHELL=/bin/sh.",
+      "fix": "Use /bin/sh as the Linux fallback, retain macOS zsh and explicit SHELL, and remove the smoke override.",
+      "reproduction": "/tmp/reach-linux-bash-h7d72qjx/logs/terminal-shell-repro.log",
+      "verification": "/tmp/reach-linux-bash-h7d72qjx/logs/terminal-shell-final.log",
+      "regression": "test/terminal-default-shell.test.mjs"
+    },
+    {
+      "file": "server/agent-shell.mjs",
+      "problem": "A native spawn error (for example a working directory removed before dispatch) was recorded as executed with exitCode:null.",
+      "fix": "Return a safe 503, persist a failed record, release concurrency capacity and emit no success action.",
+      "reproduction": "/tmp/reach-shell-spawn-repro.log",
+      "verification": "/tmp/reach-platform-fixes-mac.log",
+      "regression": "test/agent-shell.test.mjs"
+    },
+    {
+      "file": "server/core.mjs",
+      "problem": "Public-door credential caches could retain stale admission after rapid atomic credential-store writes shared mtimeMs.",
+      "fix": "Cache revision uses successful local write generation plus file identity and nanosecond metadata; invalid credential stores fail closed and transient read failures are not memoized.",
+      "reproduction": "/tmp/reach-auth-cache-regression.log",
+      "verification": "/tmp/reach-linux-bash-h7d72qjx/logs/auth-cache-final-regressions.log",
+      "regression": [
+        "test/auth-cache.test.mjs",
+        "test/hosted-mcp.test.mjs"
+      ]
+    }
+  ],
+  "initialFailureClassification": [
+    {
+      "tests": [
+        "Full control does not require sandbox-exec"
+      ],
+      "category": "unsupported native platform test plus shell error-reporting bug found during investigation",
+      "resolution": "Native zsh success test restricted to macOS; portable admission regression proves desktop presets issue no credentials when native capability is unavailable; real spawn-error regression added."
+    },
+    {
+      "tests": [
+        "owner app restriction invalidates queued capture and pending access requests"
+      ],
+      "category": "stale assertion",
+      "resolution": "Accept grant-fingerprint 401 in addition to 403/409; explicitly prove capture and input were not exposed."
+    },
+    {
+      "tests": [
+        "test/browser-connect.test.mjs"
+      ],
+      "category": "disposable harness missing source fixture",
+      "resolution": "Copied experiments/browser-connect; targeted rerun passed."
+    },
+    {
+      "tests": [
+        "a secret typed into a field still refuses protected pages"
+      ],
+      "category": "stale Full control policy assertion",
+      "resolution": "Separate inert Apps and Full tests: Apps retains content filtering; unrestricted Full deliberately permits it."
+    },
+    {
+      "tests": [
+        "Funnel enabled later: an unattended start updates its link without opening pairing by itself"
+      ],
+      "category": "stdout synchronization flake",
+      "resolution": "Wait for the final recovery instruction rather than the first heading chunk; closed pairing and link assertions remain."
+    },
+    {
+      "tests": [
+        "real terminal runs a command and survives disconnect/reconnect",
+        "Reach companion: authenticated end-to-end flows"
+      ],
+      "category": "Linux product bug; nested failure also fails parent",
+      "resolution": "Linux no-SHELL native terminal fallback fixed and integration rerun passed."
+    },
+    {
+      "tests": [
+        "native keyboard keeps the same text tail as the web diff",
+        "native keyboard plugin is registered and compiled into the app"
+      ],
+      "category": "disposable harness missing tracked iOS sources",
+      "resolution": "Copied tracked iOS fixtures into final snapshot."
+    }
+  ],
+  "limitations": [
+    "These are Linux containers on Docker Desktop, not fresh full desktop operating-system VMs; no systemd or graphical Linux desktop acceptance is claimed.",
+    "x86-64 ran under CPU emulation, not on native x86-64 hardware; timings are not native performance benchmarks.",
+    "No native Windows VM, Windows console or Windows desktop was available locally. Windows branch tests on Linux do not substitute for required Windows CI execution.",
+    "Tailscale identity states, hosted sign-in, ACLs and Funnel are deterministic fixtures in onboarding tests; no real hosted identity or tailnet enrollment occurred. A separate real vendor-binary test covers missing, daemon-stopped and logged-out states as root and an unprivileged user.",
+    "Phone UI tests use DOM clients. Physical iPhone/Android hardware, biometric authentication, push delivery and cellular/VPN transitions are outside this evidence.",
+    "Published Codex/Claude canaries validate installation and protocol compatibility without account sign-in or paid model turns.",
+    "Native Mac live desktop, iOS simulator and CI/release configuration evidence are recorded separately by the coordinating task.",
+    "Counts across runs overlap and must not be summed as unique coverage."
+  ],
+  "cleanup": {
+    "amd64TestContainerRemoved": true,
+    "arm64TestContainerRemoved": false,
+    "stalledDockerStartupCliTerminated": true,
+    "hostReachOrTailscaleChanged": false,
+    "preexistingContainersStopped": false,
+    "dockerDesktop": "Left running to avoid interrupting pre-existing containers; only task-owned containers are removed.",
+    "arm64TestContainerState": "stopped; retained at coordinator request while user confirms external feature edits are still in progress"
+  },
+  "cleanSourceSnapshot": {
+    "capturedAt": "2026-10-11T19:28:18.700734+00:00",
+    "sourceFiles": 1236,
+    "sourceSha256": "b5563645a17df16dcca32276bc169ae8e5727ad86305c575593ee5d22746c3bb"
+  },
+  "focusedReleaseFollowup": {
+    "status": "passed",
+    "sourceOverlayManifest": "/tmp/reach-linux-bash-h7d72qjx/logs/focused-followup-source.json",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "42ef8f848382aa4f2dcedfea7fde85116b179751dcf4e21796122b5e1bd92316",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "424379c0e63fbf6bd3d4966b1e19e9844c6abd2f74ccbe35099c978796c9adca"
+      }
+    },
+    "smokeLog": "/tmp/reach-linux-bash-h7d72qjx/logs/dual-archive-smoke.log",
+    "candidateLog": "/tmp/reach-linux-bash-h7d72qjx/logs/candidate-followup.log",
+    "scope": "Exact npm archive installed; portable archive created before testing, extracted, production dependencies installed with cwd at package; CLI/launcher/assets/auth/files/native PTY smoke for both. Candidate copied only those digests."
+  },
+  "cleanPackage": {
+    "status": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "54662144c22c11d69e8c642f60a9f8467f80cd5e41d3460022c63cc3daf46798",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "a56aa17e8977764e074b46de2f311aba3307cdde39ec9b75a5d3072835e5b455"
+      }
+    },
+    "smokeLog": "/tmp/reach-linux-bash-h7d72qjx/logs/dual-archive-clean.log",
+    "candidateLog": "/tmp/reach-linux-bash-h7d72qjx/logs/candidate-clean.log",
+    "published": false
+  },
+  "harnessFixes": [
+    {
+      "files": [
+        "test/helpers/first-install.mjs",
+        "test/first-install-phone-ui.test.mjs"
+      ],
+      "change": "Timeout diagnostics now include child lifecycle/elapsed timing, visible phone page, browser errors and requests."
+    },
+    {
+      "files": [
+        "test/dom/harness.mjs",
+        "test/first-install-phone-ui.test.mjs"
+      ],
+      "change": "Read an already evaluated Vite entry without triggering import; unmount its React root even when a preceding phone assertion failed. The previously unset local root reference was a concrete cleanup gap."
+    },
+    {
+      "files": [
+        "test/first-install-e2e.test.mjs"
+      ],
+      "change": "Returning-account restart uses the existing15s setup-helper startup deadline instead of a special5s deadline. Wrong-account denial, exit status, guidance and immutable owner assertions remain."
+    }
+  ],
+  "secondFullFailureClassification": {
+    "failedAssertions": [
+      "returning setup detects changed desktop Tailscale account:5s startup wait expired with no captured output",
+      "Android admin approval:connect-flow did not appear within10s",
+      "Android blocked WebAssembly fallback:expected text did not appear within10s"
+    ],
+    "failedParent": "new user phone UI: iPhone and Android, app and browser setup through a real first installation",
+    "cause": "The initial timeout trigger was not reproduced or conclusively established. No cgroup OOM/max/pid failure was observed. Startup deadline fragility and a concrete subsequent-case cleanup gap were addressed; no global DOM timeout was raised.",
+    "followup": "Same concurrent files passed with diagnostics only, then with cleanup/default startup deadline changes. Next full run passed every onboarding case; its sole failure was an independently changed Claude default with a stale assertion."
+  },
+  "releaseCandidateSourceSnapshot": {
+    "capturedAt": "2026-10-11T20:17:46.982221+00:00",
+    "sourceFiles": 1239,
+    "sourceSha256": "13ff5750bb65655dcb831da7c0ba702623ebc6713607d5565f3e5ed9b9b520ce",
+    "productionFiles": 629,
+    "productionSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+    "productionUnchangedDuringCopy": true,
+    "changedProductionPaths": [
+      "src/ChatHub.tsx",
+      "src/ChatList.tsx",
+      "src/EverythingChat.tsx",
+      "src/chat-list.css"
+    ]
+  },
+  "realLinuxInventoryCheck": {
+    "status": "passed",
+    "psPresent": true,
+    "statusExitCode": 0,
+    "log": "/tmp/reach-linux-bash-h7d72qjx/logs/real-linux-inventory-status.log",
+    "scope": "Actual read-only reach status with a separate state directory; no Reach server started. Empty inventory correctly reported not running; denied/missing inventory cases separately verified by inert CLI tests."
+  },
+  "releaseCandidatePackage": {
+    "status": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "a62fe98bc97f39a22b98bdd11b5e4a67222c7a84a41f44f9669636c3c198b4c5",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "164cce0c29b909b5d709253eb2f12a1f7f63861ec10b34c97bec3dabc26d023d"
+      }
+    },
+    "archives": [
+      {
+        "filename": "nalebc-reach-0.1.0.tgz",
+        "sha256": "a62fe98bc97f39a22b98bdd11b5e4a67222c7a84a41f44f9669636c3c198b4c5",
+        "bytes": 28220828,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      },
+      {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "164cce0c29b909b5d709253eb2f12a1f7f63861ec10b34c97bec3dabc26d023d",
+        "bytes": 34805695,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      }
+    ],
+    "smokeLog": "/tmp/reach-linux-bash-h7d72qjx/logs/dual-archive-combined.log",
+    "candidateLog": "/tmp/reach-linux-bash-h7d72qjx/logs/candidate-combined.log",
+    "published": false,
+    "sameProductionBytesAsFinalMacCandidate": true,
+    "productionFiles": 629,
+    "productionSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+    "frozenProductionUnchangedByBuild": true,
+    "archiveDigestsStillMatchAfterInstalledMatrix": true
+  },
+  "laterProductionChanges": {
+    "sourceDeltaManifest": "/tmp/reach-linux-bash-h7d72qjx/logs/post-clean-source-delta.json",
+    "notes": [
+      "Concurrent intentional Claude Auto default introduced a stale OpenClaw expectation in the third full run; assertion updated, permission implementation preserved.",
+      "A separate UI defect where an explicit Claude Default selection lost its mode field was fixed and verified.",
+      "Process-inventory failures now stop launch/status/stop/restart operations safely instead of treating unknown inventory as no running Reach.",
+      "Concurrent workflow and notification changes were included in the final frozen production snapshot and matching tests.",
+      "After explicit user confirmation that concurrent feature work was finished, combined workflow chat grouping was reviewed. CI agent fixed grouping that could hide Needs you chats below the collapsed list; four UI files and focused regressions are included in the new complete snapshot."
+    ]
+  },
+  "resourceObservations": {
+    "containerOomEventsObserved": 0,
+    "containerPidExhaustionObserved": false,
+    "hostContention": "A separate user-started full Node24 suite ran during parts of earlier validation. It was not touched. Final full run started only after the coordinating agent confirmed it ended; a scoped Mac installed-package matrix may overlap.",
+    "limitsUnchanged": true,
+    "cacheFixedBaseline": {
+      "memoryPeakBytes": 1476816896,
+      "memoryEvents": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0
+      },
+      "cpuStat": {
+        "usage_usec": 640769125,
+        "user_usec": 518932940,
+        "system_usec": 121836185,
+        "nice_usec": 0,
+        "nr_periods": 7409,
+        "nr_throttled": 8,
+        "throttled_usec": 652257,
+        "nr_bursts": 0,
+        "burst_usec": 0
+      }
+    },
+    "combinedHostContention": "Combined Linux suite in bounded Docker runs alongside the coordinator's separate guarded Mac full suite at two file workers. Neither resource limits nor test assertions are weakened.",
+    "combinedFullSuite": {
+      "memoryPeakBytes": 1171640320,
+      "memoryEvents": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0
+      },
+      "cpuStat": {
+        "usage_usec": 571450315,
+        "user_usec": 467605667,
+        "system_usec": 103844647,
+        "nice_usec": 0,
+        "nr_periods": 7084,
+        "nr_throttled": 3,
+        "throttled_usec": 487069,
+        "nr_bursts": 0,
+        "burst_usec": 0
+      }
+    }
+  },
+  "hostedConnectorFailure": {
+    "test": "test/hosted-mcp.test.mjs:256",
+    "observed": "A second newly created connector returned no JSON from registration; helper then dereferenced null client_id.",
+    "suspectedCause": "hostedConnectors memoization uses mtimeMs and endedVersion, which may retain an earlier connector list after rapid writes with equal modification timestamps.",
+    "status": "Fixed; focused Linux regression and complete combined full suite passed.",
+    "confirmedCause": "Rapid credential-store atomic writes shared mtimeMs, leaving cached hosted connector admission stale. Same-mtime registration reproduced404 before the fix and201 after on Mac.",
+    "fix": "All four public-door caches use successful local write generation plus file identity and nanosecond metadata; unreadable/corrupt stores fail closed without caching read errors."
+  },
+  "preCacheFixSourceSnapshot": {
+    "capturedAt": "2026-10-11T19:44:07.684885+00:00",
+    "sourceFiles": 1237,
+    "sourceSha256": "9e68ba65617e9957fadb34fdf6b9357cc65283231c468d02633ea573f6929ef5",
+    "productionSha256": "faee8dcd72b51c5caab583e41a5ab77ba6711896d274009772e1afa839cd5937",
+    "productionUnchangedDuringCopy": true
+  },
+  "preCacheFixPackage": {
+    "status": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "929db13ca1884713e67d006e6622a8567ce5231a6dd134592d190881a7679cab",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "136846b590b22b0c23c99ad774b7d7f4712b31805f556fc9226f5db05316f50a"
+      }
+    },
+    "archives": [
+      {
+        "filename": "nalebc-reach-0.1.0.tgz",
+        "sha256": "929db13ca1884713e67d006e6622a8567ce5231a6dd134592d190881a7679cab",
+        "bytes": 28219625,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      },
+      {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "136846b590b22b0c23c99ad774b7d7f4712b31805f556fc9226f5db05316f50a",
+        "bytes": 34805060,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      }
+    ],
+    "smokeLog": "/tmp/reach-linux-bash-h7d72qjx/logs/dual-archive-release-candidate.log",
+    "candidateLog": "/tmp/reach-linux-bash-h7d72qjx/logs/candidate-release-candidate.log",
+    "published": false,
+    "sameProductionBytesAsFinalMacCandidate": true,
+    "productionFiles": 629,
+    "productionSha256": "faee8dcd72b51c5caab583e41a5ab77ba6711896d274009772e1afa839cd5937"
+  },
+  "windowsSetupFailure": {
+    "test": "test/windows-commands.test.mjs:104",
+    "cause": "The setup helper returned when the pairing code arrived, then the test immediately asserted private-link guidance emitted by a later console.log. Pipe chunks are not a complete setup event.",
+    "classification": "test stdout synchronization defect; no product failure established",
+    "reproduction": "/tmp/reach-linux-bash-h7d72qjx/logs/windows-guidance-before.log",
+    "deterministicReproduction": "Temporarily delayed only the child guidance console.log by 300ms; original test failed while later normal setup lines appeared.",
+    "fix": "Use the existing helper ready pattern for the exact guidance asserted; preserve all link, code, local route, no socket and no public Funnel assertions.",
+    "verification": "Original delayed-output reproduction failed; normal and delayed-output targeted tests passed after test-only fix; complete combined full suite passed.",
+    "temporaryFixture": "/tmp/reach-linux-bash-h7d72qjx/logs/windows-guidance-delayed-fixture.mjs"
+  },
+  "cacheFixedSourceSnapshot": {
+    "capturedAt": "2026-10-11T20:00:30.206354+00:00",
+    "sourceFiles": 1238,
+    "sourceSha256": "d3a2b34045d7b9d09064b25ee124947b9986daee81dbc93d8882810793dfbf9f",
+    "productionSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce",
+    "productionUnchangedDuringCopy": true
+  },
+  "cacheFixedPackage": {
+    "status": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "894b3c48a6983b53ed8fcdd0a42fa29da6bc230a73a4b7f1a34e5173b158f2ea",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "b2b42be74b996e69cda1989eff0920a583708a31a35e00ff31cd3b616beeb456"
+      }
+    },
+    "archives": [
+      {
+        "filename": "nalebc-reach-0.1.0.tgz",
+        "sha256": "894b3c48a6983b53ed8fcdd0a42fa29da6bc230a73a4b7f1a34e5173b158f2ea",
+        "bytes": 28219693,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      },
+      {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "b2b42be74b996e69cda1989eff0920a583708a31a35e00ff31cd3b616beeb456",
+        "bytes": 34805212,
+        "verifiedDigestMatchesArchive": true,
+        "candidateCopyMatchesVerifiedArchive": true
+      }
+    ],
+    "smokeLog": "/tmp/reach-linux-bash-h7d72qjx/logs/dual-archive-cache-fixed.log",
+    "candidateLog": "/tmp/reach-linux-bash-h7d72qjx/logs/candidate-cache-fixed.log",
+    "published": false,
+    "sameProductionBytesAsFinalMacCandidate": true,
+    "productionFiles": 629,
+    "productionSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce"
+  },
+  "finalProductionReconciliation": {
+    "checkedAt": "2026-10-11T20:31:00.396542+00:00",
+    "frozenProductionSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+    "currentProductionSha256": "b2909a353ef400c4c83258989b6ca33f32ec8aba421c9be5cd12a847854795fe",
+    "currentProductionFiles": 629,
+    "currentProductionDriftPaths": [
+      "src/ChatHub.tsx",
+      "src/ChatList.tsx",
+      "src/chat-list.css"
+    ],
+    "testedSnapshotProductionDriftPaths": [],
+    "note": "Current-workspace hash and paths are an observation at checkedAt, not a final freeze. User subsequently confirmed external feature work is still editing. No fresh full run starts until a stable tree is explicitly confirmed."
+  },
+  "frozenSourceUnchangedAfterValidation": true
+}

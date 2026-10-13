@@ -1,12 +1,16 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, reachHosts, startTimes, stateOf, statusText, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { parseOptions } from "./launcher-options.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
+// Windows PowerShell gets its own modules, never PowerShell 7's (started from
+// a PowerShell 7 window, every helper and terminal failed to load them).
+import { cleanPowerShellEnv } from "../server/powershell.mjs";
+cleanPowerShellEnv();
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
@@ -24,22 +28,14 @@ const abort = () => {
 // Any other Reach on this computer, whichever folder it runs from.
 function othersRunning() {
   if (process.platform === "win32") return [];
-  try {
-    return reachHosts(processTable());
-  } catch {
-    return [];
-  }
+  return reachHosts(processTable());
 }
 // The Mac app this command runs inside, when it isn't Terminal: Reach started
 // here would have a terminal but no Screen Recording or Accessibility.
 function foreignApp() {
   if (process.platform !== "darwin") return "";
-  try {
-    const app = hostApp(processTable(), process.pid);
-    return outsideTerminal(app) ? app : "";
-  } catch {
-    return "";
-  }
+  const app = hostApp(processTable(), process.pid);
+  return outsideTerminal(app) ? app : "";
 }
 function lock() {
   // One Reach per computer: a second one says where the first runs instead.
@@ -63,22 +59,33 @@ function lock() {
       bootSession = fs
         .readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
         .trim();
+    else if (process.platform === "win32") bootSession = windowsBootTime();
   } catch {}
   try {
     const previous = JSON.parse(fs.readFileSync(lockFile, "utf8"));
     if (
       bootSession &&
       previous.bootSession &&
-      bootSession !== previous.bootSession
+      !sameBoot(bootSession, previous.bootSession)
     ) {
       // A PID from an earlier boot may now belong to an unrelated process.
       fs.unlinkSync(lockFile);
     } else
       try {
         process.kill(previous.pid, 0);
+        // Windows reuses a finished process's id within minutes: a live id
+        // holds this lock only while it's still Node.
+        if (process.platform === "win32" && !["node.exe", null].includes(windowsImage(previous.pid)))
+          fs.unlinkSync(lockFile);
       } catch (error) {
         if (error.code === "ESRCH") fs.unlinkSync(lockFile);
-        else if (error.code === "EPERM") {
+        else if (error.code === "EPERM" && process.platform === "win32") {
+          // Another account's (or an administrator's) process: a Reach only if
+          // it's Node; tasklist, not /bin/ps, says which.
+          const image = windowsImage(previous.pid);
+          if (image === null) throw new ProcessInventoryError(error);
+          if (image !== "node.exe") fs.unlinkSync(lockFile);
+        } else if (error.code === "EPERM") {
           // The pid belongs to another user's process now: a Reach only if
           // its command is one; otherwise the lock is stale.
           let command = "";
@@ -88,7 +95,11 @@ function lock() {
               stdio: ["ignore", "pipe", "ignore"],
               timeout: 2000,
             });
-          } catch {}
+          } catch (error) {
+            // An inaccessible process might still own this lock. Do not
+            // remove it just because its command cannot be inspected.
+            throw new ProcessInventoryError(error);
+          }
           if (!/scripts\/bootstrap\.mjs|bin\/reach\.mjs/.test(command)) fs.unlinkSync(lockFile);
         } else throw error;
       }
@@ -107,7 +118,7 @@ function lock() {
   } catch (error) {
     if (error.code === "EEXIST")
       throw Error(
-        "Reach is already starting or running from this folder. Use its existing terminal.",
+        `Reach is already starting or running from this folder. Use its existing terminal, or run ${command} restart to start it again.`,
       );
     throw error;
   }
@@ -230,8 +241,10 @@ async function prepare(options, { say, step, signal }) {
     fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
       mode: 0o600,
     });
-  // The browser sign-in client, for phones without the Tailscale app.
-  if (!packaged && !options.local) {
+  // The browser sign-in client, for phones without the Tailscale app. Not on
+  // Windows without REACH_WINDOWS_ACCOUNT=1: its start page needs account
+  // approval (configure.mjs accountApproval), and it cost a first run 2 minutes.
+  if (!packaged && !options.local && (await import("./configure.mjs")).accountApproval()) {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {
@@ -302,15 +315,16 @@ async function update() {
   const { compareVersions } = await import("../server/versions.mjs");
   const install = reachInstall(root);
   if (install.source) {
-    console.log(`This is a source checkout. Update it with git pull, then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
+    console.log(`This is a source checkout. Move it to the newest release with git fetch --tags and git checkout v<version> (https://github.com/nalebc/reach/releases), then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
+  if (install.reason === "portable") return console.log(install.manual);
   const found = await latestRelease();
   if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
   if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
   if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
   console.log(`Reach ${found.version} is out (you have ${install.version}).`);
-  if (install.reason) throw Error(`Reach can't install it into its own folder. Run: ${install.manual.replace("@latest", `@${found.version}`)}`);
+  if (install.reason) throw Error(`Reach can't install it into its own folder. ${install.reason === "permission" ? "" : "Run: "}${install.manual.replace("@latest", `@${found.version}`)}`);
   const plan = installCommand(install, found.version);
   if (!plan) throw Error(`npm wasn't found. Run: npm install --global ${PACKAGE}@${found.version}`);
   if (!process.stdin.isTTY || foreignApp()) {
@@ -756,7 +770,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       await connectPhone(root, { since });
     } else {
       const { launch } = await import("./launch.mjs");
-      await launch(options, root);
+      // A first run's step 3 is the phone: the launcher says when it's in.
+      await launch(firstRun ? { ...options, phoneStep: true } : options, root);
     }
   }
 } catch (error) {

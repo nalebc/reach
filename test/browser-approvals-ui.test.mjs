@@ -1,5 +1,6 @@
 import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
 let dom,
@@ -770,7 +771,7 @@ test("control characters cannot hide the reviewed command and a failed approval 
   await view.unmount();
 });
 
-test("Agents & people: a browser agent opens its scoped editor, and + invites through the AI browser flow", async () => {
+test("Agents & people: a browser agent opens its scoped editor, and + asks agent or person first", async () => {
   globalThis.fetch = dom.window.fetch = async (url) => {
     const route = new URL(url).pathname;
     if (route === "/api/clients")
@@ -833,19 +834,22 @@ test("Agents & people: a browser agent opens its scoped editor, and + invites th
     "cannot convert a browser grant into full or command access",
   );
   await click(sheet.querySelector('[aria-label="Close panel"]'));
-  // + opens an agent's invitation straight away; the title switches to a
-  // person, and no other Agent/Person choice is asked again.
+  // + asks who first: an agent or a person, two rows, agents first.
   await click(c.querySelector('[aria-label="Invite"]'));
-  assert.equal(c.querySelector(".ppl-invite .ppl-who .ivt-menu-button").textContent, "Invite an agent");
+  const who = () => [...c.querySelectorAll(".ppl-invite .inv-who-row")];
+  assert.deepEqual(who().map((b) => b.querySelector("strong").textContent), ["An agent", "A person"]);
+  assert.equal(c.querySelector('[aria-label="AI browser invitation"]'), null);
+  await click(who()[0]);
+  assert.match(c.querySelector(".ppl-invite h2").textContent, /Invite an agent/);
   await dom.waitFor(() =>
     c.querySelector('[aria-label="AI browser invitation"]'),
   );
   assert.equal(c.querySelector('input[aria-label="Name"]'), null);
   await dom.waitFor(() => c.querySelector('[aria-label="Access preset"] [aria-label="Full control"]'));
-  // The title: a person instead, in one tap.
-  await click(c.querySelector(".ppl-who .ivt-menu-button"));
-  await click([...c.querySelectorAll(".ppl-who .ivt-item")].find((b) => b.textContent.includes("A person")));
-  assert.equal(c.querySelector(".ppl-who .ivt-menu-button").textContent, "Invite someone");
+  // Back, then a person instead.
+  await click(c.querySelector('.ppl-invite [aria-label="Back"]'));
+  await click(who()[1]);
+  assert.match(c.querySelector(".ppl-invite h2").textContent, /Invite a person/);
   await dom.waitFor(() => c.querySelector('.ppl-invite input[aria-label="Name"]'));
   assert.equal(c.querySelector('[aria-label="AI browser invitation"]'), null);
   await view.unmount();
@@ -1654,4 +1658,29 @@ test("session approval button sends a distinct reviewed owner decision and expla
     { decision: "approve-session", reviewedScript: true },
   ]);
   assert.equal(button(c, "Always approve this session").disabled, true);
+});
+
+// At 320 px, "Allow for this session" ran past the sheet's edge and
+// "Always approve this session" was cut off: decisions wrap, never clip.
+test("approval decisions wrap on a narrow phone instead of running off the sheet", () => {
+  const style = dom.document.createElement("style");
+  style.textContent = ["agent-ui.css", "agent-sheets.css"]
+    .map((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8"))
+    .join("\n");
+  const box = dom.document.createElement("div");
+  box.innerHTML = `
+    <div class="ag-sheet-actions"><button class="ag-secondary">Deny</button><button class="ag-primary">Allow for this session</button></div>
+    <div class="ag-review"><div class="browser-approval-actions"><button class="button secondary">Always approve this session</button><button class="button">Approve once</button></div></div>`;
+  dom.document.head.append(style);
+  dom.document.body.append(box);
+  try {
+    for (const b of box.querySelectorAll("button")) {
+      const css = dom.window.getComputedStyle(b);
+      assert.equal(css.whiteSpace, "normal", b.textContent);
+      assert.equal(css.minWidth, "0px", b.textContent);
+    }
+  } finally {
+    box.remove();
+    style.remove();
+  }
 });

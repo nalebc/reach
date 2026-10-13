@@ -249,6 +249,7 @@ function windowsReach(t, { exits = true } = {}) {
         killed.push(pid);
         running = false;
       },
+      image: (pid) => (pid === 4242 && running ? "node.exe" : ""),
       graceMs: 50,
     },
   };
@@ -290,4 +291,15 @@ test("Windows stop: nothing running from this folder says so; a restart starts q
   w.said.length = 0;
   await stopReach(w.root, { ...none, restarting: true });
   assert.deepEqual(w.said, []);
+});
+
+test("Windows stop: an id that now names another program is never ended", async (t) => {
+  // Oct 12: after a crash or reboot, Windows hands Reach's old process id to
+  // the next program; taskkill /T /F would have ended it and its children.
+  for (const [image, why] of [["chrome.exe", "another program"], [null, "tasklist can't say"]]) {
+    const hung = windowsReach(t, { exits: false });
+    hung.deps.windows.image = () => image;
+    await assert.rejects(stopReach(hung.root, hung.deps), /did not stop by itself\. Close its PowerShell window, or end it in Task Manager\./, why);
+    assert.deepEqual(hung.killed, [], why);
+  }
 });

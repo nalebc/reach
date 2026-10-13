@@ -188,14 +188,18 @@ test(
     const joined = await joining.done;
     assert.equal(joined.code, 0, joined.stderr);
     assert.match(joined.stdout, /Connected to /);
-    assert.match(
+    // Its instructions come now, from the computer (the invite message is
+    // two lines), before how to add Reach to the agent.
+    assert.match(joined.stdout, /\n\nYour instructions from the owner[^\n]*:\n  You can read files in "acme", and run commands there\.\n  No screen\.\n  Commands run as my user account: keep them to those folders\.\n  Ask me before paying, sending or deleting anything\.\n  Don't share your Reach credentials\.\n\nAdd it to your agent \(once\):/);
+    assert.ok(!joined.stdout.includes(grant.invitation), "never the invitation");
+    assert.ok(
+      joined.stdout.includes(`claude mcp add --scope user reach -- node ${runtime} mcp`),
       joined.stdout,
-      new RegExp(
-        `claude mcp add --scope user reach -- node ${runtime.replace(/[/.]/g, "\\$&")} mcp`,
-      ),
     );
     assert.match(joined.stdout, /codex mcp add reach -- node /);
     assert.match(joined.stdout, /gemini mcp add -s user reach node /);
+    // Gemini CLI skips MCP servers in a folder it doesn't trust: the next line says so.
+    assert.match(joined.stdout, /gemini mcp add[^\n]*\n\s+[^\n]*trust[^\n]*trustedFolders\.json/);
     assert.match(joined.stdout, /Claude Desktop, Cursor, Windsurf, VS Code, any other: paste the JSON from  node \S+ config\n/);
     // Its MCP settings for any other client: JSON alone on stdout.
     const config = await run(["config", "--allow-local"], { env });
@@ -242,6 +246,7 @@ test(
       .map((l) => JSON.parse(l));
     const by = Object.fromEntries(replies.map((r) => [r.id, r]));
     assert.equal(by[1].result.serverInfo.name, "reach-127");
+    assert.match(by[1].result.instructions, /^You can read files in "acme", and run commands there\.\n[\s\S]*Don't share your Reach credentials\.$/, "told at initialize");
     const names = by[2].result.tools.map((x) => x.name);
     assert.ok(
       names.includes("reach_read_file") && names.includes("reach_run_command"),
@@ -264,6 +269,17 @@ test(
     });
     assert.equal(once.code, 0, once.stderr);
     assert.equal(JSON.parse(once.stdout).roots.length, 1);
+    assert.match(JSON.parse(once.stdout).guide, /^You can read files in "acme", and run commands there\./, "reach_device says it any time");
+    // The owner changes its access later: the next ask says the new one.
+    const changed = await fetch(`${origin}/api/guests/${grant.clientId}/access`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ folders: "keep", write: true }),
+    });
+    assert.equal(changed.status, 200, await changed.text());
+    const later = await run(["call", "reach_device", "{}", "--allow-local"], { env });
+    assert.equal(later.code, 0, later.stderr);
+    assert.match(JSON.parse(later.stdout).guide, /^You can read and change files in "acme"\.\nNo screen, no commands\.\n/);
 
     // A join cut short elsewhere leaves a placeholder: not a connection.
     fs.mkdirSync(path.join(env.REACH_AGENT_HOME, "half"), { mode: 0o700 });

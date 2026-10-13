@@ -211,7 +211,7 @@ test("only the owner reopens an agent's link", privateIngressTest, async (t) => 
 test("an Always agent on terms the owner never approved keeps the public page closed", (t) => {
   const f = fixture(t);
   const approver = { nodeId: "owner-phone", userId: "real-owner", clientId: "owner-client" };
-  const grant = f.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "full", standing: true }, approver);
+  const grant = f.auth.inviteBrowser({ name: "Muse", transport: "funnel", preset: "full", fullControlVersion: 1, standing: true }, approver);
   const key = crypto.randomBytes(32).toString("base64url");
   const access = f.join(grant, key);
   assert.ok(f.auth.verifyFunnel(access.token, key));

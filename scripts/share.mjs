@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { prepareTailscale } from "./tailscale.mjs";
+import { command } from "./home.mjs";
+// Windows: this background route to a local port would outlive Reach, and
+// anyone on the PC could answer there (scripts/foreground-serve.mjs).
+if (process.platform === "win32") {
+  console.error(`npm run share isn't available on Windows: its route would outlive Reach. Use ${command}; its route ends with Reach.`);
+  process.exit(1);
+}
 console.error(
   "npm run share is deprecated: use ./reach, which records the route it makes. A route made here is not recorded, and ./reach will refuse to replace it.",
 );

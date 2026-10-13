@@ -4,6 +4,9 @@ import { apps, launchApp, exec } from "./platform.mjs";
 import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
 import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
 import { bundledCodexPaths } from "./capabilities.mjs";
+import { codexNative, findWindowsCli, spawnable } from "./agent-cli.mjs";
+import { powershellCall } from "./powershell.mjs";
+export { powershellCall };
 
 export function shortcutUrl(value) {
   if (
@@ -31,7 +34,14 @@ async function openUrl(url) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", [url], { timeout: 12000 });
   else if (process.platform === "win32")
-    await exec("explorer.exe", [url], { timeout: 12000, windowsHide: true });
+    // Not explorer.exe: it exits with 1 even when the page opened, so every
+    // shortcut read as failed (platform.mjs launchApp). The link travels as
+    // data, never as script text.
+    await exec(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:REACH_URL"],
+      { timeout: 12000, windowsHide: true, env: { ...process.env, REACH_URL: url } },
+    );
   else throw fail(501, "Desktop shortcuts support Mac and Windows.");
 }
 function definition(value) {
@@ -96,16 +106,25 @@ async function readBundleId(app) {
   }
 }
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+// Windows: the CLI as cmd starts it, its full path(s) quoted (agent-cli.mjs
+// finds it as Node would, native installs off PATH too). Never the bare name:
+// PowerShell would run npm's claude.ps1, which Windows' default policy
+// refuses ("running scripts is disabled"), and a native install off PATH
+// wasn't found at all.
+export async function windowsCliCommand(name, { find = findWindowsCli, node = process.execPath } = {}) {
+  const found = await find(name, name === "codex" ? { native: (script) => codexNative(script) } : {});
+  if (!found) return null;
+  const { file, args } = spawnable(found, { platform: "win32", node });
+  return [file, ...args].map((part) => `"${part}"`).join(" ");
+}
 // Where an agent CLI can be started from a terminal, or null when missing.
 // bundled: a list of paths, or a function giving one.
 async function findCli(name, bundled = []) {
+  if (process.platform === "win32") return windowsCliCommand(name);
   try {
-    const { stdout } =
-      process.platform === "win32"
-        ? await exec("where.exe", [name], { timeout: 4000, windowsHide: true })
-        : await exec(process.env.SHELL || "/bin/zsh", ["-lc", `command -v ${name}`], {
-            timeout: 4000,
-          });
+    const { stdout } = await exec(process.env.SHELL || "/bin/zsh", ["-lc", `command -v ${name}`], {
+      timeout: 4000,
+    });
     if (stdout.trim()) return name;
   } catch {}
   for (const file of typeof bundled === "function" ? await bundled() : bundled) {
@@ -121,14 +140,14 @@ async function findCli(name, bundled = []) {
 async function openWindowsTerminal({ cwd, command }) {
   if (process.platform !== "win32")
     throw fail(501, "Terminal shortcuts are not available on this computer.");
-  const encoded = Buffer.from(command, "utf16le").toString("base64");
+  const encoded = Buffer.from(powershellCall(command), "utf16le").toString("base64");
   await exec(
     "powershell.exe",
     [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `Start-Process powershell -WorkingDirectory '${cwd.replace(/'/g, "''")}' -ArgumentList '-NoExit','-EncodedCommand','${encoded}'`,
+      `Start-Process powershell -WorkingDirectory '${cwd.replace(/['\u2018-\u201B]/g, "$&$&")}' -ArgumentList '-NoExit','-EncodedCommand','${encoded}'`,
     ],
     { timeout: 12000, windowsHide: true },
   );

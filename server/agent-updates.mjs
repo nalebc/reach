@@ -19,6 +19,8 @@ import { locateClaude } from "./agent-sessions/index.mjs";
 import { findCodexExecutable } from "./capabilities.mjs";
 import { probeAgent } from "./agent-sessions/compatibility.mjs";
 import { compareVersions, parseVersion } from "./versions.mjs";
+import { boundedResponseText } from "./http-response.mjs";
+import { envValue, spawnable } from "./agent-cli.mjs";
 
 const exec = promisify(execFile);
 
@@ -32,8 +34,9 @@ const plainPath = (file) => typeof file === "string" && path.isAbsolute(file) &&
 
 // Who updates the copy at `file` (its real path, links followed), from
 // where it lives. null: not a place Reach knows, so nothing is offered.
-export function managerOf(agent, file, { real = fs.realpathSync, home = os.homedir(), platform = process.platform } = {}) {
-  if (platform === "win32" || !plainPath(file)) return null;
+export function managerOf(agent, file, { real = fs.realpathSync, home = os.homedir(), platform = process.platform, env = process.env, node = process.execPath } = {}) {
+  if (platform === "win32") return windowsManagerOf(agent, file, { real, home, env, node });
+  if (!plainPath(file)) return null;
   let target;
   try {
     target = real(file);
@@ -57,9 +60,57 @@ export function managerOf(agent, file, { real = fs.realpathSync, home = os.homed
   }
   if (agent === "codex") {
     if (cask?.[1] === "codex") return { manager: "brew", cask: "codex", command: "brew upgrade --cask codex" };
-    if (target.includes("/node_modules/@openai/codex/"))
-      return { manager: "npm", package: "@openai/codex", command: "npm install -g @openai/codex@latest" };
+    const global = target.indexOf("/lib/node_modules/@openai/codex/");
+    if (global >= 0) {
+      const prefix = target.slice(0, global) || "/";
+      // The login shell may select a different Node/npm prefix than the
+      // Codex Reach discovered. Update this exact installation, not that one.
+      return { manager: "npm", package: "@openai/codex", command: `npm install -g --prefix ${quote(prefix)} @openai/codex@latest` };
+    }
     return null;
+  }
+  return null;
+}
+
+// The same decisions on Windows (audit #33, Oct 12), in PowerShell, which
+// runs Reach's terminals there: a program is called (&), each path between
+// single quotes, which PowerShell also reads in their typographic forms.
+const plainWindowsPath = (file) => typeof file === "string" && /^[A-Za-z]:\\/.test(file) && !/['‘’‚‛\0-\x1f\x7f]/.test(file);
+const within = (file, dir) => file.toLowerCase().startsWith(`${dir.toLowerCase()}\\`);
+function windowsManagerOf(agent, file, { real, home, env, node }) {
+  if (!plainWindowsPath(file)) return null;
+  let target;
+  try {
+    target = real(file);
+  } catch {
+    return null;
+  }
+  if (!plainWindowsPath(target)) return null;
+  const win = path.win32;
+  if (agent === "claude") {
+    // Its own update, as on a Mac: started as Reach starts it (a script
+    // with Node, never by Windows' script host).
+    const cli = spawnable(file, { platform: "win32", node });
+    const parts = [cli.file, ...cli.args];
+    if (!parts.every(plainWindowsPath)) return null;
+    const command = `& ${parts.map(quote).join(" ")} update`;
+    // Claude Code's native installer: %USERPROFILE%\.local\bin\claude.exe.
+    const local = win.join(home, ".local");
+    if (target.toLowerCase() === win.join(local, "bin", "claude.exe").toLowerCase() || within(target, win.join(local, "share", "claude", "versions")))
+      return { manager: "native", channelFeed: true, command };
+    if (/\\node_modules\\@anthropic-ai\\claude-code\\/i.test(target)) return { manager: "npm", channelFeed: true, command };
+    return null;
+  }
+  if (agent === "codex") {
+    // npm's global folder (%APPDATA%\npm), Codex's own native codex.exe
+    // inside it included. A project's node_modules looks the same on
+    // Windows, so no other folder is taken for a global install.
+    const prefix = envValue(env, "APPDATA") ? win.join(envValue(env, "APPDATA"), "npm") : win.join(home, "AppData", "Roaming", "npm");
+    const modules = win.join(prefix, "node_modules", "@openai");
+    const inside = within(target, modules) ? target.slice(modules.length + 1) : "";
+    // Its package (bin\codex.js, the codex.exe in it), or its native one beside it.
+    if (!plainWindowsPath(prefix) || !/^codex(?:-win32-[\w-]+)?\\/i.test(inside)) return null;
+    return { manager: "npm", package: "@openai/codex", command: `npm.cmd install -g --prefix ${quote(prefix)} '@openai/codex@latest'` };
   }
   return null;
 }
@@ -70,10 +121,7 @@ export async function readFeed(url, pick, { fetch: get = globalThis.fetch, timeo
   try {
     const res = await get(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers: { accept: "application/json, text/plain" } });
     if (!res.ok) return null;
-    const length = Number(res.headers?.get?.("content-length"));
-    if (Number.isFinite(length) && length > maxBytes) return null;
-    const text = await res.text();
-    if (text.length > maxBytes) return null;
+    const text = await boundedResponseText(res, maxBytes);
     const value = pick(text);
     return typeof value === "string" && parseVersion(value) ? parseVersion(value).text : null;
   } catch {
@@ -131,7 +179,7 @@ export function createAgentUpdates({
   const latest = async (url, pick, fresh) => {
     const kept = published.get(url);
     if (!fresh && kept && now() < kept.expires) return kept.value;
-    const value = read(url, pick);
+    const value = Promise.resolve().then(() => read(url, pick)).catch(() => null);
     const entry = { value, expires: now() + ttlMs };
     published.set(url, entry);
     value.then((v) => { if (!v) entry.expires = now() + failedTtlMs; });

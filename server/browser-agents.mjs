@@ -2,7 +2,7 @@ import { browserIdleEnded, fail, isPlainRecord } from './core.mjs';
 
 // Owner controls stay outside the browser agent route allowlist. An agent name
 // is a label; only the server-created invitation ID identifies a session.
-export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null, actions = null }) {
+export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null, actions = null, pauses = null }) {
   const owner = (req) => {
     const client = req.reauthorize();
     if (client.kind !== 'device' || !client.scopes?.includes('admin'))
@@ -26,6 +26,7 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
         status: client.status === 'revoked' ? 'revoked' : client.expiresAt <= at || (client.status === 'accepted' && browserIdleEnded(client, at)) ? 'expired' : client.status,
         ...(client.policy?.standing ? { standing: true } : {}),
         ...(client.relink ? { relink: true } : {}),
+        ...(client.needsInvitation ? { needsInvitation: true } : {}),
         scopes: client.scopes, policy: client.policy, browserTransport: client.browserTransport,
         folders: client.agentRoots || client.policy?.roots || [],
         activity: current ? { state: current.stopping ? 'stopping' : current.state, folder: current.folder, kind: current.kind, queuedAt: current.queuedAt, startedAt: current.startedAt } : { state: 'idle' },
@@ -33,7 +34,7 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
         ...(client.policy?.preset ? { preset: client.policy.preset } : {}),
         ...(desktopActivity.agents[client.id] ? { using: desktopActivity.agents[client.id] } : {}),
         holdsMac: desktopActivity.holder?.clientId === client.id,
-        ...(desktopActivity.paused?.includes(client.id) ? { paused: true } : {}),
+        ...(pauses?.has(client.id) ? { paused: true } : {}),
       };
     });
     owner(req);
@@ -49,6 +50,8 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     res.json(actions.list({ ...(clientId !== undefined ? { clientId } : {}), ...(before !== undefined ? { before: Number(before) } : {}), ...(limit !== undefined ? { limit: Number(limit) } : {}) }));
   });
   // Pause one preset agent: it keeps looking, its actions wait until resumed.
+  // Kept in Reach's own store (agent-pauses.mjs), on every computer: the Mac's
+  // desktop service, where there is one, only lets go of what the agent holds.
   app.post('/api/browser/agents/pause', (req, res) => {
     owner(req);
     const body = req.body;
@@ -57,9 +60,9 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
       throw fail(400, 'Choose one agent session to pause or resume.');
     const client = auth.list().find(entry => entry.id === body.clientId);
     if (!client || !eligible(client) || client.policy?.preset === undefined || client.expiresAt <= Date.now()) throw fail(404, 'That agent session has ended.');
-    if (!desktop?.setPaused) throw fail(503, 'Pausing agents is unavailable on this computer.');
+    if (!pauses) throw fail(503, 'Pausing agents is unavailable on this computer.');
     owner(req);
-    const paused = desktop.setPaused(client.id, body.paused);
+    const paused = pauses.set(client.id, body.paused);
     res.json({ clientId: client.id, paused });
   });
   // Reopen an agent's link for a new browser: the browser it used is
@@ -99,5 +102,31 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
       stopped.push(id);
     }
     res.json({ stopped, missing });
+  });
+  // Clear ended agents from the list. Only ones the Mac itself reads as
+  // ended go; nothing live is touched (no session to end, no screen stopped).
+  app.post('/api/browser/agents/clear', (req, res) => {
+    owner(req);
+    const body = req.body;
+    if (!isPlainRecord(body) || Object.keys(body).some(key => key !== 'clientIds') ||
+        !Array.isArray(body.clientIds) || !body.clientIds.length || body.clientIds.length > 500 ||
+        body.clientIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) ||
+        new Set(body.clientIds).size !== body.clientIds.length)
+      throw fail(400, 'Choose between 1 and 500 distinct ended agents to clear.');
+    const at = Date.now();
+    const ended = client => client.status === 'revoked' || client.expiresAt <= at ||
+      (client.status === 'accepted' && browserIdleEnded(client, at)) ||
+      (!!client.status && !['invited', 'pending', 'approved', 'accepted'].includes(client.status));
+    const clients = new Map(auth.list().map(client => [client.id, client]));
+    owner(req);
+    const cleared = [], kept = [];
+    for (const id of body.clientIds) {
+      const client = clients.get(id);
+      if (!client) continue;
+      if (!eligible(client) || !ended(client)) { kept.push(id); continue; }
+      auth.revoke(id);
+      cleared.push(id);
+    }
+    res.json({ cleared, kept });
   });
 }

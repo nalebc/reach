@@ -3226,7 +3226,8 @@ test("the permission mode changes from the session, in each agent's own terms, i
   assert.ok($(".as-mode-menu").parentElement.classList.contains("as-page"));
   assert.equal($(".as-mode-menu-title").textContent, "How should ChatGPT actions be approved?");
   // What Codex offers now, a profile Reach has no name for included.
-  assert.deepEqual(names(), ["Ask for approval", "Approve for me", "Full access", "Read only", "Network only", "Custom (config.toml)"]);
+  assert.deepEqual(names(), ["Ask for approval", "Approve for me", "Full access", "Read only", "Network only"]);
+  assert.equal(pick("Custom (config.toml)"), undefined, "config defaults cannot be reapplied to a loaded chat");
   assert.equal(pick("Full access").querySelector("small").textContent, "Unrestricted access to the internet and any file on your computer");
   assert.equal(pick("Approve for me").getAttribute("aria-checked"), "true");
   // A tap outside closes it, nothing changed.
@@ -3265,6 +3266,17 @@ test("the permission mode changes from the session, in each agent's own terms, i
 
 // "Reach can't pick that mode.": an open chat's menu offered Bypass, which
 // the mode route always refuses. Left out, unless the chat is in it.
+test("a Codex chat with custom permissions still shows its current configuration as a disabled choice", async () => {
+  const session = codexSession({ mode: "custom" });
+  mac.pages[`codex:${CODEX}`].session = session;
+  await open(session);
+  await dom.waitFor(() => $(".as-mode")?.textContent.includes("Custom"));
+  await click($(".as-mode"));
+  const current = await dom.waitFor(() => modeRow("Custom (config.toml)"));
+  assert.equal(current.disabled, true);
+  assert.equal(current.getAttribute("aria-checked"), "true");
+});
+
 test("an open Claude chat's menu leaves out a mode Reach can't switch it to", async (t) => {
   const names = () => $$(".as-mode-menu button .as-mode-menu-text > span").map((s) => s.textContent);
   const original = routes["/api/sessions/models"];
@@ -4433,6 +4445,56 @@ for (const outcome of ["failure", "success"]) test(`a linked chat ignores a depa
   assert.match(dom.document.body.textContent, /Target content/);
 });
 
+test("a replaced chat credential ignores the previous permission change", async t => {
+  const route = `/api/sessions/codex/${CODEX}/mode`, original = routes[route];
+  let finish, replace;
+  routes[route] = () => new Promise(resolve => { finish = resolve; });
+  t.after(() => { routes[route] = original; finish?.({ applied: true }); });
+  function Host() {
+    const [current, setCurrent] = React.useState(peer);
+    replace = () => dom.update(() => setCurrent({ ...peer, token: "replacement-token" }));
+    return React.createElement(AgentSessionView, { peer: current, session: codexSession(), siblings: [], health: signedIn, onSelect() {}, onBack() {} });
+  }
+  await mount(React.createElement(Host));
+  await click(await dom.waitFor(() => $(".as-mode")));
+  await click(await dom.waitFor(() => modeRow("Read only")));
+  await dom.waitFor(() => finish);
+  replace();
+  await settle();
+  finish({ applied: true, mode: "read-only" });
+  await settle();
+  assert.equal($(".as-mode").textContent.trim(), "Approve for me", "an old acknowledgement must not relabel the replacement connection");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a transcript read begun before permission confirmation cannot restore the old mode", async t => {
+  const session = codexSession();
+  mac.pages[`codex:${CODEX}`].session = session;
+  const readRoute = `/api/sessions/codex/${CODEX}`, previousRead = routes[readRoute];
+  const modeRoute = `${readRoute}/mode`, previousMode = routes[modeRoute];
+  routes[modeRoute] = () => ({ applied: true, mode: "read-only" });
+  t.after(() => { routes[readRoute] = previousRead; routes[modeRoute] = previousMode; });
+  await open(session);
+  await dom.waitFor(() => $(".as-mode")?.textContent.trim() === "Approve for me");
+  let finish;
+  const stale = { session: { ...session }, items: [{ id: "during-mode", role: "assistant", kind: "text", text: "Arrived while choosing permissions" }] };
+  routes[readRoute] = () => new Promise(resolve => { finish = resolve; });
+  dom.window.dispatchEvent(new dom.window.Event("online"));
+  await dom.waitFor(() => finish);
+  await click($(".as-mode"));
+  await click(await dom.waitFor(() => modeRow("Read only")));
+  await dom.waitFor(() => $(".as-mode")?.textContent.trim() === "Read only");
+  let finishFresh;
+  routes[readRoute] = () => new Promise(resolve => { finishFresh = resolve; });
+  finish(stale);
+  await dom.waitFor(() => $(".as-scroll")?.textContent.includes("Arrived while choosing permissions"));
+  assert.equal($(".as-mode").textContent.trim(), "Read only");
+  await dom.waitFor(() => finishFresh);
+  routes[readRoute] = previousRead;
+  finishFresh({ session: { ...session, mode: "auto" }, items: [] });
+  await dom.waitFor(() => $(".as-mode")?.textContent.trim() === "Ask for approval");
+});
+
 for (const outcome of ["failure", "success"]) test(`a replaced chat credential ignores the previous transcript ${outcome}`, async (t) => {
   const route = `/api/sessions/claude/${CLAUDE}`;
   const original = routes[route];
@@ -4546,16 +4608,23 @@ test("an answered Codex question stays answered when its older page is loaded", 
   assert.deepEqual(dom.errors, []);
 });
 
-for (const [context, label, text] of [
-  [{ used: 200001, window: null }, "200,001 tokens reported; context capacity unknown", "200,001 tokens"],
-  [{ used: 64000, window: 258000 }, "25% of context used", "25%"],
-]) test(`the context display reports ${label}`, async () => {
+test("the context display is a ring with no count of tokens", async () => {
+  const context = { used: 64000, window: 258000 };
   mac.pages[`claude:${CLAUDE}`].session.context = context;
   await open(claudeSession({ context }));
   const meter = await dom.waitFor(() => $(".as-context"));
-  assert.equal(meter.getAttribute("aria-label"), label);
-  assert.equal(meter.textContent, text);
-  assert.equal(!!meter.querySelector("svg"), context.window !== null);
+  assert.equal(meter.getAttribute("aria-label"), "25% of context used");
+  assert.equal(meter.textContent, "");
+  assert.ok(meter.querySelector("svg"));
+  assert.deepEqual(dom.errors, []);
+});
+
+test("with no context capacity, nothing shows by the box", async () => {
+  const context = { used: 200001, window: null };
+  mac.pages[`claude:${CLAUDE}`].session.context = context;
+  await open(claudeSession({ context }));
+  await dom.waitFor(() => $(".as-model"));
+  assert.equal($(".as-context"), null);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -4726,6 +4795,20 @@ test("a voice memo becomes words in the box; one the Mac can't hear is attached,
   await dom.waitFor(() => button("Record a voice memo"));
   assert.equal(sent.length, 3);
   assert.deepEqual(dom.errors, []);
+});
+
+// Only a Mac makes words of a memo; on a Windows PC the mic only attached a
+// recording coding agents can't read (parity audit #35): it isn't offered.
+test("a Windows PC's chat offers no voice memo", async (t) => {
+  globalThis.MediaRecorder = class { static isTypeSupported = () => true; };
+  Object.defineProperty(dom.window.navigator, "mediaDevices", { value: { getUserMedia: async () => ({ getTracks: () => [] }) }, configurable: true });
+  t.after(() => {
+    delete globalThis.MediaRecorder;
+    delete dom.window.navigator.mediaDevices;
+  });
+  await open(codexSession(), signedIn, { ...peer, platform: "win32" });
+  await dom.waitFor(() => $("textarea"));
+  assert.equal(button("Record a voice memo"), undefined);
 });
 
 test("without a microphone the memo says so and nothing breaks", async (t) => {

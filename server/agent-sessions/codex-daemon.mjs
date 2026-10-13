@@ -1,13 +1,16 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { spawnable } from "../agent-cli.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { trustedSocket } from "./trusted-socket.mjs";
+import { PIPE } from "../windows-owners.mjs";
 
 const exec = promisify(execFile);
 
@@ -57,7 +60,8 @@ export function codexDefaults(home = process.env.CODEX_HOME || path.join(os.home
 // and its catalog then lacks newer models the Codex app offers.
 export function cliModelList(file, { timeout = 8000, start = spawn } = {}) {
   return new Promise((resolve, reject) => {
-    const child = start(file, ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+    const cli = spawnable(file);
+    const child = start(cli.file, [...cli.args, "app-server"], { stdio: ["pipe", "pipe", "ignore"] });
     let buffer = "";
     // Whole characters: a chunk can end inside one (a model's description).
     child.stdout.setEncoding("utf8");
@@ -123,6 +127,9 @@ export function createCodexDaemon({
   // swap it in, as the Codex app's is (codex-desktop.mjs; connections audit,
   // Oct 10). Only the real Codex is checked.
   checkSocket = run === exec ? ownSocket : async () => {},
+  // How Windows reaches the service's pipe (ws+unix:// can't name a drive
+  // path or a pipe: audit #2, Oct 12).
+  connect = net.connect,
 } = {}) {
   let socket = null;
   let ready = null;
@@ -174,7 +181,8 @@ export function createCodexDaemon({
     if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503, code: "AGENT_NOT_INSTALLED" });
     const report = await compatibility();
     if (!["available", "degraded"].includes(report.status)) throw compatibilityError("codex", "CLI");
-    const { stdout } = await run(codex, ["app-server", "daemon", "start"], {
+    const cli = spawnable(codex);
+    const { stdout } = await run(cli.file, [...cli.args, "app-server", "daemon", "start"], {
       timeout: 20000,
       maxBuffer: 65536,
     });
@@ -182,13 +190,22 @@ export function createCodexDaemon({
     if (!status.socketPath) throw new Error("Codex did not report its session service.");
     return (await checkSocket(status.socketPath)) || status.socketPath;
   }
+  // Said without the pipe's name, which Node's own errors carry.
+  const unreachable = () => Object.assign(new Error(`Codex's session service didn't answer on this ${computerWord(platform)}.`), { status: 503 });
   async function open() {
     const path = await socketPath();
     if (closed) throw closedError();
-    const ws = new Socket(`ws+unix://${path}:/`, { handshakeTimeout: connectTimeout });
+    // Windows: the URL names no endpoint; ws takes the connection net.connect
+    // makes to the pipe. Node reaches nothing else there (no socket files).
+    const pipe = platform === "win32";
+    if (pipe && !PIPE.test(path))
+      throw Object.assign(new Error(`Codex's session service isn't on a named pipe, the only kind Reach can open on this ${computerWord(platform)}.`), { status: 503 });
+    const ws = pipe
+      ? new Socket("ws://localhost/", { handshakeTimeout: connectTimeout, createConnection: () => connect(path) })
+      : new Socket(`ws+unix://${path}:/`, { handshakeTimeout: connectTimeout });
     await new Promise((resolve, reject) => {
       ws.once("open", resolve);
-      ws.once("error", reject);
+      ws.once("error", pipe ? () => reject(unreachable()) : reject);
     });
     // Reach quit while this connection was being made.
     if (closed) {
@@ -257,7 +274,8 @@ export function createCodexDaemon({
         // once each, ahead of the update that removes it.
         if (message.method === "deprecationNotice" && typeof message.params?.summary === "string" && !deprecations.has(message.params.summary)) {
           deprecations.add(message.params.summary);
-          console.warn(`Codex deprecation: ${message.params.summary}${message.params.details ? ` (${message.params.details})` : ""}`);
+          // Quoted: Codex's words stay on this one line of Reach's log.
+          console.warn(`Codex deprecation: ${JSON.stringify(message.params.summary)}${message.params.details ? ` (${JSON.stringify(String(message.params.details))})` : ""}`);
         }
         for (const listener of listeners) {
           try { listener(message); }

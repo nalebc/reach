@@ -163,6 +163,9 @@ export type AgentHealth = {
   canTakeMoves?: boolean;
   // OpenClaw: its Gateway answers (it has no sign-in of its own).
   connected?: boolean;
+  // What it needs on the computer before it can run: "git", Git for Windows
+  // for Claude Code on Windows (installed from the phone, agent "git").
+  needs?: string[];
   error?: string;
 };
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
@@ -506,6 +509,8 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
   // Whether the computer has said what it has (or couldn't): until then,
   // Chat neither offers to start a chat nor to install one.
   const [healthChecked, setHealthChecked] = useState(false);
+  // Whether this computer can run a team (no team bridge on Windows yet).
+  const [teamsReady, setTeamsReady] = useState(true);
   const [failure, setFailure] = useState("");
   // Bumped when the feed stops or restarts: answers to requests sent
   // before are dropped, so an old "unchanged" can't set `known` over the
@@ -567,6 +572,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     setSessions(null);
     setErrors({});
     setHealth([]);
+    setTeamsReady(true);
     setHealthChecked(false);
     setRelays([]);
     setTeams([]);
@@ -585,8 +591,9 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     let lastHealth = "";
     let healthActive = true;
     const checkHealth = (fresh = false) =>
-      request<{ agents: AgentHealth[] }>(peer, `/api/sessions/health${fresh ? "?fresh=1" : ""}`)
+      request<{ agents: AgentHealth[]; teams?: false }>(peer, `/api/sessions/health${fresh ? "?fresh=1" : ""}`)
         .then((r) => {
+          if (healthActive) setTeamsReady(r.teams !== false);
           const next = JSON.stringify(r.agents);
           if (healthActive && next !== lastHealth) {
             lastHealth = next;
@@ -622,7 +629,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     seenRevision.current = revision;
     void load();
   }, [revision, load]);
-  return { sessions, errors, health, healthChecked, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
+  return { sessions, errors, health, healthChecked, teamsReady, failure, projects, macPrompts, relays, teams, workflows, reload: () => load(true), recheck: () => recheck.current() };
 }
 
 const sessionPath = (s: { agent: AgentName; id: string }) =>
@@ -866,7 +873,34 @@ export async function transcribeVoice(peer: Peer, memo: Blob, locale = navigator
     { method: "POST", body: form, signal: AbortSignal.timeout(330000) },
   );
 }
-export async function uploadImage(peer: Peer, file: Blob, name = "image") {
+// An iPhone photo picked from Files arrives as HEIC, which only a Mac turns
+// into something agents read (sips; parity audit #36). Turned into a JPEG
+// here instead, where Safari reads it, so every computer takes it: at most
+// 16 million pixels (iOS's canvas limit; more than any agent looks at). A
+// browser that can't read HEIC sends it as it is.
+export async function phoneJpeg(
+  file: Blob,
+  name: string,
+  { decode = (b: Blob) => createImageBitmap(b), canvas = () => document.createElement("canvas") } = {},
+): Promise<{ file: Blob; name: string }> {
+  if (!/^image\/hei[cf]$/i.test(file.type) && !/\.hei[cf]$/i.test(name)) return { file, name };
+  try {
+    const bitmap = await decode(file);
+    const scale = Math.min(1, Math.sqrt(16_000_000 / (bitmap.width * bitmap.height)));
+    const surface = canvas();
+    surface.width = Math.max(1, Math.floor(bitmap.width * scale));
+    surface.height = Math.max(1, Math.floor(bitmap.height * scale));
+    surface.getContext("2d")!.drawImage(bitmap, 0, 0, surface.width, surface.height);
+    bitmap.close?.();
+    const jpeg = await new Promise<Blob | null>((resolve) => surface.toBlob(resolve, "image/jpeg", 0.9));
+    return jpeg ? { file: jpeg, name: `${name.replace(/\.hei[cf]$/i, "") || "photo"}.jpg` } : { file, name };
+  } catch {
+    return { file, name };
+  }
+}
+
+export async function uploadImage(peer: Peer, picked: Blob, given = "image") {
+  const { file, name } = await phoneJpeg(picked, given);
   const form = new FormData();
   form.append("file", file, name);
   const r = await request<{ id: string }>(peer, "/api/sessions/images", {

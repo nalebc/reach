@@ -6,7 +6,7 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-10-12
 
 First public release candidate. Early access: see `docs/RELEASE.md` for the
 real-device checks that are still open.
@@ -72,7 +72,8 @@ real-device checks that are still open.
 
 ### Changed
 
-- Routes are Tailscale daemon state, in every mode. The private Serve route
+- Routes are Tailscale daemon state, in every mode on Mac and Linux (on
+  Windows the private route lasts only while Reach runs). The private Serve route
   (port 8443) and the on-demand Funnel route (port 443) are background routes:
   a dropped command-line session, a sleep or a Reach restart no longer
   interrupts phones or agents, and an unchanged route is reused without a gap.

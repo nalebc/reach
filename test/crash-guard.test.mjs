@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { CRASH_EXIT, installCrashGuard, markRunning, markStopped, previousRun, restartReason } from "../server/crash-guard.mjs";
 import { createReach } from "../server/index.mjs";
+import { keyRedactor } from "../server/tailscale-auth.mjs";
 
 // An error nothing caught ends Reach visibly and on purpose (so ./reach starts
 // it again), and the next start knows it ended unexpectedly (reliability
@@ -28,6 +29,40 @@ test("an uncaught error or rejection is written down, kept for the next start, a
     stop();
     assert.equal(target.listenerCount(event), 0);
   }
+});
+
+test("Windows' keyed route: the key is taken out of what a crash says and keeps, before any cut; otherwise nothing changes", () => {
+  const key = "Qwertyuiopasdfghjklzxcvbnm0123456789-_QWERT";
+  const redact = keyRedactor(key);
+  const leaks = (text) => {
+    for (let i = 0; i + 12 <= key.length; i++) if (text.includes(key.slice(i, i + 12))) return true;
+    return false;
+  };
+  const target = `http://127.0.0.1:51234/r-${key}`;
+  // The key across the 300-character cut of the reason and the 8000 of the stack.
+  for (const [lead, stackLead] of [[280, 7980], [295, 7990], [299, 7999], [300, 8000], [270, 7960]]) {
+    const dataDir = dir();
+    const events = new EventEmitter();
+    const written = [];
+    installCrashGuard({ dataDir, target: events, exit: () => {}, write: (text) => written.push(text), redact });
+    const error = new Error(`${"m".repeat(lead)}${target} failed`);
+    error.stack = `Error: ${"s".repeat(stackLead)}${target}\n    at x (${target})`;
+    events.emit("uncaughtException", error);
+    for (const text of [written.join(""), fs.readFileSync(path.join(dataDir, "crash.log"), "utf8"), fs.readFileSync(path.join(dataDir, "last-crash.json"), "utf8")])
+      assert.ok(!leaks(text), `${lead}/${stackLead}`);
+  }
+  // Without a redactor (a Mac, Windows without the flag): byte for byte as before.
+  const plain = dir(), redacted = dir();
+  const said = { plain: [], redacted: [] };
+  const error = () => Object.assign(new Error("boom: /tmp/r-abcdef012345/s"), { stack: "Error: boom: /tmp/r-abcdef012345/s\n    at y" });
+  for (const [dataDir, out, options] of [[plain, said.plain, {}], [redacted, said.redacted, { redact: (text) => text }]]) {
+    const events = new EventEmitter();
+    installCrashGuard({ dataDir, target: events, exit: () => {}, write: (text) => out.push(text), now: () => 1000, ...options });
+    events.emit("uncaughtException", error());
+  }
+  assert.deepEqual(said.plain, said.redacted);
+  assert.match(said.plain.join(""), /boom: \/tmp\/r-abcdef012345\/s/);
+  assert.equal(fs.readFileSync(path.join(plain, "last-crash.json"), "utf8"), fs.readFileSync(path.join(redacted, "last-crash.json"), "utf8"));
 });
 
 test("a write to a terminal or pipe that went away isn't a crash", () => {
@@ -77,7 +112,7 @@ test("how the last Reach ended: stopped, crashed, killed, still running, or the 
   assert.equal(previousRun(dataDir, { isAlive: dead, self: 1, bootedAt: 0 }).reason, "");
 });
 
-test("after an unexpected end, agents that can use the Mac start paused", async () => {
+test("after an unexpected end, agents that can use the Mac start paused, with or without the desktop service", async () => {
   const root = dir();
   const dataDir = path.join(root, "data");
   fs.mkdirSync(dataDir, { mode: 0o700 });
@@ -86,13 +121,21 @@ test("after an unexpected end, agents that can use the Mac start paused", async 
     agent("muse", { policy: { invite: true, browser: true, preset: "full", roots: [] } }),
     agent("files-only", { policy: { invite: true, roots: [] } }),
   ]), { mode: 0o600 });
-  const start = async (previous) => {
-    const paused = [];
+  // The pauses are Reach's own (agent-pauses.mjs), kept on disk for the next
+  // start; the desktop service, where there is one (a Mac), lets go first.
+  const pausesFile = path.join(dataDir, "agent-pauses.json");
+  const start = async (previous, withDesktop) => {
+    fs.rmSync(pausesFile, { force: true });
+    const letGo = [];
     const reach = await createReach({ roots: [root], dataDir, port: 0, publicOrigin: "", previousRun: previous,
-      agentDesktop: { available: () => true, cancelClient() {}, pauseAll: (ids) => { paused.push(...ids); return ids; }, forgetPauses: () => [], pausesUnreadable: () => false } });
+      agentDesktop: withDesktop ? { available: () => true, cancelClient() {}, letGo: (id) => letGo.push(id) } : null });
     await reach.close();
+    const paused = fs.existsSync(pausesFile) ? JSON.parse(fs.readFileSync(pausesFile, "utf8")).paused : [];
+    assert.deepEqual(letGo, withDesktop ? paused : []);
     return paused;
   };
-  assert.deepEqual(await start({ unclean: true, at: 1, reason: "boom" }), ["muse"]);
-  assert.deepEqual(await start(null), []);
+  for (const withDesktop of [true, false]) {
+    assert.deepEqual(await start({ unclean: true, at: 1, reason: "boom" }, withDesktop), ["muse"]);
+    assert.deepEqual(await start(null, withDesktop), []);
+  }
 });

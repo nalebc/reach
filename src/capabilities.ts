@@ -13,6 +13,10 @@ export function workspaceCapabilities(
   // access). `owner`: you, managing access. Invited people never manage it.
   const admin = allowed("admin");
   const owner = admin && device?.access?.kind !== "guest";
+  // On the Mac itself, a full-access person is you (Oct 11): apps, windows,
+  // archives, folder actions. Only managing access (and your chats) stay
+  // `owner`.
+  const mac = admin && (device?.access?.kind !== "guest" || device.access.fullControlVersion === 1);
   const desktop = !!device && ["darwin", "win32"].includes(device.platform);
   const screenSupported =
     desktop &&
@@ -22,6 +26,7 @@ export function workspaceCapabilities(
     !!device?.capabilities.files && (allowed("files") || allowed("files:read"));
   return {
     owner,
+    mac,
     files,
     writeFiles: files && (allowed("files") || allowed("files:write")),
     terminal: !!device?.capabilities.terminal && allowed("terminal"),

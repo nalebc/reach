@@ -219,10 +219,6 @@
     transition: none;
   }
 }
-/* The sheet itself holds focus when it opens (ScreenPopup): no ring. */
-.screen-popup:focus {
-  outline: none;
-}
 /* Another of your computers, not linked yet: listed, quieter, opens its sheet. */
 .more-row-waiting .more-row-label {
   color: #b7c7c0;

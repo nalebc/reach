@@ -3,11 +3,12 @@
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
 import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
-import { browserToolsFor, browserToolRequest } from "../server/browser-tools.mjs";
+import { browserToolsFor, browserToolRequest, compactTools } from "../server/browser-tools.mjs";
 
-const BROWSER_ONLY_NAMES = new Set(["reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history",
+const BROWSER_ONLY_NAMES = new Set(["reach_discover", "reach_execute", "reach_displays","reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history",
   "reach_windows", "reach_focus_window", "reach_find", "reach_menus", "reach_read_page", "reach_open_file", "reach_mac_shortcuts", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
 const BROWSER_TOOL_SCOPES = {
+  reach_discover: "browser:read", reach_execute: "browser:read", reach_displays: "browser:screen",
   reach_services: "browser:read", reach_service_request: "browser:read",
   reach_tools: "browser:control", reach_tool_protocol: "browser:control", reach_define_tool: "browser:control", reach_tool_operation: "browser:control",
   reach_access: "browser:read", reach_list_files: "files:read", reach_search_files: "files:read", reach_read_file: "files:read",
@@ -27,15 +28,38 @@ const BROWSER_TOOL_SCOPES = {
   reach_shortcuts: "browser:control", reach_record_shortcut: "browser:control", reach_save_shortcut: "browser:control", reach_discard_shortcut: "browser:control", reach_run_shortcut: "browser:control",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
-const BROWSER_DESTRUCTIVE = new Set(["reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell"]);
+const BROWSER_WRITES = new Set(["reach_execute","reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
+const BROWSER_DESTRUCTIVE = new Set(["reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_open_file", "reach_run_mac_shortcut", "reach_discard_shortcut", "reach_cancel_request"]);
+const BROWSER_OPEN_WORLD = new Set(["reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_scroll", "reach_find", "reach_focus_window", "reach_open_app", "reach_open_url", "reach_open_bank", "reach_open_file", "reach_run_mac_shortcut", "reach_request_action", "reach_request_batch", "reach_request_app"]);
+function browserAnnotations(name, approvalRequired) {
+  const toolEffect = name.startsWith("reach_tool_") && !["reach_tool_protocol", "reach_tool_operation"].includes(name);
+  const savedEffect = name.startsWith("reach_saved_");
+  // MCP's destructiveHint:false promises only additive updates. Arbitrary
+  // clicks, forms, commands and saved steps can delete or send; granting them
+  // does not turn their effects into harmless or closed-world operations.
+  return {
+    readOnlyHint: !BROWSER_WRITES.has(name) && name !== "reach_define_tool" && !savedEffect && !toolEffect,
+    destructiveHint: approvalRequired === true || BROWSER_DESTRUCTIVE.has(name) || savedEffect || toolEffect,
+    openWorldHint: BROWSER_OPEN_WORLD.has(name) || savedEffect || toolEffect || name.startsWith("reach_service_") && name !== "reach_service_request",
+  };
+}
 // The protocol revisions Reach speaks: a client's own when it's one of them,
 // else the newest, and the client decides.
 export const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 // What a client is told at initialize when the agent may drive the browser:
 // the same over stdio and at Reach's own /mcp endpoint (server/hosted-mcp.mjs).
 // Kept to a line: the tools' own names and descriptions carry the rest.
-export const serverInstructions = (scopes) => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." } : {};
+export const serverInstructions = (scopes, profile = "full") => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." + (profile === "compact" ? " This is the compact catalog: reach_discover finds all permitted tools and their schemas; reach_execute calls them. Use waitFor and observe together on navigation and actions." : "") } : {};
+// Those, then what this agent may do and its rules, from its access now
+// (server/agent-guide.mjs, said by the computer): the invite message is two
+// lines, so this is where an agent first reads them.
+export const withGuide = (told, guide) => {
+  const text = [told?.instructions, typeof guide === "string" ? guide.trim() : ""].filter(Boolean).join("\n\n");
+  return text ? { instructions: text } : {};
+};
+// How long initialize waits for the computer to say it: a connection still
+// starting answers without it (reach_device and reach_access say it too).
+const GUIDE_WAIT_MS = 5000;
 
 const location = {
   root: {
@@ -48,7 +72,7 @@ const location = {
 export const tools = [
   {
     name: "reach_device",
-    description: "Read the connected computer and its shared folders.",
+    description: "Read the connected computer, its shared folders, and your guide: what you may do there and the owner's rules.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -360,7 +384,7 @@ const TOOL_SCOPES = {
 // Tools the credential's access allows (the computer enforces it anyway).
 export function toolsFor(scopes, browserAccess) {
   if (scopes.includes("browser:read")) return browserToolsFor(browserAccess).filter((tool) => scopes.includes(tool.name.startsWith("reach_service_") ? "browser:read" : tool.name.startsWith("reach_saved_") || tool.name.startsWith("reach_tool_") ? "browser:control" : BROWSER_TOOL_SCOPES[tool.name])).map(({ example, approvalRequired, ...tool }) => ({
-    ...tool, annotations: { readOnlyHint: !BROWSER_WRITES.has(tool.name) && tool.name !== "reach_define_tool" && !tool.name.startsWith("reach_saved_") && !tool.name.startsWith("reach_tool_") || ["reach_tool_protocol", "reach_tool_operation"].includes(tool.name), destructiveHint: approvalRequired === true || BROWSER_DESTRUCTIVE.has(tool.name) || tool.name.startsWith("reach_saved_"), openWorldHint: tool.name.startsWith("reach_service_") && tool.name !== "reach_service_request" || tool.name.startsWith("reach_tool_") && !["reach_tool_protocol", "reach_tool_operation"].includes(tool.name) },
+    ...tool, annotations: browserAnnotations(tool.name, approvalRequired),
   }));
   return tools.filter((tool) => {
     if (!Object.hasOwn(TOOL_SCOPES, tool.name)) return false;
@@ -380,9 +404,9 @@ export function toolsFor(scopes, browserAccess) {
 // copy's own tools, as before (an ended access then fails there too). Only
 // the planner's own refusal (400: no such tool, wrong arguments) stands.
 // `route` adds what the computer is told (the runtime).
-export async function computerTools(api, route = (path) => path) {
+export async function computerTools(api, route = (path) => path, profile = "full") {
   try {
-    const answer = await api(route("/api/browser/mcp/tools"));
+    const answer = await api(route("/api/browser/mcp/tools" + (profile === "compact" ? "?profile=compact" : "")));
     return Array.isArray(answer?.tools) ? answer : null;
   } catch {
     return null;
@@ -416,6 +440,7 @@ export function serveMcp({
   scopes = [],
   // Ask the computer for the credential's current access (or trust `scopes`).
   liveScopes = true,
+  profile = process.env.REACH_MCP_PROFILE === "compact" ? "compact" : "full",
   input = process.stdin,
   output = process.stdout,
   name = "reach",
@@ -428,6 +453,7 @@ export function serveMcp({
   // (agent-runtimes.mjs): the owner sees which agents run what.
   report = undefined,
   upgradeWaitMs = UPGRADE_WAIT_MS,
+  guideWaitMs = GUIDE_WAIT_MS,
   now = Date.now,
 }) {
   const write = (message) =>
@@ -437,12 +463,21 @@ export function serveMcp({
   const pending = new Set();
   let currentScopes = scopes;
   // The version of Reach's own list the client last read (computerTools).
-  let listed;
+  let listed, dispatch = false;
   let impl = { toolsFor, callTool };
   let current = runtime?.current;
   const said = (route) => {
     const sha = current || report;
-    return typeof sha === "string" && SHA256.test(sha) ? `${route}?runtime=${sha}` : route;
+    return typeof sha === "string" && SHA256.test(sha) ? `${route}${route.includes("?") ? "&" : "?"}runtime=${sha}` : route;
+  };
+  // What the computer says this agent may do, now; "" when it doesn't
+  // answer in time (an older computer says nothing).
+  const guide = () => {
+    let timer;
+    return Promise.race([
+      Promise.resolve().then(() => api(said("/api/device"))).then((device) => (typeof device?.guide === "string" ? device.guide : "")),
+      new Promise((resolve) => { timer = setTimeout(resolve, guideWaitMs, ""); }),
+    ]).catch(() => "").finally(() => clearTimeout(timer));
   };
   const tried = new Map(); // sha256 → when it was last tried
   // Fails closed: a runtime that can't be fetched, doesn't match its hash or
@@ -471,8 +506,15 @@ export function serveMcp({
   });
   async function handle(line) {
     let r;
+    // JSON-RPC's own errors for a line that isn't one request object: not
+    // JSON, or a batch (MCP over stdio sends one message a line).
+    try { r = JSON.parse(line); }
+    catch { write({ id: null, error: { code: -32700, message: "Parse error" } }); return; }
+    if (r === null || typeof r !== "object" || Array.isArray(r)) {
+      write({ id: null, error: { code: -32600, message: "Invalid request" } });
+      return;
+    }
     try {
-      r = JSON.parse(line);
       if (r.id === undefined) return;
       let result;
       if (r.method === "initialize")
@@ -480,7 +522,7 @@ export function serveMcp({
           protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name, version: "0.1.0" },
-          ...serverInstructions(scopes),
+          ...withGuide(serverInstructions(scopes, profile), liveScopes ? await guide() : ""),
         };
       else if (r.method === "ping") result = {};
       // Not offered, so an orderly client never asks; one that asks anyway
@@ -495,17 +537,31 @@ export function serveMcp({
         // loads in time.
         await upgrade(device?.runtime, upgradeWaitMs);
         // Reach's own list when it has one: every tool it has now.
-        const served = currentScopes.includes("browser:read") ? await computerTools(api, said) : null;
+        const served = currentScopes.includes("browser:read") ? await computerTools(api, said, profile) : null;
         listed = served?.list;
+        dispatch = served?.dispatch === true;
         if (served) result = { tools: served.tools };
         else {
           const access = currentScopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
-          result = { tools: impl.toolsFor(currentScopes, access) };
+          result = { tools: profile === "compact" && access?.preset !== undefined ? compactTools(impl.toolsFor(currentScopes, access)) : impl.toolsFor(currentScopes, access) };
         }
       } else if (r.method === "tools/call") {
+        const args = r.params?.arguments;
+        if (typeof r.params?.name !== "string" || (args !== undefined && (args === null || typeof args !== "object" || Array.isArray(args)))) {
+          write({ id: r.id, error: { code: -32602, message: "Name a tool and pass arguments as an object." } });
+          return;
+        }
         try {
-          const planned = currentScopes.includes("browser:read") ? await computerPlan(api, r.params?.name, r.params?.arguments || {}, said) : null;
-          if (planned) {
+          const executed = dispatch ? await api(said("/api/browser/mcp/call"), "POST", { name: r.params?.name, arguments: r.params?.arguments || {} }) : null;
+          const planned = !dispatch && currentScopes.includes("browser:read") ? await computerPlan(api, r.params?.name, r.params?.arguments || {}, said) : null;
+          if (dispatch) {
+            // Never fall back or retry after a dispatch error: a mutation may
+            // already have completed, even when its response was lost.
+            if (!executed || !Object.hasOwn(executed, "result")) throw Error("Reach returned an invalid tool result. Check its state before retrying.");
+            void upgrade(executed.runtime);
+            if (listed && executed.list && listed !== executed.list) { listed = executed.list; write({ method: "notifications/tools/list_changed" }); }
+            result = { content: (impl.toContent || toContent)(executed.result) };
+          } else if (planned) {
             void upgrade(planned.runtime);
             // Reach's tools changed since the client read them: it reads again.
             if (listed && typeof planned.list === "string" && planned.list !== listed) {

@@ -30,9 +30,12 @@ export default function ScreenActions({
   platform,
   disabled,
   run,
+  strip = false,
 }: {
   platform: string;
   disabled: boolean;
+  // One scrolling row with every key; the toggle only adds the key picker.
+  strip?: boolean;
   run: (action: ScreenAction) => void;
 }) {
   const [modifiers, setModifiers] = useState<string[]>([]);
@@ -62,7 +65,7 @@ export default function ScreenActions({
     }));
   const [more, setMore] = useState(false);
   // A few everyday keys up front; the rest stay one tap away.
-  const shown = more ? items : items.filter((item) => COMMON.includes(item.id));
+  const shown = more || strip ? items : items.filter((item) => COMMON.includes(item.id));
   return (
     <section className="screen-action-groups">
       <h3>Keys</h3>
@@ -146,7 +149,13 @@ export default function ScreenActions({
         aria-expanded={more}
         onClick={() => setMore((value) => !value)}
       >
-        {more ? "Fewer keys" : "More keys"}
+        {strip
+          ? more
+            ? "Hide other keys"
+            : "Other keys"
+          : more
+            ? "Fewer keys"
+            : "More keys"}
       </button>
     </section>
   );

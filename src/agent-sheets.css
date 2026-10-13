@@ -73,6 +73,15 @@
   gap: 8px;
   margin-top: 18px;
 }
+/* On a narrow phone a long decision wraps inside its button, never past
+   the sheet's edge. */
+.ag-sheet-actions > *,
+.ag-review .browser-approval-actions .button,
+.ag-sheet .browser-approval-actions .button {
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+}
 
 /* ---- Command / screen review (markup shared with tests) --------------- */
 .ag-review .screen-popup-body > p:first-of-type {

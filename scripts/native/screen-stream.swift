@@ -70,17 +70,24 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   // as scripts/native/agent-desktop.swift leaves them out for agents.
   func hidden(_ content: SCShareableContent, _ display: SCDisplay) -> [SCWindow] {
     guard let p = privacy else { return [] }
+    // The Dock's full-screen windows. The Dock itself is one, titled "Dock"
+    // (layer 20, display-sized on macOS 26), and stays. Mission Control and
+    // App Exposé add untitled ones that draw every window's preview: while
+    // any is up, all of them are left out, so hidden stays hidden there
+    // (measured Oct 11: Mission Control adds two, at layers 20 and 18).
+    let dockLayer = { (window: SCWindow) -> Bool in
+      (window.owningApplication?.bundleIdentifier ?? "").lowercased() == "com.apple.dock"
+        && window.windowLayer > 0
+        && window.frame.width >= display.frame.width * 0.9
+        && window.frame.height >= display.frame.height * 0.9
+    }
+    let overview = content.windows.contains { dockLayer($0) && $0.title != "Dock" }
     return content.windows.filter { window in
       let app = window.owningApplication
       let id = (app?.bundleIdentifier ?? "").lowercased()
       let name = (app?.applicationName ?? "").lowercased()
       let title = (window.title ?? "").lowercased()
-      // Mission Control and App Exposé draw every window's preview in the
-      // Dock's full-screen layer: left out, so hidden stays hidden there.
-      if id == "com.apple.dock" && window.windowLayer > 0
-        && window.frame.width >= display.frame.width * 0.9
-        && window.frame.height >= display.frame.height * 0.9
-      {
+      if dockLayer(window) && (overview || window.title != "Dock") {
         return true
       }
       if p.ids.contains(where: { id == $0 || id.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") }) {
@@ -92,7 +99,18 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
   }
   func failure(_ text: String) -> Never {
     FileHandle.standardError.write(Data((text + "\n").utf8))
-    exit(1)
+    finish(1)
+  }
+  // Every way out stops the capture first. Exiting with it running once left
+  // macOS capturing for 14 hours with nobody reading (Oct 12): the Mac kept
+  // its screen-sharing mark, even with Reach paused, and Netflix wouldn't play.
+  func finish(_ code: Int32) -> Never {
+    if let stream {
+      let done = DispatchSemaphore(value: 0)
+      stream.stopCapture { _ in done.signal() }
+      _ = done.wait(timeout: .now() + 2)
+    }
+    exit(code)
   }
   func write(_ data: Data) {
     var size = UInt32(data.count).bigEndian
@@ -342,6 +360,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     return true
   }
   func selfTest(_ testWidth: Int = 640, _ testHeight: Int = 360) throws {
+    guard video && strictHardware else {
+      failure("H.264 self-test configuration is invalid.")
+    }
     width = testWidth
     height = testHeight
     try configureEncoder()
@@ -460,7 +481,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
           self.emit()
         }
       }
-      exit(0)
+      self.finish(0)
     }
   }
 }
@@ -494,10 +515,35 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     let w = test && args.count > 1 ? Int(args[1]) ?? 640 : 640
     let h = test && args.count > 2 ? Int(args[2]) ?? 360 : 360
     guard w >= 2, h >= 2, w <= 3840, h <= 3840, w * h <= 9_000_000 else { exit(1) }
-    let capture = Capture(
-      test
-        ? ["primary", "h264", args.count > 3 ? args[3] : "30", String(w), "16000000", "hardware"]
-        : args)
+    // Swift 6.1.2 -O miscompiles a conditional array passed to this
+    // initializer: --self-test silently selected JPEG instead of H.264.
+    // Separate branches preserve the requested format on that compiler.
+    let capture: Capture
+    if test {
+      let rate = args.count > 3 ? args[3] : "30"
+      let testArgs = ["primary", "h264", rate, String(w), "16000000", "hardware"]
+      capture = Capture(testArgs)
+    } else {
+      capture = Capture(args)
+      guard capture.video == (args.count > 1 && args[1] == "h264"),
+        capture.strictHardware == (args.count > 5 && args[5] == "hardware")
+      else { capture.failure("Screen capture format could not be initialized.") }
+    }
+    // Stopped by Reach (SIGTERM), or Reach gone without closing the pipe
+    // (adopted by launchd): the capture ends with this helper, never after.
+    var endings: [DispatchSourceProtocol] = []
+    for signo in [SIGTERM, SIGINT, SIGHUP] {
+      signal(signo, SIG_IGN)
+      let source = DispatchSource.makeSignalSource(signal: signo, queue: .global())
+      source.setEventHandler { capture.finish(0) }
+      source.resume()
+      endings.append(source)
+    }
+    let orphan = DispatchSource.makeTimerSource(queue: .global())
+    orphan.schedule(deadline: .now() + 2, repeating: 2)
+    orphan.setEventHandler { if getppid() == 1 { capture.finish(0) } }
+    orphan.resume()
+    endings.append(orphan)
     do {
       if test { try capture.selfTest(w, h) } else { try await capture.start() }
       while true { try await Task.sleep(nanoseconds: 60_000_000_000) }

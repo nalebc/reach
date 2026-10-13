@@ -274,8 +274,9 @@ export default function Files({
   const features = suppliedFeatures || workspaceCapabilities(device);
   const sharer = useFileShare(peer, root, toast, (file) => gone(file));
   const canWrite = features.writeFiles;
-  const canExtract = features.owner && canWrite;
-  const guest = device.access?.kind === "guest";
+  const canExtract = features.mac && canWrite;
+  // A person with full access gets the folder actions too.
+  const guest = device.access?.kind === "guest" && !features.mac;
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const searchField = useRef<HTMLInputElement>(null);
@@ -1533,7 +1534,7 @@ function Viewer({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const kind = fileKind(file);
-  const mode = previewMode(file);
+  const mode = previewMode(file, peer.platform);
   const [text, setText] = useState(""),
     [image, setImage] = useState(""),
     [pdf, setPdf] = useState<Blob | null>(null),

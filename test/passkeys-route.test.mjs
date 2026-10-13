@@ -6,6 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 import { softAuthenticator } from "./helpers/soft-authenticator.mjs";
 
 // Face ID end to end, as a real Reach sees it (Tailscale identity on every
@@ -17,6 +18,8 @@ const NODES = {
   "100.64.0.10": { id: "nSafari", user: 42, name: "iphone-browser" },
   "100.64.0.11": { id: "nChrome", user: 42, name: "iphone-browser-1" },
   "100.64.0.12": { id: "nOther", user: 42, name: "mac-browser" },
+  // This Mac itself (its own Tailscale address: the status's Self below).
+  "100.64.0.5": { id: "nThisMac", user: 42, name: "mac-a" },
   "100.64.0.20": { id: "nTagged", user: 7, name: "rg-ab12-guest00001", tags: ["tag:reach-guest"] },
   "100.64.0.30": { id: "nStranger", user: 99, name: "stranger-phone" },
 };
@@ -130,6 +133,22 @@ test(
     assert.equal((await call("nChrome", "/api/device", { method: "GET", token: polled.json.token })).status, 200);
     // Used once: the same response can't approve anything again.
     assert.equal((await call("nChrome", route, { body: { secret: asked.json.secret, credential: assertion } })).status, 403);
+
+    // A browser on this Mac itself: anyone signed in to it could have asked
+    // as you. No Face ID (the phone's sheet can't show the warning); the
+    // request is marked, and its prompt here says so (D1, on both platforms).
+    const here = await call("nThisMac", "/api/auth/requests", { body: { name: "This Mac's Safari" } });
+    assert.equal(here.status, 202);
+    assert.equal(here.json.passkey, undefined, "no Face ID offered");
+    const refused = await call("nThisMac", `/api/auth/requests/${here.json.id}/passkey/options`, { body: { secret: here.json.secret } });
+    assert.equal(refused.status, 403);
+    const word = computerWord(process.platform);
+    assert.equal(refused.json.error, `This request came from this ${word} itself: type its code in Reach on the ${word} instead.`);
+    const { pendingApprovals, describeApproval } = await import("../scripts/approve-device.mjs");
+    const pending = pendingApprovals(path.join(dir, "private")).find((r) => r.id === here.json.id);
+    assert.equal(pending.thisComputer, true);
+    assert.match(describeApproval(pending, "darwin"), /\n  From this Mac itself: anyone signed in to it could have asked\. Approve only if you just asked from a browser on it\.$/);
+    assert.equal(pendingApprovals(path.join(dir, "private")).find((r) => r.id === asked.json.id)?.thisComputer, undefined, "the iPhone's wasn't");
 
     // Not your account, or a tagged (guest) device: no request at all.
     assert.equal((await call("nTagged", "/api/auth/requests", { body: { name: "x" } })).status, 403);

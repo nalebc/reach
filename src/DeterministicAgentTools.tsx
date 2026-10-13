@@ -336,7 +336,7 @@ export default function DeterministicAgentTools({
       const protocol = (await activeBridge.callTool("reach_tool_protocol")) as {
         example: unknown;
       };
-      const catalog = await activeBridge.callTool("reach_tools");
+      const catalog = await activeBridge.callTool("reach_tools", { detail: true });
       if (!active()) return;
       setReference(JSON.stringify({ protocol, catalog }, null, 2));
       setDefinition(JSON.stringify(protocol.example, null, 2));
@@ -705,7 +705,9 @@ export default function DeterministicAgentTools({
           disabled={locked}
           onClick={() =>
             void action(async (activeBridge, active) => {
-              const catalog = (await activeBridge.callTool("reach_tools")) as {
+              const catalog = (await activeBridge.callTool("reach_tools", {
+                id: selectedTool.name.slice("reach_tool_".length),
+              })) as {
                 tools: { id: string }[];
               };
               if (active())

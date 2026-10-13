@@ -44,7 +44,7 @@ export function privateNodePath(root, arch = process.arch) {
   const expected = candidates.find((c) => fs.existsSync(c)) || candidates[0];
   if (!fs.existsSync(expected) || fs.realpathSync.native(expected) !== expected)
     throw Error(
-      "Reach's private Node runtime is missing. Run ./reach install to prepare it; system Node is not used for the service.",
+      `Reach's private Node runtime is missing. Run ${reachCommand} install to prepare it; system Node is not used for the service.`,
     );
   fs.accessSync(expected, fs.constants.X_OK);
   return expected;
@@ -116,7 +116,7 @@ async function waitForStop(pid) {
     }
     if (Date.now() >= deadline)
       throw Error(
-        "Reach is still stopping. Retry ./reach uninstall before removing its Serve route.",
+        `Reach is still stopping. Retry ${reachCommand} uninstall before removing its Serve route.`,
       );
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -212,10 +212,15 @@ export async function backgroundService(options, root, deps = {}) {
     );
     return result;
   }
-  if (!ours)
+  if (!ours) {
+    const unxml = (text) => text.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+    const program = installedPlist.match(/<string>([^<]*[\\/]scripts[\\/]bootstrap\.mjs)<\/string>/)?.[1];
+    const working = installedPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/)?.[1];
+    const folder = program ? path.dirname(path.dirname(unxml(program))) : working ? unxml(working) : "";
     throw Error(
-      "This LaunchAgent belongs to another checkout or its ownership cannot be verified. Manage it from its original Reach folder.",
+      `This LaunchAgent belongs to another checkout or its ownership cannot be verified. ${folder ? `Manage it from its original Reach folder: ${folder}. ` : ""}Check its plist: ${file}.`,
     );
+  }
   if (command === "uninstall") {
     if (loaded) run(["bootout", service]);
     await (deps.waitForStop || waitForStop)(status.pid);
@@ -236,7 +241,7 @@ export async function backgroundService(options, root, deps = {}) {
   }
   if (loaded || installedPlist)
     throw Error(
-      "Reach already has a LaunchAgent. Run ./reach uninstall before changing its setup (ends its running work).",
+      `Reach already has a LaunchAgent at ${file}. Run ${reachCommand} uninstall from ${root} before changing its setup (ends its running work).`,
     );
   const folder = protectedFolder(root, { home, platform, ...(deps.realpath ? { realpath: deps.realpath } : {}) });
   if (folder) throw Error(protectedFolderMessage(folder));
@@ -298,7 +303,7 @@ export async function backgroundService(options, root, deps = {}) {
     throw e;
   }
   (deps.print || console.log)(
-    `Reach installed. Starts at sign-in and restarts after exit.\nPrivate link: ${origin}\nLogs: ${logDir}\nRun ./reach status, ${preferences ? "then open the link on your phone and run ./reach approve." : "then ./reach pair to connect your phone."}\nSleep prevention: ${stayAwakeMode(resolved.stayAwake)} (system and display). macOS locking and FileVault still apply.\nNote: the service runs without a Terminal window, so it has no Screen Recording or Accessibility (no live screen, no control) and can't approve new phones. Use ./reach restart for that.`,
+    `Reach installed. Starts at sign-in and restarts after exit.\nPrivate link: ${origin}\nLogs: ${logDir}\nRun ${reachCommand} status, ${preferences ? `then open the link on your phone and run ${reachCommand} approve.` : `then ${reachCommand} pair to connect your phone.`}\nSleep prevention: ${stayAwakeMode(resolved.stayAwake)} (system and display). macOS locking and FileVault still apply.\nNote: the service runs without a Terminal window, so it has no Screen Recording or Accessibility (no live screen, no control) and can't approve new phones. Use ${reachCommand} restart for that.`,
   );
   return { origin, node, dataDir, logDir, options: resolved };
 }

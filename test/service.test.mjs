@@ -15,6 +15,7 @@ import {
   removePersistentRoute,
   exactPersistentRoute,
   recordedRouteOwned,
+  handoffPersistentRoute,
 } from "../scripts/persistent-serve.mjs";
 import {
   stayAwakeOnAC,
@@ -722,4 +723,71 @@ test("disabled and stopped-during-power-check modes never acquire assertions", a
   complete("Now drawing from 'AC Power'");
   await new Promise((r) => setImmediate(r));
   assert.equal(starts, 0);
+});
+
+
+test("Serve tolerates new metadata but still refuses extra routes and public access", () => {
+  const config = owned();
+  config.TCP[8443].FutureMetadata = "value";
+  config.Web["computer.example.ts.net:8443"].FutureMetadata = true;
+  config.Web["computer.example.ts.net:8443"].Handlers["/"].FutureMetadata = 1;
+  assert.equal(exactPersistentRoute(config, origin, target), true);
+  config.Web["other.example.ts.net:8443"] = { Handlers: { "/": { Proxy: target } } };
+  assert.equal(exactPersistentRoute(config, origin, target), false);
+  delete config.Web["other.example.ts.net:8443"];
+  config.Web["computer.example.ts.net:8443"].Handlers["/extra"] = { Proxy: target };
+  assert.equal(exactPersistentRoute(config, origin, target), false);
+  delete config.Web["computer.example.ts.net:8443"].Handlers["/extra"];
+  config.AllowFunnel = { "computer.example.ts.net:8443": true };
+  assert.throws(() => exactPersistentRoute(config, origin, target), /Funnel/);
+});
+
+test("Serve leaves a recorded proxy alone after its handler behavior is changed", async (t) => {
+  const dir = await temp();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "serve-owner.json");
+  const next = path.join(dir, "next-owner.json");
+  atomicJson(file, { version: 1, origin, target });
+  const cases = [
+    ["TCP", "HTTP", true],
+    ["TCP", "TCPForward", "127.0.0.1:9999"],
+    ["TCP", "TerminateTLS", "other.example.ts.net"],
+    ["TCP", "ProxyProtocol", 1],
+    ["handler", "Path", "/someone-elses-files"],
+    ["handler", "Text", "Another service"],
+    ["handler", "Redirect", "https://other.example.test"],
+    ["handler", "AcceptAppCaps", ["example.test/app-capability"]],
+  ];
+  for (const [section, key, value] of cases) {
+    const config = owned();
+    const object = section === "TCP" ? config.TCP[8443] : config.Web["computer.example.ts.net:8443"].Handlers["/"];
+    object[key] = value;
+    let mutations = 0;
+    const options = { file, origin, target, inspect: async () => config, run: async () => mutations++ };
+    assert.equal(exactPersistentRoute(config, origin, target), false, key);
+    await assert.rejects(ensurePersistentRoute(options), /already in use/, key);
+    await assert.rejects(removePersistentRoute(options), /already in use/, key);
+    assert.equal(await handoffPersistentRoute({ file: next, sources: [file], inspect: options.inspect }), false, key);
+    assert.equal(mutations, 0, key);
+    await fs.access(file);
+    await assert.rejects(fs.access(next));
+  }
+});
+
+test("a foreign LaunchAgent refusal names its original folder and plist", async (t) => {
+  const home = await temp();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const file = path.join(home, "Library/LaunchAgents/com.reach.companion.plist");
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, '<plist><dict><key>WorkingDirectory</key><string>/old/reach &amp; tools</string></dict></plist>');
+  for (const command of ["install", "uninstall"]) {
+    await assert.rejects(backgroundService({ command }, path.join(home, "new"), {
+      platform: "darwin", home, uid: 501,
+      run: (args) => { assert.equal(args[0], "print"); throw Error("not loaded"); },
+    }), (error) => {
+      assert.ok(error.message.includes("/old/reach & tools"), error.message);
+      assert.ok(error.message.includes(file), error.message);
+      return true;
+    });
+  }
 });

@@ -21,7 +21,7 @@ Object.assign(apps, { chrome, notes, onePassword, terminal, messages });
 const ownerAccount = { userId: "42", login: "owner@example.test" };
 const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nWasm: "100.64.0.4", nAgent: "100.64.0.5" };
 
-export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, agentShellRun, browserToolOptions, serviceOptions, macShortcuts, includeSystemRoot = false } = {}) {
+export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, desktopFactory, agentShellRun, browserToolOptions, serviceOptions, macShortcuts, includeSystemRoot = false } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-presets-")));
   const socketDir = fs.mkdtempSync("/tmp/reach-presets-sock-");
   const socketPath = path.join(socketDir, "s"), dataDir = path.join(dir, "private");
@@ -46,7 +46,9 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     browserScreenSupported: true, browserAppSupported: false,
     // Exercise preset admission/scopes independently of the host native file helper.
     browserFilesSupported: true,
-    agentDesktop: withDesktop ? desktop : null,
+    // A factory builds Reach's own desktop service with Reach's options (its
+    // pause store among them); otherwise a stand-in, or none.
+    ...(desktopFactory ? { agentDesktopFactory: desktopFactory } : { agentDesktop: withDesktop ? desktop : null }),
     ...(agentShellRun ? { agentShellRun } : {}),
     ...(browserToolOptions ? { browserToolOptions } : {}),
     ...(serviceOptions ? { serviceOptions } : {}),
@@ -82,7 +84,9 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     req.setTimeout(10000, () => req.destroy(Error("Fixture request timed out")));
     req.once("error", reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
-  const invite = (body, options = {}) => call("/api/agents/browser-invitations", { method: "POST", body: { name: "Muse", ttlSeconds: 600, ...body }, ...options });
+  // Positive fixtures represent a current owner form that explicitly accepts
+  // unrestricted Full control. Raw call() still tests stale/missing consent.
+  const invite = (body, options = {}) => call("/api/agents/browser-invitations", { method: "POST", body: { name: "Muse", ttlSeconds: 600, ...(body.preset === "full" ? { fullControlVersion: 1 } : {}), ...body }, ...options });
   // Agents redeem over the ordinary listener; the admission gate is passed with the helper.
   const join = async (body) => {
     const created = await invite(body);

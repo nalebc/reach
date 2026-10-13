@@ -49,11 +49,13 @@ export function tailnetAddress(address) {
 // (off the tailnet, it resolves to the public link's relay), and is given up
 // on when no connection is made within a few seconds (connections audit,
 // Oct 10).
-function tailnetLookup(hostname, options, callback) {
+export function tailnetLookup(hostname, options, callback) {
   dns.lookup(hostname, { ...options, all: false }, (error, address, family) => {
     if (error) return callback(error);
     if (!tailnetAddress(address))
       return callback(Object.assign(Error(`${hostname} isn't on your tailnet from here.`), { code: "ENOTTAILNET" }));
+    // Node's connect asks for every address (all: true) and refuses a single one.
+    if (options?.all) return callback(null, [{ address, family }]);
     callback(null, address, family);
   });
 }

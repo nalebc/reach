@@ -208,7 +208,7 @@ test("from an OpenClaw chat (a WhatsApp ask) to Claude Code: a folder is picked,
   const { opened } = await relays.start({ owner: "phone", from, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app" });
   assert.equal(opened.agent, "claude");
   assert.equal(started[0].body.cwd, "/work/app");
-  assert.equal(started[0].body.mode, "acceptEdits");
+  assert.equal(started[0].body.mode, "auto");
   assert.match(started[0].body.text, /login page is broken on Safari/);
   // A key that isn't OpenClaw's shape is refused before anything is read.
   await assert.rejects(relays.start({ owner: "phone", from: { agent: "openclaw", id: "main\nx" }, steps: [{ kind: "build", agent: "claude" }], now: true, cwd: "/work/app" }), /Unknown chat/);

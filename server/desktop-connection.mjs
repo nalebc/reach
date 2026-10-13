@@ -1,6 +1,8 @@
 import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { streamOptions, inputAction } from "./desktop-protocol.mjs";
 import { fail } from "./core.mjs";
+import { actsAsOwner } from "./screen.mjs";
+import { privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
 export function desktopConnection(
   ws,
   {
@@ -24,6 +26,7 @@ export function desktopConnection(
     // How long a stopped control keeps its connection and helper parked, so
     // Control again resumes at once instead of starting a new helper.
     parkFor = 60000,
+    platform = process.platform,
   },
 ) {
   let token,
@@ -194,6 +197,10 @@ export function desktopConnection(
       !client.scopes.includes("screen")
     )
       throw fail(403, "Desktop control expired or was revoked.");
+    // Windows can't yet hide password managers from guests' pictures, or a
+    // concealed copy from their clipboard reads (parity audit #12, #13):
+    // there only the owner and full-access people control, as they watch.
+    if (privateViewRefused(!actsAsOwner(client), platform)) throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
     // A phone app's hidden display is for whoever that app is shared with.
     if (ws.reachDisplay && !allowDisplay(client, ws.reachDisplay))
       throw fail(403, "That app isn't shared with you.");
@@ -247,7 +254,8 @@ export function desktopConnection(
             continue;
           }
           // A password manager's copied secret stays on the Mac for guests:
-          // the helper turns it down unless the owner asked.
+          // the helper turns it down unless the owner asked. (On Windows,
+          // guests don't control at all yet: authorize.)
           result = await helper.send(
             item.action.type === "clipboard-read"
               ? { ...item.action, owner: client.scopes.includes("admin") }

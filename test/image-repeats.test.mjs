@@ -94,6 +94,33 @@ test("savings add up by agent and kind and survive a restart", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("savings names are only keys: 'constructor' and 'prototype' never touch Object or its prototype", (t) => {
+  const dir = tmp();
+  t.after(() => {
+    delete Object.prototype.tokens;
+    delete Object.prototype.count;
+    delete Object["image-repeat"];
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const file = path.join(dir, "savings.json");
+  const savings = createSavings({ file, now: () => 1 });
+  savings.record({ agent: "constructor", kind: "prototype", tokens: 7 });
+  savings.record({ agent: "constructor", kind: "image-repeat", tokens: 3 });
+  assert.equal(Object.hasOwn(Object.prototype, "tokens"), false);
+  assert.equal(Object.hasOwn(Object.prototype, "count"), false);
+  assert.equal(Object.hasOwn(Object, "image-repeat"), false);
+  assert.equal({}.tokens, undefined);
+  const expected = { tokens: 10, kinds: { prototype: { tokens: 7, count: 1 }, "image-repeat": { tokens: 3, count: 1 } } };
+  assert.deepEqual(savings.totals("constructor"), expected);
+  assert.deepEqual(savings.totals("hasownproperty"), { tokens: 0, kinds: {} });
+  // Saved and read back the same; a hand-edited file can't plant either.
+  assert.deepEqual(createSavings({ file }).totals("constructor"), expected);
+  fs.writeFileSync(file, '{"totals":{"__proto__":{"x":{"tokens":1,"count":1}},"claude":{"__proto__":{"tokens":1},"image-repeat":{"tokens":"5","count":2}}},"events":[]}');
+  const read = createSavings({ file });
+  assert.deepEqual(read.totals("claude"), { tokens: 5, kinds: { "image-repeat": { tokens: 5, count: 2 } } });
+  assert.equal({}.x, undefined);
+});
+
 test("sent again to the same chat, a picture goes as a note; the saving shows in health", async () => {
   const root = tmp();
   const sent = [];

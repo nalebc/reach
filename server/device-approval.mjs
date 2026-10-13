@@ -69,7 +69,9 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
   };
   return {
     list: () => list().map(({ secretHash, token, ...rest }) => rest),
-    request(identity, name, owner) {
+    // `thisComputer`: asked from this computer itself (server/index.mjs), kept
+    // so the prompt says so and only the code typed there approves it.
+    request(identity, name, owner, { thisComputer = false } = {}) {
       if (!ownerIdentity(identity, owner))
         throw fail(
           403,
@@ -101,6 +103,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         secretHash: hash(secret),
         expiresAt: now() + 300000,
         status: "pending",
+        ...(thisComputer === true && { thisComputer: true }),
       };
       atomicJson(file(request.id), request);
       return {
@@ -153,7 +156,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           403,
           "This connection request expired or belongs to another device.",
         );
-      return { id: r.id, name: r.name };
+      return { id: r.id, name: r.name, ...(r.thisComputer === true && { thisComputer: true }) };
     },
     poll(id, secret, identity, owner, auth) {
       const r = loadJson(file(id), null);

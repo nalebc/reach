@@ -73,7 +73,7 @@ test("typing a message into the Claude app has no fixed pauses and reads the win
   assert.match(look, /AXUIElementCopyMultipleAttributeValues\(e, looked/);
   assert.doesNotMatch(look, /str\(e, kAXRoleAttribute\)/);
   // After the text goes in: no 300 ms pause; Send is looked for at once.
-  const send = between("// The text, then a last look", 'out(["sent": true, "unconfirmed": true])');
+  const send = between("// A last look that it's still the same chat", 'out(["sent": true, "unconfirmed": true])');
   assert.doesNotMatch(send, /usleep\(300_000\)/);
   assert.doesNotMatch(send, /usleep\(200_000\)/);
   // The box emptying is read on the box, not by walking the window again.
@@ -103,7 +103,7 @@ test("typing a message into the Claude app has no fixed pauses and reads the win
   assert.match(look, /AXUIElementCopyMultipleAttributeValues\(e, looked/);
   assert.doesNotMatch(look, /str\(e, kAXRoleAttribute\)/);
   // After the text goes in: no 300 ms pause; Send is looked for at once.
-  const send = between("// The text, then a last look", 'out(["sent": true, "unconfirmed": true])');
+  const send = between("// A last look that it's still the same chat", 'out(["sent": true, "unconfirmed": true])');
   assert.doesNotMatch(send, /usleep\(300_000\)/);
   assert.doesNotMatch(send, /usleep\(200_000\)/);
   // The box emptying is read on the box, not by walking the window again.
@@ -126,4 +126,16 @@ test("native permission acknowledgements require the same session and preserve u
   assert.match(gate, /permits\(sessions\) && matched/);
   const error = between("func settingsError(", "func settingsWindow(");
   assert.match(error, /"unconfirmed": settings\.selectionAttempted/);
+});
+
+test("a message with a picture keeps it: the text goes in before the paste, never over it", () => {
+  // Setting the box's value replaced the pasted picture: words arrived alone.
+  const body = swift.slice(swift.indexOf("AXUIElementSetAttributeValue(box, kAXFocusedAttribute"));
+  const setText = swift.indexOf("AXUIElementSetAttributeValue(box, kAXValueAttribute as CFString, text as CFString) == .success\n      else { fail(\"Claude couldn't update the message.\") }");
+  const paste = swift.indexOf('pressMenu(app, ["Edit", "Paste"])');
+  assert.ok(setText > 0 && paste > 0);
+  assert.ok(setText < paste, "the text is set before the pictures are pasted");
+  // Nothing sets the box's value between the paste and Send.
+  const afterPaste = body.slice(body.indexOf('pressMenu(app, ["Edit", "Paste"])'), body.indexOf("AXUIElementPerformAction(send"));
+  assert.doesNotMatch(afterPaste, /AXUIElementSetAttributeValue\(box, kAXValueAttribute/);
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   ArrowUpRight,
   RefreshCw,
@@ -27,6 +27,7 @@ import { BrandCourier } from "./ReachIdentity";
 import { NotificationBell } from "./Notifications";
 import { UsageButton, UsagePill, UsageRing } from "./UsageRing";
 import { usageOf, usageSentence } from "./usage";
+import type { Workflow as Flow } from "./Workflows";
 import "./chat-list.css";
 
 export const ago = (ms: number, now = Date.now()) => {
@@ -55,7 +56,143 @@ const pendingCount = (count: number) => count > 9 ? "9+" : count;
 // hidden on phones, so its replacement must always travel with the header.
 // The Workflows icon at the top of Chat (Workflows.tsx): how many run or
 // wait on you, and its page.
-export type WorkflowsEntry = { active: number; paused: number; onOpen: () => void };
+// With the workflows themselves, a folder's chats keep each one's together.
+export type WorkflowsEntry = { active: number; paused: number; onOpen: () => void; list?: Flow[]; onOpenFlow?: (w: Flow) => void };
+
+// The chats each workflow started (its tasks' and its planner's), by
+// "agent:id", its tries' earlier chats too; then, for one from before the
+// Mac kept those, by name: "Workflow · <task>" in its folder, since it
+// began. Only Codex's chats carry that name.
+export const flowFinder = (flows: Flow[] = []) => {
+  const map = new Map<string, Flow>();
+  for (const w of flows) {
+    if (w.planner) map.set(`${w.planner.agent}:${w.planner.id}`, w);
+    for (const t of w.tasks) for (const c of [...(t.tries || []), ...(t.chat ? [t.chat] : [])]) map.set(`${c.agent}:${c.id}`, w);
+  }
+  return (s: { agent: string; id: string; title?: string; cwd?: string; createdAt?: number }) => {
+    const known = map.get(`${s.agent}:${s.id}`);
+    if (known || s.agent !== "codex" || !s.title?.startsWith("Workflow · ")) return known;
+    const task = s.title.slice("Workflow · ".length);
+    const matches = flows.filter((w) =>
+      w.cwd === s.cwd && (s.createdAt || 0) >= w.createdAt && w.tasks.some((t) => t.agent === s.agent && t.title === task),
+    );
+    // A title cannot identify the owner when multiple workflows used it.
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+};
+// A chat that needs you, then one at work, then the rest.
+export const chatRank = (s: AgentSession) => (needsYou(s) ? 2 : s.status === "running" ? 1 : 0);
+// Each workflow's chats together, where its first one stands: with one at
+// work, the whole workflow sits with the working chats.
+export function inFlows<T>(list: T[], flowOf: (s: T) => Flow | undefined) {
+  const out: T[] = [];
+  const placed = new Set<Flow>();
+  for (const s of list) {
+    const w = flowOf(s);
+    if (!w) out.push(s);
+    else if (!placed.has(w)) {
+      placed.add(w);
+      out.push(...list.filter((x) => flowOf(x) === w));
+    }
+  }
+  return out;
+}
+// A workflow's chats that show while it's folded: those that need you, then
+// up to three at work (or, with none, its latest); the rest behind one
+// "N more" line. Folding away a single chat saves nothing.
+export const flowShown = <T,>(rows: T[], rank: (s: T) => number) => {
+  const urgent = rows.filter((s) => rank(s) >= 2);
+  const working = rows.filter((s) => rank(s) === 1).slice(0, Math.max(0, 3 - urgent.length));
+  const shown = new Set(urgent.length + working.length ? [...urgent, ...working] : rows.slice(0, 1));
+  return rows.length - shown.size < 2 ? rows : rows.filter((s) => shown.has(s));
+};
+const runsOf = <T,>(list: T[], flowOf: (s: T) => Flow | undefined) => {
+  const runs: { flow?: Flow; rows: T[] }[] = [];
+  for (const s of list) {
+    const w = flowOf(s);
+    const last = runs.at(-1);
+    if (w && last?.flow === w) last.rows.push(s);
+    else runs.push({ flow: w, rows: [s] });
+  }
+  return runs;
+};
+// How many of a folder's chats show before "Show all": about four lines, a
+// workflow never cut (it's folded instead), and past that working chats
+// up to twice as many lines. Approval requests always remain visible, even
+// beyond that budget, as they do inside each workflow. Callers sort these
+// ahead of working and idle chats before grouping.
+export const firstFew = <T,>(list: T[], flowOf: (s: T) => Flow | undefined, rank: (s: T) => number, few = 4) => {
+  let n = 0;
+  let lines = 0;
+  for (const { flow, rows } of runsOf(list, flowOf)) {
+    const shown = flow ? flowShown(rows, rank).length : 1;
+    const urgent = rows.some((s) => rank(s) >= 2);
+    if (lines >= few && !urgent && !(lines < few * 2 && rows.some((s) => rank(s) > 0))) break;
+    n += flow ? rows.length : 1;
+    lines += shown + (flow && shown < rows.length ? 1 : 0);
+  }
+  return n;
+};
+// How many of a folder's chats stay folded in their workflows: its Show all
+// counts only the chats it brings.
+export const foldedAway = <T,>(list: T[], flowOf: (s: T) => Flow | undefined, rank: (s: T) => number) =>
+  runsOf(list, flowOf).reduce((n, { flow, rows }) => n + (flow ? rows.length - flowShown(rows, rank).length : 0), 0);
+const flowWord = (w: Flow) => {
+  if (w.state === "paused") return "Paused";
+  if (w.state === "done") return "Done";
+  if (w.state === "stopped") return "Stopped";
+  if (w.state === "draft") return "Draft";
+  return `${w.tasks.filter((t) => t.state === "done" || t.state === "skipped").length} of ${w.tasks.length}`;
+};
+// Rows in runs: a workflow's under one quiet line (its name and how far it
+// is, a tap to it), its idle chats folded under "N more"; the others as they
+// are. Each workflow unfolds on its own, never with the folder's Show all.
+export function FlowRuns<T>({ list, flowOf, rank, onOpenFlow, row }: { list: T[]; flowOf: (s: T) => Flow | undefined; rank: (s: T) => number; onOpenFlow?: (w: Flow) => void; row: (s: T) => ReactNode }) {
+  const [unfolded, setUnfolded] = useState<string[]>([]);
+  return (
+    <>
+      {runsOf(list, flowOf).map(({ flow, rows }, i) => {
+        if (!flow) return <Fragment key={i}>{rows.map(row)}</Fragment>;
+        const head = (
+          <>
+            <Workflow size={13} aria-hidden="true" />
+            <span className="chat-flow-name">{plainLine(flow.title) || "Workflow"}</span>
+            <small className={flow.state === "paused" ? "paused" : ""}>{flowWord(flow)}</small>
+          </>
+        );
+        const folded = flowShown(rows, rank);
+        const open = unfolded.includes(flow.id);
+        const hidden = rows.length - folded.length;
+        return (
+          <div className="chat-flow" key={`flow:${flow.id}:${i}`} role="group" aria-label={`Workflow ${flow.title || ""}, ${flowWord(flow)}`}>
+            {onOpenFlow ? (
+              <button className="chat-flow-head" onClick={() => onOpenFlow(flow)}>
+                {head}
+              </button>
+            ) : (
+              <span className="chat-flow-head">{head}</span>
+            )}
+            <div className="chat-flow-rows">
+              {(open ? rows : folded).map(row)}
+              {hidden > 0 && (
+                <button
+                  className="chat-flow-more"
+                  aria-expanded={open}
+                  onClick={() => setUnfolded((u) => (open ? u.filter((id) => id !== flow.id) : [...u, flow.id]))}
+                >
+                  {open ? "Show fewer" : `${hidden} more ${hidden === 1 ? "chat" : "chats"}`}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+// A workflow's chat under its line: its name without the "Workflow · " the
+// line already says.
+export const inFlowTitle = (title: string) => title.replace(/^Workflow · /, "");
 export function ChatLibraryHeader({
   peer,
   apps,
@@ -603,11 +740,7 @@ export default function ChatList({
           t?.toLowerCase().includes(q),
         )),
   );
-  found.sort(
-    (a, b) =>
-      Number(needsYou(b) || b.status === "running") -
-      Number(needsYou(a) || a.status === "running"),
-  );
+  found.sort((a, b) => chatRank(b) - chatRank(a));
   // Codex chats in one of its app's projects group under it, by its name,
   // as in its sidebar (the deepest root holding the chat's folder); others
   // by their folder.
@@ -628,11 +761,14 @@ export default function ChatList({
       }
     return best || cwd;
   };
+  // Each workflow's chats together (FlowRuns).
+  const flowOf = useMemo(() => flowFinder(workflows?.list), [workflows?.list]);
   const projects = new Map<string, AgentSession[]>();
   for (const s of found) {
     const key = groupOf(s);
     projects.set(key, [...(projects.get(key) || []), s]);
   }
+  for (const [key, list] of projects) projects.set(key, inFlows(list, flowOf));
   const groupName = (cwd: string) => projectNames.get(cwd) || projectName(cwd) || "Workspace";
   // Archived from here: gone at once (the Mac's list follows), with a
   // moment to undo it.
@@ -705,7 +841,7 @@ export default function ChatList({
   useEffect(() => () => clearTimeout(held.current.timer), []);
   const cards = (list: AgentSession[]) => (
     <div className="chat-entries">
-      {list.map((s) => (
+      <FlowRuns list={list} flowOf={flowOf} rank={chatRank} onOpenFlow={workflows?.onOpenFlow} row={(s) => (
         <button
           key={`${s.agent}:${s.id}`}
           className={`chat-card ${needsYou(s) ? "waiting" : s.status}`}
@@ -717,7 +853,7 @@ export default function ChatList({
             <AgentLogo agent={s.agent} logos={logos} size={18} />
           </span>
           <span className="chat-entry-copy">
-            <strong>{plainLine(s.title || "") || "New chat"}</strong>
+            <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
             <span className="chat-card-preview">
               {/* Continued from a chat with the other agent, as if forked. */}
               {s.movedFrom && (
@@ -747,7 +883,7 @@ export default function ChatList({
             {s.status === "error" && !needsYou(s) && <span className="chat-card-state error">Stopped</span>}
           </span>
         </button>
-      ))}
+      )} />
     </div>
   );
   return (
@@ -919,8 +1055,8 @@ export default function ChatList({
                       />
                     )}
                   </div>
-                  {cards(expandedFolders.includes(cwd) ? list : list.slice(0, 4))}
-                  {list.length > 4 && (
+                  {cards(expandedFolders.includes(cwd) ? list : list.slice(0, firstFew(list, flowOf, chatRank)))}
+                  {list.length > firstFew(list, flowOf, chatRank) && (
                     <button
                       className="chat-list-more"
                       aria-expanded={expandedFolders.includes(cwd)}
@@ -928,7 +1064,7 @@ export default function ChatList({
                         ? folders.filter((folder) => folder !== cwd)
                         : [...folders, cwd])}
                     >
-                      {expandedFolders.includes(cwd) ? "Show fewer" : `Show all ${list.length}`}
+                      {expandedFolders.includes(cwd) ? "Show fewer" : `Show all ${list.length - foldedAway(list, flowOf, chatRank)}`}
                     </button>
                   )}
                 </section>

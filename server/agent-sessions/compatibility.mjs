@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { computerWord } from "../computer-word.mjs";
+import { spawnable } from "../agent-cli.mjs";
 // A command's output read from a file, not a pipe. Claude Code (2.1.291)
 // exits before a pipe has taken all of its --help: 8 or 16 KB of 22 KB came
 // through, cut mid-line, and the flags past the cut read as missing
@@ -269,7 +270,8 @@ export function createAgentProbe({
           maxBuffer: 256 * 1024,
           env: { ...process.env, CI: "1", NO_COLOR: "1" },
         };
-        const v = await run(file, ["--version"], options);
+        const cli = spawnable(file);
+        const v = await run(cli.file, [...cli.args, "--version"], options);
         version =
           String(v.stdout).match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0] ||
           null;
@@ -299,8 +301,8 @@ export function createAgentProbe({
           missing = required;
         for (let attempt = 0; attempt < 3 && missing.length; attempt++) {
           const h = await run(
-            file,
-            agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"],
+            cli.file,
+            [...cli.args, ...(agent === "claude" ? ["--help"] : ["app-server", "daemon", "--help"])],
             options,
           );
           help = String(h.stdout);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { computerWord } from "./pause";
 import { OpenSetup } from "./OpenClawSetup";
 import { clawBase } from "./OpenClawControls";
 import "./openclaw-skills.css";
@@ -171,7 +172,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                             </span>
                           ))}
                         {skill.state !== "off" && skill.missing.os.length > 0 && (
-                          <span className="claw-skill-pill missing">Not for this Mac</span>
+                          <span className="claw-skill-pill missing">Not for this {computerWord(peer.platform)}</span>
                         )}
                         {skill.blocked && <span className="claw-skill-pill missing">Blocked</span>}
                       </div>

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { tailscaleCli, windowsTailscaleDir } from "./tailscale.mjs";
+import { tailscaleCli, windowsTailscaleDir, findMacTailscaleApp } from "./tailscale.mjs";
 
 // Gets this computer onto Tailscale before Reach needs it: install, open,
 // sign in, switch on. Every step is something the owner does in Tailscale's
@@ -109,7 +109,7 @@ function defaults() {
     platform,
     appInstalled: () =>
       platform === "darwin"
-        ? fs.existsSync(MAC_APP)
+        ? !!findMacTailscaleApp()
         : platform === "win32" && fs.existsSync(windowsApp()),
     status: async () =>
       JSON.parse((await run(tailscaleCli(), ["status", "--json"])).stdout),
@@ -126,7 +126,7 @@ function defaults() {
     // The Windows app keeps running after it opens: started on its own.
     openApp: async () => {
       if (platform !== "win32")
-        return run("open", ["-a", MAC_APP]).catch(() => {});
+        return run("open", ["-a", findMacTailscaleApp() || MAC_APP]).catch(() => {});
       const child = spawn(windowsApp(), [], { detached: true, stdio: "ignore" });
       child.on("error", () => {});
       child.unref();

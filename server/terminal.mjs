@@ -1,6 +1,8 @@
-import * as pty from "node-pty";
+import { loadPty, releaseExitedPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
+import { powershellCall } from "./powershell.mjs";
+const pty = loadPty();
 // The last lines a shell printed, as plain text, for the Home cards. Full-screen
 // programs (Codex, vim) redraw with cursor moves, so they get no preview.
 export function terminalPreview(buffer, lines = 2) {
@@ -54,11 +56,16 @@ export class Terminals {
     const shell =
       process.platform === "win32"
         ? "powershell.exe"
-        : process.env.SHELL || "/bin/zsh";
+        : process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
     const proc = pty.spawn(
       shell,
       process.platform === "win32" ? ["-NoLogo"] : ["-l"],
-      { name: "xterm-256color", cols, rows, cwd, env },
+      {
+        name: "xterm-256color", cols, rows, cwd, env,
+        // The bundled ConPTY releases its native host on natural shell exit.
+        // Windows' inbox backend in node-pty 1.1.0 leaks that host per session.
+        ...(process.platform === "win32" ? { useConptyDll: true } : {}),
+      },
     );
     const session = {
       id: id(),
@@ -82,14 +89,16 @@ export class Terminals {
     let finished;
     session.ended = new Promise((resolve) => { finished = resolve; });
     proc.onExit(({ exitCode }) => {
+      releaseExitedPty(proc);
       finished();
       session.status = "exited";
       session.exitCode = exitCode;
       for (const fn of session.listeners) fn({ type: "exit", exitCode });
     });
     this.sessions.set(session.id, session);
-    // Server-resolved agent command (never client text), run once the shell starts.
-    if (command) proc.write(`${command}\r`);
+    // Server-resolved agent command (never client text), run once the shell
+    // starts; on Windows a quoted path is called (&), as PowerShell needs.
+    if (command) proc.write(`${process.platform === "win32" ? powershellCall(command) : command}\r`);
     // Or text the person chose to run (a chat's play button), typed as they
     // would type it: each line ends with Enter.
     else if (input) proc.write(`${input.replace(/\r?\n/g, "\r")}\r`);

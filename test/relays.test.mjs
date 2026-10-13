@@ -130,7 +130,7 @@ test("Codex reviews read-only, and builders never get more than each app's middl
   assert.equal(guardian.started[0].body.approvalsReviewer, "auto_review");
   const claude = stage();
   await claude.relays.start({ owner: "phone", from: { agent: "codex", id: CODEX }, steps: [{ kind: "build", agent: "claude" }], now: true });
-  assert.equal(claude.started[0].body.mode, "acceptEdits");
+  assert.equal(claude.started[0].body.mode, "auto");
 });
 
 test("a relay set while the chat is idle waits for its next reply, ignores blips, and stops when access ends", async () => {

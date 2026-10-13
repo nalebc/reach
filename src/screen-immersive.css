@@ -148,3 +148,17 @@
     gap: 6px;
   }
 }
+
+/* Little room above the keyboard (a phone on its side): the name bar goes
+   and the key row slims, so the computer keeps what height is left. This
+   follows the fullscreen typing rule above, which otherwise kept the bar. */
+.simple-screen.screen-expanded.screen-typing[data-compact-viewport="true"]
+  > .screen-toolbar {
+  display: none;
+}
+.simple-screen.screen-typing[data-compact-viewport="true"] .key-row {
+  padding: 4px 6px;
+}
+.simple-screen.screen-typing[data-compact-viewport="true"] .key-row button {
+  height: 32px;
+}

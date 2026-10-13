@@ -133,3 +133,17 @@ test("a chunk whose connection is destroyed before its bytes reach the file neve
   assert.equal(await within(uploads.write(id, { id: "phone" }, 0, again)), "settled");
   assert.equal(uploads.status(id, { id: "phone" }).offset, 10);
 });
+
+test("cancelling an upload closes a silent chunk and releases its file", async t => {
+  const { uploads, create } = await fixture(t);
+  const { id } = await create("phone", "cancel.txt");
+  const body = await held(Buffer.from("x"), false);
+  t.after(() => body.destroy());
+  const writing = uploads.write(id, { id: "phone" }, 0, body);
+  const settled = within(writing, 500);
+  await new Promise(resolve => setImmediate(resolve));
+  await uploads.cancel(id, { id: "phone" });
+  assert.equal(await settled, "settled", "cancel must end the writer, including a silent request");
+  assert.equal(body.destroyed, true);
+  assert.equal(uploads.get(id), undefined);
+});

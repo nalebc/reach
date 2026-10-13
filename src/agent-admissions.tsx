@@ -10,6 +10,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
+import { requestDeadline } from "./request-deadline";
 import {
   faceIdError,
   faceIdReady,
@@ -100,11 +101,12 @@ export function useAgentAdmissions(
     const refresh = async () => {
       if (fetching) return;
       fetching = true;
+      const deadline = requestDeadline(controller.signal);
       try {
         const result = await request<AgentAdmission[]>(
           peer,
           "/api/agents/admissions",
-          { signal: controller.signal },
+          { signal: deadline.signal },
         );
         if (controller.signal.aborted) return;
         const list = Array.isArray(result)
@@ -120,6 +122,7 @@ export function useAgentAdmissions(
           setOpened(null);
         }
       } finally {
+        deadline.dispose();
         fetching = false;
       }
     };
@@ -403,7 +406,9 @@ export function AgentAdmissionReview({
                         {canControlScreen ? "Screen control" : "Screen"}
                       </strong>
                       <small>
-                        {canControlScreen
+                        {preset === "full"
+                          ? "View and control every app and window"
+                          : canControlScreen
                           ? "View and control allowed app windows"
                           : "View only"}
                       </small>
@@ -431,13 +436,18 @@ export function AgentAdmissionReview({
                             ))}
                           </ul>
                         </>
+                      ) : preset === "full" ? (
+                        <small>
+                          Runs as your user account: passwords, security settings,
+                          all files and commands, including changing or stopping Reach.
+                        </small>
                       ) : (
                         <small>
                           Protected and hidden windows are excluded from the
                           shared screen.
                         </small>
                       )}
-                      {!!admission.hidden?.length && (
+                      {preset !== "full" && !!admission.hidden?.length && (
                         <ul
                           className="agent-admission-resources"
                           aria-label="Hidden apps"
@@ -616,7 +626,7 @@ export function AgentAdmissionReview({
               sensitive files. This connection does not require separate
               approval for each command.
               {admission.scopes.includes("browser:shell") &&
-                " Protected screen and file-tool checks are guardrails, not a sandbox for shell commands."}
+                " Full control has no content filters or shell sandbox and can change or stop Reach itself."}
             </p>
           )}
         </section>

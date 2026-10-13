@@ -20,6 +20,7 @@
     "!scripts/package.mjs",
     "!scripts/benchmark-desktop.mjs",
     "!scripts/compress-assets.mjs",
+    "!scripts/native/hello.cs",
     "dist/",
     "tailnet/dist/",
     "docs/*.md",
@@ -39,7 +40,7 @@
     "start": "node server/index.mjs",
     "test": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000 --test-concurrency=4 test/*.test.mjs",
     "test:file": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=60000",
-    "test:typing": "REACH_TEST_TYPING_NATIVE=1 node --test test/typing-native.test.mjs",
+    "test:typing": "REACH_TEST_TYPING_NATIVE=1 npm run test:file -- test/typing-native.test.mjs",
     "pair": "node scripts/pair.mjs",
     "share": "node scripts/share.mjs",
     "install-service": "node scripts/service.mjs install",
@@ -48,17 +49,21 @@
     "agent-token": "node scripts/agent-token.mjs",
     "mcp": "node scripts/mcp.mjs",
     "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs",
-    "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 node --test test/claude-permission-native.test.mjs",
+    "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 npm run test:file -- test/claude-permission-native.test.mjs",
     "build:release": "npm run build && node scripts/prune-assets.mjs --release && node scripts/build-tailnet.mjs --required && node scripts/build-notices.mjs && node scripts/release-assets.mjs",
     "verify:package": "node scripts/smoke-package.mjs",
-    "test:ci": "node --import ./test/helpers/runaway-guard.mjs --test --test-timeout=180000 --test-concurrency=2 test/*.test.mjs"
+    "test:ci": "node .github/scripts/run-tests.mjs all",
+    "test:ci:windows": "node .github/scripts/run-tests.mjs windows",
+    "test:ci:native": "node .github/scripts/run-tests.mjs native",
+    "test:ci:installed": "node .github/scripts/test-installed-package.mjs"
   },
   "dependencies": {
     "buffer-crc32": "1.0.0",
     "express": "^5.1.0",
+    "express-rate-limit": "8.7.1",
     "json5": "^2.2.3",
     "multer": "^2.0.2",
-    "node-pty": "^1.1.0",
+    "node-pty": "1.1.0",
     "prompts": "2.4.2",
     "qrcode-terminal": "0.12.0",
     "tar-stream": "3.2.2",
@@ -87,7 +92,8 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "typescript": "^5.9.2",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "yaml": "2.9.1"
   },
   "overrides": {
     "xcode": {

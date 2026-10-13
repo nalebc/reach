@@ -47,19 +47,19 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | --- | --- | --- | --- | --- | --- |
 | H1 | Node 22+ is on PATH | Reach uses it | P | CI `./reach --help` | CI only |
 | H2 | Node is missing or older than 22 | Reach downloads its pinned private Node and checks its hash | U | `installable` (version/hash parity) | passed Oct 10 |
-| H3 | No internet, or no curl or tar | Says what to do (install curl, or Node.js 22+), not curl's raw error | P, M | `launcher-script`, M7 | fixed, passed Oct 10; on Ubuntu (M7) too |
+| H3 | No internet, curl, tar, or checksum tool | Names the missing tool before downloading; offers installing it or Node.js 22+. A failed download leaves no partial runtime | P, M | `launcher-script`, M7 | passed Oct 11 (isolated tools); Ubuntu device check remains M7 |
 | H4 | Unsupported OS or CPU | Git Bash on Windows is sent to `.\reach.cmd`; another computer is named, with installing Node.js 22+ yourself as the way | U | `launcher-script` | fixed, passed Oct 10 |
 | H5 | `npm ci` or the build fails | Names the likely fix (build tools, internet, disk), then `.reach/setup.log` | P | `setup-blockers` | fixed, passed Oct 10 |
 | H6 | No Go toolchain | Reach starts. Without the browser client, phones need the Tailscale app | P | `release-assets` | passed Oct 10 |
-| H7 | Reach is already running, or its lock is held | Says where it runs and offers `./reach restart` | P | `instances` | passed Oct 10 |
+| H7 | Reach is already running, or its lock is held | Says where it runs and offers restart with the active launcher; a held lock also offers restart | P | `instances`, `windows-commands` | passed Oct 11 (Windows shim; real console remains M8) |
 | H8 | Started from iTerm, VS Code, Warp or Codex on a Mac | Opens a Terminal window and runs there | U | `outside-terminal` | passed Oct 10 |
 | H9 | No terminal (no TTY) | Skips the guided setup and names the next step | P | `setup-blockers`, `tailscale-connect`, `first-run-launch` | passed Oct 10 |
 | H10 | Ctrl+C at a menu or during a wait | "Paused. Run ./reach to continue."; lock released; resumes at the same step | U, P, M | `setup-blockers`, M7 | fixed, passed Oct 10; in a real terminal on Ubuntu (M7) too |
 | H11 | npm global install | Settings and phones live in `~/.reach` | U | `installable` | passed Oct 10 |
 | H12 | Checkout under `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive | Detected; background mode explained (see B2) | U | `setup-blockers` | fixed, passed Oct 10 |
-| H13 | Linux without a C compiler (node-pty builds from source) | Names the packages to install | U, M | `setup-blockers`, M7 | fixed, passed Oct 10; real npm on Ubuntu (M7) too |
+| H13 | Linux without a C compiler, or a node-gyp download fails | Names build packages for a build failure; network failures name the connection fix first | U, M | `setup-blockers`, M7 | passed Oct 11; real compiler failure was checked Oct 10 |
 | H18 | Windows, first `.\reach.cmd` in a terminal | The guided setup in two steps: 1. Tailscale on this computer (T17–T21), 2. HTTPS link for your phone (T22). Then the pairing code (T23). No account, invite or background step, and no account settings saved | U | `setup` | partly: setup's Windows steps passed; bootstrap running them on Windows is checked only on a Windows host (M8) |
-| H19 | Windows: hints on the first-run path (setup's wait, `pair`, `approve`, `configure`, `link`, `update`) and the phone's ("run … configure", "run … invites") | Name `.\reach.cmd`, never `./reach` | U | `setup`, `tailscale-connect` | partly: every hint uses `command` (`scripts/home.mjs`), checked on this Mac; the literal `.\reach.cmd` only shows on Windows (M8) |
+| H19 | Windows: hints on the first-run path (setup's wait, `pair`, `approve`, `configure`, `link`, `update`) and the phone's ("run … configure", "run … invites") | Name `.\reach.cmd`, never `./reach` | U | `setup`, `tailscale-connect`, `windows-commands` | passed Oct 11 with the Windows shim, including service and linked-computer hints; real console remains M8 |
 | H14 | First run in a terminal (a checkout) | The install (npm, the phone interface, browser sign-in) runs while setup asks about Tailscale; the first question comes in seconds, not after the install. Nothing the install says interrupts a menu; menus are numbered until it's done. `setup.log` records how long setup and each install part took | U | `first-start`, `prompts` | fixed, passed Oct 10 |
 | H15 | Setup done before the install | "Finishing the first install: <part>…", then Reach starts | U | `first-start` | fixed, passed Oct 10 |
 | H16 | The install fails during setup (no internet, no compiler) | Setup finishes and is saved; the install's fix is said after it | U | `first-start` | fixed, passed Oct 10 |
@@ -78,14 +78,14 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | T6 | Linux user without operator permission | Signed out: `sudo tailscale up --operator=$USER` (Tailscale refuses a signed-out computer to everyone but root, its operator too). Switched off, or already on: `sudo tailscale set --operator=$USER`. Reach goes on once it's done | U, M | `tailscale-connect`, M7 | failed on Ubuntu (M7), fixed, passed Oct 10 |
 | T7 | Tagged device, or not a personal account | Retry or set up later | U | `tailscale-auth` | passed Oct 10 |
 | T8 | Tailscale too old for socket targets | "Update Tailscale…" | U | `tailscale-auth` | passed Oct 10 |
-| T9 | Mac App Store Tailscale with a short name over 14 characters | Caught in setup, before "Setup complete", with the fix | U | `setup-blockers` | fixed, passed Oct 10 |
+| T9 | Mac App Store Tailscale with a long account name | Names up to 20 characters fit the shorter socket path; longer paths are caught during setup with the standalone-app fix | U | `setup-blockers` | passed Oct 11 |
 | T10 | MagicDNS or HTTPS certificates off | Opens the DNS page and waits | U, M | `setup`, M7 | passed Oct 10; on Ubuntu (M7) HTTPS off passed, MagicDNS off not reproduced |
-| T11 | Port 8443 used by another service, by Funnel, or by an older Reach's route | Each gets its exact fix (`tailscale serve --https=8443 off`, `--https-port`) | U | `launcher`, `setup-blockers` | fixed, passed Oct 10 |
+| T11 | Port 8443 used by another service, by Funnel, or by an older Reach's route | Names `--https-port`, `tailscale funnel --https=8443 off`, or `tailscale serve --https=8443 off`, as appropriate | U | `launcher`, `setup-blockers` | passed Oct 11 |
 | T12 | `--https-port 9443` | Saved, reused on the next start, and used by the invites rule | U | `setup-blockers` | fixed, passed Oct 10 |
 | T13 | Port 443 used by another service | Reach runs; phones need the Tailscale app; the terminal says so | U | `first-run-launch` | passed Oct 10 |
 | T14 | Funnel not allowed by the tailnet policy | Prints and opens Tailscale's page | U | `first-run-launch` | fixed, passed Oct 10 |
 | T15 | Tailscale CLI and daemon versions differ | Warning | U | `first-run-launch` | passed Oct 10 |
-| T16 | A full Tailscale-mode start (fake Tailscale) | Reaches "Reach is ready", prints the one address | P | `first-run-launch` | passed Oct 10 |
+| T16 | A full Tailscale-mode start (fake Tailscale) | Prints "Open on your phone" with the one address and "Approve new devices here" | P | `first-run-launch` | passed Oct 10 |
 | T17 | Windows: Tailscale not installed | Menu, then the Windows download page opened and its URL printed. Reach continues once it's installed, without a restart | U | `tailscale-connect` | fixed, passed Oct 10 |
 | T18 | Windows: installed, not running | Opens the Tailscale app (`tailscale-ipn.exe`) once, then names the service fix: `net start Tailscale` from a terminal opened as administrator. Without the app: the Start menu, and the same fix. No Mac or Linux words | U | `tailscale-connect` | fixed, passed Oct 10 |
 | T19 | Windows: signed out | Runs `tailscale login`, prints and opens the URL | U | `tailscale-connect` | fixed, passed Oct 10 |
@@ -114,7 +114,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | B1 | Installed from a normal folder | Service up, link printed, phone approved | U | `setup`, `service` | passed Oct 10 |
 | B2 | Installed from a protected folder (`~/Documents`…) | Explains that macOS blocks background apps there, and offers the Terminal window or moving Reach | U | `setup-blockers` | fixed, passed Oct 10 |
 | B3 | The service keeps failing | Stops waiting and shows the error log's last line | U | `setup-blockers` | fixed, passed Oct 10 |
-| B4 | Already installed, or installed from another folder | Refused with where it is | U | `service` | passed Oct 10 |
+| B4 | Already installed, or installed from another folder | Refused with the original folder when known and the plist path; nothing is stopped | U | `service` | passed Oct 11 |
 
 ## W. Pairing window
 
@@ -123,7 +123,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | W1 | Interactive start | Opens a 15-minute window; the link and QR are the one address | S, P | `pairing-window`, `phone-link`, `first-run-launch` | fixed, passed Oct 10 |
 | W2 | A phone is approved | The window closes; the internet gets "Not found." again | S | `pairing-window` | passed Oct 10 |
 | W3 | 15 minutes pass | The window closes | S | `pairing-window` | passed Oct 10 |
-| W4 | `./reach pair` | Reopens the window, for a foreground or background Reach | S | `pairing-window` | passed Oct 10 |
+| W4 | `./reach pair` | Reopens the window on this computer and prints its own address, even when the fleet home is elsewhere | S | `pairing-window` | passed Oct 11 (two real linked computers remain a manual check) |
 | W5 | Background service or no TTY | Never opens a window by itself | P | `first-run-launch`, `phone-link` | passed Oct 10 |
 | W6 | Port 443 isn't Reach's | Prints the private 8443 link and says the phone needs the Tailscale app | U | `first-run-launch`, `phone-link` | passed Oct 10 |
 | W7 | Public name not published yet | A warning next to the link | U | `public-dns`, `first-run-launch` | passed Oct 10 |
@@ -137,7 +137,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | --- | --- | --- | --- | --- | --- |
 | P1 | Tailscale app on, same account | Reach directly, then Connect, a code, approve | D, M | `faceid-ui`, M1 | passed (D) + manual M1 |
 | P2 | Tailscale app on, another account | "Connect Tailscale using the account configured on this computer." | S | `tailscale-auth` | passed Oct 10 |
-| P3 | Reach in the background | `./reach approve` | U | `service` | passed Oct 10 |
+| P3 | Reach in the background | `./reach approve` | U | `tailscale-auth` | passed Oct 10 |
 | P4 | No app, during a window | Start page, then Tailscale sign-in in the browser, then approve | D, M | `start-screens-ui`, M2 | passed (D) + manual M2 |
 | P5 | No app, outside a window | "Not found." Nothing can be shown publicly; the terminal and README explain `./reach pair` | S, M | `tailscale-auth`, M3 | passed (S) + manual M3 |
 | P6 | Each start-page screen | Sign in, Step 1 of 2, Joining, Waiting for approval, Offline, Wrong account, Couldn't start, Connection stopped, Get Tailscale, Agent link, Not available | D | `start-screens-ui` | passed Oct 10 |
@@ -183,9 +183,9 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | A1 | Nothing installed (no Claude Code, Claude app, Codex, Gemini, OpenClaw, Homebrew) | Health lists each as not installed, with no errors. The chat list has no errors. Reach stays up while polled | S, P | `first-run-agents`, `first-run-launch` | fixed, passed Oct 10 |
 | A2 | Chat tab, nothing installed | "Add an agent": Claude Code, Codex and OpenClaw with Install, Gemini with a link. No red alert. No Start button before the check finishes | D | `first-run-chat-ui` | fixed, passed Oct 10 |
 | A3 | Install, then Check again | The maker's command shown first, run in a Reach terminal, then found | S, D | `agent-install`, `agent-install-ui` | passed Oct 10 |
-| A4 | Claude Code installed, signed out | Sign in | D | `claude-signed-in-check`, `across-agents-ui` | passed Oct 10 |
+| A4 | Claude Code installed, signed out | Sign in | D | `claude-signed-in-check`, `agent-session-ui` | passed Oct 10 |
 | A5 | Claude app without the Claude Code CLI | "Claude Code isn't installed", not "signed out". Sending is blocked unless the Claude app owns the chat | S, D | `first-run-agents`, `agent-session-ui` | fixed, passed Oct 10 |
-| A6 | Codex installed, signed out | Sign in | D | `across-agents-ui` | passed Oct 10 |
+| A6 | Codex installed, signed out | Sign in | D | `agent-session-ui` | passed Oct 10 |
 | A7 | OpenClaw installed, never set up | "OpenClaw is installed but not set up yet", with setup | S | `first-run-agents` | fixed, passed Oct 10 |
 | A8 | OpenClaw set up, Gateway stopped | Start OpenClaw | S | `openclaw` | passed Oct 10 |
 | A9 | Gemini only | Read-only tab | S, D | `agent-gemini`, `gemini-chat-ui` | passed Oct 10 |
@@ -198,7 +198,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | ID | Case | Expected | Type | Test | Status |
 | --- | --- | --- | --- | --- | --- |
 | D1 | No Apple Command Line Tools | The screen says to install them. Saved tools say why instead of vanishing. Mac prompts retry later. No internal helper names | S, D | `first-run-agents` | fixed, passed Oct 10 |
-| D2 | No Screen Recording or Accessibility | Each permission named | S | `screen-stream`, `agent-desktop` | passed Oct 10 |
+| D2 | No Screen Recording or Accessibility | Each permission named | S, D | `outside-terminal`, `agent-preset-invitations`, `screen-ask-ui` | passed Oct 10 |
 | D3 | Linux host | No Screen tab | U, M | `capabilities`, M7 | fixed (its assertion), passed Oct 10; on Ubuntu (M7) the API says no screen too |
 | D4 | Windows without FFmpeg | Compatibility video; FFmpeg installed later is found within minutes, no restart | U | `setup-blockers` | fixed, passed Oct 10 |
 
@@ -331,12 +331,103 @@ Each fix was then run on the host: Reach printed the command, it was run in anot
 
 **Seen, not fixed (small).** On Linux, setup's HTTPS step says "(opening it)" but opens nothing. "Opening the Tailscale sign-in page in your browser…" prints just before a refusal. Without Go, "preparing browser sign-in … about 2 minutes" prints on every start.
 
+### October 11, 2026: empty setup through phone approval and a shared file
+
+The new `first-install-e2e` suite starts the actual `bin/reach.mjs` CLI with an empty temporary home: no saved preferences, no onboarding record, no paired devices, and no optional agents or developer tools. It uses an npm-shaped package without `src/`; its built assets and dependencies come from the checkout. The separate `npm run verify:package` check installs the actual tarball with production dependencies in another temporary directory.
+
+Reach's bootstrap, numbered menus, saved settings, Unix-socket ingress, account checks, pairing windows, approval code and file APIs run for real. A stand-in Tailscale executable supplies installation/sign-in states, identities and Serve/Funnel routes. OS page opening and process inventory are simulated, so these tests cannot stop the owner's Reach or change their Tailscale setup.
+
+Each cell below passed on October 11. A desktop prerequisite is completed before any phone can connect. **App** means the phone reaches Reach directly on the tailnet. **Browser** means public start-page access, followed by a simulated browser node joining the owner's account. Both require local approval before reading the shared test file. **Refused** means another account cannot request approval or read files.
+
+| Desktop starts with | Phone app connected to owner | No phone app | Phone app off | Phone signed out | Phone app on another tailnet | Phone uses another account for Reach |
+| --- | --- | --- | --- | --- | --- | --- |
+| No Tailscale installed | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+| Installed, signed out | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+| Installed, switched off | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+| Installed, daemon closed | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+| Waiting for admin approval | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+| Already connected | App passed | Browser passed | Browser passed | Browser passed | Browser passed | Refused |
+
+Those 36 combinations also check that approval closes the public pairing window, `reach pair` reopens it for the next phone, public requests cannot read files, and a device's credential cannot be reused by another Tailscale node.
+
+`first-install-phone-ui` connects the real `start.ts`, `main.tsx`, `ConnectForm` and browser transport to that same real server. It runs eight paths with both iPhone and Android user agents: connected app; no app; app off; app signed out; app on another tailnet; wrong browser account corrected; browser waiting for admin approval; and WebAssembly blocked with an app fallback. Every successful path proceeds from the displayed approval code to authenticated file bytes. Only the post-approval workspace is replaced. These are DOM integration tests, not Safari/Chrome or physical-device tests.
+
+Additional first-install checks cover enabling MagicDNS and HTTPS in sequence, no terminal in six Tailscale states, Funnel refused with a working private app connection, interrupted setup, a changed desktop account, and discovering a per-user Mac app without PATH or an executable override.
+
+The entire 71-check desktop/phone suite also passed against a clean npm install of the 26.6 MB release tarball using `REACH_TEST_PACKAGE`, rather than the checkout's dependencies. This includes starting with Tailscale missing, both DNS switches off and Funnel refused, then enabling each dependency in turn and connecting a phone without installing the phone app.
+
+The opt-in `first-install-source` check also passed on this Mac with `REACH_TEST_SOURCE_INSTALL=1 npm run test:file -- test/first-install-source.test.mjs`. It ran the actual `./reach` shell launcher with Node, npm, Go and Tailscale absent from PATH, in a temporary source checkout without dependencies or built assets. It downloaded and checksum-verified the pinned Node 22.23.3 runtime, ran real `npm ci`, built the interface, completed setup, approved a simulated Tailscale phone, and read the shared test file. Without Go the source build correctly reports that the phone needs the Tailscale app; the npm package ships the browser client and does not require Go. This test requires network access and installs nothing globally.
+
+Four defects were reproduced with failing tests, then fixed:
+
+| Defect | Result after the fix | Files |
+| --- | --- | --- |
+| Setup resumed at HTTPS after Tailscale signed out kept asking to enable certificates | Recovers the Tailscale connection first, then checks DNS and HTTPS; completed setup steps are preserved | `scripts/setup.mjs` |
+| Switching the desktop's Tailscale account left Reach offering a link configured for its old owner | Stops before launch, names both accounts, and points to `reach setup account`; never silently replaces the saved owner | `scripts/configure.mjs`, `scripts/launch.mjs` |
+| A Mac app under `~/Applications`, or Homebrew installed after the terminal opened, was missed | Discovers both app locations and Homebrew prefixes, honors an existing PATH CLI after app discovery, and checks again while setup waits | `scripts/tailscale.mjs`, `scripts/tailscale-connect.mjs` |
+| Enabling Funnel after startup left the old private link advertised and browser pairing closed | Updates the link and QR as soon as Funnel is ready, preserving the initial pairing window; an expired window or a window closed by approval stays closed, and unattended starts still require `reach pair` | `scripts/launch.mjs` |
+
+**Still requires a live-device pass:** downloading/installing Tailscale through the OS installer, signing into Tailscale's hosted identity provider, real tailnet ACLs and Funnel provisioning, switching Wi-Fi/cellular/VPN on physical iPhone and Android devices, and a native Windows setup. The automated matrix proves Reach's behavior for the supplied states; it does not certify those external systems or replace M6–M8.
+
+### October 11: isolated platforms, native iOS and contribution gates
+
+The later pass installed and exercised actual release archives in disposable Ubuntu 24.04 ARM64 and x86-64 environments, including an unprivileged Linux user. These are containers inside Docker Desktop's Linux VM; x86-64 uses CPU emulation. They do not certify a native Windows desktop, systemd, real Tailscale accounts or physical phones. The installed onboarding matrix passed 70 checks with one Mac-only skip on each Linux architecture and all 71 checks on macOS. A Linux source installation also downloaded its checksum-verified Node runtime, installed dependencies and built Reach with Node/npm/Go absent from PATH. Tailscale identity and phone network states remain fixtures.
+
+A separate [real Tailscale check](benchmarks/tailscale-logged-out-2026-10-11.json) installed checksum-verified vendor binaries in a disposable Linux container. Reach correctly distinguished missing installation, stopped daemon and logged-out daemon as both root and an ordinary user. Networking was disconnected before the daemon started. These four checks exercise production discovery/setup functions, without signing in or joining a tailnet; they do not cover a system package installer, systemd, real phone traffic or Serve/Funnel.
+
+The exact source snapshots, full-suite attempts, targeted follow-ups, skips and archive receipts are recorded separately in [platform validation](benchmarks/platform-validation-2026-10-11.json). A focused pass does not replace a failed full-suite result. The [local release evidence](benchmarks/local-release-validation-2026-10-11.json) records macOS, native helpers and simulator runs without adding overlapping suite counts together.
+
+The real iOS shell passed on fresh, disposable iOS 26.3.1 and 26.4 simulators: the actual pairing UI saved its credential, WKWebView read authenticated file bytes, folder traversal was refused, the native filesystem preserved bytes, and the native URLSession download returned the expected authenticated content. The 26.4 extension held the HTTPS response while Reach was backgrounded by opening Settings, then reopened Reach and verified the bytes and active state. The native share sheet was opened and inspected without choosing a recipient. Only the copied test shell permits local HTTP for the web view; the download uses a temporary HTTPS certificate trusted only in that simulator. Production URL restrictions and TLS validation remain enabled. Simulator execution requires Xcode's local signing (`CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`); an unsigned compile lacks the linked simulator identity needed by the background service.
+
+This does not test physical-device suspension/OS termination, cellular/VPN transitions, camera scanning, Face ID, push delivery or App Store signing. The simulator's non-file workspace endpoints deliberately return a fixture error so it cannot inspect the host's live terminals, apps, screen or notifications.
+
+This pass found and fixed additional production issues:
+
+| Defect | Verified correction |
+| --- | --- |
+| Minimal Linux without `SHELL` selected absent `/bin/zsh` | Linux defaults to `/bin/sh`; macOS keeps zsh; explicit shell settings still win. Real installed-package PTYs pass without a test-only shell override. |
+| Agent command spawn failure could be returned as success with a null exit code | Startup errors return a safe failure, are logged as failures, and release command capacity. |
+| Native download names `.` or `..` could escape the assigned UUID cache folder and reach recursive deletion | Names are confined, persisted IDs and destination directories are validated, symlinks/existing results are refused, and completion never deletes a destination. Compiled Foundation tests exercise real temporary files. |
+| Native download URL validation allowed non-HTTP schemes on localhost | Only HTTPS and exact HTTP loopback are admitted; credentials and fragments are rejected. |
+| Denied process inspection could report that Reach was stopped and let another launch proceed | Status, start and stop/restart fail with an actionable error when the process inventory is unavailable; an unreadable lock owner keeps its lock. Regression tests use inert process APIs and never stop the user's Reach. |
+| Claude's explicit Default permission choice, including fallback for models without Auto, was omitted and replaced by the server's Auto default | The composer sends the explicit selected mode. DOM tests cover new-chat Auto, explicit Default and unsupported-Auto fallback; existing host tests verify Default maps to Manual. |
+| Equal filesystem modification times could leave new hosted connectors unavailable and rotated public-door keys cached | All four routing caches use file identity, nanosecond metadata and a successful-write generation. Deterministic same-mtime tests cover new registrations, other-process writes, key rotation/revocation, unavailable stores and recovery. Actual API authorization separately rereads credentials. |
+| Grouping workflow chats could move idle siblings ahead of another chat waiting for approval, hiding that approval behind “Show all” | Both chat lists keep approval requests visible beyond the ordinary row budget, including inside folded workflows. Legacy title matching requires one unambiguous Codex task. Real component regressions cover approval/running visibility, expansion, search/archive and matching chat IDs on another computer. |
+
+The native Mac agent pass also fixed cursor-overlay false refusals and Command-modifier leakage during typing; see [agent test evidence](BROWSER_AGENT_TOOLS.md#live-native-follow-up-and-transport-measurements-october-11).
+
+CI now has explicit required Linux, macOS ARM/Intel, Windows portability and iOS simulator lanes, native policy/sandbox checks, installed-package onboarding, dependency/history/workflow scans, and reports retained on failure. Both npm and portable archives are created before their clean-install tests; publishing can copy only the exact bytes bound to successful receipts. Contributor code runs without publishing credentials. The release job uses protected approval and OIDC, with no checkout, dependency installation or lifecycle scripts while publishing.
+
+Workflow files alone do not enforce merges. GitHub initially refused hosted jobs because of account billing/spending limits. After the owner updated billing, the audit job in the fifth attempt of an existing-main run passed at 20:46 UTC. The overall run remained failed because its other refused jobs were not rerun; this historical job result does not establish current billing status or validate the combined-source matrix. The intended open-source repository became public on October 12 (UTC); its main and candidate PR have completed CodeQL analyses, and hosted platform validation is in progress. The earlier private-plan ruleset restriction no longer applies there. Action SHA pinning, the inventoried action allowlist, and the protected manual-approval release environment were enabled and read back. At the owner's request, branch and release-tag protections wait until final validation and main integration; npm trusted publishing still needs its package-side setup. The ruleset separately requires CodeQL findings to pass, because a successful scan can still report vulnerabilities. Follow [.github/MAINTAINER_SETUP.md](../.github/MAINTAINER_SETUP.md) and prove both a failing check and a qualifying security finding block a PR before allowing automatic merges. Repository visibility changed only after history review; no package publication or production Reach restart was performed during testing.
+
+### October 11: Batch 1 setup, install, pairing and CLI regressions
+
+The scoped regressions use temporary homes, mocked services and fake Tailscale. Each behavior fix was reproduced before changing production code. Builds and archive tests run only in a copied checkout. The running Reach and its served files are left alone.
+
+| Finding | Expected result | Test |
+| --- | --- | --- |
+| S5 | A pairing code on a linked computer uses that computer's own address | `pairing-window` (W4) |
+| R1 | A missing node-pty binding names npm's script-approval repair before server startup; Linux npm 12 also tests an explicitly approved rebuild | `installable`, `npm12-install` (Linux CI only) |
+| S8, S9 | Portable copies point to the next archive; an unwritable npm prefix names permissions and ownership, or a user-owned prefix | `reach-updates`, `portable-install` |
+| S2, S3, S7 | Download prerequisites are checked first, offline cleanup is checked in the failed run's own folder, and a node-gyp network error gets the internet hint | `launcher-script`, `setup-blockers` (H3, H13) |
+| S14, S18 | Held locks offer restart; hints use the active command on Windows and npm installs | `windows-commands` (H7, H19) |
+| S13, S16, S17 | Serve ignores extra metadata but refuses extra hosts, handlers and Funnel; service refusals identify the folder/plist; Funnel on the private port names its off command | `service`, `setup-blockers` (B4, T11) |
+| B2, B3 / S24 | Native and Windows gates each have a CI lane selecting all six formerly orphaned files | `ci-policy` |
+| S15 | The extracted portable archive runs its full dependency install and interface build on first local launch; update gives archive guidance | `portable-install` (installed lane) |
+| R2 | Committed notices match the npm lock, Go modules and Go runtime; release checks reject drift without rebuilding | `notice-versions` |
+| S21 | npm's launcher refuses Node older than 22 before importing Reach | `installable` |
+| S19, S22, B1 | Chat tests use `sessions` with an owner positive control; installer UI uses `installPlan`; Home operations use a private fixture with Library | `capabilities`, `agent-install-ui`, `browser-home-preset` |
+| R3 | Cold source installation refuses non-Linux hosts before making a fixture or starting a child | `first-install-source` |
+| S20, S23 | Matrix rows cite the actual output and tests; install docs give the signed-out operator command and macOS 13 requirement for Tailscale 1.104 | `first-run-docs` |
+
+The earlier macOS cold-source result above is historical evidence, not permission to rerun that harness on a Mac. It is now Linux-only to prevent discovery of a real app-bundled Tailscale. Native/Windows lane selection and the npm 12 Linux lane are configured here; hosted runner results are still needed. A second browser on the same device still needs approval, a passkey or a valid linked-device ticket; grouping devices grants no access. Linux npm 12 keeps its script-approval boundary and Reach explains the explicit native rebuild. Private-socket detection checks the installed CLI's advertised capability and fails closed when absent.
+
 ### Not live until Reach restarts
 
 Interface changes (`src/`, `index.html`) reach phones as soon as they're saved. Server and launcher changes, the pairing window included, take effect at the next `./reach restart`.
 
 ### Known limits (not fixed in this pass)
 
-Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people and agents without Tailscale need the same, so a Windows computer says they aren't available (T26). People already on your Tailscale can still be invited. On Windows, `status` and `stop` see only the Reach running from the same folder (H20). Validation on a real Windows host (M8) is separate work. On Ubuntu, the full start and the phones are still to check (M7). A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
+Windows has the guided setup (H18) but approves phones by pairing code (T23); linking computers needs Tailscale-account approval, so `link` says it isn't available there (T25). Invite links for people and agents without Tailscale need the same, so a Windows computer says they aren't available (T26). People already on your Tailscale can still be invited. On Windows, `status` and `stop` see only the Reach running from the same folder (H20). Validation on a real Windows host (M8) is separate work. Ubuntu graphical desktop/service and physical-phone acceptance remain M7; the disposable container launch and onboarding tests above do not replace them. A phone that never installs the Tailscale app can come back only while a pairing window or invitation is open.
 
 This Mac's `dist/` still holds its earlier builds until the next full build prunes them (`./reach` start, or `npm run build`).

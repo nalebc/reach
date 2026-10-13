@@ -165,6 +165,17 @@ function fakeDaemon(replies = {}) {
   };
 }
 
+test("a new chat's first turn uses its chosen named permission profile", async t => {
+  const daemon = fakeDaemon({ "thread/start": { thread: { id: T } }, "turn/start": { turn: { id: "first" } } });
+  const live = createCodexLive({ daemon });
+  t.after(() => live.close());
+  await live.start({ cwd: "/work", text: "hello", model: "fixture-model", modeName: "profile:network-only" });
+  const turn = daemon.calls.find(([method]) => method === "turn/start")[1];
+  assert.equal(turn.permissions, "network-only");
+  assert.equal(turn.approvalPolicy, "on-request");
+  assert.equal(turn.approvalsReviewer, "user");
+});
+
 test("continuing a Codex thread resumes it, streams the turn and lets it go after", async () => {
   const daemon = fakeDaemon({ "turn/start": { turn: { id: "turn-1" } } });
   const live = createCodexLive({ daemon });
@@ -820,6 +831,23 @@ test("completion of an older Codex turn cannot finish a newer turn", async () =>
   daemon.emit("turn/completed", { threadId: T, turn: { id: "old", status: "completed" } });
   assert.equal(live.view(T).status, "running");
   assert.equal(live.view(T).turnId, "new");
+});
+
+test("a turn/completed with a status Reach doesn't know never reads as done", async () => {
+  const daemon = fakeDaemon({ "turn/start": { turn: { id: "turn-1" } } });
+  const live = createCodexLive({ daemon });
+  await live.send(T, { text: "go" });
+  daemon.emit("turn/started", { threadId: T, turn: { id: "turn-1" } });
+  void daemon.ask(21, "item/commandExecution/requestApproval", { threadId: T, command: "echo check" });
+  daemon.emit("turn/completed", { threadId: T, turn: { id: "turn-1", status: "futureBlockedState" } });
+  assert.notEqual(live.view(T).status, "idle");
+  assert.equal(live.view(T).turnId, "turn-1");
+  assert.equal(live.view(T).prompts.length, 1);
+  assert.equal(live.drives(T), true);
+  // A known end still finishes it.
+  daemon.emit("turn/completed", { threadId: T, turn: { id: "turn-1", status: "interrupted" } });
+  assert.equal(live.view(T).status, "idle");
+  assert.equal(live.view(T).prompts.length, 0);
 });
 
 test("permission scope is visible and native-only elicitation cannot accept an empty form", async () => {

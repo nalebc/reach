@@ -63,7 +63,12 @@ export class Jobs {
       process.platform === "win32"
         ? spawn(
             "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-Command", command],
+            // Windows PowerShell writes to a pipe in the PC's old OEM code
+            // page; Reach reads UTF-8 (é came back as ‚). Its own output, and
+            // what it hands programs, in UTF-8 instead: quietly skipped where
+            // policy forbids it (Constrained Language Mode), and never ahead
+            // of what must come first (`using`, `param`).
+            ["-NoProfile", "-NonInteractive", "-Command", /^\s*(?:using\s|param\s*\()/i.test(command) ? command : `try { [Console]::OutputEncoding = $OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}\n${command}`],
             { cwd, env, windowsHide: true },
           )
         : sandbox

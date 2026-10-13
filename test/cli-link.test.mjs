@@ -59,3 +59,88 @@ test("with no folder of yours on PATH, says how to add one and links nothing", (
   assert.match(result.text, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   assert.equal(fs.existsSync(path.join(home, ".local/bin/reach")), false);
 });
+
+// Windows (parity audit #44): no symlink (it needs Developer Mode, and cmd
+// and PowerShell can't run the sh launcher); a reach.cmd that starts this
+// folder's goes into a folder on PATH that's yours, and the advice is
+// PowerShell's, not ~/.zshrc.
+test("Windows: reach cli writes a reach.cmd into a PATH folder you own, and says so in Windows' words", () => {
+  const disk = new Map();
+  const dirsOn = new Set();
+  const files = {
+    existsSync: (p) => disk.has(p.toLowerCase()) || dirsOn.has(p.toLowerCase()),
+    accessSync: (p) => { if (!dirsOn.has(p.toLowerCase())) throw Error("EACCES"); },
+    readFileSync: (p) => { if (!disk.has(p.toLowerCase())) throw Error("ENOENT"); return disk.get(p.toLowerCase()); },
+    writeFileSync: (p, text, { flag } = {}) => {
+      if (flag === "wx" && disk.has(p.toLowerCase())) throw Object.assign(Error("EEXIST"), { code: "EEXIST" });
+      disk.set(p.toLowerCase(), text);
+    },
+  };
+  const home = "C:\\Users\\Sam";
+  const apps = "C:\\Users\\Sam\\AppData\\Local\\Microsoft\\WindowsApps";
+  const env = { Path: `C:\\Windows\\system32;${apps}`, LOCALAPPDATA: "C:\\Users\\Sam\\AppData\\Local" };
+  const script = "C:\\Users\\Sam\\code\\reach\\reach";
+  // No PATH folder of yours: PowerShell's two lines, never a shell profile.
+  const none = linkCli({ script, env, home, files, platform: "win32" });
+  assert.equal(none.ok, false);
+  assert.match(none.text, /SetEnvironmentVariable\("Path"/);
+  assert.doesNotMatch(none.text, /zshrc|export PATH/);
+  // WindowsApps is on PATH and yours: the shim goes there.
+  dirsOn.add(apps.toLowerCase());
+  const made = linkCli({ script, env, home, files, platform: "win32" });
+  assert.equal(made.ok, true, made.text);
+  assert.equal(made.at, `${apps}\\reach.cmd`);
+  // Written from %USERPROFILE%: cmd reads the file in the old code page.
+  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"%USERPROFILE%\\code\\reach\\reach.cmd" %*\r\n');
+  assert.match(made.text, /PowerShell or Command Prompt/);
+  assert.equal(linkCli({ script, env, home, files, platform: "win32" }).already, true);
+  // Something else named reach.cmd is left alone.
+  disk.set(`${apps}\\reach.cmd`.toLowerCase(), "@echo off\r\necho mine\r\n");
+  assert.match(linkCli({ script, env, home, files, platform: "win32" }).text, /something else, not Reach/);
+  assert.equal(disk.get(`${apps}\\reach.cmd`.toLowerCase()), "@echo off\r\necho mine\r\n");
+  // An accented user name is fine (cmd expands %USERPROFILE% itself); a %
+  // is doubled; accents outside the profile can't be written, so it says so.
+  disk.clear();
+  const joseApps = "C:\\Users\\José\\AppData\\Local\\Microsoft\\WindowsApps";
+  const jose = { Path: joseApps, LOCALAPPDATA: "C:\\Users\\José\\AppData\\Local", USERPROFILE: "C:\\Users\\José" };
+  dirsOn.add(joseApps.toLowerCase());
+  const mine = { script: "C:\\Users\\José\\100% done\\reach\\reach", env: jose, home: "C:\\Users\\José", files, platform: "win32" };
+  const accented = linkCli(mine);
+  assert.equal(accented.ok, true, accented.text);
+  assert.equal(disk.get(`${joseApps}\\reach.cmd`.toLowerCase()), '@echo off\r\n"%USERPROFILE%\\100%% done\\reach\\reach.cmd" %*\r\n');
+  assert.equal(linkCli(mine).already, true);
+  disk.clear();
+  const outside = linkCli({ script: "D:\\Projets\\Été\\reach\\reach", env, home, files, platform: "win32" });
+  assert.equal(outside.ok, false);
+  assert.match(outside.text, /can't hold/);
+  assert.equal(disk.size, 0, "nothing written that wouldn't work");
+});
+
+// CodeQL #251: Reach looked for a reach.cmd, then wrote one; a reach.cmd made
+// in between (another tool's) was overwritten. Now it's written only where
+// none is, or over another Reach folder's shim it has just read.
+test("Windows: a reach.cmd made after Reach looked is left alone", () => {
+  const apps = "C:\\Users\\Sam\\AppData\\Local\\Microsoft\\WindowsApps";
+  const at = `${apps}\\reach.cmd`.toLowerCase();
+  const disk = new Map();
+  let looked = false;
+  const files = {
+    existsSync: (p) => {
+      if (p.toLowerCase() === at && !disk.has(at)) looked = true;
+      return disk.has(p.toLowerCase()) || p.toLowerCase() === apps.toLowerCase();
+    },
+    accessSync: () => {},
+    readFileSync: (p) => { if (!disk.has(p.toLowerCase())) throw Object.assign(Error("ENOENT"), { code: "ENOENT" }); return disk.get(p.toLowerCase()); },
+    writeFileSync: (p, text, { flag } = {}) => {
+      // Another tool's reach.cmd lands right after Reach found none.
+      if (looked && !disk.has(at)) disk.set(at, "@echo off\r\necho mine\r\n");
+      if (flag === "wx" && disk.has(p.toLowerCase())) throw Object.assign(Error("EEXIST"), { code: "EEXIST" });
+      disk.set(p.toLowerCase(), text);
+    },
+  };
+  const env = { Path: apps, LOCALAPPDATA: "C:\\Users\\Sam\\AppData\\Local" };
+  const result = linkCli({ script: "C:\\Users\\Sam\\code\\reach\\reach", env, home: "C:\\Users\\Sam", files, platform: "win32" });
+  assert.equal(result.ok, false);
+  assert.match(result.text, /something else, not Reach/);
+  assert.equal(disk.get(at), "@echo off\r\necho mine\r\n");
+});

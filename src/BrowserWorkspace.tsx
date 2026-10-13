@@ -506,7 +506,9 @@ function BrowserWorkspaceSession({ peer, onEnd, agentTools }: BrowserWorkspacePr
         ? access.control
           ? access.preset === "apps"
             ? "See and use only the apps the owner chose. Click the picture to click there; type and press keys below. Password fields and Reach stay closed."
-            : "The Mac as the owner uses it. Click the picture to click there; type, press keys and open apps below. Passwords, security prompts and Reach stay closed."
+            : access.preset === "full"
+              ? "Full control as the owner's user account: all apps, files, pages and commands. Click the picture to click there; type, press keys and open apps below."
+              : "Use the selected apps. Click the picture to click there; type, press keys and open apps below. Passwords, security prompts and Reach stay closed."
           : "Look at the screen. Nothing here clicks or types."
         : access.screen === "apps"
           ? "View the app windows the owner shared. To see another app, choose it in Screen and ask."

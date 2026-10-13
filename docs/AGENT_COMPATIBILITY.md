@@ -6,7 +6,7 @@ Reach cannot guarantee compatibility with every future agent update. Its chat ad
 
 - Codex uses its local owner/follower connection. Reach-created tasks keep the same native task ID in Codex desktop; desktop composer actions go to that task's writer. Reach sends to the desktop owner when Codex already owns the task.
 - Claude Code uses its native session UUID and transcript. Opening a Reach-created conversation in Claude releases Reach's idle writer first. Subsequent messages to desktop conversations use the native composer, with exact-session checks and protection for existing Mac drafts. Native sends require Accessibility permission for the app running Reach.
-- OpenClaw uses the local Gateway's session key and history. Separate clients see the same conversation. Reach sends only to its own local webchat sessions, and does not deliver messages to external channels. Its adapter supports native execution approvals but does not expose an authoritative pending-message queue or structured user-question controls. Sending while the chat is running or waiting is refused. Moving a conversation creates a new session with notes; it does not keep two providers synchronized as one identity. Model and thinking controls depend on Gateway support.
+- OpenClaw uses the local Gateway's session key and history. Separate clients see the same conversation. Reach sends only to its own local webchat sessions, and does not deliver messages to external channels. Its adapter supports native execution approvals but does not expose an authoritative pending-message queue or structured user-question controls. Sending while the chat is running or waiting is refused. Moving a conversation creates a new session with notes; it does not keep two providers synchronized as one identity. Model and thinking controls depend on Gateway support. Live replies follow the protocol v4 text contract (OpenClaw 2026.9.7): a snapshot is the whole text, `deltaText` and `data.delta` append to it, and `replace` sets it, even to empty.
 - Gemini currently supports reading native JSON/JSONL histories, with file-change notifications that wake open Reach chats. Sending, queueing, and approval controls are unavailable in this adapter. The installed Gemini CLI 0.39.1 rejected the October 7, 2026 live test with `UNSUPPORTED_CLIENT` for the signed-in personal account; this is separate from history synchronization.
 
 ## Runtime behavior
@@ -24,12 +24,12 @@ A CLI command check cannot validate hidden flags, all event semantics, account-s
 ## Automated checks
 
 ```sh
-node --test test/agent-compatibility.test.mjs test/agent-outbox.test.mjs
+npm run test:file -- test/agent-compatibility.test.mjs test/agent-outbox.test.mjs
 node scripts/check-agent-compatibility.mjs claude
 node scripts/check-agent-compatibility.mjs codex /absolute/path/to/codex
 ```
 
-The `Agent release compatibility` GitHub workflow installs the latest published CLIs in a disposable runner on relevant PRs/pushes, or on manual dispatch. It checks version/help, generates Codex protocol schemas to check required queue/turn/approval fields, and runs a Claude initialization handshake with a temporary configuration directory. It uploads the versioned report. It uses no account credentials and makes no model calls. A public CLI that lacks the required shared-daemon command should fail the canary; do not turn that failure into an unsafe fallback. The normal test suite separately checks protocol contracts, malformed input, disconnections, approvals and durable outbox recovery with controlled agent stand-ins.
+The `Agent release compatibility` GitHub workflow installs the latest published CLIs in a disposable runner on every CI run (PRs, merge groups, main/release-branch pushes and releases), daily, and on manual dispatch. It checks version/help, generates Codex protocol schemas to check required queue/turn/approval fields, and runs a Claude initialization handshake with a temporary configuration directory. It uploads the versioned report. It uses no account credentials and makes no model calls. A public CLI that lacks the required shared-daemon command should fail the canary; do not turn that failure into an unsafe fallback. The normal test suite separately checks protocol contracts, malformed input, disconnections, approvals and durable outbox recovery with controlled agent stand-ins.
 
 There is no claim of continuous monitoring between workflow runs or of testing a signed-in desktop app in this workflow.
 

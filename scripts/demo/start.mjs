@@ -6,7 +6,9 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const port = Number(process.env.PORT || 5201);
 // Match the companion's policy so preview/worker captures exercise its real
 // browser restrictions instead of Vite's unrestricted development defaults.
-const policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+// One difference: phone-approvals.html frames the demo's own page, so the demo
+// allows frame-ancestors 'self' where Reach itself sends 'none'.
+const policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; font-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
 const server = await createServer({
   configFile: false,
   root,

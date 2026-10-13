@@ -50,3 +50,19 @@ test("Codex adapter streams messages and requires explicit approval", async () =
   c.dispose();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("a turn/completed with a status Reach doesn't know keeps the chat and its approvals", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-codex-"));
+  const c = new Codex({ dataDir });
+  c.send = () => {};
+  c.chats.push({ id: "thread-1", name: "Test", status: "running", items: [], approvals: [] });
+  c.receive({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "t1" } } });
+  c.receive({ id: 12, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", command: "touch a" } });
+  c.receive({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "t1", status: "futureBlockedState" } } });
+  assert.notEqual(c.get("thread-1").status, "idle");
+  assert.equal(c.get("thread-1").approvals.length, 1);
+  c.receive({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "t1", status: "interrupted" } } });
+  assert.equal(c.get("thread-1").status, "idle");
+  c.dispose();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});

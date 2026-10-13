@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
 import { toolPageOperation } from "./tool-page-runtime.mjs";
+import { BrowserWorker } from "./browser-worker.mjs";
 
 const script = fileURLToPath(
   new URL("../scripts/native/tool-browser.js", import.meta.url),
@@ -154,23 +155,39 @@ export function nativeToolProcess(
 export function createToolBrowserDriver({
   process = nativeToolProcess,
   platform = globalThis.process.platform,
+  persistent = process === nativeToolProcess,
+  workerFactory = () => new BrowserWorker("/usr/bin/osascript", ["-l", "JavaScript", script, "--worker"]),
 } = {}) {
+  const workers = new Map();
+  let closed = false;
   return {
+    close() { closed = true; for (const worker of workers.values()) worker.stop(); workers.clear(); },
     async transport(browser, request, options) {
+      if (closed) throw browserError("cancelled", false);
       if (platform !== "darwin" || !fs.existsSync(script))
         throw Object.assign(
           fail(503, "Deterministic browser tools require macOS."),
           { code: "setup_required" },
         );
       let raw;
-      try { raw = await process(
+      const input = JSON.stringify({ browser, ...request, ...(options?.appPath ? { appPath: options.appPath } : {}) });
+      try {
+        if (persistent) {
+          const key = options?.appPath || browser;
+          let worker = workers.get(key);
+          if (worker?.stopped) {
+            await worker.terminated;
+            if (closed) throw browserError("cancelled", false);
+            options?.signal?.throwIfAborted();
+            if (workers.get(key) === worker) workers.delete(key);
+            worker = workers.get(key);
+          }
+          if (!worker) { worker = workerFactory(); workers.set(key, worker); }
+          raw = await worker.request(input, options);
+        } else raw = await process(
         "/usr/bin/osascript",
         ["-l", "JavaScript", script],
-        JSON.stringify({
-          browser,
-          ...request,
-          ...(options?.appPath ? { appPath: options.appPath } : {}),
-        }),
+        input,
         options,
       ); } catch (error) {
         const mapped = browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain");

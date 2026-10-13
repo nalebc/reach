@@ -5,17 +5,25 @@ import { computerWord } from "./computer-word.mjs";
 // aren't lent to any phone until Resume.
 export const pausedMessage = (platform = process.platform) =>
   `Reach is paused on this ${computerWord(platform)}.`;
-// The Mac's own dialogs (a privacy prompt, its password) are its owner's to
-// answer: while one is up, only the owner's own devices click or type.
+// System dialogs require an owner device or explicit current Full consent.
 export const dialogMessage =
-  "The Mac is showing one of its own dialogs, which only its owner can answer. You can watch until it's gone.";
+  "The Mac is showing one of its own dialogs. The owner or a person explicitly given full control must answer it.";
+
+// You, or a person you gave full access (Oct 11: "they should have the same
+// control as me on the Mac"): they answer the Mac's dialogs, take control
+// from anyone, and see the whole screen. Managing access stays yours (the
+// routes that check kind === "device").
+export const actsAsOwner = (client) =>
+  client?.kind === "device" || (client?.kind === "guest" && client.fullControlVersion === 1 && !!client.scopes?.includes("admin"));
+// A person whose control others may take over (any guest without full access).
+const limitedGuest = (client) => client?.kind === "guest" && !actsAsOwner(client);
 
 // Control is a short-lived grant for one paired browser, never a saved setting.
 // The Mac has one pointer and one keyboard: one person controls, everyone
 // else watches. Control never moves silently (two phones used to take it
 // from each other on every tap); it moves when the holder lets go or lapses,
-// or when someone taps Take over: you, from anyone; a guest, from another
-// guest, never from you.
+// or when someone taps Take over: you (or a full-access person), from
+// anyone; another guest, from another guest, never from you.
 export class ScreenControl {
   constructor(now = Date.now) {
     this.now = now;
@@ -50,7 +58,7 @@ export class ScreenControl {
   // Whether macOS shows one of its own dialogs now (set by the server).
   dialogUp = () => false;
   ownerOnly(client) {
-    if (client.kind !== "device" && this.dialogUp()) throw fail(423, dialogMessage);
+    if (!actsAsOwner(client) && this.dialogUp()) throw fail(423, dialogMessage);
   }
   // Who holds control now, as the other phones show it.
   holder() {
@@ -59,6 +67,8 @@ export class ScreenControl {
       clientId: this.lease.clientId,
       name: this.lease.name,
       guest: !!this.lease.guest,
+      // Someone you invited (full access or not), not one of your devices.
+      ...(this.lease.person ? { person: true } : {}),
     };
   }
   acquire(client, enabled, { takeover = false } = {}) {
@@ -78,7 +88,7 @@ export class ScreenControl {
     const held = this.holder();
     let taken = null;
     if (held && held.clientId !== client.id) {
-      const guest = client.kind === "guest";
+      const guest = limitedGuest(client);
       if (!takeover || (guest && !held.guest))
         throw Object.assign(
           fail(
@@ -98,7 +108,8 @@ export class ScreenControl {
       clientId: client.id,
       name: client.name || "",
       expiresAt: this.now() + 30000,
-      ...(client.kind === "guest" ? { guest: true } : {}),
+      ...(limitedGuest(client) ? { guest: true } : {}),
+      ...(client.kind === "guest" ? { person: true } : {}),
     };
     return {
       enabled: true,

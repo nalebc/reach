@@ -1,0 +1,561 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-11",
+  "status": "historical_snapshots_preserved_final_reconciliation_in_progress",
+  "runs": {
+    "macInstalledOnboarding": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 71,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 91975.412792
+      },
+      "log": "/private/tmp/reach-mac-combined-installed.log",
+      "productionSourceSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+      "scope": "Exact combined npm artifact; Tailscale identity/network states are fixtures."
+    },
+    "ciAndPrivacyRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 1610.269667
+      },
+      "log": "/private/tmp/reach-ci-final-tests.log"
+    },
+    "nativeVoice": {
+      "status": "passed",
+      "counts": {
+        "tests": 7,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 15786.863709
+      },
+      "log": "/private/tmp/reach-voice-native-live.log"
+    },
+    "nativeVideoPdf": {
+      "status": "passed",
+      "counts": {
+        "tests": 27,
+        "pass": 27,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 7778.548791
+      },
+      "log": "/private/tmp/reach-native-video-pdf.log"
+    },
+    "nativeCiRunner": {
+      "status": "passed",
+      "counts": {
+        "tests": 88,
+        "pass": 87,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "duration_ms": 72312.749292
+      },
+      "log": "/private/tmp/reach-ci-native-wiring.log"
+    },
+    "nativeDownloadBoundary": {
+      "status": "passed",
+      "counts": {
+        "tests": 6,
+        "pass": 6,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 2313.557583
+      },
+      "log": "/private/tmp/reach-ios-download-safety.log"
+    },
+    "ios2631": {
+      "status": "passed",
+      "counts": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 77383.609375
+      },
+      "log": "/private/tmp/reach-ios-simulator-26.3.log"
+    },
+    "ios264": {
+      "status": "passed",
+      "counts": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 97958.94475
+      },
+      "log": "/private/tmp/reach-ios-simulator-26.4.log"
+    },
+    "ios264Background": {
+      "status": "passed",
+      "counts": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 104224.494417
+      },
+      "log": "/private/tmp/reach-ios-simulator-background.log"
+    },
+    "processInventoryRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 28,
+        "pass": 28,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 3804.653125
+      },
+      "log": "/private/tmp/reach-process-inventory-regression.log",
+      "scope": "Denied/missing/timed-out inventory fails before start/stop/restart effects; true empty inventory remains distinguishable; inaccessible launcher lock is retained. Inert subprocess APIs only."
+    },
+    "newClaudePermissionUi": {
+      "status": "passed",
+      "counts": {
+        "tests": 3,
+        "pass": 3,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 1848.192917
+      },
+      "evidence": "Guarded npm tool output; no separate saved log",
+      "command": "npm run test:file -- --test-concurrency=1 test/new-chat-permissions-ui.test.mjs"
+    },
+    "claudePermissionHostAndOpenClaw": {
+      "status": "passed",
+      "counts": {
+        "tests": 5,
+        "pass": 5,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 275.961833
+      },
+      "evidence": "Guarded npm tool output; no separate saved log",
+      "command": "npm run test:file -- --test-concurrency=1 --test-name-pattern='a new Claude session|from an OpenClaw chat' test/agent-claude-host.test.mjs test/across-agents-openclaw.test.mjs"
+    },
+    "macInstalledOnboardingPriorSnapshot": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 71,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "duration_ms": 98800.893458
+      },
+      "log": "/private/tmp/reach-mac-installed-helper.log"
+    },
+    "authCacheRegression": {
+      "status": "passed",
+      "counts": {
+        "tests": 83,
+        "pass": 83,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 15091.379542
+      },
+      "log": "/private/tmp/reach-auth-cache-regression.log",
+      "productionSourceSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce",
+      "preFixEvidence": "/private/tmp/reach-auth-cache-before.log",
+      "preFixDeterministicResult": "0/5 passed, including actual hosted registration 404 instead of 201"
+    },
+    "windowsAuthCacheCiPolicy": {
+      "status": "passed",
+      "counts": {
+        "tests": 6,
+        "pass": 6,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 1392.071125
+      },
+      "log": "/private/tmp/reach-ci-policy-auth-cache-windows.log",
+      "scope": "Checks the required suite configuration; does not claim native Windows execution."
+    },
+    "macInstalledOnboardingBeforeAuthCacheFix": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 71,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 91408.11025
+      },
+      "log": "/private/tmp/reach-mac-final-installed.log",
+      "productionSourceSha256": "faee8dcd72b51c5caab583e41a5ab77ba6711896d274009772e1afa839cd5937",
+      "scope": "Final verified npm artifact; latest normalized phone-test lifecycle assertions. External Tailscale identities remain fixtures."
+    },
+    "codeqlFindingGatePolicy": {
+      "status": "passed",
+      "counts": {
+        "tests": 7,
+        "pass": 7,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 1456.868
+      },
+      "log": "/private/tmp/reach-codeql-gate-after.log",
+      "preFixEvidence": "/private/tmp/reach-codeql-gate-before.log",
+      "scope": "Local ruleset regression requires CodeQL results with medium-or-higher security findings and ordinary errors blocking. Does not claim hosted scan or remote rule enforcement."
+    },
+    "combinedWorkflowUi": {
+      "status": "passed",
+      "counts": {
+        "tests": 84,
+        "pass": 84,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 51441.503291
+      },
+      "log": "/private/tmp/reach-final-workflow-ui-regressions.log",
+      "productionSourceSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+      "scope": "Both approval-visibility regressions reproduced before the fix; nine new grouping regressions plus workflow/autosave, Claude permissions, folder limits/reset, swipe, attention and across-agent cases."
+    },
+    "macCombinedFullSuite": {
+      "status": "passed",
+      "log": "/private/tmp/reach-mac-combined-full.log",
+      "junit": "/private/tmp/reach-release-final-123i2l3s/reports/all.xml",
+      "tap": "/private/tmp/reach-release-final-123i2l3s/reports/all.tap",
+      "productionSourceSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+      "scope": "Actual macOS host, isolated source directory, guarded npm runner with at most two file workers.",
+      "environment": {
+        "os": "macOS 26.6.2",
+        "node": "v24.21.0",
+        "architecture": "arm64"
+      },
+      "counts": {
+        "tests": 3565,
+        "pass": 3521,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 44,
+        "todo": 0,
+        "duration_ms": 628416.454958
+      }
+    },
+    "realTailscaleLoggedOut": {
+      "status": "passed",
+      "counts": {
+        "tests": 4,
+        "pass": 4,
+        "fail": 0,
+        "skipped": 0
+      },
+      "evidence": "docs/benchmarks/tailscale-logged-out-2026-10-11.json",
+      "scope": "Official checksum-verified static binary, absent/stopped/logged-out root and ordinary user. Network disconnected before daemon startup; no account or phone connection."
+    },
+    "macInstalledOnboardingBeforeCombinedFeatures": {
+      "status": "passed",
+      "counts": {
+        "tests": 71,
+        "pass": 71,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 94634.179334
+      },
+      "log": "/private/tmp/reach-mac-authcache-installed.log",
+      "productionSourceSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce",
+      "scope": "Final verified npm artifact including cache fix; external Tailscale identities are fixtures."
+    },
+    "isolatedFoldedWorkflowReview": {
+      "status": "passed_not_integrated_into_active_workspace",
+      "counts": {
+        "tests": 100,
+        "pass": 100,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 46845.029375
+      },
+      "log": "/private/tmp/reach-isolated-folded-workflow-regressions.log",
+      "worktree": "/private/tmp/reach-hosted-validation-20261011",
+      "typeScript": "passed",
+      "patch": "/tmp/reach-isolated-folded-workflow-fix.patch",
+      "patchSha256": "161599536755ffe70331ef8e52356de725e8ed663e3b3027233a112d2e976405",
+      "scope": "Fixes wrong-agent and ambiguous historical workflow matching, preserves approval visibility across folded workflow groups, prioritizes approvals ahead of running chats. The external feature task is still editing the original workspace."
+    },
+    "integratedFoldedWorkflowUi": {
+      "command": "npm run test:file -- --test-concurrency=1 (10 chat/workflow UI files)",
+      "tests": 101,
+      "pass": 101,
+      "fail": 0,
+      "skipped": 0,
+      "durationMs": 46091.8915,
+      "log": "/tmp/reach-final-integrated-ui.log",
+      "scope": "Folded workflow fixes integrated into the shared tree before the later t17 full-suite snapshot."
+    },
+    "reconciledChatsAndWorkflows": {
+      "command": "npm run test:file -- --test-concurrency=1 test/workflows.test.mjs test/workflows-routes.test.mjs test/workflows-openclaw.test.mjs test/session-auto-defaults.test.mjs test/claude-chat-settings.test.mjs test/codex.test.mjs test/agent-sessions-live.test.mjs test/agent-claude-host.test.mjs test/openclaw.test.mjs",
+      "tests": 239,
+      "pass": 239,
+      "fail": 0,
+      "skipped": 0,
+      "durationMs": 19808.859875,
+      "log": "/tmp/reach-reconcile-chat-workflows.log",
+      "scope": "Combined chat/workflow changes; before final Full control consent fix."
+    }
+  },
+  "iosSimulatorEvidence": [
+    {
+      "ok": true,
+      "checks": [
+        "real pairing UI saved its credential",
+        "authenticated file bytes in WKWebView",
+        "folder traversal refused",
+        "native filesystem write/read preserves bytes",
+        "fresh native transfer session has no old files",
+        "native authenticated download preserves bytes",
+        "native share capability available"
+      ],
+      "platform": "ios",
+      "runtime": "26.3.1",
+      "physicalDevice": false
+    },
+    {
+      "ok": true,
+      "checks": [
+        "real pairing UI saved its credential",
+        "authenticated file bytes in WKWebView",
+        "folder traversal refused",
+        "native filesystem write/read preserves bytes",
+        "fresh native transfer session has no old files",
+        "native authenticated download preserves bytes",
+        "native share capability available"
+      ],
+      "platform": "ios",
+      "runtime": "26.4",
+      "physicalDevice": false
+    },
+    {
+      "ok": true,
+      "checks": [
+        "real pairing UI saved its credential",
+        "authenticated file bytes in WKWebView",
+        "folder traversal refused",
+        "native filesystem write/read preserves bytes",
+        "fresh native transfer session has no old files",
+        "native authenticated download preserves bytes",
+        "native app resumes after downloading while backgrounded",
+        "native share capability available"
+      ],
+      "platform": "ios",
+      "runtime": "26.4",
+      "backgroundedDuringDownload": true,
+      "physicalDevice": false
+    }
+  ],
+  "iosSourceSha256": "693e74e882c21b31a27b6c447aaea4037f8396f50641b8cdb8f00a0d869c6220",
+  "macRelease": {
+    "build": "passed; freshly rebuilt combined frontend, agent and tailnet assets",
+    "npmAndPortableCleanInstalls": "passed",
+    "candidateHandoff": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "45d51ca0abec37f430d2032d9b39dbfbaa1f3efed163f83558e296d723b0ca67",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "144890a3f812be56a6208cbe6ac184c55f9f34d930a1674cce49d2145b3e22c7"
+      }
+    },
+    "published": false,
+    "sourceSnapshot": {
+      "capturedAt": "2026-10-11T20:17:35.170725+00:00",
+      "sourceFiles": 1239,
+      "sourceSha256": "4c11d15b7d58c877389c1edd5bd53b341dbcb5863619a20f3c8bfe4ca3938d1e",
+      "productionSourceSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+      "productionSourceFiles": 629
+    },
+    "logs": {
+      "build": "/private/tmp/reach-mac-combined-build.log",
+      "package": "/private/tmp/reach-mac-combined-package.log",
+      "cleanArchiveInstalls": "/private/tmp/reach-mac-combined-archives.log",
+      "candidateHandoff": "/private/tmp/reach-mac-combined-candidate.log"
+    },
+    "archiveHashesRecheckedAfterInstalledMatrix": true
+  },
+  "scopeNotes": [
+    "Do not add these counts to other reports: several suites overlap.",
+    "See platform-validation-2026-10-11.json for full Linux-suite results and unresolved failures, independently of these local passes.",
+    "iOS app uses its real native plugins, a temporary localhost companion, synthetic files, and a certificate trusted only in the disposable simulator. The copied WKWebView permits local HTTP; native download uses HTTPS with certificate validation.",
+    "The test backgrounds Reach by opening Settings in its own simulator during the download, then resumes Reach. This does not establish physical-device suspension, OS termination, cellular networking or distribution signing.",
+    "The initial unsigned simulator build lacked Xcode-linked simulator identity; runtime tests pass with CODE_SIGNING_ALLOWED=YES and CODE_SIGN_IDENTITY=-. No production URLSession or TLS restriction was weakened.",
+    "Native video uses generated pixels, PDF uses synthetic text, and speech uses synthesized audio. No personal recording or screen capture is used.",
+    "Archive tests install both exact archives, exercise native PTY/auth/files/assets, and bind both hashes to the passing receipt.",
+    "Full control grants OS-account authority. Permission, pause and revocation checks do not make unrestricted agent actions harmless or undo completed effects."
+  ],
+  "github": {
+    "workflowChanges": "local_uncommitted",
+    "hostedRuns": "runner_access_restored_combined_matrix_pending",
+    "requiredMergeRules": "still_blocked_by_current_private_repository_plan_after_billing_fix",
+    "actionShaPinning": "enabled_and_verified",
+    "releaseEnvironment": "not_configured",
+    "npmTrustedPublisher": "not_verified",
+    "forkWorkflowApproval": "API unavailable for current private repository; must configure at public launch",
+    "actionAllowlist": {
+      "status": "selected_exact_action_paths_enabled_and_read_back_verified",
+      "githubOwnedWildcardAllowed": false,
+      "verifiedPartnerWildcardAllowed": false,
+      "actionPaths": 14,
+      "externalRepositories": 11,
+      "inventoriedPinnedReferences": 16,
+      "source": "Local and remote-main workflows plus pinned composite action dependencies",
+      "evidence": "/private/tmp/reach-actions-allowlist-20261011/verification.json",
+      "hostedExecutionVerified": false
+    },
+    "billingRecheckAfterUserUpdate": {
+      "status": "refused_before_runner_assignment",
+      "run": 38166372288,
+      "attempt": 2,
+      "job": 114567359831,
+      "commit": "b08734c06b5426e4d8acb69a53463c48869fb268",
+      "time": "2026-10-11T20:28:10Z",
+      "scope": "Small old-main audit job only; not combined source verification",
+      "annotation": "The job was not started because recent account payments have failed or your spending limit needs to be increased.",
+      "evidence": "/private/tmp/reach-hosted-recheck-20261011/",
+      "url": "https://github.com/nalebc/reach-private/actions/runs/38166372288/job/114567359831",
+      "additionalRetry": {
+        "attempt": 3,
+        "job": 114568422390,
+        "time": "2026-10-11T20:33:07Z",
+        "status": "same_billing_or_spending_limit_refusal_before_runner_assignment",
+        "evidence": "/private/tmp/reach-hosted-recheck-20261011/audit-third-attempt-annotations.json",
+        "url": "https://github.com/nalebc/reach-private/actions/runs/38166372288/job/114568422390"
+      }
+    },
+    "latestBillingProbe": {
+      "attempt": 5,
+      "job": 114571249468,
+      "startedAt": "2026-10-11T20:46:39Z",
+      "completedAt": "2026-10-11T20:46:47Z",
+      "status": "passed",
+      "runnerAssigned": true,
+      "url": "https://github.com/nalebc/reach-private/actions/runs/38166372288/job/114571249468",
+      "scope": "Small audit job on existing main only; confirms runner availability, not combined-source validation."
+    }
+  },
+  "unverified": [
+    "native Windows and Intel Mac hosted execution",
+    "physical iPhone and Android acceptance including cellular, VPN transitions, Face ID, push and camera",
+    "real hosted Tailscale login, invite provisioning, ACLs and Funnel account flows",
+    "live model/provider authentication, paid turns and model-in-loop prompt injection behavior",
+    "long-duration soak and independent penetration testing"
+  ],
+  "actualReach": "Running in its existing Terminal session; no restart requested by this test pass. Server changes require a later authorized restart.",
+  "cleanup": {
+    "disposableIosSimulatorsRemoved": true,
+    "preexistingSimulatorPreserved": true,
+    "runningReachRestarted": false,
+    "linuxTestContainers": "See platform-validation-2026-10-11.json for final cleanup status"
+  },
+  "macReleaseBeforeAuthCacheFix": {
+    "build": "passed",
+    "npmAndPortableCleanInstalls": "passed",
+    "candidateHandoff": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "21fcefa377fa48e4cfa043a8bc4912d0c2cc74975c5bdce5ed1e849586b46629",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "b8020b9d9405e1c9f152794ce2e288601e4d3ed6915c3518baa885f5b9b38f7a"
+      }
+    },
+    "published": false,
+    "sourceSnapshot": {
+      "capturedAt": "2026-10-11T19:41:29.683786+00:00",
+      "sourceFiles": 1237,
+      "sourceSha256": "6c8ceb510b1d049af2e91980457e86eafff14d88dae8cab09b05ae9434b3bef8",
+      "productionSourceSha256": "faee8dcd72b51c5caab583e41a5ab77ba6711896d274009772e1afa839cd5937",
+      "productionSourceFiles": 629
+    },
+    "logs": {
+      "build": "/tmp/reach-mac-final-build.log",
+      "package": "/tmp/reach-mac-final-package.log",
+      "cleanArchiveInstalls": "/tmp/reach-mac-final-archives.log",
+      "candidateHandoff": "/tmp/reach-mac-final-candidate.log"
+    },
+    "archiveHashesRecheckedAfterInstalledMatrix": true
+  },
+  "combinedValidation": {
+    "status": "reconciling_completed_feature_work_with_security_consent_fixes",
+    "requestedByUser": "Wait for feature work to finish, then test the combined code",
+    "baselineProductionSourceSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce",
+    "productionSourceSha256": "50ff96991e43c8be5e0095f5da7cc9a307ea6fd4692b36a5884111c2b0a10376",
+    "sourceManifest": "/private/tmp/reach-mac-combined-source.json",
+    "reviewFix": "Keep workflow grouping within existing attention/running priority tiers, so idle siblings cannot hide unrelated approvals.",
+    "laterProductionSourceSha256": "b2909a353ef400c4c83258989b6ca33f32ec8aba421c9be5cd12a847854795fe",
+    "note": "Feature workflow completed. Saved t17 evidence is independently reconciled in reconciled-validation-2026-10-12.json; final reconciliation adds security consent and solo-maintainer policy fixes.",
+    "userConfirmedStillEditingAt": "2026-10-11T20:36:09Z",
+    "isolatedReviewWorktree": "/private/tmp/reach-hosted-validation-20261011",
+    "isolatedReviewBranch": "validation/public-readiness-20261011",
+    "pending": [
+      "explicit Full control consent and legacy-grant regressions",
+      "frozen combined Mac24 and Linux24 full suites and fresh archives",
+      "commit reconciled source on local main",
+      "hosted combined matrix and repository-plan gate activation"
+    ]
+  },
+  "macReleaseBeforeCombinedFeatures": {
+    "build": "passed; prior frontend/tailnet build reused after server-only cache fix",
+    "productionChangesSinceBuild": [
+      "server/core.mjs"
+    ],
+    "npmAndPortableCleanInstalls": "passed",
+    "candidateHandoff": "passed",
+    "receipt": {
+      "filename": "nalebc-reach-0.1.0.tgz",
+      "sha256": "2b29ec1f0619997d12977d4ee7039734f414a59bbce71fa1258b7103b87c9080",
+      "version": "0.1.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.1.0-portable.tar.gz",
+        "sha256": "bd1d753b8611dfd5a8bfb790764e0e3edbe27e7c805f62c2d0e89046b969872e"
+      }
+    },
+    "published": false,
+    "sourceSnapshot": {
+      "capturedAt": "2026-10-11T20:00:03.499660+00:00",
+      "sourceFiles": 1238,
+      "sourceSha256": "93a5df2b4ec144b3bc39add409c6930e67ada2972b469bab37fcccde8a137f39",
+      "productionSourceSha256": "34377c621ea69c8f3c368da93caad1827fc63d3f9aa118cf73d55990160d04ce",
+      "productionSourceFiles": 629
+    },
+    "logs": {
+      "build": "/tmp/reach-mac-final-build.log",
+      "package": "/tmp/reach-mac-authcache-package.log",
+      "cleanArchiveInstalls": "/tmp/reach-mac-authcache-archives.log",
+      "candidateHandoff": "/tmp/reach-mac-authcache-candidate.log"
+    },
+    "archiveHashesRecheckedAfterInstalledMatrix": true
+  }
+}

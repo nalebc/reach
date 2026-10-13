@@ -467,8 +467,12 @@ for (const failedRoute of ["/api/browser", "/api/browser/shortcuts"])
     const c = await render();
     await dom.waitFor(() => c.textContent.includes("Too many agent requests"));
     rejected = false;
-    for (const poll of polls) poll();
-    await dom.waitFor(() => button(c, "Open Gmail"));
+    // The page's 3 s timer, ticking: a tick that lands while an earlier read
+    // is still out is skipped (as on a slow runner, Oct 12), the next clears.
+    await dom.waitFor(() => {
+      for (const poll of polls) poll();
+      return button(c, "Open Gmail") && !/Too many agent requests/.test(c.textContent);
+    });
     await settle();
     assert.doesNotMatch(c.textContent, /Too many agent requests/);
     assert.equal(calls.filter((call) => call.method !== "GET").length, 0);

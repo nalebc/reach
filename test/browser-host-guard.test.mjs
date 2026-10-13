@@ -290,3 +290,35 @@ test("revoking, expiring or changing an app invitation's creator also stops its 
   f.setClients([f.owner(), client]);
   assert.equal(f.guard.allows(request(), { ...client, browserAppApprover: { ...client.browserAppApprover, clientId: "new-owner" } }), false);
 });
+
+test("guest coexistence requires trusted identity and explicit approval for browser nodes", async () => {
+  const f = fixture();
+  const person = (extra = {}) => ({ id: "person", kind: "guest", scopes: ["admin", "screen"], expiresAt: 100000,
+    tailscale: { nodeId: "nWasm", userId: "42" }, ...extra });
+  const approved = person({ macEntry: { status: "allowed", nodeId: "nWasm" } });
+  f.setActive(true);
+  await f.guard.refresh();
+  const fromGuest = f.request("nWasm", { url: "/api/device", method: "GET" });
+  assert.equal(f.guard.allows(fromGuest, person()), false, "a separate browser node is not proof of separate custody");
+  assert.equal(f.guard.needsPersonApproval(fromGuest, person()), true);
+  assert.equal(f.guard.allows(fromGuest, approved), true);
+  assert.equal(f.guard.allows(f.request("nWasm", { trust: false }), approved), false);
+  assert.equal(f.guard.allows(fromGuest, person({ macEntry: { status: "allowed", nodeId: "changed" } })), false);
+  assert.equal(f.guard.allows(fromGuest, person({ macEntry: { status: "waiting", nodeId: "nWasm" } })), false);
+  assert.equal(f.guard.allows(fromGuest, { ...approved, expiresAt: 500 }), false);
+  assert.equal(f.guard.allows(f.request("nHost"), approved), false);
+  assert.equal(f.guard.allows({ headers: {} }, approved), false);
+  const expired = f.request("nWasm"); expired.reachIdentity.validUntil = 1000;
+  assert.equal(f.guard.allows(expired, approved), false);
+  // An existing native person retains its already bound grant.
+  const native = person({ tailscale: { nodeId: "nOther", userId: "42" } });
+  assert.equal(f.guard.allows(f.request("nOther"), native), true);
+  assert.equal(f.guard.allows(f.request("nOther"), f.owner("nOther")), false);
+  f.setClients([f.owner(), f.grant(), approved]);
+  assert.equal(f.guard.allowsConnection(f.request("nWasm", { url: "/ws/presence", method: "GET" })), true);
+  assert.equal(f.guard.allowsConnection(f.request("nStranger")), false);
+  f.setClients([f.owner(), f.grant(), person()]);
+  assert.equal(f.guard.allowsConnection(f.request("nWasm")), false);
+  f.setTime(7000);
+  assert.equal(f.guard.allows(fromGuest, approved), false);
+});

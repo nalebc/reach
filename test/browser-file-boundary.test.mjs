@@ -34,6 +34,21 @@ test('sandbox profile generation terminates at the host filesystem root', async(
  const {stdout}=await promisify(execFile)(process.execPath,['--input-type=module','-e',source],{timeout:5000,maxBuffer:65536});
  assert.match(stdout,/deny default/);assert.match(stdout,/allow file-read-metadata/);
 });
+test('Full control file access comes only from the live policy, never request flags', async t => {
+ const f=fixture(t); let observed;
+ const options={config:{dataDir:f.cache},run:async request=>{observed=request;return{items:[],truncated:false};}};
+ await browserFileOperation({op:'list',root:f.root,fullControl:true,privateNames:[],privatePaths:[]},()=>({id:'apps',policy:{browser:true,preset:'apps'}}),options);
+ assert.equal(observed.fullControl,false);assert.ok(observed.privateNames.includes('.ssh'));
+ await browserFileOperation({op:'list',root:path.parse(f.root).root},()=>({id:'full',policy:{browser:true,preset:'full'}}),options);
+ assert.equal(observed.fullControl,true);assert.deepEqual(observed.privateNames,[]);assert.deepEqual(observed.privatePaths,[]);
+});
+test('native Full control reads private fixture names through the filesystem root',{skip:!native},async t=>{
+ const f=fixture(t),privateDir=path.join(f.root,'.ssh');fs.mkdirSync(privateDir);fs.writeFileSync(path.join(privateDir,'id_rsa'),'fixture-key');
+ const full={id:'full',policy:{browser:true,preset:'full'}};
+ const result=await browserFileOperation({op:'read',root:'/',path:path.relative('/',path.join(privateDir,'id_rsa'))},()=>full,{config:{dataDir:f.cache}});
+ assert.equal(result.data.toString(),'fixture-key');
+ await assert.rejects(f.run('read','.ssh/id_rsa'));
+});
 test('native descriptor operations reject parent symlinks, hard links, private names and private trees',{skip:!native},async t=>{
  const f=fixture(t);
  fs.symlinkSync(f.outside,path.join(f.root,'escape'));

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, List
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
-import { agentLabel, projectName } from "./agent-sessions";
+import { agentLabel, listModels, projectName, type AgentModel, type AgentName } from "./agent-sessions";
 import "./workflows.css";
 
 // Workflows (docs/WORKFLOWS.md; server/agent-sessions/workflows.mjs): a plan
@@ -21,10 +21,15 @@ export type WorkflowTask = {
   agent: string;
   kind: "build" | "review";
   together: boolean;
+  // Its model and effort (none: the agent's default), picked by you or the planner.
+  model?: string;
+  effort?: string;
   // What to do (a workflow read in full; the chat list's copy leaves it out).
   task?: string;
   state: WorkflowTaskState;
   chat?: ChatRef;
+  // Its earlier chats, each try's (newest last).
+  tries?: ChatRef[];
   problem?: string;
   // What it finished with, in brief, and the files it changed.
   summary?: string;
@@ -47,7 +52,7 @@ export type Workflow = {
   tasks: WorkflowTask[];
 };
 // A task as the editor holds it (with its id once the Mac has it).
-export type TaskDraft = { id?: string; key?: string; title: string; agent: string; kind: "build" | "review"; task: string; together: boolean };
+export type TaskDraft = { id?: string; key?: string; title: string; agent: string; kind: "build" | "review"; task: string; together: boolean; model?: string; effort?: string };
 
 const BASE = "/api/sessions/workflows";
 const at = (id: string, rest = "") => `${BASE}/${encodeURIComponent(id)}${rest}`;
@@ -162,7 +167,18 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
   return { workflow, failure, take };
 }
 
-const toDraft = ({ id, title, agent, kind, task, together }: WorkflowTask): TaskDraft => ({ id, title, agent, kind, task: task || "", together });
+const toDraft = ({ id, title, agent, kind, task, together, model, effort }: WorkflowTask): TaskDraft => ({
+  id,
+  title,
+  agent,
+  kind,
+  task: task || "",
+  together,
+  ...(model ? { model } : {}),
+  ...(effort ? { effort } : {}),
+});
+// A task's model and effort in a few words ("" for the agent's default).
+const modelWords = (t: { model?: string; effort?: string }) => [t.model && t.model !== "default" ? t.model : "", t.effort ? `${t.effort} effort` : ""].filter(Boolean).join(" · ");
 // The tasks that have started, and those before them, stay as they are.
 const lockedCount = (w: Workflow) => (w.state === "draft" ? 0 : w.tasks.reduce((n, t, i) => (t.state !== "waiting" ? i + 1 : n), 0));
 
@@ -170,6 +186,7 @@ const lockedCount = (w: Workflow) => (w.state === "draft" ? 0 : w.tasks.reduce((
 // build left for you to say. Codex and Claude Code take the code; OpenClaw,
 // when it's here, the cheap research first.
 function starters(agents: string[]) {
+  if (!agents.length) return [];
   const coders = agents.filter((x) => x !== "openclaw");
   const a = coders[0] || agents[0] || "codex";
   const b = coders.find((x) => x !== a) || a;
@@ -222,7 +239,7 @@ function Row({
   children,
 }: {
   n: number;
-  task: { title: string; agent: string; kind: "build" | "review"; together: boolean; state?: WorkflowTaskState; files?: string[] };
+  task: { title: string; agent: string; kind: "build" | "review"; together: boolean; state?: WorkflowTaskState; files?: string[]; model?: string; effort?: string };
   logos: AgentLogos;
   open: boolean;
   onToggle: () => void;
@@ -246,7 +263,7 @@ function Row({
           <AgentLogo agent={task.agent} logos={logos} size={24} />
           <span className="wf-item-copy">
             <span className="wf-item-title">{named(task.title, n)}</span>
-            <span className="wf-item-detail">{agentLabel(task.agent)} · {task.kind === "review" ? "Review only" : "Make changes"}</span>
+            <span className="wf-item-detail">{agentLabel(task.agent)} · {task.kind === "review" ? "Review only" : "Make changes"}{modelWords(task) ? ` · ${modelWords(task)}` : ""}</span>
           </span>
           {s && <span className={`wf-item-value ${s}`}>{taskValue(task)}</span>}
           {open ? <ChevronDown size={18} className="wf-item-chevron" aria-hidden="true" /> : <ChevronRight size={18} className="wf-item-chevron" aria-hidden="true" />}
@@ -292,6 +309,57 @@ function TaskInstructions({ value, n, review, onChange }: { value: string; n: nu
         {value || "Add instructions…"}
       </button>}
   </div>;
+}
+
+// A task's model and effort, from what its agent offers now. Blank: the
+// agent's default. A model change drops an effort the new one doesn't offer.
+function ModelFields({ peer, n, draft, onChange }: { peer: Peer; n: number; draft: TaskDraft; onChange: (patch: Partial<TaskDraft>) => void }) {
+  const [models, setModels] = useState<AgentModel[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    setModels(null);
+    listModels(peer, draft.agent as AgentName).then((r) => live && setModels((r?.models || []).filter((m) => !m.unconfirmed)), () => live && setModels([]));
+    return () => {
+      live = false;
+    };
+  }, [peer, draft.agent]);
+  if (!models?.length && !draft.model && !draft.effort) return null;
+  const list = models || [];
+  const entry = draft.model ? list.find((m) => m.id === draft.model) : list.find((m) => m.isDefault);
+  const efforts = entry?.efforts || [];
+  return (
+    <div className="wf-model-fields">
+      <label className="wf-agent-field">
+        <span>Model</span>
+        <span className="wf-agent-select">
+          <select aria-label={`Task ${n} model`} value={draft.model === "default" ? "" : draft.model || ""}
+            onChange={(e) => {
+              const model = e.target.value || undefined;
+              const next = model ? list.find((m) => m.id === model) : list.find((m) => m.isDefault);
+              onChange({ model, effort: draft.effort && next?.efforts.includes(draft.effort) ? draft.effort : undefined });
+            }}>
+            <option value="">Agent's default</option>
+            {draft.model && !list.some((m) => m.id === draft.model) && <option value={draft.model}>{draft.model} (unavailable)</option>}
+            {list.filter((m) => m.id !== "default").map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
+          </select>
+          <ChevronDown size={16} aria-hidden="true" />
+        </span>
+      </label>
+      {(efforts.length > 0 || draft.effort) && (
+        <label className="wf-agent-field">
+          <span>Effort</span>
+          <span className="wf-agent-select">
+            <select aria-label={`Task ${n} effort`} value={draft.effort || ""} onChange={(e) => onChange({ effort: e.target.value || undefined })}>
+              <option value="">Default</option>
+              {draft.effort && !efforts.includes(draft.effort) && <option value={draft.effort}>{draft.effort} (unavailable)</option>}
+              {efforts.map((e) => <option key={e} value={e}>{e[0].toUpperCase() + e.slice(1)}</option>)}
+            </select>
+            <ChevronDown size={16} aria-hidden="true" />
+          </span>
+        </label>
+      )}
+    </div>
+  );
 }
 
 // Editing: the tasks still to start, with instructions, an agent picker,
@@ -409,7 +477,7 @@ function Editor({
   };
   const add = () =>
     changeTasks(
-      [...tasks, { title: "", agent: tasks.at(-1)?.agent || agents[0] || "codex", kind: "build", task: "", together: false }],
+      [...tasks, { title: "", agent: agents.includes(tasks.at(-1)?.agent || "") ? tasks.at(-1)!.agent : agents[0], kind: "build", task: "", together: false }],
       locked + tasks.length,
     );
   const lockedTasks = workflow.tasks.slice(0, locked);
@@ -465,12 +533,13 @@ function Editor({
                 <span className="wf-agent-select">
                   <AgentLogo agent={draft.agent} logos={logos} size={20} />
                   <select aria-label={`Task ${n} agent`} value={draft.agent}
-                    onChange={(e) => change(i, { agent: e.target.value })}>
-                    {[...new Set([draft.agent, ...agents])].map((agent) => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}
+                    onChange={(e) => change(i, { agent: e.target.value, model: undefined, effort: undefined })}>
+                    {[...new Set([draft.agent, ...agents])].map((agent) => <option key={agent} value={agent} disabled={!agents.includes(agent)}>{agentLabel(agent)}{!agents.includes(agent) ? " (unavailable)" : ""}</option>)}
                   </select>
                   <ChevronDown size={16} aria-hidden="true" />
                 </span>
               </label>
+              {draft.agent !== "openclaw" && <ModelFields peer={peer} n={n} draft={draft} onChange={(patch) => change(i, patch)} />}
               <fieldset className="wf-task-mode">
                 <legend>Agent should…</legend>
                 <div className="wf-mode-options">
@@ -514,6 +583,7 @@ function Editor({
           );
         }}
       />
+      {!agents.length && <p className="wf-problem">No agents are available. Connect or sign in to an agent to add tasks.</p>}
       {empty && workflow.state === "draft" && (
         <>
           <h3 className="wf-label">Start from</h3>
@@ -530,7 +600,7 @@ function Editor({
           ))}
         </>
       )}
-      <button className="wf-dashed add" disabled={all.length >= MAX_TASKS} onClick={add}>
+      <button className="wf-dashed add" disabled={!agents.length || all.length >= MAX_TASKS} onClick={add}>
         <span className="wf-dashed-icon" aria-hidden="true">
           <Plus size={18} />
         </span>

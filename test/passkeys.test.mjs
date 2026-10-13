@@ -99,6 +99,19 @@ function setup(t, extra = {}) {
 }
 const added = (keys, auth, client = "phone-1") => keys.register(client, auth.create(keys.registrationOptions(client, "me@x.test")), "iPhone");
 
+test("sign-in bounds and validates credential IDs before removing base64 padding", (t) => {
+  const { keys } = setup(t), phone = authenticator();
+  added(keys, phone);
+  for (const id of ["=".repeat(10000) + "x", "A".repeat(16385), null, { length: 100000 }]) {
+    const options = keys.assertionOptions("malformed-id"), response = phone.get(options);
+    response.id = id;
+    assert.throws(() => keys.verifyAssertion("malformed-id", response), { status: 400 });
+  }
+  const options = keys.assertionOptions("padded-id"), response = phone.get(options);
+  response.id += "==";
+  assert.doesNotThrow(() => keys.verifyAssertion("padded-id", response));
+});
+
 test("add Face ID from an approved device, then approve a new browser with it", async (t) => {
   const { keys, dir } = setup(t);
   assert.equal(keys.has(), false);

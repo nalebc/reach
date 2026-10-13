@@ -4,7 +4,6 @@ import {
   Bot,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock3,
   Copy,
   Dices,
@@ -13,7 +12,6 @@ import {
   Folder,
   Monitor,
   Pencil,
-  Plug,
   Share2,
   ShieldCheck,
 } from "lucide-react";
@@ -22,6 +20,7 @@ import { isNative } from "./native";
 import { shareCancelled } from "./sharing";
 import { request, type Device, type Peer } from "./api";
 import { guestLinkUrl } from "./start-flow";
+import { computerWord } from "./pause";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import {
   AccessRow,
@@ -30,24 +29,31 @@ import {
   Switch,
   type PickerApp,
 } from "./agent-ui";
-import { Item, Menu, Row, VIA_WORDS, type Via } from "./invite-menu";
+import {
+  Choices,
+  Item,
+  Menu,
+  Places,
+  Row,
+  Section,
+} from "./invite-menu";
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
 // Inviting any agent: one that opens a web page, or one that runs Reach's
 // tools (command line or MCP). One choice: a preset. Everything the agent may do follows from it;
-// what stays protected never changes (server/agent-guard.mjs).
+// Full control has no content exclusions; narrower presets keep their limits.
 export type Preset = "full" | "apps" | "files" | "readonly";
 export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
   full: {
     title: "Full control",
-    detail: "Use your screen, files and commands.",
+    detail: "Every app, file and command.",
   },
-  apps: { title: "Apps", detail: "Work in just the apps you choose." },
-  files: { title: "Files", detail: "Read or edit selected folders." },
+  apps: { title: "Apps", detail: "Only the apps you pick." },
+  files: { title: "Files", detail: "Only the folders you pick." },
   readonly: {
     title: "Read only",
-    detail: "See your screen and files. No changes.",
+    detail: "Looks, never changes.",
   },
 };
 const PRESET_ICONS = {
@@ -77,29 +83,14 @@ type Options = {
   presetAppsError?: string;
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
-type Issued = {
-  preset: Preset;
-  apps: string[];
-  folders: string[];
-  write: boolean;
-  hidden: string[];
-  everything: boolean;
-  always?: boolean;
-  // Tools: the agent runs this once on its own computer, then calls Reach's
-  // tools (command line or MCP) over the owner's Tailscale network.
-  command?: string;
-  // The same, for Windows (PowerShell).
-  windowsCommand?: string;
-  // Hosted: the address of Reach's MCP endpoint, added as a custom connector.
-  hosted?: string;
-};
-// What a tools agent runs, once: Reach for agents from this computer's start
-// page, then joining with its link (as Command line invites do). The
+// What an agent runs, once: Reach for agents from this computer's start
+// page, then joining with its link (Command line invites show it; a Tools
+// agent's link carries the same steps itself, server/agent-steps.mjs). The
 // runtime's SHA-256 from this computer is required: a download that isn't
 // exactly it never replaces the agent's runtime (security audit M8). A
-// computer that names no runtime gets no command (connections audit, Oct 10).
-// The link goes in on standard input, never as an argument other processes
-// can list (L5).
+// computer that names no runtime gets no command, and no Tools link
+// (connections audit, Oct 10). The link goes in on standard input, never as
+// an argument other processes can list (L5).
 export const NO_RUNTIME = "Update Reach on that computer to invite agents from it: it doesn't name the runtime agents download, so the download couldn't be checked.";
 const pinnedRuntime = (runtime?: string) => {
   if (!runtime || !/^[0-9a-f]{64}$/.test(runtime)) throw Error(NO_RUNTIME);
@@ -121,50 +112,24 @@ export const windowsToolsCommand = (start: string, link: string, runtime?: strin
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
 
-const quote = (value: string) =>
-  JSON.stringify(
-    value.length > 160 ? value.slice(0, 157) + "\u2026" : value,
-  ).replace(
-    /[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 const listWords = (items: string[]) =>
   items.length <= 1
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
-// What the agent reads, short (Oct 10: "invite message is too long"): how to
-// connect, what it may do, the few rules. Its tools describe themselves.
-// Describes the issued invitation, never later edits.
-export const agentInviteMessage = (link: string, issued: Issued) => {
-  const folders =
-    issued.folders.slice(0, 3).map(quote).join(", ") +
-    (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
-  const where = issued.everything ? "every folder I share" : folders;
-  const hidden = issued.hidden.length
-    ? ` Hidden from you: ${listWords(issued.hidden.map(quote))}.`
-    : "";
-  const access = {
-    full: `You get full control of my Mac: screen, apps, files in ${where} and a shell.`,
-    apps: `You get only ${listWords(issued.apps.map(quote))}, on my screen.`,
-    files: `You can ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
-    readonly: `You can look: my screen and files in ${where}. No clicks, no changes.`,
-  }[issued.preset];
-  const hands = issued.preset === "full" || issued.preset === "apps";
-  const tools = !!issued.command || !!issued.hosted;
-  const rules =
-    (hands
-      ? tools
-        ? ' Type passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.'
-        : " Fill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale."
-      : "") +
-    ` Ask me before paying, sending or deleting anything. Don't share this ${issued.hosted ? "address" : tools ? "command" : "link"}.`;
-  if (issued.hosted)
-    return `Add this as a custom MCP connector in your settings, then I approve the code it shows:\n\n${issued.hosted}\n\n${access}${hidden}${rules}`;
-  if (tools)
-    return `Connect to my Mac with Reach. Run this once (Node.js 22 or later), then I approve the code it shows:\n\n${issued.command}\n\nThen add Reach as an MCP server: node ~/.reach-agent/agent.mjs mcp\n\n${access}${hidden}${rules}${issued.windowsCommand ? `\n\nOn Windows, in PowerShell:\n\n${issued.windowsCommand}` : ""}`;
-  return `Open this link in your browser, then I approve the code it shows.${issued.always ? " Your access lasts until I end it." : ""} Keep the link: it brings this browser back.\n\n${access}${hidden}${rules}\n\n${link}`;
-};
+// What the agent is first told (Oct 12: "a very small prompt with a link"):
+// what to do with the link, and that I approve its code. One shape for every
+// kind of agent. What it may do and the rules come when it connects, from
+// its access then (server/agent-guide.mjs); a Tools agent's link explains
+// itself (server/agent-steps.mjs). `word`: "Mac", "Windows PC" or "computer".
+export const agentInviteMessage = (connect: Connect, link: string, word: string) =>
+  `${
+    {
+      tools: `Connect to my ${word} with Reach: open this link and follow its steps, then I approve the code it shows. Keep the link to yourself.`,
+      hosted: "Add this as a custom MCP connector, then I approve the code it shows. Keep the address to yourself.",
+      page: "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.",
+    }[connect]
+  }\n\n${link}`;
 
 // Every invite gets a fresh, silly name; the dice roll another.
 const quirks = [
@@ -235,8 +200,12 @@ type Props = {
   onCreated: (created: Created, link: string) => void;
   // How it connects at first (Tools unless chosen before).
   initialConnect?: Connect;
-  // Command line, offered in Connects where the invitation has it.
+  // Command line (folders, over Tailscale): offered only on a computer
+  // where the presets aren't (one that isn't a Mac).
   onCommandLine?: () => void;
+  // Its name so far, kept when the invitation goes to Command line and back.
+  initialName?: string;
+  onName?: (name: string) => void;
 };
 export default function BrowserInvite(props: Props) {
   return (
@@ -246,9 +215,10 @@ export default function BrowserInvite(props: Props) {
     />
   );
 }
-function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialConnect = "tools", onCommandLine }: Props) {
+function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", onCommandLine, initialName, onName }: Props) {
   const formId = useId();
-  const [name, setName] = useState(() => inviteName());
+  const [name, setName] = useState(() => initialName || inviteName());
+  useEffect(() => onName?.(name), [name]);
   const [preset, setPreset] = useState<Preset | null>(null);
   const [minutes, setMinutes] = useState(30);
   // Tools (first, and the default): the agent runs one command in its
@@ -276,9 +246,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     message: string;
     always: boolean;
     unpublished: boolean;
-    // Tools without a one-time Tailscale key: its computer must already be on
-    // the owner's tailnet (no invite keys set up here).
-    unkeyed?: boolean;
     // Hosted: the link is the connector address.
     hosted?: boolean;
   } | null>(null);
@@ -327,6 +294,8 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     preset === "full" || preset === "apps" || preset === "readonly";
   const desktopReady = options?.desktopAvailable !== false;
   const macHost = (device.platform || peer.platform) === "darwin";
+  // What the invite message calls this computer: never "Mac" off a Mac.
+  const word = computerWord(device.platform || peer.platform);
   const filesSupported = options?.protectedFilesSupported ?? macHost;
   const missing = !name.trim()
     ? "Name the agent."
@@ -354,13 +323,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     if (next === "apps" || next === "files") setHidden([]);
     setOpenRow(next === "apps" ? "apps" : next === "files" ? "folders" : null);
   };
-  // A choice that needs nothing more makes the invite once it's set.
-  const [go, setGo] = useState(false);
-  useEffect(() => {
-    if (!go) return;
-    setGo(false);
-    void create();
-  }, [go]);
   const create = async () => {
     if (busy || missing || !preset) return;
     setBusy(true);
@@ -370,8 +332,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     let created: Created | null = null;
     const controller = new AbortController();
     creation.current = controller;
-    const everything =
-      preset !== "files" && preset !== "apps" && !folders.length;
     try {
       const result = await request<{
         invitation: string;
@@ -395,16 +355,17 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
           // on your tailnet uses it at once, any other the public link.
           transport: "funnel",
           preset,
+          ...(preset === "full" ? { fullControlVersion: 1 } : {}),
           ...(connect === "hosted" ? { hosted: true } : {}),
           ...(minutes === ALWAYS
             ? { standing: true }
             : { ttlSeconds: minutes * 60 }),
-          ...(preset !== "apps" && folders.length
+          ...((preset === "files" || preset === "readonly") && folders.length
             ? { folders: folders.map(({ root, path }) => ({ root, path })) }
             : {}),
           ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
           ...(preset === "files" && write ? { write: true } : {}),
-          ...((preset === "full" || preset === "readonly") && hidden.length
+          ...(preset === "readonly" && hidden.length
             ? { hidden: hidden.map((id) => ({ id })) }
             : {}),
         }),
@@ -416,15 +377,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
       };
       if (!alive.current || controller.signal.aborted)
         throw Error("Invitation creation was cancelled.");
-      const issuedTo = {
-        preset,
-        apps: chosenApps.map((app) => app.name),
-        folders: folders.map((folder) => folder.full || folder.label),
-        write: preset === "files" && write,
-        hidden: hiddenApps.map((app) => app.name),
-        everything,
-        always: minutes === ALWAYS,
-      };
       if (connect === "hosted") {
         // A hosted agent (claude.ai, ChatGPT, Muse, Grok): the address of
         // Reach's MCP endpoint, added as a custom connector; the owner
@@ -441,35 +393,36 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
           hosted: true,
-          message: agentInviteMessage(address.href, { ...issuedTo, hosted: address.href }),
+          message: agentInviteMessage("hosted", address.href, word),
         });
         onCreated(created, address.href);
         return;
       }
       if (connect === "tools") {
-        // One command that joins through the public link, every request
-        // signed by the agent's own key (scripts/agent-funnel.mjs), the
-        // private address tried first. Works from any terminal, sandboxes
-        // included (Oct 10: Muse couldn't reach Tailscale at all).
+        // A link that explains itself (its steps at /agent): join through
+        // the public link, every request signed by the agent's own key
+        // (scripts/agent-funnel.mjs), the private address tried first.
+        // Works from any terminal, sandboxes included (Oct 10: Muse
+        // couldn't reach Tailscale at all). The runtime's SHA-256 rides in
+        // its fragment: the steps and join check against it, and a
+        // computer that names none gets no link.
         const origin = new URL(result.url).origin;
         const link = guestLinkUrl(origin, {
           key: "",
           hostname: "",
           invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
           funnel: true,
+          runtime: pinnedRuntime(result.runtime),
         }, "/agent");
-        const command = toolsCommand(origin, link, result.runtime);
-        const windowsCommand = windowsToolsCommand(origin, link, result.runtime);
         setMade({
-          link: command,
+          link,
           name: name.trim(),
           access: PRESET_WORDS[preset].title,
           expiresAt: result.expiresAt,
           joinBy: result.joinBy,
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
-          unkeyed: false,
-          message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
+          message: agentInviteMessage("tools", link, word),
         });
         onCreated(created, link);
         return;
@@ -494,7 +447,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
         joinBy: result.joinBy,
         always: minutes === ALWAYS,
         unpublished: result.publicName === "missing",
-        message: agentInviteMessage(link, issuedTo),
+        message: agentInviteMessage("page", link, word),
       });
       onCreated(created, link);
     } catch (e) {
@@ -568,7 +521,7 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
     ? ""
     : `${name.trim()} gets ${
         {
-          full: `full control of this Mac${hidden.length ? `, except ${listWords(hiddenApps.map((app) => app.name))}` : ""}`,
+          full: "full control of this Mac as your user account",
           apps: chosenApps.length
             ? `${listWords(chosenApps.slice(0, 3).map((app) => app.name))}${chosenApps.length > 3 ? ` and ${chosenApps.length - 3} more` : ""}, nothing else`
             : "the apps you pick",
@@ -603,166 +556,171 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
         }]
       : []),
   ];
-  const vias: Via[] = ["tools", "page", "hosted", ...(onCommandLine ? ["cli" as const] : [])];
+  const presetChoices = (["full", "apps", "files", "readonly"] as Preset[]).map(
+    (value) => ({
+      value,
+      label: PRESET_WORDS[value].title,
+      description: PRESET_WORDS[value].detail,
+      icon: PRESET_ICONS[value],
+      disabled:
+        !!options && (value === "files" ? !filesSupported : !desktopReady),
+    }),
+  );
 
   return (
     <section
       className="browser-invite ag-invite"
       aria-label="AI browser invitation"
     >
-      {/* As ChatGPT would: one question. Tap what it may do and the invite
-          is ready (Apps and Folders ask which first). The rest has a good
-          default, changed from the small rows below if you care. */}
+      {/* As ChatGPT would: where it runs, what it may do (a list with a
+          check), its name and how long, then one white pill. Choosing
+          never sends anything. */}
       <div className="ag-invite-form" hidden={!!made}>
-        <p className="ag-ask">What may it do?</p>
-        <div
-          className="ivt-rows ag-choices"
-          role="radiogroup"
-          aria-label="Access preset"
-        >
-          {(["full", "apps", "files", "readonly"] as Preset[]).map((value) => {
-            const Icon = PRESET_ICONS[value];
-            const disabled =
-              !!options &&
-              (value === "files" ? !filesSupported : !desktopReady);
-            return (
-              <button
-                type="button"
-                key={value}
-                role="radio"
-                aria-checked={preset === value}
-                aria-label={PRESET_WORDS[value].title}
-                className={`ivt-row ag-choice${preset === value ? " is-on" : ""}`}
-                disabled={disabled || busy}
-                onClick={() => {
-                  choose(value);
-                  // Nothing more to choose: the invite is made at once.
-                  if (value === "full" || value === "readonly") setGo(true);
-                }}
+        <Places
+          via={connect}
+          onChange={(v) => {
+            setConnect(v as Connect);
+            setError("");
+          }}
+        />
+        <Section title="What can it do?">
+          <Choices
+            label="Access preset"
+            options={presetChoices}
+            value={preset}
+            onChange={choose}
+            disabled={busy}
+          />
+          {preset === "apps" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<AppWindow />}
+                label="Apps it may use"
+                value={
+                  chosenApps.length ? (
+                    <AppStack peer={peer} apps={chosenApps} />
+                  ) : (
+                    "Pick apps"
+                  )
+                }
+                open={openRow === "apps"}
+                onToggle={() => toggleRow("apps")}
+                attention={!apps.length}
               >
-                <Icon size={21} strokeWidth={1.7} aria-hidden="true" />
-                <span className="ag-choice-text">
-                  <strong>{PRESET_WORDS[value].title}</strong>
-                  <small>{PRESET_WORDS[value].detail}</small>
-                </span>
-                {busy && preset === value ? (
-                  <span className="ag-choice-busy">Creating…</span>
-                ) : (
-                  <ChevronRight size={17} className="ag-choice-go" aria-hidden="true" />
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {preset === "apps" && (
-          <div className="ag-rows">
-            <AccessRow
-              icon={<AppWindow />}
-              label="Apps it may use"
-              value={
-                chosenApps.length ? (
-                  <AppStack peer={peer} apps={chosenApps} />
-                ) : (
-                  "Pick apps"
-                )
-              }
-              open={openRow === "apps"}
-              onToggle={() => toggleRow("apps")}
-              attention={!apps.length}
-            >
-              <p className="ag-quiet">
-                It sees and touches only these. Your browser with its saved
-                logins counts as one app.
-              </p>
-              {!options ? (
-                <p className="ag-quiet">Loading apps…</p>
-              ) : options.presetAppsError ? (
-                <p className="ag-error" role="alert">
-                  {options.presetAppsError}
+                <p className="ag-quiet">
+                  It sees and touches only these. Your browser with its saved
+                  logins counts as one app.
                 </p>
-              ) : (
-                <AppPicker
+                {!options ? (
+                  <p className="ag-quiet">Loading apps…</p>
+                ) : options.presetAppsError ? (
+                  <p className="ag-error" role="alert">
+                    {options.presetAppsError}
+                  </p>
+                ) : (
+                  <AppPicker
+                    peer={peer}
+                    apps={pickerApps}
+                    chosen={apps}
+                    onChange={setApps}
+                    chosenWords="Can use it"
+                  />
+                )}
+              </AccessRow>
+            </div>
+          )}
+          {preset === "files" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<Folder />}
+                label="Folders"
+                value={
+                  folders.length
+                    ? folders.length === 1
+                      ? folders[0].label
+                      : `${folders.length} folders`
+                    : "Pick folders"
+                }
+                open={openRow === "folders"}
+                onToggle={() => toggleRow("folders")}
+                attention={!folders.length}
+              >
+                <p className="ag-quiet">
+                  Your real folders. Home itself and system folders can't be
+                  chosen.
+                </p>
+                <FolderBrowser
                   peer={peer}
-                  apps={pickerApps}
-                  chosen={apps}
-                  onChange={setApps}
-                  chosenWords="Can use it"
+                  device={device}
+                  picked={folders}
+                  onChange={setFolders}
                 />
-              )}
-            </AccessRow>
-          </div>
-        )}
-        {preset === "files" && (
-          <div className="ag-rows">
-            <AccessRow
-              icon={<Folder />}
-              label="Folders"
-              value={
-                folders.length
-                  ? folders.length === 1
-                    ? folders[0].label
-                    : `${folders.length} folders`
-                  : "Pick folders"
-              }
-              open={openRow === "folders"}
-              onToggle={() => toggleRow("folders")}
-              attention={!folders.length}
-            >
-              <p className="ag-quiet">
-                Your real folders. Home itself and system folders can't be
-                chosen.
-              </p>
-              <FolderBrowser
-                peer={peer}
-                device={device}
-                picked={folders}
-                onChange={setFolders}
-              />
-            </AccessRow>
-            <div className="ag-row">
-              <div className="ag-row-head ag-row-static">
-                <span className="ag-row-icon">
-                  <Pencil />
-                </span>
-                <span className="ag-row-label">Can edit</span>
-                <span className="ag-row-value">
-                  {write ? "Changes files directly" : "Read only"}
-                </span>
-                <Switch
-                  label="Can edit files"
-                  checked={write}
-                  onChange={setWrite}
-                />
+              </AccessRow>
+              <div className="ag-row">
+                <div className="ag-row-head ag-row-static">
+                  <span className="ag-row-icon">
+                    <Pencil />
+                  </span>
+                  <span className="ag-row-label">Can edit</span>
+                  <span className="ag-row-value">
+                    {write ? "Changes files directly" : "Read only"}
+                  </span>
+                  <Switch
+                    label="Can edit files"
+                    checked={write}
+                    onChange={setWrite}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-        )}
-        {(preset === "apps" || preset === "files") && (
-          <div className="ag-send">
-            <p
-              className={`ag-summary${missing ? " is-missing" : ""}`}
-              aria-live="polite"
-            >
-              {missing || summary}
-            </p>
-            <button
-              className="ag-primary ag-wide"
-              disabled={busy || !!missing}
-              onClick={() => void create()}
-            >
-              {busy ? "Creating link…" : "Create invite link"}
-            </button>
-          </div>
-        )}
-        {(preset === "full" || preset === "readonly") && missing && (
-          <p className="ag-summary is-missing" aria-live="polite">
-            {missing}
-          </p>
-        )}
+          )}
+          {/* Only Read only shows everything else, so only it hides apps. */}
+          {preset === "readonly" && (
+            <div className="ag-rows">
+              <AccessRow
+                icon={<EyeOff />}
+                label="Hide apps from it"
+                value={
+                  hiddenApps.length ? (
+                    <AppStack peer={peer} apps={hiddenApps} />
+                  ) : (
+                    "None"
+                  )
+                }
+                open={openRow === "hidden"}
+                onToggle={() => toggleRow("hidden")}
+              >
+                <p className="ag-quiet">
+                  Reach filters known password and Reach windows from
+                  pictures. Add apps where your codes and mail arrive.
+                </p>
+                {suggested.length > 0 && !hidden.length && (
+                  <button
+                    type="button"
+                    className="ag-link"
+                    onClick={() => setHidden(suggested.map((app) => app.id))}
+                  >
+                    Hide {listWords(suggested.map((app) => app.name))}
+                  </button>
+                )}
+                {!options ? (
+                  <p className="ag-quiet">Loading apps…</p>
+                ) : (
+                  <AppPicker
+                    peer={peer}
+                    apps={hideableApps}
+                    chosen={hidden}
+                    onChange={setHidden}
+                    chosenWords="Hidden from it"
+                    chipsLabel="Hidden apps"
+                  />
+                )}
+              </AccessRow>
+            </div>
+          )}
+        </Section>
 
-        {/* The defaults, quiet: change them before tapping, or never. */}
-        <div className="ivt-rows ag-defaults">
+        <div className="ivt-rows">
           <div className="ivt-row ivt-add">
             <Bot size={19} aria-hidden="true" />
             <input
@@ -810,107 +768,50 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               )}
             </Menu>
           </Row>
-          <Row icon={<Plug size={19} />} label="Connects">
-            <Menu label={VIA_WORDS[connect].label} wide className="ivt-role">
-              {(close) => (
-                <div role="group" aria-label="How the agent connects">
-                  {vias.map((v) => (
-                    <Item
-                      key={v}
-                      on={v === connect}
-                      label={VIA_WORDS[v].label}
-                      description={
-                        v === "tools" && keyPeer?.id !== peer.id
-                          ? "Fastest. One command in any terminal, through your public link."
-                          : VIA_WORDS[v].description
-                      }
-                      onClick={() => {
-                        close();
-                        if (v === "cli") onCommandLine?.();
-                        else setConnect(v);
-                      }}
-                    />
-                  ))}
-                  {connect === "tools" && keyPeer?.id !== peer.id && (
-                    <button
-                      type="button"
-                      className="ivt-menu-foot"
-                      aria-label="Set up invite links"
-                      onClick={() => {
-                        close();
-                        onSetup();
-                      }}
-                    >
-                      Set up invite links
-                      <small>Keeps Tools on your Tailscale network.</small>
-                    </button>
-                  )}
-                </div>
-              )}
-            </Menu>
-          </Row>
-          {/* Apps and Folders show only what they name: nothing to hide. */}
-          {preset !== "apps" && preset !== "files" && (
-          <div className="ag-rows ag-hide">
-            <AccessRow
-              icon={<EyeOff />}
-              label="Hide apps from it"
-              value={
-                hiddenApps.length ? (
-                  <AppStack peer={peer} apps={hiddenApps} />
-                ) : (
-                  "None"
-                )
-              }
-              open={openRow === "hidden"}
-              onToggle={() => toggleRow("hidden")}
-            >
-              <p className="ag-quiet">
-                Reach filters known password and Reach windows from pictures.
-                Add apps where your codes and mail arrive. This does not limit
-                Full control commands.
-              </p>
-              {suggested.length > 0 && !hidden.length && (
-                <button
-                  type="button"
-                  className="ag-link"
-                  onClick={() => setHidden(suggested.map((app) => app.id))}
-                >
-                  Hide {listWords(suggested.map((app) => app.name))}
-                </button>
-              )}
-              {!options ? (
-                <p className="ag-quiet">Loading apps…</p>
-              ) : (
-                <AppPicker
-                  peer={peer}
-                  apps={hideableApps}
-                  chosen={hidden}
-                  onChange={setHidden}
-                  chosenWords="Hidden from it"
-                  chipsLabel="Hidden apps"
-                />
-              )}
-            </AccessRow>
-          </div>
-          )}
         </div>
-        <p className="ag-note">
-          <ShieldCheck size={14} />
-          You approve it before it can join. Full control runs as you: invite
-          only an agent you trust.
-        </p>
+
+        <div className="ag-send">
+          <p
+            className={`ag-summary${missing ? " is-missing" : ""}`}
+            aria-live="polite"
+          >
+            {missing || summary}
+          </p>
+          <button
+            className="ag-primary ag-wide"
+            disabled={busy || !!missing}
+            onClick={() => void create()}
+          >
+            {busy ? "Creating…" : "Create invite"}
+          </button>
+        </div>
         {error && (
           <p className="ag-error" role="alert">
             {error}
           </p>
         )}
+        <p className="ag-note">
+          <ShieldCheck size={14} />
+          {preset === "full"
+            ? "Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within macOS permissions. Approve only an agent you trust."
+            : "You approve it before it can join. Pause it or end its access any time."}
+        </p>
         {options && !macHost && !filesSupported && !desktopReady && (
-          <p className="ag-quiet ag-center">
-            Browser invitations currently require macOS. Your own Files and
-            terminals remain available. For an agent, choose Command line
-            under Connects.
-          </p>
+          <>
+            <p className="ag-quiet ag-center">
+              Browser invitations currently require macOS. Your own Files and
+              terminals remain available.
+            </p>
+            {onCommandLine && (
+              <button
+                type="button"
+                className="ag-secondary ag-wide"
+                onClick={onCommandLine}
+              >
+                Invite with folder access
+              </button>
+            )}
+          </>
         )}
         {options && !filesSupported && (macHost || desktopReady) && (
           <p className="ag-quiet ag-center">
@@ -936,14 +837,15 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
             <Check size={27} strokeWidth={1.8} aria-hidden="true" />
           </span>
           <h3 ref={doneHeading} tabIndex={-1}>
-            Your invite is ready
+            {made.name} is invited
           </h3>
           <p className="ag-done-for">
-            <strong>{made.name}</strong> · {made.access} ·{" "}
+            {made.access} ·{" "}
             {made.always
               ? "Until you end it"
               : `Join by ${at(made.joinBy)} · ends ${at(made.expiresAt)}`}
           </p>
+          {made.hosted && <code className="ag-done-url">{made.link}</code>}
           <div className="ag-done-actions">
             <button className="ag-primary" onClick={() => void copyMessage()}>
               {copied ? <Check size={17} /> : <Copy size={17} />}
@@ -956,16 +858,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               <Share2 size={17} /> Share…
             </button>
           </div>
-          {made.unkeyed && (
-            <p className="ag-note is-warn" role="status">
-              No Tailscale invite key: the agent's computer must already be on
-              your Tailscale network.{" "}
-              <button type="button" className="ag-link" onClick={onSetup}>
-                Set up invite links
-              </button>{" "}
-              to let any computer join with the command.
-            </p>
-          )}
           {made.unpublished && (
             <p className="ag-note is-warn" role="status">
               Agents can’t open this link yet: Tailscale hasn’t published its
@@ -977,7 +869,6 @@ function BrowserInviteForm({ peer, device, keyPeer, onSetup, onCreated, initialC
               {shareNote}
             </p>
           )}
-          {made.hosted && <code className="ag-done-url">{made.link}</code>}
           <p className="ag-done-next">
             {made.hosted
               ? "Add it to your agent as a custom MCP connector, then approve its code in Home → Needs you."

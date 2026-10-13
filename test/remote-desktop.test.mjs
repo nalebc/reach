@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { once } from "node:events";
+import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
@@ -403,9 +404,9 @@ test(
   },
 );
 test(
-  "native Mac encoder produces decodable Annex B keyframes and interframes",
+  "native Mac encoder produces Annex B keyframes and interframes",
   { skip: !process.env.REACH_TEST_VIDEO_HELPER, timeout: 20000 },
-  async () => {
+  async (t) => {
     const source = new NativeScreenSource(process.env.REACH_TEST_VIDEO_HELPER, [
       "--self-test",
     ]);
@@ -413,13 +414,43 @@ test(
       const keys = [];
       source.setBitrate(1500000);
       for (const command of ["key", "frame", "frame", "key"]) {
-        const packet = await source.next(command),
-          length = packet.readUInt32BE(),
-          meta = JSON.parse(packet.subarray(4, 4 + length));
+        let packet;
+        try {
+          packet = await source.next(command);
+        } catch (error) {
+          // A virtual Mac (GitHub's Intel runners) has no hardware H.264
+          // encoder; real Macs do. Only that pair skips: anywhere else an
+          // unavailable encoder still fails here.
+          const vm = (() => { try { return execFileSync("/usr/sbin/sysctl", ["-n", "kern.hv_vmm_present"], { encoding: "utf8" }).trim() === "1"; } catch { return false; } })();
+          if (vm && /Video encoder unavailable/.test(error.message)) return t.skip(`virtual Mac without a hardware encoder: ${error.message}`);
+          throw error;
+        }
+        // This helper receives only generated pixels. Keep diagnostics bounded
+        // and distinguish JPEG/wrong-mode output from a broken JSON envelope.
+        const diagnostic = `${command}: ${packet.length} bytes; prefix ${packet.subarray(0, 24).toString("hex")}; args --self-test`;
+        assert.ok(packet.length >= 4, `Missing H.264 metadata header: ${diagnostic}`);
+        const length = packet.readUInt32BE();
+        assert.ok(length > 0 && length <= 1024 && 4 + length < packet.length,
+          `Invalid H.264 metadata length ${length}: ${diagnostic}`);
+        assert.equal(packet[4], 0x7b, `Missing H.264 JSON envelope: ${diagnostic}`);
+        const meta = JSON.parse(packet.subarray(4, 4 + length));
         assert.match(meta.codec, /^avc1\./);
         assert.equal(meta.width, 640);
         assert.equal(meta.height, 360);
         if (command === "key") assert.equal(meta.key, true);
+        const payload = packet.subarray(4 + length);
+        const start = Buffer.from([0, 0, 0, 1]), types = [];
+        assert.equal(payload.indexOf(start), 0, "video payload must begin with an Annex B start code");
+        for (let offset = 0; offset >= 0; offset = payload.indexOf(start, offset + 4)) {
+          assert.ok(offset + 4 < payload.length, "each NAL has a header");
+          types.push(payload[offset + 4] & 0x1f);
+        }
+        if (meta.key) {
+          for (const type of [7, 8, 5]) assert.ok(types.includes(type), `keyframe must include SPS, PPS and IDR NALs: ${types}`);
+        } else {
+          assert.ok(types.includes(1), `interframe must include a non-IDR slice: ${types}`);
+          assert.ok(!types.includes(5), "an interframe must not contain an IDR slice");
+        }
         keys.push(meta.key);
       }
       assert.deepEqual(keys, [true, false, false, true]);

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createDesktopAutomation } from "../server/desktop-automation.mjs";
 import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 import { ScreenControl } from "../server/screen.mjs";
 
@@ -128,6 +129,7 @@ function desktopWorld() {
   const automation = known({ blocked: () => desktop.automationBusy(), now: () => clock });
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true,
+    pauses: createAgentPauses(),
     now: () => clock,
     verifyClient: id => clients.get(id),
     automationControls: () => automation.active() || automation.wanted(),
@@ -150,7 +152,8 @@ function desktopWorld() {
     },
   });
   const add = (id = "agent", preset = "full") => {
-    const policy = { browser:true, preset, roots:[] };
+    const policy = { browser:true, preset, roots:[],
+      ...(preset === "apps" ? { apps: [{ id: "/Applications/Safari.app", bundleId: "com.apple.Safari" }] } : {}) };
     const client = { id, kind:"agent", status:"accepted", name:id, policy, scopes:presetScopes(policy), expiresAt:clock+120000 };
     clients.set(id, client); return client;
   };
@@ -206,14 +209,16 @@ test("describing the screen counts as a look, so its labels can be clicked after
   assert.equal(w.requests.filter(request => request.op === "act").length, 1);
 });
 
-test("a secret typed into a field still refuses protected pages", async t => {
+for (const preset of ["apps", "full"]) test(`secret text follows the ${preset} preset's content restrictions`, async t => {
   const w = desktopWorld(); t.after(() => w.close());
-  const client = w.add();
+  const client = w.add("agent", preset);
   await w.desktop.screenshot(client, w.authorize(client));
-  await assert.rejects(w.desktop.act(client, { type: "type", text: "javascript:alert(1)", secret: true }, w.authorize(client)), error => error.kind === "blocked");
-  assert.equal(w.requests.filter(request => request.op === "act").length, 0);
+  const scripted = () => w.desktop.act(client, { type: "type", text: "javascript:alert(1)", secret: true }, w.authorize(client));
+  if (preset === "apps") await assert.rejects(scripted(), error => error.kind === "blocked");
+  else await scripted(); // inert helper: Full control deliberately has no content filter
+  assert.equal(w.requests.filter(request => request.op === "act").length, preset === "apps" ? 0 : 1);
   await w.desktop.act(client, { type: "type", text: "hunter2", secret: true }, w.authorize(client));
-  assert.equal(w.requests.filter(request => request.op === "act").length, 1);
+  assert.equal(w.requests.filter(request => request.op === "act").length, preset === "apps" ? 1 : 2);
 });
 
 test("a chat waiting on a busy agent gets the next turn, named", async t => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Info, Loader2, Plus, RefreshCw, SearchCheck, Workflow, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -31,7 +31,7 @@ export type RelayStarted = { relay: Relay; opened?: { agent: string; id: string 
 // docs/ACROSS_AGENTS.md).
 export const relayAgents = (health: AgentHealth[], { openclaw = true } = {}) =>
   ["codex", "claude", ...(openclaw ? ["openclaw"] : [])].filter((a) =>
-    health.some((h) => h.agent === a && h.installed && (a === "openclaw" ? h.connected === true : h.signedIn && h.usable !== false)),
+    health.some((h) => h.agent === a && h.installed && !h.needs?.length && (a === "openclaw" ? h.connected === true : h.signedIn && h.usable !== false)),
   );
 // The other agent first (the point of a second opinion), then the same one.
 const othersFirst = (agent: string, agents: string[]) => [...agents.filter((a) => a !== agent), ...agents.filter((a) => a === agent)];
@@ -102,6 +102,47 @@ export const armedAutoContinue = (relays: Relay[], here: ChatRef) =>
 export const quietRelay = (r: Relay) =>
   r.trigger === "usage" && ((r.state === "waiting" && !r.holding) || (r.state === "stopped" && r.problem === "Cancelled."));
 
+// Auto-continue that went on in the same chat (its own provider came back
+// first): nothing moved, so no row stays. The chat says it once, in a hint
+// that fades (Oct 12: "same session is same place, no need to keep it").
+export const continuedHere = (r: Relay) => r.trigger === "usage" && r.state === "done" && r.chain.length === 1;
+const HINTS_SEEN = "reach.continued-here-seen";
+const hintSeen = (id: string) => {
+  try {
+    return (JSON.parse(localStorage.getItem(HINTS_SEEN) || "[]") as string[]).includes(id);
+  } catch {
+    return false;
+  }
+};
+const markHintSeen = (id: string) => {
+  try {
+    const seen = (JSON.parse(localStorage.getItem(HINTS_SEEN) || "[]") as string[]).filter((s) => s !== id);
+    localStorage.setItem(HINTS_SEEN, JSON.stringify([...seen, id].slice(-20)));
+  } catch {
+    /* private browser: it shows again next time */
+  }
+};
+function ContinuedHereHint({ relays, here }: { relays: Relay[]; here: ChatRef }) {
+  const fresh = relaysOf(relays, here).find((r) => continuedHere(r) && !hintSeen(r.id));
+  const [shown, setShown] = useState<{ id: string; agent: string } | null>(null);
+  useEffect(() => {
+    if (!fresh || shown) return;
+    markHintSeen(fresh.id);
+    setShown({ id: fresh.id, agent: fresh.chain[0].agent });
+  }, [fresh, shown]);
+  useEffect(() => {
+    if (!shown) return;
+    const t = setTimeout(() => setShown(null), 4000);
+    return () => clearTimeout(t);
+  }, [shown]);
+  if (!shown) return null;
+  return (
+    <div className="relay-hint" role="status" key={shown.id}>
+      <Check size={14} /> {agentLabel(shown.agent)} had usage again and continued here.
+    </div>
+  );
+}
+
 // Above the message box: each relay this chat is part of, with the way to
 // the chat it's in now, and Cancel while it waits.
 export function RelayStrip({
@@ -122,8 +163,10 @@ export function RelayStrip({
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
   const [gone, setGone] = useState<string[]>([]);
-  const mine = relaysOf(relays, here).filter((r) => !gone.includes(r.id) && !quietRelay(r));
-  if (!mine.length) return null;
+  const mine = relaysOf(relays, here).filter((r) => !gone.includes(r.id) && !quietRelay(r) && !continuedHere(r));
+  // The hint keeps its place whether or not rows show, so it isn't cut short.
+  const hint = <ContinuedHereHint relays={relays} here={here} />;
+  if (!mine.length) return hint;
   const cancel = async (r: Relay) => {
     setBusy(r.id);
     setProblem("");
@@ -138,6 +181,8 @@ export function RelayStrip({
     }
   };
   return (
+    <>
+    {hint}
     <div className="relay-strip" role="group" aria-label="Handoffs">
       {mine.map((r) => {
         const at = r.chain.at(-1)!;
@@ -170,6 +215,7 @@ export function RelayStrip({
       })}
       {problem && <small className="relay-problem">{problem}</small>}
     </div>
+    </>
   );
 }
 

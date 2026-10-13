@@ -8,9 +8,11 @@
 // or a download), not ClawHub; there's no skills.search. Install details
 // come from the skill's SKILL.md (status only has the author's label).
 import crypto from "node:crypto";
+import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import JSON5 from "json5";
+import { computerWord } from "./computer-word.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const SOURCES = {
@@ -146,6 +148,25 @@ async function scripts(dir) {
   await walk(dir, 0);
   return found;
 }
+// A SKILL.md as one open file: what's measured is what's read, never past
+// 256 KB, even if it changes meanwhile (CodeQL #252). Not a link swapped in,
+// and a FIFO is refused at once instead of waiting for a writer.
+const SKILL_MAX = 256 * 1024;
+async function readSkillFile(real) {
+  const handle = await fs.open(real, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > SKILL_MAX) throw new Error("not a skill file");
+    const data = Buffer.alloc(SKILL_MAX + 1);
+    let length = 0;
+    for (let n; length <= SKILL_MAX && (n = (await handle.read(data, length, data.length - length, length)).bytesRead); ) length += n;
+    if (length > SKILL_MAX) throw new Error("not a skill file");
+    return data.subarray(0, length).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 async function clawHubSlugs(workspaceDir) {
   if (typeof workspaceDir !== "string" || !path.isAbsolute(workspaceDir)) return new Set();
   try {
@@ -186,22 +207,19 @@ export function routes(app, client, ctx) {
     if (!option) throw fail(404, "This installer isn't offered anymore.");
     const file = skill.filePath;
     if (typeof file !== "string" || !path.isAbsolute(file) || path.basename(file) !== "SKILL.md")
-      throw fail(409, "Reach can't check this skill. Install it on your Mac.");
+      throw fail(409, `Reach can't check this skill. Install it on your ${computerWord(process.platform)}.`);
     let text;
     try {
-      const real = await fs.realpath(file);
-      const stat = await fs.stat(real);
-      if (!stat.isFile() || stat.size > 256 * 1024) throw new Error();
-      text = await fs.readFile(real, "utf8");
+      text = await readSkillFile(await fs.realpath(file));
     } catch {
-      throw fail(409, "Reach can't check this skill. Install it on your Mac.");
+      throw fail(409, `Reach can't check this skill. Install it on your ${computerWord(process.platform)}.`);
     }
     // OpenClaw's installId: the spec's id, or `${kind}-${index}`.
     const spec = (skillManifest(text)?.install || []).find(
       (s, i) => (s.id ?? `${s.kind}-${i}`).trim() === installId,
     );
     if (!spec || spec.kind !== option.kind || (spec.kind === "node" && !String(option.label).includes(spec.target)))
-      throw fail(409, "Reach can't check this installer. Install it on your Mac.");
+      throw fail(409, `Reach can't check this installer. Install it on your ${computerWord(process.platform)}.`);
     const bundled = skill.bundled === true;
     const folder = await scripts(path.dirname(await fs.realpath(file)));
     const thirdPartyTap = spec.kind === "brew" && spec.target.split("/").length === 3;

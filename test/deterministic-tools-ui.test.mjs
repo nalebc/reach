@@ -222,7 +222,9 @@ test("an uncertain visual run retains its request ID and never creates a second 
   const runs = f.calls.filter((call) => call.route.endsWith("/run"));
   assert.equal(runs[0].body.requestId, runs[1].body.requestId);
   assert.equal(f.driver.counters.clicks, 1);
-  assert.ok(button(f.root, "New run"));
+  // The retry's answer arrives after its request is recorded.
+  await dom.waitFor(() => button(f.root, "New run"));
+  assert.equal(f.driver.counters.clicks, 1);
 });
 
 test("setup refusals from an already-running older server show owner guidance and allow a fresh explicit attempt", async (t) => {

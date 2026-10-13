@@ -92,4 +92,46 @@ test("approvals and connection requests follow the Mac's signal: read when it ch
   }
 });
 
+test("stalled approval and connection queues time out and resume polling", async (t) => {
+  const polls = [], deadlines = [];
+  const realInterval = globalThis.setInterval, realTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+    if (ms === 3000) { polls.push(callback); return realInterval(callback, 60000, ...args); }
+    return realInterval(callback, ms, ...args);
+  });
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    if (ms === 35000) deadlines.push(callback);
+    return realTimeout(callback, ms, ...args);
+  });
+  let stalled = true, aborted = 0;
+  const calls = [];
+  globalThis.fetch = dom.window.fetch = async (url, init) => {
+    const route = new URL(url).pathname;
+    calls.push(route);
+    if (stalled) return new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => { aborted++; reject(init.signal.reason); }, { once: true });
+    });
+    const pending = { clientId: "one", name: "Muse", expiresAt: Date.now() + 60000 };
+    return reply(route.endsWith("admissions")
+      ? [{ ...pending, requestId: "join-one", verificationCode: "ABCD-1234" }]
+      : [{ ...pending, id: "request-one", status: "pending", action: { type: "command", command: "pwd" } }]);
+  };
+  function Probe() {
+    const approvals = useBrowserApprovals(peer, true);
+    const admissions = useAgentAdmissions(peer, true);
+    return React.createElement("output", null, `${approvals.items.length}:${admissions.items.length}`);
+  }
+  const view = await dom.render(React.createElement(Probe));
+  views.add(view);
+  assert.equal(deadlines.length, 2);
+  deadlines.forEach(expire => expire());
+  await dom.waitFor(() => aborted === 2);
+  await settle();
+  stalled = false;
+  polls.forEach(poll => poll());
+  await dom.waitFor(() => view.container.textContent === "1:1");
+  assert.equal(calls.filter(route => route.endsWith("admissions")).length, 2);
+  assert.equal(calls.filter(route => route.endsWith("browser-requests")).length, 2);
+});
+
 test("polling budget tests emit no React warnings", () => assert.deepEqual(dom.errors, []));

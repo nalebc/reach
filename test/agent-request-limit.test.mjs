@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
 
-test("access requests are limited per visitor and a missing body is a 400", async (t) => {
+test("access requests use the socket visitor and ignore untrusted forwarding headers", async (t) => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "reach-req-limit-"));
   const reach = await createReach({
     roots: [tmp],
@@ -22,7 +22,8 @@ test("access requests are limited per visitor and a missing body is a 400", asyn
     fetch(`${url}/api/agents/requests`, { method: "POST", headers: { "x-forwarded-for": ip } });
   for (let i = 0; i < 5; i++) assert.equal((await ask("100.64.0.1")).status, 400);
   assert.equal((await ask("100.64.0.1")).status, 429);
-  assert.equal((await ask("100.64.0.2")).status, 400);
+  assert.equal((await ask("100.64.0.2")).status, 429, "a caller cannot get another budget by changing X-Forwarded-For");
+  assert.equal((await ask("arbitrary-forwarded-value")).status, 429);
 });
 
 // Security audit L1: a Command line request is answered to the device that
@@ -61,4 +62,8 @@ test("a Command line request is collected by the device that asked, and bound to
   const browse = (from) => call("/api/files?root=0&path=", from, { headers: { Authorization: `Bearer ${collected.json.token}` } });
   assert.equal((await browse("100.64.0.31")).status, 401, "the credential works from the device that asked only");
   assert.notEqual((await browse("100.64.0.30")).status, 401);
+  for (let i = 0; i < 4; i++)
+    assert.equal((await call("/api/agents/requests", "100.64.0.30", { method: "POST" })).status, 400);
+  assert.equal((await call("/api/agents/requests", "100.64.0.30", { method: "POST" })).status, 429);
+  assert.equal((await call("/api/agents/requests", "100.64.0.31", { method: "POST" })).status, 400, "verified private-device identities keep independent budgets");
 });

@@ -8,8 +8,13 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
 import { desktopBinary } from "../desktop-native.mjs";
+import { fail } from "../core.mjs";
 
 const run = promisify(execFile);
+// Shared across instances and users, including helper preparation. Native
+// speech work can last three minutes; reject excess work without queueing it.
+const MAX_TRANSCRIPTIONS = 2;
+let transcriptions = 0;
 // Only fixed helper diagnostics may cross into a chat response. Other stderr
 // can contain filenames, URLs or speech framework exception details.
 const KNOWN_PROBLEMS = new Set([
@@ -45,35 +50,42 @@ export function createVoice({ config, platform = process.platform, binary = (sig
     async transcribe(file, { locale, authorize = () => {} } = {}) {
       authorize();
       if (platform !== "darwin") return { problem: "Voice memos turn into words on a Mac." };
-      let helper;
+      if (transcriptions >= MAX_TRANSCRIPTIONS)
+        throw fail(429, "Two voice memos are already transcribing. Try again when one finishes.");
+      transcriptions++;
       try {
-        helper = await binary();
-      } catch {
-        return { problem: "This Mac couldn't prepare voice transcription. Install Apple Command Line Tools." };
-      }
-      // Compilation can take time. Do not start native work after the request
-      // has expired, disconnected or been revoked; never turn this into a
-      // fallback attachment by swallowing the authority refusal.
-      authorize();
-      const args = [file, ...(typeof locale === "string" && LOCALE.test(locale) ? [locale] : [])];
-      let stdout;
-      try {
-        // The first memo in a language downloads its model: give it time.
-        ({ stdout } = await exec(helper, args, { timeout: 180000, maxBuffer: 4 * 1024 * 1024 }));
-      } catch (error) {
+        let helper;
+        try {
+          helper = await binary();
+        } catch {
+          return { problem: "This Mac couldn't prepare voice transcription. Install Apple Command Line Tools." };
+        }
+        // Compilation can take time. Do not start native work after the request
+        // has expired, disconnected or been revoked; never turn this into a
+        // fallback attachment by swallowing the authority refusal.
         authorize();
-        const said = String(error?.stderr || "").trim().split("\n").pop();
-        return { problem: error?.killed
-          ? "Transcribing took too long. Keep the recording attached or try a shorter memo."
-          : KNOWN_PROBLEMS.has(said) ? said : TRANSCRIPTION_PROBLEM };
-      }
-      authorize();
-      try {
-        const out = JSON.parse(String(stdout).trim().split("\n").pop() || "{}");
-        const text = typeof out.text === "string" ? out.text.trim() : "";
-        return text ? { text } : { problem: "No words were heard in that memo." };
-      } catch {
-        return { problem: TRANSCRIPTION_PROBLEM };
+        const args = [file, ...(typeof locale === "string" && LOCALE.test(locale) ? [locale] : [])];
+        let stdout;
+        try {
+          // The first memo in a language downloads its model: give it time.
+          ({ stdout } = await exec(helper, args, { timeout: 180000, maxBuffer: 4 * 1024 * 1024 }));
+        } catch (error) {
+          authorize();
+          const said = String(error?.stderr || "").trim().split("\n").pop();
+          return { problem: error?.killed
+            ? "Transcribing took too long. Keep the recording attached or try a shorter memo."
+            : KNOWN_PROBLEMS.has(said) ? said : TRANSCRIPTION_PROBLEM };
+        }
+        authorize();
+        try {
+          const out = JSON.parse(String(stdout).trim().split("\n").pop() || "{}");
+          const text = typeof out.text === "string" ? out.text.trim() : "";
+          return text ? { text } : { problem: "No words were heard in that memo." };
+        } catch {
+          return { problem: TRANSCRIPTION_PROBLEM };
+        }
+      } finally {
+        transcriptions--;
       }
     },
   };

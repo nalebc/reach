@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { runtimePath } from "./openclaw-run.mjs";
 import { availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
+import { computerWord } from "./computer-word.mjs";
 
 const exec = promisify(execFile);
 
@@ -26,9 +27,17 @@ export const AGENT_INSTALLS = {
     needs: ["npm"],
   },
 };
+// Git for Windows, which Claude Code needs there (its Git Bash:
+// claude-environment.mjs), from winget's own catalog; its agreements are
+// accepted on the phone, as nothing in a Reach terminal could answer them.
 const windowsInstalls = {
   claude: { name: "Claude Code", commands: ["irm https://claude.ai/install.ps1 | iex"] },
   codex: { name: "Codex", commands: ["npm.cmd install -g @openai/codex"], needs: ["npm"] },
+  git: {
+    name: "Git for Windows",
+    commands: ["winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"],
+    needs: ["winget"],
+  },
 };
 
 // Whether the owner's login shell has a command (npm, brew).
@@ -64,14 +73,17 @@ export async function installPlan(agent, { has, platform = process.platform, fin
       return lead ? { agent, name: recipe.name, command, lead } : { agent, name: recipe.name, command };
     }
   }
-  throw Object.assign(new Error(`Install ${recipe.name} needs ${platform === "darwin" ? "npm or Homebrew on this Mac" : "npm on this computer"}.`), { status: 409 });
+  const tools = recipe.needs?.includes("winget") ? `winget (Windows' App Installer) on this ${computerWord(platform)}` : platform === "darwin" ? "npm or Homebrew on this Mac" : "npm on this computer";
+  throw Object.assign(new Error(`Install ${recipe.name} needs ${tools}.`), { status: 409 });
 }
 
 // The terminal manager starts PowerShell on Windows and a POSIX shell elsewhere.
 // A failed download/installer must end the temporary terminal with a failure.
 export function installTerminalCommand(plan, platform = process.platform) {
   if (platform !== "win32") return `set -o pipefail; ${plan.lead ? `${plan.lead}; ` : ""}${plan.command}; exit`;
-  const exit = plan.agent === "codex" ? "exit $LASTEXITCODE" : "exit 0";
+  // A script piped to iex (Claude Code's installer) sets no exit code of its
+  // own; a program's (npm, winget, claude update) is the install's.
+  const exit = /\|\s*iex$/.test(plan.command) ? "exit 0" : "exit $LASTEXITCODE";
   return `$ErrorActionPreference = 'Stop'; try { ${plan.command}; ${exit} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
 }
 

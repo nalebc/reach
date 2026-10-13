@@ -126,7 +126,7 @@ test("Reach's own Claude Code says what it launched a chat with, and the window 
   await h.send(ID, { text: "one", cwd: "/p", model: "haiku", effort: "low" });
   assert.deepEqual(h.settingsOf(ID), { model: "haiku", effort: "low", mode: null });
   assert.equal(h.contextWindow(ID, "claude-opus-5-5"), null);
-  claude.last().print({ type: "result", is_error: false, modelUsage: { "claude-opus-5-5": { contextWindow: 1000000 }, odd: { contextWindow: "big" } } });
+  claude.last().print({ type: "result", subtype: "success", is_error: false, modelUsage: { "claude-opus-5-5": { contextWindow: 1000000 }, odd: { contextWindow: "big" } } });
   assert.equal(h.contextWindow(ID, "claude-opus-5-5"), 1000000);
   assert.equal(h.contextWindow(ID, "odd"), null);
   assert.equal(h.settingsOf("22222222-2222-4222-8222-222222222222"), null);
@@ -141,7 +141,7 @@ test("a Claude app chat in Ultracode stays in it when Reach continues it", async
   await h.send(ID, { text: "one", cwd: "/p", effort: "xhigh", ultracode: true });
   const args = claude.last().args;
   assert.deepEqual(args.slice(args.indexOf("--settings"), args.indexOf("--settings") + 2), ["--settings", '{"ultracode":true}']);
-  claude.last().print({ type: "result", is_error: false });
+  claude.last().print({ type: "result", subtype: "success", is_error: false });
   // Turned off in the app: the next launch goes without it.
   await h.send(ID, { text: "two", ultracode: false });
   assert.equal(claude.runs.length, 2);
@@ -299,7 +299,7 @@ test("a model pick the Mac can't take now says it wasn't changed, never that it 
     claude: { read: async () => ({ session: { ...native }, items: [] }) },
     claudeHost: { models: async () => [{ value: "sonnet", resolvedModel: "claude-sonnet-5-5" }] },
     claudeOpen: async () => true,
-    claudeCompose: {
+    typeIntoApp: true, claudeCompose: {
       effort: (id, value) => automation.run(async () => ({ effort: value.effort })),
       model: (id, value) => automation.run(async () => ({ model: value.model })),
     },

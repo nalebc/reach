@@ -28,7 +28,10 @@ public class ReachDesktopInput {
 }
 '@
 [ReachDesktopInput]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
-if ($Display -eq '--list') {
+# The display list: asked as -Display list. A bare --list never reached
+# $Display (PowerShell reads a leading dash as a parameter name), so the
+# helper waited for input and the screen never loaded (Oct 12).
+if ($Display -eq 'list' -or $Display -eq '--list' -or $args -contains '--list') {
  $screens=@([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { @{id=($_.DeviceName -replace '^.*(DISPLAY[0-9]+)$','$1');name=$_.DeviceName;primary=$_.Primary;width=$_.Bounds.Width;height=$_.Bounds.Height;x=$_.Bounds.X;y=$_.Bounds.Y} })
  ConvertTo-Json -InputObject $screens -Compress;exit
 }

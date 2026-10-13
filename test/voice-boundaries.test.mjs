@@ -29,6 +29,28 @@ test('revocation during voice helper preparation prevents native dispatch',async
  await assert.rejects(result,e=>e.status===401);assert.equal(runs,0);
 });
 
+test('voice instances share a cap before preparation and release it on success, failure and revocation',async()=>{
+ const prepared=deferred(),finished=deferred();let builds=0,runs=0;
+ const make=()=>createVoice({platform:'darwin',binary:async()=>{builds++;await prepared.promise;return '/inert/helper';},exec:async()=>{runs++;await finished.promise;return {stdout:'{"text":"fixture"}'};}});
+ const first=make().transcribe('/inert/one'),second=make().transcribe('/inert/two');
+ const third=make().transcribe('/inert/three').then(value=>({value}),error=>({error}));
+ try {
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(builds,2,'one shared budget applies across instances before helper preparation');
+  assert.equal((await third).error?.status,429);assert.equal(runs,0);
+ } finally {
+  prepared.resolve();finished.resolve();await Promise.allSettled([first,second,third]);
+ }
+ assert.equal(runs,2);
+ for(const failure of ['prepare','native','revoked']) {
+  let allowed=true;
+  const voice=createVoice({platform:'darwin',binary:async()=>{if(failure==='prepare')throw Error('prepare failed');if(failure==='revoked')allowed=false;return '/inert/helper';},exec:async()=>{throw Error('native failed');}});
+  const result=voice.transcribe('/inert/memo',{authorize:()=>{if(!allowed)throw Object.assign(Error('revoked'),{status:401});}});
+  if(failure==='revoked')await assert.rejects(result,error=>error.status===401);else assert.ok((await result).problem);
+ }
+ assert.deepEqual(await make().transcribe('/inert/again'),{text:'fixture'},'every completion path releases its reservation');
+});
+
 async function fixture(t,transcribe){
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'reach-voice-boundary-'))),dataDir=path.join(root,'private');
  const reach=await createReach({roots:[root],dataDir,screen:false,agentDesktop:null,

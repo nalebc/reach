@@ -26,3 +26,22 @@ export function fileRootName(folder) {
   if (folder === fs.realpathSync.native(os.homedir())) return "Home";
   return path.basename(folder) || folder;
 }
+
+// What the computer's own file browser hides, unless "hidden" is asked for.
+// Finder: names starting with a dot. Explorer: items with the hidden or
+// system attribute, which Node can't read, so known by name and place
+// (parity audit #29): a few files anywhere, the profile's own items in
+// Home, Windows' own at a drive's root.
+const EVERYWHERE = /^(?:desktop\.ini|thumbs\.db)$/i;
+const IN_HOME =
+  /^(?:appdata|ntuser\..+|application data|cookies|local settings|my documents|nethood|printhood|recent|sendto|start menu|templates)$/i;
+const AT_DRIVE_ROOT =
+  /^(?:\$recycle\.bin|\$winreagent|\$windows\.~bt|\$windows\.~ws|\$sysreset|system volume information|recovery|config\.msi|msocache|programdata|documents and settings|pagefile\.sys|swapfile\.sys|hiberfil\.sys|dumpstack\.log(?:\.tmp)?|bootmgr|bootnxt|boot)$/i;
+export function hiddenByOs(name, dir, { platform = process.platform, home = os.homedir() } = {}) {
+  if (name.startsWith(".")) return true;
+  if (platform !== "win32") return false;
+  if (EVERYWHERE.test(name)) return true;
+  const here = path.win32.resolve(dir).toLowerCase();
+  if (here === path.win32.resolve(home).toLowerCase() && IN_HOME.test(name)) return true;
+  return /^[a-z]:\\$/.test(here) && AT_DRIVE_ROOT.test(name);
+}

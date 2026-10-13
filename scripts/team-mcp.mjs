@@ -5,6 +5,7 @@
 // goes to Reach on its private socket. Only JSON-RPC goes to stdout.
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import readline from "node:readline";
 import { TEAM_TOOLS } from "../server/agent-sessions/team-tools.mjs";
 
@@ -20,9 +21,25 @@ const key = (() => {
   }
 })();
 
+// Windows: Reach's pipe is in a namespace every account sees, not in a
+// private folder, so it's held to Reach's rule for pipes (trusted-socket.mjs)
+// before the team's key goes to it; the check's helper is built in Reach's
+// data folder, where the key file lives (<data>/teams/<id>.json).
+const reachPipe = async () => {
+  if (process.platform !== "win32") return;
+  const { trustedSocket } = await import("../server/agent-sessions/trusted-socket.mjs");
+  try {
+    await trustedSocket(key.socket, { dataDir: path.dirname(path.dirname(path.resolve(file))) });
+  } catch (e) {
+    if (e.reason === "missing") throw new Error("Reach isn't running, so the team can't act right now.");
+    throw new Error(`Reach's team connection here isn't one the team can trust (${e.because || "it couldn't be checked"}), so the team can't act right now.`);
+  }
+};
+
 // One request to Reach, on a connection of its own.
-const ask = (tool, args) =>
-  new Promise((resolve, reject) => {
+const ask = async (tool, args) => {
+  if (key) await reachPipe();
+  return new Promise((resolve, reject) => {
     if (!key) return reject(new Error("This team has ended (its key is gone). Carry on without helpers."));
     const socket = net.createConnection(key.socket);
     let buffer = "";
@@ -45,6 +62,7 @@ const ask = (tool, args) =>
     });
     socket.on("error", () => (clearTimeout(timer), reject(new Error("Reach isn't running, so the team can't act right now."))));
   });
+};
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {

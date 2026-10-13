@@ -27,9 +27,11 @@
 
 Give AI agents control of your **Mac apps, browser, files and terminals through CLI tools and MCP**. You choose what they can do, with scoped access secured by Tailscale.
 
+Built for **fast, private connections between your devices**. Tailscale connects them directly when possible, reducing latency for smooth live control and responsive agent tools.
+
 Bring **Claude, Codex, Grok, Muse, Dots or another agent**. Connect through Reach's CLI, MCP or its browser interface, depending on what your agent supports.
 
-Control the same Mac from your phone with a sharp picture and smooth, real-time control at up to **60 fps**. Reply to your coding agents and **move chats between Claude Code and Codex with their history**. Free and open source, running on your Mac.
+Control the same Mac from your phone with a sharp picture and smooth, real-time control at up to **60 fps**. Keep your **agent chats in one place** and **move chats between Claude Code and Codex with their history**. Free and open source, running on your Mac.
 
 <p align="center">
   <a href="docs/media/reach-demo.mp4"><img src="docs/media/reach-demo.gif" alt="Reach on a phone: live screen, inviting an agent over MCP, approving it, chats and files" width="760"></a>
@@ -40,9 +42,9 @@ Control the same Mac from your phone with a sharp picture and smooth, real-time 
 ## Highlights
 
 - **CLI tools and MCP to control your Mac.** Agents can open native apps, switch windows, click, type and use menus. Grant Full control or limit access to selected apps, folders or read-only actions.
+- **Fast, private connections through Tailscale.** Encrypted device-to-device connections when available, for low latency and responsive control. Agents on your private tailnet benefit too.
 - **Smooth control from your phone.** High-quality screen sharing at up to 60 fps, with touch, trackpad, zoom and your phone's keyboard.
-- **Chats that move with you.** Continue a Claude Code chat in Codex or the other way around. Read and reply to chats, send files and answer approvals from your phone.
-- **Secure connections through Tailscale.** Use your private tailnet or an authenticated Funnel link. Reach's agent client automatically switches to the private route when it becomes reachable.
+- **Your agent chats, in one place.** Read and reply to Claude Code, Codex and OpenClaw chats from your phone. Move chats between Claude Code and Codex, send files and answer approvals.
 - **Files and terminals, wherever you are.** Browse, share and upload files, run commands, and return to your Mac's open terminals.
 
 ## Give agents control of your Mac with CLI and MCP
@@ -66,7 +68,7 @@ Each agent gets one **preset**:
 
 ### Private tailnet or public Funnel
 
-Agents with Tailscale support, including **Muse**, can join your private tailnet. Agents outside it can connect through an authenticated **Tailscale Funnel** link.
+Agents with Tailscale support, including **Muse**, can join your private tailnet. With a native Tailscale connection, they can benefit from a direct path to your Mac and lower latency for tool calls, screen updates and file transfers. [Tailscale connects directly when possible](https://tailscale.com/docs/reference/connection-types), using encrypted relays when needed. Agents outside your tailnet can connect through an authenticated **Tailscale Funnel** link.
 
 Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service.
 
@@ -76,7 +78,7 @@ For an agent working through a browser, choose **Connects: Web page**: it gets y
 
 Open Reach in your phone's browser for high-quality screen sharing and smooth, real-time control at up to **60 fps**, secured by Tailscale. Click, drag, zoom, switch displays and type with your phone's keyboard. Reach adjusts to your connection to keep control responsive.
 
-No phone app or Reach account needed. Use Tailscale on your phone or connect through Reach's browser sign-in.
+For the best connection, use the Tailscale app on your phone: it enables a direct device-to-device path when your network allows it. Browser sign-in also works through an encrypted relay. No Reach phone app or Reach account needed.
 
 ## Move chats between Claude and Codex
 
@@ -86,30 +88,64 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 
 ## Quick start
 
-### Install the CLI
+> **Tailscale is required.** Reach has no server of its own: your phone reaches your computer through [Tailscale](https://tailscale.com), a free private network. It must be installed and signed in on the computer. Setup walks you through it.
 
-Reach includes a `reach` command for use from any terminal. The npm package is **not published yet**; once the first release is available, install it with [Node.js 22 or newer](https://nodejs.org/) and run:
+### What you need
+
+|                     | Mac or Linux computer                                                     | Windows PC (experimental)                                                             |
+| ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer  | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 or ARM64 |
+| **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)        | The same                                                                              |
+| **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | **The Tailscale app**, signed in to the same account and turned on                    |
+
+From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. Windows can't offer browser sign-in yet: its phones always need the app.
+
+### What setup walks you through
+
+The first run takes about 3 minutes. It shows three steps, then prompts you through each one. Ctrl+C stops at any point; run Reach again to pick up where you left off.
+
+1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. On a Mac or Linux it also asks which Tailscale account your phones sign in with.
+2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
+3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
+   - **Mac or Linux:** type the code your phone shows into the terminal to approve it. No Tailscale app on the phone? Sign in from its browser in the next 15 minutes (later: `reach pair`).
+   - **Windows:** install the Tailscale app on the phone first and sign in with the same account. The QR carries a one-time code; press Enter for a new one.
+
+The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes (Mac).
+
+### Install
+
+**From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
+
+```sh
+git clone --branch v0.1.0 https://github.com/nalebc/reach.git
+cd reach
+./reach
+```
+
+`--branch v0.1.0` installs the latest release. `main` carries changes that aren't released yet.
+
+On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
+
+**On a Windows PC (experimental, not yet verified on a physical PC).** In PowerShell:
+
+```powershell
+git clone --branch v0.1.0 https://github.com/nalebc/reach.git
+cd reach
+.\reach.cmd
+```
+
+Use Reach from your phone or another computer: opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
+
+**With npm.** With [Node.js 22 or newer](https://nodejs.org/):
 
 ```sh
 npm install --global @nalebc/reach
 reach
 ```
 
-The npm package includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach` walks you through setup; `reach update` installs later releases.
+It includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach update` installs later releases.
 
-### Run from source (available now)
-
-You need a Mac and [Tailscale](https://tailscale.com/download). `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
-
-```sh
-git clone https://github.com/nalebc/reach.git
-cd reach
-./reach
-```
-
-The first run walks you through Tailscale, the HTTPS link and optional background mode. Scan the QR code with your phone, tap **Connect**, and approve the phone in the Mac's terminal. That's it.
-
-No Tailscale app on the phone? Then the link only opens while pairing: for 15 minutes after each start, or after `./reach pair`. The rest of the time it shows "Not found".
+### Everyday commands
 
 ```sh
 ./reach status    # where Reach runs, and its link
@@ -119,14 +155,12 @@ No Tailscale app on the phone? Then the link only opens while pairing: for 15 mi
 ./reach setup     # change setup choices
 ```
 
-Already using a source checkout? Run `./reach cli` once to make `reach`, `reach status` and the other commands work from any terminal. Keep the checkout: this command links to it.
-
-On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Linux, Windows and npm installs are covered in the [full guide](docs/GUIDE.md#install).
+On Windows, use `.\reach.cmd` in place of `./reach`. In a source checkout, run `./reach cli` once to make `reach` and its commands work from any terminal; keep the checkout, as it links to it. Linux, npm and Windows details are in the [full guide](docs/GUIDE.md#install).
 
 ## Security
 
 - **You control who connects.** Reach supports device approval and temporary pairing codes. The normal connection QR contains only an address; pairing QRs include a one-use code. Optional passkey sign-in is implemented, but Face ID on a real iPhone still needs testing.
-- **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. When you use the Mac yourself, agent input pauses.
+- **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. Pause an agent from your phone at any time, or pause Reach from the Mac's menu bar; while you control the Mac from your phone, agents wait.
 - **Guardrails** keep agents' clicks and typing away from Reach and Tailscale, password managers and password fields, `sudo` and security prompts, and System Settings' security panes.
 - **Full control is your account, not a sandbox.** Its shell runs as you. Give it only to agents you trust, and use **Apps** or **Files** for everything else.
 
@@ -138,7 +172,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 | ----------- | ---------------------------------------------------------------------------------- |
 | **macOS**   | Primary: screen, control, files, terminals, chats, agents                          |
 | **Linux**   | Files, terminals and command-line agents; no screen or agent presets               |
-| **Windows** | Experimental: guided setup, pairing code, files and terminals; no invite links yet |
+| **Windows** | Experimental, not yet verified on a physical PC: guided setup, pairing code (the phone needs the Tailscale app), files, terminals, screen. No browser sign-in or invite links yet |
 | **Phone**   | Safari on iPhone, Chrome on Android. No app needed                                 |
 
 ## Docs

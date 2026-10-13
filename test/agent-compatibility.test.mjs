@@ -211,6 +211,17 @@ test("malformed replies never reach the UI and uncertain mutations are never ret
   });
   assert.equal(calls.filter((m) => m.method === "turn/start").length, 1);
 });
+test("a Codex deprecation notice is logged once, quoted on one line", async (t) => {
+  const { daemon, sockets } = transport(t, () => ({ result: { data: [] } }));
+  await daemon.rpc("thread/list");
+  const warned = [];
+  t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
+  const notice = { method: "deprecationNotice", params: { summary: "thread/list goes away\nReach: paused", details: "use\r\nthread/page" } };
+  sockets[0].emit("message", JSON.stringify(notice));
+  sockets[0].emit("message", JSON.stringify(notice));
+  assert.deepEqual(warned, [`Codex deprecation: ${JSON.stringify(notice.params.summary)} (${JSON.stringify(notice.params.details)})`]);
+  assert.equal(/[\r\n]/.test(warned[0]), false);
+});
 test("notification exceptions are contained and malformed JSON closes only the agent connection", async (t) => {
   const { daemon, sockets } = transport(t, () => ({ result: { data: [] } }));
   await daemon.rpc("thread/list");

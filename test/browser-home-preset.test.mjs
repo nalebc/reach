@@ -21,7 +21,7 @@ test('only Full and Read only authorize the exact Home, never its ancestors or s
   const dir = temporary(t), home = path.join(dir, 'home');
   fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true });
   const runtime = path.join(home, '.runtime', 'bin', 'node');
-  for (const preset of ['full', 'readonly']) {
+  for (const preset of ['readonly']) {
     const options = { home, runtime, policy: policy(preset) };
     assert.equal(validateBrowserRoot(home, options), home);
     assert.equal(validateBrowserRoot(path.join(home, 'Desktop'), options), path.join(home, 'Desktop'));
@@ -33,16 +33,19 @@ test('only Full and Read only authorize the exact Home, never its ancestors or s
 });
 
 test('Home file operations derive access from authorized policy and retain private boundary rules', async (t) => {
-  const dataDir = temporary(t), home = fs.realpathSync.native(os.homedir());
-  // Only Home metadata is inspected: every file operation uses this inert runner.
+  const dataDir = temporary(t), home = path.join(dataDir, 'home');
+  fs.mkdirSync(path.join(home, 'Library'), { recursive: true });
+  t.mock.method(os, 'homedir', () => home);
+  // A fresh, canonical Home with a Library; every operation uses this inert runner.
   let calls = 0;
   const run = async (request) => {
     calls++;
     assert.equal(request.root, home);
-    for (const name of ['.ssh', '.aws', '.codex', '.claude', '.zshrc']) assert.ok(request.privateNames.includes(name));
-    assert.ok(request.privatePaths.includes(path.join(home, 'Library')));
+    if (!request.fullControl) for (const name of ['.ssh', '.aws', '.codex', '.claude', '.zshrc']) assert.ok(request.privateNames.includes(name));
+    else assert.deepEqual(request.privateNames, []);
+    assert.equal(request.privatePaths.includes(path.join(home, 'Library')), !request.fullControl);
     assert.match(request.sandbox, /deny process-fork process-exec file-link/);
-    assert.match(request.sandbox, /deny file-read\* file-write\*/);
+    if (!request.fullControl) assert.match(request.sandbox, /deny file-read\* file-write\*/);
     assert.doesNotMatch(request.sandbox, /allow file-write/);
     return request.op === 'read' ? { data: Buffer.from('fixture').toString('base64') } : { items: [], truncated: false };
   };
@@ -89,8 +92,8 @@ test('preset invitations validate explicit and default roots before any credenti
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'fixture', ttlSeconds: 600, ...body }),
   });
   for (const preset of ['full', 'readonly']) {
-    assert.equal((await send({ preset })).status, 201);
-    assert.equal((await send({ preset, folders: [{ root: 0, path: '' }] })).status, 201);
+    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}) })).status, 201);
+    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}), folders: [{ root: 0, path: '' }] })).status, 201);
   }
   assert.equal(issued.length, 4);
   assert.equal((await send({ preset: 'files', folders: [{ root: 0, path: '' }] })).status, 403);
@@ -98,10 +101,10 @@ test('preset invitations validate explicit and default roots before any credenti
   assert.equal((await send({ preset: 'files', folders: [{ root: 0, path: '' }], allowHome: true })).status, 400);
   config.roots = [path.parse(home).root];
   for (const preset of ['full', 'readonly']) {
-    assert.equal((await send({ preset })).status, 403, 'invalid default root');
-    assert.equal((await send({ preset, folders: [{ root: 0, path: '' }] })).status, 403, 'invalid explicit root');
+    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}) })).status, preset === 'full' ? 201 : 403, 'full can use the whole computer');
+    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}), folders: [{ root: 0, path: '' }] })).status, preset === 'full' ? 201 : 403, 'narrow presets still reject filesystem roots');
   }
-  assert.equal(issued.length, 4, 'denied roots never issue a credential');
+  assert.equal(issued.length, 6, 'only Full control can cover the filesystem root');
   current = { id: 'reader', kind: 'agent', policy: policy('readonly'), scopes: presetScopes(policy('readonly')), agentRoots: [home] };
   assert.equal((await send({ op: 'write', root: 0, path: 'synthetic.txt', content: 'never written' }, '/api/browser/files/change')).status, 403);
   assert.equal((await send({ preset: 'full' })).status, 403, 'an agent cannot grant itself another preset');

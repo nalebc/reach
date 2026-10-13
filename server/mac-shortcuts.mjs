@@ -5,10 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { atomicJson, fail } from "./core.mjs";
 
-// The Mac's own Shortcuts (the Shortcuts app) an agent may run: the ones the
-// owner switched on by name, in Agents & people → Shortcuts. The agent's shell
-// can't run `shortcuts` or `osascript` (agent-shell.mjs denies them): this is
-// the one door, and only an allowed name goes through it. A shortcut runs as
+// Full control can run any Mac Shortcut. Other presets can run only names
+// the owner switched on in Agents & people → Shortcuts. A shortcut runs as
 // the owner, one at a time, for up to 60 seconds; text in, text out.
 //
 // An agent asking for a shortcut that isn't allowed is refused and the owner
@@ -104,13 +102,18 @@ export function createMacShortcuts({ file = null, list = listMacShortcuts, run =
       return { name, allowed: allowed.has(name) };
     },
     /** For an agent: the names it may run. */
-    agentList: () => ({ shortcuts: [...allowed].sort().map((name) => ({ name })) }),
+    async agentList(client) {
+      const found = client?.policy?.browser === true && client.policy.preset === "full" ? await names() : [...allowed];
+      return { shortcuts: [...found].sort().map((name) => ({ name })) };
+    },
     /** Run one allowed shortcut for an agent, with optional text input; the output as text. */
-    async run(client, { name, input } = {}, authorize = () => {}) {
+    async run(client, { name, input } = {}, authorize = () => client) {
       if (!CLEAN.test(name || "")) throw fail(400, "Name the shortcut to run.");
       if (input !== undefined && (typeof input !== "string" || input.length > 20000 || INPUT.test(input))) throw fail(400, "Give text input, up to 20000 characters.");
       if (!available()) throw fail(503, "Shortcuts aren't available on this computer.");
-      if (!allowed.has(name)) {
+      const current = authorize();
+      const full = current?.policy?.browser === true && current.policy.preset === "full";
+      if (!full && !allowed.has(name)) {
         const key = `${client.id}\n${name}`;
         if (now() - (asked.get(key) || 0) > 300000) {
           asked.set(key, now());

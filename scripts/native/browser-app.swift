@@ -497,7 +497,13 @@ func input(_ request: [String: Any], _ value: Target) throws -> [String: Any] {
     guard let direction = action["direction"] as? String, ["up", "down"].contains(direction),
       let amount = action["amount"] as? Int, (1...5).contains(amount) else { try reject("Invalid app scroll.") }
     let candidates = value.controls.filter { attr($0, kAXRoleAttribute) as? String == "AXScrollArea" && inWindow($0,value.ax,pid) }
-    guard let area = candidates.max(by: { (frame($0)?.width ?? 0)*(frame($0)?.height ?? 0) < (frame($1)?.width ?? 0)*(frame($1)?.height ?? 0) }) else {
+    guard let area = candidates.max(by: { left, right in
+      let leftFrame = frame(left) ?? .zero
+      let rightFrame = frame(right) ?? .zero
+      let leftArea: CGFloat = leftFrame.width * leftFrame.height
+      let rightArea: CGFloat = rightFrame.width * rightFrame.height
+      return leftArea < rightArea
+    }) else {
       try reject("This app does not expose safe scrolling.")
     }
     let scrollAction = direction == "up" ? "AXScrollUpByPage" : "AXScrollDownByPage"

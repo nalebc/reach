@@ -144,6 +144,26 @@ test("the keyboard: ↓ and Enter pick, Esc closes; a Codex command typed out an
   assert.deepEqual(dom.errors, []);
 });
 
+test("on a phone, a tap outside the menu and the box closes it; a tap in either doesn't", async () => {
+  const box = await open("claude");
+  const tap = async (target) => {
+    target.dispatchEvent(new dom.window.PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle();
+  };
+  await typeInto(box, "/co");
+  await dom.waitFor(() => rows().length);
+  await tap(box);
+  await tap(rows()[0].querySelector("span"));
+  assert.ok(menu(), "still open after taps in the box and on a row");
+  await tap(dom.document.querySelector(".as-scroll") || dom.document.body);
+  assert.equal(menu(), null, "a tap on the chat closes it");
+  assert.equal(box.value, "/co", "what was typed stays");
+  // Typing again opens it.
+  await typeInto(box, "n");
+  await dom.waitFor(() => rows().length);
+  assert.deepEqual(dom.errors, []);
+});
+
 test("a Codex skill goes with the message, as a chip in the box; its name is sent, not a path", async () => {
   const box = await open("codex");
   await typeInto(box, "/doc");

@@ -19,9 +19,19 @@ const rejects = async (work, status, pattern, kind) => {
   await assert.rejects(work, (error) => { assert.equal(error.status, status, error.message); if (pattern) assert.match(error.message, pattern); if (kind) assert.equal(error.kind, kind); return true; });
 };
 
+test("Full control lists and runs every shortcut; current authorization still applies", async () => {
+  const w = world(), full = { ...muse, policy: { browser: true, preset: "full" } };
+  assert.deepEqual(await w.store.agentList(full), { shortcuts: [{ name: "Shazam shortcut" }, { name: "Today's events" }] });
+  assert.equal((await w.store.run(full, { name: "Today's events" })).ok, true);
+  assert.equal(w.notes.length, 0);
+  await rejects(() => w.store.run(full, { name: "Shazam shortcut" }, () => muse), 403);
+  await assert.rejects(w.store.run(full, { name: "Today's events" }, () => { throw Error("revoked"); }), /revoked/);
+  assert.equal(w.runs.length, 1);
+});
+
 test("nothing runs until the owner allows it by name; the owner hears once", async () => {
   const w = world();
-  assert.deepEqual(w.store.agentList(), { shortcuts: [] });
+  assert.deepEqual(await w.store.agentList(muse), { shortcuts: [] });
   await rejects(() => w.store.run(muse, { name: "Today's events" }), 403, /hasn't allowed/, "blocked");
   await rejects(() => w.store.run(muse, { name: "Today's events" }), 403);
   assert.equal(w.notes.length, 1, "told once in five minutes");
@@ -34,7 +44,7 @@ test("nothing runs until the owner allows it by name; the owner hears once", asy
   await rejects(() => w.store.allow("", true), 400);
   await rejects(() => w.store.allow("Today's events", "yes"), 400);
   assert.deepEqual(await w.store.allow("Today's events", true), { name: "Today's events", allowed: true });
-  assert.deepEqual(w.store.agentList(), { shortcuts: [{ name: "Today's events" }] });
+  assert.deepEqual(await w.store.agentList(muse), { shortcuts: [{ name: "Today's events" }] });
   assert.deepEqual(await w.store.owner(), { shortcuts: [{ name: "Today's events", allowed: true }, { name: "Shazam shortcut", allowed: false }], missing: [] });
   const result = await w.store.run(muse, { name: "Today's events", input: "tomorrow" });
   assert.deepEqual(result, { ok: true, name: "Today's events", output: "9:00 Standup" });
@@ -53,12 +63,12 @@ test("the allowed names survive a restart; an unreadable file allows nothing", a
     const first = world({ file });
     await first.store.allow("Shazam shortcut", true);
     const second = world({ file });
-    assert.deepEqual(second.store.agentList(), { shortcuts: [{ name: "Shazam shortcut" }] });
+    assert.deepEqual(await second.store.agentList(muse), { shortcuts: [{ name: "Shazam shortcut" }] });
     assert.equal(second.store.unreadable, false);
     fs.writeFileSync(file, "{not json");
     const third = world({ file });
     assert.equal(third.store.unreadable, true);
-    assert.deepEqual(third.store.agentList(), { shortcuts: [] });
+    assert.deepEqual(await third.store.agentList(muse), { shortcuts: [] });
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

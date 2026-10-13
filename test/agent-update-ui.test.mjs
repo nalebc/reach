@@ -14,6 +14,7 @@ const sent = [];
 const looks = [];
 let updates = [];
 let terminal = null;
+let confirming = null;
 let dom, React, EverythingChat;
 before(async () => {
   dom = await startDom({
@@ -23,9 +24,10 @@ before(async () => {
       "/api/sessions/commands": () => ({ commands: [] }),
       "/api/sessions/models": () => ({ models: [], modes: [], mode: null }),
       "/api/sessions/agent-updates": (_init, href) => (looks.push(href), { agents: updates }),
-      "/api/sessions/agent-update/claude": (init) => {
+      "/api/sessions/agent-update/claude": async (init) => {
         const body = JSON.parse(init.body || "{}");
         sent.push(body);
+        if (body.confirm && confirming) await confirming;
         const plan = { agent: "claude", name: "Claude Code", command: "'/Users/me/.local/bin/claude' update", from: "2.1.291", to: "2.1.295" };
         return body.confirm ? { ...plan, terminal } : plan;
       },
@@ -57,7 +59,7 @@ const available = { agent: "claude", name: "Claude Code", state: "available", in
 
 test("a newer Claude Code: shown, its command confirmed, watched, then checked again", async () => {
   updates = [available];
-  terminal = { id: "u1", status: "running", preview: "Checking for updates…" };
+  terminal = { id: "u1", status: "running", preview: ["Checking for updates…"] };
   sent.length = 0;
   const view = await render();
   await dom.waitFor(() => /Claude Code 2\.1\.295 is out/.test(text()));
@@ -70,7 +72,7 @@ test("a newer Claude Code: shown, its command confirmed, watched, then checked a
   await dom.waitFor(() => /Updating Claude Code…/.test(text()));
   await dom.waitFor(() => /Checking for updates/.test(text()), 5000);
   updates = [{ ...available, state: "current", installed: "2.1.295" }];
-  terminal = { ...terminal, status: "exited", exitCode: 0, preview: "Successfully updated" };
+  terminal = { ...terminal, status: "exited", exitCode: 0, preview: ["Successfully updated"] };
   await dom.waitFor(() => /Claude Code updated to 2\.1\.295/.test(text()), 5000);
   assert.ok(looks.some((href) => /fresh=1/.test(href)), "checked again, fresh");
   await view.unmount();
@@ -79,16 +81,34 @@ test("a newer Claude Code: shown, its command confirmed, watched, then checked a
 
 test("an update that fails says so and offers Try again", async () => {
   updates = [available];
-  terminal = { id: "u2", status: "running", preview: "" };
+  terminal = { id: "u2", status: "running", preview: [] };
   const view = await render();
   await click(await dom.waitFor(() => button("Update")));
   await click(await dom.waitFor(() => button("Update")));
   await dom.waitFor(() => /Updating Claude Code…/.test(text()));
-  terminal = { ...terminal, status: "exited", exitCode: 1, preview: "Error: network unreachable" };
+  terminal = { ...terminal, status: "exited", exitCode: 1, preview: ["Error: network unreachable"] };
   await dom.waitFor(() => /Update stopped\. Error: network unreachable/.test(text()), 5000);
   assert.ok(button("Try again"));
   await view.unmount();
   assert.deepEqual(dom.errors, []);
+});
+
+test("repeated update taps while starting send only one confirmation", async t => {
+  updates = [available];
+  terminal = { id: "slow-update", status: "running", preview: [] };
+  sent.length = 0;
+  let release;
+  confirming = new Promise(resolve => { release = resolve; });
+  const view = await render();
+  t.after(async () => { confirming = null; release(); await view.unmount(); });
+  await click(await dom.waitFor(() => button("Update")));
+  await dom.waitFor(() => dom.document.querySelector(".agent-update .chat-setup-command"));
+  await click(button("Update"));
+  await click(button("Update"));
+  assert.deepEqual(sent, [{ confirm: false }, { confirm: true }]);
+  assert.equal(button("Cancel").disabled, true, "a started request cannot be cancelled by hiding it");
+  release();
+  await dom.waitFor(() => /Updating Claude Code/.test(text()));
 });
 
 for (const [what, list] of [

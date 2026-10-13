@@ -17,6 +17,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sweepAtRest } from "./at-rest.mjs";
+import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
+import { spawnable } from "../agent-cli.mjs";
+import { windowsPath } from "../app-identity.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code's permission modes as it lists them in --help, in the order and
@@ -48,9 +51,9 @@ export const claudeMode = (mode) => (mode === "default" ? "manual" : MODES.has(m
 // models list marks the rest so the phone doesn't offer them): never Bypass,
 // nor a mode Reach doesn't know yet. A new chat may start in more.
 export const SWITCHABLE_MODES = ["manual", "default", "acceptEdits", "plan", "auto"];
-// The mode a chat runs in: its own, or Manual (asks each step) for one Reach
-// can't name to Claude Code. Without a mode Claude Code would run its own
-// default, which may allow more than the phone shows (fail-open audit, Oct 8).
+// A new Reach chat explicitly chooses Auto in start(). Resumed chats with no
+// saved mode omit the flag, leaving Claude Code's existing settings intact.
+// An explicit mode Reach cannot name falls back to Manual (asks each step).
 const runMode = (mode) => (mode ? claudeMode(mode) || "manual" : null);
 const MEDIA = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
@@ -291,6 +294,9 @@ export function createClaudeHost({
   rewindFile = null,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
+  // Git Bash, without which Claude Code on Windows won't start
+  // (claude-environment.mjs); only a real Windows Claude Code needs it.
+  gitBash = spawn === spawnChild && platform === "win32" ? () => windowsGitBash(env) : () => true,
   // More flags for a session on every launch (a team's lead: its tools and
   // standing instructions, teams.mjs); false when it must have none any more.
   extraArgs = () => null,
@@ -302,6 +308,7 @@ export function createClaudeHost({
   stopSettleMs = 3000,
 }) {
   const sessions = new Map();
+  const spawned = new Set();
   const rewinds = createClaudeRewinds({ file: rewindFile });
   const rewindUncertain = () => Object.assign(uncertainDelivery("claude"), { message: "Claude may already have continued this rewind. Check the chat in Claude, then choose a rewind again before sending." });
   let closed = false;
@@ -322,9 +329,7 @@ export function createClaudeHost({
   };
   // Reach's own environment, never a host app's (a terminal inside Claude Code
   // sets CLAUDECODE) or its own pairing settings.
-  const clean = Object.fromEntries(
-    Object.entries(env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|REACH_)/.test(k) && k !== "CLAUDECODE"),
-  );
+  const clean = claudeEnvironment(env);
   const fresh = (id) => ({
     id,
     cwd: null,
@@ -603,6 +608,9 @@ export function createClaudeHost({
         if ((m.message?.content || []).some?.((b) => b?.type === "tool_result")) s.activity = null;
         break;
       case "result":
+        // Only a known end ("success", "error_*") finishes anything. A
+        // subtype Reach doesn't know keeps the chat working, prompts and all.
+        if (typeof m.subtype !== "string" || !/^(success$|error_)/.test(m.subtype)) return;
         // A result ends all it has picked up: a message sent mid-turn often
         // gets no result of its own (the chat read Working for good). Only
         // one it hasn't picked up yet starts another turn.
@@ -646,6 +654,9 @@ export function createClaudeHost({
     authorize();
     if (closed) throw bad("Claude session service is closed.", 503);
     if (!claude) throw bad(`Claude Code isn't installed on this ${computerWord(platform)}.`, 404);
+    // Said before the check, which would only fail as "couldn't check".
+    const bash = gitBash();
+    if (!bash) throw bad(`Claude Code needs Git Bash on this ${computerWord(platform)}. Install Git for Windows, then try again.`, 503);
     const compatible = await check(claude);
     authorize();
     if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
@@ -686,8 +697,13 @@ export function createClaudeHost({
         return hooked === false ? [] : hooked || s.settings.extra || [];
       })()),
     ];
-    const proc = spawn(claude, args, { cwd: s.cwd || os.homedir(), env: clean, stdio: ["pipe", "pipe", "pipe"] });
+    const cli = spawnable(claude);
+    const proc = spawn(cli.file, [...cli.args, ...args], { cwd: s.cwd || os.homedir(), env: withGitBash(clean, bash), stdio: ["pipe", "pipe", "pipe"] });
     s.proc = proc;
+    if (proc.pid) {
+      spawned.add(proc.pid);
+      proc.once?.("exit", () => spawned.delete(proc.pid));
+    }
     // Starting a preview/helper does not consume a pending continuation.
     // It is cleared only after its user message is accepted below.
     s.launchedEffort = s.settings.effort || null;
@@ -798,6 +814,9 @@ export function createClaudeHost({
 
   return {
     drives: (id) => !!sessions.get(id)?.proc,
+    // A Claude Code process Reach started, until it exits: where Windows
+    // can't say whose child a process is (processes.mjs).
+    ownsProcess: (pid) => spawned.has(pid),
     onChange(listener) {
       changeListeners.add(listener);
       return () => changeListeners.delete(listener);
@@ -902,12 +921,14 @@ export function createClaudeHost({
       return true;
     },
     async start({ cwd, text, images, model, effort, mode, extra }) {
-      if (typeof cwd !== "string" || !cwd.startsWith("/")) throw bad("Choose a folder.");
+      // A full path as the computer writes it: C:\Users\me\proj on Windows.
+      const folder = platform === "win32" ? /^[A-Za-z]:\\$/.test(cwd) || windowsPath(cwd) : typeof cwd === "string" && cwd.startsWith("/");
+      if (!folder) throw bad("Choose a folder.");
       const input = claudeContent({ text, images }, readFile);
       const id = randomUUID();
       const s = state(id);
       s.cwd = cwd;
-      s.settings = { model: model || null, effort: effort || null, mode: mode || null, ...(Array.isArray(extra) ? { extra } : {}) };
+      s.settings = { model: model || null, effort: effort || null, mode: mode || "auto", ...(Array.isArray(extra) ? { extra } : {}) };
       await launch(s, { resume: false });
       await turn(s, input);
       s.naming = name(s, text).finally(() => (s.naming = null));
@@ -1066,8 +1087,9 @@ export function createClaudeHost({
       if (!cli) return [];
       const key = binaryKey(cli);
       if (modeList?.key === key) return modeList.modes;
+      const run = spawnable(cli);
       const help = await new Promise((resolve) =>
-        execFile(cli, ["--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
+        execFile(run.file, [...run.args, "--help"], { timeout: 15000, env: clean, maxBuffer: 1024 * 1024 }, (e, stdout) =>
           resolve(String(stdout || "")),
         ),
       );
@@ -1089,8 +1111,9 @@ export function createClaudeHost({
       const key = binaryKey(claude);
       const kept = catalogs.get(where);
       if (kept && kept.key === key && now() - kept.at < 30 * 60 * 1000) return kept.value;
+      const cli = spawnable(claude);
       const value = await new Promise((resolve) => {
-        const proc = spawn(claude, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
+        const proc = spawn(cli.file, [...cli.args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
           cwd: where,
           env: clean,
           stdio: ["pipe", "pipe", "pipe"],

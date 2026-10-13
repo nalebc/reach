@@ -29,7 +29,35 @@ export function createAgentWatch({
   claudeSessions = path.join(os.homedir(), ".claude", "sessions"),
   claudeAppRecords = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
   geminiHome = path.join(os.homedir(), ".gemini"),
-  watch = (dir, options, listener) => fs.watch(dir, options, listener),
+  watch = (dir, options, listener) => {
+    // Linux's recursive watcher can return silently for a missing root on
+    // Node 24. Make absence throw so start() schedules the install retry.
+    const identity = fs.statSync(dir, { bigint: true });
+    let retired = false;
+    const watcher = fs.watch(dir, options, (event, file) => {
+      if (retired) return;
+      if (event === "rename") {
+        try {
+          const current = fs.statSync(dir, { bigint: true });
+          if (current.dev !== identity.dev || current.ino !== identity.ino)
+            throw Error("The agent's folder was replaced.");
+        } catch (error) {
+          // Root replacement is often a rename, not an error. Retire the
+          // old inode before forwarding news, then use start()'s retry.
+          retired = true;
+          watcher.emit("error", error);
+          return;
+        }
+      }
+      listener(event, file);
+    });
+    const close = watcher.close.bind(watcher);
+    watcher.close = () => {
+      retired = true;
+      return close();
+    };
+    return watcher;
+  },
   debounceMs = 120,
   retryMs = 5000,
 } = {}) {
@@ -78,7 +106,10 @@ export function createAgentWatch({
     };
     try {
       const watcher = watch(dir, options, listener);
+      let failed = false;
       watcher.on?.("error", () => {
+        if (failed || closed) return;
+        failed = true;
         watcher.close?.();
         watchers.splice(watchers.indexOf(watcher) >>> 0, 1);
         again();

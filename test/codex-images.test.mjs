@@ -33,6 +33,38 @@ test("an inline picture or a picture file comes back as the image it is", async 
   assert.equal(await codexImageData({ type: "localImage", path: file("big.png", PNG) }, { maxBytes: 10 }), null);
 });
 
+// CodeQL #163: a picture file was measured by its path, then read by its path
+// again: swapped for a pipe in between, the read waited for a writer forever.
+// Now one open file is measured and read, never past the limit.
+test("a picture file swapped for a pipe once it's measured is still read at once, as the picture it was", { skip: process.platform === "win32" }, async (t) => {
+  const pic = file("swapped.png", PNG);
+  const pipe = path.join(dir, "pipe");
+  const { execFileSync } = await import("node:child_process");
+  execFileSync("mkfifo", [pipe]);
+  const handle = await fs.promises.open(pic);
+  const FileHandle = Object.getPrototypeOf(handle);
+  await handle.close();
+  // Whichever way it's measured (by its path, or once open), the pipe takes its name right after.
+  let swapped = false;
+  for (const owner of [fs.promises, FileHandle]) {
+    const measure = owner.stat;
+    t.mock.method(owner, "stat", async function (...args) {
+      const info = await measure.apply(this, args);
+      if (info.isFile?.() && !swapped) {
+        swapped = true;
+        fs.renameSync(pipe, pic);
+      }
+      return info;
+    });
+  }
+  // A read left waiting on the pipe is let go at the end (a writer opens and closes it).
+  t.after(() => { try { fs.closeSync(fs.openSync(pic, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)); } catch {} });
+  const read = codexImageData({ type: "localImage", path: pic });
+  const image = await Promise.race([read, new Promise((resolve) => setTimeout(resolve, 2000, "waiting"))]);
+  assert.notEqual(image, "waiting", "the read waited on a pipe");
+  assert.ok(image?.data.equals(PNG));
+});
+
 test("a chat's picture is found by its message, read lately or a page back", async () => {
   const pic = file("flower.png", PNG);
   const items = [

@@ -1,0 +1,691 @@
+{
+  "schema": "reach.agent-transport-benchmark.v1",
+  "at": "2026-10-11T18:52:13.437Z",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v24.21.0",
+    "cpu": "Apple M2 Pro",
+    "runtime": "scripts/agent-remote.mjs"
+  },
+  "scenario": "real admitted read-only credential; reach_front; loopback HTTP; inert desktop adapter; source runtime",
+  "command": "REACH_TEST_TRANSPORT_BENCHMARK=1 REACH_TRANSPORT_BENCHMARK_OUTPUT=/tmp/reach-transport-benchmark.json npm run test:file -- --test-concurrency=1 test/agent-transport-benchmark.test.mjs",
+  "summaryMs": {
+    "cliHelpProcessBaseline": {
+      "samples": 12,
+      "min": 57.87,
+      "median": 63.98,
+      "p95": 79.239,
+      "max": 79.239
+    },
+    "cliProcessPerCall": {
+      "samples": 12,
+      "min": 69.183,
+      "median": 74.095,
+      "p95": 125.358,
+      "max": 125.358
+    },
+    "mcpProcessInitialize": {
+      "samples": 12,
+      "min": 56.389,
+      "median": 60.787,
+      "p95": 64.844,
+      "max": 64.844
+    },
+    "mcpProcessInitializeAndDiscover": {
+      "samples": 12,
+      "min": 64.99,
+      "median": 70.463,
+      "p95": 74.614,
+      "max": 74.614
+    },
+    "mcpColdFirstCallAfterDiscovery": {
+      "samples": 12,
+      "min": 2.045,
+      "median": 2.369,
+      "p95": 6.625,
+      "max": 6.625
+    },
+    "mcpColdStartThroughFirstResult": {
+      "samples": 12,
+      "min": 67.14,
+      "median": 72.554,
+      "p95": 81.414,
+      "max": 81.414
+    },
+    "mcpWarmCall": {
+      "samples": 40,
+      "min": 1.227,
+      "median": 1.47,
+      "p95": 2.01,
+      "max": 2.158
+    }
+  },
+  "requestCounts": {
+    "cliPerCall": {
+      "samples": 12,
+      "min": 3,
+      "median": 3,
+      "p95": 3,
+      "max": 3
+    },
+    "mcpSetup": {
+      "samples": 12,
+      "min": 2,
+      "median": 2,
+      "p95": 2,
+      "max": 2
+    },
+    "mcpPerCall": {
+      "samples": 40,
+      "min": 1,
+      "median": 1,
+      "p95": 1,
+      "max": 1
+    }
+  },
+  "limitations": [
+    "No model inference, WAN/Tailscale latency, TLS handshakes, physical desktop execution or external providers are measured.",
+    "Cold means a fresh process; operating-system code and filesystem caches are not flushed. Alternating CLI/MCP order reduces order bias.",
+    "CLI timing includes process startup, live access discovery, execution and process exit. MCP cold total ends at its first result and excludes shutdown.",
+    "Warm MCP reuses one stdio process after initialization and discovery. Current CLI starts a fresh process for every command; it has no equivalent warm process mode.",
+    "CLI help is a lower-bound process/import baseline, not an isolated measurement of all startup work in call or MCP modes.",
+    "Host CPU load is not controlled. Results are comparative evidence for this fixture, not a production latency guarantee."
+  ],
+  "raw": {
+    "baseline": [
+      {
+        "ms": 64.177,
+        "requests": []
+      },
+      {
+        "ms": 63.783,
+        "requests": []
+      },
+      {
+        "ms": 79.239,
+        "requests": []
+      },
+      {
+        "ms": 64.191,
+        "requests": []
+      },
+      {
+        "ms": 65.46,
+        "requests": []
+      },
+      {
+        "ms": 59.965,
+        "requests": []
+      },
+      {
+        "ms": 57.87,
+        "requests": []
+      },
+      {
+        "ms": 58.419,
+        "requests": []
+      },
+      {
+        "ms": 65.191,
+        "requests": []
+      },
+      {
+        "ms": 63.752,
+        "requests": []
+      },
+      {
+        "ms": 64.996,
+        "requests": []
+      },
+      {
+        "ms": 61.011,
+        "requests": []
+      }
+    ],
+    "cold": [
+      {
+        "cli": {
+          "ms": 92.041,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 61.952,
+          "readyMs": 74.614,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 6.625,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 81.414
+        }
+      },
+      {
+        "cli": {
+          "ms": 125.358,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 61.27,
+          "readyMs": 72.927,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.793,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 75.747
+        }
+      },
+      {
+        "cli": {
+          "ms": 77.538,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 59.34,
+          "readyMs": 69.28,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.411,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 71.729
+        }
+      },
+      {
+        "cli": {
+          "ms": 79.634,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 61.811,
+          "readyMs": 71.922,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.593,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 74.542
+        }
+      },
+      {
+        "cli": {
+          "ms": 73.732,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 64.844,
+          "readyMs": 74.218,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.427,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 76.684
+        }
+      },
+      {
+        "cli": {
+          "ms": 69.183,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 58.689,
+          "readyMs": 67.918,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.06,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 70.005
+        }
+      },
+      {
+        "cli": {
+          "ms": 70.429,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 60.772,
+          "readyMs": 70.573,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.067,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 72.677
+        }
+      },
+      {
+        "cli": {
+          "ms": 88.048,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 56.389,
+          "readyMs": 64.99,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.127,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 67.14
+        }
+      },
+      {
+        "cli": {
+          "ms": 72.622,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 57.141,
+          "readyMs": 66.396,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.354,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 68.784
+        }
+      },
+      {
+        "cli": {
+          "ms": 71.977,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 60.801,
+          "readyMs": 70.352,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.045,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 72.43
+        }
+      },
+      {
+        "cli": {
+          "ms": 72.246,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 62.774,
+          "readyMs": 72.453,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.384,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 74.871
+        }
+      },
+      {
+        "cli": {
+          "ms": 74.457,
+          "requests": [
+            "GET /api/device",
+            "POST /api/browser/mcp/plan",
+            "GET /api/browser/desktop/front"
+          ]
+        },
+        "mcp": {
+          "initializedMs": 59.702,
+          "readyMs": 69.344,
+          "setupRequests": [
+            "GET /api/device",
+            "GET /api/browser/mcp/tools"
+          ],
+          "firstCall": {
+            "ms": 2.292,
+            "requests": [
+              "POST /api/browser/mcp/call"
+            ]
+          },
+          "totalMs": 71.654
+        }
+      }
+    ],
+    "warm": [
+      {
+        "ms": 2.01,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.817,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.765,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.864,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.553,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.609,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.593,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 2.143,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.599,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.64,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.534,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.362,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.318,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.227,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.245,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.454,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.463,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.286,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.447,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.473,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.526,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.768,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.618,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.393,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 2.158,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.56,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.36,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.466,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.317,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.553,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.297,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.285,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.519,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.346,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.238,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.383,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.405,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.51,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.457,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      },
+      {
+        "ms": 1.405,
+        "requests": [
+          "POST /api/browser/mcp/call"
+        ]
+      }
+    ]
+  }
+}

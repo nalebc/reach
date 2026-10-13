@@ -2,6 +2,7 @@ import { expectFileResponse } from "./helpers/protected-files.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { admitAgent } from "./helpers/agent-admission.mjs";
 import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
 // Preset invitations end to end: created from a pinned phone over the
@@ -19,7 +20,7 @@ test("each preset issues its fixed scopes and reports itself to the agent", priv
   assert.equal(view.body.preset, "full");
   assert.equal(view.body.presetName, "Full control");
   assert.deepEqual([view.body.screen, view.body.control, view.body.shell, view.body.write, view.body.open], [true, true, true, true, true]);
-  assert.deepEqual(view.body.roots.map((root) => root.path), [f.home, f.shared], "Full control without chosen folders sees every shared folder");
+  assert.deepEqual(view.body.roots.map((root) => root.path), [f.home, f.shared, path.parse(f.home).root], "Full control includes the filesystem root");
   assert.equal(view.body.screenNotice, undefined);
   assert.equal(view.body.restrictedTerminal, undefined);
 
@@ -67,6 +68,13 @@ test("the owner's picker lists every app with the protected ones marked", privat
 
 test("what a preset refuses at creation", privateIngressTest, async (t) => {
   const f = await fixture(t);
+  const before = f.reach.auth.list().map(client => client.id);
+  for (const fullControlVersion of [undefined, 0, 2, "1"]) {
+    const stale = await f.call("/api/agents/browser-invitations", { method: "POST", body: { name: "Old form", preset: "full", ttlSeconds: 600, fullControlVersion } });
+    assert.equal(stale.status, 409, "a stale client must explicitly accept unrestricted Full control");
+    assert.match(stale.body.error, /Reload Reach/);
+  }
+  assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "stale forms create no access records");
   const refused = async (body, status, pattern, options) => {
     const result = await f.invite(body, options);
     assert.equal(result.status, status, JSON.stringify(result.body));
@@ -79,7 +87,7 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 1, path: "" }] })).status, 201, "Read only may share an ordinary configured folder");
   await refused({ preset: "full", screen: "apps" }, 400, /unsupported fields/);
   await refused({ preset: "full", restrictedTerminal: true }, 400, /unsupported fields/);
-  await refused({ preset: "full", folders: [{ root: 0, path: "Missing" }] }, 404, /no longer available/);
+  await refused({ preset: "readonly", folders: [{ root: 0, path: "Missing" }] }, 404, /no longer available/);
   // Taking the Mac needs the phone's own Tailscale connection, as app sessions did.
   await refused({ preset: "full" }, 403, /native Tailscale/, { node: "nWasm" });
   await refused({ preset: "apps", apps: [{ id: chrome.id }] }, 403, /native Tailscale/, { node: "nWasm" });
@@ -91,23 +99,23 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   assert.equal((await files.as("/api/agents/browser-invitations", { method: "POST", body: { name: "X", ttlSeconds: 600, preset: "readonly" } })).status, 403);
 });
 
-test("preset admission refuses filesystem roots and defaults to Home", privateIngressTest, async (t) => {
+test("narrow presets refuse filesystem roots; Full control includes them", privateIngressTest, async (t) => {
   // This owner configuration deliberately includes the filesystem root; no
-  // operation reads it, and no preset may obtain access to it.
+  // operation reads it; only Full control may obtain access to it.
   const f = await fixture(t, { includeSystemRoot: true });
   const before = f.reach.auth.list().map(client => client.id);
-  for (const preset of ["full", "readonly", "files"]) {
+  for (const preset of ["readonly", "files"]) {
     const explicit = await f.invite({ preset, folders: [{ root: 1, path: "" }] });
     assert.equal(explicit.status, 403, `${preset}: ${JSON.stringify(explicit.body)}`);
     assert.match(explicit.body.error, /system/i);
   }
   assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "refused roots create no credentials");
-  // Without chosen folders, Full and Read only default to Home, never the filesystem root.
+  // Full includes all configured roots; Read only excludes the filesystem root.
   for (const preset of ["full", "readonly"]) {
     const defaults = await f.invite({ preset });
     assert.equal(defaults.status, 201, `${preset}: ${JSON.stringify(defaults.body)}`);
     const client = f.reach.auth.list().find((c) => c.id === defaults.body.clientId);
-    assert.deepEqual(client.policy.roots, [f.home], `${preset} defaults to Home`);
+    assert.deepEqual(client.policy.roots, preset === "full" ? [f.home, path.parse(f.home).root] : [f.home], `${preset} roots`);
   }
   // An explicit valid project can still be selected from that configuration.
   assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 0, path: "Desktop/Project" }] })).status, 201);
@@ -188,6 +196,10 @@ test("changing a preset later keeps the same rules and can only narrow its hold 
   assert.equal((await change(apps.created.clientId, { apps: [{ id: onePassword.id }] })).status, 403);
   assert.equal((await change(apps.created.clientId, { screen: "apps" })).status, 409);
   assert.equal((await change(apps.created.clientId, { restrictedTerminal: true })).status, 400);
+  result = await change(apps.created.clientId, { preset: "full" });
+  assert.equal(result.status, 409, "Apps cannot silently expand into unrestricted Full control");
+  assert.match(result.body.error, /new invitation/);
+  assert.equal((await apps.as("/api/browser")).body.preset, "apps", "refusal leaves the existing grant intact");
   // Files: the edit switch and folders.
   const files = await f.join({ preset: "files", folders: [{ root: 0, path: "Desktop/Project" }] });
   result = await change(files.created.clientId, { write: true, folders: "keep" });
@@ -198,6 +210,33 @@ test("changing a preset later keeps the same rules and can only narrow its hold 
   assert.deepEqual(result.body.policy.roots, [f.home, f.shared], "Read only without chosen folders sees every shared folder");
   assert.equal((await change(files.created.clientId, { preset: "files", folders: [] })).status, 400);
   assert.equal((await change(files.created.clientId, { preset: "apps", apps: [{ id: chrome.id }], folders: [] })).status, 409);
+});
+
+test("editing an agent's access keeps the terminals it watches unless the edit names them", privateIngressTest, async (t) => {
+  const f = await fixture(t);
+  // Watched terminals are checked against the live ones at the route; the
+  // store's own rules are what's under test here.
+  const watching = () => {
+    const grant = f.reach.auth.inviteBrowser({ name: "Watcher", ttlSeconds: 600, preset: "readonly", terminalIds: ["reach:one"] });
+    admitAgent(f.reach.auth, grant.invitation, { nodeId: "nAgent", userId: "", tagged: true, validUntil: Date.now() + 60000 });
+    return grant.clientId;
+  };
+  const id = watching();
+  const record = (clientId = id) => f.reach.auth.list().find((client) => client.id === clientId);
+  assert.deepEqual(record().policy.terminalIds, ["reach:one"]);
+  // What the phone's editor sends for an expiry change: no terminalIds.
+  const result = await f.call(`/api/guests/${id}/access`, { method: "POST", body: { preset: "readonly", folders: [], hidden: [], expiresAt: Date.now() + 300_000 } });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.deepEqual(record().policy.terminalIds, ["reach:one"], "an expiry edit keeps watched terminals");
+  f.reach.auth.changeAccess(id, { terminalIds: ["reach:two"], folders: "keep" });
+  assert.deepEqual(record().policy.terminalIds, ["reach:two"], "named: replaced");
+  f.reach.auth.changeAccess(id, { terminalIds: [], folders: "keep" });
+  assert.equal(record().policy.terminalIds, undefined, "named empty: none");
+  // A preset that can't watch terminals doesn't take them along.
+  const other = watching();
+  f.reach.auth.changeAccess(other, { preset: "files", folders: [{ root: 0, path: "Desktop/Project" }] });
+  assert.equal(record(other).policy.preset, "files");
+  assert.equal(record(other).policy.terminalIds, undefined);
 });
 
 test("agents hold their own session only", privateIngressTest, async (t) => {

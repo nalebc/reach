@@ -96,8 +96,7 @@ async function serve(t) {
 test("serves the start page, its config and the browser client, nothing else", async (t) => {
   const served = await serve(t);
   const { get } = served;
-  // (/agent: an agent's link opened in a browser only says what it's for.)
-  for (const p of ["/", "/guest", "/agent", "/?pair=1"]) {
+  for (const p of ["/", "/guest", "/?pair=1"]) {
     const r = await get(p);
     assert.equal(r.status, 200, p);
     assert.equal(r.body, "<!doctype html>start");
@@ -105,6 +104,16 @@ test("serves the start page, its config and the browser client, nothing else", a
     assert.equal(r.headers["content-security-policy"], PUBLIC_CSP);
     assert.equal(r.headers["x-frame-options"], "DENY");
   }
+  // /agent: an agent's link. A browser gets the start page (which says
+  // what the link is for) with the steps in it; a program gets the steps
+  // (test/agent-link-steps.test.mjs).
+  const page = await get("/agent", { Accept: "text/html" });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /^<!doctype html>start<section id="agent-steps"/);
+  assert.equal(page.headers["content-security-policy"], PUBLIC_CSP);
+  const steps = await get("/agent");
+  assert.equal(steps.headers["content-type"], "text/plain; charset=utf-8");
+  assert.match(steps.body, /^Reach: connect an AI agent to this /);
   assert.match(PUBLIC_CSP, /script-src 'self' 'wasm-unsafe-eval';/);
   assert.match(PUBLIC_CSP, /frame-ancestors 'none'/);
   const browserAgent = await get("/agent-browser");

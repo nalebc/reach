@@ -36,7 +36,7 @@ function setup(t, extra = {}) {
     kind: "agent",
     status: "accepted",
     expiresAt: Date.now() + 600000,
-    policy: { browser: true, preset: "full", roots: [] },
+    policy: { browser: true, preset: "apps", apps: toolApps, roots: [] },
     scopes: [
       "browser:read",
       "browser:open",
@@ -692,6 +692,104 @@ test("declared empty results are distinguished from page drift, and hidden match
   example.dom.window.document.body.append(duplicate);
   assert.equal((await f.run("example_task", {}, "Safari")).status, "completed");
   assert.equal(f.driver.counters.clicks, 1);
+});
+
+test("Full control browser tools allow Reach titles, password fields and formerly protected sites", async t => {
+  const f = setup(t);
+  f.client = { ...f.client, policy: { browser: true, preset: "full", roots: ["/"], hidden: toolApps } };
+  await f.tools.define(f.authorize, exampleTool());
+  const tab = f.driver.add("Safari", "https://example.com/");
+  tab.dom.window.document.title = "GitHub - nalebc/reach";
+  assert.equal((await f.run("example_task", {}, "Safari")).status, "completed");
+  const secure = exampleTool("full_password");
+  secure.inputs = { value: { type: "string", label: "Password" } };
+  secure.steps = [
+    { op: "navigate", url: "https://example.com/" },
+    { op: "fill", target: { role: "textbox", name: "Note" }, value: { input: "value" } },
+    { op: "assert", target: { role: "main" } },
+  ];
+  tab.dom.window.document.querySelector("input").type = "password";
+  await f.tools.define(f.authorize, secure);
+  assert.equal((await f.run(secure.id, { value: "fixture-password" }, "Safari")).status, "completed");
+  assert.equal(tab.dom.window.document.querySelector("input").value, "fixture-password");
+  for (const [id, origin] of [["full_passwords", "https://passwords.google.com"], ["full_bank", "https://secure.chase.com"]]) {
+    const definition = exampleTool(id);
+    definition.origins = [origin]; definition.steps[0].url = origin + "/";
+    await f.tools.define(f.authorize, definition);
+    assert.equal((await f.run(id)).status, "completed");
+  }
+});
+
+test("a run's inputs are kept only as a salted scrypt fingerprint: a typed password can't be guessed from the ledger, retries still match", async t => {
+  const f = setup(t);
+  f.client = { ...f.client, policy: { browser: true, preset: "full", roots: ["/"], hidden: toolApps } };
+  const tab = f.driver.add("Safari", "https://example.com/");
+  tab.dom.window.document.querySelector("input").type = "password";
+  const fill = exampleTool("sign_in_fill");
+  fill.inputs = { value: { type: "string", label: "Password" } };
+  fill.steps = [
+    { op: "navigate", url: "https://example.com/" },
+    { op: "fill", target: { role: "textbox", name: "Note" }, value: { input: "value" } },
+    { op: "assert", target: { role: "main" } },
+  ];
+  await f.tools.define(f.authorize, fill);
+  const secret = "hunter2", requestId = crypto.randomUUID();
+  const first = await f.run(fill.id, { value: secret }, "Safari", requestId);
+  assert.equal(first.status, "completed");
+  await f.run(fill.id, { value: secret }, "Safari");
+  const ledgerFile = path.join(f.dataDir, "agent-tool-runs.json");
+  const ledger = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const raw = fs.readFileSync(ledgerFile, "utf8");
+  // What the ledger kept before: an unsalted SHA-256 of these exact inputs.
+  const plain = crypto.createHash("sha256")
+    .update(JSON.stringify([fill.id, "Safari", { value: secret }])).digest("hex");
+  assert.equal(raw.includes(secret), false);
+  assert.equal(raw.includes(plain), false);
+  assert.equal(ledger.length, 2);
+  for (const entry of ledger) assert.match(entry.hash, /^s1:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(ledger[0].hash, ledger[1].hash, "the same inputs are salted apart");
+  // After a restart: the same inputs are the same run, never typed again;
+  // other inputs under that requestId are refused.
+  f.restart();
+  tab.dom.window.document.querySelector("input").value = "";
+  const again = await f.run(fill.id, { value: secret }, "Safari", requestId);
+  assert.deepEqual([again.requestId, again.status, again.resultExpired], [requestId, "completed", true]);
+  assert.equal(tab.dom.window.document.querySelector("input").value, "");
+  await assert.rejects(f.run(fill.id, { value: "hunter3" }, "Safari", requestId), /different inputs/);
+  // A run saved before fingerprints were salted is still never repeated.
+  const legacyId = crypto.randomUUID();
+  fs.writeFileSync(ledgerFile, JSON.stringify([{ ...ledger[0], requestId: legacyId, hash: plain, status: "completed" }]));
+  f.restart();
+  assert.equal((await f.run(fill.id, { value: secret }, "Safari", legacyId)).status, "completed");
+  assert.equal(tab.dom.window.document.querySelector("input").value, "");
+});
+
+// CodeQL #67: each fingerprint is ~30 ms of scrypt on one of libuv's four
+// threads, run before any run budget. An agent replaying a requestId (or
+// naming a browser it can't use) as fast as it could kept all four busy,
+// stalling Reach's file, zlib and crypto work for everyone. One at a time now.
+test("run fingerprints are worked out one at a time, whoever asks and however often", async (t) => {
+  let active = 0, most = 0;
+  const scrypt = crypto.scrypt;
+  t.mock.method(crypto, "scrypt", (...args) => {
+    const done = args.pop();
+    most = Math.max(most, ++active);
+    scrypt(...args, (error, key) => { active--; done(error, key); });
+  });
+  // A copy of the module that took the counting scrypt when it loaded.
+  const { inputsFingerprint, sameInputs } = await import(`../server/agent-tools.mjs?fingerprints=${Date.now()}`);
+  const inputs = JSON.stringify(["sign_in_fill", "Safari", { value: "hunter2" }]);
+  const kept = await inputsFingerprint(inputs);
+  most = 0;
+  const answers = await Promise.all([
+    ...Array.from({ length: 8 }, () => sameInputs(kept, inputs)),
+    ...Array.from({ length: 4 }, () => inputsFingerprint(inputs)),
+    sameInputs(kept, inputs.replace("hunter2", "hunter3")),
+  ]);
+  assert.equal(most, 1);
+  assert.deepEqual(answers.slice(0, 8), Array(8).fill(true));
+  for (const fingerprint of answers.slice(8, 12)) assert.match(fingerprint, /^s1:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}$/);
+  assert.equal(answers[12], false);
 });
 
 test("downloads enforce the file limit; protected pages and cross-site controls cannot be used", async (t) => {

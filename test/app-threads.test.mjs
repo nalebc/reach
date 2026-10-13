@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
-import { APP_STREAM, phoneViewport } from "../server/app-threads.mjs";
+import { APP_STREAM, AppThreads, phoneViewport } from "../server/app-threads.mjs";
 
 // Apps on your phone, server side. The native helper that makes hidden
 // displays and moves windows is replaced by a recording fake; the routes,
@@ -198,6 +198,40 @@ test("an app opens on the phone in its own thread, is reused, rotates, and goes 
     thread: opened.body.id,
   });
   assert.deepEqual((await call("/api/screen/apps")).body, []);
+});
+
+test("learned minimum sizes are kept by app ID as keys only, validated when read back", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-app-minimums-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "app-threads.json");
+  // A hand-edited file: only well-formed sizes come back.
+  fs.writeFileSync(file, `{"threads":[],"minimums":{"__proto__":{"w":1,"h":1},${JSON.stringify(NOTES)}:{"w":400,"h":0},${JSON.stringify(CHROME)}:{"w":"wide"}}}`);
+  const odd = ["__proto__", "toString", "constructor"];
+  const fake = fakeHelper();
+  const make = () => new AppThreads({
+    file,
+    platform: "darwin",
+    listApps: async () => [NOTES, ...odd].map((id) => ({ id, name: id })),
+    startHelper: fake.start,
+  });
+  const phone = { width: 393, height: 852 };
+  const threads = make();
+  t.after(() => threads.shutdown());
+  // Names that are also Object's own never read as a learned size.
+  for (const id of odd) await threads.open(id, phone);
+  const opens = fake.requests.filter((r) => r.cmd === "open");
+  assert.deepEqual(opens.map((r) => r.minimum), [{ w: 1, h: 1 }, undefined, undefined]);
+  // The helper's answer is learned for each, kept and saved by its exact ID.
+  const saved = JSON.parse(fs.readFileSync(file, "utf8")).minimums;
+  assert.deepEqual(Object.keys(saved).sort(), [NOTES, ...odd].sort());
+  assert.deepEqual(saved.toString, { w: 500, h: 0 });
+  await threads.shutdown();
+  const again = make();
+  t.after(() => again.shutdown());
+  fake.requests.length = 0;
+  await again.open("constructor", phone);
+  await again.open(NOTES, phone);
+  assert.deepEqual(fake.requests.filter((r) => r.cmd === "open").map((r) => r.minimum), [{ w: 500, h: 0 }, { w: 400, h: 0 }]);
 });
 
 test("only the computer's owner can open apps, with screen viewing on, from its app list", async (t) => {

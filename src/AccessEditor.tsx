@@ -16,7 +16,7 @@ export const presetSummary = (policy: NonNullable<EditableAccess["policy"]>) => 
   const apps = (policy.apps || []).map((app) => app.name || app.id.split("/").at(-1)?.replace(/\.app$/, "") || app.id);
   return preset === "apps" ? `Apps: ${apps.join(", ") || "none"}`
     : preset === "files" ? `Files: ${policy.write ? "read and edit" : "read only"}`
-      : `${PRESET_WORDS[preset]?.title || preset}${policy.hidden?.length ? ` · ${policy.hidden.length} hidden ${policy.hidden.length === 1 ? "app" : "apps"}` : ""}`;
+      : `${PRESET_WORDS[preset]?.title || preset}${preset !== "full" && policy.hidden?.length ? ` · ${policy.hidden.length} hidden ${policy.hidden.length === 1 ? "app" : "apps"}` : ""}`;
 };
 export function accessSummary(client: EditableAccess) {
   if (client.scopes?.includes("admin")) return "Full access";
@@ -41,6 +41,7 @@ export type EditableAccess = {
   scopes?: string[];
   expiresAt?: number;
   status?: string;
+  needsInvitation?: boolean;
   guestRoots?: string[];
   guestApps?: string[];
   browserTransport?: string;
@@ -122,12 +123,13 @@ export default function AccessEditor(props: AccessEditorProps) {
 }
 
 // A preset agent: change its preset, apps, folders, editing or hidden apps.
-// Taking the Mac (Full control, Apps) needs a new invitation from the phone,
-// so from Files or Read only only those two are offered.
+// Taking the Mac (Full control, Apps), or raising Apps into unrestricted Full
+// control, needs a new invitation from the phone.
 type PresetApp = { id: string; name: string; bundleId: string; running: boolean; protected: boolean; reason?: string; runsCommands?: boolean };
 function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEditorProps) {
   const current = (client.policy?.preset || "readonly") as Preset;
   const mayTakeMac = current === "full" || current === "apps";
+  const needsInvitation = (next: Preset) => (next === "full" && current !== "full") || (next === "apps" && !mayTakeMac);
   const [preset, setPreset] = useState<Preset>(current);
   const [apps, setApps] = useState<string[]>((client.policy?.apps || []).map((app) => app.id));
   const [folders, setFolders] = useState(() => existingFolders(client, device));
@@ -157,10 +159,10 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
     try {
       await post(peer, `/api/guests/${encodeURIComponent(client.id)}/access`, {
         preset,
-        folders: preset === "apps" ? [] : folders.map(({ root, path }) => ({ root, path })),
+        folders: preset === "apps" || preset === "full" ? [] : folders.map(({ root, path }) => ({ root, path })),
         ...(preset === "apps" ? { apps: apps.map((id) => ({ id })) } : {}),
         ...(preset === "files" ? { write } : {}),
-        ...(preset === "full" || preset === "readonly" ? { hidden: hidden.map((id) => ({ id })) } : {}),
+        ...(preset === "readonly" ? { hidden: hidden.map((id) => ({ id })) } : {}),
         ...(expiryChanged ? { expiresAt: new Date(until).getTime() } : {}),
       });
       onSaved();
@@ -190,8 +192,8 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
           onChange={(next) => { setPreset(next); setError(""); if (next !== "apps") setApps([]); }}
           options={(["full", "apps", "files", "readonly"] as Preset[]).map((value) => ({
             value, title: PRESET_WORDS[value].title,
-            detail: !mayTakeMac && (value === "full" || value === "apps") ? "Needs a new invitation from your phone." : PRESET_WORDS[value].detail,
-            disabled: !mayTakeMac && (value === "full" || value === "apps"),
+            detail: needsInvitation(value) ? "Needs a new invitation from your phone." : PRESET_WORDS[value].detail,
+            disabled: needsInvitation(value),
           }))}
         />
         <div className="ag-rows">
@@ -200,7 +202,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
               {catalog === null ? <p className="ag-quiet">Loading apps…</p> : <AppPicker peer={peer} apps={pickerApps} chosen={apps} onChange={setApps} chosenWords="Can use it" />}
             </AccessRow>
           )}
-          {preset !== "apps" && (
+          {preset !== "apps" && preset !== "full" && (
             <AccessRow icon={<Folder />} label="Folders" value={folders.length ? (folders.length === 1 ? folders[0].label : `${folders.length} folders`) : preset === "files" ? "Pick folders" : "Everything you share"} open={openRow === "folders"} onToggle={() => toggleRow("folders")} attention={preset === "files" && !folders.length}>
               <FolderBrowser peer={peer} device={device} picked={folders} onChange={setFolders} />
             </AccessRow>
@@ -215,7 +217,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
               </div>
             </div>
           )}
-          {(preset === "full" || preset === "readonly") && (
+          {preset === "readonly" && (
             <AccessRow icon={<Monitor />} label="Hide apps from it" value={hiddenApps.length ? <AppStack peer={peer} apps={hiddenApps} /> : "None"} open={openRow === "hidden"} onToggle={() => toggleRow("hidden")}>
               <p className="ag-quiet">Passwords and Reach are always hidden.</p>
               {catalog === null ? <p className="ag-quiet">Loading apps…</p> : <AppPicker peer={peer} apps={hideable} chosen={hidden} onChange={setHidden} chosenWords="Hidden from it" chipsLabel="Hidden apps" />}
@@ -410,6 +412,7 @@ function GeneralAccessEditor({
             ? { write, exec, terminal, codex: sessions }
             : {
                 full,
+                ...(full ? { fullControlVersion: 1 } : {}),
                 write,
                 terminal,
                 agents: sessions,
@@ -627,6 +630,7 @@ function GeneralAccessEditor({
         </div>
         <fieldset disabled={busy}>
           {!agent && toggle("Full access", full, setFull)}
+          {!agent && full && <p>Includes every window, private data and system dialogs. Only give this to someone you trust with your computer.</p>}
           {!full && (
             <>
               <details className="ae-folders">

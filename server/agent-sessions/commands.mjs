@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { spawnable } from "../agent-cli.mjs";
 
 const exec = promisify(execFile);
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -58,7 +59,8 @@ export function createCodexMethods({ locate = findCodexExecutable, run = exec, t
     const value = (async () => {
       const dir = fs.mkdtempSync(path.join(tmp, "reach-codex-protocol-"));
       try {
-        await run(codex, ["app-server", "generate-json-schema", "--out", dir], { timeout: 20000, maxBuffer: 1 << 20 });
+        const cli = spawnable(codex);
+        await run(cli.file, [...cli.args, "app-server", "generate-json-schema", "--out", dir], { timeout: 20000, maxBuffer: 1 << 20 });
         return protocolMethods(dir);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });

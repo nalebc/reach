@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { noticeVersionFindings } from "./notice-versions.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -17,10 +18,10 @@ for (const listFile of [".reach/private-identifiers", path.join(os.homedir(), ".
 }
 if (!process.env.CI && username.length >= 4) privateWords.push(username);
 if (!privateWords.some((w) => w.length >= 4)) console.error("Note: no private identifiers configured (REACH_PRIVATE_IDENTIFIERS or .reach/private-identifiers); the scan covers only known credential formats.");
-// Keep personal names/emails out of published metadata without stripping the
-// owner's requested attribution or the bots' own public attribution. GitHub
-// login/ID pairs were checked through its users API; this is an explicit
-// allowlist, not acceptance of any address that resembles a noreply address.
+// Explicitly approved attribution can overlap a configured private identifier.
+// This list exempts those exact identities from that privacy check; it is not
+// an allowlist of people who may contribute. Contributors choose their own Git
+// attribution. Authentication and review belong to the repository's merge rules.
 const publicIdentities = new Map([
   ["contributors@example.invalid", "Reach Contributors"],
   ["54943684+nalebc@users.noreply.github.com", "nalebc"],
@@ -28,23 +29,29 @@ const publicIdentities = new Map([
   ["49699333+dependabot[bot]@users.noreply.github.com", "dependabot[bot]"],
   ["41898282+github-actions[bot]@users.noreply.github.com", "github-actions[bot]"],
 ]);
-try {
-  const commits = execFileSync("git", ["log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  const stray = commits.filter((line) => {
-    const [, author, authorEmail, committer, committerEmail] = line.split("\0");
-    return !authorEmail || !committerEmail ||
-      publicIdentities.get(authorEmail.toLowerCase()) !== author ||
-      publicIdentities.get(committerEmail.toLowerCase()) !== committer;
-  });
-  for (const line of stray.slice(0, 20)) findings.push([`commit ${line.split("\0")[0].slice(0, 12)}`, "author or committer is not an approved public identity"]);
-  if (stray.length > 20) findings.push([`${stray.length - 20} more commits`, "author or committer is not an approved public identity"]);
-} catch { findings.push(["git history", "could not read commit identities"]); }
 const patterns = [
   ["private key", new RegExp("-----BEGIN " + "(?:RSA |EC |OPENSSH )?PRIVATE KEY-----")],
   ["AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
   ["GitHub credential", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b/],
   ["Tailscale credential", /\btskey-(?:auth|client|api)-[A-Za-z0-9]{12,}-[A-Za-z0-9]{24,}\b/],
 ];
+try {
+  const commits = execFileSync("git", ["log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  for (const line of commits) {
+    const [sha, author, authorEmail, committer, committerEmail] = line.split("\0");
+    const where = `commit ${sha.slice(0, 12)}`;
+    if (!author || !authorEmail || !committer || !committerEmail) {
+      findings.push([where, "missing author or committer identity"]);
+      continue;
+    }
+    const identities = [[author, authorEmail], [committer, committerEmail]];
+    if (identities.some(pair => patterns.some(([, pattern]) => pair.some(value => pattern.test(value)))))
+      findings.push([where, "credential in author or committer"]);
+    if (identities.some(([name, email]) => publicIdentities.get(email.toLowerCase()) !== name &&
+      privateWords.some(word => `${name}\n${email}`.toLowerCase().includes(word.toLowerCase()))))
+      findings.push([where, "private identifier in author or committer"]);
+  }
+} catch { findings.push(["git history", "could not read commit identities"]); }
 for (const file of files) {
   if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) {
     findings.push([file, "review symlink target before release"]);
@@ -70,6 +77,8 @@ for (const file of files) {
 }
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 if (pkg.author !== "Reach Contributors") findings.push(["package.json", "use the project contributor identity"]);
+if (fs.existsSync("tailnet/go.mod"))
+  for (const reason of noticeVersionFindings()) findings.push(["docs/THIRD_PARTY_NOTICES.md", reason]);
 if (findings.length) {
   for (const [file, reason] of findings) console.error(`${file}: ${reason}`);
   process.exitCode = 1;

@@ -1,0 +1,104 @@
+/* A page pushed in place (SubPage.tsx): the back chevron and the page's one
+   action on a 44px bar, then the title as Agents & people's own. Slides in
+   on the way in only: a swipe back in Safari brings its own picture. */
+.sub-page-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  margin: 0 0 2px;
+}
+.sub-page-back {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-left: -10px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: #eef4ef;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sub-page-back:active {
+  background: rgb(255 255 255 / 0.06);
+}
+/* Its one action, as text: quiet, away from the thumb. */
+.sub-page-action {
+  height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: #eef4ef;
+  font: 500 16px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.sub-page-action.is-danger {
+  color: #f08a7a;
+}
+.sub-page-action:disabled {
+  opacity: 0.5;
+}
+.sub-page > h1 {
+  margin: 0 4px 6px;
+  font: 650 26px/1.15 system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.6px;
+  color: #f1f6f2;
+  outline: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .is-pushed > .sub-page {
+    animation: sub-page-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+@keyframes sub-page-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+/* Asking first (ConfirmSheet.tsx): the question, a line, the red action,
+   Cancel in its own group. */
+.screen-popup.confirm-sheet {
+  width: min(400px, calc(100vw - 28px));
+}
+.confirm-sheet .screen-popup-body > header {
+  justify-content: center;
+  margin-bottom: 6px;
+  text-align: center;
+}
+.confirm-sheet .screen-popup-body > header h2 {
+  font-size: 17px;
+  letter-spacing: -0.2px;
+}
+.confirm-sheet .screen-popup-body > header .icon-button {
+  display: none;
+}
+.confirm-sheet-detail {
+  margin: 0 0 16px;
+  color: var(--muted, #93a096);
+  font-size: 14px;
+  text-align: center;
+}
+.confirm-sheet .gs-group + .gs-group {
+  margin-top: 8px;
+}
+.confirm-sheet .gs-row {
+  justify-content: center;
+  min-height: 54px;
+  font-size: 17px;
+  cursor: pointer;
+}
+.confirm-sheet-yes {
+  color: #f08a7a;
+}
+.confirm-sheet-no {
+  font-weight: 600;
+}
+.confirm-sheet-no:focus-visible,
+.confirm-sheet-yes:focus-visible {
+  outline: 2px solid var(--lime, #b9efd4);
+  outline-offset: -2px;
+}

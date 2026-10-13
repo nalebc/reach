@@ -55,9 +55,9 @@ test("a numbered press re-finds its control; press and fill go through the same 
   const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
   const perform = source.split("func perform(")[1].split("\n@available")[0];
   assert.match(perform, /case "element":[\s\S]*?readScreen\(rules, text: false\)[\s\S]*?clickControl\(control, in: screen/);
-  assert.match(perform, /case "press":[\s\S]*?findControl\(screen, name: wanted, role: action\["role"\] as\? String\)/);
-  assert.match(perform, /case "fill":[\s\S]*?if control\.secure && !secret \{ try refuse\(secureReason\) \}[\s\S]*?\["type": "type", "text": text\]/);
-  assert.match(perform, /if secret \{ rememberSecret\(text\) \}/, "a vault value typed is remembered");
+  assert.match(perform, /case "press":[\s\S]*?findControl\(candidates, name: wanted, role: action\["role"\] as\? String\)/);
+  assert.match(perform, /case "fill":[\s\S]*?if rules\.mode != "full", control\.secure && !secret \{ try refuse\(secureReason\) \}[\s\S]*?\["type": "type", "text": text\]/);
+  assert.match(perform, /if secret \|\| target\.element\.secure \{ rememberSecret\(text\) \}/, "a vault value typed is remembered");
   assert.match(source.split("func readScreen(")[1].split("\nfunc elements(")[0], /hideSecrets\(String\(words\.prefix\(300\)\), typedSecrets\)[\s\S]*hideSecrets\(String\(value\.prefix\(120\)\), typedSecrets\)/, "text and field values");
   assert.match(source.split("func shot(")[1], /redacted\(image, rules\)/, "and screenshots");
 });
@@ -89,7 +89,7 @@ test("all native title decisions share the verified Mail identity wrapper", asyn
 test("secure-field key checks use the tested native policy only for secure targets", async () => {
   const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
   const keyHandler = source.split('case "key":')[1].split('default:')[0];
-  assert.match(keyHandler, /if target\.element\.secure, !secureKeyAllowed\(name, command\) \{ try refuse\(secureReason\) \}/);
+  assert.match(keyHandler, /if rules\.mode != "full", target\.element\.secure, !secureKeyAllowed\(name, command\) \{ try refuse\(secureReason\) \}/);
   assert.doesNotMatch(keyHandler, /target\.element\.secure, !command/);
 });
 
@@ -129,11 +129,22 @@ ${name}.terminalLike = ${list(value.terminalLike)}
     const chrome = { id: "/Applications/Google Chrome.app", bundleId: "com.google.Chrome" };
     const checks = `
 import Foundation
-${build("full", rules("full", { hidden: [{ id: "/System/Applications/Messages.app", bundleId: "com.apple.MobileSMS", name: "Messages" }] }))}
+${build("restricted", rules("readonly", { hidden: [{ id: "/System/Applications/Messages.app", bundleId: "com.apple.MobileSMS", name: "Messages" }] }))}
 ${build("apps", rules("apps", { apps: [chrome] }))}
 ${build("view", rules("readonly"))}
+${build("full", rules("full"))}
 func check(_ value: Bool, _ label: String) { if !value { print("FAILED: " + label); exit(1) } }
-// Always protected, in every mode.
+// Full control bypasses content restrictions; narrow presets keep them.
+for title in ["nalebc/reach · GitHub", "Reach", "Password Manager", "DevTools", "Privacy & Security"] {
+  check(titleReason(title, "com.google.Chrome", full) == nil, "full allows " + title)
+}
+for url in ["https://mac.tail1234.ts.net/", "chrome://password-manager/passwords", "devtools://devtools/"] {
+  check(urlReason(url, full) == nil, "full allows " + url)
+}
+check(appReason("com.apple.keychainaccess", "Keychain Access", "", full) == nil, "full allows password apps")
+check(appReason("io.tailscale.ipn.macos", "Tailscale", "", full) == nil, "full allows Tailscale")
+check(appReason("com.reach.app", "Reach", "", full) == nil, "full allows Reach")
+// Restricted presets retain protected targets.
 for (bundle, name, path) in [
   ("com.apple.keychainaccess", "Keychain Access", "/System/Applications/Utilities/Keychain Access.app"),
   ("com.apple.Passwords", "Passwords", "/System/Applications/Passwords.app"),
@@ -146,18 +157,18 @@ for (bundle, name, path) in [
   ("com.reach.app", "Reach", "/Applications/Reach.app"),
   ("", "", "/Applications/Reach.app"),
 ] {
-  check(appReason(bundle, name, path, full) != nil, "full protects " + name + path)
+  check(appReason(bundle, name, path, restricted) != nil, "restricted protects " + name + path)
   check(appReason(bundle, name, path, apps) != nil, "apps protects " + name + path)
   check(appReason(bundle, name, path, view) != nil, "view protects " + name + path)
 }
-check(appReason("com.apple.keychainaccess", "x", "", full) == protectedReason, "protected reason")
-check(appReason("io.tailscale.ipn.macos", "Tailscale", "", full) == reachReason, "reach reason")
+check(appReason("com.apple.keychainaccess", "x", "", restricted) == protectedReason, "protected reason")
+check(appReason("io.tailscale.ipn.macos", "Tailscale", "", restricted) == reachReason, "reach reason")
 // Full control: browsers, terminals and ordinary apps are open; hidden apps are not.
 for (bundle, name) in [("com.google.Chrome", "Google Chrome"), ("com.apple.Safari", "Safari"), ("com.apple.Terminal", "Terminal"), ("com.apple.finder", "Finder"), ("com.apple.mail", "Mail"), ("com.example.Preacher", "Preacher"), ("com.apple.systempreferences", "System Settings")] {
-  check(appReason(bundle, name, "/Applications/" + name + ".app", full) == nil, "full allows " + name)
+  check(appReason(bundle, name, "/Applications/" + name + ".app", restricted) == nil, "restricted allows " + name)
 }
-check(appReason("com.apple.MobileSMS", "Messages", "/System/Applications/Messages.app", full) == hiddenReason, "hidden app by bundle")
-check(appReason("com.other.Messenger", "Messages", "/Applications/Other.app", full) == hiddenReason, "hidden app by name")
+check(appReason("com.apple.MobileSMS", "Messages", "/System/Applications/Messages.app", restricted) == hiddenReason, "hidden app by bundle")
+check(appReason("com.other.Messenger", "Messages", "/Applications/Other.app", restricted) == hiddenReason, "hidden app by name")
 // Apps preset: the chosen apps only, matched by bundle id or path.
 check(appReason("com.google.Chrome", "Google Chrome", "/Applications/Google Chrome.app", apps) == nil, "apps allows chosen bundle")
 check(appReason("", "", "/Applications/Google Chrome.app", apps) == nil, "apps allows chosen path")
@@ -165,20 +176,20 @@ check(appReason("com.apple.Safari", "Safari", "/Applications/Safari.app", apps) 
 check(appReason("com.apple.finder", "Finder", "", apps) == notAllowedReason, "apps refuses Finder")
 check(appReason("com.google.Chrome.helper", "Google Chrome Helper", "", apps) == notAllowedReason, "a helper process with a longer bundle id is not the app")
 // Titles: Reach's windows, privacy panes, developer tools and password pages.
-check(titleReason("reach — node — 80x24", "com.apple.Terminal", full) == reachReason, "Reach terminal title")
-check(titleReason("Reach", "com.google.Chrome", full) == reachReason, "Reach tab title")
+check(titleReason("reach — node — 80x24", "com.apple.Terminal", restricted) == reachReason, "Reach terminal title")
+check(titleReason("Reach", "com.google.Chrome", restricted) == reachReason, "Reach tab title")
 check(titleReason("Reach", "com.google.Chrome", apps) == reachReason, "selected Chrome still hides Reach")
 check(titleReason("Password Manager", "com.google.Chrome", apps) == protectedReason, "selected Chrome still hides password windows")
-check(titleReason("Preacher notes", "com.apple.Notes", full) == nil, "Preacher is not Reach")
-check(titleReason("Privacy & Security", "com.apple.systempreferences", full) == protectedReason, "privacy pane")
-check(titleReason("Displays", "com.apple.systempreferences", full) == nil, "displays pane")
-check(titleReason("Privacy & Security", "com.google.Chrome", full) == nil, "a page about privacy is a page")
-check(titleReason("DevTools - amazon.com", "com.google.Chrome", full) == protectedReason, "devtools")
-check(titleReason("Password Manager", "com.google.Chrome", full) == protectedReason, "password manager")
-check(titleReason("Passwords", "com.apple.Safari", full) == protectedReason, "Safari passwords pane")
-check(titleReason("Reset your passwords - Help Center", "com.google.Chrome", full) == nil, "an article about passwords")
-check(titleReason("Force Quit Applications", "com.apple.loginwindow", full) == protectedReason, "force quit")
-check(titleReason("", "com.google.Chrome", full) == nil, "no title")
+check(titleReason("Preacher notes", "com.apple.Notes", restricted) == nil, "Preacher is not Reach")
+check(titleReason("Privacy & Security", "com.apple.systempreferences", restricted) == protectedReason, "privacy pane")
+check(titleReason("Displays", "com.apple.systempreferences", restricted) == nil, "displays pane")
+check(titleReason("Privacy & Security", "com.google.Chrome", restricted) == nil, "a page about privacy is a page")
+check(titleReason("DevTools - amazon.com", "com.google.Chrome", restricted) == protectedReason, "devtools")
+check(titleReason("Password Manager", "com.google.Chrome", restricted) == protectedReason, "password manager")
+check(titleReason("Passwords", "com.apple.Safari", restricted) == protectedReason, "Safari passwords pane")
+check(titleReason("Reset your passwords - Help Center", "com.google.Chrome", restricted) == nil, "an article about passwords")
+check(titleReason("Force Quit Applications", "com.apple.loginwindow", restricted) == protectedReason, "force quit")
+check(titleReason("", "com.google.Chrome", restricted) == nil, "no title")
 // Mail content titles need exact metadata and separately verified running code.
 check(mailIdentityCandidate("com.apple.mail", "/System/Applications/Mail.app"), "exact Mail metadata")
 for (bundle, path) in [("com.example.mail", "/System/Applications/Mail.app"), ("com.apple.mail", "/Applications/Mail.app"), ("com.apple.mail", "/tmp/Mail.app"), ("com.apple.mail", ""), ("", "/System/Applications/Mail.app")] {
@@ -191,34 +202,34 @@ check(!trustedMailIdentity(-1, "com.apple.mail", "/System/Applications/Mail.app"
 // Security API failure path, without launching or inspecting a user's app.
 check(!trustedMailIdentity(getpid(), "com.apple.mail", "/System/Applications/Mail.app"), "test process cannot impersonate signed Mail")
 for title in ["Reach out to Alice tomorrow", "Order confirmation: replacement keychain"] {
-  check(titleReason(title, "com.apple.mail", full, verifiedMail: true) == nil, "verified Mail allows subject " + title)
+  check(titleReason(title, "com.apple.mail", restricted, verifiedMail: true) == nil, "verified Mail allows subject " + title)
   check(titleReason(title, "com.apple.mail", apps, verifiedMail: true) == nil, "title context is consistent across presets")
   check(titleReason(title, "com.apple.mail", view, verifiedMail: true) == nil, "view uses the same title context")
-  check(titleReason(title, "com.apple.mail", full) != nil, "unknown signing retains refusal " + title)
-  check(titleReason(title, "com.google.Chrome", full, verifiedMail: true) != nil, "Mail context cannot exempt another app")
+  check(titleReason(title, "com.apple.mail", restricted) != nil, "unknown signing retains refusal " + title)
+  check(titleReason(title, "com.google.Chrome", restricted, verifiedMail: true) != nil, "Mail context cannot exempt another app")
 }
 for title in ["Keychain", "Keychain Access", "Unlock your keychain", "Enter the keychain password", "Keychain authentication", "Password Manager", "Saved passwords", "Web Inspector"] {
-  check(titleReason(title, "com.apple.mail", full, verifiedMail: true) == protectedReason, "verified Mail preserves sensitive title " + title)
+  check(titleReason(title, "com.apple.mail", restricted, verifiedMail: true) == protectedReason, "verified Mail preserves sensitive title " + title)
 }
-check(titleReason("Web Inspector tutorial - Example", "com.google.Chrome", full) == protectedReason, "no generic browser title relaxation")
-var hiddenMail = full
+check(titleReason("Web Inspector tutorial - Example", "com.google.Chrome", restricted) == protectedReason, "no generic browser title relaxation")
+var hiddenMail = restricted
 hiddenMail.hiddenApps = [["bundleId": "com.apple.mail", "id": "/System/Applications/Mail.app"]]
 check(appReason("com.apple.mail", "Mail", "/System/Applications/Mail.app", hiddenMail) == hiddenReason, "Mail title exception cannot override hidden app")
 check(appReason("com.apple.mail", "Mail", "/System/Applications/Mail.app", apps) == notAllowedReason, "Mail title exception cannot override selected app")
 // Addresses: Reach's own, and the pages that reveal passwords or run code.
 for url in ["https://mac.tail1234.ts.net/", "http://localhost:8443/", "chrome://password-manager/passwords", "chrome://settings/passwords", "chrome://settings/payments", "brave://password-manager", "edge://wallet", "about:logins", "javascript:alert(1)", "data:text/html,x", "devtools://devtools/"] {
-  check(urlReason(url, full) != nil, "blocked url " + url)
+  check(urlReason(url, restricted) != nil, "blocked url " + url)
 }
 for url in ["https://www.amazon.com/", "chrome://newtab", "chrome://settings/appearance", "about:blank", "https://example.com/?next=chrome://settings/passwords", ""] {
-  check(urlReason(url, full) == nil, "open url " + url)
+  check(urlReason(url, restricted) == nil, "open url " + url)
 }
 for (url, blocked) in [${reachUrlCases.map(([url, blocked]) => `(${swift(url)}, ${blocked})`).join(",")} ] {
-  check((urlReason(url, full) != nil) == blocked, "HTTP authority parity: " + url)
+  check((urlReason(url, restricted) != nil) == blocked, "HTTP authority parity: " + url)
 }
-check(terminalLikeApp("com.apple.Terminal", "Terminal", "/System/Applications/Utilities/Terminal.app", full), "terminal is terminal-like")
-check(terminalLikeApp("com.microsoft.VSCode", "Code", "/Applications/Visual Studio Code.app", full), "an IDE is terminal-like")
-check(!terminalLikeApp("com.google.Chrome", "Google Chrome", "/Applications/Google Chrome.app", full), "a browser is not")
-check(mentionsReach("com.reach.app", full) && mentionsReach("Reach — node", full) && !mentionsReach("preacher", full) && !mentionsReach("outreach", full), "reach as a word")
+check(terminalLikeApp("com.apple.Terminal", "Terminal", "/System/Applications/Utilities/Terminal.app", restricted), "terminal is terminal-like")
+check(terminalLikeApp("com.microsoft.VSCode", "Code", "/Applications/Visual Studio Code.app", restricted), "an IDE is terminal-like")
+check(!terminalLikeApp("com.google.Chrome", "Google Chrome", "/Applications/Google Chrome.app", restricted), "a browser is not")
+check(mentionsReach("com.reach.app", restricted) && mentionsReach("Reach — node", restricted) && !mentionsReach("preacher", restricted) && !mentionsReach("outreach", restricted), "reach as a word")
 // Secure fields allow navigation, never typing, deletion or Command shortcuts.
 for key in ["tab", "escape", "esc", "return", "enter", "left", "right", "up", "down"] {
   check(secureKeyAllowed(key, false), "secure field keeps navigation " + key)

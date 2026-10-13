@@ -44,6 +44,27 @@ test("Windows installers use PowerShell and Linux never offers a Homebrew cask",
   await assert.rejects(installPlan("codex", { platform: "linux", has: async name => name === "brew" }), error => error.status === 409 && !/Homebrew/.test(error.message));
 });
 
+// Claude Code on Windows runs on Git Bash (audit #7, Oct 12): Git for
+// Windows from winget's own catalog, its agreements accepted on the phone
+// (a Reach terminal can't answer winget's questions), its exit code the
+// install's. Only Windows needs it, so only Windows offers it.
+test("Git for Windows installs with winget on Windows, and nowhere else", async () => {
+  const git = await installPlan("git", { platform: "win32", has: async (name) => name === "winget" });
+  assert.deepEqual(git, {
+    agent: "git",
+    name: "Git for Windows",
+    command: "winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements",
+  });
+  assert.equal(
+    installTerminalCommand(git, "win32"),
+    "$ErrorActionPreference = 'Stop'; try { winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }",
+  );
+  await assert.rejects(installPlan("git", { platform: "win32", has: async () => false }), (e) => e.status === 409 && e.message === "Install Git for Windows needs winget (Windows' App Installer) on this Windows PC.");
+  for (const platform of ["darwin", "linux"]) await assert.rejects(installPlan("git", { platform, has: async () => true }), (e) => e.status === 400, platform);
+  // Claude Code's own installer is a script, which sets no exit code.
+  assert.match(installTerminalCommand(await installPlan("claude", { platform: "win32", has: async () => true }), "win32"), /; exit 0 \}/);
+});
+
 test("installer prerequisites are queried using the selected platform's shell", async () => {
   const calls = [];
   const run = async (...args) => { calls.push(args); return { stdout: "C:\\Program Files\\nodejs\\npm.cmd\r\n" }; };
@@ -66,6 +87,9 @@ test("PowerShell installer wrappers preserve success and failure without executi
     [{ agent: "claude", command: "Write-Output 'synthetic success'" }, 0],
     [{ agent: "claude", command: "throw 'synthetic failure'" }, 1],
     [{ agent: "codex", command: `& '${node}' -e 'process.exit(23)'` }, 23],
+    // A program's own failure (winget's, an update's) fails the install.
+    [{ agent: "git", command: `& '${node}' -e 'process.exit(5)'` }, 5],
+    [{ agent: "claude", command: `& '${node}' -e 'process.exit(0)'` }, 0],
   ]) {
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", installTerminalCommand(plan, "win32")], { encoding: "utf8", timeout: 60_000, windowsHide: true });
     assert.ifError(result.error);
@@ -244,7 +268,10 @@ test("two phones confirming the same install at once: only one terminal", async 
     const body = await done.json();
     assert.equal(body.lead, undefined); // shell text stays on the Mac
     assert.equal(created.length, 1);
-    assert.match(created[0].command, /^set -o pipefail; export PATH='\/x'/);
+    assert.match(created[0].command, process.platform === "win32"
+      // The program's own exit code (only Claude Code's irm | iex installer says 0).
+      ? /^\$ErrorActionPreference = 'Stop'; try \{ synthetic-installer-never-run; exit \$LASTEXITCODE/
+      : /^set -o pipefail; export PATH='\/x'/);
     // Its terminal still runs: a third confirm waits too; showing the plan doesn't.
     assert.equal((await install({ confirm: true })).status, 409);
     assert.equal((await install({})).status, 200);

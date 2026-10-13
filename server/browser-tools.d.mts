@@ -48,6 +48,7 @@ export type BrowserTool = {
   approvalRequired?: boolean;
 };
 export function browserToolsFor(access?: Partial<BrowserAccess>): BrowserTool[];
+export function compactTools<T extends { name: string; inputSchema: Record<string, unknown> }>(tools: T[]): T[];
 export const SAVED_TOOLS_HINT: string;
 export function savedToolName(item: { id: string; name: string }): string;
 export function deterministicToolName(item: { id: string }): string;

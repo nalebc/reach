@@ -1,6 +1,70 @@
 import Capacitor
 import Foundation
 
+// BEGIN BACKGROUND DOWNLOAD SAFETY
+enum BackgroundDownloadSafety {
+    static func downloadURL(_ address: String) -> URL? {
+        guard let parts = URLComponents(string: address),
+            let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+            let host = parts.host?.lowercased(), !host.isEmpty,
+            parts.user == nil, parts.password == nil, parts.fragment == nil,
+            scheme == "https" || ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host)
+        else { return nil }
+        return parts.url
+    }
+
+    static func fileName(_ name: String) -> String {
+        var safe = ""
+        for scalar in name.unicodeScalars {
+            let part = CharacterSet.controlCharacters.contains(scalar)
+                || "/:\\".unicodeScalars.contains(scalar) ? "_" : String(scalar)
+            if safe.utf8.count + part.utf8.count > 240 { break }
+            safe += part
+        }
+        return safe.isEmpty || safe == "." || safe == ".." ? "download" : safe
+    }
+
+    private static func invalidDestination() -> NSError {
+        NSError(
+            domain: "ReachDownloads", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "The download destination is not safe."])
+    }
+
+    static func store(_ source: URL, id: String, name: String, cache: URL) throws -> URL {
+        // Task descriptions survive app relaunches; validate their ID too.
+        guard cache.isFileURL, let uuid = UUID(uuidString: id), uuid.uuidString == id.uppercased()
+        else { throw invalidDestination() }
+        let files = FileManager.default
+        let root = cache.resolvingSymlinksInPath().appendingPathComponent(
+            "ReachDownloads", isDirectory: true)
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true,
+            root.resolvingSymlinksInPath().standardizedFileURL.path == root.standardizedFileURL.path
+        else { throw invalidDestination() }
+
+        let folder = root.appendingPathComponent(id, isDirectory: true)
+        // Each transfer owns a new directory. Never reuse a symlink or delete a
+        // previous result (including a directory named by a dot component).
+        guard (try? files.attributesOfItem(atPath: folder.path)) == nil
+        else { throw invalidDestination() }
+        try files.createDirectory(at: folder, withIntermediateDirectories: false)
+        let folderValues = try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard folderValues.isDirectory == true, folderValues.isSymbolicLink != true,
+            folder.resolvingSymlinksInPath().standardizedFileURL.path == folder.standardizedFileURL.path
+        else { throw invalidDestination() }
+
+        let target = folder.appendingPathComponent(fileName(name), isDirectory: false)
+        guard target.standardizedFileURL.deletingLastPathComponent().path == folder.standardizedFileURL.path
+        else { throw invalidDestination() }
+        // Foundation refuses an existing destination. No recursive removal or
+        // overwrite is needed because the transfer ID is unique.
+        try files.moveItem(at: source, to: target)
+        return target
+    }
+}
+// END BACKGROUND DOWNLOAD SAFETY
+
 /// Downloads that keep going when Reach is in the background or closed: an iOS
 /// background URLSession runs them. Finished files land in
 /// Caches/ReachDownloads/<id>/ and are offered to save or share. Files that
@@ -79,23 +143,19 @@ final class BackgroundDownloads: NSObject, URLSessionDownloadDelegate {
     ) {
         guard let info = Self.info(of: downloadTask) else { return }
         // An error response (expired access, file gone) also "finishes".
-        if let response = downloadTask.response as? HTTPURLResponse,
-            !(200..<300).contains(response.statusCode)
-        {
+        guard let response = downloadTask.response as? HTTPURLResponse else {
+            plugin?.notifyListeners("failed", data: ["id": info.id, "error": "The download did not return an HTTP response."])
+            return
+        }
+        if !(200..<300).contains(response.statusCode) {
             plugin?.notifyListeners("failed", data: ["id": info.id, "status": response.statusCode])
             return
         }
         do {
-            let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("ReachDownloads", isDirectory: true)
-                .appendingPathComponent(info.id, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let safe = info.name.replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: ":", with: "_")
-            let target = folder.appendingPathComponent(safe.isEmpty ? "download" : safe)
-            try? FileManager.default.removeItem(at: target)
             // iOS deletes `location` when this returns: move it now.
-            try FileManager.default.moveItem(at: location, to: target)
+            let target = try BackgroundDownloadSafety.store(
+                location, id: info.id, name: info.name,
+                cache: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0])
             let file: [String: Any] = ["id": info.id, "name": info.name, "uri": target.absoluteString]
             if let plugin, plugin.hasListeners("done") {
                 plugin.notifyListeners("done", data: file)
@@ -146,8 +206,7 @@ public class BackgroundTransferPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func download(_ call: CAPPluginCall) {
-        guard let address = call.getString("url"), let url = URL(string: address),
-            url.scheme == "https" || url.host == "127.0.0.1" || url.host == "localhost",
+        guard let address = call.getString("url"), let url = BackgroundDownloadSafety.downloadURL(address),
             let name = call.getString("name"), !name.isEmpty
         else { return call.reject("Choose a file to download.") }
         var request = URLRequest(url: url)

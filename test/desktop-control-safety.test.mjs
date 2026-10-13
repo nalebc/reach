@@ -13,7 +13,7 @@ const until = async (check, ms = 3000) => {
 const owner = { id: "owner", kind: "device", name: "Owner", scopes: ["admin", "screen"] };
 const guest = { id: "guest", kind: "guest", name: "Guest", scopes: ["screen", "screen:control"] };
 
-function connect({ client = owner, display = "primary", allowDisplay, slow = {} } = {}) {
+function connect({ client = owner, display = "primary", allowDisplay, slow = {}, platform = "darwin" } = {}) {
   const control = new ScreenControl();
   control.acquire(client, true);
   const sent = [];
@@ -42,6 +42,7 @@ function connect({ client = owner, display = "primary", allowDisplay, slow = {} 
     control,
     scanner: null,
     create: async () => helper,
+    platform,
     ...(allowDisplay && { allowDisplay }),
   });
   const message = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
@@ -122,6 +123,25 @@ test("only the owner reads a concealed clipboard: the helper is told who asks", 
     assert.deepEqual(c.sent.at(-1), { type: "clipboard-read", owner: isOwner });
     c.end();
   }
+});
+
+// Windows can't yet hide password managers from a guest's picture or a
+// concealed copy from their clipboard reads (parity audit #12, #13): a
+// guest's control is refused with the reason, before any helper starts.
+test("on Windows only the owner controls: a guest is refused with the reason; the owner reads the clipboard", async () => {
+  const c = connect({ client: guest, platform: "win32" });
+  await until(() => c.ws.readyState !== 1);
+  assert.equal(c.ws.closedWith, 4001);
+  assert.ok(c.ws.sent.some((m) => /owner can watch or control/.test(m.error || "")), JSON.stringify(c.ws.sent));
+  assert.deepEqual(c.sent, [], "no helper was asked anything");
+  c.end();
+  const mine = connect({ client: owner, platform: "win32" });
+  await until(mine.ready);
+  mine.input({ type: "clipboard-read" });
+  await until(() => mine.ack(1));
+  assert.equal(mine.ack(1).ok, true);
+  assert.deepEqual(mine.sent.at(-1), { type: "clipboard-read", owner: true });
+  mine.end();
 });
 
 test("a hidden app display needs that app shared; losing it mid-control ends control", async () => {

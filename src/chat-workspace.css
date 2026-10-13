@@ -880,6 +880,9 @@ button.chat-new-context:hover,
   -webkit-overflow-scrolling: touch;
 }
 .chat-redesign .as-composer > * { flex-shrink: 0; }
+/* The "/" menu gives way first (it scrolls its own rows), so the box under it
+   stays in sight when the keyboard leaves half a screen. */
+.chat-redesign .as-composer > .sm-menu { flex-shrink: 1; min-height: 88px; }
 
 /* Keep Latest outside the composer scroll clipping. */
 .chat-redesign .as-latest-anchor { position: relative; flex: 0 0 0; height: 0; z-index: 2; }

@@ -5,6 +5,7 @@ import {
   RemoteScreenHub,
   sentKeyframe,
   privateWindows,
+  privateViewRefused,
 } from "../server/remote-screen.mjs";
 import { NativeScreenSource } from "../server/screen-stream.mjs";
 
@@ -185,7 +186,7 @@ test("a guest's picture is its own stream that leaves out private windows; the o
   const owner = socket(),
     guest = socket();
   await hub.add(owner, () => true, { display: "1", format: "h264" });
-  await hub.add(guest, () => true, { display: "1", format: "h264" }, { privateView: true });
+  await hub.add(guest, () => true, { display: "1", format: "h264" }, { privateView: true, platform: "darwin" });
   await until(() => binary(owner).length > 0 && binary(guest).length > 0);
   assert.equal(hub.groups.size, 2);
   assert.deepEqual(prepared, [false, true]);
@@ -202,6 +203,29 @@ test("a guest's picture is its own stream that leaves out private windows; the o
     assert.ok(list.length && list.every((w) => typeof w === "string" && w === w.toLowerCase()));
   assert.ok(rules.ids.includes("com.1password"));
   assert.ok(rules.words.includes("reach"));
+});
+
+test("on Windows a guest's picture is refused with the reason, before anything is captured; the owner's still streams", async () => {
+  const prepared = [];
+  const hub = new RemoteScreenHub({}, async (options, extra) => {
+    prepared.push(extra.privateView);
+    return () => ({ next: async () => video(true), stop() {} });
+  });
+  const owner = socket(),
+    guest = socket();
+  await assert.rejects(
+    hub.add(guest, () => true, { display: "1", format: "h264" }, { privateView: true, platform: "win32" }),
+    (e) => e.status === 403 && /owner can watch/.test(e.message),
+  );
+  assert.equal(hub.viewers.size, 0, "no viewer slot is held");
+  await hub.add(owner, () => true, { display: "1", format: "h264" }, { platform: "win32" });
+  await until(() => binary(owner).length > 0);
+  assert.deepEqual(prepared, [false]);
+  assert.equal(binary(guest).length, 0);
+  assert.equal(privateViewRefused(true, "darwin"), false);
+  assert.equal(privateViewRefused(false, "win32"), false);
+  assert.equal(privateViewRefused(true, "win32"), true);
+  hub.remove(owner);
 });
 
 test(

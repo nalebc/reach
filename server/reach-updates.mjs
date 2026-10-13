@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn as spawnChild } from "node:child_process";
 import { compareVersions, parseVersion } from "./versions.mjs";
+import { boundedResponseText } from "./http-response.mjs";
 
 export const PACKAGE = "@nalebc/reach";
 const CHECK_EVERY_MS = 6 * 3600_000;
@@ -38,7 +39,10 @@ export function reachInstall(root, {
   const version = parseVersion(pkg.version)?.text || null;
   const name = pkg.name === PACKAGE ? PACKAGE : null;
   const manual = `npm install --global ${PACKAGE}@latest`;
-  if (exists(path.join(root, "src", "main.tsx"))) return { source: true, version, name };
+  if (exists(path.join(root, "src", "main.tsx"))) {
+    if (exists(path.join(root, ".git"))) return { source: true, version, name };
+    return { source: false, version, name, reason: "portable", manual: "Download the new portable archive from https://github.com/nalebc/reach/releases and follow docs/RELEASE.md to replace this copy." };
+  }
   if (!name || !version) return { source: false, version, name, reason: "unknown", manual };
   let real;
   try { real = realpath(root); } catch { return { source: false, version, name, reason: "unknown", manual }; }
@@ -50,7 +54,7 @@ export function reachInstall(root, {
   const prefix = parts.slice(0, parts.length - tail.length).join(platform === "win32" ? "\\" : "/") || "/";
   const modules = platform === "win32" ? path.win32.join(prefix, "node_modules") : path.posix.join(prefix, "lib", "node_modules");
   const bin = platform === "win32" ? prefix : path.posix.join(prefix, "bin");
-  if (!writable(modules) || !writable(bin)) return { source: false, version, name, prefix, reason: "permission", manual: `npm install --global --prefix ${quote(prefix, platform)} ${PACKAGE}@latest` };
+  if (!writable(modules) || !writable(bin)) return { source: false, version, name, prefix, reason: "permission", manual: `You don't have permission to update this installation. Fix ownership of the prefix ${quote(prefix, platform)}, then run npm install --global --prefix ${quote(prefix, platform)} ${PACKAGE}@latest; or install into a user-owned prefix and use its reach command.` };
   // npm itself, from the same prefix when it's there (the one that installed
   // Reach, most likely); otherwise any npm: --prefix decides where it goes.
   const ownNpm = platform === "win32" ? path.win32.join(modules, "npm", "bin", "npm-cli.js") : path.posix.join(modules, "npm", "bin", "npm-cli.js");
@@ -91,8 +95,7 @@ export async function latestRelease({ name = PACKAGE, fetch: get = globalThis.fe
     // have (404 for an unscoped one), as for one that isn't public.
     if ([401, 403, 404].includes(res.status)) return { state: "unpublished" };
     if (!res.ok) return { state: "offline" };
-    const text = await res.text();
-    if (text.length > maxBytes) return { state: "offline" };
+    const text = await boundedResponseText(res, maxBytes);
     const latest = parseVersion(JSON.parse(text)?.latest)?.text;
     return latest ? { state: "found", version: latest } : { state: "offline" };
   } catch {

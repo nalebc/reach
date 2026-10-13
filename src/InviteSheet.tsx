@@ -1,34 +1,49 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowUpRight,
   Bot,
-  Plug,
-  Sparkles,
+  Briefcase,
+  Check,
   Copy,
-  Link2,
+  Dices,
+  Eye,
+  Folder,
+  KeyRound,
+  MousePointer2,
+  Pencil,
   Search,
   Share2,
   Clock3,
   Monitor,
-  ShieldCheck,
+  SlidersHorizontal,
+  SquareTerminal,
   UserRound,
-  X,
 } from "lucide-react";
 import { Share as NativeShare } from "@capacitor/share";
 import { isNative } from "./native";
 import { post, request, type Device, type Peer } from "./api";
 import { workspaceCapabilities } from "./capabilities";
 import { guestLinkUrl, parseGuestLink } from "./start-flow";
+import { computerWord } from "./pause";
 import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
-import BrowserInvite, { NO_RUNTIME, toolsCommand } from "./BrowserInvite";
-import { Item, Menu, Row, VIA_WORDS, type Via } from "./invite-menu";
+import BrowserInvite, { NO_RUNTIME, agentInviteMessage, inviteName } from "./BrowserInvite";
+import {
+  Choices,
+  Item,
+  Menu,
+  Places,
+  Row,
+  Section,
+  type Choice,
+} from "./invite-menu";
 import type { EditableAccess } from "./AccessEditor";
 import "./invite-sheet.css";
 
-// People and assistants share a focused composer; the assistant connection
-// method is a secondary choice. Permissions are checked on every request.
+// Inviting a person, or an agent over Command line (BrowserInvite has the
+// other ways an agent connects), as one short form: what they may do as a
+// list with icons, then their name and how long, then one white pill; the
+// link replaces the form. Permissions are checked on every request.
 
 type Role = "watch" | "control" | "files" | "work" | "full" | "custom";
 export type Created = { peer: Peer; clientId: string; invitation: string };
@@ -44,34 +59,34 @@ const ROLES: {
   {
     value: "watch",
     label: "Can watch",
-    description: "See your screen and the apps you open.",
+    description: "See your screen and apps.",
     screen: true,
   },
   {
     value: "control",
     label: "Can control",
-    description: "Use your mouse and keyboard, and watch your apps.",
+    description: "Use your mouse and keyboard.",
     screen: true,
   },
   {
     value: "files",
     label: "Can use files",
-    description: "Open or edit the folders you choose.",
+    description: "Only the folders you pick.",
   },
   {
     value: "work",
     label: "Can work",
-    description: "Folders, a terminal and AI sessions.",
+    description: "Folders, a terminal and AI.",
   },
   {
     value: "full",
     label: "Full access",
-    description: "Everything you can do, except managing access.",
+    description: "Every window, private data and system dialogs. Only invite someone you trust with your computer.",
   },
   {
     value: "custom",
     label: "Custom",
-    description: "Choose exactly what they can use.",
+    description: "Pick exactly what.",
   },
 ];
 const DURATIONS = [
@@ -86,20 +101,34 @@ const AGENT_ROLES: { value: AgentRole; label: string; description: string }[] =
     {
       value: "read",
       label: "Can read",
-      description: "Read the folders you choose.",
+      description: "Only reads the folders.",
     },
     {
       value: "edit",
       label: "Can edit",
-      description: "Read and change files in them.",
+      description: "Reads and changes files.",
     },
     {
       value: "run",
       label: "Can run commands",
       description:
-        "Unrestricted command access. Commands run as you, so they can reach beyond those folders. Use Browser link to give a browser agent a preset instead.",
+        "Commands run as you, so they can reach beyond those folders.",
     },
   ];
+// Their icons in the invitation's lists.
+const ROLE_ICONS: Record<Role, Choice<Role>["icon"]> = {
+  watch: Eye,
+  control: MousePointer2,
+  files: Folder,
+  work: Briefcase,
+  full: KeyRound,
+  custom: SlidersHorizontal,
+};
+const AGENT_ROLE_ICONS: Record<AgentRole, Choice<AgentRole>["icon"]> = {
+  read: Eye,
+  edit: Pencil,
+  run: SquareTerminal,
+};
 const AGENT_DAYS = [
   { days: 1, label: "1 day" },
   { days: 7, label: "1 week" },
@@ -161,7 +190,7 @@ export const LEVEL_BODY: Record<Level, Record<string, unknown>> = {
   open: { folders: "keep", write: false },
   edit: { folders: "keep", write: true },
   work: { folders: "keep", write: true, terminal: true, agents: true },
-  full: { full: true },
+  full: { full: true, fullControlVersion: 1 },
   read: { folders: "keep", write: false },
   run: { folders: "keep", write: true, exec: true },
 };
@@ -171,15 +200,17 @@ export const hasFolders = (g: Guest) =>
     ? (g.policy?.roots?.length || 0) > 0
     : !(g.scopes || []).includes("admin") && (g.guestRoots?.length || 0) > 0;
 const startOf = (peer: Peer) => `https://${new URL(peer.url).hostname}`;
-// What an agent runs, once: Reach for agents from the computer's start page
-// (checked against its SHA-256), then join with its link. A computer that
-// names no runtime gets no command: "" (connections audit, Oct 10).
-export const agentCommand = (start: string, link: string, runtime?: string) => {
-  try {
-    return toolsCommand(start, link, runtime);
-  } catch {
-    return "";
-  }
+// An agent's link, carrying the SHA-256 of the runtime its computer named
+// (r=): the steps at the link check the download against it, and so does
+// join (Oct 12: "a very small prompt with a link"). A computer that names no
+// runtime gets no link: "" (connections audit, Oct 10).
+export const pinnedAgentLink = (link: string, runtime?: string) => {
+  if (!runtime || !/^[0-9a-f]{64}$/.test(runtime)) return "";
+  const url = new URL(link);
+  const params = new URLSearchParams(url.hash.slice(1));
+  params.set("r", runtime);
+  url.hash = params.toString();
+  return url.href;
 };
 export const list = (items: string[]) =>
   items.length <= 1
@@ -258,7 +289,9 @@ export function InviteSheet({
   peer: Peer;
   device: Device;
   peers?: Peer[];
-  initialKind?: "person" | "browser";
+  // An agent's Command line form ("agent") opens directly only where agent
+  // presets aren't offered; elsewhere it's reached from BrowserInvite.
+  initialKind?: "person" | "browser" | "agent";
   // Each link made (or given its key later), for the list of who has access.
   onCreated?: (clientId: string, made: MadeLink) => void;
 }) {
@@ -266,6 +299,8 @@ export function InviteSheet({
   // How an agent connects, kept when it goes to Command line and back.
   const [via, setVia] = useState<"tools" | "page" | "hosted">("tools");
   const [name, setName] = useState("");
+  // An agent's name: a fresh silly one, kept between the ways it connects.
+  const [agentName, setAgentName] = useState(() => inviteName());
   const [role, setRole] = useState<Role>("watch");
   const [agentRole, setAgentRole] = useState<AgentRole>("edit");
   const [agentDays, setAgentDays] = useState(7);
@@ -313,6 +348,8 @@ export function InviteSheet({
     guest: string;
     expiresAt: number;
     summary: string;
+    // What they may do and for how long, in a few words.
+    access: string;
     // An agent's: it must join by then.
     joinBy?: number;
   } | null>(null);
@@ -373,11 +410,10 @@ computers.includes(p.id) && !devices[p.id]
   }, [apps]);
 
   const chosen = peers.filter((p) => computers.includes(p.id));
-  const screenOk =
-    workspaceCapabilities(device).screen ||
-    chosen.some(
-      (p) => devices[p.id] && workspaceCapabilities(devices[p.id]).screen,
-    );
+  // Somewhere they could watch: Windows refuses invited people its screen
+  // for now (server/capabilities.mjs guestScreen).
+  const watchable = (d?: Device | null) => !!d && workspaceCapabilities(d).screen && d.capabilities.guestScreen !== false;
+  const screenOk = watchable(device) || chosen.some((p) => watchable(devices[p.id]));
   const roles = ROLES.filter((r) => screenOk || !r.screen);
   const current = roles.find((r) => r.value === role) || roles[0];
   // What the chosen access grants.
@@ -406,7 +442,7 @@ computers.includes(p.id) && !devices[p.id]
   const canEdit = current.value === "work" || write;
   const body = (p: Peer) =>
     "full" in grant
-      ? { full: true }
+      ? { full: true, fullControlVersion: 1 }
       : {
           roots: [],
           folders: usesFiles
@@ -457,15 +493,16 @@ computers.includes(p.id) && !devices[p.id]
 
   // An agent: one computer, at least one folder.
   const agent = kind === "agent";
+  const agentWho = agentName.trim();
   const agentPeer = chosen[0] || peer;
   const agentFolders = folders[agentPeer.id] || [];
   const agentDuration = AGENT_DAYS.find((d) => d.days === agentDays)!.label;
-  const agentSummary = `${who || "The agent"} can ${
+  const agentSummary = `${agentWho || "The agent"} can ${
     { read: "read", edit: "read and edit", run: "edit and run commands in" }[
       agentRole
     ]
   } ${agentFolders.length ? list(agentFolders.map((f) => f.label)) : "the folders you choose"} on ${agentPeer.name} for ${agentDuration}.`;
-  const agentMissing = !who
+  const agentMissing = !agentWho
     ? "Name the agent."
     : !agentFolders.length
       ? "Choose a folder."
@@ -526,6 +563,7 @@ computers.includes(p.id) && !devices[p.id]
         guest: who,
         expiresAt: Date.now() + minutes * 60000,
         summary,
+        access: `${current.label} · ${duration}`,
       });
       setName("");
       setShare("");
@@ -554,7 +592,7 @@ computers.includes(p.id) && !devices[p.id]
         joinBy: number;
         runtime?: string;
       }>(p, "/api/agents/invitations", {
-        name: who,
+        name: agentWho,
         ttlSeconds: agentDays * 86400,
         folders: agentFolders.map(({ root, path }) => ({ root, path })),
         write: agentRole !== "read",
@@ -593,12 +631,12 @@ computers.includes(p.id) && !devices[p.id]
       }));
       setMade({
         clientId: g.clientId,
-        guest: who,
+        guest: agentWho,
         expiresAt: g.expiresAt,
         joinBy: g.joinBy,
         summary: agentSummary,
+        access: `${AGENT_ROLES.find((r) => r.value === agentRole)!.label} · ${agentDuration}`,
       });
-      setName("");
     } catch (e) {
       if (created) await cancel([created]);
       setError((e as Error).message);
@@ -643,6 +681,118 @@ computers.includes(p.id) && !devices[p.id]
         setNote("Couldn’t open sharing. Copy the link instead.");
     }
   };
+  // A fresh invitation after the last one: back to the form.
+  const another = () => {
+    setMade(null);
+    setNote("");
+    setError("");
+    if (agent) setAgentName((current) => inviteName(Math.random, current));
+  };
+  const at = (value: number) =>
+    new Date(value).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  // Where it runs and what it may do: the agent's form, before Command line's.
+  const toBrowser = (v: "tools" | "page" | "hosted") => {
+    setVia(v);
+    setKind("browser");
+    setError("");
+  };
+  const computerRow = peers.length > 1 && (
+    <Row icon={<Monitor size={19} />} label="Computer">
+      <Menu
+        label={
+          agent
+            ? agentPeer.name
+            : chosen.length
+              ? list(chosen.map((p) => p.name))
+              : "No computer"
+        }
+        className="ivt-role"
+      >
+        {(close) =>
+          peers.map((p) => (
+            <Item
+              key={p.id}
+              on={computers.includes(p.id)}
+              label={p.name}
+              onClick={() => {
+                if (agent) {
+                  setComputers([p.id]);
+                  close();
+                } else
+                  setComputers(
+                    computers.includes(p.id)
+                      ? computers.filter((id) => id !== p.id)
+                      : [...computers, p.id],
+                  );
+              }}
+            />
+          ))
+        }
+      </Menu>
+    </Row>
+  );
+  const folderPicker = (
+    <div className="ivt-panel" aria-label="Folders">
+      {!agent && chosen.length > 1 && (
+        <div className="ivt-segment" role="tablist" aria-label="Computer">
+          {chosen.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="tab"
+              aria-selected={
+                (chosen.find((x) => x.id === browsing) || chosen[0]).id === p.id
+              }
+              onClick={() => setBrowsing(p.id)}
+            >
+              {p.name}
+              {(folders[p.id] || []).length > 0 &&
+                ` · ${(folders[p.id] || []).length}`}
+            </button>
+          ))}
+        </div>
+      )}
+      {(() => {
+        const p = agent
+          ? agentPeer
+          : chosen.find((x) => x.id === browsing) || chosen[0];
+        return (
+          p && (
+            <FolderBrowser
+              key={p.id}
+              peer={p}
+              device={devices[p.id]}
+              picked={folders[p.id] || []}
+              onChange={(next) => setFolders({ ...folders, [p.id]: next })}
+            />
+          )
+        );
+      })()}
+      {!agent && current.value !== "work" && (
+        <Toggle
+          on={write}
+          label="Can edit"
+          detail="Upload and change files"
+          onChange={setWrite}
+        />
+      )}
+    </div>
+  );
+  const setupLink = (
+    <button
+      type="button"
+      className="ivt-primary small"
+      onClick={() => {
+        setSetupOpen(true);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }}
+    >
+      Set up invite links
+    </button>
+  );
   return (
     <div className={`ivt${kind !== "person" ? " ivt-agent" : ""}`}>
       <div className="ivt-composer">
@@ -661,7 +811,7 @@ computers.includes(p.id) && !devices[p.id]
         {keyed === false && noKeys && (kind !== "browser" || setupOpen) && (
           <p className="ivt-quiet ivt-no-keys">{noKeys}</p>
         )}
-        {keyed === false && !noKeys && (kind !== "browser" || setupOpen) && (
+        {keyed === false && !noKeys && ((kind !== "browser" && !made) || setupOpen) && (
           <InviteLinksSetup
             peer={peer}
             policy={policy}
@@ -727,6 +877,8 @@ computers.includes(p.id) && !devices[p.id]
             keyPeer={keyPeer}
             onSetup={() => setSetupOpen(true)}
             initialConnect={via}
+            initialName={agentName}
+            onName={setAgentName}
             onCommandLine={() => {
               setKind("agent");
               setComputers([agentPeer.id]);
@@ -737,280 +889,322 @@ computers.includes(p.id) && !devices[p.id]
                 ...old,
                 [created.clientId]: { link, keyed: true, created: [created] },
               }));
-                    }}
+            }}
           />
         ) : (
           <>
-            {/* The invitation as short lists: who, then one row per choice,
-                each a menu (as ChatGPT's share settings). */}
-            <div className="ivt-rows">
-            <div className="ivt-row ivt-add">
-              {agent ? <Bot size={19} aria-hidden="true" /> : <UserRound size={19} aria-hidden="true" />}
-              <input
-                id="invite-name"
-                className="ivt-name"
-                aria-label="Name"
-                placeholder={agent ? "Name the agent" : "Who are you inviting?"}
-                maxLength={80}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && void (agent ? inviteAgent() : invite())
-                }
-              />
-            </div>
-            </div>
-            <div className="ivt-rows">
-            <div className="ivt-row">
-              <span className="ivt-setting-label">
-                <ShieldCheck size={19} /> Access
-              </span>
+            <div className="inv-form" hidden={!!made}>
               {agent ? (
-                <Menu
-                  label={AGENT_ROLES.find((r) => r.value === agentRole)!.label}
-                  wide
-                  className="ivt-role"
-                >
-                  {(close) =>
-                    AGENT_ROLES.map((r) => (
-                      <Item
-                        key={r.value}
-                        on={r.value === agentRole}
-                        label={r.label}
-                        description={r.description}
-                        onClick={() => {
-                          setAgentRole(r.value);
-                          close();
-                        }}
+                <>
+                  <Places via="cli" onChange={(v) => v !== "cli" && toBrowser(v)} />
+                  <Section title="What can it do?">
+                    <Choices
+                      label="Agent access"
+                      options={AGENT_ROLES.map((r) => ({
+                        ...r,
+                        icon: AGENT_ROLE_ICONS[r.value],
+                      }))}
+                      value={agentRole}
+                      onChange={setAgentRole}
+                    />
+                  </Section>
+                  <Section title="In these folders">
+                    {computerRow && <div className="ivt-rows">{computerRow}</div>}
+                    {folderPicker}
+                  </Section>
+                  <div className="ivt-rows">
+                    <div className="ivt-row ivt-add">
+                      <Bot size={19} aria-hidden="true" />
+                      <input
+                        id="invite-name"
+                        className="ivt-name"
+                        aria-label="Name"
+                        placeholder="Name the agent"
+                        maxLength={80}
+                        value={agentName}
+                        onChange={(e) => setAgentName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && void inviteAgent()}
                       />
-                    ))
-                  }
-                </Menu>
+                      <button
+                        type="button"
+                        className="ag-roll"
+                        aria-label="New name"
+                        onClick={() =>
+                          setAgentName((current) => inviteName(Math.random, current))
+                        }
+                      >
+                        <Dices size={19} />
+                      </button>
+                    </div>
+                    <Row icon={<Clock3 size={19} />} label="Expires">
+                      <Menu label={agentDuration} className="ivt-role">
+                        {(close) =>
+                          AGENT_DAYS.map((d) => (
+                            <Item
+                              key={d.days}
+                              on={d.days === agentDays}
+                              label={d.label}
+                              onClick={() => {
+                                setAgentDays(d.days);
+                                close();
+                              }}
+                            />
+                          ))
+                        }
+                      </Menu>
+                    </Row>
+                  </div>
+                </>
               ) : (
-                <Menu label={current.label} wide className="ivt-role">
-                  {(close) =>
-                    roles.map((r) => (
-                      <Item
-                        key={r.value}
-                        on={r.value === current.value}
-                        label={r.label}
-                        description={r.description}
-                        onClick={() => {
-                          setRole(r.value);
-                          close();
-                        }}
+                <>
+                  <div className="ivt-rows">
+                    <div className="ivt-row ivt-add">
+                      <UserRound size={19} aria-hidden="true" />
+                      <input
+                        id="invite-name"
+                        className="ivt-name"
+                        aria-label="Name"
+                        placeholder="Their name"
+                        maxLength={80}
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && void invite()}
                       />
-                    ))
-                  }
-                </Menu>
-              )}
-            </div>
-              {peers.length > 1 && (
-                <div className="ivt-row">
-                  <span className="ivt-setting-label">
-                    <Monitor size={19} /> Computer
-                  </span>
-                  <Menu
-                    label={
-                      agent
-                        ? agentPeer.name
-                        : chosen.length
-                          ? list(chosen.map((p) => p.name))
-                          : "No computer"
-                    }
-                  >
-                    {(close) =>
-                      peers.map((p) => (
-                        <Item
-                          key={p.id}
-                          on={computers.includes(p.id)}
-                          label={p.name}
-                          onClick={() => {
-                            if (agent) {
-                              setComputers([p.id]);
-                              close();
-                            } else
-                              setComputers(
-                                computers.includes(p.id)
-                                  ? computers.filter((id) => id !== p.id)
-                                  : [...computers, p.id],
-                              );
-                          }}
+                    </div>
+                    {computerRow}
+                  </div>
+                  <Section title="What can they do?">
+                    <Choices
+                      label="Access"
+                      options={roles.map((r) => ({
+                        ...r,
+                        icon: ROLE_ICONS[r.value],
+                      }))}
+                      value={current.value}
+                      onChange={setRole}
+                    />
+                    {current.value === "custom" && (
+                      <div className="ivt-panel" aria-label="Custom access">
+                        {screenOk && (
+                          <>
+                            <Toggle
+                              on={screen !== "off"}
+                              label="Screen"
+                              detail="See what’s on your screen"
+                              onChange={(on) => setScreen(on ? "view" : "off")}
+                            />
+                            {screen !== "off" && (
+                              <Toggle
+                                on={screen === "control"}
+                                label="Control the screen"
+                                detail="Use your mouse and keyboard. You can take it back any time."
+                                onChange={(on) => setScreen(on ? "control" : "view")}
+                              />
+                            )}
+                            <Toggle
+                              on={apps !== "off"}
+                              label="Apps"
+                              detail="Watch the apps you open on your phone"
+                              onChange={(on) => setApps(on ? "all" : "off")}
+                            />
+                            {apps !== "off" && (
+                              <div
+                                className="ivt-segment"
+                                role="radiogroup"
+                                aria-label="Which apps"
+                              >
+                                {(["all", "pick"] as const).map((v) => (
+                                  <button
+                                    key={v}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={apps === v}
+                                    onClick={() => setApps(v)}
+                                  >
+                                    {v === "all" ? "Any app" : "Only some"}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {apps === "pick" && (
+                              <div className="ivt-picks">
+                                <label className="ivt-search">
+                                  <Search size={15} />
+                                  <input
+                                    placeholder="Search apps"
+                                    value={appQuery}
+                                    onChange={(e) => setAppQuery(e.target.value)}
+                                  />
+                                </label>
+                                {appList
+                                  .filter((a) =>
+                                    a.name
+                                      .toLowerCase()
+                                      .includes(appQuery.trim().toLowerCase()),
+                                  )
+                                  .slice(0, 40)
+                                  .map((a) => (
+                                    <Item
+                                      key={a.id}
+                                      on={appIds.includes(a.id)}
+                                      label={a.name}
+                                      onClick={() =>
+                                        setAppIds(
+                                          appIds.includes(a.id)
+                                            ? appIds.filter((id) => id !== a.id)
+                                            : [...appIds, a.id],
+                                        )
+                                      }
+                                    />
+                                  ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                        <Toggle
+                          on={files}
+                          label="Folders"
+                          detail="Open the folders you choose"
+                          onChange={setFiles}
                         />
-                      ))
-                    }
-                  </Menu>
-                </div>
+                        <Toggle
+                          on={terminal}
+                          label="Terminal"
+                          detail="Their own terminals, not yours"
+                          onChange={setTerminal}
+                        />
+                        <Toggle
+                          on={agents}
+                          label="AI sessions"
+                          detail="Start Codex sessions on your computer"
+                          onChange={setAgents}
+                        />
+                      </div>
+                    )}
+                    {usesFiles && folderPicker}
+                  </Section>
+                  <div className="ivt-rows">
+                    <Row icon={<Clock3 size={19} />} label="Expires">
+                      <Menu label={duration} className="ivt-role">
+                        {(close) =>
+                          DURATIONS.map((d) => (
+                            <Item
+                              key={d.minutes}
+                              on={d.minutes === minutes}
+                              label={d.label}
+                              onClick={() => {
+                                setMinutes(d.minutes);
+                                close();
+                              }}
+                            />
+                          ))
+                        }
+                      </Menu>
+                    </Row>
+                  </div>
+                </>
               )}
-            <div className="ivt-row">
-              <span className="ivt-setting-label">
-                <Clock3 size={19} /> Expires
-              </span>
-              {agent ? (
-                <Menu label={agentDuration}>
-                  {(close) =>
-                    AGENT_DAYS.map((d) => (
-                      <Item
-                        key={d.days}
-                        on={d.days === agentDays}
-                        label={d.label}
-                        onClick={() => {
-                          setAgentDays(d.days);
-                          close();
-                        }}
-                      />
-                    ))
-                  }
-                </Menu>
-              ) : (
-                <Menu label={duration}>
-                  {(close) =>
-                    DURATIONS.map((d) => (
-                      <Item
-                        key={d.minutes}
-                        on={d.minutes === minutes}
-                        label={d.label}
-                        onClick={() => {
-                          setMinutes(d.minutes);
-                          close();
-                        }}
-                      />
-                    ))
-                  }
-                </Menu>
+              <div className="ivt-send">
+                <p
+                  className={`ivt-summary ${(agent ? agentMissing : missing) ? "muted" : ""}`}
+                  aria-live="polite"
+                >
+                  {agent ? agentSummary : summary}
+                </p>
+                <button
+                  className="ivt-primary ivt-submit"
+                  disabled={!!(agent ? agentMissing : missing) || busy}
+                  onClick={() => void (agent ? inviteAgent() : invite())}
+                >
+                  {busy ? "Creating…" : agent ? "Create invite" : "Create invite link"}
+                </button>
+              </div>
+              {error && (
+                <p className="ivt-error" role="alert">
+                  {error}
+                </p>
               )}
-            </div>
-            {agent && (
-              <Row icon={<Plug size={19} />} label="Connects">
-                <Menu label={VIA_WORDS.cli.label} wide className="ivt-role">
-                  {(close) =>
-                    (["tools", "page", "hosted", "cli"] as Via[]).map((v) => (
-                      <Item
-                        key={v}
-                        on={v === "cli"}
-                        label={VIA_WORDS[v].label}
-                        description={VIA_WORDS[v].description}
-                        onClick={() => {
-                          close();
-                          if (v === "cli") return;
-                          setVia(v);
-                          setKind("browser");
-                          setError("");
-                        }}
-                      />
-                    ))
-                  }
-                </Menu>
-              </Row>
-            )}
             </div>
 
+            {/* Made: the link (or the agent's command) in place of the form,
+                as the agent invitation's "ready" screen. */}
             {made && madeLink && made.joinBy && (
               <section
-                className="ivt-link"
+                className="ivt-link inv-done"
                 aria-live="polite"
                 ref={linkCard}
                 aria-label="Agent invitation"
               >
-                <div className="ivt-link-head">
-                  <Sparkles size={16} />
-                  <strong>{made.guest} is invited</strong>
-                  <button
-                    className="ivt-icon"
-                    aria-label="Close"
-                    onClick={() => setMade(null)}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <small className="ivt-quiet">
-                  Give this to your agent. It joins once, within 15 minutes.
-                </small>
+                <span className="inv-done-icon" aria-hidden="true">
+                  <Check size={26} strokeWidth={1.8} />
+                </span>
+                <h3>{made.guest} is invited</h3>
+                <p className="inv-done-for">{made.access}</p>
                 {(() => {
-                  const command = agentCommand(
-                    new URL(madeLink.link).origin,
-                    madeLink.link,
-                    madeLink.runtime,
-                  );
-                  const text = `Join my computer with Reach, then add the MCP server it prints:\n${command}`;
-                  if (!command) return <small className="ivt-quiet">{NO_RUNTIME}</small>;
+                  const link = pinnedAgentLink(madeLink.link, madeLink.runtime);
+                  // The same line and link as an invite from Agents (BrowserInvite).
+                  const text = agentInviteMessage("tools", link, computerWord(peer.platform));
+                  if (!link) return <p className="ivt-quiet">{NO_RUNTIME}</p>;
                   return (
-                    <div className="ivt-link-row">
+                    <>
                       <input
                         className="ivt-link-field"
-                        aria-label="Command for the agent"
+                        aria-label="Link for the agent"
                         readOnly
-                        value={command}
+                        value={link}
                         onFocus={(e) => e.target.select()}
                       />
-                      <button
-                        className="ivt-primary small"
-                        onClick={() => void copy(text, "Copied")}
-                      >
-                        <Copy size={15} /> Copy
-                      </button>
-                      <button
-                        className="ivt-icon"
-                        aria-label="Share"
-                        onClick={() => void send(text)}
-                      >
-                        <Share2 size={16} />
-                      </button>
-                    </div>
+                      <div className="inv-done-actions">
+                        <button
+                          className="ivt-primary"
+                          onClick={() => void copy(text, "Copied")}
+                        >
+                          <Copy size={16} /> Copy
+                        </button>
+                        <button
+                          className="ivt-secondary"
+                          onClick={() => void send(text)}
+                        >
+                          <Share2 size={16} /> Share…
+                        </button>
+                      </div>
+                    </>
                   );
                 })()}
-                <small className="ivt-quiet">
+                <p className="ivt-quiet">
                   {note ||
-                    `Needs Node 18 or later${madeLink.keyed ? ", nothing else" : ""}. After it opens the link, compare its connection code in Home → Needs you and approve. ${made.summary}`}
-                </small>
+                    `It opens the link and follows its steps within 15 minutes. Needs Node.js 22 or later${madeLink.keyed ? ", nothing else" : ""}. Then approve its code in Home → Needs you.`}
+                </p>
                 {!madeLink.keyed && (
                   <div className="ivt-tailscale">
                     <p>
                       Without invite links, its machine needs Tailscale on your
                       tailnet.
                     </p>
-                    <button
-                      type="button"
-                      className="ivt-primary small"
-                      onClick={() => {
-                        setSetupOpen(true);
-                        window.scrollTo({ top: 0, behavior: "smooth" });
-                      }}
-                    >
-                      Set up invite links
-                    </button>
+                    {setupLink}
                   </div>
                 )}
+                <button type="button" className="inv-again" onClick={another}>
+                  Invite another agent
+                </button>
               </section>
             )}
             {made && madeLink && !made.joinBy && (
-              <section className="ivt-link" aria-live="polite" ref={linkCard}>
-                <div className="ivt-link-head">
-                  <Link2 size={16} />
-                  <strong>{made.guest}’s invite link</strong>
-                  <button
-                    className="ivt-icon"
-                    aria-label="Close"
-                    onClick={() => setMade(null)}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
+              <section
+                className="ivt-link inv-done"
+                aria-live="polite"
+                ref={linkCard}
+                aria-label="Invite link"
+              >
+                <span className="inv-done-icon" aria-hidden="true">
+                  <Check size={26} strokeWidth={1.8} />
+                </span>
+                <h3>{made.guest} is invited</h3>
+                <p className="inv-done-for">{made.access}</p>
                 {!madeLink.keyed && !onTailnet && (
                   <div className="ivt-tailscale">
                     <p>{made.guest} would need Tailscale for this link.</p>
-                    {!noKeys && (
-                      <button
-                        type="button"
-                        className="ivt-primary small"
-                        onClick={() => {
-                          setSetupOpen(true);
-                          window.scrollTo({ top: 0, behavior: "smooth" });
-                        }}
-                      >
-                        Set up invite links
-                      </button>
-                    )}
+                    {!noKeys && setupLink}
                     {/* No invite keys here: Tailscale sharing is the way. */}
                     <details className="ivt-fallback" open={!!noKeys || undefined}>
                       <summary>They already use Tailscale</summary>
@@ -1046,210 +1240,37 @@ computers.includes(p.id) && !devices[p.id]
                 )}
                 {ready && (
                   <>
-                    <div className="ivt-link-row">
-                      <input
-                        className="ivt-link-field"
-                        aria-label="Invitation link"
-                        readOnly
-                        value={madeLink.link}
-                        onFocus={(e) => e.target.select()}
-                      />
+                    <input
+                      className="ivt-link-field"
+                      aria-label="Invitation link"
+                      readOnly
+                      value={madeLink.link}
+                      onFocus={(e) => e.target.select()}
+                    />
+                    <div className="inv-done-actions">
                       <button
-                        className="ivt-primary small"
+                        className="ivt-primary"
                         onClick={() => void copy(message(made, madeLink))}
                       >
-                        <Copy size={15} /> Copy
+                        <Copy size={16} /> Copy link
                       </button>
                       <button
-                        className="ivt-icon"
-                        aria-label="Share"
+                        className="ivt-secondary"
                         onClick={() => void send(message(made, madeLink))}
                       >
-                        <Share2 size={16} />
+                        <Share2 size={16} /> Share…
                       </button>
                     </div>
-                    <small className="ivt-quiet">
+                    <p className="ivt-quiet">
                       {note ||
-                        `Anyone with this link joins as ${made.guest} until ${new Date(made.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.${madeLink.keyed ? " Nothing to install." : ""}`}
-                    </small>
+                        `Anyone with this link joins as ${made.guest} until ${at(made.expiresAt)}.${madeLink.keyed ? " Nothing to install." : ""}`}
+                    </p>
                   </>
                 )}
+                <button type="button" className="inv-again" onClick={another}>
+                  Invite someone else
+                </button>
               </section>
-            )}
-
-            {!agent && current.value === "custom" && (
-              <div className="ivt-panel" aria-label="Custom access">
-                {screenOk && (
-                  <>
-                    <Toggle
-                      on={screen !== "off"}
-                      label="Screen"
-                      detail="See what’s on your screen"
-                      onChange={(on) => setScreen(on ? "view" : "off")}
-                    />
-                    {screen !== "off" && (
-                      <Toggle
-                        on={screen === "control"}
-                        label="Control the screen"
-                        detail="Use your mouse and keyboard. You can take it back any time."
-                        onChange={(on) => setScreen(on ? "control" : "view")}
-                      />
-                    )}
-                    <Toggle
-                      on={apps !== "off"}
-                      label="Apps"
-                      detail="Watch the apps you open on your phone"
-                      onChange={(on) => setApps(on ? "all" : "off")}
-                    />
-                    {apps !== "off" && (
-                      <div
-                        className="ivt-segment"
-                        role="radiogroup"
-                        aria-label="Which apps"
-                      >
-                        {(["all", "pick"] as const).map((v) => (
-                          <button
-                            key={v}
-                            type="button"
-                            role="radio"
-                            aria-checked={apps === v}
-                            onClick={() => setApps(v)}
-                          >
-                            {v === "all" ? "Any app" : "Only some"}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {apps === "pick" && (
-                      <div className="ivt-picks">
-                        <label className="ivt-search">
-                          <Search size={15} />
-                          <input
-                            placeholder="Search apps"
-                            value={appQuery}
-                            onChange={(e) => setAppQuery(e.target.value)}
-                          />
-                        </label>
-                        {appList
-                          .filter((a) =>
-                            a.name
-                              .toLowerCase()
-                              .includes(appQuery.trim().toLowerCase()),
-                          )
-                          .slice(0, 40)
-                          .map((a) => (
-                            <Item
-                              key={a.id}
-                              on={appIds.includes(a.id)}
-                              label={a.name}
-                              onClick={() =>
-                                setAppIds(
-                                  appIds.includes(a.id)
-                                    ? appIds.filter((id) => id !== a.id)
-                                    : [...appIds, a.id],
-                                )
-                              }
-                            />
-                          ))}
-                      </div>
-                    )}
-                  </>
-                )}
-                <Toggle
-                  on={files}
-                  label="Folders"
-                  detail="Open the folders you choose"
-                  onChange={setFiles}
-                />
-                <Toggle
-                  on={terminal}
-                  label="Terminal"
-                  detail="Their own terminals, not yours"
-                  onChange={setTerminal}
-                />
-                <Toggle
-                  on={agents}
-                  label="AI sessions"
-                  detail="Start Codex sessions on your computer"
-                  onChange={setAgents}
-                />
-              </div>
-            )}
-
-            {(agent || usesFiles) && (
-              <div className="ivt-panel" aria-label="Folders">
-                {!agent && chosen.length > 1 && (
-                  <div
-                    className="ivt-segment"
-                    role="tablist"
-                    aria-label="Computer"
-                  >
-                    {chosen.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={
-                          (chosen.find((x) => x.id === browsing) || chosen[0])
-                            .id === p.id
-                        }
-                        onClick={() => setBrowsing(p.id)}
-                      >
-                        {p.name}
-                        {(folders[p.id] || []).length > 0 &&
-                          ` · ${(folders[p.id] || []).length}`}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {(() => {
-                  const p = agent
-                    ? agentPeer
-                    : chosen.find((x) => x.id === browsing) || chosen[0];
-                  return (
-                    p && (
-                      <FolderBrowser
-                        key={p.id}
-                        peer={p}
-                        device={devices[p.id]}
-                        picked={folders[p.id] || []}
-                        onChange={(next) =>
-                          setFolders({ ...folders, [p.id]: next })
-                        }
-                      />
-                    )
-                  );
-                })()}
-                {!agent && current.value !== "work" && (
-                  <Toggle
-                    on={write}
-                    label="Can edit"
-                    detail="Upload and change files"
-                    onChange={setWrite}
-                  />
-                )}
-              </div>
-            )}
-
-            <div className="ivt-send">
-              <p
-                className={`ivt-summary ${(agent ? agentMissing : missing) ? "muted" : ""}`}
-              >
-                {agent ? agentSummary : summary}
-              </p>
-              <button
-                className="ivt-primary ivt-submit"
-                disabled={!!(agent ? agentMissing : missing) || busy}
-                onClick={() => void (agent ? inviteAgent() : invite())}
-              >
-                {busy ? "Creating link…" : "Create invite link"}
-                <ArrowUpRight size={17} />
-              </button>
-            </div>
-            {error && (
-              <p className="ivt-error" role="alert">
-                {error}
-              </p>
             )}
           </>
         )}

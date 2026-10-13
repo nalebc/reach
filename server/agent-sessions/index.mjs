@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { agentCommand } from "../app-shortcuts.mjs";
 import { createCodexDaemon } from "./codex-daemon.mjs";
-import { createCodexSessions } from "./codex.mjs";
+import { createCodexSessions, codexStartMode } from "./codex.mjs";
 import { createCodexLive } from "./codex-live.mjs";
 import { createCodexDesktop } from "./codex-desktop.mjs";
 import { createClaudeSessions } from "./claude.mjs";
@@ -15,6 +15,7 @@ import { liveClaudeSessions, readSessionRegistry } from "./processes.mjs";
 import { createSignIn } from "./sign-in.mjs";
 import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
+import { findWindowsCli } from "../agent-cli.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
@@ -29,6 +30,7 @@ import { createMacPrompts } from "../mac-prompts.mjs";
 import { apps as platformApps } from "../platform.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
+import { prepareOwners, useOwnersFolder } from "../windows-owners.mjs";
 import { agentName, createMoves, handoff, moveTurns, openClawNotes, resumeText } from "./move.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
 import { createAgentWatch } from "./agent-watch.mjs";
@@ -105,15 +107,58 @@ let claudeFound = null;
 // once when the phone checks again (forgetClaudeMiss).
 let claudeMissedAt = 0;
 const claudeMissMs = 30000;
-export function locateClaude(run = exec, { now = Date.now } = {}) {
+// Where Claude Code lands without being on PATH: its installer's folder
+// (~/.local/bin, which a fresh install often hasn't added to the shell yet),
+// its older local install, and the copy the Claude desktop app keeps for
+// itself (verified, newest version first). Oct 12: someone with only the
+// Claude app, or a fresh install, was told Claude Code isn't installed, and
+// installing from the phone looked like nothing happened.
+export function claudeInstallLocations({ platform = process.platform, env = process.env, home = os.homedir(), readdir = (dir) => fs.readdirSync(dir), exists = fs.existsSync } = {}) {
+  const win = platform === "win32";
+  const paths = win ? path.win32 : path.posix;
+  const at = (name) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
+  const appData = win ? at("APPDATA") || paths.join(home, "AppData", "Roaming") : paths.join(home, "Library", "Application Support");
+  const own = win ? [] : [paths.join(home, ".local", "bin", "claude"), paths.join(home, ".claude", "local", "claude")];
+  const bundled = [];
+  const root = paths.join(appData, "Claude", "claude-code");
+  const version = (name) => name.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const newer = (a, b) => { const x = version(a), y = version(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+  let versions = [];
+  try { versions = readdir(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(newer); } catch {}
+  for (const v of versions) {
+    let builds = [];
+    try { builds = readdir(paths.join(root, v)); } catch {}
+    for (const build of builds) {
+      // Only a copy the app finished checking (it writes .verified last).
+      if (!exists(paths.join(root, v, build, ".verified"))) continue;
+      bundled.push(win ? paths.join(root, v, build, "claude.exe") : paths.join(root, v, build, "claude.app", "Contents", "MacOS", "claude"));
+    }
+  }
+  return [...own, ...bundled];
+}
+const runnable = (file, platform) => {
+  try {
+    fs.accessSync(file, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+export function locateClaude(run = exec, { now = Date.now, platform = process.platform, env = process.env, home = os.homedir(), locations = claudeInstallLocations, isRunnable = runnable } = {}) {
   // Gone from where it was (reinstalled elsewhere, an update that moved
   // it): looked for again rather than sent to a missing file.
   if (claudeFound && !fs.existsSync(claudeFound)) claudeAt = claudeFound = null;
   if (!claudeAt && now() - claudeMissedAt < claudeMissMs) return Promise.resolve(null);
-  claudeAt ??= run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
-    .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
-    .then((found) => (found?.startsWith("/") ? found : null))
+  claudeAt ??= (platform === "win32"
+    // No login shell to ask on Windows: PATH and the installers' folders,
+    // as Node can start it, never npm's sh shim (agent-cli.mjs).
+    ? findWindowsCli("claude", { env, home })
+    : run(process.env.SHELL || "/bin/zsh", ["-lc", "command -v claude"], { timeout: 8000 })
+        .then(({ stdout }) => stdout.trim().split("\n").pop() || null)
+        .then((found) => (found?.startsWith("/") ? found : null)))
     .catch(() => null)
+    // Not on PATH: where installers and the Claude app put it.
+    .then((found) => found || locations({ platform, env, home }).find((file) => isRunnable(file, platform)) || null)
     .then((found) => {
       if (!found) claudeAt = null; // look again later
       claudeMissedAt = found ? 0 : now();
@@ -245,9 +290,14 @@ export function createAgentSessions({
   outbox = createOutbox({ file: process.env.NODE_TEST_CONTEXT ? null : path.join(dataDir, "agent-outbox.json") }),
   // Apps installed here, to show a consent card's apps with their icons.
   installedApps = platformApps,
-  // Messages to chats the Claude app lists go into the app itself
-  // (claude-compose.mjs); off in tests unless given.
+  // Drafts, Stop and settings for chats the Claude app lists, through the
+  // app itself (claude-compose.mjs); off in tests unless given.
   claudeCompose: givenCompose = null,
+  // Messages to those chats go through Claude Code (claudeHost), pictures
+  // and words in one turn; the app's window reloads them (claudeRefresh).
+  // Typing them into the app's box (the old way) dropped pictures without a
+  // word (Oct 11): only when asked for.
+  typeIntoApp = false,
   claudeOpen = claudeAppRunning,
   listenForAsks = !process.env.NODE_TEST_CONTEXT,
   // Claude Code's permissions and questions held for the phone by its own
@@ -291,6 +341,10 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? { codexMethods: async () => new Set() } : { codexMethods: createCodexMethods() }),
   }),
 } = {}) {
+  // Windows' owner checks (Codex's pipes, the files it holds) build their
+  // helper in this data folder (windows-owners.mjs).
+  useOwnersFolder(dataDir);
+  if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT) void prepareOwners(dataDir).catch(() => {});
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
   // never this Mac's app in tests.
@@ -320,9 +374,9 @@ export function createAgentSessions({
   const adapters = { codex, claude, gemini };
   const fileSearch = createFileSearch();
   const adapter = (agent) => {
-    const a = adapters[agent];
-    if (!a) throw Object.assign(new Error("Unknown agent."), { status: 404 });
-    return a;
+    if (!Object.hasOwn(adapters, agent))
+      throw Object.assign(new Error("Unknown agent."), { status: 404 });
+    return adapters[agent];
   };
   const blocked = (message) => Object.assign(new Error(message), { status: 409 });
   // A model or effort pick the Mac couldn't take now: nothing retries it, so
@@ -338,7 +392,7 @@ export function createAgentSessions({
   let liveCache = null;
   const liveNow = async () => {
     if (!liveCache || Date.now() - liveCache.at > liveMs)
-      liveCache = { at: Date.now(), value: claude.starts().then(live) };
+      liveCache = { at: Date.now(), value: claude.starts().then((starts) => live(starts, { platform, ours: (pid) => !!claudeHost.ownsProcess?.(pid) })) };
     try {
       return await liveCache.value;
     } catch (e) {
@@ -630,7 +684,8 @@ export function createAgentSessions({
             try {
               fs.appendFileSync(path.join(dataDir, "claude-box-kept.jsonl"), `${JSON.stringify({ id, text, at: Date.now() })}\n`, { mode: 0o600 });
             } catch {
-              console.warn(text);
+              // Quoted: kept whole, and its lines can't pass for Reach's own.
+              console.warn(JSON.stringify(String(text)));
             }
           },
         }));
@@ -698,7 +753,7 @@ export function createAgentSessions({
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
-          if (next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
+          if (typeIntoApp && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
             // Marked on its way only once the app is about to be typed into:
             // marked while it still queued behind other Claude app work, a
             // Reach restart paused it as maybe sent when it never was.
@@ -1341,7 +1396,7 @@ export function createAgentSessions({
       // at the level it was started with, and nothing outside it changes
       // that but a click in its menu (never, Oct 10). Claude Code continues
       // it at that level instead, as for a locked Mac.
-      if (claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+      if (typeIntoApp && claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
@@ -1369,6 +1424,14 @@ export function createAgentSessions({
     },
     async start(agent, body) {
       if (host(agent) === codexLive) {
+        // Apply the same default for every caller, including API and team starts.
+        // Explicit modes and custom permission settings remain authoritative.
+        if (!body.modeName && !body.approvalPolicy && !body.sandbox && !body.approvalsReviewer && !body.config) {
+          const catalog = await codex.models?.();
+          const modeName = !catalog?.modes?.length || catalog.modes.some((m) => m.id === "guardian-approvals")
+            ? "guardian-approvals" : "auto";
+          body = { ...body, ...codexStartMode(modeName), modeName };
+        }
         const started = await codexLive.start(body);
         // Its next messages keep the mode it started in.
         if (body.modeName) chatModes.set(started.threadId, body.modeName);
@@ -1655,6 +1718,8 @@ export function createAgentSessions({
     // The Mac's own dialogs on screen now (screen control holds others'
     // pointers and keys while one is up).
     macDialogs: () => macPrompts.current?.().prompts || [],
+    // Reach paused or resumed (server/index.mjs setPaused).
+    pauseMacPrompts: (value) => macPrompts.pause?.(value),
     // The System Settings page a Mac prompt belongs to, opened on the Mac.
     openMacSetting: async (id) => {
       if (!macPrompts.openSetting) throw Object.assign(new Error("That Mac prompt was already answered."), { status: 404 });

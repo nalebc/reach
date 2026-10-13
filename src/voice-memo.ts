@@ -140,7 +140,7 @@ export function useVoiceMemo(onMemo: (memo: Blob) => Promise<void>, onProblem: (
         const memo = await toWav(new Blob(chunks, { type: rec.mimeType || chunks[0].type }));
         if (current() && keep.current) await onMemo(memo);
       } catch (e) {
-        if (current()) onProblem((e as Error).message || "The memo couldn't be sent to the Mac.");
+        if (current()) onProblem((e as Error).message || "The memo couldn't be sent.");
       } finally {
         if (current()) {
           pending.current = false;

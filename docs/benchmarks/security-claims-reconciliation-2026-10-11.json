@@ -1,0 +1,554 @@
+{
+  "date": "2026-10-11",
+  "scope": "Security/access reconciliation against shared main working tree; root records final source/commit identity.",
+  "baseHead": "b08734c06b5426e4d8acb69a53463c48869fb268",
+  "certification": false,
+  "claims": [
+    {
+      "id": "SC01",
+      "section": "Current release model / private ingress",
+      "status": "source_reviewed",
+      "conclusion": "Unix-socket request classification is per request; public traffic never enters owner API/WebSocket handlers. Socket owner and root are trusted, not isolated adversaries.",
+      "sources": [
+        "server/index.mjs",
+        "server/tailscale-auth.mjs"
+      ],
+      "regressionFiles": [
+        "test/tailscale-auth.test.mjs",
+        "test/funnel-agent-integration.test.mjs"
+      ]
+    },
+    {
+      "id": "SC02",
+      "section": "Public access / one address",
+      "status": "documentation_corrected",
+      "conclusion": "Funnel port 443 remains configured while Reach runs. Unknown HTTP requests are gated; closed invitation window does not imply a closed TCP port. Known agent keys, connector addresses and expiring person door keys have separate bounded admission.",
+      "sources": [
+        "server/index.mjs",
+        "server/core.mjs"
+      ],
+      "regressionFiles": [
+        "test/auth-cache.test.mjs",
+        "test/pairing-window.test.mjs",
+        "test/hosted-mcp.test.mjs"
+      ]
+    },
+    {
+      "id": "SC03",
+      "section": "Funnel cleanup",
+      "status": "source_reviewed_with_limit",
+      "conclusion": "Reach removes only its recorded route and a lease janitor attempts cleanup. A five-second lease is not a guarantee of instant cleanup during daemon/network failure.",
+      "sources": [
+        "scripts/ephemeral-funnel.mjs",
+        "scripts/funnel-lease-worker.mjs",
+        "scripts/persistent-serve.mjs"
+      ],
+      "regressionFiles": [
+        "test/ephemeral-funnel.test.mjs",
+        "test/service.test.mjs"
+      ],
+      "limits": "Live authenticated tailnet/Funnel cleanup still needs acceptance."
+    },
+    {
+      "id": "SC04",
+      "section": "Public gateway signatures",
+      "status": "focused_regression_passed",
+      "conclusion": "P-256 signature, audience, key binding, nonce replay, expiry and fixed route allowlists precede scoped dispatch.",
+      "sources": [
+        "server/funnel-agent.mjs"
+      ],
+      "regressionFiles": [
+        "test/funnel-agent-gateway.test.mjs",
+        "test/agent-funnel-tools.test.mjs"
+      ]
+    },
+    {
+      "id": "SC05",
+      "section": "Full control",
+      "status": "explicit_trust_boundary",
+      "conclusion": "Full control intentionally has OS-account authority, including filesystem root, private data, Reach and security UI; no command deny list or shell sandbox. It cannot be promised harmless.",
+      "sources": [
+        "server/agent-presets.mjs",
+        "server/agent-policy.mjs",
+        "server/agent-shell.mjs",
+        "server/browser-private-paths.mjs",
+        "server/browser-tools.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-preset-desktop-routes.test.mjs",
+        "test/agent-shell-sandbox.test.mjs",
+        "test/mcp-preset-tools.test.mjs"
+      ]
+    },
+    {
+      "id": "SC06",
+      "section": "Full control consent migration",
+      "status": "fixed_and_regression_tested",
+      "conclusion": "Current owner forms explicitly request fullControlVersion 1. Missing/old/future/wrong-type requests fail with reload guidance. Unversioned stored grants fail before filesystem expansion, expire in owner lists, cannot edit/reopen/renew and cannot open a public invitation window. New invitation and connection approval are required.",
+      "sources": [
+        "server/agent-presets.mjs",
+        "server/core.mjs",
+        "src/BrowserInvite.tsx",
+        "src/BrowserAgents.tsx"
+      ],
+      "regressionFiles": [
+        "test/full-control-migration.test.mjs",
+        "test/agent-preset-invitations.test.mjs",
+        "test/agent-preset-invite-ui.test.mjs",
+        "test/agent-preset-agents-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "SC07",
+      "section": "Preset elevation / D3",
+      "status": "fixed_and_regression_tested",
+      "conclusion": "Apps-to-Full now requires a new invitation, matching the documented step-up requirement. Existing narrower-to-Apps/Full checks remain.",
+      "sources": [
+        "server/core.mjs",
+        "src/AccessEditor.tsx"
+      ],
+      "regressionFiles": [
+        "test/agent-preset-invitations.test.mjs",
+        "test/agent-preset-agents-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "SC08",
+      "section": "Full hidden-app claims",
+      "status": "fixed_and_regression_tested",
+      "conclusion": "Owner UI no longer claims legacy hidden-app selections constrain unrestricted Full control; Read only still reports its exclusions.",
+      "sources": [
+        "src/BrowserAgents.tsx",
+        "src/AccessEditor.tsx"
+      ],
+      "regressionFiles": [
+        "test/agent-preset-agents-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "SC09",
+      "section": "Apps / Files / Read only boundaries",
+      "status": "source_and_focused_regressions",
+      "conclusion": "Preset scopes and route allowlists are derived on each authorized request. Narrow presets retain file exclusions, native protected-window checks and no-link/sandbox helper. Selecting a terminal/IDE under Apps still gives OS-user command capability.",
+      "sources": [
+        "server/agent-policy.mjs",
+        "server/agent-presets.mjs",
+        "server/browser-file-boundary.mjs",
+        "scripts/native/browser-files.swift"
+      ],
+      "regressionFiles": [
+        "test/agent-presets.test.mjs",
+        "test/agent-preset-invitations.test.mjs",
+        "test/security-resilience.test.mjs"
+      ],
+      "limits": "Native window/input checks are not transactional; hostile local OS-user processes are outside isolation."
+    },
+    {
+      "id": "SC10",
+      "section": "Rotated public credential grace",
+      "status": "fixed_and_regression_tested",
+      "conclusion": "Only the current credential may exchange. Retired credential plus signing key cannot displace a legitimate pending successor. Ordinary in-flight requests retain two-minute overlap; a lost exchange response can retry until the successor is first used.",
+      "sources": [
+        "server/core.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-funnel-tools.test.mjs"
+      ],
+      "limits": "A cloned agent folder includes the signing key; overlap is not protection against a trusted-runtime compromise."
+    },
+    {
+      "id": "SC11",
+      "section": "Hosted MCP OAuth",
+      "status": "focused_regression_passed",
+      "conclusion": "PKCE S256, connection address binding, current-only refresh exchange and confidential client authentication apply. Hosted bearer tokens are a separate explicit trust boundary from signed gateway keys.",
+      "sources": [
+        "server/hosted-mcp.mjs",
+        "server/core.mjs"
+      ],
+      "regressionFiles": [
+        "test/hosted-mcp.test.mjs"
+      ],
+      "limits": "Signed-in Claude/Gemini and live claude.ai/ChatGPT connector calls remain acceptance work."
+    },
+    {
+      "id": "SC12",
+      "section": "Protocol adoption / D7",
+      "status": "deferred_compatibility_change",
+      "conclusion": "Advertised protocols remain 2024-11-05, 2025-03-26 and 2025-06-18. Newer clients negotiate down; unsupported post-initialize protocol headers fail. No claim of full 2025-11-25 or 2026-07-28 support, issuer-response compatibility or signed-in ChatGPT acceptance.",
+      "sources": [
+        "scripts/mcp-server.mjs",
+        "server/hosted-mcp.mjs"
+      ],
+      "regressionFiles": [
+        "test/hosted-mcp.test.mjs"
+      ],
+      "limits": "Protocol adoption requires a separate official-spec and live-client compatibility pass."
+    },
+    {
+      "id": "SC13",
+      "section": "Credential cache invalidation",
+      "status": "focused_regression_passed",
+      "conclusion": "Credential-store identity/nanosecond metadata plus successful-write generation invalidate all four public-door caches; unreadable stores fail closed.",
+      "sources": [
+        "server/core.mjs"
+      ],
+      "regressionFiles": [
+        "test/auth-cache.test.mjs",
+        "test/hosted-mcp.test.mjs"
+      ]
+    },
+    {
+      "id": "SC14",
+      "section": "Host guard / D6",
+      "status": "revised_and_regression_tested",
+      "conclusion": "Owner APIs remain pinned to the native approving device while Apps/Full agent access exists. Separately invited people can coexist; new joins and pre-existing browser/WASM nodes require explicit node-bound owner approval. Missing/untrusted/expired identity, the host node, waiting and revoked grants fail closed. Pausing retains the owner guard.",
+      "sources": [
+        "server/browser-host-guard.mjs",
+        "server/core.mjs"
+      ],
+      "regressionFiles": [
+        "test/browser-host-guard.test.mjs",
+        "test/person-beside-agent.test.mjs",
+        "test/full-control-migration.test.mjs"
+      ],
+      "limits": "Approval confirms intended custody; it is not hardware attestation."
+    },
+    {
+      "id": "SC15",
+      "section": "Second browser / D2",
+      "status": "already_enforced",
+      "conclusion": "Same-device identity/name grouping affects presentation only. Another browser needs local approval, Face ID or a verified linked-computer ticket.",
+      "sources": [
+        "server/device-approval.mjs",
+        "server/index.mjs"
+      ],
+      "regressionFiles": [
+        "test/pairing-window.test.mjs",
+        "test/same-device.test.mjs",
+        "test/fleet.test.mjs"
+      ]
+    },
+    {
+      "id": "SC16",
+      "section": "Invite duration / D4",
+      "status": "documentation_corrected",
+      "conclusion": "Preset API permits 60 seconds to 24 hours; public join window is at most 15 minutes. UI duration choices start at 15 minutes. A shorter valid invitation is not an access widening.",
+      "sources": [
+        "server/agent-presets.mjs",
+        "src/BrowserInvite.tsx"
+      ],
+      "regressionFiles": [
+        "test/agent-presets.test.mjs"
+      ]
+    },
+    {
+      "id": "SC17",
+      "section": "Tailscale socket detection / D8",
+      "status": "source_reviewed",
+      "conclusion": "serve --help stdout and stderr must contain Unix-socket support. Failure denies startup with upgrade guidance and never enables an insecure TCP fallback. This capability probe can false-negative if help wording changes.",
+      "sources": [
+        "scripts/configure.mjs"
+      ],
+      "regressionFiles": [
+        "test/setup.test.mjs"
+      ],
+      "limits": "Real daemon/service variants still need their own platform acceptance."
+    },
+    {
+      "id": "SC18",
+      "section": "Claude default mode / D1",
+      "status": "comment_corrected",
+      "conclusion": "New Reach chats explicitly choose Auto. Resumed chats with no saved mode omit the flag and retain provider settings; an explicit unknown mode falls back to Manual. The comment now distinguishes these cases.",
+      "sources": [
+        "server/agent-sessions/claude-host.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-claude-host.test.mjs"
+      ],
+      "limits": "Real signed-in provider behavior is not established by fake-process tests."
+    },
+    {
+      "id": "SC19",
+      "section": "Passkey verifier / Face ID",
+      "status": "source_reviewed_existing_vectors",
+      "conclusion": "Challenge, exact origin, RP ID, signature, presence/verification, user handle and counter are checked; user verification is required. Public challenges have a separate bounded pool.",
+      "sources": [
+        "server/passkeys.mjs"
+      ],
+      "regressionFiles": [
+        "test/passkeys.test.mjs",
+        "test/passkeys-real.test.mjs",
+        "test/passkeys-route.test.mjs"
+      ],
+      "limits": "Software authenticator and recorded vectors are not physical Face ID acceptance or independent cryptographic audit."
+    },
+    {
+      "id": "SC20",
+      "section": "Face ID enrollment / removal",
+      "status": "source_reviewed_existing_coverage",
+      "conclusion": "Public passkey sign-in returns a one-use ticket and tagged enrollment key; private redemption binds owner credential to the enrolled node. Removal revokes local credential access; device deletion is asynchronous.",
+      "sources": [
+        "server/face-join.mjs",
+        "server/index.mjs",
+        "server/guest-keys.mjs"
+      ],
+      "regressionFiles": [
+        "test/face-join.test.mjs",
+        "test/guest-keys.test.mjs"
+      ],
+      "limits": "Live OAuth/Tailscale enrollment, phone biometrics and policy isolation remain manual gates."
+    },
+    {
+      "id": "SC21",
+      "section": "Face ID for agent approval",
+      "status": "source_reviewed_existing_coverage",
+      "conclusion": "Approval challenges bind request and owner credential; enabling is owner-only, disabling requires its own assertion, denying never needs biometrics.",
+      "sources": [
+        "server/index.mjs",
+        "server/passkeys.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-admission-faceid.test.mjs",
+        "test/agent-admission-faceid-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "SC22",
+      "section": "Private local approval / receipts",
+      "status": "source_reviewed",
+      "conclusion": "Five-minute receipts bind claimant secret and Tailscale identity; interrupted issuance fails closed, retry returns one token, revoked token is not reissued.",
+      "sources": [
+        "server/device-approval.mjs"
+      ],
+      "regressionFiles": [
+        "test/tailscale-auth.test.mjs",
+        "test/pairing-window.test.mjs"
+      ]
+    },
+    {
+      "id": "SC23",
+      "section": "Linked computers",
+      "status": "source_reviewed_existing_coverage",
+      "conclusion": "Mutual links and one-use device-bound tickets authorize cross-computer admission. Device identity alone does not approve; exact linked origins and verified revocation callbacks remain required.",
+      "sources": [
+        "server/fleet.mjs",
+        "server/index.mjs"
+      ],
+      "regressionFiles": [
+        "test/fleet.test.mjs",
+        "test/fleet-join.test.mjs"
+      ]
+    },
+    {
+      "id": "SC24",
+      "section": "Guest permissions / historical claims",
+      "status": "revised_with_explicit_consent",
+      "conclusion": "Detailed guest grants may include terminal/AI/control. Unfiltered screen and system-dialog control require fullControlVersion 1 from the current owner form; unmarked legacy Full grants stay restricted. Guest management APIs remain blocked, but Full desktop/terminal power is not isolation from the OS account.",
+      "sources": [
+        "server/core.mjs",
+        "server/index.mjs"
+      ],
+      "regressionFiles": [
+        "test/guest-permissions.test.mjs",
+        "test/guest-access.test.mjs",
+        "test/person-full-consent.test.mjs",
+        "test/person-waiting-ui.test.mjs",
+        "test/screen.test.mjs"
+      ]
+    },
+    {
+      "id": "SC25",
+      "section": "Agent CLI folders / scopes",
+      "status": "source_reviewed",
+      "conclusion": "Named profiles intersect stored and current roots/scopes; missing/invalid profiles deny. Shell-capable profiles are not OS filesystem sandboxes.",
+      "sources": [
+        "server/agent-policy.mjs",
+        "scripts/agent-remote.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-remote.test.mjs",
+        "test/browser-invite-auth.test.mjs"
+      ]
+    },
+    {
+      "id": "SC26",
+      "section": "Native screen, input, selection and shortcuts",
+      "status": "historical_evidence_scoped",
+      "conclusion": "Documented limits and native evidence are from synthetic helpers/toy apps and earlier saved runs, not a model reasoning in a real signed-in application. Owner control leases, pause/revoke and native permission checks remain required.",
+      "sources": [
+        "server/index.mjs",
+        "server/agent-desktop.mjs",
+        "scripts/native/agent-desktop.swift"
+      ],
+      "regressionFiles": [
+        "test/native-agent-live.test.mjs",
+        "test/agent-desktop.test.mjs",
+        "test/desktop-input-lifecycle.test.mjs"
+      ],
+      "limits": "Physical phone, ordinary overlapping windows and OS failure/suspension remain acceptance gaps."
+    },
+    {
+      "id": "SC27",
+      "section": "Shell execution / revocation",
+      "status": "focused_regression_passed",
+      "conclusion": "Unrestricted Full shell runs as owner with clean environment, time/output/concurrency bounds and audit records; spawn failure is 503. Revocation cancels monitored process groups but cannot undo effects or contain detached processes.",
+      "sources": [
+        "server/agent-shell.mjs"
+      ],
+      "regressionFiles": [
+        "test/agent-shell.test.mjs",
+        "test/agent-shell-sandbox.test.mjs"
+      ]
+    },
+    {
+      "id": "SC28",
+      "section": "File mutation and multiple agents",
+      "status": "source_reviewed_existing_coverage",
+      "conclusion": "Narrow file tools use no-symlink descriptor traversal plus kernel sandbox; shared writer coordination serializes overlapping roots and checks live authorization. Files preset edits are immediate without per-action approval.",
+      "sources": [
+        "server/browser-file-boundary.mjs",
+        "scripts/native/browser-files.swift",
+        "server/browser-operation-coordinator.mjs"
+      ],
+      "regressionFiles": [
+        "test/browser-file-boundary.test.mjs",
+        "test/browser-multi-agent-security.test.mjs"
+      ],
+      "limits": "Completed mutations cannot be undone by revocation."
+    },
+    {
+      "id": "SC29",
+      "section": "Public browser Tailscale / device keys",
+      "status": "existing_evidence_only",
+      "conclusion": "Browser node state and Reach credentials remain in browser storage. XSS, browser extension or browser-profile compromise are inside this trust boundary. App and browser nodes need separate approval.",
+      "sources": [
+        "tailnet/main.go",
+        "server/device-approval.mjs"
+      ],
+      "regressionFiles": [
+        "test/tailnet-transport.test.mjs",
+        "test/same-device.test.mjs"
+      ],
+      "limits": "Real networks, Tailscale login and physical mobile storage eviction remain acceptance work."
+    },
+    {
+      "id": "SC30",
+      "section": "Notifications",
+      "status": "existing_evidence_only",
+      "conclusion": "Preferences and pauses filter delivery; notification contents/navigation have separate validation. No new claim of real push delivery is made.",
+      "sources": [
+        "server/notifications.mjs"
+      ],
+      "regressionFiles": [
+        "test/notifications.test.mjs",
+        "test/notification-actions.test.mjs"
+      ],
+      "limits": "Physical push delivery is unverified in this reconciliation."
+    },
+    {
+      "id": "SC31",
+      "section": "Agent/runtime and Reach updates",
+      "status": "existing_evidence_scoped",
+      "conclusion": "Agent runtime hashes are verified and owner-controlled updates pin an exact package version. Agent runtime auto-update trusts the invited host; this is deliberate remote-code trust and can be disabled.",
+      "sources": [
+        "server/reach-updates.mjs",
+        "server/agent-runtimes.mjs",
+        "scripts/agent-remote.mjs"
+      ],
+      "regressionFiles": [
+        "test/reach-updates.test.mjs",
+        "test/agent-runtime-update.test.mjs"
+      ],
+      "limits": "Live published update recovery and signed-in agent reconnection need release acceptance."
+    },
+    {
+      "id": "SC32",
+      "section": "Historical findings and verification counts",
+      "status": "historical_not_recertified",
+      "conclusion": "Older severity tables, counts, recorded live-tailnet observations and restart statements document earlier passes. They are not assertions that every current line, platform or physical device was exercised.",
+      "sources": [
+        "docs/SECURITY.md"
+      ],
+      "regressionFiles": [],
+      "limits": "Current release evidence must be tied to the final commit/source digest by the parent validation task."
+    },
+    {
+      "id": "SC33",
+      "section": "DoS, supply chain and trust limits",
+      "status": "explicit_limit",
+      "conclusion": "Bounded requests, pools and rate limits reduce abuse but do not certify public-service resilience. OS-user access, public custom passkey verifier, detached effects, disk/resource exhaustion, dependency/runtime trust and independent review remain material limits.",
+      "sources": [
+        "SECURITY.md",
+        "docs/SECURITY.md"
+      ],
+      "regressionFiles": []
+    }
+  ],
+  "focusedRuns": [
+    {
+      "log": "/tmp/reach-security-reconcile-before.log",
+      "tests": 16,
+      "passed": 14,
+      "failed": 2,
+      "purpose": "Reproduced retired-token exchange and Apps-to-Full elevation before fixes."
+    },
+    {
+      "log": "/tmp/reach-security-reconcile-after.log",
+      "tests": 135,
+      "passed": 135,
+      "failed": 0,
+      "scope": "Credential exchange, step-up, guard wording and adjacent auth/Claude tests; before migration marker."
+    },
+    {
+      "log": "/tmp/reach-security-reconcile-ui.log",
+      "tests": 22,
+      "passed": 22,
+      "failed": 0,
+      "scope": "Step-up picker and truthful hidden-app display; before migration marker."
+    },
+    {
+      "log": "/tmp/reach-full-consent-migration.log",
+      "tests": 98,
+      "passed": 98,
+      "failed": 0,
+      "scope": "Stored-consent migration and adjacent boundary tests; before request-version requirement."
+    },
+    {
+      "log": "/tmp/reach-full-consent-current-form.log",
+      "tests": 104,
+      "passed": 104,
+      "failed": 0,
+      "scope": "Explicit current-form consent, legacy migration, owner UI, standing/reconnect/gateway/OAuth."
+    },
+    {
+      "log": "/tmp/reach-security-final-boundaries.log",
+      "tests": 70,
+      "passed": 68,
+      "failed": 2,
+      "scope": "Two positive test fixtures still used legacy unversioned Full policies; corrected via approvedFullPolicy helper and verified in 27/27 follow-up."
+    },
+    {
+      "log": "/tmp/reach-security-final-followup.log",
+      "tests": 27,
+      "passed": 27,
+      "failed": 0,
+      "scope": "Explicit-consent route fixtures and legacy migration public-door regression."
+    },
+    {
+      "log": "/tmp/reach-security-final-migration.log",
+      "tests": 21,
+      "passed": 21,
+      "failed": 0,
+      "scope": "Final old-hosted registration restriction, current Full invitations and hosted OAuth."
+    }
+  ],
+  "remainingAcceptance": [
+    "Physical iOS/Android onboarding and biometric/push/background behavior",
+    "Live authenticated Tailscale OAuth, ACL, Serve/Funnel and cross-tailnet invitations",
+    "Signed-in agent/provider tool calls and actual hosted connectors",
+    "Model-driven malicious-content resistance and unrestricted Full control in a real application",
+    "Final combined platform matrix and CI/release enforcement are tracked separately",
+    "Independent penetration/security review and long-duration resource/availability testing"
+  ],
+  "followupDate": "2026-10-12"
+}

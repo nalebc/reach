@@ -142,7 +142,7 @@ export function createAgentShortcuts({
         step.type === "open" || step.type === "website"
           ? { id: step.app, bundleId: step.bundle }
           : { bundleId: step.context.bundle };
-      return (
+      return client.policy.preset === "full" || (
         !protectedAppReason(app) &&
         !(client.policy.hidden || []).some(
           (entry) => entry.id === app.id || entry.bundleId === app.bundleId,

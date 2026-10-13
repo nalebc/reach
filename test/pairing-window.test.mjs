@@ -89,8 +89,11 @@ test("the start page answers the internet only while a pairing window is open", 
 
   const until = openPairingWindow(dataDir);
   assert.ok(until - Date.now() <= PAIRING_WINDOW_MS);
+  // The public window is capped by the file's recorded write time. Some
+  // filesystems record that just before the integer wall-clock millisecond.
+  const written = Math.floor((await fs.stat(pairingWindowFile(dataDir))).mtimeMs);
   const window = reach.funnelWindow();
-  assert.deepEqual({ open: window.open, until: window.until, reason: window.reason }, { open: true, until, reason: "pairing" });
+  assert.deepEqual({ open: window.open, until: window.until, reason: window.reason }, { open: true, until: Math.min(until, written + PAIRING_WINDOW_MS), reason: "pairing" });
   assert.deepEqual(await internet(), { status: 200, body: "start page" });
   // Only the start page: never Reach's own API or a live connection.
   assert.equal((await internet("/api/health")).status, 404);
@@ -113,6 +116,16 @@ test("a pairing window ends on its own, and never stays open longer than 15 minu
   const window = reach.funnelWindow();
   assert.equal(window.open, true);
   assert.ok(window.until <= Date.now() + PAIRING_WINDOW_MS);
+  // Held to 15 minutes from when it was written, not from each look.
+  const real = Date.now;
+  t.mock.method(Date, "now", () => real() + 20 * 60_000);
+  assert.equal(reach.funnelWindow().open, false, "20 minutes later: closed, whatever the file asks");
+  assert.equal((await internet()).status, 404);
+  t.mock.restoreAll();
+  // A file dated in the future doesn't slide the 15 minutes along with it.
+  const ahead = new Date(Date.now() + 86400000);
+  await fs.utimes(pairingWindowFile(dataDir), ahead, ahead);
+  assert.equal(reach.funnelWindow().open, false, "written tomorrow: closed");
   closePairingWindow(dataDir);
   assert.equal(reach.funnelWindow().open, false);
   // Nonsense in the file opens nothing.
@@ -193,6 +206,14 @@ test("./reach pair opens a pairing window at the one address; without one, it sa
   assert.equal(reach.funnelWindow().reason, "pairing");
   assert.match(qrs.at(-1), /^https:\/\/studio\.example\.ts\.net\/#pair=\d{8}&name=Studio$/);
   assert.match(said.at(-1), /sign in to Tailscale in its browser for the next 15 minutes/);
+
+  // A linked computer's general link belongs to the fleet home. Its code
+  // and pairing window still belong to this computer.
+  atomicJson(path.join(root, ".reach/host-status.json"), {
+    ...status, origin: "https://studio.example.ts.net:8443", link: "https://first.example.ts.net",
+  });
+  await pairRunningHost(root, deps);
+  assert.match(qrs.at(-1), /^https:\/\/studio\.example\.ts\.net\/#pair=\d{8}&name=Studio$/);
 
   // A link that isn't a plain one address isn't trusted for it.
   closePairingWindow(dataDir);

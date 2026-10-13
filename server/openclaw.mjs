@@ -777,16 +777,33 @@ export function createOpenClaw({
       if (run.retrying) {
         settleRetry(run);
         run.text = "";
+        run.chat = run.agent = undefined;
       }
       run.status = "running";
       run.error = "";
-      if (state === "delta")
-        run.text =
-          event === "chat"
-            ? textOf(p.message)
-            : typeof p.data?.text === "string"
-              ? p.data.text
-              : run.text;
+      // Protocol v4 (2026.9.7): a snapshot (chat.message, agent.data.text)
+      // is the whole text so far; otherwise the delta (chat.deltaText,
+      // agent.data.delta) appends, or with replace becomes the text, even
+      // empty. Chat and agent are two views of one reply: kept apart, and
+      // the chat's is shown once it has one.
+      if (state === "delta") {
+        const chat = event === "chat";
+        const snapshot = chat
+          ? p.message !== undefined ? textOf(p.message) : undefined
+          : typeof p.data?.text === "string" ? p.data.text : undefined;
+        const delta = chat ? p.deltaText : p.data?.delta;
+        const replace = (chat ? p.replace : p.data?.replace) === true;
+        const was = chat ? run.chat : run.agent;
+        const next =
+          snapshot !== undefined ? snapshot
+          : typeof delta !== "string" ? was
+          : replace ? delta
+          : was === undefined ? undefined // an append needs the snapshot first
+          : was + delta;
+        if (chat) run.chat = next;
+        else run.agent = next;
+        run.text = run.chat ?? run.agent ?? run.text;
+      }
     } else if (state === "error") {
       // Not the end yet: when a model fails (no credit, unknown model…)
       // OpenClaw tries its fallbacks under the same runId, and their events
@@ -807,6 +824,7 @@ export function createOpenClaw({
       // Generation ends before outbound delivery. Only the terminal RPC result
       // can report delivery success/failure; lifecycle alone is not a receipt.
       run.text = "";
+      run.chat = run.agent = undefined;
       run.generated = true;
     } else finishRun(key, run, "idle");
     changed();

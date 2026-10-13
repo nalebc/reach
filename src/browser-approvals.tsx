@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { requestDeadline } from "./request-deadline";
 import { Bot, Eye, ShieldCheck } from "lucide-react";
 import AppLogo from "./AppLogo";
 import "./agent-ui.css";
@@ -156,11 +157,12 @@ export function useBrowserApprovals(
     const refresh = async () => {
       if (pending) return;
       pending = true;
+      const deadline = requestDeadline(controller.signal);
       try {
         const list = await request<BrowserRequest[]>(
           peer,
           "/api/agents/browser-requests",
-          { signal: controller.signal },
+          { signal: deadline.signal },
         );
         if (live) {
           const current = Array.isArray(list)
@@ -182,6 +184,7 @@ export function useBrowserApprovals(
           setOpened(null);
         }
       } finally {
+        deadline.dispose();
         pending = false;
       }
     };
