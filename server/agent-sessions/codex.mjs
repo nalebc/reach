@@ -291,6 +291,19 @@ export function codexAppState(file = APP_STATE) {
 // The apps write "GPT-6 Astra" for the catalog's "GPT-6-Astra".
 export const modelName = (name) => String(name || "").replace(/^(GPT-[\d.]+)-/i, "$1 ");
 
+// The CLI's models the service doesn't list (it runs an older Codex), in the
+// CLI's order; hidden ones aside.
+export const newerModels = (service, cli) => {
+  const have = new Set((Array.isArray(service) ? service : []).map((m) => m?.id));
+  return (Array.isArray(cli) ? cli : []).filter((m) => m && typeof m.id === "string" && !m.hidden && !have.has(m.id));
+};
+// What updating the service unlocks, by name: the CLI's default among them,
+// else its first ("GPT-6.1 Sol"); none, null ("newer models").
+export const unlocksName = (added) => {
+  const pick = added.find((m) => m.isDefault) || added[0];
+  return pick ? modelName(pick.displayName || pick.id) : null;
+};
+
 // Codex's error kind: "usageLimitExceeded", or the same as an object
 // ({ usageLimitExceeded: {...} } or { type: "usageLimitExceeded" }).
 const errorKind = (info) =>
@@ -673,13 +686,17 @@ export function createCodexSessions({
       // codex-live.mjs withModel), not offered to pick.
       const known = new Set(models.map((m) => m.id));
       const report = daemon.cliModels ? await daemon.compatibility?.().catch(() => null) : null;
+      // The service behind the CLI: what updating it unlocks (keep-in-sync.mjs),
+      // its newest model by name when the CLI's list has one more.
+      let serviceUpdate;
       if (olderVersion(report?.serviceVersion, report?.version)) {
         const cli = await daemon.cliModels(report.version).catch(() => null);
-        for (const m of cli?.data || [])
-          if (!m.hidden && !known.has(m.id)) {
-            known.add(m.id);
-            models.push({ ...offer(m), isDefault: false, unconfirmed: true });
-          }
+        const added = newerModels(r.data, cli?.data);
+        for (const m of added) {
+          known.add(m.id);
+          models.push({ ...offer(m), isDefault: false, unconfirmed: true, needsServiceUpdate: true });
+        }
+        serviceUpdate = { from: report.serviceVersion, to: report.version, unlocks: unlocksName(added) };
       }
       // config.toml's model (what Codex starts chats on): the default when
       // the daemon has it; listed by its own name when nobody does.
@@ -704,6 +721,7 @@ export function createCodexSessions({
         });
       return {
         models,
+        ...(serviceUpdate ? { serviceUpdate } : {}),
         modes: [...modes, { id: "custom", label: "Custom (config.toml)", note: "Uses permissions defined in config.toml", switchable: false }],
         mode: modes.some((m) => m.id === saved) || saved === "custom" ? saved : modes[0]?.id || "auto",
       };

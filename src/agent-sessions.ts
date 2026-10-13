@@ -261,6 +261,8 @@ export type AgentModel = {
   // Codex: in the installed Codex's catalog (or config.toml) but not the
   // service Reach runs chats on; shown, not offered to pick.
   unconfirmed?: boolean;
+  // Codex: one an update to its service unlocks (KeepInSync.tsx).
+  needsServiceUpdate?: boolean;
 };
 // A dialog macOS itself shows (server/mac-prompts.mjs), answered at the Mac.
 export type MacPrompt = {

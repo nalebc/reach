@@ -58,6 +58,7 @@ import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
+import { SyncLine } from "./KeepInSync";
 import { ContinuedIn, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, armedAutoContinue, type RelayStarted } from "./Relays";
@@ -764,10 +765,12 @@ function ModelMenu({
   working,
   ultracode,
   failed,
+  footer,
   onRetry,
   onPick,
   onClose,
 }: {
+  footer?: ReactNode;
   agent: AgentName;
   models: AgentModel[];
   model: string | null;
@@ -787,7 +790,7 @@ function ModelMenu({
 }) {
   const [configuring, setConfiguring] = useState(false);
   const onAgain = failed ? () => onPick(failed.next, failed.stay) : undefined;
-  const shared = { agent, models, model, effort, speed, busy, error, notice, working, ultracode, onRetry, onAgain, onClose };
+  const shared = { agent, models, model, effort, speed, busy, error, notice, working, ultracode, onRetry, onAgain, onClose, footer };
   if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next)} />;
   if (configuring || !models.length || error)
     return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, true)} />;
@@ -1610,6 +1613,7 @@ export function ModelPicker({
   speed,
   busy,
   error,
+  footer,
   onRetry,
   onPick,
   onClose,
@@ -1621,12 +1625,13 @@ export function ModelPicker({
   speed?: string | null;
   busy?: boolean;
   error?: string;
+  footer?: ReactNode;
   onRetry?: () => void;
   onPick: (choice: { model?: string; effort?: string; speed?: string }, done: boolean) => void;
   onClose: () => void;
 }) {
   const [configuring, setConfiguring] = useState(false);
-  const shared = { agent, models, model, effort, speed, busy, error, onRetry, onClose };
+  const shared = { agent, models, model, effort, speed, busy, error, onRetry, onClose, footer };
   if (agent !== "codex") return <ClaudeModelSheet {...shared} onPick={(next) => onPick(next, true)} />;
   if (configuring || error || !models.length) return <CodexConfigureSheet {...shared} onPick={(next) => onPick(next, false)} onClose={configuring ? () => setConfiguring(false) : onClose} />;
   return <CodexEffortStrip {...shared} onPick={(next) => onPick(next, false)} onConfigure={() => setConfiguring(true)} />;
@@ -3475,6 +3480,7 @@ export default function AgentSessionView({
             working={working}
             ultracode={info.ultracode === true}
             failed={failedPick}
+            footer={agent === "codex" && models.some((m) => m.needsServiceUpdate) ? <SyncLine peer={peer} id="codex-service" onDone={() => setModelReload((n) => n + 1)} /> : undefined}
             onRetry={() => (setFailedPick(null), setModelReload((n) => n + 1))}
             onClose={() => (setPicking(false), setModelNote(""), setFailedPick(null))}
             onPick={async (next, stay) => {

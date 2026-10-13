@@ -3,6 +3,7 @@ import "./storage-fallback";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
+import KeepInSync from "./KeepInSync";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
@@ -1692,6 +1693,9 @@ export function SettingsPage({
         </button>
         <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
       </div>
+
+      {/* What Reach drives here, behind or too old: Update (KeepInSync.tsx). */}
+      <KeepInSync peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
 
       {/* Who can use this computer: one place (PeopleHub.tsx), the owner's. */}
       {(!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")) && (

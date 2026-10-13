@@ -89,12 +89,13 @@ export function useBellNeeds(peer: Peer): NeedItem[] {
   )
     return [];
   return state.items
-    .filter((item) => item.source === "restart" || item.source === "update")
+    .filter((item) => item.source === "restart" || item.source === "update" || item.source === "sync")
     .map((item) => ({
       key: item.id,
-      icon: item.source === "update" ? <CircleArrowUp size={22} /> : <RotateCw size={22} />,
+      icon: item.source === "restart" ? <RotateCw size={22} /> : <CircleArrowUp size={22} />,
       title: item.title,
-      detail: [item.sender, item.summary].filter(Boolean).join(" · "),
+      // What Reach drives (keep-in-sync): its versions, then what a tap stops.
+      detail: (item.source === "sync" ? [item.detail, item.summary] : [item.sender, item.summary]).filter(Boolean).join(" · "),
       actions: (item.actions || []).map((action) => ({
         label: action.label,
         primary: action.tone === "primary",
@@ -525,6 +526,10 @@ export function NotificationCenter({
     setNotice(
       item.source === "update" && action === "update"
         ? "Updating Reach. It restarts when it's installed"
+        : item.source === "sync" && action !== "deny"
+        ? `Updating ${item.sender}`
+        : item.source === "sync"
+        ? "Not now"
         : item.source === "restart" && action !== "deny"
         ? action === "after"
           ? "Reach restarts when the chats finish"
