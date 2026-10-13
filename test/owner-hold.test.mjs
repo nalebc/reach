@@ -87,7 +87,8 @@ const refusedPaused = async (work, who = "The owner") => {
     assert.equal(error.kind, "paused");
     assert.equal(error.holder, who);
     assert.ok(error.retryInMs >= 1000 && error.retryInMs <= 120000, String(error.retryInMs));
-    assert.match(error.message, new RegExp(`^${who} is using the Mac\\. The agent waits until they're done\\.$`));
+    // The computer's own word: "Mac" here, "Windows PC" or "computer" on CI.
+    assert.match(error.message, new RegExp(`^${who} is using the (Mac|Windows PC|computer)\\. The agent waits until they're done\\.$`));
     return true;
   });
 };
