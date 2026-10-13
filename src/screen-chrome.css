@@ -111,12 +111,18 @@
 }
 .simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing) .screen-bar {
   flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
 }
+/* A short screen (a small phone on its side): the buttons give a little
+   height rather than any of them going off the rail. */
 .simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
   .screen-bar
   button {
   width: 40px;
-  height: 40px;
+  height: auto;
+  flex: 0 1 40px;
+  min-height: 30px;
 }
 .simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
   .screen-bar
@@ -129,7 +135,14 @@
   .screen-bar-group
   button {
   width: 34px;
-  height: 34px;
+  flex-basis: 34px;
+  min-height: 26px;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-bar
+  .screen-bar-group {
+  min-height: 0;
+  flex-shrink: 1;
 }
 /* Words in the rail wrap within it, small. */
 .simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
