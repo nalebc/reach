@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Queued messages as the agents' own apps show them: one line each, the
-// whole of it on a tap; Edit where it waits (pictures kept); Send now (Claude:
-// into its app chat at once; Codex: its Steer); Claude's fold into a stack and
-// take a new order.
+// Queued messages, the same list in every chat that queues: one line each,
+// the whole of it on a tap; Edit where it waits (pictures kept); Send now
+// (Claude: into its app chat at once; Codex: its Steer); a new order by
+// dragging the handle (a lifted copy, the others sliding, a gap) or from the
+// keyboard, announced.
 let dom, React, QueuedMessages;
 before(async () => {
   dom = await startDom({ mobile: true });
@@ -43,15 +44,11 @@ const $$ = (sel) => [...dom.document.querySelectorAll(sel)];
 const button = (label) => $$("button").filter((b) => b.getAttribute("aria-label") === label);
 
 
-test("Claude: a stack of one line each, opened with a tap; a message opens whole on a tap", async () => {
+test("Claude: the same list as Codex's, one line each; a message opens whole on a tap", async () => {
   const { view } = await render({ agent: "claude", messages: three });
   try {
-    assert.equal($$(".qm-row").length, 1, "folded: the first one only");
-    const head = $$(".qm-head")[0];
-    assert.match(head.textContent, /3 queued/);
-    head.click();
-    await settle(10);
-    assert.equal($$(".qm-row").length, 3);
+    assert.equal($$(".qm-row").length, 3, "every row shown, no fold");
+    assert.equal($$(".qm-head").length, 0);
     // One line each; a tap shows all of it, another folds it back.
     const first = $$(".qm-open")[0];
     assert.equal(first.textContent, long);
@@ -90,8 +87,6 @@ test("the message and edit controls keep their full widths in the queue styles",
 test("Claude: Send now and a new order, by the handle and the arrow keys", async () => {
   const { view, calls } = await render({ agent: "claude", messages: three });
   try {
-    $$(".qm-head")[0].click();
-    await settle(10);
     button("Send now")[1].click();
     assert.deepEqual(calls.now, ["m2"]);
     const grip = button("Reorder queued message 1 of 3")[0];
@@ -250,4 +245,273 @@ test("two submit events in one render send a queued edit only once", async () =>
     });
     assert.equal(calls, 1);
   } finally { finish(); await settle(); await view.unmount(); }
+});
+
+// Rows 40px tall, stacked from the top; a pointer on one row's handle.
+const geometry = () => {
+  for (const el of $$(".qm-row"))
+    el.getBoundingClientRect = () => {
+      const top = $$(".qm-row").indexOf(el) * 40;
+      return { top, bottom: top + 40, height: 40, left: 0, width: 300 };
+    };
+};
+const pointerOn = (grip) => {
+  grip.setPointerCapture = () => {};
+  return (type, clientY) => {
+    const event = new dom.window.MouseEvent(type, { bubbles: true, button: 0, clientY });
+    Object.defineProperty(event, "pointerId", { value: 1 });
+    dom.update(() => grip.dispatchEvent(event));
+  };
+};
+const key = (el, k) => dom.update(() => el.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: k, bubbles: true })));
+const texts = () => $$(".qm-open").map((el) => el.textContent);
+// The harness answers every media query with `mobile`: reduced motion set here.
+const motion = (reduced) => {
+  const saved = dom.window.matchMedia;
+  dom.window.matchMedia = (media) => ({ ...saved(media), matches: /reduced-motion/.test(media) ? reduced : saved(media).matches });
+  return () => { dom.window.matchMedia = saved; };
+};
+const said = () => $$(".qm-live")[0].textContent;
+
+test("every app's queue rows carry the same controls: handle, preview, Send now, Edit, remove", async () => {
+  for (const [agent, messages] of [["codex", three.map(({ via, ...m }) => m)], ["claude", three]]) {
+    const { view } = await render({ agent, messages });
+    try {
+      const rows = $$(".qm-row");
+      assert.equal(rows.length, 3, agent);
+      for (const row of rows) {
+        const labels = [...row.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") || "open");
+        assert.deepEqual(labels.map((l) => l.replace(/ \d of 3$/, "")),
+          ["Reorder queued message", "open", "Send now", "Edit queued message", "Remove queued message"], agent);
+      }
+      assert.equal(rows[0].querySelector(".qm-images").getAttribute("aria-label"), "1 image");
+    } finally { await view.unmount(); }
+  }
+});
+
+test("rows nothing can move have no handle and keep their place: Claude Code's own queue, the phone's copy, one being sent", async () => {
+  const restore = motion(true);
+  const messages = [
+    { id: "h1", text: "already in Claude Code", images: 0, held: true },
+    { id: "l1", text: "phone copy", images: 0, held: true, local: true },
+    { id: "s1", text: "on its way", images: 0, sending: true },
+    { id: "a", text: "alpha", images: 0 },
+    { id: "b", text: "beta", images: 0 },
+  ];
+  const { view, calls } = await render({ agent: "claude", messages });
+  try {
+    assert.equal($$(".qm-grip").length, 2, "only the two still waiting in Reach's queue");
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 5 of 5")[0]);
+    // Dragged far above the top: it stops below the rows that can't move.
+    pointer("pointerdown", 180);
+    pointer("pointermove", -400);
+    pointer("pointerup", -400);
+    await settle(10);
+    assert.deepEqual(calls.order, [["s1", "b", "a"]], "the Mac's queue in its new order, not what only shows here");
+    assert.deepEqual(texts(), ["already in Claude Code", "phone copy", "on its way", "beta", "alpha"]);
+  } finally { restore(); await view.unmount(); }
+});
+
+test("dragging: a press lifts a copy, the others slide, a gap shows, and the row settles into place on release", async () => {
+  const restore = motion(false);
+  const { view, calls } = await render({ agent: "codex", messages: three });
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 1 of 3")[0]);
+    pointer("pointerdown", 20);
+    assert.equal($$(".qm-ghost").length, 0, "not lifted by the press alone yet");
+    await settle(260);
+    // Held: lifted, a copy following the finger, its own slot a gap.
+    assert.equal($$(".qm-ghost").length, 1);
+    assert.equal($$(".qm-ghost")[0].getAttribute("aria-hidden"), "true");
+    assert.match($$(".qm-ghost")[0].textContent, /Messages stay queued/);
+    assert.ok($$(".qm-row")[0].classList.contains("qm-gap"));
+    assert.ok($$(".qm")[0].classList.contains("sorting"));
+    pointer("pointermove", 105);
+    await settle(40);
+    // Past both other rows' middles: they slide up, the gap goes to the end.
+    const [first, second, third] = $$(".qm-row");
+    assert.equal(second.style.transform, "translate3d(0, -40px, 0)");
+    assert.equal(third.style.transform, "translate3d(0, -40px, 0)");
+    assert.equal(first.style.transform, "translate3d(0, 80px, 0)");
+    assert.match($$(".qm-ghost")[0].style.transform, /translate3d\(0, 85px, 0\) scale\(1\.03\)/);
+    pointer("pointerup", 105);
+    // Released: the copy glides into the gap first.
+    assert.ok($$(".qm-ghost")[0].classList.contains("qm-dropping"));
+    assert.equal($$(".qm-ghost")[0].style.transform, "translate3d(0, 80px, 0)");
+    assert.deepEqual(calls.order, []);
+    await settle(260);
+    assert.deepEqual(calls.order, [["m2", "m3", "m1"]]);
+    assert.deepEqual(texts(), ["second", "third", long]);
+    assert.equal($$(".qm-ghost").length, 0);
+    assert.ok($$(".qm-row").every((r) => !r.style.transform && !r.classList.contains("qm-gap")));
+    assert.match(said(), /Moved to position 3 of 3/);
+  } finally { restore(); await view.unmount(); }
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Escape while dragging puts the row back where it was, nothing sent", async () => {
+  const restore = motion(true);
+  const { view, calls } = await render({ agent: "codex", messages: three });
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 1 of 3")[0]);
+    pointer("pointerdown", 20);
+    pointer("pointermove", 100);
+    await settle(40);
+    assert.notEqual($$(".qm-row")[1].style.transform, "");
+    dom.update(() => dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await settle(10);
+    assert.equal($$(".qm-ghost").length, 0);
+    assert.ok($$(".qm-row").every((r) => !r.style.transform));
+    pointer("pointerup", 100);
+    await settle(10);
+    assert.deepEqual(calls.order, []);
+    assert.deepEqual(texts(), [long, "second", "third"]);
+    assert.match(said(), /Cancelled\. Back at position 1 of 3/);
+  } finally { restore(); await view.unmount(); }
+});
+
+test("with reduced motion a drop lands at once, without the glide", async () => {
+  const restore = motion(true);
+  const { view, calls } = await render({ agent: "claude", messages: three });
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 3 of 3")[0]);
+    pointer("pointerdown", 100);
+    pointer("pointermove", 10);
+    pointer("pointerup", 10);
+    assert.deepEqual(calls.order, [["m3", "m1", "m2"]], "no wait for an animation");
+    assert.equal($$(".qm-ghost").length, 0);
+  } finally { restore(); await view.unmount(); }
+});
+
+test("keyboard: Space picks a row up, arrows move it, Enter drops it; each step announced, focus kept", async () => {
+  const restore = motion(true);
+  const { view, calls } = await render({ agent: "codex", messages: three });
+  try {
+    geometry();
+    const grip = button("Reorder queued message 1 of 3")[0];
+    grip.focus();
+    key(grip, " ");
+    assert.equal(grip.getAttribute("aria-pressed"), "true");
+    assert.ok($$(".qm-row")[0].classList.contains("lifted"));
+    assert.match(said(), /Picked up\. Position 1 of 3/);
+    key(grip, "ArrowDown");
+    assert.match(said(), /Position 2 of 3/);
+    key(grip, "ArrowDown");
+    key(grip, "ArrowDown");
+    assert.match(said(), /Position 3 of 3/, "stops at the end");
+    assert.equal($$(".qm-row")[0].style.transform, "translate3d(0, 80px, 0) scale(1.02)");
+    assert.deepEqual(calls.order, [], "nothing sent while it's held");
+    key(grip, "Enter");
+    await settle(10);
+    assert.deepEqual(calls.order, [["m2", "m3", "m1"]]);
+    assert.match(said(), /Moved to position 3 of 3/);
+    assert.equal(dom.document.activeElement, $$(".qm-grip")[2], "focus stays on the moved row's handle");
+    assert.equal($$(".qm-grip")[2].getAttribute("aria-label"), "Reorder queued message 3 of 3");
+  } finally { restore(); await view.unmount(); }
+});
+
+test("keyboard: the focus comes back to the moved row's handle once the Mac has taken the order", async () => {
+  const restore = motion(true);
+  let accept;
+  function Fixture() {
+    const [busy, setBusy] = React.useState(null);
+    return React.createElement(QueuedMessages, { agent: "codex", messages: three, busy, canEdit: true,
+      onEdit: async () => {}, onRemove() {},
+      onReorder: () => {
+        // As AgentSession: busy while the Mac takes it; the disabled handle
+        // drops the focus, as a browser does.
+        setBusy("order");
+        dom.document.activeElement?.blur();
+        return new Promise((resolve) => { accept = () => { setBusy(null); resolve(); }; });
+      } });
+  }
+  const view = await dom.render(React.createElement(Fixture));
+  try {
+    geometry();
+    const grip = button("Reorder queued message 1 of 3")[0];
+    grip.focus();
+    key(grip, "Enter");
+    key(grip, "ArrowDown");
+    key(grip, "Enter");
+    await settle(10);
+    assert.ok($$(".qm-grip").every((g) => g.disabled));
+    assert.equal(dom.document.activeElement, dom.document.body);
+    dom.update(() => accept());
+    await settle(10);
+    assert.equal(dom.document.activeElement, $$(".qm-grip")[1]);
+    assert.equal($$(".qm-grip")[1].getAttribute("aria-label"), "Reorder queued message 2 of 3");
+  } finally { restore(); await view.unmount(); }
+});
+
+test("keyboard: Escape puts a picked-up row back, nothing sent", async () => {
+  const restore = motion(true);
+  const { view, calls } = await render({ agent: "claude", messages: three });
+  try {
+    geometry();
+    const grip = button("Reorder queued message 2 of 3")[0];
+    grip.focus();
+    key(grip, "Enter");
+    key(grip, "ArrowUp");
+    assert.match(said(), /Position 1 of 3/);
+    key(grip, "Escape");
+    await settle(10);
+    assert.deepEqual(calls.order, []);
+    assert.deepEqual(texts(), [long, "second", "third"]);
+    assert.ok($$(".qm-row").every((r) => !r.style.transform && !r.classList.contains("lifted")));
+    assert.match(said(), /Cancelled\. Back at position 2 of 3/);
+  } finally { restore(); await view.unmount(); }
+});
+
+test("a poll mid-drag with the same queue keeps the drag; a queue that changed puts it down", async () => {
+  const restore = motion(true);
+  let setMessages;
+  const orders = [];
+  function Fixture() {
+    const [messages, update] = React.useState(three); setMessages = update;
+    return React.createElement(QueuedMessages, { agent: "codex", messages, busy: null, canEdit: true,
+      onEdit: async () => {}, onRemove() {}, onReorder: (ids) => { orders.push(ids); } });
+  }
+  const view = await dom.render(React.createElement(Fixture));
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 1 of 3")[0]);
+    pointer("pointerdown", 20);
+    pointer("pointermove", 70);
+    await settle(30);
+    // Each poll hands over a new array with the same messages.
+    dom.update(() => setMessages(three.map((m) => ({ ...m }))));
+    await settle(10);
+    assert.equal($$(".qm-row")[1].style.transform, "translate3d(0, -40px, 0)", "still dragging");
+    dom.update(() => setMessages([three[1], three[2]]));
+    await settle(10);
+    assert.ok($$(".qm-row").every((r) => !r.style.transform));
+    pointer("pointerup", 70);
+    await settle(10);
+    assert.deepEqual(orders, []);
+  } finally { restore(); await view.unmount(); }
+});
+
+test("near the list's bottom edge a drag scrolls the list", async () => {
+  const restore = motion(true);
+  const many = Array.from({ length: 8 }, (_, i) => ({ id: `q${i}`, text: `row ${i}`, images: 0 }));
+  const { view } = await render({ agent: "codex", messages: many });
+  try {
+    geometry();
+    const list = $$(".qm-list")[0];
+    let top = 0;
+    Object.defineProperty(list, "scrollTop", { get: () => top, set: (v) => { top = Math.max(0, Math.min(200, v)); }, configurable: true });
+    list.getBoundingClientRect = () => ({ top: 0, bottom: 120, height: 120, left: 0, width: 300 });
+    const pointer = pointerOn(button("Reorder queued message 1 of 8")[0]);
+    pointer("pointerdown", 20);
+    pointer("pointermove", 118);
+    await settle(150);
+    assert.ok(top > 0, "scrolled while held at the edge");
+    pointer("pointercancel", 118);
+    await settle(10);
+    assert.equal($$(".qm-ghost").length, 0);
+  } finally { restore(); await view.unmount(); }
 });
