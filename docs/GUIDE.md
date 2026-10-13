@@ -93,7 +93,7 @@ See [Agent CLI setup](AGENT_CLI.md) for owner commands, restricted tailnet grant
 
 ## Install
 
-With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
+With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22.12 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
 
 ```sh
 git clone --branch v0.1.1 https://github.com/nalebc/reach.git
