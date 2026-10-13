@@ -78,6 +78,7 @@ release notes, so date the heading before tagging.
 
 ### Fixed
 
+- 2026-10-13: Adding Face ID in Settings never worked. The page asked for a new challenge while Face ID was still up, so every answer was refused "for an earlier attempt". After ten tries the button stopped responding, with no message. Turning off "Face ID confirms approvals" failed the same way, and showed "Access expired or was revoked." Now every tap either opens Face ID or says why it can't. Each passkey you add shows a green check with "Added today". The setting uses your device's own name for it: Face ID, Touch ID, fingerprint or face unlock on Android, or Windows Hello. Reach's terminal shows "Reach: Face ID not added: <reason>" for each refused add.
 - 2026-10-13: Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
   They now take the room the picture leaves (a rail at the side on a phone
   turned sideways, rows above and below when upright), and hiding them never

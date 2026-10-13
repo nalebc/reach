@@ -42,16 +42,19 @@ function authenticator({ rsa = false } = {}) {
   const id = crypto.randomBytes(16);
   let counter = 0;
   const auth = { counted: false, flags: 0x05, rp: RP, userHandle: null };
-  auth.create = (options, { origin = ORIGIN, flags = 0x45 } = {}) => {
+  // `ext`: authenticator extension outputs (a Map), after the key, with the
+  // ED flag, as some authenticators add (credProtect, say).
+  auth.create = (options, { origin = ORIGIN, flags = 0x45, ext } = {}) => {
     auth.userHandle = Buffer.from(options.user.id, "base64url");
     const authData = Buffer.concat([
       sha(options.rp.id),
-      Buffer.from([flags]),
+      Buffer.from([ext ? flags | 0x80 : flags]),
       Buffer.alloc(4),
       Buffer.alloc(16),
       Buffer.from([0, id.length]),
       id,
       cbor(cose),
+      ...(ext ? [cbor(ext)] : []),
     ]);
     return {
       id: b64u(id),
@@ -205,6 +208,23 @@ test("adding: made for this computer, with Face ID, from the page that asked", a
   const forOther = phone.create(keys.registrationOptions("phone-2", "me"));
   assert.throws(() => keys.register("phone-1", forOther), /took too long/);
   assert.equal(keys.has(), false);
+});
+
+test("synced passkeys (iCloud Keychain, Google Password Manager: backup eligible and backed up), with extension outputs, ES256 and RS256: added from either address, then sign in", async (t) => {
+  for (const rsa of [false, true])
+    for (const origin of [PRIVATE, ORIGIN]) {
+      const { keys } = setup(t);
+      const phone = authenticator({ rsa });
+      // UP, UV, BE, BS and AT (0x5D), with credProtect's output (ED).
+      const saved = keys.register(
+        "phone-1",
+        phone.create(keys.registrationOptions("phone-1", "me@x.test"), { origin, flags: 0x5d, ext: new Map([["credProtect", 2]]) }),
+        "Android phone",
+      );
+      assert.equal(keys.list()[0].id, saved.id);
+      phone.flags = 0x1d; // UP, UV, BE, BS
+      assert.equal(keys.verifyAssertion("r:n", phone.get(keys.assertionOptions("r:n"), { origin })).id, saved.id, `${rsa ? "RS256" : "ES256"} from ${origin}`);
+    }
 });
 
 test("RSA passkeys (RS256) work too", async (t) => {

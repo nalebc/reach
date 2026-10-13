@@ -96,7 +96,66 @@ export const createWithFaceId = (options: FaceOptions) =>
     })
     .then(asJson);
 
-export const faceIdError = (e: unknown) => {
+// What this device calls the unlock a passkey asks for. The feature takes
+// any platform passkey, so it's said the same way everywhere, in the
+// device's own words: Face ID on an iPhone that has it, Touch ID on a Mac
+// (or an iPhone with a home button), "Face ID or Touch ID" on an iPad (or
+// an iPhone whose screen doesn't say), fingerprint or face unlock on
+// Android (Samsung's included), Windows Hello on Windows. Read from the
+// user agent, cautiously: anything else is the screen lock.
+export type UnlockWords = {
+  word: string; // mid-sentence: "Face ID", "fingerprint or face unlock"
+  Word: string; // starting a sentence
+  title: string; // a heading or a setting's name
+  device: string; // "iPhone", "phone", "PC"…
+};
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+export function unlockWords({
+  ua = typeof navigator === "undefined" ? "" : navigator.userAgent,
+  touch = typeof navigator === "undefined" ? 0 : navigator.maxTouchPoints || 0,
+  // An iPhone's longer side, in points: 812 and up have Face ID; 736 and
+  // under (SE, 8) a home button with Touch ID.
+  longSide = typeof screen === "undefined" ? 0 : Math.max(screen.width || 0, screen.height || 0),
+}: { ua?: string; touch?: number; longSide?: number } = {}): UnlockWords {
+  const said = (word: string, device: string) => ({
+    word,
+    Word: cap(word),
+    title: cap(word),
+    device,
+  });
+  if (/iPhone|iPod/.test(ua))
+    return said(
+      longSide >= 812
+        ? "Face ID"
+        : longSide && longSide <= 736
+          ? "Touch ID"
+          : "Face ID or Touch ID",
+      "iPhone",
+    );
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && touch > 1))
+    return said("Face ID or Touch ID", "iPad");
+  if (/Android/.test(ua)) return said("fingerprint or face unlock", "phone");
+  if (/Windows/.test(ua)) return said("Windows Hello", "PC");
+  if (/Macintosh/.test(ua)) return said("Touch ID", deviceLabel(ua, touch));
+  const device = /Mobi/.test(ua) ? "phone" : "device";
+  return {
+    word: `your ${device}'s screen lock`,
+    Word: `Your ${device}'s screen lock`,
+    title: "Screen lock",
+    device,
+  };
+}
+
+// Why a passkey didn't happen, in this device's words (`said`; Face ID's
+// where a page doesn't say).
+export const faceIdError = (
+  e: unknown,
+  said: Pick<UnlockWords, "word" | "Word" | "device"> = {
+    word: "Face ID",
+    Word: "Face ID",
+    device: "phone",
+  },
+) => {
   const error = e as {
     name?: string;
     message?: string;
@@ -106,20 +165,28 @@ export const faceIdError = (e: unknown) => {
   // which request() would otherwise call "pair again".
   if (error?.body?.error) return error.body.error;
   if (/NotAllowed|Abort/.test(error?.name || ""))
-    return "Face ID was cancelled or took too long.";
+    return `${said.Word} was cancelled or took too long.`;
   if (error?.name === "InvalidStateError")
-    return "This phone's Face ID is already added.";
-  return error?.message || "Face ID didn't work.";
+    return `This ${said.device}'s ${said.word} is already added.`;
+  if (error?.name === "SecurityError")
+    return `${said.Word} can't be used from this page's address. Open Reach from its own link.`;
+  return error?.message || `${said.Word} didn't work.`;
 };
 
-// What to call the passkey in Settings.
-export const deviceLabel = (ua = navigator.userAgent) =>
+// What to call the passkey in Settings. An iPad's Safari says it's a Mac:
+// its touch screen tells them apart.
+export const deviceLabel = (
+  ua = navigator.userAgent,
+  touch = typeof navigator === "undefined" ? 0 : navigator.maxTouchPoints || 0,
+) =>
   /iPhone/.test(ua)
     ? "iPhone"
-    : /iPad/.test(ua)
+    : /iPad/.test(ua) || (/Macintosh/.test(ua) && touch > 1)
       ? "iPad"
       : /Android/.test(ua)
         ? "Android phone"
-        : /Macintosh/.test(ua)
-          ? "Mac"
-          : "This device";
+        : /Windows/.test(ua)
+          ? "Windows PC"
+          : /Macintosh/.test(ua)
+            ? "Mac"
+            : "This device";

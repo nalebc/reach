@@ -226,7 +226,9 @@ export function createPasskeys({
     if (attempts > 10)
       throw fail(
         429,
-        "Too many Face ID attempts here. Approve on your computer instead.",
+        key.startsWith("add:")
+          ? "Too many tries to add Face ID. Wait 2 minutes, then try again."
+          : "Too many Face ID attempts here. Approve on your computer instead.",
       );
     const challenge = newChallenge();
     challenges.set(key, { challenge, until: now() + 120000, attempts });
@@ -327,7 +329,11 @@ export function createPasskeys({
       if (!authData.credentialId)
         throw fail(400, "That Face ID response has no passkey in it.");
       const key = coseToJwk(authData.publicKey);
-      crypto.createPublicKey({ key: key.jwk, format: "jwk" }); // must load
+      try {
+        crypto.createPublicKey({ key: key.jwk, format: "jwk" }); // must load
+      } catch {
+        throw fail(400, "That passkey's key can't be read here.");
+      }
       const s = store();
       const id = b64u(authData.credentialId);
       if (!unb64u(credential.id).equals(authData.credentialId) ||

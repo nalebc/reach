@@ -17,3 +17,17 @@
 .agent-faceid {
   margin: 14px 0;
 }
+/* A passkey set up here: on, with Reach's green check. */
+.faceid-on {
+  color: #5fd39a;
+}
+/* What a tap did: why not (red), or added (green). */
+.faceid-line {
+  color: var(--reach-ink, inherit);
+}
+.faceid-line.bad {
+  color: #f08a7a;
+}
+.faceid-line.good {
+  color: #5fd39a;
+}

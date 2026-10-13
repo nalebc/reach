@@ -49,6 +49,7 @@ function phone({ faceId = true, passkey = true, approveAfterFaceId = true } = {}
     },
     create: (options) => {
       calls.create.push(options);
+      if (calls.createResult) return calls.createResult();
       return Promise.resolve({ id: "AQID", rawId: bytes(1, 2, 3), type: "public-key", response: { clientDataJSON: bytes(123, 125), attestationObject: bytes(160), getTransports: () => ["internal"] } });
     },
   };
@@ -222,6 +223,30 @@ test("leaving during the offer (phone locked, reload) keeps the approval: saved 
   assert.equal(dom.window.localStorage.getItem("reach.browser.active"), saved[0].id);
   assert.equal(dom.window.localStorage.getItem("reach.devices"), null, "not the app way's");
   await view.unmount(); // the phone goes away mid-offer
+  dom.window.localStorage.clear();
+});
+
+test("the offer, cancelled: said, fresh options fetched, and the next tap works (it used to stay greyed out)", async () => {
+  dom.window.document.documentElement.dataset.connection = "browser";
+  dom.window.localStorage.clear();
+  const { log, calls } = phone({ passkey: false });
+  const { view, c, paired } = await render();
+  await connect(c);
+  await settle(1800);
+  const asked = () => log.filter(([, , p]) => p === "/api/auth/passkeys/options").length;
+  assert.equal(asked(), 1);
+  calls.createResult = () => Promise.reject(Object.assign(new Error("x"), { name: "NotAllowedError" }));
+  await click(button(c, "Use Face ID next time"));
+  await settle(80);
+  assert.match(c.textContent, /Face ID was cancelled or took too long/);
+  assert.equal(asked(), 2, "fresh options, once Face ID was down");
+  assert.equal(button(c, "Use Face ID next time").disabled, false, "ready for another try");
+  delete calls.createResult;
+  await click(button(c, "Use Face ID next time"));
+  await settle(80);
+  assert.equal(calls.create.length, 2);
+  assert.equal(paired.length, 1);
+  await view.unmount();
   dom.window.localStorage.clear();
 });
 

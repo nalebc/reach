@@ -25,10 +25,9 @@ const NODES = {
 };
 const IP = Object.fromEntries(Object.entries(NODES).map(([ip, n]) => [n.id, ip]));
 
-test(
-  "Face ID: added from an approved browser, then a new browser of yours is approved with it",
-  { skip: process.platform === "win32", timeout: 30000 },
-  async (t) => {
+// A real Reach on Tailscale Serve's private socket, and `call` for requests
+// as Serve delivers them from the devices above.
+async function reachWithFaceId(t) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-passkey-route-"));
     const socketDir = fs.mkdtempSync("/tmp/reach-pk-sock-");
     const socketPath = path.join(socketDir, "s");
@@ -82,6 +81,14 @@ test(
         req.once("error", reject);
         req.end(body ? JSON.stringify(body) : undefined);
       });
+    return { reach, call, dir };
+}
+
+test(
+  "Face ID: added from an approved browser, then a new browser of yours is approved with it",
+  { skip: process.platform === "win32", timeout: 30000 },
+  async (t) => {
+    const { reach, call, dir } = await reachWithFaceId(t);
     const startPage = softAuthenticator({ origin: `https://${HOST}` });
 
     // Before any passkey: no offer, and nothing to sign.
@@ -161,5 +168,83 @@ test(
     assert.ok(list.json.passkeys[0].usedAt);
     assert.equal((await call("nSafari", `/api/auth/passkeys/${list.json.passkeys[0].id}`, { method: "DELETE", token: safari.token })).status, 200);
     assert.equal((await call("nOther", "/api/auth/requests", { body: { name: "Mac" } })).json.passkey, undefined);
+  },
+);
+
+test(
+  "a refused add says why, in Reach's terminal and the security record (never the answer itself); a refused Face ID answer on the setting keeps its reason",
+  { skip: process.platform === "win32", timeout: 30000 },
+  async (t) => {
+    const { reach, call } = await reachWithFaceId(t);
+    const said = [];
+    const log = console.log;
+    console.log = (...args) => said.push(args.join(" "));
+    t.after(() => {
+      console.log = log;
+    });
+    const phone = softAuthenticator({ origin: `https://${HOST}:8443` });
+    const safari = reach.auth.issue("iPhone", ALL_SCOPES, "device", {
+      tailscale: { userId: "42", nodeId: "nSafari" },
+      nodeName: "iphone-browser",
+    });
+    const options = () => call("nSafari", "/api/auth/passkeys/options", { token: safari.token, body: {} });
+    const add = (credential) => call("nSafari", "/api/auth/passkeys", { token: safari.token, body: { credential, label: "iPhone" } });
+    const security = async () =>
+      (await call("nSafari", "/api/activity", { method: "GET", token: safari.token })).json
+        .filter((e) => e.kind === "security")
+        .map((e) => e.title);
+
+    // What the page used to do: a new challenge while Face ID was up.
+    const first = await options();
+    await options();
+    const answer = phone.create(first.json);
+    const refused = await add(answer);
+    assert.equal(refused.status, 401);
+    assert.equal(refused.json.error, "That Face ID response is for an earlier attempt. Try again.");
+    const line = "Face ID not added: That Face ID response is for an earlier attempt. Try again.";
+    assert.deepEqual(said.filter((l) => /Face ID/.test(l)), [`Reach: ${line}`]);
+    assert.ok((await security()).includes(line));
+    assert.ok(
+      !said.join("\n").includes(answer.id) && !said.join("\n").includes(answer.response.clientDataJSON),
+      "nothing of the answer",
+    );
+    // The same reason again right away: said once.
+    await add(answer);
+    assert.equal(said.filter((l) => l === `Reach: ${line}`).length, 1);
+    // Not your own device: said too.
+    const invite = reach.auth.inviteGuest({ name: "G", ttlSeconds: 600, full: true });
+    const guest = reach.auth.redeemGuest(invite.invitation, { userId: "42", nodeId: "nOther" });
+    assert.equal((await call("nOther", "/api/auth/passkeys/options", { token: guest.token, body: {} })).status, 403);
+    assert.ok(said.includes("Reach: Face ID not added: Only your own approved devices can manage Face ID."));
+    // Added: said.
+    const ok = await add(phone.create((await options()).json));
+    assert.equal(ok.status, 201, JSON.stringify(ok.json));
+    assert.ok(said.includes("Reach: Face ID added (iPhone)."));
+    assert.ok((await security()).includes("Face ID added (iPhone)"));
+    // Too many tries in a row: adding's own words.
+    let last;
+    for (let i = 0; i < 12 && last?.status !== 429; i++) last = await options();
+    assert.equal(last.status, 429);
+    assert.equal(last.json.error, "Too many tries to add Face ID. Wait 2 minutes, then try again.");
+    assert.ok(said.includes("Reach: Face ID not added: Too many tries to add Face ID. Wait 2 minutes, then try again."));
+
+    // Settings → Agents: on, then off with an answer to an older challenge.
+    // Its reason reaches the phone, not "Access expired or was revoked.".
+    const setting = (body) => call("nSafari", "/api/settings", { token: safari.token, body });
+    assert.equal((await setting({ faceIdForAgents: true })).json.faceIdForAgents, true);
+    const ask = () => call("nSafari", "/api/settings/passkey/options", { token: safari.token, body: {} });
+    const older = await ask();
+    await ask();
+    const stale = await setting({ faceIdForAgents: false, credential: phone.get(older.json) });
+    assert.equal(stale.status, 401);
+    assert.equal(stale.json.error, "That Face ID response is for an earlier attempt. Try again.");
+    assert.equal(
+      (await call("nSafari", "/api/settings", { method: "GET", token: safari.token })).json.faceIdForAgents,
+      true,
+      "still on",
+    );
+    const off = await setting({ faceIdForAgents: false, credential: phone.get((await ask()).json) });
+    assert.equal(off.status, 200, JSON.stringify(off.json));
+    assert.equal(off.json.faceIdForAgents, false);
   },
 );
