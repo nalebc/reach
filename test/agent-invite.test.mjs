@@ -7,6 +7,7 @@ import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Inviting an agent from the phone: its own folders and access, joined once
 // within a short window, bound to the Tailscale device that joined, and never
@@ -313,7 +314,7 @@ test("an agent's invite key lasts its join window; its device lasts the invitati
         keys.push(JSON.parse(init.body));
         return json({
           id: `k${keys.length}`,
-          key: `tskey-auth-k${keys.length}`,
+          key: tskey(`auth-k${keys.length}`),
         });
       }
       if (route === "/tailnet/-/devices") return json({ devices });
@@ -335,7 +336,7 @@ test("an agent's invite key lasts its join window; its device lasts the invitati
     });
     await guestKeys.setup({
       clientId: "id",
-      clientSecret: "tskey-client-abc-123",
+      clientSecret: tskey("client-abc-123"),
     });
     const made = await guestKeys.createInvite({
       ttlSeconds: 30 * 86400,

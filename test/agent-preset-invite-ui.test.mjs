@@ -1,6 +1,7 @@
 import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // The owner's invite, as ChatGPT would: how the agent connects (three tiles),
 // what it may do (a list with a check; Apps and Files ask which), its name
@@ -66,7 +67,7 @@ function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllow
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [], ...(runtime ? { runtime } : {}) });
     if (route === "/api/files") return reply({ items: [] });
-    if (route === "/api/guests/key") return reply({ key: "tskey-auth-k1", hostname: "rf-ab12-agent" });
+    if (route === "/api/guests/key") return reply({ key: tskey("auth-k1"), hostname: "rf-ab12-agent" });
     if (route.startsWith("/api/clients/") && init.method === "DELETE") return reply({ ok: true });
     return reply({ error: "Unexpected request" }, 404);
   };

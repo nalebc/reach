@@ -1,6 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Face ID sign-in in the browser: a new browser of yours, no Tailscale app,
 // opens the link and sees one button. Face ID (straight from the tap), and
@@ -58,7 +59,7 @@ const button = (root, text) => [...root.querySelectorAll("button")].find((b) => 
 test("the start page: a new browser opens with one Face ID button, and the tap goes straight to Face ID", async () => {
   answers["/reach-start.json"] = json(CONFIG);
   answers["/faceid/options"] = json({ id: "ask-1", options: { challenge: "Y2hhbGxlbmdl", rpId: "mac.t.ts.net", allowCredentials: [], userVerification: "required", timeout: 120000 } });
-  answers["/faceid/join"] = json({ key: "tskey-auth-kX-abc", hostname: "rf-ab12-aaaaaaaaaa", ticket: "T".repeat(43) });
+  answers["/faceid/join"] = json({ key: tskey("auth-kX-abc"), hostname: "rf-ab12-aaaaaaaaaa", ticket: "T".repeat(43) });
   answers["/tailnet/client.wasm"] = () => new Response("wasm");
   dom.document.body.insertAdjacentHTML("beforeend", '<main id="start"></main>');
   dom.window.fetch = globalThis.fetch; // a browser's window.fetch is its fetch

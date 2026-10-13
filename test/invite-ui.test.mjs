@@ -1,6 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Inviting someone (a share dialog like Claude's and ChatGPT's): a name, an
 // access level, Invite; one link; everyone with access listed. The requests
@@ -34,7 +35,7 @@ const device = (name, host) => ({
 const secret = (c) => c.repeat(43);
 // The SHA-256 of the runtime each computer serves: every agent command pins it.
 const RUNTIME = "ab".repeat(32);
-const KEY = { key: "tskey-auth-kTEST123456-abcdef", hostname: "rg-ab12-k3m9x2p7qa" };
+const KEY = { key: tskey("auth-kTEST123456-abcdef"), hostname: "rg-ab12-k3m9x2p7qa" };
 
 // `keyed`: true, false, or the hosts holding the invite-link credential.
 // `unavailable`: why this computer can make no invite keys (a Windows Reach).
@@ -51,14 +52,14 @@ function computers({ keyed = true, failOn = "", guests = [], policyBlock = false
       new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
     if (u.pathname === "/api/guests/keys" && init.method === "POST") {
       if (body.accessToken !== undefined) {
-        if (body.accessToken !== "tskey-api-good-1")
+        if (body.accessToken !== tskey("api-good-1"))
           return reply(400, { error: "Tailscale didn't accept that token: it may have expired, or your account isn't an admin of this tailnet." });
         if (policyBlock && body.narrowDefaultWildcard !== true)
           return reply(409, { error: "Guest access is not isolated: grants[1]", canNarrowDefault: true });
         holders.add(host);
         return reply(200, { configured: true, added: ["tagOwners: tag:reach-guest → autogroup:admin", "grant: tag:reach-guest → 100.64.0.1 port 8443"], allowAll: !policyBlock });
       }
-      if (body.clientSecret !== "tskey-client-good") return reply(502, { error: "Tailscale didn't accept the OAuth client. Check its ID and secret." });
+      if (body.clientSecret !== tskey("client-good")) return reply(502, { error: "Tailscale didn't accept the OAuth client. Check its ID and secret." });
       holders.add(host);
       return reply(200, { configured: true });
     }
@@ -361,21 +362,21 @@ test("set up invite links from the phone with one token, then the very next invi
   };
   const connect = () => [...setup.querySelectorAll("button")].find((b) => /Connect|Setting up/.test(b.textContent));
   assert.equal(connect().disabled, true);
-  await type(field, "tskey-client-wrong-kind");
+  await type(field, tskey("client-wrong-kind"));
   assert.equal(connect().disabled, true, "only an access token");
-  await type(field, "tskey-api-expired-9");
+  await type(field, tskey("api-expired-9"));
   await click(connect());
   await settle(60);
   assert.match(setup.textContent, /didn't accept that token/);
-  await type(field, "tskey-api-good-1");
+  await type(field, tskey("api-good-1"));
   await click(connect());
   await settle(60);
   assert.equal(c.querySelector(".ivt-setup"), null, "done");
   assert.deepEqual(
     log.filter(([m, , p]) => m === "POST" && p === "/api/guests/keys").map(([, h, , b]) => [h, b]),
     [
-      ["mac-a", { accessToken: "tskey-api-expired-9" }],
-      ["mac-a", { accessToken: "tskey-api-good-1" }],
+      ["mac-a", { accessToken: tskey("api-expired-9") }],
+      ["mac-a", { accessToken: tskey("api-good-1") }],
     ],
   );
   // The policy still lets everyone reach everything: said once, plainly.
@@ -395,7 +396,7 @@ test("default all-access policy offers a reviewed fix before retrying the token"
   await settle(40);
   await click(c.querySelector(".ivt-setup-line"));
   const field = c.querySelector('[aria-label="Access token"]');
-  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(field, "tskey-api-good-1");
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(field, tskey("api-good-1"));
   field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await settle();
   await click([...c.querySelectorAll(".ivt-setup button")].find((b) => b.textContent === "Connect"));
@@ -404,8 +405,8 @@ test("default all-access policy offers a reviewed fix before retrying the token"
   await click([...c.querySelectorAll(".ivt-policy-fix button")][0]);
   assert.equal(c.querySelector(".ivt-setup"), null);
   assert.deepEqual(log.filter(([m, , p]) => m === "POST" && p === "/api/guests/keys").map(([, , , body]) => body), [
-    { accessToken: "tskey-api-good-1" },
-    { accessToken: "tskey-api-good-1", narrowDefaultWildcard: true },
+    { accessToken: tskey("api-good-1") },
+    { accessToken: tskey("api-good-1"), narrowDefaultWildcard: true },
   ]);
   await view.unmount();
 });
@@ -447,12 +448,12 @@ test("by hand still works: three short steps, and back to the token way", async 
   const connect = () => [...setup.querySelectorAll("button")].find((b) => /Connect|Checking/.test(b.textContent));
   assert.equal(connect().disabled, true);
   await type(field("Client ID"), "k123");
-  await type(field("Client secret"), "tskey-client-bad");
+  await type(field("Client secret"), tskey("client-bad"));
   await click(connect());
   await settle(60);
   assert.match(setup.textContent, /didn't accept the OAuth client/);
   assert.equal(field("Client secret").type, "password");
-  await type(field("Client secret"), "tskey-client-good");
+  await type(field("Client secret"), tskey("client-good"));
   await click(connect());
   await settle(60);
   assert.equal(c.querySelector(".ivt-setup"), null, "done");
@@ -460,8 +461,8 @@ test("by hand still works: three short steps, and back to the token way", async 
   assert.deepEqual(
     log.filter(([m, , p]) => m === "POST" && p === "/api/guests/keys").map(([, h, , b]) => [h, b]),
     [
-      ["mac-a", { clientId: "k123", clientSecret: "tskey-client-bad" }],
-      ["mac-a", { clientId: "k123", clientSecret: "tskey-client-good" }],
+      ["mac-a", { clientId: "k123", clientSecret: tskey("client-bad") }],
+      ["mac-a", { clientId: "k123", clientSecret: tskey("client-good") }],
     ],
   );
   await view.unmount();
@@ -637,7 +638,7 @@ test("set up after inviting: the waiting link gets its key, so they just open it
     el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     await settle();
   };
-  await type(setup.querySelector('[aria-label="Access token"]'), "tskey-api-good-1");
+  await type(setup.querySelector('[aria-label="Access token"]'), tskey("api-good-1"));
   await click([...setup.querySelectorAll("button")].find((b) => b.textContent === "Connect"));
   await settle(120);
   const keyCall = log.find(([m, , p]) => m === "POST" && p === "/api/guests/key");
@@ -812,7 +813,7 @@ test("an agent without invite links: still a command (for a machine on your tail
     el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     await settle();
   };
-  await type(setup.querySelector('[aria-label="Access token"]'), "tskey-api-good-1");
+  await type(setup.querySelector('[aria-label="Access token"]'), tskey("api-good-1"));
   await click([...setup.querySelectorAll("button")].find((b) => b.textContent === "Connect"));
   await settle(120);
   const keyCall = log.find(([m, , p]) => m === "POST" && p === "/api/guests/key");

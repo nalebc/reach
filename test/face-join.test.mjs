@@ -10,6 +10,7 @@ import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 import { createFaceJoin } from "../server/face-join.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
 import { softAuthenticator } from "./helpers/soft-authenticator.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Face ID sign-in: a new browser, no Tailscale app, no Tailscale login. The
 // start page (the internet) gets a challenge, the phone answers with a passkey
@@ -40,7 +41,7 @@ function tailscaleApi({ devices = [] } = {}) {
     calls.push([init.method || "GET", u.pathname, body]);
     const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "Content-Type": "application/json" } });
     if (u.pathname === "/api/v2/oauth/token") return json({ access_token: "tok", expires_in: 3600 });
-    if (u.pathname === "/api/v2/tailnet/-/keys" && init.method === "POST") return json({ id: `k${++keys}`, key: `tskey-auth-k${keys}CNTRL-secretsecret` });
+    if (u.pathname === "/api/v2/tailnet/-/keys" && init.method === "POST") return json({ id: `k${++keys}`, key: tskey(`auth-k${keys}CNTRL-secretsecret`) });
     if (u.pathname === "/api/v2/tailnet/-/devices") return json({ devices });
     if (u.pathname.startsWith("/api/v2/device/") && init.method === "DELETE") return json({});
     return json({ message: "no" }, 404);
@@ -48,7 +49,7 @@ function tailscaleApi({ devices = [] } = {}) {
   return { calls, request, devices };
 }
 const configure = (dataDir) =>
-  fs.writeFileSync(path.join(dataDir, "tailscale-oauth.json"), JSON.stringify({ version: 1, clientId: "kClient", clientSecret: "tskey-client-kClient-secret" }));
+  fs.writeFileSync(path.join(dataDir, "tailscale-oauth.json"), JSON.stringify({ version: 1, clientId: "kClient", clientSecret: tskey("client-kClient-secret") }));
 
 test("the internet's challenges have a pool of their own: a flood can't block your tailnet's Face ID", (t) => {
   const { passkeys, phone } = withPasskey(tmp(t));

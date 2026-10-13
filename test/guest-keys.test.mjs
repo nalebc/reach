@@ -7,11 +7,12 @@ import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { command } from "../scripts/home.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Invite keys against a fake Tailscale API: keys are single-use, tagged and
 // lasting; guest devices are removed when their invitation ends or is
 // revoked; nothing that isn't Reach's own guest device is ever touched.
-function fakeTailscale({ secret = "tskey-client-abc-123", devices = [] } = {}) {
+function fakeTailscale({ secret = tskey("client-abc-123"), devices = [] } = {}) {
   const api = { calls: [], devices, keys: [], deleted: [], tokens: 0 };
   api.request = async (url, init = {}) => {
     const u = new URL(url);
@@ -43,7 +44,7 @@ function fakeTailscale({ secret = "tskey-client-abc-123", devices = [] } = {}) {
       const body = JSON.parse(init.body);
       const key = {
         id: `k${api.keys.length + 1}`,
-        key: `tskey-auth-k${api.keys.length + 1}`,
+        key: tskey(`auth-k${api.keys.length + 1}`),
         body,
       };
       api.keys.push(key);
@@ -79,13 +80,13 @@ test("setup saves the OAuth client only after Tailscale accepts it", async () =>
       /starts with tskey-client-/,
     );
     await assert.rejects(
-      keys.setup({ clientId: "id", clientSecret: "tskey-client-wrong" }),
+      keys.setup({ clientId: "id", clientSecret: tskey("client-wrong") }),
       /didn't accept the OAuth client/,
     );
     assert.equal(keys.configured(), false);
     await keys.setup({
       clientId: " id ",
-      clientSecret: " tskey-client-abc-123 ",
+      clientSecret: ` ${tskey("client-abc-123")} `,
     });
     assert.equal(keys.configured(), true);
     // The check made a short key and deleted it again.
@@ -97,7 +98,7 @@ test("setup saves the OAuth client only after Tailscale accepts it", async () =>
       {
         version: 1,
         clientId: "id",
-        clientSecret: "tskey-client-abc-123",
+        clientSecret: tskey("client-abc-123"),
       },
     );
   } finally {
@@ -116,7 +117,7 @@ test("one single-use, tagged, lasting key per invitation; devices removed when i
       request: api.request,
       now: () => clock,
     });
-    await keys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    await keys.setup({ clientId: "id", clientSecret: tskey("client-abc-123") });
     const tokensAfterSetup = api.tokens;
     const invite = await keys.createInvite({
       ttlSeconds: 3600,
@@ -217,7 +218,7 @@ test("revoking the guest removes their device at once; other invitations stay", 
       self: "dev-a",
       request: api.request,
     });
-    await keys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    await keys.setup({ clientId: "id", clientSecret: tskey("client-abc-123") });
     const a = await keys.createInvite({
       ttlSeconds: 3600,
       clientIds: ["guest-a"],
@@ -270,7 +271,7 @@ test("POST /api/guests with key: one link, no orphan invitation when keys aren't
   );
   await reach.guestKeys.setup({
     clientId: "id",
-    clientSecret: "tskey-client-abc-123",
+    clientSecret: tskey("client-abc-123"),
   });
   const invite = await reach.guestKeys.createInvite({
     ttlSeconds: 600,
@@ -347,9 +348,9 @@ test(
         grants: [{ src: ["tag:reach-guest"], dst: ["100.64.0.5"], ip: ["tcp:8443"] }],
       },
     });
-    const wrong = await call("/api/guests/keys", phone.token, { clientId: "id", clientSecret: "tskey-client-wrong" });
+    const wrong = await call("/api/guests/keys", phone.token, { clientId: "id", clientSecret: tskey("client-wrong") });
     assert.equal(wrong.status, 502);
-    const ok = await call("/api/guests/keys", phone.token, { clientId: "id", clientSecret: "tskey-client-abc-123" });
+    const ok = await call("/api/guests/keys", phone.token, { clientId: "id", clientSecret: tskey("client-abc-123") });
     assert.equal(ok.status, 200);
     assert.deepEqual(ok.json, { configured: true });
     assert.doesNotMatch(ok.text + (await call("/api/guests/keys", phone.token)).text, /tskey-client/);
@@ -358,7 +359,7 @@ test(
     const invite = reach.auth.inviteGuest({ name: "G", ttlSeconds: 600, full: true });
     const guest = reach.auth.redeemGuest(invite.invitation, { userId: "42", nodeId: "nPhone" });
     assert.equal((await call("/api/guests/keys", guest.token)).status, 403);
-    assert.equal((await call("/api/guests/keys", guest.token, { clientId: "x", clientSecret: "tskey-client-x" })).status, 403);
+    assert.equal((await call("/api/guests/keys", guest.token, { clientId: "x", clientSecret: tskey("client-x") })).status, 403);
   },
 );
 
@@ -371,7 +372,7 @@ test("a device that renamed itself still leaves by its node ID; renamed guests g
   try {
     const api = fakeTailscale();
     const keys = createGuestKeys({ dataDir: dir, self: "dev-a", request: api.request });
-    await keys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    await keys.setup({ clientId: "id", clientSecret: tskey("client-abc-123") });
     const a = await keys.createInvite({ ttlSeconds: 3600, clientIds: ["agent-a"] });
     const b = await keys.createInvite({ ttlSeconds: 3600, clientIds: ["agent-b"] });
     const now = new Date().toISOString(), old = new Date(Date.now() - 3600_000).toISOString();
@@ -435,7 +436,7 @@ test(
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(socketDir, { recursive: true, force: true });
     });
-    await reach.guestKeys.setup({ clientId: "id", clientSecret: "tskey-client-abc-123" });
+    await reach.guestKeys.setup({ clientId: "id", clientSecret: tskey("client-abc-123") });
     const phone = reach.auth.issue("My iPhone", ALL_SCOPES, "device", { tailscale: { userId: "42", nodeId: "nPhone" } });
     const call = (route, from, token, method = "GET", body) =>
       new Promise((resolve, reject) => {
@@ -510,7 +511,7 @@ test("a Windows computer says why invite links aren't available, wherever it's a
   const keys = await call("/api/guests/keys");
   assert.equal(keys.status, 200);
   assert.deepEqual([keys.json.configured, keys.json.available, keys.json.why], [false, false, why]);
-  const setup = await call("/api/guests/keys", { accessToken: "tskey-api-x" });
+  const setup = await call("/api/guests/keys", { accessToken: tskey("api-x") });
   assert.deepEqual([setup.status, setup.json.error], [404, why]);
   const key = await call("/api/guests/key", { ttlSeconds: 600, clientIds: [] });
   assert.deepEqual([key.status, key.json.error], [409, why], "not told to run invites, which can't work here");
