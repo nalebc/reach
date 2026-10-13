@@ -327,34 +327,6 @@
 .screen-typing .simple-screen-caption {
   display: none;
 }
-.action-modifiers {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.action-modifiers button {
-  min-height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #ffffff06;
-  font-size: 12px;
-}
-.action-modifiers button[aria-pressed="true"] {
-  color: var(--lime);
-  border-color: #b9f7e870;
-  background: #b9f7e81a;
-}
-.action-key-picker {
-  display: flex;
-  gap: 10px;
-}
-.action-key-picker select {
-  min-width: 0;
-  flex: 1;
-  min-height: 44px;
-}
-
 /* Phones and tablets use bottom navigation in either orientation. No drawer. */
 @media (max-width: 1024px), (pointer: coarse) {
   .app-shell > .sidebar {

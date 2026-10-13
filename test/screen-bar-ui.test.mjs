@@ -57,7 +57,7 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
   // Shortcuts and options are one menu: keys on top, then short lists.
   bar.querySelector('[aria-label="Screen options"]').click();
   const menu = await dom.waitFor(() => $('dialog[aria-label="Screen options"]'));
-  assert.ok(menu.querySelector(".screen-helper-action"), "keys in the menu");
+  assert.ok(menu.querySelector(".key-tile"), "keys in the menu");
   for (const row of ["Copy selected text", "Clipboard", "Touch", "Pause", "Connection"])
     assert.ok([...menu.querySelectorAll(".gs-row")].some((r) => r.textContent.startsWith(row)), row);
   menu.querySelector('[aria-label="Close panel"]').click();

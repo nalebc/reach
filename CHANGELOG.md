@@ -10,6 +10,18 @@ release notes, so date the heading before tagging.
 
 ### Changed
 
+- 2026-10-13: Keys in the screen's menu are a grid of icon tiles, four across
+  on a phone, instead of a row of pills that scrolled sideways. Each tile shows
+  an icon and a word or two. The exact shortcut is the tile's name and tooltip.
+  Eight everyday keys come first: previous and next tab, new tab, close tab,
+  switch app, find, undo and Escape. **More** opens the rest in place. The
+  "Other keys" list and its **Send key** button are gone. In their place,
+  modifier chips (⌘ ⌥ ⌃ ⇧ on a Mac, Win Ctrl Alt Shift on Windows) are held
+  with the next key tapped. That one tap sends the combination, and the chips
+  then let go. Function keys, letters and digits are one more tap away. The
+  commands for the app in front are tiles too, and Keys doesn't repeat one
+  they already offer.
+
 - 2026-10-12: Agents on the Mac take one turn per step. Every tool that acts
   (reach_act, press, fill, and opening an app, page, bank, file or window)
   answers with the screen as text once it has settled (about a second after

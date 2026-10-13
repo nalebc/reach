@@ -1,0 +1,71 @@
+import {
+  AppWindow,
+  ArrowLeft,
+  ArrowRight,
+  ClipboardPaste,
+  Command,
+  Copy,
+  Eraser,
+  ExternalLink,
+  FileSearch,
+  FolderPlus,
+  FolderUp,
+  Globe,
+  History,
+  MessageSquarePlus,
+  OctagonX,
+  Plus,
+  Printer,
+  Redo2,
+  RotateCcwSquare,
+  RotateCw,
+  Save,
+  Scissors,
+  Search,
+  Settings,
+  SquarePlus,
+  SquareX,
+  Undo2,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+
+// An app command's icon, from its words: the hand-picked commands
+// (app-context.ts) and whatever an app's own menu calls its commands. The
+// same words get the same icon as in Keys; anything unknown gets one quiet
+// fallback. First match wins.
+const ICONS: [RegExp, LucideIcon][] = [
+  [/^new (chat|thread|conversation|session|message)/i, MessageSquarePlus],
+  [/^new tab/i, SquarePlus],
+  [/^new window/i, AppWindow],
+  [/^new folder/i, FolderPlus],
+  [/^new\b/i, Plus],
+  [/^reopen/i, RotateCcwSquare],
+  [/^close tab/i, SquareX],
+  [/^close\b/i, X],
+  [/^(reload|refresh)\b/i, RotateCw],
+  [/^back$/i, ArrowLeft],
+  [/^forward$/i, ArrowRight],
+  [/^(address bar|open location)/i, Globe],
+  [/^quick open|^go to file/i, FileSearch],
+  [/^command palette/i, Command],
+  [/^(find|search)\b/i, Search],
+  [/^interrupt/i, OctagonX],
+  [/^clear\b/i, Eraser],
+  [/^previous command/i, History],
+  [/^(up a folder|enclosing folder)/i, FolderUp],
+  [/^save\b/i, Save],
+  [/^undo\b/i, Undo2],
+  [/^redo\b/i, Redo2],
+  [/^copy\b/i, Copy],
+  [/^cut\b/i, Scissors],
+  [/^paste\b/i, ClipboardPaste],
+  [/^print\b/i, Printer],
+  [/^(settings|preferences)/i, Settings],
+  [/^(open|go to)\b/i, ExternalLink],
+];
+
+export function commandIcon(label: string): LucideIcon {
+  return ICONS.find(([pattern]) => pattern.test(label))?.[1] ?? Zap;
+}

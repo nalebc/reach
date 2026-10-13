@@ -1089,10 +1089,12 @@ export default function Screen({
                   )}
                   {control && (
                     <ScreenActions
-                      strip
                       platform={device.platform}
                       disabled={!usable || helperBusy}
                       run={(helper) => void runHelper(helper)}
+                      shownAbove={
+                        appContext.app ? contextActions.map((item) => item.label) : []
+                      }
                     />
                   )}
                   {(control || (canControl && device.capabilities.apps)) && (

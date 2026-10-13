@@ -164,64 +164,11 @@
   opacity: 0.75;
 }
 
-/* The bar's one menu (···): keys as small tiles on top, then Settings'
-   grouped lists (settings-list.css), as ChatGPT lays a menu out. */
+/* The bar's one menu (···): the app's commands and the keys as tiles on top
+   (key-tiles.css), then Settings' grouped lists (settings-list.css), as
+   ChatGPT lays a menu out. */
 .screen-menu .screen-popup-body > .gs-group + .gs-group {
   margin-top: 14px;
-}
-.screen-menu .screen-action-groups,
-.screen-menu .app-commands {
-  margin-bottom: 14px;
-}
-.screen-menu .screen-action-groups h3,
-.screen-menu .app-commands h3 {
-  margin: 0 4px 8px;
-  font: 600 13px system-ui, -apple-system, sans-serif;
-  color: var(--muted, #93a096);
-}
-/* Keys and app commands: one row of pills that scrolls sideways, not a
-   wall of tiles. */
-.screen-menu .screen-helper-grid {
-  display: flex;
-  gap: 8px;
-  margin: 0 -22px;
-  padding: 0 22px 2px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-}
-.screen-menu .screen-helper-grid::-webkit-scrollbar {
-  display: none;
-}
-.screen-menu .screen-helper-action {
-  flex: 0 0 auto;
-  flex-direction: row;
-  align-items: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 999px;
-  background: #161e1a;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
-  color: #eef4ef;
-  font-size: 14px;
-  white-space: nowrap;
-}
-.screen-menu .screen-helper-action svg {
-  width: 16px;
-  height: 16px;
-}
-.screen-menu .screen-helper-action:active:not(:disabled) {
-  background: #1e2823;
-}
-.screen-menu .screen-helper-action small {
-  display: none;
-}
-.screen-menu .screen-more-toggle {
-  display: block;
-  margin: 4px 0 0 -6px;
-  min-height: 32px;
 }
 /* A row's choice sits where its value would: plain text, no box. */
 .gs-row .gs-select {
@@ -244,12 +191,6 @@ button.gs-row[aria-pressed="true"] .gs-value {
   margin-top: -6px;
 }
 
-@media (max-width: 600px) {
-  .screen-menu .screen-helper-grid {
-    margin: 0 -20px;
-    padding: 0 20px 2px;
-  }
-}
 /* A phone on its side: the menu is a panel down the right edge, so the
    screen stays in view and nothing reaches past the top. */
 @media (orientation: landscape) and (max-height: 500px) {
@@ -270,10 +211,6 @@ button.gs-row[aria-pressed="true"] .gs-value {
   }
   .screen-menu h2 {
     font-size: 17px;
-  }
-  .screen-menu .screen-helper-grid {
-    margin: 0 -16px;
-    padding: 0 16px 2px;
   }
   .screen-menu .gs-row {
     min-height: 46px;
