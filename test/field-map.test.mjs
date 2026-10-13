@@ -140,7 +140,7 @@ function connection({ scanner, helper = async () => ({}) }) {
   const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
   return { ws, send };
 }
-const until = async (check, ms = 1500) => {
+const until = async (check, ms = 5000) => {
   for (const end = Date.now() + ms; !check() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
 };
 

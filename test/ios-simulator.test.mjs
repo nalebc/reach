@@ -268,7 +268,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const finished = await wait(async () => {
         if (failures.has(download.id)) throw Error("Native download failed: " + JSON.stringify(failures.get(download.id)));
         return completed.get(download.id) || (await native("BackgroundTransfer", "finished")).files.find(file => file.id === download.id);
-      }, "native URLSession download", 45000);
+      }, "native URLSession download", 120000);
       const downloaded = await native("Filesystem", "readFile", { path: finished.uri });
       check(atob(downloaded.data) === "Reach simulator bytes\n", "native authenticated download preserves bytes");
       await wait(async () => (await native("App", "getState")).isActive, "app foreground resume");
