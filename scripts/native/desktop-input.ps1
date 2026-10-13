@@ -3,6 +3,7 @@ $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -30,6 +31,40 @@ public class ReachDesktopInput {
  public static void Scroll(int x,int y){Touch();if(y!=0)mouse_event(2048,0,0,y,UIntPtr.Zero);if(x!=0)mouse_event(4096,0,0,-x,UIntPtr.Zero);}
 }
 '@
+# A look at the field under a finger never focuses it or reads its text.
+# A slow UI Automation provider cannot delay the click behind the probe:
+# allow one background look, bounded to 250 ms, without piling up workers.
+Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Point].Assembly.Location) -TypeDefinition @'
+using System;
+using System.Threading;
+using System.Windows;
+using System.Windows.Automation;
+public class ReachDesktopFieldProbe {
+ static readonly object gate=new object(); static Thread worker;
+ public static int At(double x,double y){lock(gate){
+  if(worker!=null && worker.IsAlive)return 0;
+  int result=0;
+  worker=new Thread(()=>{try{result=Read(x,y);}catch{}});
+  worker.IsBackground=true;worker.SetApartmentState(ApartmentState.MTA);worker.Start();
+  return worker.Join(250)?result:0;
+ }}
+ static int Read(double x,double y){
+  AutomationElement element=AutomationElement.FromPoint(new Point(x,y));
+  for(int depth=0;element!=null && depth<4;depth++){
+   var info=element.Current;var rect=info.BoundingRectangle;object value;
+   bool hasValue=element.TryGetCurrentPattern(ValuePattern.Pattern,out value);
+   bool writable=hasValue && !((ValuePattern)value).Current.IsReadOnly;
+   bool editable=info.IsEnabled && info.IsKeyboardFocusable && !info.IsOffscreen
+    && (!hasValue || writable) && (info.ControlType==ControlType.Edit || info.ControlType==ControlType.ComboBox || writable);
+   if(editable && !rect.IsEmpty && rect.Width>0 && rect.Height>0
+    && x>=rect.Left && x<=rect.Right && y>=rect.Top && y<=rect.Bottom)
+    return info.IsPassword?3:1;
+   element=TreeWalker.RawViewWalker.GetParent(element);
+  }
+  return 0;
+ }
+}
+'@
 [ReachDesktopInput]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 # The display list: asked as -Display list. A bare --list never reached
 # $Display (PowerShell reads a leading dash as a parameter name), so the
@@ -48,8 +83,9 @@ function Get-ReachTextTarget($payload,$screen) {
   if(!$element){throw 'No focused element'}
   $info=$element.Current
   $pattern=$null
-  $writable=$element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern) -and !$pattern.Current.IsReadOnly
-  $editable=$info.IsEnabled -and $info.IsKeyboardFocusable -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $info.ControlType -eq [System.Windows.Automation.ControlType]::ComboBox -or $writable)
+  $hasValue=$element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)
+  $writable=$hasValue -and !$pattern.Current.IsReadOnly
+  $editable=$info.IsEnabled -and $info.IsKeyboardFocusable -and !$info.IsOffscreen -and (!$hasValue -or $writable) -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $info.ControlType -eq [System.Windows.Automation.ControlType]::ComboBox -or $writable)
   if($payload.PSObject.Properties.Name -contains 'x') {
    $b=$screen.Bounds;$rect=$info.BoundingRectangle
    $x=$b.X+$payload.x*($b.Width-1);$y=$b.Y+$payload.y*($b.Height-1)
@@ -80,6 +116,7 @@ try {
    switch ($p.type) {
     {$_ -in 'move','down','up','click'} {$b=$screen.Bounds;[ReachDesktopInput]::Mouse($p.type,[int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)),($p.button -eq 'right'),[int]$p.count)}
     'focus' {$result.target=Get-ReachTextTarget $p $screen}
+    'probe' {$b=$screen.Bounds;$field=[ReachDesktopFieldProbe]::At(($b.X+$p.x*($b.Width-1)),($b.Y+$p.y*($b.Height-1)));$result.field=($field -band 1) -ne 0;$result.secure=($field -band 2) -ne 0}
     'context' {
      # The app in front, for context shortcuts. Never reads window content.
      $owner=[uint32]0;[void][ReachDesktopInput]::GetWindowThreadProcessId([ReachDesktopInput]::GetForegroundWindow(),[ref]$owner)

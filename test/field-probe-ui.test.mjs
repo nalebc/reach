@@ -284,7 +284,10 @@ test("a one-finger scroll puts the pointer there once, then sends only scroll st
   video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500, x: 0, y: 0 });
   const stage = view.container.querySelector(".remote-stage");
   finger("pointerdown", stage, 500, 400);
-  for (let y = 390; y >= 100; y -= 10) finger("pointermove", stage, 500, y);
+  for (let y = 390; y >= 100; y -= 10) {
+    finger("pointermove", stage, 500, y);
+    await settle(16);
+  }
   finger("pointerup", stage, 500, 100);
   await settle(20);
   const kinds = sent.map((a) => a.type).filter((t) => t === "move" || t === "scroll");

@@ -814,7 +814,9 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:control"), options = readOptions(body);
     const authorize = () => presetClient(req, "browser:control");
     try {
-      const read = () => desktop.elements(client, authorize, options);
+      // A condition may concern a different region than the requested output.
+      // Evaluate it against the whole screen, then filter the returned text.
+      const read = () => desktop.elements(client, authorize, body.waitFor ? { displayId: options.displayId } : options);
       const changed = desktop.waitForChange ? (revision, ms) => desktop.waitForChange(client, revision, ms, authorize) : null;
       const waited = body.waitFor ? await waitForScreen({ read, authorize, wanted: body.waitFor, changed }) : null;
       const settled = !waited && settle ? await settleScreen({ read, changed, authorize, ...settle }) : null;

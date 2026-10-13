@@ -1,0 +1,81 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+// Construct real Quartz events and intercept every emission. No event is
+// posted, no window is touched, and no screen or app is read by this test.
+test("Mac drag events position before pressing, carry movement deltas and pair the press with its release", {
+  skip: process.platform !== "darwin",
+}, async (t) => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "reach-mouse-sequence-"));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const source = await fs.readFile(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
+  const mouse = source.split("// BEGIN DESKTOP MOUSE")[1].split("// END DESKTOP MOUSE")[0];
+  const file = path.join(folder, "main.swift"), binary = path.join(folder, "mouse");
+  await fs.writeFile(file, "import CoreGraphics\n" + mouse + String.raw`
+var events: [CGEvent] = []
+let source = CGEventSource(stateID: .hidSystemState)
+let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: { events.append($0) })
+func field(_ e: CGEvent, _ key: CGEventField) -> Int64 { e.getIntegerValueField(key) }
+mouse.down(at: CGPoint(x: 150, y: 200), button: .left)
+precondition(events.map { $0.type } == [.mouseMoved, .leftMouseDown])
+precondition(events[0].location == CGPoint(x: 150, y: 200))
+precondition(field(events[0], .mouseEventDeltaX) == -650 && field(events[0], .mouseEventDeltaY) == -500)
+precondition(mouse.held == .left)
+mouse.move(to: CGPoint(x: 320, y: 40))
+precondition(events.last!.type == .leftMouseDragged)
+precondition(field(events.last!, .mouseEventDeltaX) == 170 && field(events.last!, .mouseEventDeltaY) == -160)
+// A drop contains a final motion even if the phone had no last move sample.
+mouse.up(at: CGPoint(x: 360, y: 10))
+precondition(events.map { $0.type } == [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseDragged, .leftMouseUp])
+precondition(field(events[3], .mouseEventDeltaX) == 40 && field(events[3], .mouseEventDeltaY) == -30)
+let number = field(events[1], .mouseEventNumber)
+precondition(number > 0)
+for event in events.dropFirst() {
+  precondition(field(event, .mouseEventNumber) == number, "one press through drag and drop")
+  precondition(field(event, .mouseEventClickState) == 1)
+  precondition(field(event, .mouseEventButtonNumber) == 0)
+}
+precondition(events.last!.location == CGPoint(x: 360, y: 10))
+precondition(mouse.held == nil)
+let completed = events.count
+mouse.release()
+precondition(events.count == completed, "no extra release after a complete drag")
+// Right drags and cancellation pair the same button and press identity.
+events = []
+mouse.down(at: CGPoint(x: 200, y: 180), button: .right)
+mouse.move(to: CGPoint(x: 190, y: 160))
+mouse.release()
+precondition(events.map { $0.type } == [.mouseMoved, .rightMouseDown, .rightMouseDragged, .rightMouseUp])
+precondition(field(events[2], .mouseEventDeltaX) == -10 && field(events[2], .mouseEventDeltaY) == -20)
+for event in events.dropFirst() { precondition(field(event, .mouseEventButtonNumber) == 1) }
+precondition(field(events[1], .mouseEventNumber) == field(events[3], .mouseEventNumber))
+precondition(events.last!.location == CGPoint(x: 190, y: 160))
+precondition(mouse.held == nil)
+// Two clicks have separate press numbers but the correct click counts.
+events = []
+for count in 1...2 {
+  mouse.down(at: CGPoint(x: 100, y: 100), button: .left, count: count)
+  mouse.up(at: CGPoint(x: 100, y: 100))
+}
+let clicks = events.filter { $0.type != .mouseMoved }
+precondition(clicks.map { field($0, .mouseEventClickState) } == [1, 1, 2, 2])
+precondition(field(clicks[0], .mouseEventNumber) != field(clicks[2], .mouseEventNumber))
+// A second press releases the first one where it was actually held.
+events = []
+mouse.down(at: CGPoint(x: 5, y: 10), button: .left)
+mouse.down(at: CGPoint(x: 80, y: 90), button: .left)
+precondition(events.map { $0.type } == [.mouseMoved, .leftMouseDown, .leftMouseUp, .mouseMoved, .leftMouseDown])
+precondition(events[2].location == CGPoint(x: 5, y: 10))
+mouse.release()
+print("native mouse sequences passed")
+`);
+  const built = spawnSync("xcrun", ["swiftc", "-module-cache-path", path.join(folder, "cache"), file, "-o", binary], { encoding: "utf8", timeout: 45000 });
+  assert.equal(built.status, 0, built.stderr);
+  const checked = spawnSync(binary, [], { encoding: "utf8", timeout: 10000 });
+  assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
+  assert.match(checked.stdout, /native mouse sequences passed/);
+});

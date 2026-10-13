@@ -35,14 +35,69 @@ func touchChoice(_ at: CGPoint, _ radius: CGSize, _ candidates: [TouchCandidate]
 }
 // END TOUCH GEOMETRY
 
+// BEGIN DESKTOP MOUSE
+// A complete Quartz mouse sequence, including movement before a press and
+// relative deltas during a drag. System surfaces such as Mission Control
+// must receive the same fields as an ordinary mouse, not just a location.
+final class DesktopMouse {
+  let source: CGEventSource?
+  let emit: (CGEvent) -> Void
+  var point: CGPoint
+  private(set) var held: CGMouseButton?
+  private var number: Int64 = 0
+  private var clickState = 1
+  init(source: CGEventSource?, point: CGPoint, emit: @escaping (CGEvent) -> Void = {
+    $0.post(tap: .cghidEventTap)
+  }) {
+    self.source = source; self.point = point; self.emit = emit
+  }
+  private func event(_ kind: CGEventType, _ button: CGMouseButton, from: CGPoint) {
+    guard let e = CGEvent(mouseEventSource: source, mouseType: kind,
+      mouseCursorPosition: point, mouseButton: button) else { return }
+    let moving = kind == .mouseMoved || kind == .leftMouseDragged || kind == .rightMouseDragged
+    e.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+    e.setIntegerValueField(.mouseEventNumber, value: number)
+    e.setIntegerValueField(.mouseEventClickState, value: kind == .mouseMoved ? 0 : Int64(clickState))
+    e.setIntegerValueField(.mouseEventDeltaX, value: moving ? Int64((point.x - from.x).rounded()) : 0)
+    e.setIntegerValueField(.mouseEventDeltaY, value: moving ? Int64((point.y - from.y).rounded()) : 0)
+    e.setDoubleValueField(.mouseEventPressure,
+      value: kind == .leftMouseUp || kind == .rightMouseUp || kind == .mouseMoved ? 0 : 1)
+    emit(e)
+  }
+  func move(to next: CGPoint) {
+    let previous = point
+    point = next
+    event(held == .left ? .leftMouseDragged : held == .right ? .rightMouseDragged : .mouseMoved,
+      held ?? .left, from: previous)
+  }
+  func down(at next: CGPoint, button: CGMouseButton, count: Int = 1) {
+    release()
+    // Mission Control's hover/hit state follows pointer movement. A touch
+    // never generated a mouseMoved before this down, unlike a real mouse.
+    move(to: next)
+    number += 1
+    clickState = count
+    held = button
+    event(button == .right ? .rightMouseDown : .leftMouseDown, button, from: point)
+  }
+  func up(at next: CGPoint) {
+    if held != nil, next != point { move(to: next) }
+    release()
+  }
+  func release() {
+    guard let button = held else { return }
+    event(button == .right ? .rightMouseUp : .leftMouseUp, button, from: point)
+    held = nil
+  }
+}
+// END DESKTOP MOUSE
+
 final class Input: @unchecked Sendable {
   let lock = NSLock()
   let source = CGEventSource(stateID: .hidSystemState)
-  var held: CGMouseButton? = nil
-  var buttons = Set<UInt32>()
+  lazy var mouse = DesktopMouse(source: source, point: CGEvent(source: nil)?.location ?? .zero)
   var currentFlags: CGEventFlags = []
   var last = Date()
-  var point = CGPoint.zero
   let display: CGDirectDisplayID
   init(_ display: CGDirectDisplayID) { self.display = display }
   var typingElement: AXUIElement?
@@ -555,23 +610,8 @@ final class Input: @unchecked Sendable {
     (59, .maskControl), (58, .maskAlternate), (56, .maskShift), (55, .maskCommand),
     (63, .maskSecondaryFn),
   ]
-  func mouseKind(_ button: CGMouseButton, _ down: Bool) -> CGEventType {
-    button == .left
-      ? (down ? .leftMouseDown : .leftMouseUp)
-      : button == .right
-        ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .otherMouseDown : .otherMouseUp)
-  }
   func release() {
-    if let held { buttons.insert(held.rawValue) }
-    for b in buttons {
-      if let button = CGMouseButton(rawValue: b) {
-        CGEvent(
-          mouseEventSource: source, mouseType: mouseKind(button, false), mouseCursorPosition: point,
-          mouseButton: button)?.post(tap: .cghidEventTap)
-      }
-    }
-    buttons.removeAll()
-    held = nil
+    mouse.release()
     currentFlags = []
   }
   // MARK: Context shortcuts: the frontmost app and its own menu commands.
@@ -743,35 +783,29 @@ final class Input: @unchecked Sendable {
       let y = p["y"] as? Double
     {
       let bounds = CGDisplayBounds(display)
-      point = CGPoint(
+      var point = CGPoint(
         x: bounds.minX + x * max(0, bounds.width - 1),
         y: bounds.minY + y * max(0, bounds.height - 1))
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
       if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
         point = touchPoint(point, tolerance)
       }
-      func post(_ kind: CGEventType, _ b: CGMouseButton, _ count: Int = 1) {
-        let e = CGEvent(
-          mouseEventSource: source, mouseType: kind, mouseCursorPosition: point, mouseButton: b)
-        e?.setIntegerValueField(.mouseEventClickState, value: Int64(count))
-        e?.post(tap: .cghidEventTap)
-      }
+      // A local mouse may have moved between gestures. Held drags keep
+      // their own last point so every delta continues the same press.
+      if mouse.held == nil { mouse.point = CGEvent(source: nil)?.location ?? mouse.point }
       if type == "move" {
-        post(
-          held == .left ? .leftMouseDragged : held == .right ? .rightMouseDragged : .mouseMoved,
-          held ?? .left)
+        mouse.move(to: point)
       }
       if type == "down" {
         release()
-        held = button
-        post(button == .left ? .leftMouseDown : .rightMouseDown, button)
+        mouse.down(at: point, button: button)
       }
-      if type == "up" { release() }
+      if type == "up" { mouse.up(at: point); currentFlags = [] }
       if type == "click" {
         release()
         for c in 1...(p["count"] as? Int ?? 1) {
-          post(button == .left ? .leftMouseDown : .rightMouseDown, button, c)
-          post(button == .left ? .leftMouseUp : .rightMouseUp, button, c)
+          mouse.down(at: point, button: button, count: c)
+          mouse.up(at: point)
         }
         return ["point": [
           "x": min(1, max(0, (point.x - bounds.minX) / max(1, bounds.width - 1))),

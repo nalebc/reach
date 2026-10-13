@@ -62,8 +62,8 @@ export async function waitForScreen({ read, changed, authorize, wanted, now = Da
 // read may extend total elapsed time. Authorized on every round; an explicit
 // waitFor replaces it.
 export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300, refreshMs: 600 };
-const loading = (screen) => (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
-const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
+const loading = (screen) => typeof screen?.loading === "boolean" ? screen.loading : (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
+const shown = (screen) => JSON.stringify([screen?.app, screen?.title, screen?.loading, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
 export async function settleScreen({ read, changed, authorize, capMs, minMs = 0, quietMs = SETTLE.quietMs, now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const start = now(), end = start + capMs;
@@ -178,7 +178,7 @@ export function createObservations({ now = Date.now } = {}) {
     const options = observationOptions(raw);
     const entry = entryOf(client);
     const previous = entry.snapshots.get(options.sinceSnapshot);
-    const compatible = previous && Date.now() - previous.savedAt <= 60000 && previous.app === screen.app && previous.title === screen.title && previous.windowRef === screen.windowRef && previous.displayId === screen.displayId;
+    const compatible = previous && !previous.truncated && !screen.truncated && Date.now() - previous.savedAt <= 60000 && previous.app === screen.app && previous.title === screen.title && previous.windowRef === screen.windowRef && previous.displayId === screen.displayId && JSON.stringify(previous.scope || null) === JSON.stringify(screen.scope || null);
     const scoped = item => (!options.within || words(item.context).includes(words(options.within))) &&
       (!options.query || words([item.name, item.value, item.text, item.context].join(" ")).includes(words(options.query)));
     const identity = item => item.ref || JSON.stringify([item.role, item.name, item.text, item.x, item.y]);
@@ -210,7 +210,7 @@ export function createObservations({ now = Date.now } = {}) {
     // controls the agent never received.
     const description = lead + describeScreen(result, { truncate: false });
     // Only what changed, against the last whole look of this same window.
-    const whole = !options.query && !options.within && !options.sinceSnapshot;
+    const whole = !screen.scope && !options.query && !options.within && !options.sinceSnapshot;
     const seen = entry.seen;
     const comparable = mode.changes && !mode.full && whole && seen && now() - seen.at <= CHANGES_MS && seen.app === screen.app && seen.title === screen.title &&
       seen.windowRef === screen.windowRef && seen.displayId === screen.displayId;
@@ -228,7 +228,7 @@ export function createObservations({ now = Date.now } = {}) {
   };
   // A look given whole some other way (reach_find), or a screen the agent
   // may not have seen whole (a find that scrolled and found nothing).
-  observe.remember = (client, screen) => { entryOf(client).seen = describeScreen(screen, { truncate: false }).length <= 30000 ? baseline(screen) : null; };
+  observe.remember = (client, screen) => { entryOf(client).seen = !screen.scope && describeScreen(screen, { truncate: false }).length <= 30000 ? baseline(screen) : null; };
   observe.forget = (client) => { entryOf(client).seen = null; };
   return observe;
 }

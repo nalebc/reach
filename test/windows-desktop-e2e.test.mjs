@@ -145,17 +145,32 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     await until(() => input.messages.some((m) => (m.type === "ack" || m.type === "error") && m.id === n), `input ${action.type}`, 30000);
     const answer = input.messages.find((m) => m.id === n);
     assert.equal(answer.type, "ack", JSON.stringify(answer));
+    return answer;
   };
   const at = {
     x: (boxX - primary.x) / Math.max(1, primary.width - 1),
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
   };
   note({ click: at });
+  const probed = await send({ type: "probe", ...at });
+  assert.equal(probed.field, true, "the Windows field is detected before a click");
+  assert.equal(probed.secure, false);
+  assert.equal(fs.existsSync(`${out}.click`), false, "a probe never clicks the field");
+  assert.equal(fs.existsSync(`${out}.text`), false, "a probe never types");
+  assert.equal((await send({ type: "focus", ...at })).target.editable, false,
+    "probing must not move focus from the initial button");
   await send({ type: "click", ...at, button: "left", count: 1 });
   await until(() => fs.existsSync(`${out}.click`), "the click to reach the box", 15000);
-  await send({ type: "text", text: "hello reach" });
+  const focused = await send({ type: "focus", ...at });
+  assert.equal(focused.target.editable, true);
+  assert.ok(focused.target.focus);
+  await send({ type: "type-edit", delete: 0, text: "hello reach", focus: focused.target.focus });
   await until(() => fs.existsSync(`${out}.text`) && fs.readFileSync(`${out}.text`, "utf8") === "hello reach", "the typing to reach the box", 15000);
   note({ typed: fs.readFileSync(`${out}.text`, "utf8") });
+  assert.equal((await send({ type: "focus", x: 0, y: 0 })).target.editable, false,
+    "a field retaining Windows focus must not qualify for a tap outside its bounds");
+  assert.equal((await send({ type: "probe", x: 0, y: 0 })).field, false);
+  note({ probedBeforeClick: true, guardedTyping: true, outsideFieldRejected: true });
 
   // Pause gives the PC back: the stream and control end, and no screen or
   // input helper is left running.

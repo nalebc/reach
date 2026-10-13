@@ -1245,6 +1245,8 @@ struct Screen {
   let controls: [Control], values: [Int: String]
   let texts: [(String, CGRect, String)], headings: [CGRect]
   let truncated: Bool, display: CGRect
+  var within: String? = nil
+  var loading: Bool? = nil
 }
 var snapshots: [(id: String, pid: pid_t, controls: [Control])] = []
 var snapshotDisplays: [String: CGDirectDisplayID] = [:]
@@ -1307,7 +1309,8 @@ func referencedControl(_ ref: String, _ rules: Rules) throws -> (Control, Screen
 }
 func contextLabel(_ node: AXUIElement, _ role: String, _ children: [AXUIElement]) -> String {
   guard ["AXGroup", "AXRow", "AXCell", "AXToolbar", "AXTable", "AXList", "AXTabGroup", "AXSheet"].contains(role) else { return "" }
-  let label = [string(node, kAXTitleAttribute), string(node, kAXDescriptionAttribute)].first { !$0.isEmpty } ?? ""
+  let title = string(node, kAXTitleAttribute)
+  let label = title.isEmpty ? string(node, kAXDescriptionAttribute) : title
   if label.isEmpty, ["AXRow", "AXCell"].contains(role) {
     return children.prefix(4).filter { string($0, kAXRoleAttribute) == "AXStaticText" }.map { string($0, kAXValueAttribute) }.joined(separator: " ")
   }
@@ -1329,22 +1332,27 @@ func controlContext(_ element: AXUIElement, window: AXUIElement) -> String? {
 
 
 func labelName(_ element: AXUIElement, _ role: String, secure: Bool) -> String {
-  var parts = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)]
-  if role == "AXTextField" || role == "AXTextArea" || role == "AXSearchField" || role == "AXComboBox" || secure {
-    parts.append(string(element, kAXPlaceholderValueAttribute))
-  } else if ["AXButton", "AXLink", "AXPopUpButton", "AXMenuButton", "AXTab", "AXRadioButton", "AXCheckBox"].contains(role) {
-    parts.append(string(element, kAXValueAttribute))
-  }
   let known = ["AXCloseButton": "Close window", "AXMinimizeButton": "Minimize", "AXZoomButton": "Zoom window",
     "AXFullScreenButton": "Full screen", "AXToolbarButton": "Toolbar"]
-  if let named = known[string(element, kAXSubroleAttribute)] { parts.insert(named, at: 0) }
-  parts.append(string(element, kAXHelpAttribute))
-  let name = parts.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.first { !$0.isEmpty } ?? ""
-  return hideSecrets(String(name.prefix(120)), typedSecrets)
+  if let named = known[string(element, kAXSubroleAttribute)] { return hideSecrets(named, typedSecrets) }
+  // AX reads are synchronous. Only ask for a fallback if earlier attributes
+  // did not supply a name, preserving the same precedence and redaction.
+  var attributes = [kAXTitleAttribute, kAXDescriptionAttribute]
+  if role == "AXTextField" || role == "AXTextArea" || role == "AXSearchField" || role == "AXComboBox" || secure {
+    attributes.append(kAXPlaceholderValueAttribute)
+  } else if ["AXButton", "AXLink", "AXPopUpButton", "AXMenuButton", "AXTab", "AXRadioButton", "AXCheckBox"].contains(role) {
+    attributes.append(kAXValueAttribute)
+  }
+  attributes.append(kAXHelpAttribute)
+  for attribute in attributes {
+    let name = string(element, attribute).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    if !name.isEmpty { return hideSecrets(String(name.prefix(120)), typedSecrets) }
+  }
+  return ""
 }
 // The front window read through accessibility: its controls, what fields
 // hold, and (unless skipped) what a person reads there. One walk, bounded.
-func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
+func readScreen(_ rules: Rules, text wantText: Bool = true, within: String = "") throws -> Screen {
   if rules.mode == "view" { try refuse("This agent can only look.") }
   watchScreen()
   guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier > 0 else { try refuse("Nothing is in front.", "retry") }
@@ -1354,6 +1362,25 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
   // Chromium and Electron build their web trees only for assistive apps.
   AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
   let display = displayBounds()
+  let scopeWords = { (value: String) in value.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+  let wantedWithin = scopeWords(within)
+  let simpleScope = within.utf8.allSatisfy { $0 < 128 }
+  var includedContexts: [String: Bool] = [:]
+  func includesContext(_ context: String) -> Bool {
+    if wantedWithin.isEmpty { return true }
+    if let included = includedContexts[context] { return included }
+    // JavaScript filters the final text using UTF-16 substrings. Swift's
+    // Unicode matching/whitespace rules differ; keep those candidates and
+    // let the server decide rather than risk dropping a matching region.
+    if !simpleScope || !context.utf8.allSatisfy({ $0 < 128 }) { includedContexts[context] = true; return true }
+    // Bank contexts are masked after traversal. Consider both forms here;
+    // the server still applies the scope to the final, redacted content.
+    let included = scopeWords(context).contains(wantedWithin) || scopeWords(maskAccountNumbers(context, rules)).contains(wantedWithin)
+    includedContexts[context] = included
+    return included
+  }
+  func isLoadingControl(_ name: String) -> Bool { name.range(of: #"(?i)^stop\b"#, options: .regularExpression) != nil }
+  var pageLoading = false
   var found: [Control] = []
   var texts: [(String, CGRect, String)] = [], headings: [CGRect] = [], values: [Int: String] = [:]
   var textChars = 0
@@ -1378,8 +1405,20 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
     if role == "AXWebArea", urlReason(string(node, "AXURL"), rules) != nil { continue }
     if role == "AXWebArea", moneySite(string(node, "AXURL"), rules) { bank = true }
     if role == "AXMenu" { continue } // closed menus' items are not on screen
+    let included = includesContext(entry.context)
+    // Still walk containers and check web boundaries, but unrelated leaves
+    // need no values, names or geometry. Buttons retain the loading signal
+    // used by the settling loop, even when the toolbar is outside the scope.
+    if !included && (role == "AXStaticText" || (labelRoles.contains(role) && role != "AXButton" && role != "AXMenuBarItem")) { continue }
     let subrole = string(node, kAXSubroleAttribute)
     let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    if !included && (labelRoles.contains(role) || secure) && role != "AXMenuBarItem" {
+      if role == "AXButton", isLoadingControl(labelName(node, role, secure: secure)), let rect = frameOf(node), rect.width >= 4, rect.height >= 4 {
+        let visible = rect.intersection(display)
+        if !visible.isNull, visible.width >= 2, visible.height >= 2, attr(node, kAXEnabledAttribute) as? Bool != false { pageLoading = true }
+      }
+      continue
+    }
     if wantText, role == "AXHeading", let rect = frameOf(node) { headings.append(rect) }
     if role == "AXStaticText" {
       if wantText, texts.count < 500, textChars < 20000 {
@@ -1396,7 +1435,7 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
       }
       continue
     }
-    if labelRoles.contains(role) || secure {
+    if (labelRoles.contains(role) || secure) && included {
       if let rect = frameOf(node), rect.width >= 4, rect.height >= 4 {
         let visible = rect.intersection(display)
         if !visible.isNull, visible.width >= 2, visible.height >= 2, attr(node, kAXEnabledAttribute) as? Bool != false {
@@ -1406,7 +1445,9 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
             let value = string(node, kAXValueAttribute).split(whereSeparator: \.isWhitespace).joined(separator: " ")
             if !value.isEmpty { values[found.count] = hideSecrets(String(value.prefix(120)), typedSecrets) }
           }
-          found.append(Control(element: node, role: role, name: labelName(node, role, secure: secure), secure: secure, frame: visible, context: entry.context))
+          let name = labelName(node, role, secure: secure)
+          if role == "AXButton" && isLoadingControl(name) { pageLoading = true }
+          found.append(Control(element: node, role: role, name: name, secure: secure, frame: visible, context: entry.context))
         }
       }
       // A control's own parts (a link's text, a button's image) are the control.
@@ -1435,9 +1476,10 @@ func readScreen(_ rules: Rules, text wantText: Bool = true) throws -> Screen {
   let keptValues = Dictionary(uniqueKeysWithValues: kept.enumerated().compactMap { position, entry in values[entry.0].map { (position, $0) } })
   texts.sort { order($0.1, $1.1) }
   return Screen(pid: front.processIdentifier, app: name, bundle: bundle, title: windowTitle, controls: kept.map { $0.1 }, values: keptValues,
-    texts: texts, headings: headings, truncated: found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000 || Date() >= deadline, display: display)
+    texts: texts, headings: headings, truncated: found.count > kept.count || visited >= 6000 || texts.count >= 500 || textChars >= 20000 || Date() >= deadline, display: display,
+    within: wantedWithin.isEmpty ? nil : within, loading: pageLoading)
 }
-func elements(_ rules: Rules) throws -> [String: Any] { snapshotPayload(try readScreen(rules)) }
+func elements(_ rules: Rules, within: String = "") throws -> [String: Any] { snapshotPayload(try readScreen(rules, within: within)) }
 // The control the agent named, in a fresh read of the screen: the best match
 // by name (and role, when given; fields only, for a form); among equals the
 // one nearest to where it was last seen. Several equally good: the agent
@@ -1793,7 +1835,10 @@ func snapshotPayload(_ screen: Screen) -> [String: Any] {
     if screen.headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
     return entry.merging(place(rect)) { first, _ in first }
   }
-  return ["ok": true, "snapshot": id, "windowRef": window.map { rememberElement($0, prefix: "w") } ?? "", "revision": screenRevision, "displayId": displayID(), "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
+  var result: [String: Any] = ["ok": true, "snapshot": id, "windowRef": window.map { rememberElement($0, prefix: "w") } ?? "", "revision": screenRevision, "displayId": displayID(), "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
+  if let within = screen.within { result["within"] = within }
+  if let loading = screen.loading { result["loading"] = loading }
+  return result
 }
 // Something in the front window by its words (reach_find): a control by name
 // (and role), or text, anywhere in the window, what is scrolled out of view
@@ -2059,7 +2104,7 @@ func rules(from request: [String: Any]) -> Rules {
           out(try openURL(request["url"] as? String ?? "", request["app"] as? String ?? "", rules))
         case "elements":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
-          out(try elements(rules))
+          out(try elements(rules, within: request["within"] as? String ?? ""))
         case "browser-check":
           guard AXIsProcessTrusted() else { try refuse("Reach needs Accessibility to let an agent use this Mac.", "unavailable") }
           let path = request["app"] as? String ?? ""

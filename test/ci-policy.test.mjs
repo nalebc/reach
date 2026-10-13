@@ -218,6 +218,14 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 
+test("Windows CI covers shared phone gesture accuracy, accelerated scrolling and native input sequences", () => {
+  for (const name of ["touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+    "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",
+    "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
+    "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard"])
+    assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+});
+
 test("installed CI covers a real portable first launch and npm 12 on Linux", () => {
   assert.ok(suites.windows.includes("notice-versions"), "Windows must validate notices using native checkout line endings");
   const installed = fs.readFileSync(new URL('../.github/scripts/test-installed-package.mjs', import.meta.url), 'utf8');

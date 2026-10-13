@@ -75,6 +75,29 @@ test("motion coalesces behind the bounded window but preserves down/move/up orde
   );
   assert.equal(sent[1].action.x, 1);
 });
+
+test("stopping a fling discards unsent scrolls on a slow link while preserving taps and release order", async () => {
+  let now = 0;
+  const sent = [], failures = [];
+  const queue = new DesktopInputQueue((id, action) => sent.push({ id, action }), (line) => failures.push(line), 1, () => now);
+  const first = queue.enqueue({ type: "heartbeat" });
+  now += 16;
+  const scroll = queue.enqueue({ type: "scroll", dx: 0, dy: -100 });
+  const click = { type: "click", x: 0.3, y: 0.4, button: "left", count: 1 };
+  const tap = queue.enqueue(click);
+  const release = queue.enqueue({ type: "release" });
+  const laterScroll = queue.enqueue({ type: "scroll", dx: 0, dy: -80 });
+  const cancelled = { type: "scroll", dx: 0, dy: 0, phase: "cancelled" };
+  const stop = queue.enqueue(cancelled);
+  assert.deepEqual(await scroll, { ok: true, skipped: true });
+  assert.deepEqual(await laterScroll, { ok: true, skipped: true });
+  now += 16;
+  for (let id = 1; id <= 4; id++) queue.acknowledge(id, { ok: true });
+  await Promise.all([first, tap, release, stop]);
+  assert.deepEqual(sent.map((item) => item.action), [{ type: "heartbeat" }, click, { type: "release" }, cancelled]);
+  assert.deepEqual(failures, []);
+  queue.close();
+});
 test("disconnect rejects queued and in-flight input without sending more actions", async () => {
   const sent = [];
   const queue = new DesktopInputQueue(
