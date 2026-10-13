@@ -10,9 +10,21 @@ import { startDom, settle } from "./dom/harness.mjs";
 // it was. The switch on the Agents page, for your own devices only: on is a
 // tap, off takes Face ID the same way.
 let dom, React, AgentAdmissionReview, AgentFaceIdSetting;
+const IPHONE =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+const ANDROID =
+  "Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36";
+// The phone's own word for its unlock (src/passkeys.ts unlockWords): an
+// iPhone with Face ID unless a test says otherwise.
+const device = (ua, longSide = 844) => {
+  Object.defineProperty(dom.window.navigator, "userAgent", { configurable: true, value: ua });
+  Object.defineProperty(dom.window.screen, "width", { configurable: true, value: 390 });
+  Object.defineProperty(dom.window.screen, "height", { configurable: true, value: longSide });
+};
 before(async () => {
   dom = await startDom({ mobile: true });
   React = dom.React;
+  device(IPHONE);
   dom.window.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
   };
@@ -370,6 +382,69 @@ test("Settings → Agents: the switch, for your own devices once Face ID is set 
     await settle(80);
     assert.equal(view.container.textContent, "", JSON.stringify(opts));
     await view.unmount();
+  }
+});
+
+test("Settings → Agents, off with Face ID: no new challenge while Face ID is up (it would replace the one being answered); a tap before the challenge arrives says so", async () => {
+  const { log, calls } = phone({ on: true });
+  // Face ID stays up until the test answers, as a person takes a moment.
+  let answer;
+  calls.getResult = () =>
+    new Promise((resolve) => {
+      answer = () =>
+        resolve({
+          id: "AQID",
+          rawId: bytes(1, 2, 3),
+          type: "public-key",
+          response: { clientDataJSON: bytes(123, 125), authenticatorData: bytes(9, 9), signature: bytes(7), userHandle: null },
+        });
+    });
+  // The challenge is slow to come: a tap before it says why, nothing sent.
+  let release;
+  const slow = new Promise((resolve) => (release = resolve));
+  const served = dom.window.fetch;
+  globalThis.fetch = dom.window.fetch = async (url, init) =>
+    new URL(url).pathname === "/api/settings/passkey/options"
+      ? slow.then(() => served(url, init))
+      : served(url, init);
+  const view = await dom.render(React.createElement(AgentFaceIdSetting, { peer }));
+  const c = view.container;
+  await dom.waitFor(() => c.querySelector('[role="switch"]'));
+  await click(c.querySelector('[role="switch"]'));
+  assert.match(c.textContent, /Getting Face ID ready\. Tap again in a moment\./);
+  assert.equal(calls.get.length, 0);
+  assert.equal(settingPosts(log).length, 0);
+  release();
+  await dom.waitFor(() => settingOptions(log) === 1);
+  await settle(40);
+  await click(c.querySelector('[role="switch"]'));
+  assert.equal(calls.get.length, 1, "Face ID up");
+  await settle(150);
+  assert.equal(settingOptions(log), 1, "no new challenge while Face ID is up");
+  answer();
+  await dom.waitFor(() => c.querySelector('[role="switch"]').getAttribute("aria-checked") === "false");
+  assert.equal(settingPosts(log).at(-1).credential.rawId, "AQID");
+  await view.unmount();
+});
+
+test("Settings → Agents and an agent's review, on Android: the phone's own words", async () => {
+  device(ANDROID, 0);
+  try {
+    phone({ on: true });
+    let view = await dom.render(React.createElement(AgentFaceIdSetting, { peer }));
+    await dom.waitFor(() => view.container.querySelector('[role="switch"]'));
+    assert.match(view.container.textContent, /Fingerprint or face unlock confirms approvals/);
+    assert.equal(
+      view.container.querySelector('[role="switch"]').getAttribute("aria-label"),
+      "Fingerprint or face unlock confirms approvals",
+    );
+    await view.unmount();
+    view = await review();
+    await dom.waitFor(() => button(view.container, "Approve with fingerprint or face unlock"));
+    assert.match(view.container.textContent, /Fingerprint or face unlock confirms approvals/);
+    await view.unmount();
+  } finally {
+    device(IPHONE);
   }
 });
 
