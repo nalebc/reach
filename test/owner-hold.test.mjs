@@ -15,7 +15,7 @@ import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs"
 // sometime they can get it back" (Oct 12). Input through Reach's screen from
 // you (or a full-access person) holds every agent off the screen, looks
 // included, until 2 minutes without input through Reach, or "Let them back".
-const owner = { id: "phone", kind: "device", name: "Nassim's iPhone", scopes: ["admin", "screen"] };
+const owner = { id: "phone", kind: "device", name: "Sam's iPhone", scopes: ["admin", "screen"] };
 const person = { id: "sam", kind: "guest", name: "Sam", fullControlVersion: 1, scopes: ["admin", "screen"] };
 const limited = { id: "lee", kind: "guest", name: "Lee", scopes: ["screen", "screen:control"] };
 const agent = { id: "muse", kind: "agent", name: "Muse", scopes: ["browser:screen"] };
