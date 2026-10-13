@@ -148,7 +148,7 @@ export default function QueuedMessages({
   useEffect(() => {
     const actual = idsKey.split(",").filter(Boolean);
     const d = drag.current;
-    if (d?.lifted && d.ids.join() !== idsKey) putDown(false);
+    if (d && d.ids.join() !== idsKey) putDown(false);
     if (!orderRef.current) return;
     if (actual.join() === orderRef.current.join() ||
         (orderBase.current !== null && actual.join() !== orderBase.current) ||

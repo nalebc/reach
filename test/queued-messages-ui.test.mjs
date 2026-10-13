@@ -433,6 +433,35 @@ test("keyboard: Escape puts a picked-up row back, nothing sent", async () => {
   } finally { restore(); await view.unmount(); }
 });
 
+test("a poll mid-drag with the same queue keeps the drag; a queue that changed puts it down", async () => {
+  const restore = motion(true);
+  let setMessages;
+  const orders = [];
+  function Fixture() {
+    const [messages, update] = React.useState(three); setMessages = update;
+    return React.createElement(QueuedMessages, { agent: "codex", messages, busy: null, canEdit: true,
+      onEdit: async () => {}, onRemove() {}, onReorder: (ids) => { orders.push(ids); } });
+  }
+  const view = await dom.render(React.createElement(Fixture));
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 1 of 3")[0]);
+    pointer("pointerdown", 20);
+    pointer("pointermove", 70);
+    await settle(30);
+    // Each poll hands over a new array with the same messages.
+    dom.update(() => setMessages(three.map((m) => ({ ...m }))));
+    await settle(10);
+    assert.equal($$(".qm-row")[1].style.transform, "translate3d(0, -40px, 0)", "still dragging");
+    dom.update(() => setMessages([three[1], three[2]]));
+    await settle(10);
+    assert.ok($$(".qm-row").every((r) => !r.style.transform));
+    pointer("pointerup", 70);
+    await settle(10);
+    assert.deepEqual(orders, []);
+  } finally { restore(); await view.unmount(); }
+});
+
 test("near the list's bottom edge a drag scrolls the list", async () => {
   const restore = motion(true);
   const many = Array.from({ length: 8 }, (_, i) => ({ id: `q${i}`, text: `row ${i}`, images: 0 }));
