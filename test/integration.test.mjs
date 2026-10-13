@@ -107,6 +107,16 @@ test("Reach companion: authenticated end-to-end flows", async (t) => {
         );
       },
     );
+    await t.test("text edits from the same read: one wins, the rest are told it changed", async () => {
+      await fs.writeFile(path.join(root, "edits.txt"), "first");
+      const texts = ["one", "two", "three"];
+      const results = await Promise.all(
+        texts.map((text) => call("/api/files/text?path=edits.txt", { text, sha256: hash("first") }, { method: "PUT" })),
+      );
+      assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409], JSON.stringify(results));
+      const won = texts[results.findIndex((r) => r.status === 200)];
+      assert.equal(await fs.readFile(path.join(root, "edits.txt"), "utf8"), won);
+    });
     await t.test(
       "upload/download round trip; existing files are never overwritten",
       async () => {

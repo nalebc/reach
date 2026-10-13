@@ -122,7 +122,24 @@ export async function launch(options, root) {
       });
       if (folders.ok) {
         keyedState = await readKeyedState().catch(() => ({ status }));
-        peerCheck = options.peerCheck || createTailscaledPeerCheck({ helper: folders.helper("tailscaled-peer") });
+        peerCheck =
+          options.peerCheck ||
+          createTailscaledPeerCheck({
+            helper: folders.helper("tailscaled-peer"),
+            // Its helper stopped, timed out or wouldn't start again: said
+            // once per reason, so a refusal that follows has its cause.
+            onProblem: (reason) => {
+              const said = {
+                stopped: "Reach's Tailscale check stopped; it starts again in a moment.",
+                timeout: "Reach's Tailscale check didn't answer in time; it starts again in a moment.",
+                garbled: "Reach's Tailscale check gave an answer Reach couldn't read; it starts again in a moment.",
+              }[reason] || String(reason);
+              console.warn(`Reach: ${said}`);
+              try {
+                log?.write(`Reach: ${said}`);
+              } catch {}
+            },
+          });
       }
       const problem = folders.reason || keyedSupportProblem(keyedState) || (await peerCheck.ready()).reason || "";
       if (problem) {
