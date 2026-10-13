@@ -23,10 +23,11 @@ import { isNative } from "./native";
 import { post, request, type Device, type Peer } from "./api";
 import { workspaceCapabilities } from "./capabilities";
 import { guestLinkUrl, parseGuestLink } from "./start-flow";
+import { computerWord } from "./pause";
 import { tailscaleShareUrl } from "./invitation";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import { InviteLinksSetup } from "./InviteLinksSetup";
-import BrowserInvite, { NO_RUNTIME, inviteName, toolsCommand } from "./BrowserInvite";
+import BrowserInvite, { NO_RUNTIME, agentInviteMessage, inviteName } from "./BrowserInvite";
 import {
   Choices,
   Item,
@@ -199,15 +200,17 @@ export const hasFolders = (g: Guest) =>
     ? (g.policy?.roots?.length || 0) > 0
     : !(g.scopes || []).includes("admin") && (g.guestRoots?.length || 0) > 0;
 const startOf = (peer: Peer) => `https://${new URL(peer.url).hostname}`;
-// What an agent runs, once: Reach for agents from the computer's start page
-// (checked against its SHA-256), then join with its link. A computer that
-// names no runtime gets no command: "" (connections audit, Oct 10).
-export const agentCommand = (start: string, link: string, runtime?: string) => {
-  try {
-    return toolsCommand(start, link, runtime);
-  } catch {
-    return "";
-  }
+// An agent's link, carrying the SHA-256 of the runtime its computer named
+// (r=): the steps at the link check the download against it, and so does
+// join (Oct 12: "a very small prompt with a link"). A computer that names no
+// runtime gets no link: "" (connections audit, Oct 10).
+export const pinnedAgentLink = (link: string, runtime?: string) => {
+  if (!runtime || !/^[0-9a-f]{64}$/.test(runtime)) return "";
+  const url = new URL(link);
+  const params = new URLSearchParams(url.hash.slice(1));
+  params.set("r", runtime);
+  url.hash = params.toString();
+  return url.href;
 };
 export const list = (items: string[]) =>
   items.length <= 1
@@ -1138,20 +1141,17 @@ computers.includes(p.id) && !devices[p.id]
                 <h3>{made.guest} is invited</h3>
                 <p className="inv-done-for">{made.access}</p>
                 {(() => {
-                  const command = agentCommand(
-                    new URL(madeLink.link).origin,
-                    madeLink.link,
-                    madeLink.runtime,
-                  );
-                  const text = `Join my computer with Reach, then add the MCP server it prints:\n${command}`;
-                  if (!command) return <p className="ivt-quiet">{NO_RUNTIME}</p>;
+                  const link = pinnedAgentLink(madeLink.link, madeLink.runtime);
+                  // The same line and link as an invite from Agents (BrowserInvite).
+                  const text = agentInviteMessage("tools", link, computerWord(peer.platform));
+                  if (!link) return <p className="ivt-quiet">{NO_RUNTIME}</p>;
                   return (
                     <>
                       <input
                         className="ivt-link-field"
-                        aria-label="Command for the agent"
+                        aria-label="Link for the agent"
                         readOnly
-                        value={command}
+                        value={link}
                         onFocus={(e) => e.target.select()}
                       />
                       <div className="inv-done-actions">
@@ -1173,7 +1173,7 @@ computers.includes(p.id) && !devices[p.id]
                 })()}
                 <p className="ivt-quiet">
                   {note ||
-                    `Its terminal runs this once, within 15 minutes. Needs Node 18 or later${madeLink.keyed ? ", nothing else" : ""}. Then approve its code in Home → Needs you.`}
+                    `It opens the link and follows its steps within 15 minutes. Needs Node.js 22 or later${madeLink.keyed ? ", nothing else" : ""}. Then approve its code in Home → Needs you.`}
                 </p>
                 {!madeLink.keyed && (
                   <div className="ivt-tailscale">

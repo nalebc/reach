@@ -658,7 +658,6 @@ const chooseAgent = async (c) => {
   await dom.waitFor(() => c.querySelector('.inv-choices [aria-label="Can edit"]'));
   await settle(40);
 };
-const commandLink = (command) => command.match(/printf '%s\\n' '([^']+)' \| node ~\/\.reach-agent\/agent\.mjs join$/)[1];
 
 test("an agent: one computer, a folder, what it may do, then one command to give it", async () => {
   const log = computers();
@@ -702,20 +701,19 @@ test("an agent: one computer, a folder, what it may do, then one command to give
   const card = c.querySelector('[aria-label="Agent invitation"]');
   assert.match(card.textContent, /Claude on my server is invited/);
   assert.match(card.textContent, /Can run commands · 30 days/);
-  assert.match(card.textContent, /Needs Node 18 or later, nothing else/);
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  assert.ok(
-    command.startsWith("curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new https://mac-b.t.ts.net/agent.mjs && node -e ") &&
-      command.includes(`~/.reach-agent/agent.mjs.new ${RUNTIME} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && printf '%s\\n' 'https://mac-b.t.ts.net/agent#`),
-    command,
-  );
-  const agentLink = new URL(commandLink(command));
+  assert.match(card.textContent, /Needs Node\.js 22 or later, nothing else/);
+  // A line and a link (Oct 12): the link explains itself and pins the
+  // runtime its computer named (r=), as an invite from Agents does.
+  const link = c.querySelector('[aria-label="Link for the agent"]').value;
+  const agentLink = new URL(link);
+  assert.equal(agentLink.origin, "https://mac-b.t.ts.net");
   assert.equal(agentLink.pathname, "/agent", "never a link a browser would use");
   assert.deepEqual(parseGuestLink(agentLink.hash), { ...KEY, invites: [{ origin: macB.url, secret: secret("z") }] });
+  assert.equal(new URLSearchParams(agentLink.hash.slice(1)).get("r"), RUNTIME);
   let copied = "";
   dom.window.navigator.clipboard = { writeText: async (t) => (copied = t) };
   await click([...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "Copy"));
-  assert.equal(copied, `Join my computer with Reach, then add the MCP server it prints:\n${command}`);
+  assert.equal(copied, `Connect to my Mac with Reach: open this link and follow its steps, then I approve the code it shows. Keep the link to yourself.\n\n${link}`);
   // Another: the form again, with a new name.
   await click([...card.querySelectorAll("button")].find((b) => b.textContent === "Invite another agent"));
   assert.equal(c.querySelector(".inv-form").hidden, false);
@@ -745,8 +743,8 @@ test("an agent on a computer without the setup: no key from a linked one, a comm
       ["mac-b", "/api/guests/key", ["agent-mac-b"]],
     ],
   );
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  assert.equal(parseGuestLink(new URL(commandLink(command)).hash).key || "", "");
+  const link = c.querySelector('[aria-label="Link for the agent"]').value;
+  assert.equal(parseGuestLink(new URL(link).hash).key || "", "");
   await view.unmount();
 });
 
@@ -806,7 +804,7 @@ test("an agent without invite links: still a command (for a machine on your tail
   assert.deepEqual(posts(log).map(([h, p]) => p), ["/api/agents/invitations"]);
   const card = c.querySelector('[aria-label="Agent invitation"]');
   assert.match(card.textContent, /Without invite links, its machine needs Tailscale on your tailnet/);
-  assert.equal(parseGuestLink(new URL(commandLink(c.querySelector('[aria-label="Command for the agent"]').value)).hash).key, "");
+  assert.equal(parseGuestLink(new URL(c.querySelector('[aria-label="Link for the agent"]').value).hash).key, "");
   await click([...card.querySelectorAll(".ivt-tailscale > button")].find((b) => b.textContent === "Set up invite links"));
   const setup = c.querySelector(".ivt-setup");
   const type = async (el, v) => {
@@ -821,8 +819,7 @@ test("an agent without invite links: still a command (for a machine on your tail
   assert.deepEqual(keyCall[3].clientIds, ["agent-mac-a"]);
   assert.ok(keyCall[3].ttlSeconds > 7 * 86400 - 100 && keyCall[3].ttlSeconds <= 7 * 86400);
   assert.ok(keyCall[3].keySeconds > 880 && keyCall[3].keySeconds <= 900);
-  const command = c.querySelector('[aria-label="Command for the agent"]').value;
-  const fixed = new URL(commandLink(command));
+  const fixed = new URL(c.querySelector('[aria-label="Link for the agent"]').value);
   assert.equal(fixed.pathname, "/agent");
   assert.deepEqual(parseGuestLink(fixed.hash), { ...KEY, invites: [{ origin: macA.url, secret: secret("z") }] }, "the same invitation, now with a key");
   assert.match(c.querySelector('[aria-label="Agent invitation"]').textContent, /nothing else/);
