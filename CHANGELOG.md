@@ -29,6 +29,13 @@ release notes, so date the heading before tagging.
 
 ### Changed
 
+- 2026-10-13: An invitation nobody ever joined clears itself a day after its
+  chance to join ended: an unopened link a day after its join window (a
+  person's, a day after their access ran out), an agent's request a day after
+  it was declined or ran out. It goes the way removing it does, and the
+  security record says "Unopened invitation for <name> cleared". Within the
+  day, a new link starts a new window. Anything that joined, or that you
+  approved, is never cleared this way. Same on Mac and Windows.
 - 2026-10-12: Dependencies: Vite 8, xterm 6 (addon-fit 0.11), esbuild 0.28,
   jsdom 30, lucide-react 1.53, TypeScript 7 and the current GitHub Actions.
   A source checkout now builds on Node 22.12 or newer; `./reach` and
