@@ -11,6 +11,7 @@ import {
 } from "./agent-sessions";
 import type { Peer } from "./api";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
+import { computerWord } from "./pause";
 import "./move-chat.css";
 
 // Continuing a chat in another app, as if it had been forked in the same app
@@ -68,7 +69,7 @@ export function moveChoices(agent: string, health: AgentHealth[], word = "Mac") 
 }
 
 // Same-app forks belong in the same picker as cross-app continuations.
-export function forkChoices(agent: string, health: AgentHealth[], word = "Mac") {
+export function forkChoices(agent: string, health: AgentHealth[], word: string) {
   const choices = moveChoices(agent, health, word);
   if (APPS.includes(agent)) choices.push({ to: agent, name: agentLabel(agent), blocked: moveBlocked(agent, health, word) });
   return choices;
@@ -116,7 +117,7 @@ export function MoveItems({
   onBack: () => void;
   onMoved: (s: AgentSession) => void;
 }) {
-  const choices = forkChoices(session.agent, health, word);
+  const choices = forkChoices(session.agent, health, word ?? computerWord(peer.platform));
   const [asking, setAsking] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
