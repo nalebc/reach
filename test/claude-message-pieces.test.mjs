@@ -65,6 +65,25 @@ test("a message typed while Claude works shows at once, before Claude writes any
   assert.deepEqual(items.at(-1) && [items.at(-1).text, items.at(-1).queued], ["also the tests", true]);
 });
 
+// Claude Code 2.1.296 writes a typed message as commandMode "prompt", with no
+// humanTurn, and its own background-task notices as "task-notification".
+// Reach hid the person's message, so it vanished from the phone though
+// Claude had it and answered it (Oct 13).
+test("a message typed while Claude works shows in Claude Code 2.1.296's form too; its task notices don't", () => {
+  const typed = (uuid, parent, prompt, commandMode) => line({ ...base, type: "attachment", uuid, parentUuid: parent, timestamp: at(3),
+    attachment: { type: "queued_command", prompt, source_uuid: `s-${uuid}`, delivery_id: `d-${uuid}`, commandMode, timestamp: at(3) } });
+  const text = [
+    line({ ...base, type: "user", uuid: "u1", parentUuid: null, timestamp: at(1), message: { role: "user", content: "Fix it" } }),
+    line({ ...base, type: "assistant", uuid: "a1", parentUuid: "u1", timestamp: at(2), message: { content: [{ type: "text", text: "On it." }] } }),
+    typed("q1", "a1", [{ type: "text", text: "<task-notification><task-id>x</task-id></task-notification>" }], "task-notification"),
+    typed("q2", "q1", [{ type: "text", text: "also the tests" }], "prompt"),
+    typed("q3", "q2", [{ type: "text", text: "a mode Claude Code adds later" }], "something-new"),
+  ].join("\n");
+  const { items } = parseClaudeTranscript(text);
+  const mine = items.filter((i) => i.role === "user").map((i) => [i.text, !!i.queued]);
+  assert.deepEqual(mine, [["Fix it", false], ["also the tests", true]]);
+});
+
 test("Claude's words keep their id when something above them comes or goes, so the phone keeps the pages it loaded", () => {
   const reply = line({ ...base, type: "assistant", uuid: "a2", parentUuid: "q1", timestamp: at(4), message: { content: [{ type: "text", text: "Done." }] } });
   const start = [
