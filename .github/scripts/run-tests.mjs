@@ -25,6 +25,8 @@ export const suites = {
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
+    // Keeping what Reach drives in sync: Codex's service update (Oct 13).
+    "keep-in-sync",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
