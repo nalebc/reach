@@ -181,11 +181,18 @@ export default function QueuedMessages({
       void el?.offsetHeight;
       el?.classList.remove("qm-snap");
     }
-    // Moved from the keyboard: the focus stays on its handle.
+    // Moved from the keyboard: the focus goes back to its handle, once the
+    // handle is enabled again (it's disabled while the Mac takes the new
+    // order, and a disabled button drops the focus). Never taken back from
+    // something focused since.
     if (refocus.current) {
       const grip = grips.current.get(refocus.current);
-      if (grip && document.activeElement !== grip) grip.focus();
-      refocus.current = null;
+      if (!grip) refocus.current = null;
+      else if (!grip.disabled) {
+        const active = document.activeElement;
+        if (!active || active === document.body || active === grip) grip.focus();
+        refocus.current = null;
+      }
     }
   });
 

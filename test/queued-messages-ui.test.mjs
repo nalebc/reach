@@ -414,6 +414,39 @@ test("keyboard: Space picks a row up, arrows move it, Enter drops it; each step 
   } finally { restore(); await view.unmount(); }
 });
 
+test("keyboard: the focus comes back to the moved row's handle once the Mac has taken the order", async () => {
+  const restore = motion(true);
+  let accept;
+  function Fixture() {
+    const [busy, setBusy] = React.useState(null);
+    return React.createElement(QueuedMessages, { agent: "codex", messages: three, busy, canEdit: true,
+      onEdit: async () => {}, onRemove() {},
+      onReorder: () => {
+        // As AgentSession: busy while the Mac takes it; the disabled handle
+        // drops the focus, as a browser does.
+        setBusy("order");
+        dom.document.activeElement?.blur();
+        return new Promise((resolve) => { accept = () => { setBusy(null); resolve(); }; });
+      } });
+  }
+  const view = await dom.render(React.createElement(Fixture));
+  try {
+    geometry();
+    const grip = button("Reorder queued message 1 of 3")[0];
+    grip.focus();
+    key(grip, "Enter");
+    key(grip, "ArrowDown");
+    key(grip, "Enter");
+    await settle(10);
+    assert.ok($$(".qm-grip").every((g) => g.disabled));
+    assert.equal(dom.document.activeElement, dom.document.body);
+    dom.update(() => accept());
+    await settle(10);
+    assert.equal(dom.document.activeElement, $$(".qm-grip")[1]);
+    assert.equal($$(".qm-grip")[1].getAttribute("aria-label"), "Reorder queued message 2 of 3");
+  } finally { restore(); await view.unmount(); }
+});
+
 test("keyboard: Escape puts a picked-up row back, nothing sent", async () => {
   const restore = motion(true);
   const { view, calls } = await render({ agent: "claude", messages: three });
