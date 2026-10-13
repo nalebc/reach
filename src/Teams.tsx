@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, LoaderCircle, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, stopTeam, type Team, type TeamTask } from "./agent-sessions";
@@ -133,7 +133,7 @@ export function TeamStrip({
               Keep
             </button>
             <button className="danger" disabled={busy} onClick={() => void stop()}>
-              {busy ? <Loader2 size={14} className="spin" /> : "Stop team"}
+              {busy ? <LoaderCircle size={14} className="spin" /> : "Stop team"}
             </button>
           </span>
         ) : (
@@ -155,7 +155,7 @@ export function TeamStrip({
                   <AgentLogo agent={t.helper} logos={logos} size={18} />
                   <span className="team-task-title">{t.title}</span>
                   <span className={`team-task-state ${t.state}`}>
-                    {t.state === "working" ? <Loader2 size={13} className="spin" /> : t.state === "done" ? <Check size={13} /> : <X size={13} />}
+                    {t.state === "working" ? <LoaderCircle size={13} className="spin" /> : t.state === "done" ? <Check size={13} /> : <X size={13} />}
                     {t.kind === "review" && t.state === "working" ? "Reviewing" : STATE[t.state]}
                   </span>
                 </button>

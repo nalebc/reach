@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { request, post, type Peer } from "./api";
 import { installAgent, type InstallPlan } from "./agent-sessions";
 import { computerWord } from "./pause";
@@ -130,7 +130,7 @@ function KeyForm({
           </button>
         )}
         <button type="submit" className="claw-primary" disabled={!ready || busy}>
-          {busy && <Loader2 size={14} className="spin" />}
+          {busy && <LoaderCircle size={14} className="spin" />}
           {busy ? busyLabel || `${action}…` : action}
         </button>
       </div>
@@ -192,7 +192,7 @@ function InstallRow({ peer, recheck }: { peer: Peer; recheck: () => void }) {
             {step === "failed" ? "Try again" : "Install"}
           </button>
         ) : step === "running" ? (
-          <Loader2 size={16} className="spin" aria-label="Installing" />
+          <LoaderCircle size={16} className="spin" aria-label="Installing" />
         ) : null}
       </div>
       {step === "confirm" && plan && (
@@ -275,7 +275,7 @@ function SetupRunning({ peer, onDone }: { peer: Peer; onDone: () => void }) {
     <div className="claw-onboard" role="status">
       <div className="claw-onboard-row">
         <strong>Setting up OpenClaw</strong>
-        {!problem && <Loader2 size={14} className="spin" />}
+        {!problem && <LoaderCircle size={14} className="spin" />}
       </div>
       {problem && (
         <p className="claw-error" role="alert">

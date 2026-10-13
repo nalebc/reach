@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { AddModelPrompt } from "./OpenClawSetup";
 
@@ -228,7 +228,7 @@ function ClawSettingsForm({ peer, session, disabled, onSaved, onClose }: ClawSes
           className="claw-primary"
           disabled={busy || disabled || !catalog?.canEdit || !label.trim() || !changed}
         >
-          {busy ? <Loader2 size={15} className="spin" /> : null}Save changes
+          {busy ? <LoaderCircle size={15} className="spin" /> : null}Save changes
         </button>
       </div>
     </form>

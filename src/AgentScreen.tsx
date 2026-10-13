@@ -12,7 +12,7 @@ import {
   Hash,
   Maximize,
   Minimize,
-  MoreHorizontal,
+  Ellipsis,
   ShieldCheck,
   ZoomIn,
 } from "lucide-react";
@@ -1188,7 +1188,7 @@ export default function AgentScreen({
               aria-haspopup="dialog"
               onClick={() => setPanel("more")}
             >
-              <MoreHorizontal size={20} />
+              <Ellipsis size={20} />
             </button>
           )}
         </div>

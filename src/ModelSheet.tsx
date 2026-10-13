@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, Loader2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, LoaderCircle } from "lucide-react";
 import { effortLabel, type AgentModel, type AgentName } from "./agent-sessions";
 import { dragToClose } from "./sheet-drag";
 import "./model-sheet.css";
@@ -177,7 +177,7 @@ function Status({ busy, error, notice, working, empty, onRetry, onAgain, changin
 // The row tapped shows it's being changed (a spinner where its check goes)
 // until the agent confirms: a tap that seemed to do nothing, Oct 6.
 function Mark({ checked, pending }: { checked: boolean; pending: boolean }) {
-  return pending ? <Loader2 size={18} className="spin ms-check" /> : checked ? <Check size={20} className="ms-check" /> : null;
+  return pending ? <LoaderCircle size={18} className="spin ms-check" /> : checked ? <Check size={20} className="ms-check" /> : null;
 }
 function ModelRows({ models, model, current, busy, onPick }: { models: AgentModel[]; model: string | null; current?: AgentModel; busy?: boolean; onPick: (m: AgentModel) => void }) {
   const [tapped, setTapped] = useState("");

@@ -13,7 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  AlignLeft,
+  TextAlignStart,
   ArrowUp,
   Check,
   ChevronDown,
@@ -27,7 +27,7 @@ import {
   Ellipsis,
   Laptop,
   Clock,
-  Loader2,
+  LoaderCircle,
   Mic,
   Monitor,
   Plus,
@@ -42,7 +42,7 @@ import {
   Workflow,
   RefreshCw,
   RotateCcw,
-  Trash2,
+  Trash,
   Square,
   Terminal,
   TriangleAlert,
@@ -175,7 +175,7 @@ const SKIN = {
   claude: {
     placeholder: "Reply to Claude",
     app: "Claude app",
-    menu: AlignLeft,
+    menu: TextAlignStart,
     compose: ClaudeNewChat,
     where: Laptop,
     disclaimer: "Claude is AI and can make mistakes.",
@@ -184,7 +184,7 @@ const SKIN = {
   gemini: {
     placeholder: "Type your message or @path/to/file",
     app: "Gemini CLI",
-    menu: AlignLeft,
+    menu: TextAlignStart,
     compose: SquarePen,
     where: Terminal,
     disclaimer: "",
@@ -492,7 +492,7 @@ function ToolRun({ items }: { items: SessionItem[] }) {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        {running && <Loader2 size={13} className="spin" />}
+        {running && <LoaderCircle size={13} className="spin" />}
         <span>{text}</span>
         {added > 0 && <b className="plus">+{added}</b>}
         {removed > 0 && <b className="minus">-{removed}</b>}
@@ -950,7 +950,7 @@ function ImageViewer({
       {count > 1 && <span className="as-viewer-count">{at + 1} / {count}</span>}
       {!current ? (
         <span className="as-viewer-wait" aria-label="Loading">
-          <Loader2 size={26} className="spin" />
+          <LoaderCircle size={26} className="spin" />
         </span>
       ) : current.url ? (
         <img src={current.url} alt="" />
@@ -1147,7 +1147,7 @@ function AskingCard({
                 disabled={!!busy}
                 onClick={() => void press(label)}
               >
-                {busy === label ? <Loader2 size={14} className="spin" /> : label}
+                {busy === label ? <LoaderCircle size={14} className="spin" /> : label}
               </button>
             ))}
           </div>
@@ -1161,7 +1161,7 @@ function AskingCard({
                 <div className="as-prompt-actions as-app-card-actions">
                   {card.more.map((label) => (
                     <button key={label} disabled={!!busy} onClick={() => void press(label)}>
-                      {busy === label ? <Loader2 size={14} className="spin" /> : label}
+                      {busy === label ? <LoaderCircle size={14} className="spin" /> : label}
                     </button>
                   ))}
                 </div>
@@ -1172,7 +1172,7 @@ function AskingCard({
         </>
       ) : answerable && !failed ? (
         <p className="as-reason as-app-card-loading">
-          <Loader2 size={14} className="spin" /> Getting the choices from the {where}…
+          <LoaderCircle size={14} className="spin" /> Getting the choices from the {where}…
         </p>
       ) : (
         <>
@@ -1203,7 +1203,7 @@ function AskingCard({
                     }
                   }}
                 >
-                  {enabling ? <Loader2 size={14} className="spin" /> : "Answer Claude from your phone"}
+                  {enabling ? <LoaderCircle size={14} className="spin" /> : "Answer Claude from your phone"}
                 </button>
               )}
               {answerable && failed && <button onClick={() => load()}>Try again</button>}
@@ -1257,14 +1257,14 @@ function ConsentCard({
       )}
       <div className="as-consent-actions">
         <button disabled={!!busy} onClick={() => void act("deny")}>
-          {busy === "deny" ? <Loader2 size={14} className="spin" /> : deny}
+          {busy === "deny" ? <LoaderCircle size={14} className="spin" /> : deny}
         </button>
         <button
           className="primary"
           disabled={!!busy}
           onClick={() => void act("allow")}
         >
-          {busy === "allow" ? <Loader2 size={14} className="spin" /> : allow}
+          {busy === "allow" ? <LoaderCircle size={14} className="spin" /> : allow}
         </button>
       </div>
     </section>
@@ -1458,7 +1458,7 @@ export function PromptCard({
                   disabled={!!busy || prompt.attempted}
                   onClick={() => void act(key, { decision: key })}
                 >
-                  {busy === key ? <Loader2 size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
+                  {busy === key ? <LoaderCircle size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
                 </button>
               ))}
           </div>
@@ -1477,7 +1477,7 @@ export function PromptCard({
                 aria-label="What to change in the plan"
               />
               <button type="submit" disabled={!!busy || prompt.attempted}>
-                {busy === "keepPlanning" ? <Loader2 size={14} className="spin" /> : "Keep planning"}
+                {busy === "keepPlanning" ? <LoaderCircle size={14} className="spin" /> : "Keep planning"}
               </button>
             </form>
           )}
@@ -1558,7 +1558,7 @@ export function PromptCard({
                   })
                 }
               >
-                {busy ? <Loader2 size={14} className="spin" /> : "Submit"}
+                {busy ? <LoaderCircle size={14} className="spin" /> : "Submit"}
               </button>
             ) : (
               <button
@@ -1585,7 +1585,7 @@ export function PromptCard({
               onClick={() => void act(key, { decision: key })}
             >
               {busy === key ? (
-                <Loader2 size={14} className="spin" />
+                <LoaderCircle size={14} className="spin" />
               ) : prompt.kind === "dialog" ? (
                 "Cancel request"
               ) : (
@@ -2948,7 +2948,7 @@ export default function AgentSessionView({
                       }
                     }}
                   >
-                    <Trash2 size={18} /> Delete chat
+                    <Trash size={18} /> Delete chat
                   </button>
                 )}
               </>
@@ -2964,7 +2964,7 @@ export default function AgentSessionView({
             <p className="as-rewind-quote">{visibleUserText(rewinding.item.text).slice(0, 200)}</p>
             {rewinding.busy === "preview" ? (
               <p>
-                <Loader2 size={14} className="spin" /> Checking what would change…
+                <LoaderCircle size={14} className="spin" /> Checking what would change…
               </p>
             ) : rewinding.preview && rewinding.preview.files.length ? (
               <p>
@@ -2981,19 +2981,19 @@ export default function AgentSessionView({
             <div className="as-rewind-actions">
               {!!rewinding.preview?.files.length && rewinding.preview.canRewind && rewinding.preview.conversation !== false && (
                 <button className="primary" disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: true }, "both")}>
-                  {rewinding.busy === "both" ? <Loader2 size={14} className="spin" /> : "Restore code and conversation"}
+                  {rewinding.busy === "both" ? <LoaderCircle size={14} className="spin" /> : "Restore code and conversation"}
                 </button>
               )}
               {/* The first message has no conversation before it (the server refuses), and a
                   preview that failed (the chat held elsewhere) leaves nothing to restore. */}
               {rewinding.preview?.conversation !== false && (
                 <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || (!rewinding.preview && !!rewinding.error)} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
-                  {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
+                  {rewinding.busy === "conversation" ? <LoaderCircle size={14} className="spin" /> : "Restore conversation"}
                 </button>
               )}
               {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
                 <button disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: false }, "code")}>
-                  {rewinding.busy === "code" ? <Loader2 size={14} className="spin" /> : "Restore code only"}
+                  {rewinding.busy === "code" ? <LoaderCircle size={14} className="spin" /> : "Restore code only"}
                 </button>
               )}
               <button className="quiet" disabled={!!rewinding.busy && rewinding.busy !== "preview"} onClick={() => setRewinding(null)}>
@@ -3034,7 +3034,7 @@ export default function AgentSessionView({
         ) : null}
         {!items ? (
           <p className="as-note">
-            <Loader2 size={15} className="spin" /> Opening…
+            <LoaderCircle size={15} className="spin" /> Opening…
           </p>
         ) : (
           placeMoves(blocks.map((b, i) =>
@@ -3075,7 +3075,7 @@ export default function AgentSessionView({
                     Cancel
                   </button>
                   <button type="submit" className="primary" disabled={editingLast.busy || !editingLast.text.trim()}>
-                    {editingLast.busy ? <Loader2 size={14} className="spin" /> : "Send"}
+                    {editingLast.busy ? <LoaderCircle size={14} className="spin" /> : "Send"}
                   </button>
                 </span>
               </form>
@@ -3634,7 +3634,7 @@ export default function AgentSessionView({
                       <img src={a.url} alt="" />
                     )}
                     {!a.id && !a.error && (
-                      <Loader2 size={16} className="spin" />
+                      <LoaderCircle size={16} className="spin" />
                     )}
                     <button
                       aria-label={a.file ? "Remove file" : "Remove image"}
@@ -3798,7 +3798,7 @@ export default function AgentSessionView({
                 onClick={() => void (memo.state === "recording" ? memo.stop() : memo.start())}
               >
                 {memo.state === "working" ? (
-                  <Loader2 size={16} className="spin" />
+                  <LoaderCircle size={16} className="spin" />
                 ) : memo.state === "recording" ? (
                   <span className="as-mic-time">
                     {Math.floor(memo.seconds / 60)}:{String(memo.seconds % 60).padStart(2, "0")}
@@ -3827,7 +3827,7 @@ export default function AgentSessionView({
                 onClick={() => void send()}
               >
                 {sending ? (
-                  <Loader2 size={16} className="spin" />
+                  <LoaderCircle size={16} className="spin" />
                 ) : (
                   <ArrowUp size={18} />
                 )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink, LoaderCircle } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { agentLabel, type AgentName } from "./agent-sessions";
 import { computerWord } from "./pause";
@@ -61,7 +61,7 @@ export default function AgentSignIn({
     return (
       <span className="sign-in">
         <button className="sign-in-start" disabled={busy} onClick={() => void start()}>
-          {busy && <Loader2 size={13} className="spin" />} Sign in
+          {busy && <LoaderCircle size={13} className="spin" />} Sign in
         </button>
         {error && <small className="bad">{error}</small>}
       </span>
@@ -70,7 +70,7 @@ export default function AgentSignIn({
     <div className="sign-in" role="group" aria-label={`Sign ${name} in`}>
       {view.state === "starting" && (
         <p>
-          <Loader2 size={13} className="spin" /> Starting sign-in on your {word}…
+          <LoaderCircle size={13} className="spin" /> Starting sign-in on your {word}…
         </p>
       )}
       {view.state === "link" && view.url && (
@@ -115,12 +115,12 @@ export default function AgentSignIn({
       )}
       {view.state === "link" && agent === "codex" && (
         <p>
-          <Loader2 size={13} className="spin" /> Waiting for you to finish…
+          <LoaderCircle size={13} className="spin" /> Waiting for you to finish…
         </p>
       )}
       {view.state === "checking" && (
         <p>
-          <Loader2 size={13} className="spin" /> Signing in…
+          <LoaderCircle size={13} className="spin" /> Signing in…
         </p>
       )}
       {view.state === "done" && (

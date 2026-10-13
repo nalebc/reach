@@ -4,7 +4,7 @@ import {
   ChevronLeft,
   Keyboard,
   Laptop,
-  Loader2,
+  LoaderCircle,
   Power,
   RotateCcw,
 } from "lucide-react";
@@ -478,7 +478,7 @@ export default function AppThread({
                       name={thread.name}
                       size={64}
                     />
-                    <Loader2 className="spin" size={20} />
+                    <LoaderCircle className="spin" size={20} />
                     <span>{stream.error || `Opening ${thread.name}…`}</span>
                   </>
                 )}

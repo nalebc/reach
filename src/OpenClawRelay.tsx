@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Check, FolderOpen, Loader2, SearchCheck, Workflow } from "lucide-react";
+import { Check, FolderOpen, LoaderCircle, SearchCheck, Workflow } from "lucide-react";
 import { request, type Peer } from "./api";
 import { projectName, type AgentHealth, type AgentName, type AgentSession } from "./agent-sessions";
 import type { AgentLogos } from "./agent-logos";
@@ -193,7 +193,7 @@ export function ClawRelayAction({
       </div>
       {picking && (
         <div className="claw-relay-folders" role="listbox" aria-label="Folder">
-          {!sessions && <Loader2 size={14} className="spin" />}
+          {!sessions && <LoaderCircle size={14} className="spin" />}
           {folders.map((f) => (
             <button key={f} role="option" aria-selected={f === cwd} className="claw-relay-pill" title={f} onClick={() => pick(f)}>
               {folderLabel(f, folders)}

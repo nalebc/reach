@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, ChevronDown, Loader2, Plus, X } from "lucide-react";
+import { Bot, ChevronDown, LoaderCircle, Plus, X } from "lucide-react";
 import { request, post, type Peer } from "./api";
 import "./openclaw-agents.css";
 
@@ -79,7 +79,7 @@ export function ClawAgentsPanel({ peer, query, refresh }: { peer: Peer; query: s
       )}
       {!data && !error && (
         <p className="claw-note" role="status">
-          <Loader2 size={14} className="spin" />
+          <LoaderCircle size={14} className="spin" />
           Loading agents…
         </p>
       )}
@@ -234,7 +234,7 @@ function ApprovalRules({ peer, refresh, agents }: { peer: Peer; refresh: number;
     <div className="claw-agents-rules" aria-label="Approval rules" role="region">
       <h2 className="claw-agents-heading">
         Approval rules
-        {busy && <Loader2 size={14} className="spin" />}
+        {busy && <LoaderCircle size={14} className="spin" />}
       </h2>
       <div className="claw-channels" role="group" aria-label="Rules for">
         {[["*", "All agents"], ...agents.map((a) => [a.id, a.name])].map(([id, name]) => (
@@ -287,7 +287,7 @@ function ApprovalRules({ peer, refresh, agents }: { peer: Peer; refresh: number;
             onChange={(e) => setDraft(e.target.value)}
           />
           <button type="submit" aria-label="Add to allowlist" disabled={!edit || !draft.trim()}>
-            {busy === "add" ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+            {busy === "add" ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}
           </button>
         </form>
       )}

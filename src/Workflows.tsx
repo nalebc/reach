@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, Loader2, Pause, Plus, RotateCcw, Search, SkipForward, Trash2, Workflow as WorkflowIcon, Wrench } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, LoaderCircle, Pause, Plus, RotateCcw, Search, SkipForward, Trash, Workflow as WorkflowIcon, Wrench } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -112,7 +112,7 @@ function taskValue(t: { kind: string; state?: WorkflowTaskState }) {
   if (atWork(t.state))
     return (
       <>
-        <Loader2 size={13} className="spin" /> {t.kind === "review" ? "Reviewing" : "Working"}
+        <LoaderCircle size={13} className="spin" /> {t.kind === "review" ? "Reviewing" : "Working"}
       </>
     );
   return { waiting: "Waiting", done: "Done", skipped: "Skipped", stopped: "Stopped", uncertain: "Check" }[t.state] || "";
@@ -574,7 +574,7 @@ function Editor({
                     <ArrowDown size={16} />
                   </button>
                   <button className="wf-icon" aria-label={`Remove task ${n}`} onClick={() => changeTasks(tasks.filter((_, x) => x !== i), -1)}>
-                    <Trash2 size={16} />
+                    <Trash size={16} />
                   </button>
                 </span>
               </div>
@@ -665,7 +665,7 @@ export function WorkflowSheet({
           <p className="wf-problem">{failure}</p>
         ) : (
           <p className="wf-meta" role="status">
-            <Loader2 size={14} className="spin" /> Loading…
+            <LoaderCircle size={14} className="spin" /> Loading…
           </p>
         )}
       </ChatSheet>
@@ -684,7 +684,7 @@ export function WorkflowSheet({
         Cancel
       </button>
       <button className="wf-pill danger" disabled={!!busy} onClick={run}>
-        {busy ? <Loader2 size={14} className="spin" /> : yes}
+        {busy ? <LoaderCircle size={14} className="spin" /> : yes}
       </button>
     </div>
   );
@@ -713,7 +713,7 @@ export function WorkflowSheet({
             <span className="wf-item-copy">
               <span className="wf-item-title">{planner.working ? "Planning…" : planner.problem ? "No plan in its reply" : `Planned by ${agentLabel(planner.agent)}`}</span>
             </span>
-            {planner.working && <Loader2 size={15} className="spin wf-muted" aria-hidden="true" />}
+            {planner.working && <LoaderCircle size={15} className="spin wf-muted" aria-hidden="true" />}
             <button className="wf-action" onClick={() => onOpenChat({ agent: planner.agent, id: planner.id, title: planner.title })}>
               Open chat
             </button>
@@ -771,7 +771,7 @@ export function WorkflowSheet({
                     if (await flush()) await act("run", () => workflowAction(peer, w.id, "run"));
                   }}
                 >
-                  {busy === "run" && <Loader2 size={16} className="spin" />} Run workflow
+                  {busy === "run" && <LoaderCircle size={16} className="spin" />} Run workflow
                 </button>
                 {problem && <p className="wf-problem">{problem}</p>}
                 <div className="wf-quiet-row">
@@ -841,7 +841,7 @@ export function WorkflowSheet({
           <>
             {w.state === "paused" && !stuck && (
               <button className="wf-primary" disabled={!!busy} onClick={() => void act("resume", () => workflowAction(peer, w.id, "resume"))}>
-                {busy === "resume" && <Loader2 size={16} className="spin" />} Continue
+                {busy === "resume" && <LoaderCircle size={16} className="spin" />} Continue
               </button>
             )}
             <div className="wf-footer">
@@ -867,7 +867,7 @@ export function WorkflowSheet({
               }
             }}
           >
-            {busy === "again" ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />} Run again
+            {busy === "again" ? <LoaderCircle size={16} className="spin" /> : <RotateCcw size={16} />} Run again
           </button>
           <div className="wf-quiet-row">{remove()}</div>
         </>
@@ -934,7 +934,7 @@ export function WorkflowsPage({
                     <button className={`wf-item-main wf-flow ${w.state}`} aria-label={`${w.title || "Workflow"}, ${value}`} onClick={() => onOpen(w)}>
                       <span className="wf-flow-icon" aria-hidden="true">
                         {w.state === "running" ? (
-                          <Loader2 size={16} className="spin" />
+                          <LoaderCircle size={16} className="spin" />
                         ) : w.state === "paused" ? (
                           <Pause size={16} />
                         ) : w.state === "done" ? (
@@ -1007,7 +1007,7 @@ export function WorkflowIntro({
     <div className="wf-intro">
       <span>{agentLabel(agent)} drafts the tasks · you review first</span>
       <button className="wf-text-btn" disabled={disabled || busy || !cwd} onClick={() => void write()}>
-        {busy && <Loader2 size={13} className="spin" />} Write tasks myself
+        {busy && <LoaderCircle size={13} className="spin" />} Write tasks myself
       </button>
       {problem && <p className="wf-problem">{problem}</p>}
     </div>

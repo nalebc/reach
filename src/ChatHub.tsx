@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, Loader2, Search, ShieldCheck, X } from "lucide-react";
+import { ArrowUpRight, FolderOpen, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
@@ -123,7 +123,7 @@ function SearchAll({
           onChange={(e) => setQuery(e.target.value)}
         />
         {busy ? (
-          <Loader2 size={15} className="spin" />
+          <LoaderCircle size={15} className="spin" />
         ) : (
           query && (
             <button aria-label="Clear search" onClick={() => setQuery("")}>
@@ -411,7 +411,7 @@ export default function ChatHub({
                 </button>
                 {r.state === "waiting" && (
                   <button className="relay-row-action" disabled={cancelling === r.id} aria-label="Cancel handoff" onClick={() => void cancel(r)}>
-                    {cancelling === r.id ? <Loader2 size={14} className="spin" /> : "Cancel"}
+                    {cancelling === r.id ? <LoaderCircle size={14} className="spin" /> : "Cancel"}
                   </button>
                 )}
               </div>
@@ -421,7 +421,7 @@ export default function ChatHub({
       )}
       {!sessions ? (
         <p className="chat-list-note" role="status">
-          <Loader2 size={15} className="spin" /> Finding your conversations…
+          <LoaderCircle size={15} className="spin" /> Finding your conversations…
         </p>
       ) : (
         <section className="chat-projects" aria-label="Projects">
@@ -496,7 +496,7 @@ export default function ChatHub({
                               <span className="chat-state-dot" />
                             </span>
                           ) : s.status === "running" ? (
-                            <Loader2 className="chat-row-status spin" size={17} aria-label="Working" />
+                            <LoaderCircle className="chat-row-status spin" size={17} aria-label="Working" />
                           ) : null}
                           <time className="chat-card-time" dateTime={new Date(s.updatedAt).toISOString()}>
                             {ago(s.updatedAt)}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import ChatSheet from "./ChatSheet";
 import { post, request, type Peer } from "./api";
 import { clawBase } from "./OpenClawControls";
@@ -105,7 +105,7 @@ export function ClawWizard({
             )}
             {state.busy && (
               <p role="status">
-                <Loader2 size={14} className="spin" /> OpenClaw is working… You
+                <LoaderCircle size={14} className="spin" /> OpenClaw is working… You
                 can close this panel and return later.
               </p>
             )}

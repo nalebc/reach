@@ -10,7 +10,7 @@ import {
   ChevronRight,
   CircleAlert,
   FileText,
-  Loader2,
+  LoaderCircle,
   RefreshCw,
   Server,
 } from "lucide-react";
@@ -239,7 +239,7 @@ function HealthSheet({
         <div className="claw-check-time" role="status">
           {refreshing ? (
             <>
-              <Loader2 size={13} className="spin" /> Refreshing status…
+              <LoaderCircle size={13} className="spin" /> Refreshing status…
             </>
           ) : (
             `Checked ${checked}`

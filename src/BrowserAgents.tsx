@@ -6,11 +6,11 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
-  History,
+  RotateCcwClock,
   ShieldCheck,
   Sparkles,
   SquareTerminal,
-  Trash2,
+  Trash,
 } from "lucide-react";
 import { PRESET_WORDS } from "./BrowserInvite";
 import { type EditableAccess } from "./AccessEditor";
@@ -705,7 +705,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
             <div className="gs-group ag-ended-list">{ended.map(row)}</div>
           ) : (
             <div className="ag-ended-empty">
-              <History size={26} />
+              <RotateCcwClock size={26} />
               <p>No ended agents</p>
               <small>Agents show up here when their access ends.</small>
             </div>
@@ -736,7 +736,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
                 {body(focused)}
                 <div className="gs-group gs-end">
                   <button type="button" className="gs-row gs-danger" disabled={clearing} onClick={() => setAsking([focused])}>
-                    <Trash2 size={21} />
+                    <Trash size={21} />
                     <span className="gs-label">{clearing ? "Clearing…" : "Clear"}</span>
                   </button>
                 </div>

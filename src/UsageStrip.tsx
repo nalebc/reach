@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Bell, BellRing, Loader2, RefreshCw } from "lucide-react";
+import { ArrowRight, Bell, BellRing, LoaderCircle, RefreshCw } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import type { UsageLink } from "./agent-sessions";
 import type { Peer } from "./api";
@@ -84,7 +84,7 @@ export default function UsageStrip({
                 Cancel
               </button>
               <button className="primary" disabled={busy} onClick={() => void reset()}>
-                {busy ? <Loader2 size={14} className="spin" /> : "Reset"}
+                {busy ? <LoaderCircle size={14} className="spin" /> : "Reset"}
               </button>
             </>
           ) : (
@@ -97,7 +97,7 @@ export default function UsageStrip({
                   disabled={back.busy}
                   onClick={() => void back.toggle()}
                 >
-                  {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
+                  {back.busy ? <LoaderCircle size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
                   {back.on ? "Notifying" : "Notify me"}
                 </button>
               )}
@@ -128,7 +128,7 @@ export default function UsageStrip({
                   Cancel
                 </button>
                 <button className="primary" disabled={moving} onClick={() => void go(target.agent)}>
-                  {moving ? <Loader2 size={14} className="spin" /> : "Continue"}
+                  {moving ? <LoaderCircle size={14} className="spin" /> : "Continue"}
                 </button>
               </span>
             </>
