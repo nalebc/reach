@@ -6,7 +6,7 @@ import {
   CalendarClock,
   Gamepad2,
   Hash,
-  Loader2,
+  LoaderCircle,
   MessageCircle,
   MessageSquare,
   Plus,
@@ -161,7 +161,7 @@ export function ClawScheduled({ peer, refresh, onBack }: { peer: Peer; refresh: 
       )}
       {!data && !error && (
         <p className="claw-note" role="status">
-          <Loader2 size={14} className="spin" />
+          <LoaderCircle size={14} className="spin" />
           Loading tasks…
         </p>
       )}
@@ -349,7 +349,7 @@ function TaskDetail({
               }
             }}
           >
-            {busy === "run" && <Loader2 size={14} className="spin" />}
+            {busy === "run" && <LoaderCircle size={14} className="spin" />}
             {ran ? "Started" : "Run now"}
           </button>
         )}
@@ -363,7 +363,7 @@ function TaskDetail({
               if (await act("pause", "automations", { id: job.id, enabled: !job.enabled })) onChanged();
             }}
           >
-            {busy === "pause" && <Loader2 size={14} className="spin" />}
+            {busy === "pause" && <LoaderCircle size={14} className="spin" />}
             {job.enabled ? "Pause" : "Resume"}
           </button>
         )}
@@ -379,7 +379,7 @@ function TaskDetail({
               if (await act("remove", "automations/remove", { id: job.id })) onRemoved();
             }}
           >
-            {busy === "remove" && <Loader2 size={14} className="spin" />}
+            {busy === "remove" && <LoaderCircle size={14} className="spin" />}
             {removing ? "Tap again to delete" : "Delete"}
           </button>
         )}
@@ -462,7 +462,7 @@ export function ClawCustomize({
               }
             }}
           >
-            {busy ? <Loader2 size={18} className="spin" /> : <RotateCw size={18} />}
+            {busy ? <LoaderCircle size={18} className="spin" /> : <RotateCw size={18} />}
           </button>
         }
       />
@@ -480,7 +480,7 @@ export function ClawCustomize({
       <div className="claw-group" role="group" aria-label="Messaging apps">
         {!data && !error && (
           <p className="claw-note claw-group-note" role="status">
-            <Loader2 size={14} className="spin" />
+            <LoaderCircle size={14} className="spin" />
             Loading apps…
           </p>
         )}

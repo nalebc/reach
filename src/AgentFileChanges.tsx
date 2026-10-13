@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FilePlus, FolderPlus, Pencil, Save, Trash2, X } from "lucide-react";
+import { FilePlus, FolderPlus, Pencil, Save, Trash, X } from "lucide-react";
 import { request, type Peer } from "./api";
 import "./agent-desktop.css";
 
@@ -51,11 +51,11 @@ export default function AgentFileChanges({ peer, root, dir, file, onChanged, onE
           <button className="ag-secondary ag-small" type="button" disabled={busy} onClick={() => { setDraft(file.text); setEditing(true); }}><Pencil size={14} /> Edit {file.path.split("/").at(-1)}</button>
           {confirmDelete ? (
             <>
-              <button className="ag-danger ag-small" type="button" disabled={busy} onClick={() => void change({ op: "rm", path: file.path }, `Deleted ${file.path}.`, null).then(() => setConfirmDelete(false))}><Trash2 size={14} /> Confirm delete</button>
+              <button className="ag-danger ag-small" type="button" disabled={busy} onClick={() => void change({ op: "rm", path: file.path }, `Deleted ${file.path}.`, null).then(() => setConfirmDelete(false))}><Trash size={14} /> Confirm delete</button>
               <button className="ag-secondary ag-small" type="button" onClick={() => setConfirmDelete(false)}><X size={14} /> Keep it</button>
             </>
           ) : (
-            <button className="ag-secondary ag-small" type="button" disabled={busy} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Delete</button>
+            <button className="ag-secondary ag-small" type="button" disabled={busy} onClick={() => setConfirmDelete(true)}><Trash size={14} /> Delete</button>
           )}
         </div>
       )}

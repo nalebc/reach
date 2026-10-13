@@ -711,11 +711,12 @@ svg {
 .xterm {
   height: 100%;
 }
-.xterm-viewport::-webkit-scrollbar {
-  width: 7px;
+/* xterm draws its own scrollbar (its color: terminalOptions). */
+.xterm .xterm-scrollable-element > .scrollbar.vertical,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 7px !important;
 }
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: #354635;
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
   border-radius: 5px;
 }
 .terminal-keys {

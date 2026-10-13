@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 import { PrivateLinkRecovery } from "../scripts/private-link-recovery.mjs";
@@ -16,12 +16,7 @@ const loadTS = async (name) => {
     new URL(`../src/${name}.ts`, import.meta.url),
     "utf8",
   );
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  });
+  const outputText = transpile(source);
   return import(
     `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
   );

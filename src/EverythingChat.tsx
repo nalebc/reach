@@ -11,7 +11,7 @@ import {
   Image as ImageIcon,
   Bell,
   BellRing,
-  Loader2,
+  LoaderCircle,
   Plus,
   ShieldAlert,
   ShieldCheck,
@@ -613,7 +613,7 @@ export function NewChat({
                   title={i.error}
                 >
                   <img src={i.url} alt="" />
-                  {!i.id && !i.error && <Loader2 size={16} className="spin" />}
+                  {!i.id && !i.error && <LoaderCircle size={16} className="spin" />}
                   <button
                     aria-label="Remove image"
                     onClick={() => {
@@ -731,7 +731,7 @@ export function NewChat({
             onClick={() => void start()}
           >
             {busy ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : (
               <ArrowUp size={21} />
             )}
@@ -813,7 +813,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }:
         </>
       ) : step === "running" ? (
         <p className="chat-setup-running">
-          <Loader2 size={14} className="spin" /> Installing {name} on your {word}…
+          <LoaderCircle size={14} className="spin" /> Installing {name} on your {word}…
           {line && <code>{line}</code>}
         </p>
       ) : step === "installed" ? (
@@ -824,7 +824,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }:
             </p>
           ) : (
             <p className="chat-setup-running">
-              <Loader2 size={14} className="spin" /> {name} is installed. Looking for it…
+              <LoaderCircle size={14} className="spin" /> {name} is installed. Looking for it…
             </p>
           )}
           <div className="chat-setup-actions">
@@ -986,7 +986,7 @@ function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentNam
           disabled={back.busy}
           onClick={() => void back.toggle()}
         >
-          {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
+          {back.busy ? <LoaderCircle size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
         </button>
         {upgradeUrl && (
           <a
@@ -1721,7 +1721,7 @@ function NewClawChat({
             disabled={!text.trim() || busy}
           >
             {busy ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : (
               <ArrowUp size={21} />
             )}

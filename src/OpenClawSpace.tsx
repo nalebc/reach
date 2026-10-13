@@ -5,17 +5,17 @@ import {
   ChevronLeft,
   Clock,
   GitFork,
-  Loader2,
+  LoaderCircle,
   Lock,
   MessageSquare,
-  MoreHorizontal,
+  Ellipsis,
   RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Square,
-  Trash2,
+  Trash,
   X,
 } from "lucide-react";
 import { post, type Peer } from "./api";
@@ -306,7 +306,7 @@ function Conversation({
         </button>
         <details className="claw-thread-actions" ref={threadActions}>
           <summary className="claw-round" aria-label="OpenClaw conversation actions">
-            <MoreHorizontal size={20} />
+            <Ellipsis size={20} />
           </summary>
           <div className="claw-thread-menu">
             {current.writable === true && (
@@ -379,7 +379,7 @@ function Conversation({
                   }
                 }}
               >
-                {deleting === "busy" ? <Loader2 size={17} className="spin" /> : <Trash2 size={17} />}
+                {deleting === "busy" ? <LoaderCircle size={17} className="spin" /> : <Trash size={17} />}
                 {deleting ? "Tap again to delete" : "Delete chat"}
               </button>
             )}
@@ -424,7 +424,7 @@ function Conversation({
       >
         {!data && !error && (
           <p className="claw-note" role="status">
-            <Loader2 size={13} className="spin" />
+            <LoaderCircle size={13} className="spin" />
             Loading…
           </p>
         )}
@@ -548,7 +548,7 @@ function Conversation({
               aria-label="Send to OpenClaw"
               disabled={!text.trim() || busy || unsettled || !!error || !data}
             >
-              {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} strokeWidth={2.4} />}
+              {busy ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={18} strokeWidth={2.4} />}
             </button>
           )}
         </form>
@@ -758,7 +758,7 @@ export default function OpenClawSpace({
                   }
                 }}
               >
-                {starting ? <Loader2 size={14} className="spin" /> : null}
+                {starting ? <LoaderCircle size={14} className="spin" /> : null}
                 {starting ? "Starting OpenClaw…" : `Start OpenClaw on ${peer.name}`}
               </button>
             )}
@@ -770,7 +770,7 @@ export default function OpenClawSpace({
             )}
             {!data && !error && (
               <p className="claw-note" role="status">
-                <Loader2 size={14} className="spin" />
+                <LoaderCircle size={14} className="spin" />
                 Finding OpenClaw on {peer.name}…
               </p>
             )}
@@ -807,7 +807,7 @@ export default function OpenClawSpace({
                           </span>
                           <span className="claw-chat-tail">
                             {s.status === "running" ? (
-                              <Loader2 size={15} className="spin" aria-label="Working" />
+                              <LoaderCircle size={15} className="spin" aria-label="Working" />
                             ) : s.status === "waiting" ? (
                               <span className="claw-chat-dot" aria-label="Needs you" />
                             ) : null}

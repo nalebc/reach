@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import {
   Search,
   ArrowUpRight,
-  Loader2,
+  LoaderCircle,
   Plus,
   Pencil,
-  Trash2,
+  Trash,
   ArrowLeft,
 } from "lucide-react";
 import { request, post, type Peer } from "./api";
@@ -93,7 +93,7 @@ export default function QuickLauncher({
             <small>{a.detail}</small>
           </span>
           {busy === a.id ? (
-            <Loader2 size={17} className="spin" />
+            <LoaderCircle size={17} className="spin" />
           ) : (
             <ArrowUpRight size={17} />
           )}
@@ -117,7 +117,7 @@ export default function QuickLauncher({
               aria-label={`Remove ${a.name}`}
               onClick={() => void remove(a.id)}
             >
-              <Trash2 size={15} />
+              <Trash size={15} />
             </button>
           </div>
         )}
@@ -357,7 +357,7 @@ export default function QuickLauncher({
                       disabled={!!busy}
                       onClick={() => void remove(c.id)}
                     >
-                      <Trash2 size={15} />
+                      <Trash size={15} />
                     </button>
                   </div>
                 ))}

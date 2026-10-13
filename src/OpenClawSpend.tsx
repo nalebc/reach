@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { DollarSign, Loader2, TriangleAlert } from "lucide-react";
+import { DollarSign, LoaderCircle, TriangleAlert } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
@@ -215,7 +215,7 @@ function Budget({ peer, budget, onSaved }: { peer: Peer; budget: number; onSaved
         />
         {valid && value !== budget && (
           <button type="button" className="claw-secondary" disabled={busy} onClick={save}>
-            {busy && <Loader2 size={13} className="spin" />}
+            {busy && <LoaderCircle size={13} className="spin" />}
             Save
           </button>
         )}
@@ -327,7 +327,7 @@ function Routing({ peer }: { peer: Peer }) {
             <span className="claw-spend-fixes">
               {r.cache.canKeepLonger && (
                 <button type="button" className="claw-secondary" disabled={!!busy || r.readOnly} onClick={() => run("cache", "/cache", {})}>
-                  {busy === "cache" && <Loader2 size={13} className="spin" />}
+                  {busy === "cache" && <LoaderCircle size={13} className="spin" />}
                   Cache 1 h
                 </button>
               )}
@@ -384,7 +384,7 @@ function Routing({ peer }: { peer: Peer }) {
               Cancel
             </button>
             <button type="button" className="claw-primary" disabled={!!busy} onClick={() => run("model", "", draft)}>
-              {busy === "model" && <Loader2 size={13} className="spin" />}
+              {busy === "model" && <LoaderCircle size={13} className="spin" />}
               Save
             </button>
           </div>
@@ -419,7 +419,7 @@ function Routing({ peer }: { peer: Peer }) {
               Cancel
             </button>
             <button type="button" className="claw-primary" disabled={!!busy || !changes.length} onClick={() => run("cheap", "/cheap", { model: cheap }, changes.some((c) => c.restart))}>
-              {busy === "cheap" && <Loader2 size={13} className="spin" />}
+              {busy === "cheap" && <LoaderCircle size={13} className="spin" />}
               Apply
             </button>
           </div>

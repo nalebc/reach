@@ -3,14 +3,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
-  History,
+  RotateCcwClock,
   Laptop,
   Link2,
   Plus,
   ShieldCheck,
   Smartphone,
   Sparkles,
-  Trash2,
+  Trash,
   Zap,
 } from "lucide-react";
 import { usePageVisible } from "./page-visible";
@@ -836,7 +836,7 @@ export default function PeopleHub({
         {loaded && !loadErrors.clients && !agents.length && <div className="gs-row gs-note ppl-empty">No agents yet</div>}
         {extras.shortcuts > 0 && extraRow("shortcuts", <Zap size={19} />, "Shortcuts", extras.shortcuts)}
         {extras.services > 0 && !extras.waiting && extraRow("services", <ShieldCheck size={19} />, "Services", extras.services)}
-        {ended > 0 && extraRow("ended", <History size={19} />, "Ended", ended)}
+        {ended > 0 && extraRow("ended", <RotateCcwClock size={19} />, "Ended", ended)}
       </Group>
       <AgentFaceIdSetting peer={peer} />
       <ToolBrowserSetup peer={peer} toast={toast} />
@@ -964,7 +964,7 @@ export default function PeopleHub({
               )
             )}
             <button className="gs-row gs-danger" aria-label={`End ${opened.name}’s access`} disabled={busy} onClick={() => void end(opened)}>
-              <Trash2 size={20} />
+              <Trash size={20} />
               <span className="gs-label">Remove access</span>
             </button>
           </div>
@@ -995,7 +995,7 @@ export default function PeopleHub({
           {!openedDevice.ids.includes(current) && (
             <div className="gs-group gs-end">
               <button className="gs-row gs-danger" aria-label={`Revoke ${openedDevice.name}`} onClick={() => void revoke(openedDevice)}>
-                <Trash2 size={20} />
+                <Trash size={20} />
                 <span className="gs-label">Remove access</span>
               </button>
             </div>

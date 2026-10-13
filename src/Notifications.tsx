@@ -9,12 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ArrowUpCircle,
+  CircleArrowUp,
   Bell,
   Check,
   ChevronLeft,
   ChevronRight,
-  Loader2,
+  LoaderCircle,
   Monitor,
   RotateCw,
   Settings2,
@@ -92,7 +92,7 @@ export function useBellNeeds(peer: Peer): NeedItem[] {
     .filter((item) => item.source === "restart" || item.source === "update")
     .map((item) => ({
       key: item.id,
-      icon: item.source === "update" ? <ArrowUpCircle size={22} /> : <RotateCw size={22} />,
+      icon: item.source === "update" ? <CircleArrowUp size={22} /> : <RotateCw size={22} />,
       title: item.title,
       detail: [item.sender, item.summary].filter(Boolean).join(" · "),
       actions: (item.actions || []).map((action) => ({
@@ -238,7 +238,7 @@ export function NotificationCard({
           >
             {busy === action.id ? (
               <>
-                <Loader2 size={14} className="spin" /> Sending…
+                <LoaderCircle size={14} className="spin" /> Sending…
               </>
             ) : (
               <>

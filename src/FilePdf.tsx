@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, LoaderCircle } from "lucide-react";
 import {
   AnnotationMode,
   PDFWorker,
@@ -184,7 +184,7 @@ export default function FilePdf({ blob, name }: { blob: Blob; name: string }) {
       ) : (
         <div className="file-pdf-page" ref={viewport}>
           {busy && (
-            <Loader2
+            <LoaderCircle
               className="spin"
               size={24}
               aria-label="Rendering PDF page"

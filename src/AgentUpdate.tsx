@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { request, type Peer, type Session } from "./api";
 import { agentLabel, agentUpdates, tooOldLine, updateAgent, type AgentName, type AgentUpdateInfo } from "./agent-sessions";
 import { computerWord } from "./pause";
@@ -149,7 +149,7 @@ export default function AgentUpdate({
     return (
       <div className="chat-status agent-update open" role="status">
         <span className="chat-setup-running">
-          <Loader2 size={14} className="spin" /> Updating {name}…{line && <code>{line}</code>}
+          <LoaderCircle size={14} className="spin" /> Updating {name}…{line && <code>{line}</code>}
         </span>
       </div>
     );

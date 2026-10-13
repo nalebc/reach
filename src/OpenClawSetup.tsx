@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { post, type Peer } from "./api";
 import { computerWord } from "./pause";
 import { clawBase, useClawCatalog } from "./OpenClawControls";
@@ -212,7 +212,7 @@ export function ScheduleForm({
           Cancel
         </button>
         <button className="claw-primary" disabled={!ready || busy}>
-          {busy ? <Loader2 size={15} className="spin" /> : null}Add schedule
+          {busy ? <LoaderCircle size={15} className="spin" /> : null}Add schedule
         </button>
       </div>
     </form>
@@ -327,7 +327,7 @@ export function WhatsAppLink({
         </>
       ) : step === "starting" ? (
         <p className="claw-note" role="status">
-          <Loader2 size={14} className="spin" /> Getting a QR from OpenClaw…
+          <LoaderCircle size={14} className="spin" /> Getting a QR from OpenClaw…
         </p>
       ) : step === "qr" ? (
         <>
@@ -341,7 +341,7 @@ export function WhatsAppLink({
             another device) and scan it from there.{note ? ` ${note}` : ""}
           </p>
           <p className="claw-note" role="status">
-            <Loader2 size={14} className="spin" /> Waiting for the scan…
+            <LoaderCircle size={14} className="spin" /> Waiting for the scan…
           </p>
           <div className="claw-settings-actions">
             <button type="button" className="claw-secondary" onClick={onCancel}>
@@ -492,7 +492,7 @@ export function AddChannelForm({
           Cancel
         </button>
         <button className="claw-primary" disabled={!ready || busy}>
-          {busy ? <Loader2 size={15} className="spin" /> : null}Add {spec.name}
+          {busy ? <LoaderCircle size={15} className="spin" /> : null}Add {spec.name}
         </button>
       </div>
     </form>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Check, ChevronDown, ChevronRight, Circle, ListTodo, Loader2, Square } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Circle, ListTodo, LoaderCircle, Square } from "lucide-react";
 import type { AgentSession, SessionItem, Subagent } from "./agent-sessions";
 import AgentMarkdown from "./AgentMarkdown";
 import "./subagents.css";
@@ -31,7 +31,7 @@ export function SubagentCard({ item, agent, onStop }: { item: SessionItem; agent
   return (
     <div className={`sa-card ${status} ${open ? "open" : ""}`} id={`subagent-${item.id}`}>
       <button className="sa-card-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        {status === "running" ? <Loader2 size={13} className="spin" aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}
+        {status === "running" ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}
         <span className="sa-card-name">{item.text || "Agent"}</span>
         {status !== "running" && status !== "done" && <em className={`sa-word ${status}`}>{WORDS[status] || status}</em>}
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -57,7 +57,7 @@ export function SubagentCard({ item, agent, onStop }: { item: SessionItem; agent
                 }
               }}
             >
-              {stopping ? <Loader2 size={13} className="spin" /> : <Square size={11} fill="currentColor" />} Stop this agent
+              {stopping ? <LoaderCircle size={13} className="spin" /> : <Square size={11} fill="currentColor" />} Stop this agent
             </button>
           )}
           {result && (
@@ -103,7 +103,7 @@ export function SubagentBadge({ agents }: { agents: Subagent[] }) {
                       setOpen(false);
                     }}
                   >
-                    <Loader2 size={13} className="spin" aria-hidden="true" />
+                    <LoaderCircle size={13} className="spin" aria-hidden="true" />
                     <span className="sa-text">
                       <strong>{a.name}</strong>
                       <small>
@@ -146,7 +146,7 @@ export function TodoStrip({ todos }: { todos: NonNullable<AgentSession["todos"]>
               {t.status === "completed" ? (
                 <Check size={14} aria-label="Done" />
               ) : t.status === "in_progress" ? (
-                <Loader2 size={14} className="spin" aria-label="Doing now" />
+                <LoaderCircle size={14} className="spin" aria-label="Doing now" />
               ) : (
                 <Circle size={14} aria-label="To do" />
               )}

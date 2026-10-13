@@ -2383,7 +2383,7 @@ test("changing the new-chat app preserves the draft and remembers the app", asyn
 });
 
 test("real app logos appear on conversations and in the app chooser", async () => {
-  await home([codexSession(), claudeSession()], [...signedIn, { agent: "openclaw", installed: true, signedIn: false, supported: true }]);
+  await home([codexSession(), claudeSession()], [...signedIn, { agent: "openclaw", name: "OpenClaw", installed: true, signedIn: false, supported: true }]);
   await dom.waitFor(() => $(".chat-card img.agent-logo"));
   assert.equal($(".chat-card img.agent-logo").getAttribute("src"), LOGO);
   await click(button("New chat"));

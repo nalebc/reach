@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { Loader2, X } from "lucide-react";
+import { LoaderCircle, X } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import type { AgentName, AgentSession } from "./agent-sessions";
 import "./slash-menu.css";
@@ -246,7 +246,7 @@ export function SlashMenu({ menu }: { menu: SlashMenuState }) {
         <div className="as-commands sm-menu" data-agent={menu.agent} role="listbox" aria-label="Commands" ref={menu.list}>
           {menu.loading && (
             <p className="sm-loading">
-              <Loader2 size={14} className="spin" /> Loading commands…
+              <LoaderCircle size={14} className="spin" /> Loading commands…
             </p>
           )}
           {menu.matches.slice(0, 80).map((c, i) => (
@@ -271,7 +271,7 @@ export function SlashMenu({ menu }: { menu: SlashMenuState }) {
       )}
       {menu.busy && (
         <p className="sm-busy">
-          <Loader2 size={14} className="spin" /> Running /{menu.busy}…
+          <LoaderCircle size={14} className="spin" /> Running /{menu.busy}…
         </p>
       )}
       {menu.result && (

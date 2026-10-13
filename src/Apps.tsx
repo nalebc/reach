@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { AppWindow, Loader2, Monitor, Search, X } from "lucide-react";
+import { AppWindow, LoaderCircle, Monitor, Search, X } from "lucide-react";
 import { post, request, type Device, type Peer } from "./api";
 import { Empty, ErrorLine, PageTitle } from "./ui";
 import AppLogo from "./AppLogo";
@@ -289,7 +289,7 @@ export default function Apps({
         <AppLogo peer={peer} appId={app.id} name={app.name} />
         {busy === app.id && (
           <span className="app-tile-busy">
-            <Loader2 className="spin" size={22} />
+            <LoaderCircle className="spin" size={22} />
           </span>
         )}
       </span>

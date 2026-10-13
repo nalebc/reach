@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeftRight, ArrowRight, ChevronLeft, ChevronRight, Loader2, MessageSquare, MoreHorizontal } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, ChevronLeft, ChevronRight, LoaderCircle, MessageSquare, Ellipsis } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
@@ -163,7 +163,7 @@ function MoveRow({
           <small>{says}</small>
         </span>
         {busy ? (
-          <Loader2 size={16} className="spin" />
+          <LoaderCircle size={16} className="spin" />
         ) : asking ? (
           <span className="move-offer-go">Continue</span>
         ) : (
@@ -306,7 +306,7 @@ export function MoveItems({
               {here && <small>{problem || `Gets what ${from} knows so far`}</small>}
             </span>
             {busy && here ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : here ? (
               <span className="move-item-go">Continue</span>
             ) : null}
@@ -450,7 +450,7 @@ export function MoveSection({
           <span>{busy && here ? (left > 1 ? `Moving ${done + 1} of ${left}…` : "Moving…") : `Move ${what} to ${app}`}</span>
           <small>{here && problem ? problem : note}</small>
         </span>
-        {busy && here ? <Loader2 size={16} className="spin" /> : here ? <span className="move-item-go">Move</span> : null}
+        {busy && here ? <LoaderCircle size={16} className="spin" /> : here ? <span className="move-item-go">Move</span> : null}
       </button>
     );
   };
@@ -466,7 +466,7 @@ export function MoveSection({
           go("");
         }}
       >
-        <MoreHorizontal size={16} />
+        <Ellipsis size={16} />
       </button>
       {open && (
         // Stays while chats move, so the count shows.

@@ -7,6 +7,7 @@ import type { MacTerminal } from "./DesktopTerminals";
 import "./key-row.css";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
+  altArrowWords,
   disposeLater,
   plainKeyboard,
   terminalOptions,
@@ -58,6 +59,7 @@ export default function MacTerminalView({
     term.loadAddon(fit);
     term.open(mount.current);
     plainKeyboard(term);
+    altArrowWords(term);
     const removeTouch = terminalTouch(mount.current, term);
     terminal.current = term;
     const stopHistory = history.observe(term);

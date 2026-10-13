@@ -29,6 +29,8 @@ const feed = {
   })),
   health: ["codex", "claude", "openclaw", "gemini"].map((agent) => ({
     agent,
+    // As the Mac names it (server/agent-sessions KNOWN_AGENTS).
+    ...(agent === "openclaw" && { name: "OpenClaw" }),
     installed: true,
     signedIn: true,
     supported: true,

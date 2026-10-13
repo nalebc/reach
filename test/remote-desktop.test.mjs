@@ -13,17 +13,12 @@ import { inputAction, streamOptions } from "../server/desktop-protocol.mjs";
 import { RemoteBroadcast } from "../server/remote-screen.mjs";
 import { AnnexBFrames } from "../server/windows-video.mjs";
 import { NativeScreenSource } from "../server/screen-stream.mjs";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 const source = await fs.readFile(
   new URL("../src/desktop-geometry.ts", import.meta.url),
   "utf8",
 );
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-  },
-});
+const outputText = transpile(source);
 const { boundView, pinchView } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

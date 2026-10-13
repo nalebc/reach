@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
@@ -93,7 +93,7 @@ export function MacPasswordField({ placeholder, submit, onState }: { placeholder
         onChange={(e) => setValue(e.target.value)}
       />
       <button className="primary" disabled={!value || busy || sent}>
-        {busy ? <><Loader2 size={14} className="spin" /> Authenticating…</> : sent ? "Sent to Mac" : "Authenticate on Mac"}
+        {busy ? <><LoaderCircle size={14} className="spin" /> Authenticating…</> : sent ? "Sent to Mac" : "Authenticate on Mac"}
       </button>
       <small className="mac-password-help">Sent only to this Mac's authentication dialog. Not saved by Reach.</small>
       {problem && <small className="problem" role="alert">{problem}</small>}
@@ -208,7 +208,7 @@ export function NeedsYouStrip({ items, label = "Needs you" }: { items: NeedItem[
                       void act(item, a);
                     }}
                   >
-                    {busy === item.key && a.primary ? <><Loader2 size={14} className="spin" /> Sending…</> : a.label}
+                    {busy === item.key && a.primary ? <><LoaderCircle size={14} className="spin" /> Sending…</> : a.label}
                   </button>
                 ))}
               </div>
@@ -332,7 +332,7 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
         <div className="need-actions">
           {card.buttons.map((label) => (
             <button key={label} className={label === primary ? "primary" : ""} disabled={!!busy} onClick={() => void press(label)}>
-              {busy === label ? <><Loader2 size={14} className="spin" /> Sending…</> : label}
+              {busy === label ? <><LoaderCircle size={14} className="spin" /> Sending…</> : label}
             </button>
           ))}
         </div>
@@ -341,7 +341,7 @@ function ElsewhereNeed({ peer, session, where, answered }: { peer: Peer; session
           {failed && <small className="problem" role="alert">{failed}</small>}
           <div className="need-actions">
             <button className="primary" disabled={loading} onClick={() => load()}>
-              {loading ? <><Loader2 size={14} className="spin" /> Reading…</> : failed ? "Try again" : "Review"}
+              {loading ? <><LoaderCircle size={14} className="spin" /> Reading…</> : failed ? "Try again" : "Review"}
             </button>
           </div>
         </>

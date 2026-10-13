@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { ArrowUpCircle, Loader2, RefreshCw } from "lucide-react";
+import { CircleArrowUp, LoaderCircle, RefreshCw } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import {
   checkForUpdates,
@@ -89,7 +89,7 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
   const disabled = pending
     ? working
     : state === "checking" || state === "reloading" || state === "waiting";
-  const Icon = working ? Loader2 : pending ? ArrowUpCircle : RefreshCw;
+  const Icon = working ? LoaderCircle : pending ? CircleArrowUp : RefreshCw;
   return (
     <>
       <button

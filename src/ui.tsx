@@ -1,7 +1,7 @@
 import { useEffect, useRef, ReactNode } from "react";
 import {
   X,
-  Loader2,
+  LoaderCircle,
   Monitor,
   Command,
   Terminal,
@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 export {
   X,
-  Loader2,
+  LoaderCircle,
   Monitor,
   Command,
   Terminal,
@@ -39,7 +39,7 @@ export function Spinner({
 }) {
   return (
     <div className="loading" role="status">
-      <Loader2 className="spin" size={22} aria-hidden="true" />
+      <LoaderCircle className="spin" size={22} aria-hidden="true" />
       <span>{label}</span>
     </div>
   );
