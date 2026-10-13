@@ -33,7 +33,6 @@ function SessionLink({ id, children }: { id: string; children: ReactNode }) {
 // http, a file path, a relative address that would land inside Reach) shows
 // only its text. A bare https address is a link too (agents paste PR and run
 // addresses as they are, Oct 13): sentence punctuation after it stays out.
-const WEB = /^https:\/\/[^\s"<>]+$/i;
 function bareLink(url: string): [string, string] {
   let end = url.length;
   const opens = (u: string) => (u.match(/\(/g) || []).length;
@@ -59,7 +58,7 @@ function inline(text: string, key: string): ReactNode[] {
     else if (match[5] !== undefined || match[6] !== undefined) {
       const [url, after] = match[5] !== undefined ? [match[5], ""] : bareLink(match[6]);
       out.push(
-        WEB.test(url) ? (
+        /^https:\/\/[^\s"<>]+$/i.test(url) ? (
           <a key={k} href={url} target="_blank" rel="noopener noreferrer">
             {url}
           </a>
@@ -70,7 +69,7 @@ function inline(text: string, key: string): ReactNode[] {
       if (after) out.push(after);
       continue;
     }
-    else if (WEB.test(match[4]))
+    else if (/^https:\/\/[^\s"<>]+$/i.test(match[4]))
       out.push(
         <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
           {match[3]}

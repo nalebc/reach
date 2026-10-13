@@ -71,10 +71,17 @@ test("kept on disk beside the action log, bounded as it is, read back after a re
     const lines = fs.readFileSync(file, "utf8").trim().split("\n");
     assert.ok(lines.length <= 6 && lines.length >= 3, `bounded: ${lines.length} lines`);
     for (const line of lines) assert.deepEqual(Object.keys(JSON.parse(line)).filter((key) => !KEYS.includes(key)), []);
-    assert.equal((fs.statSync(file).mode & 0o777).toString(8), "600");
     assert.equal(timings.list({ clientId: "c1", limit: 100 }).length, 4, "a small ring in memory");
     // A restart reads the newest back, and the agent's time goes on from them.
-    fs.appendFileSync(file, "{torn");
+    // One handle checks the file's mode and tears its last line (no
+    // check-then-use on the path).
+    const fd = fs.openSync(file, "a");
+    try {
+      assert.equal((fs.fstatSync(fd).mode & 0o777).toString(8), "600");
+      fs.writeSync(fd, "{torn");
+    } finally {
+      fs.closeSync(fd);
+    }
     const again = createAgentTimings({ file, now: () => clock, ring: 4 });
     assert.equal(again.list({ clientId: "c1" }).length, 4);
     again.add(muse, { kind: "describe", startedAt: clock + 2_000, finishedAt: clock + 2_100 });
