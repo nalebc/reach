@@ -106,6 +106,8 @@ await window.reach.callTool("reach_open_url", {
 });
 ```
 
+Every tool that acts (`reach_act`, `reach_press`, `reach_fill`, `reach_open_app`, `reach_open_url`, `reach_open_bank`, `reach_open_file`, `reach_focus_window`) answers with the screen as text, so an agent doesn't need a separate look: one turn per step. Reach first waits for the screen to settle: about a second after an action, up to three seconds after opening an app, page or file (a page still loading is waited for within that). `describe: false` returns the action alone. A single refused action is refused with its status and kind, as before; a batch reports `stopped`. Called directly, the HTTP routes still answer with the screen only when asked (`describe: true`).
+
 `waitFor` takes exactly one of `text` or `name`, with optional `role`, `within`, `state: "present" | "absent"`, and `timeoutMs` (500–15000). Reach checks immediately, then wakes on available macOS accessibility notifications, with bounded polling when an app does not send them. A timed-out condition returns `found: false`; it does not undo completed input. `observe: true` returns up to 6000 characters. A failed follow-up read retains the completed action receipt and reports `observationFailed`.
 
 For a sequence, `reach_act({actions: [...]})` accepts `{type: "wait_for", text: "Ready", timeoutMs: 3000}` between actions. If readiness fails, Reach stops before the next action and reports `done` and `stopped`. The batch's combined wait budget is 15 seconds; fixed sleeps within it are limited to 6 seconds. Use a condition when the next action depends on the page changing.

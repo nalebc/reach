@@ -51,6 +51,54 @@ export async function waitForScreen({ read, changed, authorize, wanted, now = Da
   }
 }
 
+// After an action or an open, the screen an agent gets back is the one the
+// action made, not the one before it: Reach waits until the front window has
+// been still for one short window (no accessibility change), then reads it
+// once. Bounded: about a second after an action, three after opening an app,
+// a page or a file (a page still loading, its Stop button showing, is waited
+// for within that). The same on a Mac and on Windows: the helper's
+// wait-change where it has one (no reads, so no snapshot spent), else reads
+// compared by what they show. Never longer than `capMs`, authorized on every
+// round; an explicit waitFor replaces it.
+export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300 };
+const loading = (screen) => (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
+const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
+export async function settleScreen({ read, changed, authorize, capMs, minMs = 0, quietMs = SETTLE.quietMs, now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  const start = now(), end = start + capMs;
+  let revision, moved = false, fresh = false, screen = null, last = null;
+  const still = () => moved || now() - start >= minMs;
+  while (now() < end) {
+    authorize();
+    if (changed) {
+      let result;
+      // A helper that can't wait for changes: the screen as it is.
+      try { result = await changed(revision, Math.max(1, Math.min(quietMs, end - now()))); } catch { break; }
+      authorize();
+      if (Number.isSafeInteger(result?.revision)) revision = result.revision;
+      if (result?.changed) { moved = true; fresh = false; continue; }
+      // Still, and already read since it last changed: keep waiting.
+      if (!still() || (screen && fresh)) continue;
+      screen = await read();
+      fresh = true;
+      authorize();
+      // A page still loading: its changes are coming, within the cap.
+      if (loading(screen) && now() < end) continue;
+      break;
+    }
+    const next = await read();
+    authorize();
+    const seen = shown(next);
+    if (last !== null && seen !== last) moved = true;
+    const settled = last !== null && seen === last && still() && !loading(next);
+    screen = next;
+    last = seen;
+    if (settled) break;
+    await sleep(Math.max(0, Math.min(quietMs, end - now())));
+  }
+  return { screen, settledMs: now() - start };
+}
+
 // Bounded, per-invitation history. A changed grant discards prior content.
 // Fresh reads always perform live authorization; deltas never authorize input.
 export function createObservations() {

@@ -1,4 +1,5 @@
 import { appLabel } from "./app-identity.mjs";
+import { GO_FAST } from "./browser-tools.mjs";
 
 // What an agent is told once it's in (Oct 12: "a very small prompt with a
 // link; the instructions come when they connect"): what it may do, then the
@@ -54,17 +55,18 @@ export function agentGuide(client, { word = "computer", folders = [], page = fal
   const scopes = Array.isArray(client.scopes) ? client.scopes : [];
   const where = folders.length ? some(folders) : "";
   const lines = [];
-  let hands = false;
+  let hands = false, acts = false;
   if (policy.browser === true && policy.preset !== undefined) {
     // A preset: what it may do follows from it (agent-presets.mjs).
-    if (policy.preset === "full")
+    if (policy.preset === "full") {
       lines.push(`You have full control of my ${word} as my user account: all apps, files, browser pages and shell commands.`);
-    else if (policy.preset === "apps") {
+      acts = true;
+    } else if (policy.preset === "apps") {
       const apps = names(policy.apps);
       lines.push(apps.length
         ? `You get only ${some(apps)}, on my screen. Nothing else.`
         : "You get only the apps I chose, on my screen. Nothing else.");
-      hands = true;
+      hands = acts = true;
     } else if (policy.preset === "files")
       lines.push(where
         ? `You can ${policy.write === true ? "read and change" : "read"} files in ${where}. No screen, no commands.`
@@ -98,6 +100,8 @@ export function agentGuide(client, { word = "computer", folders = [], page = fal
     if (run) lines.push("Commands run as my user account: keep them to those folders.");
   }
   if (hands) lines.push(secrets(page));
+  // How to go fast on the screen, said as every tool that acts says it.
+  if (acts) lines.push(GO_FAST);
   lines.push(...RULES);
   return lines.join("\n");
 }

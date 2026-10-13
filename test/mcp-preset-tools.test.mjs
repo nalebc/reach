@@ -75,7 +75,8 @@ test("Command line tools refuse dot and empty ids before any request", async () 
 
 // The fast path, read and act with no pictures: a control from
 // reach_describe_screen is pressed by its number on every connection
-// (MCP over Tailscale or the public link, and the agent page's tools).
+// (MCP over Tailscale or the public link, and the agent page's tools), and
+// the screen comes back with it (Oct 12: one turn per step).
 test("reach_act presses a described control by number; coordinates still work", async () => {
   const { browserToolRequest } = await import("../server/browser-tools.mjs");
   const full = access("full");
@@ -84,7 +85,7 @@ test("reach_act presses a described control by number; coordinates still work", 
     { type: "element", snapshot: "ab12cd34", n: 7, button: "right", count: 2 },
     { type: "click", x: 0.5, y: 0.5 },
   ]) assert.deepEqual(browserToolRequest("reach_act", { action }, full),
-    { route: "/api/browser/desktop/input", method: "POST", body: { action }, response: "json" });
+    { route: "/api/browser/desktop/input", method: "POST", body: { action, describe: true }, response: "json" });
   for (const action of [
     { type: "element", snapshot: "../x", n: 1 },
     { type: "element", snapshot: "ab12cd34", n: 0 },
@@ -95,7 +96,7 @@ test("reach_act presses a described control by number; coordinates still work", 
   const { callTool } = await import("../scripts/mcp-server.mjs");
   const sent = [];
   await callTool(async (route, method, body) => { sent.push([method, route, body]); return { ok: true }; }, "reach_act", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }, full);
-  assert.deepEqual(sent, [["POST", "/api/browser/desktop/input", { action: { type: "element", snapshot: "ab12cd34", n: 7 } }]]);
+  assert.deepEqual(sent, [["POST", "/api/browser/desktop/input", { action: { type: "element", snapshot: "ab12cd34", n: 7 }, describe: true }]]);
 });
 
 test("reach_act sends a batch and describe in one request; one form at a time", async () => {
@@ -105,8 +106,11 @@ test("reach_act sends a batch and describe in one request; one form at a time", 
   assert.deepEqual(browserToolRequest("reach_act", { actions, describe: true }, full),
     { route: "/api/browser/desktop/input", method: "POST", body: { actions, describe: true }, response: "json" });
   assert.deepEqual(browserToolRequest("reach_act", { action: actions[0], describe: true }, full).body, { action: actions[0], describe: true });
+  // The screen comes back unless the agent says not to.
+  assert.deepEqual(browserToolRequest("reach_act", { actions }, full).body, { actions, describe: true });
+  assert.deepEqual(browserToolRequest("reach_act", { actions, describe: false }, full).body, { actions });
   for (const args of [{}, { action: actions[0], actions }, { actions: [] }, { actions: Array.from({ length: 11 }, () => actions[3]) },
-    { action: { type: "wait", ms: 400 } }, { actions: [{ type: "wait", ms: 5000 }] }, { actions, describe: false }])
+    { action: { type: "wait", ms: 400 } }, { actions: [{ type: "wait", ms: 5000 }] }, { actions, describe: "no" }])
     assert.throws(() => browserToolRequest("reach_act", args, full), /Invalid tool arguments/, JSON.stringify(args).slice(0, 60));
 });
 
@@ -119,7 +123,8 @@ test("press, fill and wait_for map to the Mac's routes", async () => {
     { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "press", name: "Add to cart", role: "Button" }, describe: true }, response: "json" });
   const fields = [{ label: "Email", text: "from the vault", secret: true }, { label: "Password", text: "from the vault", secret: true }];
   assert.deepEqual(browserToolRequest("reach_fill", { fields, submit: true }, full),
-    { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "fill", fields, submit: true } }, response: "json" });
+    { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "fill", fields, submit: true }, describe: true }, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_fill", { fields, describe: false }, full).body, { action: { type: "fill", fields } });
   assert.deepEqual(browserToolRequest("reach_wait_for", { text: "Order placed", timeoutMs: 3000 }, full),
     { route: "/api/browser/desktop/wait", method: "POST", body: { text: "Order placed", timeoutMs: 3000 }, response: "json" });
   assert.equal(browserToolRequest("reach_act", { actions: [{ type: "press", name: "Search" }, { type: "fill", fields: [{ label: "Search", text: "diapers" }], submit: true }] }, full).body.actions.length, 2);

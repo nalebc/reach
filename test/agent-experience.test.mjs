@@ -41,7 +41,14 @@ function agentMcp(t, agent, profile = "compact") {
     call: async (name, args = {}) => {
       const result = await rpc("tools/call", { name, arguments: args });
       assert.equal(result.isError, undefined, JSON.stringify(result));
-      return JSON.parse(result.content.find(item => item.type === "text").text);
+      const [done, screen] = result.content.filter(item => item.type === "text");
+      const value = JSON.parse(done.text);
+      // The screen after acting comes as plain text of its own (toContent).
+      if (screen) {
+        assert.equal(value.screen.text, undefined, "not escaped inside the JSON too");
+        value.screen.text = screen.text;
+      }
+      return value;
     },
   };
 }
