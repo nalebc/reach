@@ -39,7 +39,10 @@ export default defineConfig({
     // What this build made (dist/.vite/manifest.json): what's current, for
     // removing earlier builds' files once they're old (scripts/prune-assets.mjs).
     manifest: true,
-    rollupOptions: {
+    // Vite 6's default. Vite 8's (Safari 16.4) would stop rewriting newer
+    // syntax for the iPhones still supported (iOS 15, src/abort-polyfill.ts).
+    target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"],
+    rolldownOptions: {
       // start.html: the public start page (server/public-start.mjs).
       input: { index: "index.html", start: "start.html", agent: "agent.html" },
       output: {
@@ -49,28 +52,40 @@ export default defineConfig({
         entryFileNames: "assets/r2-[name]-[hash].js",
         chunkFileNames: "assets/r2-[name]-[hash].js",
         assetFileNames: "assets/r2-[name]-[hash][extname]",
-        // xterm loads only with a terminal. Other libraries (React, icons) get
-        // their own chunk, which stays cached across Reach updates. Capacitor's
-        // web shims are loaded on demand, so they stay out of it.
-        manualChunks: (id) =>
-          id.includes("/node_modules/highlight.js/")
-            ? "syntax"
-            : /\/node_modules\/(react-markdown|remark[^/]*|rehype[^/]*|unified|micromark[^/]*|mdast[^/]*|hast[^/]*|unist[^/]*|vfile[^/]*)\//.test(
-                  id,
-                )
-              ? "markdown"
-              : id.includes("/node_modules/pdfjs-dist/")
-                ? "pdf"
-                : id.includes("/node_modules/@xterm/")
-                  ? "terminal"
-                  : // The public start page needs only this helper, not all libraries.
-                    /vite\/(preload-helper|modulepreload-polyfill)/.test(id)
-                    ? "preload"
-                    : (id.includes("/node_modules/") || id.startsWith("\0")) &&
-                        !id.includes("/dist/esm/web.js")
-                      ? "vendor"
-                      : undefined,
+        // A chunk takes its modules' dependencies along: vendor goes before
+        // the libraries built on it (React stays out of "markdown"), and the
+        // start page's helper before both.
+        codeSplitting: {
+          groups: ["preload", "vendor", "syntax", "markdown", "pdf", "terminal"].map(
+            (name, i) => ({ name, test: (id) => chunkOf(id) === name, priority: 6 - i }),
+          ),
+        },
       },
     },
   },
 });
+
+// xterm loads only with a terminal. Other libraries (React, icons) get their
+// own chunk, which stays cached across Reach updates. Capacitor's web shims
+// are loaded on demand, so they stay out of it.
+function chunkOf(moduleId) {
+  // Windows ids may use backslashes.
+  const id = moduleId.replaceAll("\\", "/");
+  return id.includes("/node_modules/highlight.js/")
+    ? "syntax"
+    : /\/node_modules\/(react-markdown|remark[^/]*|rehype[^/]*|unified|micromark[^/]*|mdast[^/]*|hast[^/]*|unist[^/]*|vfile[^/]*)\//.test(
+          id,
+        )
+      ? "markdown"
+      : id.includes("/node_modules/pdfjs-dist/")
+        ? "pdf"
+        : id.includes("/node_modules/@xterm/")
+          ? "terminal"
+          : // The public start page needs only this helper, not all libraries.
+            /vite\/(preload-helper|modulepreload-polyfill)/.test(id)
+            ? "preload"
+            : (id.includes("/node_modules/") || id.startsWith("\0")) &&
+                !id.includes("/dist/esm/web.js")
+              ? "vendor"
+              : undefined;
+}
