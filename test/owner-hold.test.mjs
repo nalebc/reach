@@ -285,3 +285,32 @@ test("chats' desktop work never waits on the hold, only on control itself", asyn
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+// An invitation nobody opened can't touch the screen: no "Agents wait" for it
+// (an unused Always invite put the pill up with no agent around, Oct 13).
+test("only an agent that joined puts up the pill; an unopened invitation doesn't", privateIngressTest, async (t) => {
+  let clock = Date.now();
+  const hold = new OwnerHold(() => clock);
+  const helper = { async send(request, beforeSend) { beforeSend?.(); return { ok: true, jpeg, width: 10, height: 6 }; }, stop() {} };
+  const f = await presetFixture(t, { ownerHold: hold, desktopFactory: (config, given) => createAgentDesktop(config, { ...given, spawnHelper: async () => helper }) });
+  // What the owner's phone hears when it connects now.
+  const firstSnapshot = async () => {
+    const ws = new WebSocket(`ws+unix:${f.socketPath}:/ws/presence`, { headers: { Host: "localhost", "X-Forwarded-For": f.addresses.nPhone, "Tailscale-User-Login": f.ownerAccount.login } });
+    try {
+      const first = new Promise((resolve, reject) => { ws.once("message", (data) => resolve(JSON.parse(data))); ws.once("error", reject); });
+      await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+      ws.send(JSON.stringify({ type: "auth", token: f.owners.nPhone.token, kind: "phone" }));
+      return await first;
+    } finally {
+      ws.terminate();
+    }
+  };
+  const invited = await f.invite({ name: "Unopened", preset: "full" });
+  assert.equal(invited.status, 201, JSON.stringify(invited.body));
+  hold.note(owner);
+  assert.ok(hold.active());
+  assert.ok(!(await firstSnapshot()).changes?.agentsWait, "no pill for an invitation nobody opened");
+  // Once one joins, the same hold shows it.
+  await f.join({ name: "Muse", preset: "full" });
+  assert.equal((await firstSnapshot()).changes?.agentsWait, true);
+});

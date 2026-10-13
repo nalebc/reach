@@ -993,8 +993,12 @@ export async function createReach(overrides = {}) {
     .map((client) => client.id);
   // Agents that look at the screen at all: these presets, and those shown
   // only chosen app windows.
+  // Only an agent that joined counts: an invitation nobody opened (or one
+  // that lapsed, or waits for your approval) can't touch the screen, so it
+  // doesn't put up "Agents wait" (an unused Always invite did, Oct 13).
   const screenAgentsPresent = () => auth.list().some((client) => client.kind === "agent" &&
-    client.policy?.browser === true && (client.policy.preset !== undefined || client.policy.screen === "apps") && client.expiresAt > Date.now());
+    client.policy?.browser === true && (client.policy.preset !== undefined || client.policy.screen === "apps") && client.expiresAt > Date.now() &&
+    (client.status === undefined || client.status === "accepted"));
   // Your input went through Reach's screen (a tap, a key, a scroll): agents
   // wait. Input on one of Reach's hidden app displays doesn't touch the
   // screen agents use, so it doesn't hold them. The phones hear at once.
