@@ -74,3 +74,12 @@ test("H2: a system Node 22 older than 22.12 is passed over for Reach's own (Vite
   // It went for its own runtime: here, with no curl, it says how to get one.
   assert.match(result.stderr, /Reach needs curl to download Node\.js.*Node\.js 22\.12 or newer/);
 });
+
+test("reach.cmd's Node check has no double quotes for PowerShell to strip", () => {
+  // PowerShell drops the " inside a native command's argument, so split(".")
+  // reached Node as split(.) and every system Node looked too old (Oct 13).
+  const ps1 = fs.readFileSync("scripts/bootstrap.ps1", "utf8");
+  const check = ps1.match(/-e '([^']*process\.versions\.node[^']*)'/)?.[1];
+  assert.ok(check, "the Node version check is there");
+  assert.doesNotMatch(check, /"/);
+});

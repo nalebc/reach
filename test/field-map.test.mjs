@@ -132,7 +132,7 @@ function connection({ scanner, helper = async () => ({}) }) {
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({ send: helper, stop() {} }),
     ...(scanner !== undefined && { scanner }),

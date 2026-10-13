@@ -250,7 +250,7 @@ test("the probe is checked like any desktop action, and the computer says it can
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({ send: async () => ({ cursor: null }), stop() {} }),
   });
@@ -307,7 +307,7 @@ test("on the Mac, a move or scroll that waited too long is let go; control stays
   let release;
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({
       // The first action holds the helper 1.2 s; the next ones wait behind it.
@@ -338,7 +338,7 @@ test("on the Mac, an action the helper turns down fails alone; control stays on"
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({
       send: async (a) => {
