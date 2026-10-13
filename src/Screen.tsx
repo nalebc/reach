@@ -46,6 +46,7 @@ import { useAppContext } from "./useAppContext";
 import { allCommands, contextPicks, type ContextAction } from "./app-context";
 import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
+import { focusKeyboard, prepareKeyboard } from "./keyboard-focus";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
 import { agentsWaitIn, computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
@@ -531,7 +532,7 @@ export default function Screen({
   // Must run inside the tap's event handler: iOS only opens the keyboard then.
   const openKeyboard = () => {
     if (typingTarget && typingEditor.current) {
-      typingEditor.current.focus({ preventScroll: true });
+      focusKeyboard(typingEditor.current);
       return;
     }
     flushSync(() => {
@@ -539,7 +540,7 @@ export default function Screen({
       setPanel(null);
       setTypingTarget({ editable: true });
     });
-    typingEditor.current?.focus({ preventScroll: true });
+    focusKeyboard(typingEditor.current);
   };
   // Done with the Mac: your control ends and agents have it back now, not 2
   // minutes from now.
@@ -854,6 +855,7 @@ export default function Screen({
           )}
           <DesktopSurface
             touchScroll
+            doubleClick={input.doubleClick}
             touchAssist={device.platform === "darwin" && touchAssist}
             focusRect={askRect}
             canvas={stream.canvas}
@@ -875,12 +877,27 @@ export default function Screen({
             onDragEnd={() => setDrag(false)}
             onFeedback={setFeedback}
             onInteractionStart={startInteraction}
-            onInteraction={clearTyping}
+            onInteraction={(repeat) => {
+              typingCheck.current++;
+              // Keep a confirmed editor for a repeat; every edit still
+              // carries its native focus guard.
+              const current = typingRef.current;
+              if (repeat && current?.focus && !current.pending) {
+                flushSync(() => setTypingTarget({
+                  ...current,
+                  editRevision: (current.editRevision ?? 0) + 1,
+                }));
+                return true;
+              }
+              clearTyping();
+              return false;
+            }}
             onTextTarget={(point) => void detectTyping(point)}
             {...(input.probe && {
               probe: (point: { x: number; y: number }) =>
                 send({ type: "probe", ...point }),
               onField: typeInField,
+              onKeyboardActivate: () => typingEditor.current?.focus({ preventScroll: true }),
               knownField: input.fieldAt,
               onStaleFields: input.forgetFields,
             })}
@@ -902,15 +919,13 @@ export default function Screen({
           {typing &&
             typingTarget &&
             (nativeKeyboard ? (
-              !typingTarget.pending && (
-                <NativeRemoteTyping
-                  key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
-                  target={typingTarget}
-                  send={send}
-                  onClose={clearTyping}
-                  onError={setError}
-                />
-              )
+              <NativeRemoteTyping
+                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                target={typingTarget}
+                send={send}
+                onClose={clearTyping}
+                onError={setError}
+              />
             ) : (
               <RemoteTyping
                 key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
@@ -933,7 +948,8 @@ export default function Screen({
               // between keystrokes (each next letter then deleted the last).
               <TapToType
                 key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
-                editorRef={typingEditor}
+                onOpen={openKeyboard}
+                onPrepare={() => prepareKeyboard(typingEditor.current)}
               />
             )}
           {/* Every control in one small bar floating at the bottom center:

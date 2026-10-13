@@ -20,7 +20,10 @@ test("Windows implements the advertised field probe with a bounded read-only hit
   assert.match(fieldProbe, /public static void Warm\(\)/);
   assert.match(source, /\[ReachDesktopFieldProbe\]::Warm\(\)/);
   // Each look's thread takes the helper's per-monitor DPI awareness.
-  assert.match(fieldProbe, /SetThreadDpiAwarenessContext\(new IntPtr\(-4\)\);result=Read/);
+  assert.match(
+    fieldProbe,
+    /SetThreadDpiAwarenessContext\(new IntPtr\(-4\)\);result=Read/,
+  );
   assert.match(fieldProbe, /worker!=null && worker\.IsAlive/);
   assert.match(fieldProbe, /depth<4/);
   assert.match(fieldProbe, /!info\.IsOffscreen/);
@@ -35,6 +38,29 @@ test("Windows implements the advertised field probe with a bounded read-only hit
   );
   assert.doesNotMatch(probeAction, /Release\(|Mouse\(/);
   assert.match(probeAction, /\$b\.X\+\$p\.x\*\(\$b\.Width-1\)/);
+});
+
+test("Windows completes rapid pairs with timestamped input and releases partially delivered clicks", () => {
+  assert.equal(
+    (source.match(/public class ReachDesktopInput\b/g) || []).length,
+    1,
+    "the native pointer class must compile once per helper",
+  );
+  assert.match(
+    source,
+    /static extern uint SendInput\(uint count,Input\[\] inputs,int size\)/,
+  );
+  assert.match(source, /id==previousId/);
+  assert.match(
+    source,
+    /previousTime\+Math\.Max\(1u,Math\.Min\(50u,GetDoubleClickTime\(\)\/2\)\)/,
+  );
+  assert.doesNotMatch(source, /x=previousX|y=previousY/);
+  assert.match(source, /GetSystemMetrics\(36\).*GetSystemMetrics\(37\)/);
+  assert.match(source, /InDoubleClickRect\(x,y\)/);
+  assert.match(source, /Input\[\] inputs=new Input\[count\*2\]/);
+  assert.match(source, /held=up;\s*try\{if\(SendInput/);
+  assert.match(source, /catch\{Release\(\);throw;\}/);
 });
 
 // Compile the production C# probe and execute the production PowerShell
@@ -74,7 +100,8 @@ namespace System.Windows.Automation {
   public static AutomationElement FromPoint(System.Windows.Point at){Calls++;LastPoint=at;
    if(Delay>0)System.Threading.Thread.Sleep(Delay);if(Refused)throw new System.Exception("Provider refused");return Hit;}
   public bool TryGetCurrentPattern(object pattern,out object value){value=Value;return Value!=null;}
-  public int[] GetRuntimeId(){return new int[]{42};}
+  public int Runtime=42;
+  public int[] GetRuntimeId(){return new int[]{Runtime};}
  }
  public class TreeWalker {
   public static readonly TreeWalker RawViewWalker=new TreeWalker();
@@ -82,9 +109,8 @@ namespace System.Windows.Automation {
  }
 }
 `;
-    const focus = source.match(
-      /function Get-ReachTextTarget\([\s\S]*?\r?\n}\r?\n/,
-    )[0];
+    const focus = ["Get-ReachFocusedTextElement", "Get-ReachTextTarget", "Assert-ReachTypingTarget"]
+      .map((name) => source.match(new RegExp(`function ${name}[^\\n]*\\n[\\s\\S]*?\\r?\\n}\\r?\\n`))[0]).join("\n");
     const script = `
 $ErrorActionPreference='Stop'
 Add-Type @'
@@ -119,9 +145,21 @@ Check $true (Get-ReachTextTarget $p $screen).editable
 Check 0 ([ReachDesktopFieldProbe]::At(-800,70))
 Check $false (Get-ReachTextTarget ([pscustomobject]@{x=0;y=0}) $screen).editable
 $child=Field;$child.Current.ControlType=[System.Windows.Automation.ControlType]::Text
-$child.Current.IsKeyboardFocusable=$false;$child.Parent=$field
+$child.Current.IsKeyboardFocusable=$false;$child.Parent=$field;$child.Runtime=77
 [System.Windows.Automation.AutomationElement]::Hit=$child
 Check 1 ([ReachDesktopFieldProbe]::At(-1100,70))
+[System.Windows.Automation.AutomationElement]::FocusedElement=$child
+$target=Get-ReachTextTarget $p $screen
+Check $true $target.editable
+Assert-ReachTypingTarget $target.focus
+$other=Field;$other.Runtime=99
+[System.Windows.Automation.AutomationElement]::FocusedElement=$other
+$refused=$false;try{Assert-ReachTypingTarget $target.focus}catch{$refused=$true}
+Check $true $refused
+[System.Windows.Automation.AutomationElement]::FocusedElement=$child
+$field.Current.IsEnabled=$false
+Check $false (Get-ReachTextTarget $p $screen).editable
+$field.Current.IsEnabled=$true
 # Four ancestors maximum, without walking the entire desktop.
 for($i=0;$i -lt 4;$i++){$next=Field;$next.Current.IsKeyboardFocusable=$false;$next.Parent=$child;$child=$next}
 [System.Windows.Automation.AutomationElement]::Hit=$child
@@ -186,7 +224,7 @@ test("the shared scroll protocol delivers fine and accelerated movement to Windo
 });
 
 // Run the production C# pointer/scroll implementation in Windows' own
-// compiler, replacing just the two input emissions with recordings. This
+// compiler, replacing input emissions and the tick clock with recordings. This
 // never posts input or moves the Windows desktop cursor.
 test(
   "Windows native input preserves small wheel deltas, both axes, drag pairing and multi-display click coordinates",
@@ -200,11 +238,16 @@ test(
     const mouse =
       '[DllImport("user32.dll")] static extern void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra);';
     assert.ok(code.includes(cursor) && code.includes(mouse));
+    const sendInput =
+      '[DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count,Input[] inputs,int size);';
+    assert.ok(code.includes(sendInput));
     code = code
       .replace(
         "public class ReachDesktopInput {",
         `public class ReachDesktopInput {
- public static System.Collections.Generic.List<string> Events=new System.Collections.Generic.List<string>();`,
+ public static System.Collections.Generic.List<string> Events=new System.Collections.Generic.List<string>();
+ public static System.Collections.Generic.List<uint> Times=new System.Collections.Generic.List<uint>();
+ public static uint Clock=1000;`,
       )
       .replace(
         cursor,
@@ -213,6 +256,18 @@ test(
       .replace(
         mouse,
         'static void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra){Events.Add("mouse:"+flags+":"+data);}',
+      )
+      .replace(
+        sendInput,
+        'public static uint SendCount=uint.MaxValue;static uint SendInput(uint count,Input[] inputs,int size){uint sent=Math.Min(count,SendCount);for(int i=0;i<sent;i++){Events.Add("mouse:"+inputs[i].mouse.flags+":0");Times.Add(inputs[i].mouse.time);}return sent;}',
+      )
+      .replace(
+        '[DllImport("kernel32.dll")] static extern uint GetTickCount();',
+        "static uint GetTickCount(){return Clock;}",
+      )
+      .replace(
+        '[DllImport("user32.dll")] static extern int GetSystemMetrics(int index);',
+        "static int GetSystemMetrics(int index){return 4;}",
       )
       .replace(/static Timer timer=new Timer\([^\n]+\);/, ""); // No asynchronous watchdog in the fixture.
     const pointer = source.match(
@@ -245,6 +300,33 @@ Check ''
 Check 'point:100,200|mouse:8:0|mouse:16:0'
 [ReachDesktopInput]::Mouse('click',700,900,$false,2)
 Check 'point:700,900|mouse:2:0|mouse:4:0|mouse:2:0|mouse:4:0'
+[ReachDesktopInput]::Times.Clear()
+if([Runtime.InteropServices.Marshal]::SizeOf([type][ReachDesktopInput+Input]) -ne $(if([IntPtr]::Size -eq 8){40}else{28})){throw 'Wrong SendInput struct size'}
+if([ReachDesktopInput]::Click(100,200,$false,1,7,1) -ne 1){throw 'First tap is not a single click'}
+[ReachDesktopInput]::Clock=1700
+if([ReachDesktopInput]::Click(101,201,$false,1,7,2) -ne 2){throw 'Second tap did not complete the double-click'}
+Check 'point:100,200|mouse:2:0|mouse:4:0|point:101,201|mouse:2:0|mouse:4:0'
+if([ReachDesktopInput]::Times.Count -ne 4){throw 'Double-tapping must emit exactly two physical clicks'}
+$times=[ReachDesktopInput]::Times
+if($times[0] -ne 1000 -or $times[2] -le $times[0] -or $times[2]-$times[0] -ge 700){throw 'Network delay leaked into the double-click timing'}
+if([ReachDesktopInput]::Click(110,205,$false,1,7,2) -ne 1){throw 'Completed pair was reused'}
+Check 'point:110,205|mouse:2:0|mouse:4:0'
+[void][ReachDesktopInput]::Click(100,200,$false,1,70,1)
+if([ReachDesktopInput]::Click(110,205,$false,1,70,2) -ne 1){throw 'Nearby different targets were merged'}
+if([ReachDesktopInput]::ClickX -ne 110 -or [ReachDesktopInput]::ClickY -ne 205){throw 'Second click moved to the first point'}
+Check 'point:100,200|mouse:2:0|mouse:4:0|point:110,205|mouse:2:0|mouse:4:0'
+[void][ReachDesktopInput]::Click(100,200,$false,1,8,1)
+[ReachDesktopInput]::ForgetClick()
+if([ReachDesktopInput]::Click(150,250,$false,1,8,2) -ne 1){throw 'Canceled pair was reused'}
+Check 'point:100,200|mouse:2:0|mouse:4:0|point:150,250|mouse:2:0|mouse:4:0'
+[ReachDesktopInput]::SendCount=1
+$refused=$false
+try{[void][ReachDesktopInput]::Click(350,300,$false,1,9,1)}catch{$refused=$true}
+if(!$refused){throw 'A partial click was acknowledged'}
+Check 'point:350,300|mouse:2:0|mouse:4:0'
+[ReachDesktopInput]::Release()
+Check ''
+[ReachDesktopInput]::SendCount=[uint32]::MaxValue
 $screen=@{Bounds=@{X=-1440;Y=120;Width=1440;Height=900}}
 foreach($case in @(
  @{x=0.0;y=0.0;expected='-1440,120'},

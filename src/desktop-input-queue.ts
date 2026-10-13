@@ -5,6 +5,8 @@ export type TextTarget = {
   secure?: boolean;
   // The keyboard opened during the tap; no input may leave until focus is confirmed.
   pending?: boolean;
+  // Reset phone-only draft context after a remote caret/selection change.
+  editRevision?: number;
 };
 export type InputResult = {
   ok?: boolean;
@@ -14,6 +16,8 @@ export type InputResult = {
   skipped?: boolean;
   target?: TextTarget;
   point?: { x: number; y: number };
+  clickState?: number;
+  retargeted?: boolean;
 };
 type Pending = {
   action: DesktopAction;

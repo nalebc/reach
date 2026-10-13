@@ -14,7 +14,8 @@ import {
   pinchView,
   typingView,
 } from "./desktop-geometry";
-import { screenPoint, screenTouchTolerance } from "./screen-pointer";
+import { screenImageRect, screenPoint, screenTouchTolerance } from "./screen-pointer";
+import { TapClicks } from "./tap-clicks";
 import { TouchScroll } from "./touch-scroll";
 import ScreenConnection from "./ScreenConnection";
 import ScreenGestureFeedback, { type GestureFeedback } from "./ScreenGestureFeedback";
@@ -57,6 +58,7 @@ export default function DesktopSurface({
   onTextTarget,
   probe,
   onField,
+  onKeyboardActivate,
   knownField,
   onStaleFields,
   resetKey,
@@ -67,6 +69,7 @@ export default function DesktopSurface({
   typing = false,
   touchScroll = false,
   touchAssist = false,
+  doubleClick = false,
   idle,
   blocked = "",
   waitForControl = false,
@@ -87,16 +90,18 @@ export default function DesktopSurface({
   onFeedback: (s: string) => void;
   // Invalidate delayed field checks at touch-down; a swipe can keep typing.
   onInteractionStart?: () => void;
-  onInteraction: () => void;
+  // Return true to retain a confirmed keyboard during the second click.
+  onInteraction: (repeat?: boolean) => boolean | void;
   onTextTarget: (point: Point) => void;
   // Asked on touch-down: is there a text field under the finger? When the
   // answer is back before the finger lifts, onField opens the keyboard on
   // that same tap (Safari opens it only during a tap).
   probe?: (point: Point) => Promise<unknown>;
   onField?: (point: Point, secure: boolean) => void;
+  onKeyboardActivate?: () => void;
   // A text field the computer already said is here (its pushed map): the
   // keyboard opens on the tap without waiting for the probe.
-  knownField?: (point: Point) => { secure: boolean } | null;
+  knownField?: (point: Point) => { secure: boolean; x?: number; y?: number; w?: number; h?: number } | null;
   // The probe found no field where the map had one: the map is out of date.
   onStaleFields?: () => void;
   // The Mac can't see what's under the finger (a game, a canvas, a remote
@@ -112,6 +117,8 @@ export default function DesktopSurface({
   touchScroll?: boolean;
   // macOS can recover a nearby miss using the live control bounds.
   touchAssist?: boolean;
+  // The host can complete a double-click with just the second tap's click.
+  doubleClick?: boolean;
   // Shown instead of "Live view is paused" while nothing streams.
   idle?: ReactNode;
   // Why a tap can't reach the computer now (control off, reconnecting…):
@@ -127,6 +134,7 @@ export default function DesktopSurface({
     viewRef = useRef(view);
   viewRef.current = view;
   const beforeTyping = useRef<typeof view | null>(null);
+  const tapClicks = useRef(new TapClicks());
   const cursorRef = useRef<Point>({ x: 0.5, y: 0.5 });
   // A finger on the picture: the zoom pill steps aside meanwhile.
   const [touching, setTouching] = useState(false);
@@ -150,6 +158,7 @@ export default function DesktopSurface({
     start: Point;
     clientStart: Point;
     point: Point | null;
+    image: ReturnType<typeof screenImageRect>;
     touch?: Touch;
     last: Point;
     at: number;
@@ -200,9 +209,13 @@ export default function DesktopSurface({
   const tappedField = useRef<{
     point: Point;
     probe: number;
-    known: { secure: boolean } | null;
+    known: { secure: boolean; x?: number; y?: number; w?: number; h?: number } | null;
     at: number;
     acknowledged: boolean;
+    focusActivated?: boolean;
+    keepTyping: boolean;
+    opened?: boolean;
+    retargeted?: boolean;
   } | null>(null);
   const wheelHandler = useRef<(event: WheelEvent) => void>(() => {});
   useEffect(() => {
@@ -310,6 +323,7 @@ export default function DesktopSurface({
     momentum.current.frame = requestAnimationFrame((time) => momentumHandler.current(time));
   };
   const release = () => {
+    tapClicks.current.reset();
     clearHold();
     clearTimeout(wheelFeedback.current);
     setGestureFeedback(null);
@@ -348,8 +362,10 @@ export default function DesktopSurface({
   useEffect(() => {
     release();
   }, [mode]);
+  useEffect(() => { tapClicks.current.reset(); }, [clickMode, doubleClick]);
   useEffect(() => {
     if (!ready || stale) {
+      tapClicks.current.reset();
       stopMomentum();
       dropScroll();
     }
@@ -479,6 +495,11 @@ export default function DesktopSurface({
     imageH = baseH * view.scale,
     left = (size.width - imageW) / 2 + view.x,
     top = (size.height - imageH) / 2 + view.y;
+  // Rendering and feedback use the same contained image as hit testing,
+  // including the brief interval between a new frame size and layout update.
+  const rendered = screenImageRect({ left, top, width: imageW, height: imageH },
+    canvas.current?.width || width, canvas.current?.height || height)
+    ?? { left, top, width: imageW, height: imageH };
   const bounded = (scale: number, x: number, y: number) =>
     boundView(scale, x, y, baseW, baseH, size.width, size.height, 48);
   const local = (x: number, y: number) => {
@@ -528,6 +549,7 @@ export default function DesktopSurface({
     step.frame = requestAnimationFrame((at) => dragPanHandler.current(at));
   };
   const zoomAt = (scale: number, p: Point) => {
+    tapClicks.current.reset();
     const v = viewRef.current,
       next = clamp(scale, 1, 4),
       ox = (size.width - baseW * v.scale) / 2 + v.x,
@@ -565,46 +587,50 @@ export default function DesktopSurface({
     }, Math.max(0, at + TAP_RETRY_MS - performance.now()));
     pendingTap.current = { point, right, at, timer, touch };
   };
-  const click = (point: Point, right: boolean, at: number, touch?: Touch) => {
+  const click = (point: Point, right: boolean, at: number, touch?: Touch,
+    sequence?: { clickId: number; clickState: number }) => {
     const id = ++serial.current;
-    const kind: WaveKind = right || clickMode === "right" ? "right" : clickMode === "double" ? "double" : "click";
+    const kind: WaveKind = right || clickMode === "right" ? "right" : clickMode === "double" || sequence?.clickState === 2 ? "double" : "click";
     onFeedback("");
     void send({
       type: "click",
       ...point,
       button: kind === "right" ? "right" : "left",
-      count: kind === "double" ? 2 : 1,
+      count: clickMode === "double" && kind !== "right" ? 2 : 1,
       ...(touch && kind !== "right" ? { touch } : {}),
+      ...(sequence && { clickId: sequence.clickId, clickState: sequence.clickState }),
     })
       .then((result) => {
         const actual = (result as { point?: Point } | null)?.point;
         const landed = actual && [actual.x, actual.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
           ? actual : point;
         if (id === serial.current) moveCursor(landed);
-        wave(landed, kind);
+        const actualState = (result as { clickState?: number } | null)?.clickState;
+        wave(landed, sequence?.clickState === 2 && actualState === 1 ? "click" : kind);
         if (id === serial.current && kind !== "right") {
-          // The host can acknowledge before Safari delivers the tap's click.
-          // Wait for that click to open the keyboard before confirming focus.
           const field = tappedField.current;
           if (field?.point === point) {
             field.point = landed;
-            // A corrected near miss needs the Mac's focus check; the
+            // A retargeted click needs the host's focus check; the
             // touch-down probe described the uncorrected location.
-            if (Math.hypot(landed.x - point.x, landed.y - point.y) > 1e-8) {
-              tappedField.current = null;
-              onTextTarget(landed);
-              return;
+            const retargeted = (result as { retargeted?: boolean } | null)?.retargeted;
+            if (retargeted === true || (retargeted === undefined && Math.hypot(landed.x - point.x, landed.y - point.y) > 1e-8)) {
+              field.retargeted = true;
             }
             field.acknowledged = true;
-            return;
+            field.focusActivated = !!(field.opened || field.keepTyping);
           }
+          // Focus confirmation also runs if the browser omits its synthetic
+          // click. The keyboard activation itself stays inside the touch event.
           onTextTarget(landed);
         }
       })
       .catch((error: Error & { notSent?: boolean }) => {
+        if (sequence) tapClicks.current.reset(sequence.clickId);
+        else if (id === serial.current) tapClicks.current.reset();
         // Never reached the Mac (its connection blinked before it went):
         // it waits for control to come back, if that's soon.
-        if (error?.notSent && performance.now() - at < TAP_RETRY_MS) {
+        if (id === serial.current && error?.notSent && performance.now() - at < TAP_RETRY_MS) {
           holdTap(point, right, at, touch);
           return;
         }
@@ -617,8 +643,11 @@ export default function DesktopSurface({
   };
   // A tap on the picture: sent, or held a moment while control comes back,
   // or said why not. Only watching, there is no mark at all.
-  const tap = (point: Point, right = false, touch?: Touch) => {
-    if (canControl) return click(point, right, performance.now(), touch);
+  const tap = (point: Point, right = false, touch?: Touch,
+    sequence?: { clickId: number; clickState: number }) => {
+    const at = performance.now();
+    if (!sequence) tapClicks.current.reset();
+    if (canControl) return click(point, right, at, touch, sequence);
     if (waitForControl) return holdTap(point, right, performance.now(), touch);
     onFeedback(blocked || "View only · tap Control to use it");
   };
@@ -626,6 +655,7 @@ export default function DesktopSurface({
   // mode; Ctrl or ⌘ (a trackpad's pinch) zooms, and so does a wheel while
   // only watching.
   wheelHandler.current = (e) => {
+    tapClicks.current.reset();
     onInteractionStart?.();
     stopMomentum();
     dropScroll();
@@ -676,6 +706,7 @@ export default function DesktopSurface({
         start: p,
         clientStart: { x: event.clientX, y: event.clientY },
         point,
+        image: image && imageBox ? screenImageRect(imageBox, image.width, image.height) : null,
         // Tolerance is measured on the rendered image, so zooming reduces
         // it on the Mac. Mouse, Pencil, trackpad and drags stay exact.
         touch: touchAssist && mode === "direct" && event.pointerType === "touch" && image && imageBox
@@ -699,6 +730,8 @@ export default function DesktopSurface({
       // Capture the tap point before dismissing a pending phone keyboard:
       // closing it can resize and move the displayed picture.
       onInteractionStart?.();
+      if (!point || stopper || mode === "pan" || !canControl || event.button > 0)
+        tapClicks.current.reset();
       if (point && !stopper && mode !== "pan" && canControl && probe && onField) {
         const id = ++probeSerial.current;
         gesture.current.probe = id;
@@ -742,6 +775,7 @@ export default function DesktopSurface({
             pointers.current.has(event.pointerId)
           ) {
             clearTimeout(holdFeedback.current);
+            tapClicks.current.reset();
             g.held = true;
             onFeedback("");
             cue("grabbing", g.last);
@@ -770,6 +804,7 @@ export default function DesktopSurface({
         }
       }
     } else if (pointers.current.size === 2 && gesture.current) {
+      tapClicks.current.reset();
       clearHold();
       stopDragPan();
       if (gesture.current.held) {
@@ -874,6 +909,7 @@ export default function DesktopSurface({
     const dx = p.x - g.last.x,
       dy = p.y - g.last.y;
     if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > MOVE_SLOP) {
+      tapClicks.current.reset();
       g.moved = true;
       clearHold();
       if (!g.held) setGestureFeedback(null);
@@ -949,9 +985,23 @@ export default function DesktopSurface({
     const tapped =
       !g.held && !g.multiple && !g.moved && event.button !== 2 &&
       (performance.now() - g.at < HOLD_MS || !canControl);
-    // A committed tap dismisses typing even in a margin, in pan mode, or
-    // when it just stops momentum. None of those sends a host click.
-    if (tapped) onInteraction();
+    const point = tapped && !g.stopper && mode !== "pan"
+      ? mode === "trackpad" ? cursorRef.current
+        : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY)
+      : null;
+    const image = canvas.current;
+    const box = event.pointerType === "touch" ? g.image
+      : image && screenImageRect(image.getBoundingClientRect(), image.width, image.height);
+    const sequence = tapped && !g.stopper && mode !== "pan" && canControl && doubleClick && clickMode === "left" && box
+      ? tapClicks.current.next(point, performance.now(), event.pointerType, box)
+      : undefined;
+    // Ordinary taps dismiss typing, including margins, pan mode and stopping
+    // momentum. A repeat can retain a confirmed editor unless its fresh hit
+    // test has already established that this tap is outside an input.
+    const answer = probeAnswer.current;
+    const repeat = sequence?.clickState === 2 && !(answer && answer.id === g.probe && !answer.field);
+    const keepTyping = tapped && onInteraction(repeat) === true;
+    if (!tapped || g.stopper || mode === "pan") tapClicks.current.reset();
     if (g.held) {
       stopDragPan();
       // Pointer-up may contain the final motion when the browser coalesces
@@ -981,12 +1031,7 @@ export default function DesktopSurface({
       // Pan & zoom only moves the picture: said, so a tap never seems lost.
       onFeedback(canControl ? "Pan & zoom · taps don't click" : blocked || "View only · tap Control to use it");
     } else if (tapped && mode !== "pan" && !g.stopper) {
-      const point =
-        mode === "trackpad"
-          ? cursorRef.current
-          : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY);
       if (point) {
-        const answer = probeAnswer.current;
         const known = knownField?.(point) ?? null;
         // The keyboard opens only on a field the computer confirmed: this
         // touch's probe answer, or else its pushed map (a guess opened it and
@@ -1008,8 +1053,10 @@ export default function DesktopSurface({
             known,
             at: performance.now(),
             acknowledged: false,
+            keepTyping,
           };
-        tap(point, false, g.touch);
+        tap(point, false, g.touch, sequence);
+        activateField();
       }
     }
     if (!pointers.current.size) {
@@ -1017,17 +1064,38 @@ export default function DesktopSurface({
       setTouching(false);
     }
   };
-  // The click that follows a tap is when Safari lets the keyboard open.
-  const clicked = () => {
+  // Try on finger-up, touch-end and click: browser keyboard activation must
+  // happen inside a real gesture, without waiting for the click acknowledgement.
+  const activateField = () => {
     const field = tappedField.current;
-    tappedField.current = null;
     if (field && canControl && ready && performance.now() - field.at < 1000) {
       // The probe's own answer is the freshest; the map stands in until it comes.
       const answer = probeAnswer.current;
-      if (answer?.id === field.probe) {
-        if (answer.field) onField?.(field.point, answer.secure);
-      } else if (field.known) onField?.(field.point, field.known.secure);
-      if (field.acknowledged) onTextTarget(field.point);
+      const { x = Infinity, y = Infinity, w = 0, h = 0 } = field.known ?? {};
+      if (!field.keepTyping && !field.opened) {
+        if (!field.retargeted && answer?.id === field.probe && answer.field) {
+          field.opened = true;
+          onField?.(field.point, answer.secure);
+        } else if (field.known && (!field.retargeted || (
+          field.point.x >= x && field.point.x <= x + w &&
+          field.point.y >= y && field.point.y <= y + h))) {
+          // A negative probe overrides a stale map at the original point.
+          if (field.retargeted || answer?.id !== field.probe) {
+            field.opened = true;
+            onField?.(field.point, field.known.secure);
+          }
+        }
+      }
+      if (field.opened || field.keepTyping) onKeyboardActivate?.();
+    }
+  };
+  const clicked = () => {
+    activateField();
+    const field = tappedField.current;
+    tappedField.current = null;
+    if (field && canControl && ready && performance.now() - field.at < 1000) {
+      if (field.acknowledged && field.opened && !field.focusActivated)
+        onTextTarget(field.point);
     }
   };
   return (
@@ -1036,10 +1104,11 @@ export default function DesktopSurface({
         className={`remote-stage${touching ? " is-touching" : ""}`}
         ref={stage}
         tabIndex={0}
-        aria-label={`Remote desktop. ${mode === "trackpad" ? "Trackpad mode moves the cursor." : "Tap to click."} Pinch to zoom. Long press to drag. ${view.scale > 1.01 ? "Swipe to pan. " : ""}Two fingers to scroll.`}
+        aria-label={`Remote desktop. ${mode === "trackpad" ? "Trackpad mode moves the cursor." : "Tap to click."} ${doubleClick ? "Tap twice quickly to double-click. " : ""}Pinch to zoom. Long press to drag. ${view.scale > 1.01 ? "Swipe to pan. " : ""}Two fingers to scroll.`}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
+        onTouchEnd={activateField}
         onClick={clicked}
         onPointerCancel={(event) => {
           if (!pointers.current.has(event.pointerId)) return;
@@ -1054,6 +1123,7 @@ export default function DesktopSurface({
           if (pointers.current.has(e.pointerId)) release();
         }}
         onContextMenu={(e) => {
+          tapClicks.current.reset();
           e.preventDefault();
           stopMomentum();
           dropScroll();
@@ -1069,6 +1139,7 @@ export default function DesktopSurface({
           }
         }}
         onKeyDown={(e) => {
+          tapClicks.current.reset();
           stopMomentum();
           dropScroll();
           if (!canControl || e.key === "Escape") return;
@@ -1125,6 +1196,7 @@ export default function DesktopSurface({
             top,
             width: imageW,
             height: imageH,
+            objectFit: "contain",
             visibility: ready ? "visible" : "hidden",
             opacity: stale ? 0.45 : 1,
             transition: "opacity 0.4s ease",
@@ -1142,7 +1214,7 @@ export default function DesktopSurface({
             key={w.id}
             aria-hidden="true"
             className={`screen-wave ${w.kind}`}
-            style={{ left: left + w.x * imageW, top: top + w.y * imageH }}
+            style={{ left: rendered.left + w.x * rendered.width, top: rendered.top + w.y * rendered.height }}
           >
             <span />
             <span />

@@ -24,6 +24,7 @@ export const suites = {
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
+    "tap-clicks", "screen-double-click-ui",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).

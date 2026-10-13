@@ -222,7 +222,8 @@ test("Windows CI covers shared phone gesture accuracy, accelerated scrolling and
   for (const name of ["touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
-    "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard"])
+    "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
+    "tap-clicks", "screen-double-click-ui"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 

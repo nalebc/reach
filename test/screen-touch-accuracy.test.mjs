@@ -91,6 +91,10 @@ func AXUIElementCopyAttributeValue(_ element: AXUIElement, _ name: CFString, _ o
   out = attributes[number(element)][name as String]
   return out == nil ? .noValue : .success
 }
+func AXUIElementIsAttributeSettable(_ element: AXUIElement, _ name: CFString, _ out: inout DarwinBoolean) -> AXError {
+  out = false
+  return .success
+}
 func AXUIElementCopyMultipleAttributeValues(_ element: AXUIElement, _ names: CFArray,
   _ options: AXCopyMultipleAttributeOptions, _ out: inout CFArray?) -> AXError {
   if slow { usleep(130000) }
@@ -184,6 +188,23 @@ for (point, expected) in [
   (CGPoint(x: 0.25, y: 0.25), CGPoint(x: -1080.25, y: 344.75)),
 ] { checkClick(click(point), expected) }
 print("native click coordinates passed")
+// Probe can identify a parent input while the app focuses its text child.
+// Focus confirmation and guarded edits must resolve that same parent.
+let editor = node("AXTextArea", CGRect(x: -1200, y: 200, width: 300, height: 120))
+let child = node("AXStaticText", CGRect(x: -1150, y: 230, width: 100, height: 30))
+attributes[number(child)][kAXParentAttribute] = editor
+attributes[number(root)][kAXFocusedUIElementAttribute] = child
+let target = input.textTarget(["x": 300.0 / 1439, "y": 120.0 / 899])
+precondition(target["editable"] as? Bool == true)
+let token = target["focus"] as! String
+try! input.checkTyping(token)
+let other = node("AXTextArea", CGRect(x: -800, y: 200, width: 300, height: 120))
+attributes[number(root)][kAXFocusedUIElementAttribute] = other
+do { try input.checkTyping(token); preconditionFailure("a different field cannot receive guarded typing") } catch {}
+attributes[number(root)][kAXFocusedUIElementAttribute] = child
+attributes[number(editor)][kAXEnabledAttribute] = NSNumber(value: false)
+precondition(input.textTarget(["x": 300.0 / 1439, "y": 120.0 / 899])["editable"] as? Bool == false)
+print("focused child input fixtures passed")
 `);
   const built = spawnSync("xcrun", ["swiftc", "-module-cache-path", path.join(folder, "cache"), file, "-o", binary], { encoding: "utf8", timeout: 45000 });
   assert.equal(built.status, 0, built.stderr);
@@ -192,4 +213,5 @@ print("native click coordinates passed")
   assert.match(checked.stdout, /touch geometry passed/);
   assert.match(checked.stdout, /live target fixtures passed/);
   assert.match(checked.stdout, /native click coordinates passed/);
+  assert.match(checked.stdout, /focused child input fixtures passed/);
 });

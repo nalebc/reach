@@ -15,7 +15,7 @@ test("Mac drag events position before pressing, carry movement deltas and pair t
   const source = await fs.readFile(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
   const mouse = source.split("// BEGIN DESKTOP MOUSE")[1].split("// END DESKTOP MOUSE")[0];
   const file = path.join(folder, "main.swift"), binary = path.join(folder, "mouse");
-  await fs.writeFile(file, "import CoreGraphics\n" + mouse + String.raw`
+  await fs.writeFile(file, "import CoreGraphics\nimport Foundation\n" + mouse + String.raw`
 var events: [CGEvent] = []
 let source = CGEventSource(stateID: .hidSystemState)
 let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: { events.append($0) })
@@ -64,6 +64,26 @@ for count in 1...2 {
 let clicks = events.filter { $0.type != .mouseMoved }
 precondition(clicks.map { field($0, .mouseEventClickState) } == [1, 1, 2, 2])
 precondition(field(clicks[0], .mouseEventNumber) != field(clicks[2], .mouseEventNumber))
+// A rapid pair preserves each actual point instead of snapping to the first.
+events = []
+let first = mouse.click(at: CGPoint(x: 101, y: 104), button: .left, id: 7)
+let second = mouse.click(at: CGPoint(x: 103, y: 105), button: .left, id: 7, state: 2)
+let pair = events.filter { $0.type != .mouseMoved }
+precondition(pair.map { field($0, .mouseEventClickState) } == [1, 1, 2, 2], "exactly two physical clicks")
+precondition(pair.prefix(2).allSatisfy { $0.location == CGPoint(x: 101, y: 104) })
+precondition(pair.suffix(2).allSatisfy { $0.location == CGPoint(x: 103, y: 105) })
+precondition(first.1 == 1 && second.1 == 2 && second.0 == CGPoint(x: 103, y: 105))
+// An unrelated or already completed pair is a single click, never a replay.
+events = []
+let third = mouse.click(at: CGPoint(x: 180, y: 190), button: .left, id: 7, state: 2)
+precondition(third.1 == 1 && third.0 == CGPoint(x: 180, y: 190))
+precondition(events.filter { $0.type == .leftMouseDown }.count == 1)
+_ = mouse.click(at: CGPoint(x: 100, y: 100), button: .left, id: 70)
+let neighbor = mouse.click(at: CGPoint(x: 112, y: 100), button: .left, id: 70, state: 2)
+precondition(neighbor.1 == 1 && neighbor.0 == CGPoint(x: 112, y: 100), "different host points stay independent")
+_ = mouse.click(at: CGPoint(x: 30, y: 40), button: .left, id: 8)
+mouse.forgetClick()
+precondition(mouse.click(at: CGPoint(x: 50, y: 60), button: .left, id: 8, state: 2).1 == 1)
 // A second press releases the first one where it was actually held.
 events = []
 mouse.down(at: CGPoint(x: 5, y: 10), button: .left)

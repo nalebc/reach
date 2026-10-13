@@ -66,11 +66,17 @@ const edits = () =>
   computer.actions.filter((a) => ["type-edit", "text", "key"].includes(a.type));
 async function mount(
   replies = {},
-  { platform = "darwin", native = false, probing = true } = {},
+  {
+    platform = "darwin",
+    native = false,
+    probing = true,
+    doubleClick = false,
+  } = {},
 ) {
   computer.reset();
   keyboard.reset(native);
   computer.probeSupported = probing;
+  computer.doubleClickSupported = doubleClick;
   dom.errors.length = 0;
   computer.replies = {
     probe: () => ({ field: true }),
@@ -219,6 +225,219 @@ for (const correction of [0, 0.005]) {
   });
 }
 for (const platform of ["darwin", "win32"]) {
+  for (const activation of ["click", "touchend"]) {
+  test(`Tap to type (${platform}, ${activation}): prepare an already focused sink on finger-down, then open on release without losing its guard or draft`, async () => {
+    // Model the extra WebKit failure observed in iPhone Simulator: a blur and
+    // refocus in one handler produce a DOM focus event but no keyboard. The
+    // native editor needs the blur on finger-down, before focus on release.
+    await mount({ probe: () => ({ field: false }) }, { platform });
+    await tapStart(); click();
+    await dom.waitFor(() => sink());
+    await dom.waitFor(() => button("Tap to type"));
+    const field = sink();
+    assert.equal(dom.document.activeElement, field);
+    await typeInto(field, "before");
+    let phase = "none", prepared = false, shown = false, changes = 0;
+    const focus = field.focus, blur = field.blur;
+    field.blur = function () {
+      blur.call(this);
+      if (phase === "down" && dom.document.activeElement !== this) prepared = true;
+    };
+    field.focus = function (options) {
+      const changed = dom.document.activeElement !== this;
+      focus.call(this, options);
+      if (phase === "up" && prepared && changed && dom.document.activeElement === this) {
+        shown = true; changes++;
+      }
+    };
+    const open = button("Tap to type");
+    phase = "down";
+    open.dispatchEvent(new dom.window.PointerEvent("pointerdown", { pointerType: "touch", bubbles: true, cancelable: true }));
+    assert.equal(prepared, true, "Safari must see the intentional blur before finger-up");
+    assert.equal(sink(), field, "preparing focus must retain the editor and draft");
+    if (activation === "touchend") open.dispatchEvent(new dom.window.TouchEvent("touchstart", { bubbles: true, cancelable: true }));
+    phase = "up";
+    open.dispatchEvent(new dom.window.PointerEvent("pointerup", { pointerType: "touch", bubbles: true, cancelable: true }));
+    if (activation === "touchend") {
+      open.dispatchEvent(new dom.window.TouchEvent("touchend", { bubbles: true, cancelable: true }));
+      open.dispatchEvent(new dom.window.MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
+    } else open.click();
+    phase = "none";
+    await settle(20);
+    assert.equal(shown, true, "the fallback must create a fresh focus transition during the tap");
+    assert.equal(changes, 1, "a compatibility click after touch-end must not reopen the keyboard twice");
+    assert.equal(sink(), field, "reopening cannot unmount the editor or discard its draft");
+    assert.equal(dom.document.activeElement, field);
+    await typeInto(field, " after");
+    assert.deepEqual(edits(), [
+      { type: "type-edit", delete: 0, text: "before", focus: "selected-field" },
+      { type: "type-edit", delete: 0, text: " after", focus: "selected-field" },
+    ]);
+    field.blur(); await settle(20);
+    assert.equal(sink(), null, "an ordinary blur still dismisses typing");
+  });
+  }
+  test(`finger-up (${platform}): a detected input opens and confirms typing even without a synthetic click`, async () => {
+    await mount({}, { platform });
+    await tapStart();
+    const field = sink();
+    assert.ok(field, "the keyboard sink opens in the finger-up gesture");
+    assert.equal(dom.document.activeElement, field);
+    await typeInto(field, "early");
+    await dom.waitFor(() => edits().length);
+    assert.deepEqual(edits(), [{ type: "type-edit", delete: 0, text: "early", focus: "selected-field" }]);
+    click(); await settle(60);
+    assert.equal(sink(), field, "a later browser click only refocuses the existing editor");
+  });
+  for (const secure of [false, true]) {
+    test(`native keyboard (${platform}, ${secure ? "password" : "text"}): detection opens it before a slow click acknowledgement and buffers typing with a focus guard`, async () => {
+      let acknowledge;
+      await mount({
+        click: (a) => new Promise((resolve) => { acknowledge = () => resolve({ point: { x: a.x, y: a.y } }); }),
+        focus: () => ({ target: { editable: true, focus: "selected-field", secure } }),
+      }, { platform, native: true });
+      await tapStart();
+      assert.equal(keyboard.visible, true, "the native keyboard opens on the detected field");
+      keyboard.emit("input", { value: "early" });
+      assert.deepEqual(edits(), [], "nothing is sent before focus confirmation");
+      acknowledge();
+      await dom.waitFor(() => edits().length);
+      assert.deepEqual(edits(), [{ type: "type-edit", delete: 0, text: "early", focus: "selected-field" }]);
+      assert.equal(keyboard.visible, true);
+      if (!secure) {
+        assert.equal(keyboard.shows.length, 1, "focus confirmation must not recreate the native input");
+        assert.equal(keyboard.hides, 0);
+      } else assert.equal(keyboard.shows.at(-1).secure, true);
+      click(); await settle(60);
+      keyboard.emit("input", { value: secure ? "next" : "early next" });
+      await settle(10);
+      assert.deepEqual(edits().at(-1), { type: "type-edit", delete: 0, text: secure ? "next" : " next", focus: "selected-field" });
+    });
+  }
+  for (const native of [false, true]) {
+    test(`rapid neighboring tap (${platform}, ${native ? "native" : "browser"} keyboard): a fresh non-input hit closes typing before click acknowledgement`, async () => {
+      let acknowledge;
+      await mount({
+        probe: (a) => ({ field: a.x < 0.402 }),
+        focus: (a) => ({ target: a.x < 0.402
+          ? { editable: true, focus: "selected-field" } : { editable: false } }),
+        click: (a) => a.x < 0.402 ? { point: { x: a.x, y: a.y }, clickState: 1 }
+          : new Promise((resolve) => { acknowledge = () => resolve({ point: { x: a.x, y: a.y }, clickState: 1 }); }),
+      }, { platform, native, doubleClick: true });
+      await tapStart(); click();
+      await settle(80);
+      assert.ok(native ? keyboard.visible : sink());
+      pointer("pointerdown", 404, 200);
+      await settle(20);
+      pointer("pointerup", 404, 200); click();
+      await settle(20);
+      const clicks = computer.actions.filter((a) => a.type === "click");
+      assert.equal(clicks.at(-1).x, 0.404, "the click keeps the neighboring target");
+      assert.equal(clicks.at(-1).clickState, 2, "the client proposed a rapid pair");
+      assert.equal(native ? keyboard.visible : !!sink(), false,
+        "a negative hit test overrides keeping the keyboard for a repeat");
+      assert.deepEqual(edits(), []);
+      acknowledge(); await settle(100);
+      assert.equal(native ? keyboard.visible : !!sink(), false);
+    });
+  }
+  test(`real surface (${platform}): a rapid double-tap keeps the confirmed keyboard and guards typing`, async () => {
+    let acknowledge;
+    await mount(
+      {
+        click: (a) =>
+          a.clickState === 2
+            ? new Promise((resolve) => {
+                acknowledge = () =>
+                  resolve({ point: { x: a.x, y: a.y }, clickState: 2 });
+              })
+            : { point: { x: a.x, y: a.y }, clickState: 1 },
+      },
+      { platform, doubleClick: true },
+    );
+    await tapStart();
+    click();
+    await settle(50);
+    const field = sink();
+    await typeInto(field, "before");
+    await tapStart();
+    click();
+    assert.equal(
+      sink() === field,
+      true,
+      "the second click keeps the focused editor",
+    );
+    await typeInto(sink(), "double");
+    acknowledge();
+    await dom.waitFor(() => edits().length);
+    const clicks = computer.actions.filter((a) => a.type === "click");
+    assert.deepEqual(
+      clicks.map((a) => [a.count, a.clickState]),
+      [
+        [1, 1],
+        [1, 2],
+      ],
+    );
+    assert.equal(clicks[0].clickId, clicks[1].clickId);
+    assert.deepEqual(edits(), [
+      { type: "type-edit", delete: 0, text: "before", focus: "selected-field" },
+      { type: "type-edit", delete: 0, text: "double", focus: "selected-field" },
+    ]);
+    assert.equal(sink() === field, true);
+  });
+  test(`native keyboard bridge (${platform}): repeating a field click resets local draft context and keeps guarded typing`, async () => {
+    await mount(
+      {
+        click: (a) => ({
+          point: { x: a.x, y: a.y },
+          clickState: a.clickState,
+          retargeted: false,
+        }),
+      },
+      { platform, native: true, doubleClick: true },
+    );
+    await tapStart();
+    click();
+    await dom.waitFor(() => keyboard.visible);
+    keyboard.emit("input", { value: "before" });
+    await dom.waitFor(() => edits().length);
+    await tapStart();
+    click();
+    await settle(60);
+    assert.equal(keyboard.visible, true);
+    keyboard.emit("input", { value: "after" });
+    await settle(20);
+    assert.deepEqual(edits(), [
+      { type: "type-edit", delete: 0, text: "before", focus: "selected-field" },
+      { type: "type-edit", delete: 0, text: "after", focus: "selected-field" },
+    ]);
+  });
+  test(`real surface (${platform}): physical pixel rounding preserves a probed input before the browser click`, async () => {
+    await mount(
+      {
+        click: (a) => ({
+          point: { x: a.x + 0.0002, y: a.y },
+          retargeted: false,
+          clickState: 1,
+        }),
+      },
+      { platform, doubleClick: true },
+    );
+    await tapStart();
+    await settle(20);
+    click();
+    assert.ok(sink(), "rounding a pixel is not an assisted retarget");
+    await settle(80);
+    await typeInto(sink(), "rounded");
+    assert.deepEqual(edits(), [
+      {
+        type: "type-edit",
+        delete: 0,
+        text: "rounded",
+        focus: "selected-field",
+      },
+    ]);
+  });
   for (const gesture of ["wheel", "navigation"]) {
     test(`real surface (${platform}): ${gesture} cancels an earlier input focus reply`, async () => {
       let confirm;
@@ -390,7 +609,7 @@ for (const platform of ["darwin", "win32"]) {
     await dom.waitFor(() => keyboard.visible);
     assert.equal(sink(), null, "this fixture uses the native keyboard bridge");
     keyboard.emit("input", { value: "hello" });
-    await settle(20);
+    await dom.waitFor(() => edits().length);
     assert.deepEqual(edits(), [
       { type: "type-edit", delete: 0, text: "hello", focus: "selected-field" },
     ]);

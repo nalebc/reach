@@ -46,6 +46,7 @@ final class DesktopMouse {
   private(set) var held: CGMouseButton?
   private var number: Int64 = 0
   private var clickState = 1
+  private var previousClick: (id: Int, point: CGPoint, at: Date)?
   init(source: CGEventSource?, point: CGPoint, emit: @escaping (CGEvent) -> Void = {
     $0.post(tap: .cghidEventTap)
   }) {
@@ -85,9 +86,30 @@ final class DesktopMouse {
     release()
   }
   func release() {
+    forgetClick()
     guard let button = held else { return }
     event(button == .right ? .rightMouseUp : .leftMouseUp, button, from: point)
     held = nil
+  }
+  func forgetClick() { previousClick = nil }
+  // A rapid pair is two physical clicks total. Click state 2 never changes
+  // the second tap's location: its live hit target still decides what receives it.
+  func click(at next: CGPoint, button: CGMouseButton, count: Int = 1,
+    id: Int? = nil, state: Int = 1) -> (CGPoint, Int)
+  {
+    let previous = previousClick
+    let continuing = count == 1 && button == .left && state == 2 && id != nil
+      && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
+      && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
+    let landed = next
+    for index in 1...count {
+      down(at: landed, button: button, count: continuing ? 2 : index)
+      up(at: landed)
+    }
+    if count == 1 && button == .left && state == 1, let id {
+      previousClick = (id, landed, Date())
+    }
+    return (landed, continuing ? 2 : count)
   }
 }
 // END DESKTOP MOUSE
@@ -138,7 +160,7 @@ final class Input: @unchecked Sendable {
     return role == "AXUnknown" && settable.boolValue ? element : nil
   }
   func textTarget(_ p: [String: Any]) -> [String: Any] {
-    guard let focus = focused(), let element = editableElement(focus) else {
+    guard let element = focusedEditableElement() else {
       typingElement = nil
       typingToken = ""
       return ["editable": false]
@@ -174,6 +196,20 @@ final class Input: @unchecked Sendable {
     }
     // Never read the value, label, selected text or surrounding document.
     return ["editable": true, "focus": typingToken, "secure": subrole == "AXSecureTextField"]
+  }
+  // A text editor can focus its text/placeholder child. Resolve the same
+  // editable ancestor for focus confirmation and every guarded edit as probe.
+  func focusedEditableElement() -> AXUIElement? {
+    guard var element = focused() else { return nil }
+    for _ in 0..<4 {
+      if let field = editableElement(element) {
+        return attribute(field, kAXEnabledAttribute) as? Bool == false ? nil : field
+      }
+      guard let parent = attribute(element, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+      element = parent as! AXUIElement
+    }
+    return nil
   }
   // Apps whose web content (Chrome, Electron apps such as Claude) was asked
   // to describe itself: they only list their text fields once asked.
@@ -533,7 +569,7 @@ final class Input: @unchecked Sendable {
   }
   func checkTyping(_ token: String) throws {
     guard !token.isEmpty, token == typingToken, let expected = typingElement,
-      let focus = focused(), let current = editableElement(focus),
+      let current = focusedEditableElement(),
       CFEqual(expected, current) || sameField(current)
     else {
       typingElement = nil
@@ -720,9 +756,11 @@ final class Input: @unchecked Sendable {
     if type == "fields" { return fields(p) }
     if type == "context" { return context(since: p["since"] as? String) }
     if type == "menu", let path = p["path"] as? [String] {
+      mouse.forgetClick()
       try pressMenu(path)
       return [:]
     }
+    if !["click", "move", "heartbeat"].contains(type) { mouse.forgetClick() }
     if let token = p["focus"] as? String { try checkTyping(token) }
     if type == "type-edit", let text = p["text"] as? String, let count = p["delete"] as? Int {
       guard count >= 0, count <= 256, text.utf8.count <= 8000, p["focus"] is String else {
@@ -786,6 +824,7 @@ final class Input: @unchecked Sendable {
       var point = CGPoint(
         x: bounds.minX + x * max(0, bounds.width - 1),
         y: bounds.minY + y * max(0, bounds.height - 1))
+      let requested = point
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
       if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
         point = touchPoint(point, tolerance)
@@ -802,14 +841,13 @@ final class Input: @unchecked Sendable {
       }
       if type == "up" { mouse.up(at: point); currentFlags = [] }
       if type == "click" {
-        release()
-        for c in 1...(p["count"] as? Int ?? 1) {
-          mouse.down(at: point, button: button, count: c)
-          mouse.up(at: point)
-        }
-        return ["point": [
-          "x": min(1, max(0, (point.x - bounds.minX) / max(1, bounds.width - 1))),
-          "y": min(1, max(0, (point.y - bounds.minY) / max(1, bounds.height - 1)))]]
+        let (landed, state) = mouse.click(at: point, button: button,
+          count: p["count"] as? Int ?? 1, id: p["clickId"] as? Int,
+          state: p["clickState"] as? Int ?? 1)
+        currentFlags = []
+        return ["clickState": state, "retargeted": landed != requested, "point": [
+          "x": min(1, max(0, (landed.x - bounds.minX) / max(1, bounds.width - 1))),
+          "y": min(1, max(0, (landed.y - bounds.minY) / max(1, bounds.height - 1)))]]
       }
     } else if type == "scroll" {
       let dx = p["dx"] as? Double ?? 0

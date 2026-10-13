@@ -89,13 +89,19 @@ export function inputAction(value) {
       count = value.count ?? 1;
     if (!["left", "right"].includes(button) || ![1, 2].includes(count))
       throw fail(400, "Invalid mouse button or click count.");
+    const clickId = value.clickId, clickState = value.clickState === undefined ? 1 : value.clickState;
+    if ((clickId !== undefined || value.clickState !== undefined) &&
+      (type !== "click" || button !== "left" || count !== 1 ||
+        !Number.isInteger(clickId) || clickId < 1 || clickId > 2147483647 || ![1, 2].includes(clickState)))
+      throw fail(400, "Invalid click sequence.");
     const touch = value.touch;
     if (touch !== undefined &&
       (type !== "click" || button !== "left" || !touch ||
         ![touch.x, touch.y].every((n) => Number.isFinite(n) && n > 0 && n <= 0.1)))
       throw fail(400, "Invalid touch tolerance.");
     return { type, x: value.x, y: value.y, button, count,
-      ...(touch ? { touch: { x: touch.x, y: touch.y } } : {}) };
+      ...(touch ? { touch: { x: touch.x, y: touch.y } } : {}),
+      ...(clickId !== undefined ? { clickId, clickState } : {}) };
   }
   if (type === "scroll") {
     const dx = value.dx ?? 0,

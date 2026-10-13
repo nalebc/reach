@@ -71,6 +71,21 @@ test("a finger tap and its tolerance share the actual rendered image size, inclu
     await s.view.unmount();
   }
 });
+test("a frame aspect change preserves its visible pixels, hit coordinates and click feedback through layout catch-up", async () => {
+  const s = await surface();
+  s.canvas.width = 1000; s.canvas.height = 1000;
+  assert.equal(s.canvas.style.objectFit, "contain", "the canvas must render the same containment used by hit testing");
+  await tap(s, 400, 200);
+  assert.deepEqual(s.clicks()[0], {
+    type: "click", x: 0.3, y: 0.4, button: "left", count: 1, touch: { x: 0.02, y: 0.02 },
+  });
+  const mark = s.view.container.querySelector(".screen-wave.click");
+  assert.equal(mark.style.left, "400px");
+  assert.equal(mark.style.top, "200px");
+  await tap(s, 240, 200);
+  assert.equal(s.clicks().length, 1, "the newly visible canvas letterbox is not a target");
+  await s.view.unmount();
+});
 
 test("a layout shift while a finger rests keeps the original target and does not become a swipe", async () => {
   const s = await surface();

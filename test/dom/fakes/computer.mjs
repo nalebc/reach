@@ -18,6 +18,7 @@ export const computer = {
     for (const deliver of this.frames) deliver();
   },
   reset() {
+    this.doubleClickSupported = false;
     this.actions.length = 0;
     this.stream = null;
     this.input = null;

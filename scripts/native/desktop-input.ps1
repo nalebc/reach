@@ -12,6 +12,12 @@ public class ReachDesktopInput {
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] static extern void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra);
+ [DllImport("user32.dll")] static extern uint GetDoubleClickTime();
+ [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+ [DllImport("kernel32.dll")] static extern uint GetTickCount();
+ [StructLayout(LayoutKind.Sequential)] public struct MouseInput {public int dx,dy;public uint data,flags,time;public UIntPtr extra;}
+ [StructLayout(LayoutKind.Sequential)] public struct Input {public uint type;public MouseInput mouse;}
+ [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count,Input[] inputs,int size);
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
  [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code,uint mapType);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -19,16 +25,49 @@ public class ReachDesktopInput {
  // Navigation keys and the Windows key are "extended" keys. Without the flag,
  // arrows can arrive as numeric-keypad keys and Win shortcuts are ignored.
  static readonly byte[] extended={33,34,35,36,37,38,39,40,45,46,91,92};
- public static void Key(byte vk,bool down){uint flags=(down?0u:2u)|(Array.IndexOf(extended,vk)>=0?1u:0u);keybd_event(vk,(byte)MapVirtualKey(vk,0),flags,UIntPtr.Zero);}
+ public static void Key(byte vk,bool down){ForgetClick();uint flags=(down?0u:2u)|(Array.IndexOf(extended,vk)>=0?1u:0u);keybd_event(vk,(byte)MapVirtualKey(vk,0),flags,UIntPtr.Zero);}
  static readonly object gate=new object(); static uint held=0; static DateTime last=DateTime.UtcNow;
+ static long previousId=0;static int previousX,previousY;static uint previousTime;static DateTime previousAt;
+ public static int ClickX,ClickY;
  static Timer timer=new Timer(_=> {lock(gate){if((DateTime.UtcNow-last).TotalSeconds>2)Release();}},null,500,500);
  public static void Touch(){lock(gate){last=DateTime.UtcNow;}}
- public static void Release(){lock(gate){if(held!=0)mouse_event(held,0,0,0,UIntPtr.Zero);held=0;}}
- public static void Mouse(string type,int x,int y,bool right,int count){lock(gate){Touch();SetCursorPos(x,y);uint down=right?8u:2u,up=right?16u:4u;if(type=="down"){Release();held=up;mouse_event(down,0,0,0,UIntPtr.Zero);}if(type=="up")Release();if(type=="click"){Release();for(int i=0;i<count;i++){mouse_event(down,0,0,0,UIntPtr.Zero);mouse_event(up,0,0,0,UIntPtr.Zero);}}}}
+ public static void ForgetClick(){lock(gate){previousId=0;}}
+ public static void Release(){lock(gate){ForgetClick();if(held!=0)mouse_event(held,0,0,0,UIntPtr.Zero);held=0;}}
+ public static void Mouse(string type,int x,int y,bool right,int count){lock(gate){
+  if(type=="click"){Click(x,y,right,count,0,1);return;}
+  Touch();SetCursorPos(x,y);uint down=right?8u:2u,up=right?16u:4u;
+  if(type=="down"){Release();held=up;mouse_event(down,0,0,0,UIntPtr.Zero);}if(type=="up")Release();
+ }}
+ // SendInput timestamps tell Windows these are the two taps of one gesture,
+ // even when network delivery separates them. Never replay the first click.
+ // https://devblogs.microsoft.com/oldnewthing/20121101-00/?p=6193
+ public static int Click(int x,int y,bool right,int count,long id,int state){lock(gate){
+  Touch();bool continuing=!right && count==1 && state==2 && id>0 && id==previousId && (DateTime.UtcNow-previousAt).TotalSeconds<2
+   && InDoubleClickRect(x,y);
+  uint time=GetTickCount();if(time==0)time=1;
+  if(continuing){time=unchecked(previousTime+Math.Max(1u,Math.Min(50u,GetDoubleClickTime()/2)));if(time==0)time=1;}
+  Release();SetCursorPos(x,y);ClickX=x;ClickY=y;
+  uint down=right?8u:2u,up=right?16u:4u;
+  Input[] inputs=new Input[count*2];
+  for(int i=0;i<count;i++){inputs[i*2].mouse.flags=down;inputs[i*2+1].mouse.flags=up;inputs[i*2].mouse.time=unchecked(time+(uint)(i*2));inputs[i*2+1].mouse.time=unchecked(time+(uint)(i*2+1));}
+  held=up;
+  try{if(SendInput((uint)inputs.Length,inputs,Marshal.SizeOf(typeof(Input)))!=(uint)inputs.Length)throw new InvalidOperationException("Windows refused the click");held=0;}
+  catch{Release();throw;}
+  if(!right && count==1 && state!=2 && id>0){previousId=id;previousX=x;previousY=y;previousTime=time;previousAt=DateTime.UtcNow;}
+  return continuing?2:count;
+ }}
+ // Keep the actual second point. Windows applies its own spatial tolerance
+ // and routes input to the window under that point, even for a rapid pair.
+ // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getsystemmetrics
+ static bool InDoubleClickRect(int x,int y){
+  long dx=(long)x-previousX,dy=(long)y-previousY;
+  int w=Math.Max(1,GetSystemMetrics(36)),h=Math.Max(1,GetSystemMetrics(37));
+  return dx>=-(w/2) && dx<(w+1)/2 && dy>=-(h/2) && dy<(h+1)/2;
+ }
  // dy and dx as a Mac takes them (positive: content moves down, right).
  // WHEEL agrees; HWHEEL is the other way round (positive scrolls right),
  // so dx is turned for it: a sideways swipe goes the same way on both.
- public static void Scroll(int x,int y){Touch();if(y!=0)mouse_event(2048,0,0,y,UIntPtr.Zero);if(x!=0)mouse_event(4096,0,0,-x,UIntPtr.Zero);}
+ public static void Scroll(int x,int y){Touch();ForgetClick();if(y!=0)mouse_event(2048,0,0,y,UIntPtr.Zero);if(x!=0)mouse_event(4096,0,0,-x,UIntPtr.Zero);}
 }
 '@
 # A look at the field under a finger never focuses it or reads its text.
@@ -85,15 +124,23 @@ $keys=@{enter=13;backspace=8;tab=9;escape=27;left=37;up=38;right=39;down=40;dele
 $mods=@{meta=91;alt=18;control=17;shift=16}
 $typingToken=''
 $typingRuntime=''
-function Get-ReachTextTarget($payload,$screen) {
- try {
-  $element=[System.Windows.Automation.AutomationElement]::FocusedElement
-  if(!$element){throw 'No focused element'}
-  $info=$element.Current
-  $pattern=$null
+function Get-ReachFocusedTextElement {
+ $element=[System.Windows.Automation.AutomationElement]::FocusedElement
+ for($depth=0;$element -and $depth -lt 4;$depth++) {
+  $info=$element.Current;$pattern=$null
   $hasValue=$element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)
   $writable=$hasValue -and !$pattern.Current.IsReadOnly
-  $editable=$info.IsEnabled -and $info.IsKeyboardFocusable -and !$info.IsOffscreen -and (!$hasValue -or $writable) -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $info.ControlType -eq [System.Windows.Automation.ControlType]::ComboBox -or $writable)
+  if($info.IsEnabled -and $info.IsKeyboardFocusable -and !$info.IsOffscreen -and (!$hasValue -or $writable) -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $info.ControlType -eq [System.Windows.Automation.ControlType]::ComboBox -or $writable)) {return $element}
+  $element=[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($element)
+ }
+ return $null
+}
+function Get-ReachTextTarget($payload,$screen) {
+ try {
+  $element=Get-ReachFocusedTextElement
+  if(!$element){throw 'No focused element'}
+  $info=$element.Current
+  $editable=$true
   if($payload.PSObject.Properties.Name -contains 'x') {
    $b=$screen.Bounds;$rect=$info.BoundingRectangle
    $x=$b.X+$payload.x*($b.Width-1);$y=$b.Y+$payload.y*($b.Height-1)
@@ -106,7 +153,7 @@ function Get-ReachTextTarget($payload,$screen) {
  } catch {$script:typingRuntime='';$script:typingToken='';return @{editable=$false}}
 }
 function Assert-ReachTypingTarget($token) {
- $element=[System.Windows.Automation.AutomationElement]::FocusedElement
+ $element=Get-ReachFocusedTextElement
  if(!$token -or $token -ne $script:typingToken -or !$element -or ($element.GetRuntimeId() -join '-') -ne $script:typingRuntime){throw 'Typing target changed. Tap the field again.'}
 }
 function Send-ReachText($text) {
@@ -121,10 +168,12 @@ try {
    if(!$screen){[ReachDesktopInput]::Release();throw 'Display disconnected. Select a display again.'}
    $result=@{ok=$true}
    if($p.focus){Assert-ReachTypingTarget $p.focus}
+   if($p.type -in 'text','type-edit','menu','release'){[ReachDesktopInput]::ForgetClick()}
    switch ($p.type) {
-    {$_ -in 'move','down','up','click'} {$b=$screen.Bounds;[ReachDesktopInput]::Mouse($p.type,[int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)),($p.button -eq 'right'),[int]$p.count)}
+    {$_ -in 'move','down','up'} {$b=$screen.Bounds;[ReachDesktopInput]::Mouse($p.type,[int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)),($p.button -eq 'right'),[int]$p.count)}
+    'click' {$b=$screen.Bounds;$x=[int]($b.X+$p.x*($b.Width-1));$y=[int]($b.Y+$p.y*($b.Height-1));$result.clickState=[ReachDesktopInput]::Click($x,$y,($p.button -eq 'right'),[int]$p.count,[long]$p.clickId,[int]$p.clickState);$result.retargeted=([ReachDesktopInput]::ClickX -ne $x -or [ReachDesktopInput]::ClickY -ne $y);$result.point=@{x=([ReachDesktopInput]::ClickX-$b.X)/[Math]::Max(1,$b.Width-1);y=([ReachDesktopInput]::ClickY-$b.Y)/[Math]::Max(1,$b.Height-1)}}
     'focus' {$result.target=Get-ReachTextTarget $p $screen}
-    'probe' {$b=$screen.Bounds;$field=[ReachDesktopFieldProbe]::At(($b.X+$p.x*($b.Width-1)),($b.Y+$p.y*($b.Height-1)));$result.field=($field -band 1) -ne 0;$result.secure=($field -band 2) -ne 0}
+    'probe' {$b=$screen.Bounds;$field=[ReachDesktopFieldProbe]::At([int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)));$result.field=($field -band 1) -ne 0;$result.secure=($field -band 2) -ne 0}
     'context' {
      # The app in front, for context shortcuts. Never reads window content.
      $owner=[uint32]0;[void][ReachDesktopInput]::GetWindowThreadProcessId([ReachDesktopInput]::GetForegroundWindow(),[ref]$owner)

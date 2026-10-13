@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { typingEdit, typingTail } from "./typing-edit";
+import { renewingKeyboardFocus } from "./keyboard-focus";
 import KeyRow, { type RowKey } from "./KeyRow";
 import "./typing-keys.css";
 import type {
@@ -86,6 +87,15 @@ export default function RemoteTyping({
     }).catch(fail);
   };
   useEffect(() => {
+    // A remote click changes the selection independently of this local sink.
+    // Start the next diff from an empty draft without closing the keyboard.
+    shadow.current = "";
+    queued.current = [];
+    composing.current = false;
+    deleting.current = false;
+    setDraft("");
+  }, [target.editRevision]);
+  useEffect(() => {
     if (target.pending || !target.focus) return;
     const actions = queued.current.splice(0);
     for (const action of actions) dispatch(action);
@@ -161,7 +171,9 @@ export default function RemoteTyping({
     spellCheck: false,
     writingsuggestions: "false",
     enterKeyHint: "enter" as const,
-    onBlur: onClose,
+    onBlur: (event: React.FocusEvent<Editor>) => {
+      if (!renewingKeyboardFocus(event.currentTarget)) onClose();
+    },
     onChange: (e: React.ChangeEvent<Editor>) => commit(e.target.value),
     onPaste: (e: React.ClipboardEvent<Editor>) => {
       const text = e.clipboardData.getData("text/plain");
