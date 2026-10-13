@@ -328,7 +328,10 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // screen, the app never started (run 38279745481's screenshot, no requests).
   await sim("install", ["install", device, app], { limit: 150000, attempts: 2 });
   reached("app installed");
-  await sim("launch", ["launch", device, bundle], { limit: 75000, attempts: 2 });
+  // Twice more on a hang (PR 21 and PR 24, both attempts on the home
+  // screen): each attempt first stops a half-started copy of the app, and a
+  // third fits the lane's budget (a failing run reached launch at ~170 s).
+  await sim("launch", ["launch", "--terminate-running-process", device, bundle], { limit: 75000, attempts: 3 });
   reached("app launched");
   const pageLimit = Math.max(0, Math.min(100000, left()));
   const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);
