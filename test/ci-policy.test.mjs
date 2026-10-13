@@ -345,6 +345,9 @@ function assertPublishIsolation(publish) {
     assert.doesNotMatch(step.run, /\b(?:node|bash|sh|source)\s+["']?candidate\//);
     if (/\bnpm\s+publish\b/.test(step.run)) {
       assert.match(step.run, /npm publish .* --ignore-scripts --provenance/);
+      // Without "./" npm reads candidate/x.tgz as a GitHub user/repo (v0.1.0).
+      for (const [, target] of step.run.matchAll(/\bnpm\s+publish\s+("[^"]*"|\S+)/g))
+        assert.match(target, /^"?\.\/candidate\//, "npm publish takes the verified tarball by a ./ path");
       assert.equal(({ ...publish.env, ...step.env }).NPM_CONFIG_IGNORE_SCRIPTS, "true");
     }
   }
@@ -362,6 +365,10 @@ test("publishing isolation covers multiline commands, script settings and same-r
     changed.steps.push({ run: `echo setup\n${command}\n` });
     assert.throws(() => assertPublishIsolation(changed));
   }
+  const bareTarball = structuredClone(publish);
+  const publishStep = bareTarball.steps.find(step => step.run?.includes("npm publish"));
+  publishStep.run = publishStep.run.replace('npm publish "./candidate/', 'npm publish "candidate/');
+  assert.throws(() => assertPublishIsolation(bareTarball));
   const missingEnv = structuredClone(publish);
   delete missingEnv.steps.find(step => step.run?.includes("npm publish")).env.NPM_CONFIG_IGNORE_SCRIPTS;
   assert.throws(() => assertPublishIsolation(missingEnv));
