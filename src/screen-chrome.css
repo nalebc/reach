@@ -1,0 +1,179 @@
+/* Fullscreen without covering the computer (Oct 12: "i could not see my doc
+   and top bar from mac even in control"). Reach's status and bar take the
+   room the picture leaves, as laid out in src/screen-chrome.ts (its sizes:
+   44 px status row and 96 px bar row upright, --screen-rail at the side).
+   Hiding them only fades them: their space stays, so the picture never
+   moves under a finger. While typing, the keyboard's own layout stands. */
+
+.screen-state-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Upright (and tablets): status above, the bar below, the picture between. */
+.simple-screen.screen-immersive[data-chrome="ends"]:not(.screen-typing) {
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+.simple-screen.screen-immersive[data-chrome="ends"]:not(.screen-typing)
+  > .simple-screen-toolbar {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: calc(44px + env(safe-area-inset-top));
+  min-height: 0;
+  padding: env(safe-area-inset-top) max(16px, env(safe-area-inset-right)) 0
+    max(16px, env(safe-area-inset-left));
+  background: none;
+  transform: none;
+}
+.simple-screen.screen-immersive[data-chrome="ends"]:not(.screen-typing)
+  > .simple-screen-dock.screen-bar-dock {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: auto;
+  max-width: none;
+  height: calc(96px + env(safe-area-inset-bottom));
+  margin: 0;
+  padding: 0 12px max(12px, env(safe-area-inset-bottom));
+  justify-content: flex-end;
+  transform: none;
+}
+
+/* On its side: one rail at the right, the picture at full height beside it. */
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing) {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    calc(var(--screen-rail, 60px) + env(safe-area-inset-right));
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+/* Everything else (the picture, an error line) shares the picture's area. */
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing) > * {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing) > .error {
+  z-index: 5;
+  align-self: start;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  > .simple-screen-toolbar {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  inset: auto;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 12px env(safe-area-inset-right) 0 0;
+  justify-content: center;
+  background: none;
+  transform: none;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-state {
+  flex-direction: column;
+  gap: 4px;
+  text-align: center;
+  white-space: normal;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-state-text {
+  white-space: normal;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-state-text:not([data-news]) {
+  display: none;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  > .simple-screen-dock.screen-bar-dock {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  inset: auto;
+  box-sizing: border-box;
+  width: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 8px env(safe-area-inset-right) 8px 0;
+  justify-content: center;
+  transform: none;
+  overflow: hidden;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing) .screen-bar {
+  flex-direction: column;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-bar
+  button {
+  width: 40px;
+  height: 40px;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-bar
+  .screen-bar-group {
+  flex-direction: column;
+  margin: 2px 0;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-bar
+  .screen-bar-group
+  button {
+  width: 34px;
+  height: 34px;
+}
+/* Words in the rail wrap within it, small. */
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-bar-dock
+  .simple-screen-caption {
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border-radius: 12px;
+  white-space: normal;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.simple-screen.screen-immersive[data-chrome="side"]:not(.screen-typing)
+  .screen-agents-wait {
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 8px 6px;
+  border-radius: 16px;
+  white-space: normal;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* Hidden means faded: the space stays (no slide that moves the picture). */
+.simple-screen.screen-immersive.chrome-hidden[data-chrome]:not(.screen-typing)
+  > .simple-screen-toolbar {
+  opacity: 0;
+  transform: none;
+}
+
+/* Zoomed in, the Fit pill sits on the picture; it steps aside while a
+   finger is on the picture, and never needs to clear a floating bar. */
+.simple-screen.screen-immersive[data-chrome]:not(.screen-typing)
+  .remote-zoom.compact {
+  bottom: 12px;
+}
+.simple-screen .remote-stage.is-touching .remote-zoom.compact,
+.simple-screen.screen-immersive .remote-stage.is-touching .remote-zoom.compact {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}

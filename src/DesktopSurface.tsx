@@ -115,6 +115,8 @@ export default function DesktopSurface({
   viewRef.current = view;
   const beforeTyping = useRef<typeof view | null>(null);
   const cursorRef = useRef<Point>({ x: 0.5, y: 0.5 });
+  // A finger on the picture: the zoom pill steps aside meanwhile.
+  const [touching, setTouching] = useState(false);
   const [waves, setWaves] = useState<Wave[]>([]),
     timers = useRef(new Set<ReturnType<typeof setTimeout>>()),
     serial = useRef(0);
@@ -216,6 +218,7 @@ export default function DesktopSurface({
     }
     gesture.current = null;
     pointers.current.clear();
+    setTouching(false);
     tappedField.current = null;
     serial.current++;
     probeSerial.current++;
@@ -465,6 +468,7 @@ export default function DesktopSurface({
     event.currentTarget.setPointerCapture(event.pointerId);
     const p = local(event.clientX, event.clientY);
     pointers.current.set(event.pointerId, p);
+    setTouching(true);
     if (pointers.current.size === 1) {
       const point =
         mode === "trackpad"
@@ -736,7 +740,10 @@ export default function DesktopSurface({
         tap(point);
       }
     }
-    if (!pointers.current.size) gesture.current = null;
+    if (!pointers.current.size) {
+      gesture.current = null;
+      setTouching(false);
+    }
   };
   // The click that follows a tap is when Safari lets the keyboard open.
   const clicked = () => {
@@ -754,7 +761,7 @@ export default function DesktopSurface({
   return (
     <>
       <div
-        className="remote-stage"
+        className={`remote-stage${touching ? " is-touching" : ""}`}
         ref={stage}
         tabIndex={0}
         aria-label={`Remote desktop. ${mode === "trackpad" ? "Trackpad mode moves the cursor." : "Tap to click."} Pinch to zoom. Long press to drag.`}
