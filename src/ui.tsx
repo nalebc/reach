@@ -1,4 +1,4 @@
-import { useEffect, useRef, ReactNode } from "react";
+import { ReactNode } from "react";
 import {
   X,
   LoaderCircle,
@@ -28,6 +28,9 @@ export {
   ChevronRight,
 };
 import LivingLogo from "./LivingLogo";
+import ScreenPopup from "./ScreenPopup";
+import "./settings-list.css";
+import "./sheet.css";
 // The wordmark plays a short random act now and then (LivingLogo).
 export function Logo({ companion = false }: { companion?: boolean }) {
   return <LivingLogo companion={companion} />;
@@ -66,45 +69,43 @@ export function Empty({
     </div>
   );
 }
+// A sheet to create or confirm one thing, as ChatGPT's: a bottom sheet on
+// phones (pull it down to close), a centred card on wider screens, a compact
+// title with a small round close, and the sheet's one action kept in reach
+// at the bottom (footer). Escape, a tap outside and the close button close
+// it. ScreenPopup underneath, as Reach's other sheets: the sheet holds focus
+// as it opens (no ring on its close button), the page stays still behind it.
 export function Modal({
   title,
+  heading,
   children,
+  footer,
   onClose,
   wide = false,
+  className = "",
 }: {
   title: string;
+  /** Shown in the title's place (a back chevron and a page's name, say). */
+  heading?: ReactNode;
   children: ReactNode;
+  /** The sheet's action, pinned to its bottom edge. */
+  footer?: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  className?: string;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const d = ref.current;
-    d?.showModal();
-    return () => d?.close();
-  }, []);
   return (
-    <dialog
-      ref={ref}
-      className={`modal ${wide ? "wide" : ""}`}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <ScreenPopup
+      title={title}
+      heading={heading}
+      onClose={onClose}
+      className={["reach-sheet", wide && "wide", footer && "has-foot", className]
+        .filter(Boolean)
+        .join(" ")}
     >
-      <div className="modal-inner">
-        <div className="modal-header">
-          <h2>{title}</h2>
-          <button className="icon-button" aria-label="Close" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </dialog>
+      {children}
+      {footer && <div className="reach-sheet-foot">{footer}</div>}
+    </ScreenPopup>
   );
 }
 export function PageTitle({

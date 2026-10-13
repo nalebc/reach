@@ -113,30 +113,6 @@
     max-width: 270px;
     margin: 0 auto;
   }
-  .modal,
-  .modal.wide {
-    width: calc(100% - 16px);
-    max-width: none;
-    margin: auto auto 8px;
-    padding: 0;
-    border-radius: 24px;
-    max-height: calc(100dvh - env(safe-area-inset-top) - 20px);
-  }
-  .modal-inner {
-    padding: 22px 20px calc(20px + env(safe-area-inset-bottom));
-  }
-  .modal .modal-header {
-    position: sticky;
-    top: -22px;
-    background: #191d20;
-    z-index: 1;
-    padding: 12px 0;
-    margin-top: -12px;
-  }
-  .modal .icon-button {
-    min-height: 44px;
-    min-width: 44px;
-  }
 }
 @media (max-width: 360px) {
   .main-content {
@@ -217,14 +193,6 @@
     font-size: 14px;
     font-weight: 500;
   }
-}
-.modal,
-.modal-inner {
-  background: #141b23;
-  border-color: #ffffff16;
-}
-.modal .modal-header {
-  background: #141b23;
 }
 
 /* Onboarding stays readable above the native phone keyboard. */

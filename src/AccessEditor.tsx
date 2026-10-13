@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { usePageVisible } from "./page-visible";
 import { ChevronDown, Folder, Monitor, ShieldCheck, Sparkles, SquareTerminal, Terminal, UserRound } from "lucide-react";
 import { post, request, type Device, type Peer } from "./api";
-import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
+import { FolderBrowser, placeFolder, type PickedFolder } from "./FolderBrowser";
 import { ErrorLine, Modal } from "./ui";
 import "./access-editor.css";
 import AppLogo from "./AppLogo";
@@ -77,27 +77,10 @@ function existingFolders(
   device: Device,
 ): PickedFolder[] {
   return (client.guestRoots || client.policy?.roots || []).map((full) => {
-    const normalized = (path: string) =>
-      /^[A-Za-z]:[\\/]/.test(path)
-        ? path.replaceAll("\\", "/").toLowerCase()
-        : path;
-    const root = [...device.roots]
-      .sort((a, b) => b.path.length - a.path.length)
-      .find(
-        (r) =>
-          normalized(full) === normalized(r.path) ||
-          normalized(full).startsWith(
-            normalized(r.path).replace(/\/$/, "") + "/",
-          ),
-      );
+    const at = placeFolder(full, device.roots);
     return {
-      root: root?.id ?? -1,
-      path: root
-        ? full
-            .slice(root.path.replace(/[\\/]$/, "").length)
-            .replace(/^[\\/]/, "")
-            .replaceAll("\\", "/")
-        : "",
+      root: at?.root ?? -1,
+      path: at?.path ?? "",
       label: full.split(/[\\/]/).filter(Boolean).at(-1) || "Root",
       full,
     };
