@@ -115,6 +115,16 @@ test("changes at the settle deadline cannot return a previously read screen", as
   assert.equal(reads, 2, "one initial read and one fresh read at the deadline");
 });
 
+test("a native read that finishes past the settling budget is not repeated", async () => {
+  let clock = 0, reads = 0;
+  await settleScreen({
+    now: () => clock, capMs: SETTLE.actMs, authorize() {},
+    changed: async (_, ms) => { clock += ms; return { revision: 1, changed: false }; },
+    read: async () => { reads++; clock += 800; return screenOf("Loading", [{ role: "Button", name: "Stop loading this page" }]); },
+  });
+  assert.equal(reads, 1, "a slow observation already consumed the remaining budget");
+});
+
 // The stand-in Mac behind the routes: its screen as the accessibility tree
 // reads it, a change signal, and the native helper's own check of a
 // snapshot and number (it keeps 16 snapshots; an older one is refused).

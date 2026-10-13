@@ -58,8 +58,9 @@ export async function waitForScreen({ read, changed, authorize, wanted, now = Da
 // a page or a file (a page still loading, its Stop button showing, is waited
 // for within that). The same on a Mac and on Windows: the helper's
 // wait-change where it has one (no reads, so no snapshot spent), else reads
-// compared by what they show. Never longer than `capMs`, authorized on every
-// round; an explicit waitFor replaces it.
+// compared by what they show. Waiting stops at `capMs`; finishing a native
+// read may extend total elapsed time. Authorized on every round; an explicit
+// waitFor replaces it.
 export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300, refreshMs: 600 };
 const loading = (screen) => (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
 const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
@@ -91,6 +92,7 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
       break;
     }
     const next = await read();
+    readAt = now();
     authorize();
     const seen = shown(next);
     if (last !== null && seen !== last) moved = true;
@@ -103,7 +105,7 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
   // If the deadline follows a change or a fallback sleep, the previous
   // read is no longer current. The caller must receive a fresh observation,
   // including when a page stopped loading without an AX notification.
-  if (screen && now() >= end && (!fresh || loading(screen) || !watch)) {
+  if (screen && now() >= end && readAt < end && (!fresh || loading(screen) || !watch)) {
     authorize();
     screen = await read();
     authorize();
