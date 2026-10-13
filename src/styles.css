@@ -27,6 +27,14 @@
 body {
   margin: 0;
 }
+/* A sideways swipe in the page (a code block, a row of chips) that runs
+   past its end never turns into the browser's own back or forward. The
+   phone's edge swipe and Android's back are the system's and still go back,
+   one step of Reach's stack (src/nav-history.ts). */
+html,
+body {
+  overscroll-behavior-x: none;
+}
 /* A native app's chrome isn't text: a long press on a row, a tab or a title
    selects nothing (iOS otherwise starts a selection across the list). What's
    there to read or copy stays selectable: messages, code, commands, fields. */

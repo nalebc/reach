@@ -55,6 +55,7 @@ import {
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
 import { rememberPlace } from "./deep-link";
+import { leavingForReload, pushInPage } from "./nav-history";
 import {
   CODEX_MODE_CHOICES,
   agentLabel,
@@ -1018,8 +1019,10 @@ let chatShown = false;
 // pushed none and Back reloaded the page. Unmarked once, it gets its own.
 if (typeof window !== "undefined" && window.history.state?.reachChat)
   window.history.replaceState({ ...window.history.state, reachChat: false }, "");
+// Pushed one above the chat list's own entry (src/nav-history.ts), so the
+// workspace knows how deep its stack is.
 const chatEntry = () => {
-  if (!window.history.state?.reachChat) window.history.pushState({ ...window.history.state, reachChat: true }, "");
+  if (!window.history.state?.reachChat) pushInPage({ reachChat: true });
 };
 function useBackCloses(shown: boolean, close: () => void) {
   const closeNow = useRef(close);
@@ -1029,6 +1032,9 @@ function useBackCloses(shown: boolean, close: () => void) {
     chatShown = true;
     chatEntry();
     const onPop = () => {
+      // Stepping back for an interface reload: the chat stays open, and
+      // remembered, so it opens again after.
+      if (leavingForReload()) return;
       if (!window.history.state?.reachChat) closeNow.current();
     };
     window.addEventListener("popstate", onPop);
