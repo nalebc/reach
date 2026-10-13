@@ -114,6 +114,12 @@ export default function ConnectForm({
   useEffect(() => {
     void faceIdReady().then(setFaceAvailable);
   }, []);
+  // Face ID up, or its answer on its way: no new challenge meanwhile (the
+  // computer keeps one per request; a new one replaces the one being
+  // answered, src/face-options.ts).
+  const faceBusy = useRef(false);
+  // The offer's tries: each failed one fetches fresh options.
+  const [offerTry, setOfferTry] = useState(0);
   // A fresh browser asks its computer at once (no second "Connect" tap).
   const autoAsked = useRef(false);
   // Approved, and offered Face ID for this phone's other browsers next time.
@@ -323,6 +329,10 @@ export default function ConnectForm({
       timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       if (!(await faceIdReady())) return;
+      if (faceBusy.current) {
+        if (live) timer = setTimeout(load, 5000);
+        return;
+      }
       try {
         const options = await call(
           origin,
@@ -349,6 +359,7 @@ export default function ConnectForm({
       options = faceOptions;
     setFaceNote("");
     setFaceOptions(null);
+    faceBusy.current = true;
     // Straight from the tap. The usual poll then picks up the approval.
     signWithFaceId(options)
       .then((credential) =>
@@ -357,8 +368,12 @@ export default function ConnectForm({
           credential,
         }),
       )
-      .then(() => setFaceNote("Approved with Face ID. Connecting…"))
+      .then(() => {
+        faceBusy.current = false;
+        setFaceNote("Approved with Face ID. Connecting…");
+      })
       .catch((e) => {
+        faceBusy.current = false;
         setFaceNote(faceIdError(e));
         call(origin, `/api/auth/requests/${p.id}/passkey/options`, {
           secret: p.secret,
@@ -382,7 +397,7 @@ export default function ConnectForm({
     return () => {
       live = false;
     };
-  }, [offer?.peer.token]);
+  }, [offer?.peer.token, offerTry]);
   const finishOffer = (later: boolean) => {
     if (!offer) return;
     if (later)
@@ -409,7 +424,10 @@ export default function ConnectForm({
       .then(() => onDone.current(peer))
       .catch((e) => {
         setFaceNote(faceIdError(e));
-        setOffer({ peer, options: null }); // fetches fresh options
+        // Fresh options for another try (none while Face ID was up: a new
+        // challenge would have replaced the one being answered).
+        setOffer({ peer, options: null });
+        setOfferTry((n) => n + 1);
       });
   };
   if (joining)
