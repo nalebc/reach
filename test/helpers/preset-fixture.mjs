@@ -70,7 +70,7 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
   });
   const owners = Object.fromEntries(["nPhone", "nHost", "nWasm"].map((nodeId) =>
     [nodeId, reach.auth.issue(nodeId, ALL_SCOPES, "device", { tailscale: { nodeId, userId: "42" } })]));
-  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(socketDir, { recursive: true, force: true }); });
+  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); fs.rmSync(socketDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
   await reach.listenPrivate(socketPath);
   const call = (route, { node = "nPhone", token = owners[node]?.token || "", method = "GET", body, headers = {} } = {}) => new Promise((resolve, reject) => {

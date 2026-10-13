@@ -5748,6 +5748,9 @@ export async function createReach(overrides = {}) {
       jobs.dispose();
       await Promise.all([apps, closed, terminalExit]);
       clearTimeout(cutoff);
+      // The last agent timings still on their way to disk land before Reach
+      // says it stopped (a test removing the data folder raced them).
+      await agentTimings.flushed?.().catch(() => {});
     },
   };
 }
