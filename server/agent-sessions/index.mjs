@@ -2154,7 +2154,7 @@ export function createAgentSessions({
                   ...o,
                   canTakeMoves: openClaw.canMove?.() !== false,
                   connected: openClaw.connected?.() === true,
-                  ...(old?.to ? { installed: true, tooOld: { ...(old.version ? { version: old.version } : {}), to: old.to }, needs: ["update"] } : {}),
+                  ...(old?.to ? { tooOld: { ...(old.version ? { version: old.version } : {}), to: old.to }, needs: ["update"] } : {}),
                 };
               })()
             : o,

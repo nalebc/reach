@@ -1994,6 +1994,25 @@ test("an OpenClaw too old for Reach is named with the version to update to, and 
   assert.equal(c.tooOld(), null);
   assert.equal(c.canMove(), true);
 });
+test("an OpenClaw found too old, then set aside (its configuration gone), is no longer said to be", async (t) => {
+  let clock = 1000;
+  let configured = true;
+  const { c, handle } = await fixture(t, {
+    now: () => clock,
+    configuration: async () => {
+      if (!configured) throw Object.assign(new Error("OpenClaw isn't set up on this computer yet."), { status: 503, notSetUp: true });
+      return { url: "ws://127.0.0.1:18789", token: "secret-token" };
+    },
+  });
+  handle((req) => (req.method === "connect" ? { error: { code: "INVALID_REQUEST", message: "device signature invalid" } } : undefined));
+  assert.deepEqual((await c.overview()).tooOld, { to: "2026.2.26" });
+  configured = false;
+  clock += 60000;
+  const after = await c.overview();
+  assert.equal(after.notSetUp, true);
+  assert.equal(after.tooOld, undefined);
+  assert.equal(c.tooOld(), null);
+});
 test("only a refused signature or an older version it says is too old for Reach", async (t) => {
   for (const [answer, connected] of [
     // Any other refusal says what it did, and is tried again on the next look.
@@ -2001,6 +2020,8 @@ test("only a refused signature or an older version it says is too old for Reach"
     // A version Reach can't read, or a build of its own, is no reason.
     [{ payload: { type: "hello-ok", protocol: 3 } }, true],
     [{ payload: { type: "hello-ok", protocol: 3, server: { version: "dev" } } }, true],
+    // Text after a version is never read as one (nor sent to a phone).
+    [{ payload: { type: "hello-ok", protocol: 3, server: { version: "2026.2.25 <b>see https://x</b>" } } }, true],
     [{ payload: { type: "hello-ok", protocol: 4, server: { version: "2026.10.2" } } }, true],
   ]) {
     const { c, handle, sockets } = await fixture(t);

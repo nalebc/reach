@@ -644,9 +644,10 @@ export function createOpenClaw({
                   ? hello.server.version.slice(0, 40)
                   : "";
               // Older than Reach works with, as it says itself: left, not
-              // used. A version it doesn't say, or not in OpenClaw's
-              // year.month.day form (a build of its own), isn't.
-              if (/^\d{4}\.\d+\.\d+/.test(version) && tooOld("openclaw", version)) {
+              // used. A version it doesn't say, or not wholly in OpenClaw's
+              // year.month.day form (a build of its own, or other text, which
+              // never reaches a phone), isn't.
+              if (version.length <= 32 && /^\d{4}\.\d+\.\d+(?:[-+][\w.]+)?$/.test(version) && tooOld("openclaw", version)) {
                 finish(agedOut(version));
                 changed();
                 return;
@@ -705,6 +706,8 @@ export function createOpenClaw({
       });
     })().catch((error) => {
       connecting = null;
+      // Its configuration gone: nothing here is too old any more.
+      if (error?.notSetUp) aged = null;
       throw error;
     });
     return connecting;
