@@ -26,6 +26,16 @@
 .ap-stage .ap-brief[open] { position: absolute; z-index: 3; top: 44px; right: 6px; max-width: min(420px, calc(100% - 12px)); padding: 10px 12px; border-radius: 14px; background: rgba(25, 33, 28, 0.97); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .ap-brief summary { cursor: pointer; color: var(--ag-ink, #e9eee9); font-weight: 600; }
 .ap-brief ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 2px; }
+/* The agent's instructions (server/agent-guide.mjs): one row a line, folded to a pill once read. */
+.ap-guide { justify-self: start; max-width: 720px; border-radius: 14px; background: var(--ag-surface-2, #1a221e); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); font-size: 14px; }
+.ap-guide summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 14px; cursor: pointer; list-style: none; font-weight: 600; color: var(--ag-ink, #e9eee9); }
+.ap-guide summary::-webkit-details-marker { display: none; }
+.ap-guide summary svg:first-child { color: var(--ag-accent, #b9efd4); }
+.ap-guide summary svg:last-child { margin-left: auto; transition: transform 0.15s; }
+.ap-guide[open] summary svg:last-child { transform: rotate(180deg); }
+.ap-guide ul { margin: 0; padding: 0 14px 6px; list-style: none; display: grid; }
+.ap-guide li { padding: 8px 0; border-top: 1px solid var(--ag-line, rgba(255, 255, 255, 0.06)); line-height: 1.4; color: var(--ag-ink-2, #93a198); }
+.ap-guide li:first-child { color: var(--ag-ink, #e9eee9); }
 .ap-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
 .ap-pill[aria-pressed="true"] { border-color: var(--ag-accent, #b9efd4); color: var(--ag-accent, #b9efd4); }
 .ap-pill.is-primary { background: var(--ag-accent, #b9efd4); border-color: transparent; color: #10221a; font-weight: 600; }

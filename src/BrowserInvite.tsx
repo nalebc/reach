@@ -20,6 +20,7 @@ import { isNative } from "./native";
 import { shareCancelled } from "./sharing";
 import { request, type Device, type Peer } from "./api";
 import { guestLinkUrl } from "./start-flow";
+import { computerWord } from "./pause";
 import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import {
   AccessRow,
@@ -82,29 +83,14 @@ type Options = {
   presetAppsError?: string;
 };
 type Created = { peer: Peer; clientId: string; invitation: string };
-type Issued = {
-  preset: Preset;
-  apps: string[];
-  folders: string[];
-  write: boolean;
-  hidden: string[];
-  everything: boolean;
-  always?: boolean;
-  // Tools: the agent runs this once on its own computer, then calls Reach's
-  // tools (command line or MCP) over the owner's Tailscale network.
-  command?: string;
-  // The same, for Windows (PowerShell).
-  windowsCommand?: string;
-  // Hosted: the address of Reach's MCP endpoint, added as a custom connector.
-  hosted?: string;
-};
-// What a tools agent runs, once: Reach for agents from this computer's start
-// page, then joining with its link (as Command line invites do). The
+// What an agent runs, once: Reach for agents from this computer's start
+// page, then joining with its link (Command line invites show it; a Tools
+// agent's link carries the same steps itself, server/agent-steps.mjs). The
 // runtime's SHA-256 from this computer is required: a download that isn't
 // exactly it never replaces the agent's runtime (security audit M8). A
-// computer that names no runtime gets no command (connections audit, Oct 10).
-// The link goes in on standard input, never as an argument other processes
-// can list (L5).
+// computer that names no runtime gets no command, and no Tools link
+// (connections audit, Oct 10). The link goes in on standard input, never as
+// an argument other processes can list (L5).
 export const NO_RUNTIME = "Update Reach on that computer to invite agents from it: it doesn't name the runtime agents download, so the download couldn't be checked.";
 const pinnedRuntime = (runtime?: string) => {
   if (!runtime || !/^[0-9a-f]{64}$/.test(runtime)) throw Error(NO_RUNTIME);
@@ -126,50 +112,24 @@ export const windowsToolsCommand = (start: string, link: string, runtime?: strin
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;
 
-const quote = (value: string) =>
-  JSON.stringify(
-    value.length > 160 ? value.slice(0, 157) + "\u2026" : value,
-  ).replace(
-    /[\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 const listWords = (items: string[]) =>
   items.length <= 1
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
-// What the agent reads, short (Oct 10: "invite message is too long"): how to
-// connect, what it may do, the few rules. Its tools describe themselves.
-// Describes the issued invitation, never later edits.
-export const agentInviteMessage = (link: string, issued: Issued) => {
-  const folders =
-    issued.folders.slice(0, 3).map(quote).join(", ") +
-    (issued.folders.length > 3 ? ` and ${issued.folders.length - 3} more` : "");
-  const where = issued.everything ? "every folder I share" : folders;
-  const hidden = issued.preset !== "full" && issued.hidden.length
-    ? ` Hidden from you: ${listWords(issued.hidden.map(quote))}.`
-    : "";
-  const access = {
-    full: "You get full control of my Mac as my user account: all apps, files, browser pages and shell commands.",
-    apps: `You get only ${listWords(issued.apps.map(quote))}, on my screen.`,
-    files: `You can ${issued.write ? "read and change" : "read"} files in ${where}. No screen, no commands.`,
-    readonly: `You can look: my screen and files in ${where}. No clicks, no changes.`,
-  }[issued.preset];
-  const hands = issued.preset === "apps";
-  const tools = !!issued.command || !!issued.hosted;
-  const rules =
-    (hands
-      ? tools
-        ? ' Type passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.'
-        : " Fill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale."
-      : "") +
-    ` Ask me before paying, sending or deleting anything. Don't share this ${issued.hosted ? "address" : tools ? "command" : "link"}.`;
-  if (issued.hosted)
-    return `Add this as a custom MCP connector in your settings, then I approve the code it shows:\n\n${issued.hosted}\n\n${access}${hidden}${rules}`;
-  if (tools)
-    return `Connect to my Mac with Reach. Run this once (Node.js 22 or later), then I approve the code it shows:\n\n${issued.command}\n\nThen add Reach as an MCP server: node ~/.reach-agent/agent.mjs mcp\n\n${access}${hidden}${rules}${issued.windowsCommand ? `\n\nOn Windows, in PowerShell:\n\n${issued.windowsCommand}` : ""}`;
-  return `Open this link in your browser, then I approve the code it shows.${issued.always ? " Your access lasts until I end it." : ""} Keep the link: it brings this browser back.\n\n${access}${hidden}${rules}\n\n${link}`;
-};
+// What the agent is first told (Oct 12: "a very small prompt with a link"):
+// what to do with the link, and that I approve its code. One shape for every
+// kind of agent. What it may do and the rules come when it connects, from
+// its access then (server/agent-guide.mjs); a Tools agent's link explains
+// itself (server/agent-steps.mjs). `word`: "Mac", "Windows PC" or "computer".
+export const agentInviteMessage = (connect: Connect, link: string, word: string) =>
+  `${
+    {
+      tools: `Connect to my ${word} with Reach: open this link and follow its steps, then I approve the code it shows. Keep the link to yourself.`,
+      hosted: "Add this as a custom MCP connector, then I approve the code it shows. Keep the address to yourself.",
+      page: "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.",
+    }[connect]
+  }\n\n${link}`;
 
 // Every invite gets a fresh, silly name; the dice roll another.
 const quirks = [
@@ -334,6 +294,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
     preset === "full" || preset === "apps" || preset === "readonly";
   const desktopReady = options?.desktopAvailable !== false;
   const macHost = (device.platform || peer.platform) === "darwin";
+  // What the invite message calls this computer: never "Mac" off a Mac.
+  const word = computerWord(device.platform || peer.platform);
   const filesSupported = options?.protectedFilesSupported ?? macHost;
   const missing = !name.trim()
     ? "Name the agent."
@@ -370,8 +332,6 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
     let created: Created | null = null;
     const controller = new AbortController();
     creation.current = controller;
-    const everything =
-      preset !== "files" && preset !== "apps" && !folders.length;
     try {
       const result = await request<{
         invitation: string;
@@ -417,15 +377,6 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
       };
       if (!alive.current || controller.signal.aborted)
         throw Error("Invitation creation was cancelled.");
-      const issuedTo = {
-        preset,
-        apps: chosenApps.map((app) => app.name),
-        folders: folders.map((folder) => folder.full || folder.label),
-        write: preset === "files" && write,
-        hidden: preset === "full" ? [] : hiddenApps.map((app) => app.name),
-        everything,
-        always: minutes === ALWAYS,
-      };
       if (connect === "hosted") {
         // A hosted agent (claude.ai, ChatGPT, Muse, Grok): the address of
         // Reach's MCP endpoint, added as a custom connector; the owner
@@ -442,34 +393,36 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
           hosted: true,
-          message: agentInviteMessage(address.href, { ...issuedTo, hosted: address.href }),
+          message: agentInviteMessage("hosted", address.href, word),
         });
         onCreated(created, address.href);
         return;
       }
       if (connect === "tools") {
-        // One command that joins through the public link, every request
-        // signed by the agent's own key (scripts/agent-funnel.mjs), the
-        // private address tried first. Works from any terminal, sandboxes
-        // included (Oct 10: Muse couldn't reach Tailscale at all).
+        // A link that explains itself (its steps at /agent): join through
+        // the public link, every request signed by the agent's own key
+        // (scripts/agent-funnel.mjs), the private address tried first.
+        // Works from any terminal, sandboxes included (Oct 10: Muse
+        // couldn't reach Tailscale at all). The runtime's SHA-256 rides in
+        // its fragment: the steps and join check against it, and a
+        // computer that names none gets no link.
         const origin = new URL(result.url).origin;
         const link = guestLinkUrl(origin, {
           key: "",
           hostname: "",
           invites: [{ origin: new URL(peer.url).origin, secret: result.invitation }],
           funnel: true,
+          runtime: pinnedRuntime(result.runtime),
         }, "/agent");
-        const command = toolsCommand(origin, link, result.runtime);
-        const windowsCommand = windowsToolsCommand(origin, link, result.runtime);
         setMade({
-          link: command,
+          link,
           name: name.trim(),
           access: PRESET_WORDS[preset].title,
           expiresAt: result.expiresAt,
           joinBy: result.joinBy,
           always: minutes === ALWAYS,
           unpublished: result.publicName === "missing",
-          message: agentInviteMessage(link, { ...issuedTo, command, windowsCommand }),
+          message: agentInviteMessage("tools", link, word),
         });
         onCreated(created, link);
         return;
@@ -494,7 +447,7 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         joinBy: result.joinBy,
         always: minutes === ALWAYS,
         unpublished: result.publicName === "missing",
-        message: agentInviteMessage(link, issuedTo),
+        message: agentInviteMessage("page", link, word),
       });
       onCreated(created, link);
     } catch (e) {

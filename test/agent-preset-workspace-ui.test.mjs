@@ -1005,6 +1005,36 @@ test("Files describes only shared files, without offering absent screen controls
   assert.match(c.querySelector(".ap-file pre").textContent, /# Notes/);
 });
 
+// Oct 12: the invite message is two lines; once in, the agent reads what it
+// may do and the owner's rules on its page (its guide from /api/browser),
+// a row a line, on every section, folded once it has read them.
+test("the agent's instructions show on its page once it's in, and fold away", async () => {
+  dom.window.sessionStorage.removeItem("reach.agent-guide-closed");
+  const guide = 'You get only "Notes", on my screen. Nothing else.\nFill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale.\nAsk me before paying, sending or deleting anything.\nDon\'t share your Reach credentials.';
+  const { c } = await open({ ...full, preset: "apps", presetName: "Apps", shell: false, write: false, roots: [], guide });
+  const block = await dom.waitFor(() => c.querySelector("details.ap-guide"));
+  assert.equal(block.open, true, "open the first time");
+  assert.equal(block.querySelector("summary").textContent.trim(), "Your instructions");
+  assert.deepEqual([...block.querySelectorAll("li")].map((li) => li.textContent), guide.split("\n"));
+  // On every section, not only Access.
+  await click(c.querySelector('[aria-label="Workspace navigation"] [aria-label="Screen"]'));
+  assert.ok(c.querySelector("details.ap-guide"));
+  block.open = false;
+  block.dispatchEvent(new dom.window.Event("toggle"));
+  await settle(20);
+  assert.equal(dom.window.sessionStorage.getItem("reach.agent-guide-closed"), "1", "kept folded in this tab");
+  for (const view of views) await view.unmount();
+  views.clear();
+  const again = await open({ ...full, guide });
+  assert.equal((await dom.waitFor(() => again.c.querySelector("details.ap-guide"))).open, false);
+  dom.window.sessionStorage.removeItem("reach.agent-guide-closed");
+  for (const view of views) await view.unmount();
+  views.clear();
+  // A computer that says none: no block.
+  const older = await open({ ...full });
+  assert.equal(older.c.querySelector(".ap-guide"), null);
+});
+
 test("the agent page renders without React warnings", () =>
   assert.deepEqual(dom.errors, []));
 

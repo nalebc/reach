@@ -5,8 +5,8 @@ import { startDom, settle } from "./dom/harness.mjs";
 // The owner's invite, as ChatGPT would: how the agent connects (three tiles),
 // what it may do (a list with a check; Apps and Files ask which), its name
 // and how long as quiet rows with defaults, then Create invite. Choosing
-// never sends anything. The message the agent reads describes the issued
-// invitation and what stays closed.
+// never sends anything. The message the agent reads is a line and a link
+// (Oct 12): what it may do and the rules come when it connects.
 let dom, React, BrowserInvite;
 const peer = { id: "mac", name: "My Mac", url: "https://mac.tail.ts.net:8443", token: "owner", platform: "darwin" };
 const device = { name: "My Mac", roots: [{ id: 0, name: "Project", path: "/Users/me/Project" }] };
@@ -56,7 +56,7 @@ const choose = (c, title) => click(preset(c, title));
 const place = (c, label) => [...c.querySelectorAll('[aria-label="How the agent connects"] [role="radio"]')].find((b) => b.textContent.trim() === label);
 const create = (c) => click(button(c, "Create invite"));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false } = {}) {
+function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false, runtime = "ab".repeat(32) } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
@@ -64,9 +64,10 @@ function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllow
     calls.push([init.method || "GET", route, body]);
     if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
     if (route === "/api/agents/browser-invitations")
-      return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [], runtime: "ab".repeat(32) });
+      return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [], ...(runtime ? { runtime } : {}) });
     if (route === "/api/files") return reply({ items: [] });
     if (route === "/api/guests/key") return reply({ key: "tskey-auth-k1", hostname: "rf-ab12-agent" });
+    if (route.startsWith("/api/clients/") && init.method === "DELETE") return reply({ ok: true });
     return reply({ error: "Unexpected request" }, 404);
   };
   return calls;
@@ -83,6 +84,9 @@ const open = async ({ connect = "page", keyPeer = peer, onSetup = () => {} } = {
 };
 const issued = (calls) => calls.find(([, route]) => route === "/api/agents/browser-invitations")?.[2];
 const message = (c) => c.querySelector('textarea[aria-label="AI browser invitation message"]').value;
+// The whole message for a page agent: a line, then its link.
+const PAGE = "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.";
+const pageMessage = `${PAGE}\n\nhttps://mac.tail.ts.net/agent-browser#invite=${secret}`;
 
 test("Full control: chosen with a check, made with Create invite, nothing else to fill", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async () => {
   const calls = mock();
@@ -105,13 +109,10 @@ test("Full control: chosen with a check, made with Create invite, nothing else t
   await dom.waitFor(() => dom.document.activeElement.textContent === `${name} is invited`);
   assert.equal(dom.document.activeElement.textContent, `${name} is invited`, "focus moves to the result after creation");
   const text = message(c);
-  assert.match(text, /^Open this link in your browser, then I approve the code it shows\./);
-  assert.match(text, /You get full control of my Mac/);
-  assert.match(text, /all apps, files, browser pages and shell commands/);
-  assert.doesNotMatch(text, /stay out|except|hidden apps/);
-  assert.doesNotMatch(text, /Saved tools|hands come first|One agent acts|not sandboxed/, "nothing long or outdated");
-  assert.match(text, /Ask me before paying, sending or deleting anything\. Don't share this link\./);
-  assert.ok(text.split(/\s+/).length <= 80, "short enough to read");
+  // A line and the link: what it may do and the rules come when it
+  // connects (server/agent-guide.mjs), from its access then.
+  assert.equal(text, pageMessage);
+  assert.doesNotMatch(text, /full control|Ask me before|stay out/);
   assert.equal(text.split("\n").at(-1), `https://mac.tail.ts.net/agent-browser#invite=${secret}`);
   assert.equal(made()[1], text.split("\n").at(-1));
   assert.doesNotMatch(text, /approval|view only/i);
@@ -133,7 +134,8 @@ test("Apps: pick apps with real names; protected apps are shown locked with thei
   await dom.waitFor(() => issued(calls));
   assert.deepEqual(issued(calls), { name: issued(calls).name, transport: "funnel", ttlSeconds: 3600, preset: "apps", apps: [{ id: "/Applications/Google Chrome.app" }] });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
-  assert.match(message(c), /You get only "Google Chrome", on my screen\./);
+  assert.equal(message(c), pageMessage, "the same short message for every preset");
+  assert.doesNotMatch(message(c), /Chrome/);
 });
 
 test("Files: folders are required, editing is a switch; Read only can hide apps with one tap", async () => {
@@ -150,8 +152,8 @@ test("Files: folders are required, editing is a switch; Read only can hide apps 
   await dom.waitFor(() => issued(calls));
   assert.deepEqual(issued(calls), { name: issued(calls).name, transport: "funnel", ttlSeconds: 1800, preset: "files", folders: [{ root: 0, path: "" }], write: true });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
-  assert.match(message(c), /You can read and change files in "\/Users\/me\/Project"\. No screen, no commands\./);
-  assert.doesNotMatch(message(c), /One agent acts/);
+  assert.equal(message(c), pageMessage);
+  assert.doesNotMatch(message(c), /\/Users\/me/, "no folder paths in the message");
   // Another invitation: Read only, hiding the apps where codes arrive.
   await click(button(c, "Invite another agent"));
   assert.equal(button(c, "Hide Messages and Mail"), undefined, "hiding is Read only's");
@@ -162,8 +164,8 @@ test("Files: folders are required, editing is a switch; Read only can hide apps 
   const second = calls.filter(([, route]) => route === "/api/agents/browser-invitations")[1][2];
   assert.deepEqual(second, { name: second.name, transport: "funnel", ttlSeconds: 1800, preset: "readonly", hidden: [{ id: "/System/Applications/Messages.app" }, { id: "/System/Applications/Mail.app" }] });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
-  assert.match(message(c), /You can look: my screen/);
-  assert.match(message(c), /Hidden from you: "Messages" and "Mail"\./);
+  assert.equal(message(c), pageMessage);
+  assert.doesNotMatch(message(c), /Messages|Mail/);
 });
 
 test("a day of access is offered only when the server allows it", async () => {
@@ -193,7 +195,8 @@ test("Always sends no end time and tells the owner and the agent it lasts until 
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
   assert.match(c.querySelector(".ag-done-for").textContent, /Until you end it/);
   assert.doesNotMatch(c.textContent, /Join by/);
-  assert.match(message(c), /Your access lasts until I end it\. Keep the link: it brings this browser back\./);
+  // The agent hears it lasts until ended when it connects (its guide).
+  assert.equal(message(c), pageMessage);
   assert.doesNotMatch(message(c), /temporary/);
   mock();
   const older = await open();
@@ -223,12 +226,11 @@ test("Tools: the same preset, one command through the public link (the private a
   assert.equal(issued(calls).preset, "full");
   assert.equal(calls.find(([, route]) => route === "/api/guests/key"), undefined, "no Tailscale key");
   const text = message(c);
-  assert.match(text, /^Connect to my Mac with Reach\. Run this once \(Node\.js 22 or later\), then I approve the code it shows:/);
-  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs\.new https:\/\/mac\.tail\.ts\.net\/agent\.mjs && node -e '[^\n]*' ~\/\.reach-agent\/agent\.mjs\.new (?:ab){32} && mv ~\/\.reach-agent\/agent\.mjs\.new ~\/\.reach-agent\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#i=https%3A%2F%2Fmac\.tail\.ts\.net%3A8443[^']+&t=funnel' \| node ~\/\.reach-agent\/agent\.mjs join/, "the private address rides in the link");
-  assert.doesNotMatch(text, /tskey-auth/);
-  assert.match(text, /Then add Reach as an MCP server: node ~\/\.reach-agent\/agent\.mjs mcp/);
-  assert.match(text, /all apps, files, browser pages and shell commands/);
-  assert.doesNotMatch(text, /window\.reach|Sign in:/);
+  // A line and the link, which explains itself (its steps at /agent); the
+  // private address and the runtime's SHA-256 ride in its fragment.
+  assert.match(text, /^Connect to my Mac with Reach: open this link and follow its steps, then I approve the code it shows\. Keep the link to yourself\.\n\nhttps:\/\/mac\.tail\.ts\.net\/agent#i=https%3A%2F%2Fmac\.tail\.ts\.net%3A8443%7Eb{43}&t=funnel&r=(?:ab){32}$/, text);
+  assert.equal(made()[1], text.split("\n").at(-1), "the link the owner shares");
+  assert.doesNotMatch(text, /tskey-auth|curl|node |PowerShell|full control|Ask me before/);
 });
 
 // Always over Tools (audit conditions for Always): offered when this Mac
@@ -278,9 +280,55 @@ test("Tools without invite links: one command through the public link, no key as
   assert.equal(issued(calls).transport, "funnel");
   assert.equal(calls.find(([, route]) => route === "/api/guests/key"), undefined, "no Tailscale key");
   const text = message(c);
-  assert.match(text, /curl -fsSL --create-dirs -o ~\/\.reach-agent\/agent\.mjs\.new https:\/\/mac\.tail\.ts\.net\/agent\.mjs && node -e '[^\n]*' ~\/\.reach-agent\/agent\.mjs\.new (?:ab){32} && mv ~\/\.reach-agent\/agent\.mjs\.new ~\/\.reach-agent\/agent\.mjs && printf '%s\\n' 'https:\/\/mac\.tail\.ts\.net\/agent#i=[^']+&t=funnel' \| node ~\/\.reach-agent\/agent\.mjs join/);
-  assert.doesNotMatch(text, /No Tailscale invite key/);
-  assert.match(text, /On Windows, in PowerShell[^\n]*:\n\n\[Net\.ServicePointManager\]::SecurityProtocol = 'Tls12'; \$d = "\$HOME\\\.reach-agent"; .*Invoke-WebRequest -UseBasicParsing -Uri https:\/\/mac\.tail\.ts\.net\/agent\.mjs .*\| node "\$d\\agent\.mjs" join/);
+  assert.match(text, /^Connect to my Mac with Reach: open this link and follow its steps, then I approve the code it shows\. Keep the link to yourself\.\n\nhttps:\/\/mac\.tail\.ts\.net\/agent#i=\S+&t=funnel&r=(?:ab){32}$/);
+  assert.doesNotMatch(text, /No Tailscale invite key|PowerShell/, "one message for macOS and Windows agents alike");
+});
+
+// A computer that names no runtime gets no Tools link: its steps couldn't
+// check the download (connections audit, Oct 10). The invitation is taken back.
+test("Tools on a computer that names no runtime: no link, the invitation taken back", async () => {
+  const calls = mock({ runtime: "" });
+  const { c, made } = await open({ connect: "default" });
+  await choose(c, "Full control");
+  await create(c);
+  await dom.waitFor(() => c.querySelector(".ag-error"));
+  assert.match(c.querySelector(".ag-error").textContent, /Update Reach on that computer to invite agents from it/);
+  assert.equal(made(), undefined);
+  assert.ok(calls.some(([method, route]) => method === "DELETE" && route === "/api/clients/muse"));
+  assert.equal(c.querySelector('[aria-label="AI browser invitation message"]'), null);
+});
+
+// The computer's own word, never "Mac" off a Mac (owner rule: Mac and
+// Windows the same).
+test("a Windows PC is called a Windows PC in the message", async () => {
+  mock();
+  const windows = { ...peer, platform: "win32" };
+  let made;
+  const view = await render(React.createElement(BrowserInvite, { peer: windows, device: { ...device, platform: "win32" }, keyPeer: null, onSetup: () => {}, onCreated: (...args) => { made = args; } }));
+  const c = view.container;
+  await dom.waitFor(() => preset(c, "Full control"));
+  await settle(40);
+  await choose(c, "Full control");
+  await create(c);
+  await dom.waitFor(() => made);
+  assert.match(message(c), /^Connect to my Windows PC with Reach: open this link and follow its steps/);
+  assert.doesNotMatch(message(c), /\bMac\b/);
+});
+
+test("the three messages: a line each, the link after a blank line, short", async () => {
+  const { agentInviteMessage } = await dom.load("/src/BrowserInvite.tsx");
+  const link = "https://mac.tail.ts.net/agent#i=x&t=funnel&r=" + "ab".repeat(32);
+  assert.equal(agentInviteMessage("tools", link, "Mac"), `Connect to my Mac with Reach: open this link and follow its steps, then I approve the code it shows. Keep the link to yourself.\n\n${link}`);
+  assert.equal(agentInviteMessage("hosted", "https://mac.tail.ts.net/mcp/x", "Mac"), "Add this as a custom MCP connector, then I approve the code it shows. Keep the address to yourself.\n\nhttps://mac.tail.ts.net/mcp/x");
+  assert.equal(agentInviteMessage("page", "https://mac.tail.ts.net/agent-browser#invite=x", "Mac"), `${PAGE}\n\nhttps://mac.tail.ts.net/agent-browser#invite=x`);
+  for (const kind of ["tools", "hosted", "page"])
+    for (const word of ["Mac", "Windows PC", "computer"]) {
+      const text = agentInviteMessage(kind, "LINK", word);
+      assert.ok(text.endsWith("\n\nLINK"));
+      assert.ok(text.length - "LINK".length < 400, `${kind}: ${text.length}`);
+      assert.equal(text.split("\n").length, 3, "a line, a blank line, the link");
+    }
+  assert.match(agentInviteMessage("tools", "LINK", "computer"), /^Connect to my computer with Reach/);
 });
 
 test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));
