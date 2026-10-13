@@ -163,9 +163,12 @@ export function createKeepInSync({
     return list().filter((item) => ["behind", "too-old"].includes(item.state) && dismissed[item.id] !== pairOf(item) && !["updating", "started"].includes(runs.get(item.id)?.state));
   }
   function dismiss(id, pair) {
-    const item = snapshot.get(id);
+    // Only a piece Reach lists: the key written is Reach's own, never the
+    // request's text.
+    const key = [...byId.keys()].find((known) => known === id);
+    const item = key === undefined ? null : snapshot.get(key);
     if (!item || (pair && pair !== pairOf(item))) return;
-    dismissed = { ...dismissed, [id]: pairOf(item) };
+    dismissed = { ...dismissed, [key]: pairOf(item) };
     if (dismissedFile) try {
       fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(dismissedFile, JSON.stringify(dismissed), { mode: 0o600 });
