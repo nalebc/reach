@@ -401,8 +401,12 @@ export function createCodexDaemon({
       const codex = await locate();
       if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503 });
       const cli = spawnable(codex);
+      const daemon = [...cli.args, "app-server", "daemon"];
+      // --from-cli: the service becomes the very Codex Reach found (the one
+      // the owner runs), pinned, so the two match; --yes: nobody is at a
+      // terminal to answer Codex's question.
       try {
-        await run(cli.file, [...cli.args, "app-server", "daemon", "update"], { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 });
+        await run(cli.file, [...daemon, "update", "--from-cli", "--yes"], { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 });
       } catch (e) {
         const said = String(e?.stderr || e?.stdout || "").trim().split("\n").filter(Boolean).pop() || (e?.killed ? "it took too long" : "");
         throw Object.assign(new Error(`Codex's service didn't update${said ? `: ${said.slice(0, 200)}` : "."}`), { status: 502 });
@@ -412,7 +416,15 @@ export function createCodexDaemon({
       }
       // The new connection's hello, as the next call would make it.
       await api.rpc("model/list", {}).catch(() => {});
-      const now = await serviceStatus();
+      let now = await serviceStatus();
+      // A service that kept running on the old package: started again once,
+      // onto the new one (the owner already chose to interrupt it).
+      if (now.service && now.behind) {
+        await run(cli.file, [...daemon, "restart"], { timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 }).catch(() => {});
+        reconnect();
+        await api.rpc("model/list", {}).catch(() => {});
+        now = await serviceStatus();
+      }
       if (!now.service || now.behind)
         throw Object.assign(new Error(now.service ? `Codex's service is still ${now.service}.` : "Codex's service didn't come back."), { status: 502 });
       return now;

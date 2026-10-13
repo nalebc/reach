@@ -78,16 +78,18 @@ async function service(t) {
 }
 const CLI = "0.162.0-alpha.17.2";
 const cliCatalog = { data: [{ id: "gpt-6.1-sol", displayName: "GPT-6.1-Sol", isDefault: true, supportedReasoningEfforts: [] }, { id: "gpt-6-astra", displayName: "gpt-6-astra", supportedReasoningEfforts: [] }] };
-function daemonWith(t, svc, { update = async () => { svc.state.version = CLI; svc.state.models = ["gpt-6.1-sol", "gpt-6-astra"]; }, file = windows ? "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" : "/opt/codex/bin/codex" } = {}) {
+function daemonWith(t, svc, { update = async () => { svc.state.version = CLI; svc.state.models = ["gpt-6.1-sol", "gpt-6-astra"]; }, restart = async () => {}, file = windows ? "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" : "/opt/codex/bin/codex" } = {}) {
   const calls = [];
   const daemon = createCodexDaemon({
     locate: async () => file,
     run: async (cmd, args) => {
       calls.push([cmd, ...args]);
-      const verb = args.slice(-1)[0];
+      // The daemon's verb, whatever flags follow it (update --from-cli --yes).
+      const verb = args[args.indexOf("daemon") + 1];
       if (verb === "start") return { stdout: JSON.stringify({ socketPath: svc.endpoint }) };
       if (verb === "version") return { stdout: OWNER_VERSION };
       if (verb === "update") { await update(); return { stdout: "" }; }
+      if (verb === "restart") { svc.restarts = (svc.restarts || 0) + 1; await restart(); return { stdout: "" }; }
       throw new Error("unexpected");
     },
     check: async () => ({ status: "available", version: CLI }),
@@ -123,7 +125,7 @@ test("after an update: one fixed command, a new connection, and gpt-6.1-sol is p
   // The same Codex Reach runs, by the same route as `daemon start` (on
   // Windows CI: node and Codex's script, never cmd.exe).
   const cli = spawnable(file);
-  assert.deepEqual(calls.find((c) => c.at(-1) === "update"), [cli.file, ...cli.args, "app-server", "daemon", "update"]);
+  assert.deepEqual(calls.find((c) => c.includes("update")), [cli.file, ...cli.args, "app-server", "daemon", "update", "--from-cli", "--yes"]);
   assert.ok(svc.state.connections > connections, "a new connection after the update");
   assert.equal(closedOnce, 1, "subscriptions hear the old connection end");
   const now = await codex.models();
@@ -150,7 +152,7 @@ test("Windows: the update runs Codex's script with node, as its daemon start doe
   const svc = await service(t);
   const { daemon, calls } = daemonWith(t, svc, { file: js });
   await daemon.updateService();
-  assert.deepEqual(calls.find((c) => c.at(-1) === "update"), [process.execPath, js, "app-server", "daemon", "update"]);
+  assert.deepEqual(calls.find((c) => c.includes("update")), [process.execPath, js, "app-server", "daemon", "update", "--from-cli", "--yes"]);
 });
 
 // The shared list: once per pair, the owner's tap, what it would stop said first.
@@ -302,4 +304,18 @@ test("an update in a Reach terminal: no card meanwhile, done once current, stopp
   await again.look();
   assert.deepEqual([again.list()[0].run.state, again.list()[0].run.message], ["failed", "Update stopped."]);
   assert.equal(again.offers().length, 1);
+});
+
+test("an update that leaves the old service running restarts it once onto the new one", async (t) => {
+  const svc = await service(t);
+  // The package is new, but the running service is still the old one until it starts again.
+  const { daemon, calls } = daemonWith(t, svc, {
+    update: async () => {},
+    restart: async () => { svc.state.version = CLI; svc.state.models = ["gpt-6.1-sol", "gpt-6-astra"]; },
+  });
+  assert.equal((await daemon.serviceStatus()).behind, true);
+  const after = await daemon.updateService();
+  assert.deepEqual(after, { service: CLI, cli: CLI, behind: false });
+  assert.equal(svc.restarts, 1, "restarted once");
+  assert.ok(calls.some((c) => c.includes("restart")));
 });
