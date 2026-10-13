@@ -17,6 +17,10 @@ export function desktopConnection(
       : null,
     register = () => {},
     unregister = () => {},
+    // Told of each input that reached the computer (a tap, a key, a scroll,
+    // a pointer move; never a look such as a probe or a focus check), with
+    // the display it went to: agents step aside while a person uses it.
+    used = () => {},
     // May this client control this display? (Reach's hidden app displays
     // are only for those the app is shared with: server/index.mjs.)
     allowDisplay = () => true,
@@ -95,6 +99,9 @@ export function desktopConnection(
     scanTimer = setTimeout(() => void scan(), 200);
   };
   const changes = new Set(["click", "down", "up", "key", "text", "type-edit", "scroll", "menu"]);
+  // A person's hands on the computer: everything that changes it, and the
+  // pointer moving (a trackpad, a mouse). Reads and let-gos don't count.
+  const inputs = new Set([...changes, "move"]);
   // Actions that let go of something held. (A key press lets go of its own
   // modifiers in the same helper call, so there's no separate key-up.)
   const releases = new Set(["up", "release"]);
@@ -277,6 +284,10 @@ export function desktopConnection(
         }
         const client = authorize();
         control.acquire(client, true);
+        // A skipped probe or a dropped late move never came here.
+        if (inputs.has(item.action.type)) {
+          try { used(client, ws.reachDisplay); } catch { /* never costs the input */ }
+        }
         item.resolve?.(result);
         if (item.id !== undefined) doneId = item.id;
         if (changes.has(item.action.type)) rescan();

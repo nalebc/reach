@@ -21,7 +21,7 @@ Object.assign(apps, { chrome, notes, onePassword, terminal, messages });
 const ownerAccount = { userId: "42", login: "owner@example.test" };
 const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nWasm: "100.64.0.4", nAgent: "100.64.0.5" };
 
-export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, desktopFactory, agentShellRun, browserToolOptions, serviceOptions, macShortcuts, includeSystemRoot = false, overrides = {} } = {}) {
+export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, desktopFactory, agentShellRun, browserToolOptions, serviceOptions, macShortcuts, includeSystemRoot = false, ownerHold, overrides = {} } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-presets-")));
   const socketDir = fs.mkdtempSync("/tmp/reach-presets-sock-");
   const socketPath = path.join(socketDir, "s"), dataDir = path.join(dir, "private");
@@ -53,6 +53,7 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     ...(browserToolOptions ? { browserToolOptions } : {}),
     ...(serviceOptions ? { serviceOptions } : {}),
     ...(macShortcuts !== undefined ? { macShortcuts } : {}),
+    ...(ownerHold ? { ownerHold } : {}),
     // Stand-ins a test names for Reach's own parts (agentTimings, savings…).
     ...overrides,
     browserCapture: async () => assert.fail("Full desktop capture must not run"),
@@ -97,5 +98,5 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     const as = (route, options = {}) => call(route, { node: "nAgent", token: joined.token, ...options });
     return { created: created.body, joined, as };
   };
-  return { reach, call, invite, join, home, shared, cancelled, socketPath };
+  return { reach, call, invite, join, home, shared, cancelled, socketPath, owners, addresses, ownerAccount };
 }

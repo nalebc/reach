@@ -41,13 +41,16 @@ export function agentErrorDetails(error) {
     result.status = status;
   if (kinds.has(body.kind)) {
     result.kind = body.kind;
-    if (body.kind === "busy") {
+    // Busy: another agent, for seconds. Paused: a person using the Mac
+    // (server/screen.mjs ownerHoldRefusal), back up to 2 minutes after
+    // their last input.
+    if (body.kind === "busy" || body.kind === "paused") {
       if (typeof body.holder === "string")
         result.holder = clean(body.holder, 100);
       if (
         Number.isFinite(body.retryInMs) &&
         body.retryInMs >= 0 &&
-        body.retryInMs <= 60000
+        body.retryInMs <= (body.kind === "busy" ? 60000 : 120000)
       )
         result.retryInMs = Math.ceil(body.retryInMs);
     }
