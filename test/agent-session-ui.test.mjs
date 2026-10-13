@@ -2200,11 +2200,10 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
     ],
   };
   await open(claudeSession({ status: "running" }));
-  // Claude's queue folds into a stack, as in the Claude app: a tap opens it.
-  await dom.waitFor(() => $(".qm-head"));
-  assert.match($(".qm-head").textContent, /2 queued/);
-  await click($(".qm-head"));
+  // Claude's queue is the same list as Codex's: every row, a handle on each.
   await dom.waitFor(() => $$(".qm-row").length === 2);
+  assert.equal($(".qm-head"), null);
+  assert.equal($$(".qm-row .qm-grip").length, 2);
   const [first, second] = $$(".qm-row");
   assert.equal(first.querySelector(".qm-open").textContent, "Run the tests");
   assert.equal(first.querySelector(".qm-images").getAttribute("aria-label"), "1 image");
@@ -5100,9 +5099,10 @@ test("a message sent while the agent works goes a moment after it stops, and its
   await typeInto($(".as-composer textarea"), "zq-stop two");
   await click(button("Send"));
   const row = (words) => $$(".qm-row").find((r) => r.textContent.includes(words));
-  // Claude's queue stacks them: opened, each one shows.
-  await click(await dom.waitFor(() => $(".qm-head")));
+  // Claude's queue lists each one, as Codex's (no fold); phone copies have no handle.
   await dom.waitFor(() => row("zq-stop one") && row("zq-stop two"));
+  assert.equal($(".qm-head"), null);
+  assert.equal(row("zq-stop two").querySelector(".qm-grip"), null);
   // Only the phone's copy: Remove lets it go, and asks the Mac nothing.
   const sent = mac.sent.length;
   await click(row("zq-stop two").querySelector("[aria-label='Remove queued message']"));

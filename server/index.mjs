@@ -1614,10 +1614,10 @@ export async function createReach(overrides = {}) {
       notAdded(e);
       throw e;
     }
-    // The label is the phone's own words: one line in the log, always.
-    const label = String(added.label).replace(/[\r\n]+/g, " ");
-    console.log(`Reach: Face ID added (${label}).`);
-    record("security", `Face ID added (${label})`);
+    // The terminal line stays fixed; the phone's own words (its label) go
+    // only to the activity record, one line.
+    console.log("Reach: Face ID added.");
+    record("security", `Face ID added (${String(added.label).replace(/[\r\n]+/g, " ")})`);
     res.status(201).json(added);
   });
   app.delete("/api/auth/passkeys/:id", (req, res) => {
@@ -2659,6 +2659,24 @@ export async function createReach(overrides = {}) {
       void fleet?.revokeElsewhere(client.tailscale);
     res.type("json").send(JSON.stringify({ ok: true }));
   });
+  // Invitations nobody joined, a day after their chance to join ended
+  // (core.mjs, clearUnopened): removed for good the way removing one does,
+  // any invite key or device they had with them, and a line in the security
+  // record. Every 5 minutes with the guests' tidy, on every computer.
+  const clearUnopened = (now = Date.now()) => {
+    let cleared = [];
+    try { cleared = auth.clearUnopened(now); } catch (e) { console.log(`Reach: ${e.message}`); }
+    for (const client of cleared) {
+      endClient(client.id);
+      void releaseGuest(client);
+      record("security", `Unopened invitation for ${client.name || (client.kind === "guest" ? "a person" : "an agent")} cleared`);
+    }
+    return cleared;
+  };
+  for (const timer of [setTimeout(clearUnopened, 20000), setInterval(clearUnopened, 5 * 60000)]) {
+    timer.unref();
+    guestTimers.push(timer);
+  }
   // Same order as localeCompare, without building a collator per comparison.
   const names = new Intl.Collator();
   const privateRoots = () =>
@@ -5641,6 +5659,8 @@ export async function createReach(overrides = {}) {
     funnelWindow: () => paused || !transportAvailable
       ? { open: false, until: 0, reason: null } : auth.funnelWindow(),
     setFunnelController(controller) { prepareFunnel = controller; },
+    // The 5-minute sweep of invitations nobody joined, run now (tests).
+    clearUnopened,
     faceIdAvailable: () => !!faceJoin?.available(),
     approvals,
     guestKeys,

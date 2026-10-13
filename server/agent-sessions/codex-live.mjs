@@ -24,7 +24,7 @@ import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
 import { codexMode } from "./codex.mjs";
 import { questionKey, questionReply, readQuestionReply } from "./codex-questions.mjs";
 import { randomUUID } from "node:crypto";
-import { visibleUserText } from "./message-text.mjs";
+import { mentionedFiles, visibleUserText } from "./message-text.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { sweepAtRest } from "./at-rest.mjs";
 
@@ -421,11 +421,16 @@ export function createCodexLive({
       .then((r) => {
         if (!Array.isArray(r?.data)) throw compatibilityError("codex", "queued messages");
         if (t.queueAgain) return;
-        const next = r.data.map((q) => ({
-          id: String(q.id),
-          text: visibleUserText((q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n")),
-          images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length,
-        }));
+        const next = r.data.map((q) => {
+          const raw = (q.input || []).filter((i) => i?.type === "text").map((i) => i.text).join("\n");
+          return {
+            id: String(q.id),
+            text: visibleUserText(raw),
+            // Pictures sent as input, and pictures the Codex app attached
+            // as a note ahead of the message (its path never shown).
+            images: (q.input || []).filter((i) => i?.type === "image" || i?.type === "localImage").length || mentionedFiles(raw).pictures,
+          };
+        });
         if (JSON.stringify(next) !== JSON.stringify(t.queue || [])) {
           t.queue = next;
           changed(id);
