@@ -146,7 +146,7 @@ export function useDesktopInput(
     dispatcher.current = (a) =>
       queue && !failed
         ? queue.enqueue(a)
-        : Promise.reject(Error("Desktop input is not connected."));
+        : Promise.reject(Object.assign(Error("Desktop input is not connected."), { notSent: true }));
     deadline = setTimeout(
       () => stop("Desktop input connection timed out. Reconnecting…", true),
       12000,

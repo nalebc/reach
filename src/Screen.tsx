@@ -229,9 +229,31 @@ export default function Screen({
   const frameRate = `${stream.fps ? `${stream.fps} fps` : "Still"}${stream.cap ? ` · up to ${stream.cap}` : ""}`;
   const send = async (action: DesktopAction) => {
     if (!usable && action.type !== "release")
-      throw Error("Wait for a fresh screen and enable control.");
+      throw Object.assign(Error("Wait for a fresh screen and enable control."), { notSent: true });
     return input.send(action);
   };
+  // Why a tap on the picture can't reach the computer now, in one line
+  // (src/DesktopSurface.tsx says it; nothing is ever dropped in silence).
+  const stalePicture = Date.now() - stream.updated >= 10000;
+  const tapBlocked = !live
+    ? "Live view is paused"
+    : !stream.ready
+      ? "Waiting for the picture"
+      : !canControl
+        ? "View only"
+        : !control
+          ? holder?.canTakeOver
+            ? `${holder.name} is controlling · tap Take over`
+            : "View only · tap Control to use it"
+          : input.reconnecting
+            ? "Reconnecting controls…"
+            : !input.ready
+              ? "Connecting controls…"
+              : stalePicture
+                ? "The picture is out of date"
+                : "";
+  // Control is on and its connection is coming back: a tap waits a moment.
+  const tapWaits = control && !input.ready && live && visible && stream.ready;
   const detectTyping = async (point: { x: number; y: number }) => {
     if (!input.typing) return;
     const epoch = typingEpoch.current;
@@ -816,6 +838,8 @@ export default function Screen({
             }
             stale={live && !paused && stream.ready && stream.connecting}
             canControl={usable}
+            blocked={tapBlocked}
+            waitForControl={tapWaits}
             initialCursor={input.initialCursor}
             mode={mode}
             drag={drag}

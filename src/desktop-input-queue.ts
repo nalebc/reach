@@ -42,7 +42,7 @@ export class DesktopInputQueue {
   }
   enqueue(action: DesktopAction): Promise<InputResult> {
     return new Promise((resolve, reject) => {
-      if (this.stopped) return reject(Error("Desktop control ended."));
+      if (this.stopped) return reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
       // A move or scroll merges into the last one of its kind still waiting,
       // past other moves and scrolls (never past a click or key): moves and
       // scrolls arriving in turns can't pile up on a slow link.
@@ -132,8 +132,11 @@ export class DesktopInputQueue {
     this.stopped = true;
     clearTimeout(this.timer);
     const error = Error("Desktop control ended.");
-    for (const item of [...this.pending.values(), ...this.queued])
-      item.reject(error);
+    for (const item of this.pending.values()) item.reject(error);
+    // Never transmitted: the Mac can't have done these, so a tap among them
+    // may go again once control is back (src/DesktopSurface.tsx, within 1 s).
+    for (const item of this.queued)
+      item.reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
     this.pending.clear();
     this.queued = [];
   }

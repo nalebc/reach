@@ -18,8 +18,19 @@ import ScreenConnection from "./ScreenConnection";
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
 type Point = { x: number; y: number };
-type Ripple = Point & { id: number; status: string };
+// A click the Mac acknowledged, drawn as a wave where it landed: one ring
+// for a click, two quick ones for a double-click, an inward ring for a
+// right-click. Nothing for a drag, and nothing until the Mac said it's done.
+export type WaveKind = "click" | "double" | "right";
+type Wave = Point & { id: number; kind: WaveKind };
 const SCROLL_HINT = "reach.twoFingerScrollHint";
+// A tap made while control reconnects goes once it's back, if that's
+// within this long; never later (the screen may have changed by then).
+export const TAP_RETRY_MS = 1000;
+const WAVE_MS = 600;
+// Why a tap didn't reach the computer, as one short line.
+const notSentLine = (why: string) =>
+  `Tap not sent · ${why.replace(/[.…]+$/u, "").replace(/\s*Reconnecting$/u, "")}`;
 export default function DesktopSurface({
   canvas,
   width,
@@ -48,6 +59,8 @@ export default function DesktopSurface({
   typing = false,
   touchScroll = false,
   idle,
+  blocked = "",
+  waitForControl = false,
 }: {
   canvas: RefObject<HTMLCanvasElement | null>;
   width: number;
@@ -88,6 +101,12 @@ export default function DesktopSurface({
   touchScroll?: boolean;
   // Shown instead of "Live view is paused" while nothing streams.
   idle?: ReactNode;
+  // Why a tap can't reach the computer now (control off, reconnecting…):
+  // said in one line, never a silent tap.
+  blocked?: string;
+  // Control is on and coming back (its connection blinked): a tap waits
+  // for it, up to TAP_RETRY_MS, instead of being dropped.
+  waitForControl?: boolean;
 }) {
   const stage = useRef<HTMLDivElement>(null),
     [size, setSize] = useState({ width: 0, height: 0 });
@@ -96,9 +115,19 @@ export default function DesktopSurface({
   viewRef.current = view;
   const beforeTyping = useRef<typeof view | null>(null);
   const cursorRef = useRef<Point>({ x: 0.5, y: 0.5 });
-  const [ripples, setRipples] = useState<Ripple[]>([]),
+  const [waves, setWaves] = useState<Wave[]>([]),
     timers = useRef(new Set<ReturnType<typeof setTimeout>>()),
     serial = useRef(0);
+  // A tap waiting for control to come back (see waitForControl).
+  const pendingTap = useRef<{
+    point: Point;
+    right: boolean;
+    at: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
+  const waveSerial = useRef(0);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<{
     start: Point;
@@ -205,14 +234,31 @@ export default function DesktopSurface({
     release();
     beforeTyping.current = null;
     setView({ scale: 1, x: 0, y: 0 });
-    setRipples([]);
+    setWaves([]);
+    dropTap();
     moveCursor({ x: 0.5, y: 0.5 });
   }, [resetKey]);
   useEffect(() => {
     release();
   }, [mode]);
   useEffect(() => {
-    if (!canControl) release();
+    if (canControl) {
+      // Control is back: a tap that waited for it goes now, once, if it is
+      // still recent; older, it is said and dropped, never sent late.
+      const waiting = pendingTap.current;
+      if (!waiting) return;
+      clearTimeout(waiting.timer);
+      pendingTap.current = null;
+      if (performance.now() - waiting.at <= TAP_RETRY_MS) click(waiting.point, waiting.right, waiting.at);
+      else onFeedback(notSentLine("control came back too late"));
+      return;
+    }
+    // A finger resting for a tap keeps its gesture: lifted while control
+    // blinks, the tap waits for it. Anything under way is let go.
+    const g = gesture.current;
+    clearTimeout(hold.current);
+    if (g && !g.held && !g.moved && !g.multiple && pointers.current.size <= 1) return;
+    release();
   }, [canControl]);
   useEffect(() => {
     if (initialCursor) moveCursor(initialCursor);
@@ -233,6 +279,7 @@ export default function DesktopSurface({
       clearTimeout(hold.current);
       dropScroll();
       for (const timer of timers.current) clearTimeout(timer);
+      clearTimeout(pendingTap.current?.timer);
     },
     [],
   );
@@ -319,33 +366,44 @@ export default function DesktopSurface({
       ),
     );
   };
-  const ripple = (point: Point, right = false) => {
-    const id = ++serial.current;
-    setRipples((r) => [
-      ...r.slice(-7),
-      { ...point, id, status: canControl ? "sending" : "local" },
-    ]);
+  // The Mac did it: a wave where it landed, gone by itself.
+  const wave = (point: Point, kind: WaveKind) => {
+    const id = ++waveSerial.current;
+    setWaves((list) => [...list.slice(-5), { ...point, id, kind }]);
     const timer = setTimeout(() => {
       timers.current.delete(timer);
-      setRipples((r) => r.filter((x) => x.id !== id));
-    }, 900);
+      setWaves((list) => list.filter((entry) => entry.id !== id));
+    }, WAVE_MS);
     timers.current.add(timer);
-    if (!canControl) {
-      onFeedback("View only · enable control to interact");
-      return;
-    }
+  };
+  const dropTap = () => {
+    clearTimeout(pendingTap.current?.timer);
+    pendingTap.current = null;
+  };
+  // A tap while control is coming back waits for it, briefly; then it is
+  // said, not dropped in silence.
+  const holdTap = (point: Point, right: boolean, at: number) => {
+    dropTap();
+    const timer = setTimeout(() => {
+      if (pendingTap.current?.timer !== timer) return;
+      pendingTap.current = null;
+      onFeedback(notSentLine(blockedRef.current || "control is reconnecting"));
+    }, Math.max(0, at + TAP_RETRY_MS - performance.now()));
+    pendingTap.current = { point, right, at, timer };
+  };
+  const click = (point: Point, right: boolean, at: number) => {
+    const id = ++serial.current;
+    const kind: WaveKind = right || clickMode === "right" ? "right" : clickMode === "double" ? "double" : "click";
     onFeedback("");
     void send({
       type: "click",
       ...point,
-      button: right || clickMode === "right" ? "right" : "left",
-      count: clickMode === "double" && !right ? 2 : 1,
+      button: kind === "right" ? "right" : "left",
+      count: kind === "double" ? 2 : 1,
     })
       .then(() => {
-        setRipples((r) =>
-          r.map((x) => (x.id === id ? { ...x, status: "sent" } : x)),
-        );
-        if (id === serial.current && !right && clickMode !== "right") {
+        wave(point, kind);
+        if (id === serial.current && kind !== "right") {
           // The host can acknowledge before Safari delivers the tap's click.
           // Wait for that click to open the keyboard before confirming focus.
           const field = tappedField.current;
@@ -356,16 +414,26 @@ export default function DesktopSurface({
           onTextTarget(point);
         }
       })
-      .catch(() => {
-        setRipples((r) =>
-          r.map((x) => (x.id === id ? { ...x, status: "failed" } : x)),
-        );
-        onFeedback("Click was not sent");
+      .catch((error: Error & { notSent?: boolean }) => {
+        // Never reached the Mac (its connection blinked before it went):
+        // it waits for control to come back, if that's soon.
+        if (error?.notSent && performance.now() - at < TAP_RETRY_MS) {
+          holdTap(point, right, at);
+          return;
+        }
+        onFeedback(notSentLine(error?.message || "the computer didn't answer"));
         if (id === serial.current) {
           tappedField.current = null;
           onInteraction();
         }
       });
+  };
+  // A tap on the picture: sent, or held a moment while control comes back,
+  // or said why not. Only watching, there is no mark at all.
+  const tap = (point: Point, right = false) => {
+    if (canControl) return click(point, right, performance.now());
+    if (waitForControl) return holdTap(point, right, performance.now());
+    onFeedback(blocked || "View only · tap Control to use it");
   };
   // A wheel or a laptop's two-finger swipe scrolls the computer in every
   // mode; Ctrl or ⌘ (a trackpad's pinch) zooms, and so does a wheel while
@@ -621,7 +689,18 @@ export default function DesktopSurface({
     } else if (
       !g.multiple &&
       !g.moved &&
-      performance.now() - g.at < 400 &&
+      event.button !== 2 &&
+      mode === "pan" &&
+      performance.now() - g.at < 400
+    ) {
+      // Pan & zoom only moves the picture: said, so a tap never seems lost.
+      onFeedback(canControl ? "Pan & zoom · taps don't click" : blocked || "View only · tap Control to use it");
+    } else if (
+      !g.multiple &&
+      !g.moved &&
+      // Only watching (or control coming back), a long press is a tap too:
+      // it is held for control or said why, never lost.
+      (performance.now() - g.at < 400 || !canControl) &&
       mode !== "pan" &&
       event.button !== 2
     ) {
@@ -654,7 +733,7 @@ export default function DesktopSurface({
             at: performance.now(),
             acknowledged: false,
           };
-        ripple(point);
+        tap(point);
       }
     }
     if (!pointers.current.size) gesture.current = null;
@@ -683,7 +762,14 @@ export default function DesktopSurface({
         onPointerMove={move}
         onPointerUp={up}
         onClick={clicked}
-        onPointerCancel={release}
+        onPointerCancel={() => {
+          // The browser took the touch back mid-tap (a system gesture):
+          // nothing went to the computer, and the phone says so.
+          const g = gesture.current;
+          if (g && !g.multiple && !g.moved && !g.held && mode !== "pan" && performance.now() - g.at < 400)
+            onFeedback("Tap didn't go through · try again");
+          release();
+        }}
         onLostPointerCapture={(e) => {
           if (pointers.current.has(e.pointerId)) release();
         }}
@@ -696,7 +782,7 @@ export default function DesktopSurface({
               : normalized(e.clientX, e.clientY);
           if (point) {
             onInteraction();
-            ripple(point, true);
+            tap(point, true);
           }
         }}
         onKeyDown={(e) => {
@@ -761,12 +847,12 @@ export default function DesktopSurface({
           <div className="remote-loading">{idle ?? "Live view is paused"}</div>
         )}
         <ScreenConnection active={connecting} ready={ready} />
-        {ripples.map((r) => (
+        {waves.map((w) => (
           <span
-            key={r.id}
+            key={w.id}
             aria-hidden="true"
-            className={`screen-click-ripple ${r.status}`}
-            style={{ left: left + r.x * imageW, top: top + r.y * imageH }}
+            className={`screen-wave ${w.kind}`}
+            style={{ left: left + w.x * imageW, top: top + w.y * imageH }}
           >
             <span />
             <span />
