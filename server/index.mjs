@@ -1614,10 +1614,10 @@ export async function createReach(overrides = {}) {
       notAdded(e);
       throw e;
     }
-    // The label is the phone's own words: one line in the log, always.
-    const label = String(added.label).replace(/[\r\n]+/g, " ");
-    console.log(`Reach: Face ID added (${label}).`);
-    record("security", `Face ID added (${label})`);
+    // The terminal line stays fixed; the phone's own words (its label) go
+    // only to the activity record, one line.
+    console.log("Reach: Face ID added.");
+    record("security", `Face ID added (${String(added.label).replace(/[\r\n]+/g, " ")})`);
     res.status(201).json(added);
   });
   app.delete("/api/auth/passkeys/:id", (req, res) => {

@@ -334,7 +334,7 @@ test(
     await waitFor("its row", `/iPhone\\s*Added today/.test(document.body.innerText)`);
     assert.equal(await tab.evaluate(`!!document.querySelector(".faceid-on")`), true, "the green check");
     assert.match(await text(), /Added\. New browsers of yours can sign in with Face ID now\./);
-    assert.ok(logged.includes("Reach: Face ID added (iPhone)."), logged.join("\n"));
+    assert.ok(logged.includes("Reach: Face ID added."), logged.join("\n"));
     assert.ok(!logged.some((l) => /Face ID not added/.test(l)), logged.join("\n"));
     // Again from the same phone: its passkey is already there, and it says so.
     await waitFor("the next challenge", `!!${find("Add Face ID on this iPhone")}`);

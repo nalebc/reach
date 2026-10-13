@@ -219,7 +219,7 @@ test(
     // Added: said.
     const ok = await add(phone.create((await options()).json));
     assert.equal(ok.status, 201, JSON.stringify(ok.json));
-    assert.ok(said.includes("Reach: Face ID added (iPhone)."));
+    assert.ok(said.includes("Reach: Face ID added."));
     assert.ok((await security()).includes("Face ID added (iPhone)"));
     // Too many tries in a row: adding's own words.
     let last;
