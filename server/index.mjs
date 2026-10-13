@@ -2925,6 +2925,28 @@ export async function createReach(overrides = {}) {
       .set("Cache-Control", "no-store")
       .json({ icons: Object.fromEntries(types.map((t, i) => [t, found[i]])) });
   });
+  // Read, compared and written through one handle, proven to be the file
+  // checked (confined-file.mjs): a link or another file put in its place
+  // meanwhile is never written. Written in place, so its links and
+  // permissions stay as they were.
+  const editText = async (file, place, body) => {
+    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
+    try {
+      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
+      if (previous.includes(0))
+        throw fail(415, "Binary files cannot be edited as text.");
+      if (hash(previous) !== body.sha256)
+        throw fail(409, "This file changed. Read it again before writing.");
+      const text = Buffer.from(body.text, "utf8");
+      await handle.truncate(0);
+      await handle.write(text, 0, text.length, 0);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  };
+  let editing = Promise.resolve();
   app.put("/api/files/text", async (req, res) => {
     if (
       typeof req.body?.text !== "string" ||
@@ -2936,27 +2958,14 @@ export async function createReach(overrides = {}) {
         400,
         "Send text up to 128 KiB and the sha256 from the last read.",
       );
-    // Read, compared and written through one handle, proven to be the file
-    // checked (confined-file.mjs): a link or another file put in its place
-    // meanwhile is never written. Written in place, so its links and
-    // permissions stay as they were.
     const place = () => resolve(req.query.root, req.query.path || "", req.client);
     const file = place();
-    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
-    try {
-      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
-      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
-      if (previous.includes(0))
-        throw fail(415, "Binary files cannot be edited as text.");
-      if (hash(previous) !== req.body?.sha256)
-        throw fail(409, "This file changed. Read it again before writing.");
-      const text = Buffer.from(req.body.text, "utf8");
-      await handle.truncate(0);
-      await handle.write(text, 0, text.length, 0);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    // One edit at a time, all files together: each reads, compares and
+    // writes before the next reads, so two edits from the same read can't
+    // both win (the rest get 409). None is refused for waiting.
+    const turn = editing.then(() => editText(file, place, req.body));
+    editing = turn.catch(() => {});
+    await turn;
     record("file", `Updated ${path.basename(file)}`);
     res.json({ ok: true, sha256: hash(req.body?.text) });
   });
