@@ -34,3 +34,19 @@ test("files attached on the phone show by name, not as Reach's paths", () => {
   assert.deepEqual(attachedFiles(`${dir}/note.txt`), { text: "", files: ["note.txt"] }, "Codex: the bare path");
   for (const text of ["Look at @src/app.ts", `@${dir}/note.txt\nthen fix it`, "@/etc/hosts"]) assert.deepEqual(attachedFiles(text), { text, files: [] });
 });
+
+test("the Codex app's note for a file attached on a phone shows as the request and a picture, never its path", async () => {
+  const { visibleUserText, mentionedFiles } = await import("../server/agent-sessions/message-text.mjs");
+  const sent = "# Files mentioned by the user:\n\n## Photo 1.jpg: /tmp/codex-remote-attachments/01a1/6B6A/1-Photo-1.jpg\n\n## My request:\nDragging here does not work";
+  assert.equal(visibleUserText(sent), "Dragging here does not work");
+  assert.deepEqual(mentionedFiles(sent), { names: ["Photo 1.jpg"], pictures: 1 });
+  const two = "# Files mentioned by the user:\n\n## a.png: /tmp/x/a.png\n## notes.txt: /tmp/x/notes.txt\n\n## My request:\nLook";
+  assert.equal(visibleUserText(two), "Look");
+  assert.deepEqual(mentionedFiles(two), { names: ["a.png", "notes.txt"], pictures: 1 });
+  // Behind Codex's own context envelope too.
+  assert.equal(visibleUserText(`<environment_context>cwd</environment_context>\n${sent}`), "Dragging here does not work");
+  // Only exactly that note: a message that merely starts the same stays whole.
+  for (const own of ["# Files mentioned by the user: none today", "# Files mentioned by the user:\n\nno list here\n\n## My request:\nhi", "Dragging here does not work"])
+    assert.equal(visibleUserText(own), own);
+  assert.deepEqual(mentionedFiles("plain"), { names: [], pictures: 0 });
+});

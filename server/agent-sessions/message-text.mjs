@@ -17,7 +17,29 @@ export function visibleUserText(value) {
     text = text.slice(match[0].length);
     removed = true;
   }
+  // The Codex app sends a picture or file attached on a phone as a note
+  // ahead of the message ("# Files mentioned by the user:", one "## name:
+  // path" per file, then "## My request:"): the files show as chips
+  // (mentionedFiles below), the request as what the person typed.
+  const files = text.match(FILES_NOTE);
+  if (files) return text.slice(files[0].length).trim();
   return removed ? text.replace(/^\s*## My request:\s*\n?/, "").trim() : text;
+}
+
+// Exactly the Codex app's note, nothing that merely looks like it: a heading
+// line, one or more "## name: path" lines, then "## My request:".
+const FILES_NOTE = /^\s*# Files mentioned by the user:[ \t]*\n((?:[ \t]*\n)*(?:## [^\n:]+: [^\n]+\n(?:[ \t]*\n)*)+)## My request:[ \t]*\n?/;
+const PICTURE = /\.(?:jpe?g|png|gif|webp|heic|heif)$/i;
+
+// The files that note names, by name, and how many are pictures.
+export function mentionedFiles(value) {
+  let text = String(value ?? "");
+  const envelope = /^\s*<(in-app-browser-context|external_codex_apps_open_page|environment_context|ide_context|system-reminder|reach-chat|reach-image)\b[^>]*>[\s\S]*?<\/\1>\s*/;
+  for (let match; (match = text.match(envelope)); ) text = text.slice(match[0].length);
+  const note = text.match(FILES_NOTE);
+  if (!note) return { names: [], pictures: 0 };
+  const names = [...note[1].matchAll(/^## ([^\n:]+): [^\n]+$/gm)].map((m) => m[1].trim());
+  return { names, pictures: names.filter((name) => PICTURE.test(name)).length };
 }
 
 // The chats a message mentioned ("@" in the box), by name and agent, from the
