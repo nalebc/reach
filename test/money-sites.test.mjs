@@ -262,7 +262,9 @@ test("reach_open_bank opens only listed banks, each on a bank site, through the 
   assert.match(tool.description, /^Read the owner's bank/);
   assert.match(tool.description, /read-only/);
   assert.deepEqual(browserToolRequest("reach_open_bank", { bank: "TD" }, access),
-    { route: "/api/browser/desktop/open-url", method: "POST", body: { url: "https://easyweb.td.com/" }, response: "json" });
+    { route: "/api/browser/desktop/open-url", method: "POST", body: { url: "https://easyweb.td.com/", describe: true }, response: "json" });
+  // Like every open, it answers with the page once settled; describe: false skips it.
+  assert.deepEqual(browserToolRequest("reach_open_bank", { bank: "TD", describe: false }, access).body, { url: "https://easyweb.td.com/" });
   assert.throws(() => browserToolRequest("reach_open_bank", { bank: "https://evil.test/" }, access), /not a supported value/);
   assert.ok(!browserToolsFor({ ...access, open: false }).some((item) => item.name === "reach_open_bank"), "only with browser:open");
   assert.match(browserToolsFor(access).find((item) => item.name === "reach_open_url").description, /A bank: reach_open_bank\./);
