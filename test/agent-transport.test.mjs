@@ -215,17 +215,22 @@ test("scheduling errors bound display text and retain only valid retry guidance"
     }),
     { error: "failed" },
   );
+  // A person using the Mac (server/screen.mjs ownerHoldRefusal): who, and
+  // when to look again, up to the 2 minutes the hold lasts.
   assert.deepEqual(
     agentErrorDetails({
       body: {
         error: "paused",
         kind: "paused",
-        holder: "ignored",
+        holder: "The owner",
         retryInMs: 2,
       },
     }),
-    { error: "paused", kind: "paused" },
+    { error: "paused", kind: "paused", holder: "The owner", retryInMs: 2 },
   );
+  assert.equal(agentErrorDetails({ body: { error: "paused", kind: "paused", retryInMs: 120000 } }).retryInMs, 120000);
+  for (const retryInMs of [-1, Infinity, 120001, "1200"])
+    assert.equal(agentErrorDetails({ body: { error: "paused", kind: "paused", retryInMs } }).retryInMs, undefined);
 });
 
 

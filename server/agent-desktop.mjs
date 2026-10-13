@@ -6,6 +6,7 @@ import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typed
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { ownerHoldRefusal } from "./screen.mjs";
 import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
@@ -339,6 +340,10 @@ export function createAgentDesktop(config, {
   home = os.homedir(),
   verifyClient = () => undefined,
   phoneControls = () => false,
+  // You (or a full-access person) using the Mac through Reach's screen:
+  // { name, retryInMs } while agents wait (server/screen.mjs OwnerHold).
+  // Every look and every action waits, not only input.
+  ownerUsing = () => null,
   automationControls = () => false,
   // When a chat last drove the Mac (desktop-automation.mjs changedAt): an
   // agent's picture from before then may show the wrong window.
@@ -404,6 +409,10 @@ export function createAgentDesktop(config, {
         !Number.isFinite(latest.expiresAt) || latest.expiresAt <= now() || !presetScopes(latest.policy).includes(scope) || !latest.scopes?.includes(scope))
       throw fail(403, "This agent's access to the Mac has changed or ended.");
     if (paused()) throw fail(409, "Reach is paused. The Mac waits until it resumes.");
+    // Checked on every call and again after each native answer (checkState):
+    // a picture taken as the owner started is dropped, not handed over.
+    const hold = ownerUsing();
+    if (hold) throw ownerHoldRefusal(hold, platform);
     return latest;
   };
   const session = async (client) => {
@@ -431,6 +440,8 @@ export function createAgentDesktop(config, {
         throw fail(403, "This agent's access changed. Refresh before using the Mac again.");
       return current;
     } catch (error) {
+      // The owner's hold is a wait, not a changed grant: the helper stays.
+      if (error?.kind === "paused") throw error;
       state.helper.stop();
       if (sessions.get(client.id) === state) sessions.delete(client.id);
       throw error;
