@@ -175,12 +175,13 @@ function statusOf(g: Guest, now: number, live?: Live, word = "computer"): { text
 // screen, a tool), or it's connected to the Mac right now. Idle otherwise.
 const ACTIVE_MS = 120_000;
 // Ended, Shortcuts and Services open as pages in place; an ended agent opens
-// one more page under Ended.
-type Page = { kind: "ended" | "shortcuts" | "services"; agent?: string };
-const depth = (p: Page | null) => (p ? (p.agent ? 2 : 1) : 0);
+// one more page under Ended. Someone's access opens as a page too (from
+// their sheet, which comes back with it): a long form isn't a sheet.
+type Page = { kind: "ended" | "shortcuts" | "services" | "access"; agent?: string };
+const depth = (p: Page | null) => (p ? (p.kind === "ended" && p.agent ? 2 : 1) : 0);
 const pageIn = (state: unknown): Page | null => {
   const p = (state as { reachPeople?: Page } | null)?.reachPeople;
-  return p && ["ended", "shortcuts", "services"].includes(p.kind) ? p : null;
+  return p && ["ended", "shortcuts", "services", "access"].includes(p.kind) ? p : null;
 };
 // What scrolls the hub: the nearest scrolling ancestor, else the page.
 const scrollerOf = (el: HTMLElement | null) => {
@@ -271,7 +272,8 @@ export default function PeopleHub({
   const hubScroll = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const [openId, setOpenId] = useState("");
-  const [editing, setEditing] = useState<Guest | null>(null);
+  // Whose sheet opens again on the way back from their access page.
+  const sheetBack = useRef("");
   // Links made here, by invitation (a computer never keeps them).
   const [links, setLinks] = useState<Record<string, MadeLink>>({});
   const [busy, setBusy] = useState(false);
@@ -390,6 +392,8 @@ export default function PeopleHub({
       opener.current?.focus?.({ preventScroll: true });
       void load(true);
       setExtrasAt(Date.now());
+      if (sheetBack.current) setOpenId(sheetBack.current);
+      sheetBack.current = "";
     }
   }, [page]);
   useEffect(() => {
@@ -768,7 +772,29 @@ export default function PeopleHub({
     <div className="settings-workspace gs ppl" ref={hub}>
       {page ? (
         <div className={pushing.current ? "ppl-page is-pushed" : "ppl-page"} key={`${page.kind}:${page.agent || ""}`}>
-          {page.kind === "ended" ? (
+          {page.kind === "access" ? (
+            (() => {
+              const client = [...agents, ...people].find((c) => c.id === page.agent);
+              return client ? (
+                <AccessEditor
+                  key={client.id}
+                  peer={peer}
+                  device={device}
+                  client={client}
+                  onClose={goBack}
+                  onSaved={(removed) => {
+                    if (removed) sheetBack.current = "";
+                    else setChanged("Access updated.");
+                    goBack();
+                  }}
+                />
+              ) : (
+                <SubPage title="Edit access" backLabel="Back to Agents & people" onBack={goBack}>
+                  <p className="gs-foot">This access has ended.</p>
+                </SubPage>
+              );
+            })()
+          ) : page.kind === "ended" ? (
             <BrowserAgents
               peer={peer}
               device={device}
@@ -884,7 +910,16 @@ export default function PeopleHub({
             {/* Their access: changed here, no new link. */}
             {!byLevel(opened) ? (
               canEditAccess(opened) ? (
-                <button className="gs-row" onClick={() => setEditing(opened)}>
+                <button
+                  className="gs-row"
+                  onClick={() => {
+                    sheetBack.current = opened.id;
+                    setOpenId("");
+                    setChanged("");
+                    setError("");
+                    goTo({ kind: "access", agent: opened.id });
+                  }}
+                >
                   <span className="gs-label">{appScopedAccess(opened) ? "Manage app requests" : "Edit access"}</span>
                   <ChevronRight className="gs-chevron" size={18} />
                 </button>
@@ -1046,21 +1081,6 @@ export default function PeopleHub({
       )}
 
       {inviting && invitationSheet()}
-      {editing && (
-        <AccessEditor
-          key={editing.id}
-          peer={peer}
-          device={device}
-          client={editing}
-          onClose={() => setEditing(null)}
-          onSaved={(removed) => {
-            setEditing(null);
-            if (removed) setOpenId("");
-            setChanged(removed ? "" : "Access updated.");
-            void load(true);
-          }}
-        />
-      )}
     </div>
   );
 }

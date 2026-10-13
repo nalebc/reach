@@ -3,7 +3,8 @@ import { usePageVisible } from "./page-visible";
 import { ChevronDown, Folder, Monitor, ShieldCheck, Sparkles, SquareTerminal, Terminal, UserRound } from "lucide-react";
 import { post, request, type Device, type Peer } from "./api";
 import { FolderBrowser, placeFolder, type PickedFolder } from "./FolderBrowser";
-import { ErrorLine, Modal } from "./ui";
+import { ErrorLine } from "./ui";
+import SubPage from "./SubPage";
 import "./access-editor.css";
 import AppLogo from "./AppLogo";
 import { AccessRow, AgentAvatar, AppPicker, AppStack, Choices, Switch, SwitchLine, type PickerApp } from "./agent-ui";
@@ -161,7 +162,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
   };
   const chosen = named(apps), hiddenApps = named(hidden);
   return (
-    <Modal title="Edit access" onClose={() => !busy && onClose()}>
+    <SubPage title="Edit access" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
       <section className="access-editor ag-manage" aria-label="Edit agent access">
         <div className="ag-manage-who">
           <AgentAvatar name={client.name} size={48} />
@@ -221,7 +222,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
           <button className="ag-danger ag-small" disabled={busy} onClick={() => void remove()}>End access</button>
         </div>
       </section>
-    </Modal>
+    </SubPage>
   );
 }
 function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps) {
@@ -277,7 +278,7 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
   };
   const ends = new Date(client.expiresAt || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return <>
-    <Modal title="Manage app requests" onClose={() => !busy && onClose()}>
+    <SubPage title="Manage app requests" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
       <section className="access-editor ag-manage">
         <div className="ag-manage-who">
           <AgentAvatar name={client.name} size={48} />
@@ -311,7 +312,7 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
           <button className="ag-danger ag-small" disabled={busy} onClick={() => void end()}>{busy ? "Ending…" : "End session"}</button>
         </div>
       </section>
-    </Modal>
+    </SubPage>
     {selected && <BrowserApprovalReview peer={peer} item={selected} onClose={() => setSelected(null)} onResolved={() => { setSelected(null); setRevision((value) => value + 1); }} />}
   </>;
 }
@@ -454,7 +455,7 @@ function GeneralAccessEditor({
     ];
     const toggleRow = (row: string) => setOpenRow((current) => (current === row ? null : row));
     return (
-      <Modal title="Edit access" onClose={() => !busy && onClose()}>
+      <SubPage title="Edit access" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
         <form
           className="access-editor ag-manage"
           onSubmit={(e) => {
@@ -592,11 +593,11 @@ function GeneralAccessEditor({
             </button>
           </div>
         </form>
-      </Modal>
+      </SubPage>
     );
   }
   return (
-    <Modal title="Edit access" onClose={() => !busy && onClose()}>
+    <SubPage title="Edit access" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
       <form
         className="access-editor"
         onSubmit={(e) => {
@@ -784,6 +785,6 @@ function GeneralAccessEditor({
           </button>
         </div>
       </form>
-    </Modal>
+    </SubPage>
   );
 }

@@ -754,10 +754,6 @@ dialog.screen-popup.agent-admission-review {
   width: 22px;
   height: 22px;
 }
-.modal:has(.ag-manage) {
-  border-color: #ffffff12;
-  background: #121915;
-}
 /* Long app lists scroll in place, about seven rows tall. */
 .ag-apps > .ag-app-list {
   max-height: 380px;
@@ -818,9 +814,6 @@ dialog.screen-popup.agent-admission-review {
   font-size: 13px;
   cursor: pointer;
 }
-.modal:has(.ag-manage) .modal-inner {
-  background: #121915;
-}
 .ag-row-static select.ag-mode {
   flex: none;
   width: auto;
@@ -828,11 +821,6 @@ dialog.screen-popup.agent-admission-review {
   min-height: 32px;
   height: 32px;
   margin: 0 0 0 auto;
-}
-.modal:has(.ag-manage) .modal-header {
-  background: transparent;
-  box-shadow: none;
-  border-color: transparent;
 }
 
 /* ---- Option buttons (agent workspace pickers) -------------------------- */
