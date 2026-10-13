@@ -1234,8 +1234,11 @@ export default function AgentScreen({
       )}
       {panel === "shortcuts" && control && (
         <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)} returnFocus={() => keysRef.current}>
+          {/* The page's own key row and typed shortcut (below) stand in for
+              the composer: an agent writes "cmd+l" in one step. */}
           <ScreenActions
             platform="darwin"
+            composer={false}
             disabled={!canAct || actionBusy}
             run={({ keys, action }) => {
               setPanel(null);

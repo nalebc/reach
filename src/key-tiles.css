@@ -1,0 +1,247 @@
+/* Keys and app commands (ScreenActions, AppCommands): a grid of rounded
+   tiles, an icon over a word or two, as ChatGPT's tools sheet and Control
+   Center lay them out. Four across on a phone, more where the sheet is wide.
+   Everything wraps: nothing in the sheet scrolls sideways. */
+.key-section {
+  container-type: inline-size;
+  margin: 0 0 16px;
+}
+.key-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 20px;
+  margin: 0 0 8px 4px;
+}
+.key-head h3,
+.key-head h4 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: var(--muted, #93a096);
+}
+/* "More" / "Less": quiet text, a 44px target without a taller row. */
+.key-more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: -12px -4px -12px 0;
+  padding: 0 6px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted, #93a096);
+  font: 500 13px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.key-more svg {
+  width: 16px;
+  height: 16px;
+}
+.key-more[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.key-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.key-tiles + .key-tiles,
+.key-more-body > .key-tiles {
+  margin-top: 8px;
+}
+/* Icons line up across a row even when one label takes two lines. */
+.key-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 72px;
+  margin: 0;
+  padding: 14px 4px 10px;
+  border: 0;
+  border-radius: 18px;
+  background: #161e1a;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  color: #eef4ef;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.key-tile > svg {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.75;
+}
+.key-tile.key-flip > svg {
+  transform: scaleX(-1);
+}
+.key-glyph {
+  font: 600 15px/22px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.2px;
+}
+.key-tile-label {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+  font: 500 11.5px/1.25 system-ui, -apple-system, sans-serif;
+  color: var(--muted, #93a096);
+  text-align: center;
+}
+.key-tile:hover:not(:disabled) {
+  background: #1a231e;
+}
+.key-tile:active:not(:disabled) {
+  background: #222c26;
+}
+.key-tile:disabled,
+.key-chip:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.key-tile:focus-visible,
+.key-chip:focus-visible,
+.key-more:focus-visible,
+.key-expand:focus-visible {
+  outline: 2px solid var(--lime, #b9efd4);
+  outline-offset: 2px;
+}
+
+/* Any key: the chips held with it, then the key. */
+.key-composer {
+  margin-top: 18px;
+}
+.key-preview {
+  flex: none;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: var(--lime, #b9efd4);
+  white-space: nowrap;
+}
+.key-chips {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.key-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #161e1a;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  color: #eef4ef;
+  font: 500 14px system-ui, -apple-system, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.key-chip-symbol {
+  font-size: 16px;
+}
+/* A Mac's ⌘ ⌥ ⌃ ⇧ alone on a phone; with their names where there's room. */
+.key-chip-name {
+  display: none;
+  font-size: 13px;
+}
+.key-chip[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--lime, #b9efd4) 16%, #161e1a);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime, #b9efd4) 50%, transparent);
+  color: var(--lime, #b9efd4);
+}
+.key-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--muted, #93a096);
+  font: 500 13px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.key-expand svg {
+  width: 16px;
+  height: 16px;
+}
+.key-expand[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+/* F1–F12, letters and digits: a keypad, one glyph a key. */
+.key-tiles.key-pad {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 2px;
+}
+.key-pad .key-tile {
+  justify-content: center;
+  gap: 0;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 12px;
+}
+
+@container (min-width: 400px) {
+  .key-chip-name {
+    display: inline;
+  }
+}
+@container (min-width: 560px) {
+  .key-tiles {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+  .key-tiles.key-pad {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+}
+@container (max-width: 250px) {
+  .key-tiles,
+  .key-chips {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .key-tile,
+  .key-chip {
+    transition:
+      background-color 0.12s ease,
+      transform 0.12s ease;
+  }
+  .key-tile:active:not(:disabled),
+  .key-chip:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+  .key-more svg,
+  .key-expand svg {
+    transition: transform 0.15s ease;
+  }
+}
