@@ -51,7 +51,8 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
   // Controlling: the same bar, with the keyboard and paste.
   bar.querySelector('[aria-label="Control"]').click();
   await dom.waitFor(() => bar.querySelector('[aria-label="Stop"]'));
-  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Enter fullscreen", "Screen options"]);
+  // Desktops (Oct 12): previous, all windows, next, as one small group.
+  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Previous desktop", "All windows", "Next desktop", "Enter fullscreen", "Screen options"]);
   assert.equal(bar.querySelector('[aria-label="Stop"]').getAttribute("aria-pressed"), "true");
   // Shortcuts and options are one menu: keys on top, then short lists.
   bar.querySelector('[aria-label="Screen options"]').click();

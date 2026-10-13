@@ -15,12 +15,15 @@ import {
   Ellipsis,
   ClipboardPaste,
   ChevronRight,
+  ChevronLeft,
+  LayoutGrid,
   AppWindow,
   Hand,
   MousePointerClick,
   Move,
   Unplug,
   Activity,
+  Bot,
 } from "lucide-react";
 import { pasteFromPhone } from "./phone-paste";
 import { Device, Peer, post, request } from "./api";
@@ -31,6 +34,7 @@ import QuickLauncher from "./QuickLauncher";
 import ScreenPopup from "./ScreenPopup";
 import RemoteTyping from "./RemoteTyping";
 import ScreenActions, { type ScreenAction } from "./ScreenActions";
+import { screenActionGroups, shortcutText } from "./screen-action-catalog";
 import { CLIPBOARD_BYTES, copyRemoteSelection, fitBytes } from "./remote-copy";
 import type { TextTarget } from "./desktop-input-queue";
 import DesktopSurface from "./DesktopSurface";
@@ -43,7 +47,7 @@ import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
-import { computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
+import { agentsWaitIn, computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
 import "./settings-list.css";
@@ -174,6 +178,10 @@ export default function Screen({
   const controlKey = controlIn(changes);
   // Someone else on the Mac now (a person in control, an agent acting).
   const using = usingIn(changes);
+  // Your input holds agents off the screen until 2 minutes after you stop
+  // (server/screen.mjs OwnerHold): one quiet pill, with "Let them back".
+  const agentsWait = agentsWaitIn(changes);
+  const [lettingBack, setLettingBack] = useState(false);
   useEffect(() => {
     setHolder((was) => {
       if (was) setError("");
@@ -352,6 +360,27 @@ export default function Screen({
     input.send,
     control && input.ready && stream.ready && live && visible && !typing,
   );
+  // The bar's desktop switcher: the catalog's own keys for this computer
+  // (Ctrl ←/→ and Ctrl ↑ on a Mac; Win Ctrl ←/→ and Win Tab on Windows).
+  const desktopItems = screenActionGroups(device.platform).flatMap((group) => group.items);
+  const desktopActions = (
+    [
+      ["previous-desktop", ChevronLeft],
+      ["all-windows", LayoutGrid],
+      ["next-desktop", ChevronRight],
+    ] as const
+  ).flatMap(([id, Icon]) => {
+    const item = desktopItems.find((entry) => entry.id === id);
+    return item
+      ? [{
+          id,
+          label: item.label,
+          Icon,
+          keys: shortcutText(device.platform, item.modifiers, item.key),
+          action: { type: "key", key: item.key, modifiers: item.modifiers } as DesktopAction,
+        }]
+      : [];
+  });
   const contextActions = contextPicks(
     device.platform,
     appContext.app,
@@ -479,6 +508,20 @@ export default function Screen({
       setTypingTarget({ editable: true });
     });
     typingEditor.current?.focus({ preventScroll: true });
+  };
+  // Done with the Mac: your control ends and agents have it back now, not 2
+  // minutes from now.
+  const letAgentsBack = async () => {
+    setLettingBack(true);
+    if (control) release();
+    try {
+      await post(peer, "/api/screen/agents-back", {});
+      if (mounted.current) setFeedback("Agents are back");
+    } catch (e) {
+      if (mounted.current) setError((e as Error).message);
+    } finally {
+      if (mounted.current) setLettingBack(false);
+    }
   };
   const toggleViewing = async (value: boolean) => {
     setBusy(true);
@@ -856,6 +899,20 @@ export default function Screen({
                 {using} is using the {computerWord(device.platform)}
               </span>
             ) : null}
+            {agentsWait && (
+              <span className="screen-agents-wait" role="status" data-immersive-keep>
+                <Bot size={14} aria-hidden="true" />
+                <span>Agents wait · 2 min after you stop</span>
+                <button
+                  type="button"
+                  disabled={lettingBack}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => void letAgentsBack()}
+                >
+                  Let them back
+                </button>
+              </span>
+            )}
             <div
               className="screen-bar"
               role="toolbar"
@@ -904,6 +961,23 @@ export default function Screen({
                 >
                   <ClipboardPaste size={18} />
                 </button>
+              )}
+              {/* Desktops, as the keys menu sends them: previous, all
+                  windows, next. Smaller, together, no words. */}
+              {control && !typing && (
+                <span className="screen-bar-group" role="group" aria-label="Desktops">
+                  {desktopActions.map(({ id, label, keys, Icon, action }) => (
+                    <button
+                      key={id}
+                      aria-label={label}
+                      title={`${label} · ${keys}`}
+                      disabled={!usable || helperBusy}
+                      onClick={() => void runHelper({ label, keys, action })}
+                    >
+                      <Icon size={18} />
+                    </button>
+                  ))}
+                </span>
               )}
               <button
                 aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}

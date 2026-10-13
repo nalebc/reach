@@ -74,7 +74,7 @@ const full = {
 };
 function mock(
   access,
-  { busy = false, input, catalog, front = "Google Chrome" } = {},
+  { busy = false, input, catalog, front = "Google Chrome", screen } = {},
 ) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
@@ -90,7 +90,7 @@ function mock(
     if (route === "/api/browser") return reply(access);
     if (route === "/api/browser/shortcuts")
       return reply({ shortcuts: [], recording: null });
-    if (route === "/api/browser/desktop/screen") return jpeg();
+    if (route === "/api/browser/desktop/screen") return screen ? screen() : jpeg();
     if (route === "/api/browser/desktop/elements")
       return reply({
         snapshot: "snap1",
@@ -1238,4 +1238,27 @@ test("numbered labels sit over the picture and a click on one presses that exact
   await dom.waitFor(() => /Done: clicked 2 \(Add to cart\)/.test(c.textContent));
   await click(button(c, "Labels"));
   assert.equal(c.querySelector(".ap-label"), null, "Labels hides them");
+});
+
+// "Stop him the screen share while im using it" (Oct 12): while the owner
+// uses the Mac through Reach, the agent's picture is a calm wait, not an
+// error, and it asks again slowly; the picture comes back after.
+test("while the owner uses the Mac, the agent's live picture waits calmly and comes back", async () => {
+  let held = true;
+  const { c, calls } = await open(full, {
+    screen: () =>
+      held
+        ? reply({ error: "The owner is using the Mac. The agent waits until they're done.", kind: "paused", holder: "The owner", retryInMs: 90000 }, 409)
+        : jpeg(),
+  });
+  const wait = await dom.waitFor(() => c.querySelector(".ap-placeholder.is-waiting"));
+  assert.match(wait.textContent, /^The owner is using the Mac/);
+  assert.doesNotMatch(c.textContent, /could not be read|No picture/);
+  assert.equal(c.querySelector(".ap-frame img"), null, "no picture of the owner's screen");
+  const asked = shots(calls).length;
+  await settle(600);
+  assert.ok(shots(calls).length - asked <= 1, "asks again slowly, not every frame");
+  held = false;
+  await dom.waitFor(() => c.querySelector(".ap-frame img"), 6000);
+  assert.equal(c.querySelector(".ap-placeholder.is-waiting"), null);
 });

@@ -24,7 +24,10 @@ public class ReachDesktopInput {
  public static void Touch(){lock(gate){last=DateTime.UtcNow;}}
  public static void Release(){lock(gate){if(held!=0)mouse_event(held,0,0,0,UIntPtr.Zero);held=0;}}
  public static void Mouse(string type,int x,int y,bool right,int count){lock(gate){Touch();SetCursorPos(x,y);uint down=right?8u:2u,up=right?16u:4u;if(type=="down"){Release();held=up;mouse_event(down,0,0,0,UIntPtr.Zero);}if(type=="up")Release();if(type=="click"){Release();for(int i=0;i<count;i++){mouse_event(down,0,0,0,UIntPtr.Zero);mouse_event(up,0,0,0,UIntPtr.Zero);}}}}
- public static void Scroll(int x,int y){Touch();if(y!=0)mouse_event(2048,0,0,y,UIntPtr.Zero);if(x!=0)mouse_event(4096,0,0,x,UIntPtr.Zero);}
+ // dy and dx as a Mac takes them (positive: content moves down, right).
+ // WHEEL agrees; HWHEEL is the other way round (positive scrolls right),
+ // so dx is turned for it: a sideways swipe goes the same way on both.
+ public static void Scroll(int x,int y){Touch();if(y!=0)mouse_event(2048,0,0,y,UIntPtr.Zero);if(x!=0)mouse_event(4096,0,0,-x,UIntPtr.Zero);}
 }
 '@
 [ReachDesktopInput]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null

@@ -19,6 +19,7 @@ const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
 type Point = { x: number; y: number };
 type Ripple = Point & { id: number; status: string };
+const SCROLL_HINT = "reach.twoFingerScrollHint";
 export default function DesktopSurface({
   canvas,
   width,
@@ -115,7 +116,12 @@ export default function DesktopSurface({
     probe?: number;
     // A one-finger scroll under way (the pointer was put there once).
     scrolling?: boolean;
+    // What two fingers are doing, decided once at their first real movement
+    // and kept: a scroll whose fingers drift never turns into a zoom.
+    two?: "pinch" | "scroll" | "pan";
   } | null>(null);
+  // Two-finger scroll steps, merged per frame and sent as one.
+  const scrollStep = useRef({ dx: 0, dy: 0, frame: 0 });
   // The latest touch-down's answer, and a field tapped awaiting its click.
   const probeSerial = useRef(0);
   const probeAnswer = useRef<{
@@ -148,8 +154,33 @@ export default function DesktopSurface({
     if (!canControl) return;
     void send(a).catch((e: Error) => onFeedback(e.message));
   };
+  // A frame's worth of two-finger movement goes as one scroll, in whole
+  // pixels (the remainder waits for the next frame), never more than 120 a
+  // step. The pointer stays where it was put at the gesture's start.
+  const flushScroll = () => {
+    const step = scrollStep.current;
+    if (step.frame) cancelAnimationFrame(step.frame);
+    step.frame = 0;
+    const dx = clamp(Math.trunc(step.dx), -120, 120),
+      dy = clamp(Math.trunc(step.dy), -120, 120);
+    step.dx -= Math.trunc(step.dx);
+    step.dy -= Math.trunc(step.dy);
+    if (dx || dy) action({ type: "scroll", dx, dy });
+  };
+  const queueScroll = (dx: number, dy: number) => {
+    const step = scrollStep.current;
+    step.dx += dx;
+    step.dy += dy;
+    if (!step.frame) step.frame = requestAnimationFrame(flushScroll);
+  };
+  const dropScroll = () => {
+    const step = scrollStep.current;
+    if (step.frame) cancelAnimationFrame(step.frame);
+    scrollStep.current = { dx: 0, dy: 0, frame: 0 };
+  };
   const release = () => {
     clearTimeout(hold.current);
+    dropScroll();
     if (gesture.current?.held) {
       void send({ type: "release" }).catch(() => {});
       onDragEnd();
@@ -186,9 +217,21 @@ export default function DesktopSurface({
   useEffect(() => {
     if (initialCursor) moveCursor(initialCursor);
   }, [initialCursor]);
+  // Said once, the first time a phone can control: nothing permanent.
+  useEffect(() => {
+    if (!canControl) return;
+    try {
+      if (!matchMedia("(pointer: coarse)").matches || localStorage.getItem(SCROLL_HINT)) return;
+      localStorage.setItem(SCROLL_HINT, "1");
+    } catch {
+      return;
+    }
+    onFeedback("Two fingers to scroll");
+  }, [canControl]);
   useEffect(
     () => () => {
       clearTimeout(hold.current);
+      dropScroll();
       for (const timer of timers.current) clearTimeout(timer);
     },
     [],
@@ -324,8 +367,11 @@ export default function DesktopSurface({
         }
       });
   };
+  // A wheel or a laptop's two-finger swipe scrolls the computer in every
+  // mode; Ctrl or ⌘ (a trackpad's pinch) zooms, and so does a wheel while
+  // only watching.
   wheelHandler.current = (e) => {
-    if (e.ctrlKey || e.metaKey || mode === "pan" || !canControl)
+    if (e.ctrlKey || e.metaKey || !canControl)
       zoomAt(
         view.scale * Math.exp(-e.deltaY * 0.002),
         local(e.clientX, e.clientY),
@@ -438,6 +484,8 @@ export default function DesktopSurface({
         mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
         anchor: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
         pan: { x: view.x, y: view.y },
+        two: undefined,
+        scrolling: false,
       });
     }
   };
@@ -464,9 +512,33 @@ export default function DesktopSurface({
       const [a, b] = [...pointers.current.values()],
         mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
         distance = Math.hypot(a.x - b.x, a.y - b.y);
-      if (Math.abs(distance / Math.max(1, g.distance) - 1) > 0.06)
-        g.pinch = true;
-      if (g.pinch) {
+      // Pinch or scroll, told apart by what moved first: the distance
+      // between the fingers (6 %: a pinch) or the fingers together (10 px:
+      // a scroll; while only watching, a pan of the picture).
+      if (!g.two) {
+        const spread = Math.abs(distance / Math.max(1, g.distance) - 1) / 0.06,
+          travel = Math.hypot(mid.x - g.anchor.x, mid.y - g.anchor.y) / 10;
+        if (spread >= 1 || travel >= 1)
+          g.two = spread >= travel ? "pinch" : canControl ? "scroll" : "pan";
+      }
+      g.pinch = g.two === "pinch";
+      if (g.two === "scroll" && canControl) {
+        // The pointer goes under the fingers once (in trackpad mode it is
+        // already where the cursor is), then only the scroll steps.
+        if (!g.scrolling) {
+          g.scrolling = true;
+          const box = stage.current?.getBoundingClientRect();
+          const point =
+            mode === "trackpad" || !box
+              ? null
+              : normalized(g.anchor.x + box.left, g.anchor.y + box.top);
+          if (point) {
+            moveCursor(point);
+            action({ type: "move", ...point });
+          }
+        }
+        queueScroll(mid.x - g.mid.x, mid.y - g.mid.y);
+      } else if (g.pinch) {
         setView(
           pinchView(
             { scale: g.scale, x: g.pan.x, y: g.pan.y },
@@ -479,13 +551,7 @@ export default function DesktopSurface({
             size.height,
           ),
         );
-      } else if (mode === "trackpad" && canControl) {
-        action({
-          type: "scroll",
-          dx: clamp(mid.x - g.mid.x, -120, 120),
-          dy: clamp(mid.y - g.mid.y, -120, 120),
-        });
-      } else
+      } else if (g.two === "pan")
         setView((v) =>
           bounded(v.scale, v.x + mid.x - g.mid.x, v.y + mid.y - g.mid.y),
         );
@@ -540,6 +606,8 @@ export default function DesktopSurface({
     clearTimeout(hold.current);
     pointers.current.delete(event.pointerId);
     if (!g) return;
+    // A finger lifting ends the two-finger scroll: its last steps go now.
+    if (g.two === "scroll") flushScroll();
     if (g.held) {
       action({
         type: "up",

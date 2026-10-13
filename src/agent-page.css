@@ -50,6 +50,10 @@
 .ap-screen.is-full { position: fixed; inset: 0; z-index: 50; --ap-chrome: 52px; border-radius: 0; padding: max(4px, env(safe-area-inset-top)) 4px 64px; background: #0b0d10; overflow: auto; }
 .ap-screen.is-full .ap-stage { border-radius: 0; }
 .ap-placeholder { display: grid; place-items: center; gap: 8px; padding: 40px 16px; color: #c9cdd3; text-align: center; font-size: 14px; }
+/* Someone is using the Mac: a calm wait, not an error. */
+.ap-placeholder.is-waiting { color: #dfe5e1; }
+.ap-placeholder.is-waiting svg { color: var(--ag-accent, #2f9e6f); }
+.ap-placeholder.is-waiting small { color: #8f9a94; font-size: 12px; }
 .ap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ap-row-label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; min-width: 128px; }
 .ap-inline { display: inline-flex; flex-wrap: wrap; min-width: 0; max-width: 100%; align-items: center; gap: 6px; }
