@@ -41,6 +41,20 @@ test("CLI probes share work, expire, and detect replaced executables without sen
   await probe("claude", "/fake/claude");
   assert.equal(calls, 6);
 });
+// Found by installing each release (Oct 13): Claude Code from 2.1.259 (its
+// --permission-prompts) and Codex from 0.148.0 (its message queue). An older
+// one is told to update itself, not Reach; a newer one missing something
+// still says Reach needs updating.
+test("an agent older than Reach works with is named, with the version to update to", async () => {
+  const at = (version, text = help) => createAgentProbe({ stat: () => ({}), run: async (_, args) => ({ stdout: args[0] === "--version" ? version : text }) });
+  const old = await at("2.1.258 (Claude Code)", help.replace(" --permission-prompts --permission-prompt-tool", ""))("claude", "/fake");
+  assert.deepEqual(old, { version: "2.1.258", status: "incompatible", reason: "Claude Code 2.1.258 is older than Reach works with: update it to 2.1.259 or newer, or use the screen or terminal." });
+  assert.equal((await at("2.1.259 (Claude Code)")("claude", "/fake")).status, "available");
+  assert.match((await at("codex-cli 0.147.0", "start")("codex", "/fake")).reason, /^Codex 0\.147\.0 is older than Reach works with: update it to 0\.148\.0 or newer/);
+  assert.equal((await at("codex-cli 0.148.0", "start")("codex", "/fake")).status, "available");
+  assert.match((await at("2.1.300 (Claude Code)", "--input-format")("claude", "/fake")).reason, /Update Reach/, "newer and missing: Reach must change");
+});
+
 test("a help text cut short is read again, and never makes the agent incompatible", async () => {
   // Claude Code's --help came through a pipe as 8 or 16 KB of 22 KB, cut
   // mid-line, about half the time: the flags past the cut read as missing.

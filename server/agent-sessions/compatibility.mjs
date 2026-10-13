@@ -236,6 +236,23 @@ export function validateCodexResult(method, result) {
 
 // Bounded, account-free probes. Cache by executable metadata, so an in-place
 // upgrade is noticed even before the TTL expires. Failed probes expire sooner.
+// The oldest releases with everything Reach uses, found by testing each
+// release (Oct 13): Claude Code 2.1.259 brought --permission-prompts (how
+// the phone answers its permission prompts), Codex 0.148.0 the queue of
+// messages sent while it works. Older ones are named, with what to do,
+// rather than "Update Reach" (what an old Claude Code was told before).
+export const OLDEST_WORKING = { claude: "2.1.259", codex: "0.148.0" };
+const olderThan = (version, floor) => {
+  const a = String(version).split(/[.+-]/).slice(0, 3).map(Number), b = floor.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
+  return false;
+};
+export function tooOld(agent, version) {
+  const floor = OLDEST_WORKING[agent];
+  if (!floor || !version || !/^\d+\.\d+\.\d+/.test(version) || !olderThan(version, floor)) return null;
+  const name = agent === "codex" ? "Codex" : "Claude Code";
+  return { version, status: "incompatible", reason: `${name} ${version} is older than Reach works with: update it to ${floor} or newer, or use the screen or terminal.` };
+}
 export function createAgentProbe({
   run = runToFile,
   stat = fs.statSync,
@@ -275,6 +292,8 @@ export function createAgentProbe({
         version =
           String(v.stdout).match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0] ||
           null;
+        const old = tooOld(agent, version);
+        if (old) return old;
         const required =
           agent === "claude"
             ? [
@@ -318,6 +337,7 @@ export function createAgentProbe({
               "Could not read the agent's command list fully. Try again in a moment, or use the screen or terminal.",
           };
         }
+        // Missing from a release new enough: it changed, and Reach needs to.
         if (missing.length)
           return {
             version,
