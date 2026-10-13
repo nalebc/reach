@@ -2200,11 +2200,10 @@ test("messages waiting on the Mac for their turn show after the page reloads, sa
     ],
   };
   await open(claudeSession({ status: "running" }));
-  // Claude's queue folds into a stack, as in the Claude app: a tap opens it.
-  await dom.waitFor(() => $(".qm-head"));
-  assert.match($(".qm-head").textContent, /2 queued/);
-  await click($(".qm-head"));
+  // Claude's queue is the same list as Codex's: every row, a handle on each.
   await dom.waitFor(() => $$(".qm-row").length === 2);
+  assert.equal($(".qm-head"), null);
+  assert.equal($$(".qm-row .qm-grip").length, 2);
   const [first, second] = $$(".qm-row");
   assert.equal(first.querySelector(".qm-open").textContent, "Run the tests");
   assert.equal(first.querySelector(".qm-images").getAttribute("aria-label"), "1 image");

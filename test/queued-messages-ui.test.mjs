@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Queued messages as the agents' own apps show them: one line each, the
-// whole of it on a tap; Edit where it waits (pictures kept); Send now (Claude:
-// into its app chat at once; Codex: its Steer); Claude's fold into a stack and
-// take a new order.
+// Queued messages, the same list in every chat that queues: one line each,
+// the whole of it on a tap; Edit where it waits (pictures kept); Send now
+// (Claude: into its app chat at once; Codex: its Steer); a new order by
+// dragging the handle (a lifted copy, the others sliding, a gap) or from the
+// keyboard, announced.
 let dom, React, QueuedMessages;
 before(async () => {
   dom = await startDom({ mobile: true });
@@ -43,15 +44,11 @@ const $$ = (sel) => [...dom.document.querySelectorAll(sel)];
 const button = (label) => $$("button").filter((b) => b.getAttribute("aria-label") === label);
 
 
-test("Claude: a stack of one line each, opened with a tap; a message opens whole on a tap", async () => {
+test("Claude: the same list as Codex's, one line each; a message opens whole on a tap", async () => {
   const { view } = await render({ agent: "claude", messages: three });
   try {
-    assert.equal($$(".qm-row").length, 1, "folded: the first one only");
-    const head = $$(".qm-head")[0];
-    assert.match(head.textContent, /3 queued/);
-    head.click();
-    await settle(10);
-    assert.equal($$(".qm-row").length, 3);
+    assert.equal($$(".qm-row").length, 3, "every row shown, no fold");
+    assert.equal($$(".qm-head").length, 0);
     // One line each; a tap shows all of it, another folds it back.
     const first = $$(".qm-open")[0];
     assert.equal(first.textContent, long);
@@ -90,8 +87,6 @@ test("the message and edit controls keep their full widths in the queue styles",
 test("Claude: Send now and a new order, by the handle and the arrow keys", async () => {
   const { view, calls } = await render({ agent: "claude", messages: three });
   try {
-    $$(".qm-head")[0].click();
-    await settle(10);
     button("Send now")[1].click();
     assert.deepEqual(calls.now, ["m2"]);
     const grip = button("Reorder queued message 1 of 3")[0];
