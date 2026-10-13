@@ -2689,6 +2689,8 @@ export async function createReach(overrides = {}) {
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
+    // Screen text an agent didn't read again (savings.mjs, "screen-diff").
+    savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
       // A Windows Reach has no public link without browser sign-in.
       if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)

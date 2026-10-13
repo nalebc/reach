@@ -105,6 +105,9 @@ export function browserAccessRoutes(
     // Whether this computer makes invite keys: Always over Tools needs the
     // agent on its own invited device.
     toolsStandingAllowed = () => false,
+    // Reach's ledger of tokens it saved agents (savings.mjs): the screen
+    // text an agent didn't read again ("screen-diff").
+    savings = null,
     // What the agent may do and the rules, from its access now
     // (agent-guide.mjs): its reach_access and its page show them.
     guide = () => "",
@@ -795,6 +798,7 @@ export function browserAccessRoutes(
   const readOptions = body => body.observe === undefined ? {} : observationOptions(body.observe);
   const validateAfter = body => {
     if (body.describe !== undefined && body.describe !== true) throw fail(400, "Leave describe out, or set it to true.");
+    if (body.full !== undefined && body.full !== true) throw fail(400, "Leave full out, or set it to true.");
     if (body.observe !== undefined) observationOptions(body.observe);
     if (body.waitFor !== undefined) waitOptions(body.waitFor);
   };
@@ -815,9 +819,15 @@ export function browserAccessRoutes(
       const waited = body.waitFor ? await waitForScreen({ read, authorize, wanted: body.waitFor, changed }) : null;
       const settled = !waited && settle ? await settleScreen({ read, changed, authorize, ...settle }) : null;
       const screen = waited?.screen || settled?.screen || await read();
-      const view = observations(authorize(), screen, options);
+      // Only what changed since the agent's last whole look, unless it asks
+      // for all of it (full).
+      const view = observations(authorize(), screen, options, { changes: true, full: body.full === true });
+      // What that spared it, once it has the answer.
+      if (view.saved > 0 && savings && req.res)
+        req.res.once("finish", () => { if (req.res.statusCode < 400) try { savings.record({ agent: "browser", kind: "screen-diff", tokens: view.saved }); } catch { /* never the answer's concern */ } });
       return { ...result, ...(waited ? { found: waited.found, waitedMs: waited.waitedMs } : {}),
         screen: { snapshot: view.snapshot, app: view.app, title: view.title, displayId: view.displayId, truncated: view.truncated, outputTruncated: view.outputTruncated,
+          ...(view.diff ? { diff: true } : {}),
           text: view.text, ...(body.observe && typeof body.observe === "object" && body.observe.sinceSnapshot ? { delta: view.delta, reset: view.reset, removed: view.removed } : {}) } };
     } catch (error) {
       // Input already completed. Preserve its receipt so a failed read never
@@ -882,12 +892,12 @@ export function browserAccessRoutes(
     const body = req.body;
     const keys = isPlainRecord(body) ? Object.keys(body) : [];
     if (!isPlainRecord(body) || keys.includes("action") === keys.includes("actions") ||
-        keys.some((key) => !["action", "actions", "describe", "observe", "waitFor"].includes(key)) || (body.describe !== undefined && body.describe !== true))
+        keys.some((key) => !["action", "actions", "describe", "full", "observe", "waitFor"].includes(key)) || (body.describe !== undefined && body.describe !== true))
       throw fail(400, "Send one action, or actions: a list of up to 10.");
     const authorize = () => presetClient(req, "browser:control");
     validateAfter(body);
     const act = (action) => (shortcuts || desktop).act(client, action, authorize);
-    if (keys.includes("action") && !body.describe && !body.observe && !body.waitFor) return answer(res, () => act(body.action));
+    if (keys.includes("action") && !body.describe && !body.observe && !body.waitFor && !body.full) return answer(res, () => act(body.action));
     const list = keys.includes("action") ? [body.action] : body.actions;
     if (!Array.isArray(list) || !list.length || list.length > BATCH.actions)
       throw fail(400, "Send one action, or actions: a list of up to 10.");
@@ -975,10 +985,11 @@ export function browserAccessRoutes(
     needDesktop();
     const body = req.body;
     if (!isPlainRecord(body)) throw fail(400, "Give a wait condition.");
-    const { observe, ...condition } = body;
+    const { observe, full, ...condition } = body;
     waitOptions(condition);
     if (observe !== undefined) observationOptions(observe);
-    await answer(res, () => observeAfter(req, {}, { waitFor: condition, observe: observe ?? true }));
+    if (full !== undefined && full !== true) throw fail(400, "Leave full out, or set it to true.");
+    await answer(res, () => observeAfter(req, {}, { waitFor: condition, observe: observe ?? true, full }));
   });
 
   app.get("/api/browser/desktop/apps", async (req, res) => {
@@ -1011,7 +1022,7 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["app", "describe", "observe", "waitFor"].includes(key)) || typeof body.app !== "string" || !body.app.trim() || body.app.length > 4096)
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["app", "describe", "full", "observe", "waitFor"].includes(key)) || typeof body.app !== "string" || !body.app.trim() || body.app.length > 4096)
       throw fail(400, "Choose one app by its name or path.");
     const authorize = () => presetClient(req, "browser:open");
     const target = body.app.startsWith("/") ? body.app : await appByName(client, body.app, authorize);
@@ -1023,7 +1034,7 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser", "describe", "observe", "waitFor"].includes(key)) || typeof body.url !== "string")
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["url", "browser", "describe", "full", "observe", "waitFor"].includes(key)) || typeof body.url !== "string")
       throw fail(400, "Give a web address, and optionally a browser.");
     const authorize = () => presetClient(req, "browser:open");
     if (body.browser !== undefined && (typeof body.browser !== "string" || !body.browser.trim()))
@@ -1045,7 +1056,7 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["id", "title", "tab", "tabRef", "describe", "observe", "waitFor"].includes(key))) throw fail(400, "Choose a window by id, with its title, and a tab if you like.");
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["id", "title", "tab", "tabRef", "describe", "full", "observe", "waitFor"].includes(key))) throw fail(400, "Choose a window by id, with its title, and a tab if you like.");
     validateAfter(body);
     await answer(res, async () => observeAfter(req, await desktop.focusWindow(client, body, () => presetClient(req, "browser:open")), body, OPENED));
   });
@@ -1067,6 +1078,9 @@ export function browserAccessRoutes(
       throw fail(400, "Find text, or a control by name (and role).");
     await answer(res, async () => {
       const found = await desktop.find(client, body, () => presetClient(req, "browser:control"));
+      // It may have scrolled: what changed is counted from this look on.
+      if (!found.found) observations.forget(client);
+      else observations.remember(client, found);
       if (!found.found) return { found: false, app: found.app, title: found.title, truncated: found.truncated,
         screenText: `Not in this window: ${JSON.stringify(body.text ?? body.name)}.${found.truncated ? " The window was too large to read fully." : ""}` };
       const { items, texts, fields, ...rest } = found;
@@ -1098,7 +1112,7 @@ export function browserAccessRoutes(
     const client = presetClient(req, "browser:open");
     needDesktop();
     const body = req.body;
-    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["root", "path", "reveal", "describe", "observe", "waitFor"].includes(key)) || typeof body.path !== "string" || !body.path.trim() ||
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => !["root", "path", "reveal", "describe", "full", "observe", "waitFor"].includes(key)) || typeof body.path !== "string" || !body.path.trim() ||
         (body.reveal !== undefined && body.reveal !== true)) throw fail(400, "Name the file inside a shared folder, and reveal: true to show it in the Finder.");
     if (!client.policy.roots?.length) throw fail(403, "This invitation shares no folders to open files from.");
     const target = resolve(body.root ?? 0, body.path, client);

@@ -27,7 +27,7 @@ export const deterministicToolName = item => `reach_tool_${item.id}`;
 // How acting goes, said the same way by every tool that acts and by the
 // agent's guide (agent-guide.mjs), so on every connection (Oct 12: "make
 // navigation super fast and smooth"): one turn per step, not act, look, act.
-export const ACT_AND_SEE = "Acting answers with the screen as text, so don't look again; describe: false skips it.";
+export const ACT_AND_SEE = "Acting answers with the screen as text, only what changed since your last look (full: true for all of it), so don't look again; describe: false skips it.";
 export const GO_FAST = "Act and you get the screen back as text: don't look again. Batch up to 10 actions in one reach_act. Use reach_wait_for instead of looking again and again.";
 const requestId = { ...string(36), pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "A fresh UUID for a new operation. Reuse it after a lost response; effects will never be repeated." };
 const toolDefinitionSchema = object({ protocol: kinds("reach.tool.v1"), id: { ...string(48), pattern: "^[a-z][a-z0-9_]*$" }, title: string(80), description: string(500), origins: { type: "array", minItems: 1, maxItems: 4, items: string(2000) }, inputs: { type: "object", maxProperties: 12, additionalProperties: true }, steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", maxProperties: 8, additionalProperties: true } } }, ["protocol", "id", "title", "description", "origins", "inputs", "steps"]);
@@ -62,12 +62,14 @@ const displayId = { ...integer(1, 4294967295), description: "Display id from rea
 const observationFields = { query: string(200), within: string(200), maxChars: integer(500, 30000), sinceSnapshot: string(40), displayId };
 const waitFor = object({ text: string(200), name: string(120), role: string(40), within: string(200), state: kinds(["present", "absent"]), timeoutMs: integer(500, 15000) });
 const observation = { oneOf: [{ type: "boolean", enum: [true] }, object(observationFields)] };
-const afterFields = { observe: observation, waitFor };
+// The whole screen text after acting, not only what changed.
+const fullField = { type: "boolean", enum: [true], description: "The whole screen text, not only what changed." };
+const afterFields = { observe: observation, waitFor, full: fullField };
 // What comes back after acting: the screen as text unless the agent says
 // describe: false (the routes themselves answer without it when not asked).
 const after = input => ({
   ...Object.fromEntries(["observe", "waitFor"].filter(key => input[key] !== undefined).map(key => [key, input[key]])),
-  ...(input.describe === false ? {} : { describe: true }),
+  ...(input.describe === false ? {} : { describe: true, ...(input.full === true ? { full: true } : {}) }),
 });
 // (The enum is what this file's validator checks for a boolean.)
 const describeField = { type: "boolean", enum: [true, false], description: "false: no screen after acting." };
@@ -117,7 +119,7 @@ function presetTools(access) {
     definition("reach_read_page", "Read the page", "The front window's whole text, in reading order, what is scrolled out of view included: a web page, an email, a document, a terminal. Controls appear in [brackets]; no numbers, no coordinates. Up to 12000 characters a call: more: true means call again with the offset given as nextOffset. For a browser it reads the page, not the toolbar.", object({ offset: integer(0, 60000) }), {}),
     definition("reach_press", "Press a control by name", "Press a button, link, tab or menu item by the name reach_describe_screen shows, no number needed: the exact name first, then one starting with it. Several match: refused with the count (press one by number). Nothing matches: describe the screen. Works inside reach_act batches as {type: \"press\", name}. For a \"press and hold\" button or a long press, add holdMs.", object({ name: string(120), role: { ...string(40), pattern: "^[A-Za-z]{1,40}$", description: "Narrow to a role: Button, Link, Tab, MenuItem, CheckBox…" }, button: kinds(["left", "right"]), count: integer(1, 3), holdMs, describe: describeField }, ["name"]), { name: "Add to cart" }),
     definition("reach_fill", "Fill a form", "Type into a form's fields by their labels, all in one call (reach_describe_screen lists them under Fields): each field is clicked, then typed into; submit: true presses Enter at the end; replace: true clears a field first (text appends otherwise). For a username, email or password from your vault, set secret: true on that field: it goes in unseen and is never shown back to you; only a secret goes into a password field. Works inside reach_act batches as {type: \"fill\", fields}.", object({ fields: { type: "array", minItems: 1, maxItems: 12, items: object({ label: string(120), text: string(2000), secret: { type: "boolean", enum: [true] } }, ["label", "text"]) }, submit: { type: "boolean", enum: [true] }, replace: { type: "boolean", enum: [true] }, describe: describeField }, ["fields"]), { fields: [{ label: "Email", text: "from your vault", secret: true }, { label: "Password", text: "from your vault", secret: true }], submit: true }),
-    definition("reach_wait_for", "Wait for the screen", "The Mac waits until its screen shows some text, or a control by name (a page loaded, a dialog appeared), up to 15 seconds, then returns the screen as text; found: false after the wait. One call instead of describing again and again.", object({ text: string(200), name: string(120), timeoutMs: integer(500, 15000) }), { text: "Order placed", timeoutMs: 8000 }),
+    definition("reach_wait_for", "Wait for the screen", "The Mac waits until its screen shows some text, or a control by name (a page loaded, a dialog appeared), up to 15 seconds, then returns the screen as text, only what changed since your last look (full: true for all of it); found: false after the wait. One call instead of describing again and again.", object({ text: string(200), name: string(120), timeoutMs: integer(500, 15000) }), { text: "Order placed", timeoutMs: 8000 }),
     definition("reach_act", "Act on the screen", "Act on the Mac and get the screen back: one action, or actions: up to 10 in order (they stop at the first one refused). Prefer {type: \"element\", snapshot, n} from the screen text, then type and key: for example [element 3, type \"diapers\", key enter]. Where a page has to load: {type: \"wait_for\", text} (or {type: \"wait\", ms}). Menu items: {type: \"menu\", path} (reach_menus). Long text: type with paste: true. Something out of view: reach_find instead of scrolling blind. Long press or \"press and hold\": holdMs on click, element or press (the button stays down that long). Drag: holdMs to hold before moving, durationMs for a slower move. Each action is checked against exactly what it would reach. Refusals say why: blocked (never allowed there), busy (another agent holds the Mac; wait retryInMs), paused (the owner paused you, or a person is controlling the Mac; wait until they let go), retry (the screen changed; describe again).", object({ action: { oneOf: desktopActions }, actions: { type: "array", minItems: 1, maxItems: 10, items: { oneOf: [...desktopActions, waitAction, object({ ...waitFor.properties, type: kinds("wait_for"), displayId }, ["type"])] } }, describe: describeField }), { actions: [{ type: "element", snapshot: "SNAPSHOT", n: 3 }, { type: "type", text: "diapers" }, { type: "key", key: "enter" }] }),
   );
   if (access.open) tools.push(
@@ -221,7 +223,7 @@ function presetTools(access) {
     if (tool.name === "reach_act") tool.description += " In actions, use {type:'wait_for',text or name,timeoutMs} for readiness between steps. Use displayId for coordinates on another display.";
     if (tool.name === "reach_press") tool.inputSchema.properties.within = string(200);
     if (["reach_press", "reach_fill"].includes(tool.name)) tool.inputSchema.properties.displayId = displayId;
-    if (tool.name === "reach_wait_for") Object.assign(tool.inputSchema.properties, waitFor.properties, { observe: observation });
+    if (tool.name === "reach_wait_for") Object.assign(tool.inputSchema.properties, waitFor.properties, { observe: observation, full: fullField });
     if (tool.name === "reach_screenshot") tool.inputSchema.properties.displayId = displayId;
     if (tool.name === "reach_focus_window") {
       tool.inputSchema.properties.id = { ...string(40), pattern: "^(w-[a-f0-9-]+|[0-9]{1,8}:[0-9]{1,2})$" };
@@ -418,11 +420,11 @@ export function browserToolRequest(name, args, access) {
       if (("action" in input) === ("actions" in input)) invalid("Send action, or actions: a list of up to 10.");
       return { route: "/api/browser/desktop/input", method: "POST", body: { ...("action" in input ? { action: input.action } : { actions: input.actions }), ...after(input) }, response: "json" };
     case "reach_press": {
-      const { describe, observe, waitFor, ...rest } = input;
+      const { describe, observe, waitFor, full, ...rest } = input;
       return { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "press", ...rest }, ...after(input) }, response: "json" };
     }
     case "reach_fill": {
-      const { describe, observe, waitFor, ...rest } = input;
+      const { describe, observe, waitFor, full, ...rest } = input;
       return { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "fill", ...rest }, ...after(input) }, response: "json" };
     }
     case "reach_wait_for":

@@ -230,10 +230,15 @@ test("a batch of actions in one request, stopping at the first refused, with the
   assert.deepEqual(log.filter(([op]) => op === "act").map(([, who, action]) => [who, action.type]), [[id, "element"], [id, "type"], [id, "key"]]);
   assert.equal(batch.body.screen.snapshot, "s1");
   assert.match(batch.body.screen.text, /\[2\] Button "Add to cart"/);
-  // One action, then see: one request.
+  // One action, then see: one request. The same screen again: only what
+  // changed since it was seen whole (Oct 12), or all of it when asked.
   const seen = await input({ action: { type: "element", snapshot: "s1", n: 2 }, describe: true });
   assert.equal(seen.body.ok, true);
-  assert.match(seen.body.screen.text, /Pampers Swaddlers/);
+  assert.equal(seen.body.screen.diff, true);
+  assert.match(seen.body.screen.text, /^Google Chrome — Uber Eats\nNothing changed since your last look\. Click a \[number\] with reach_act \{"action":\{"type":"element","snapshot":"s1"/);
+  const whole = await input({ action: { type: "element", snapshot: "s1", n: 2 }, describe: true, full: true });
+  assert.equal(whole.body.screen.diff, undefined);
+  assert.match(whole.body.screen.text, /Pampers Swaddlers/);
   // Another agent holds the Mac: the batch stops at once and says who.
   const other = await f.join({ preset: "full", name: "Grok" });
   const stopped = await other.as("/api/browser/desktop/input", { method: "POST", body: { actions: [{ type: "key", key: "enter" }, { type: "type", text: "never typed" }] } });
@@ -279,7 +284,7 @@ test("the Mac waits for text or a control to appear; press and fill ride in batc
   assert.match(missing.body.screen.text, /Uber Eats/, "the screen as text comes back either way");
   for (const body of [{}, { text: "a", name: "b" }, { text: "" }, { text: "a", timeoutMs: 100 }, { text: "a", extra: 1 }, { text: "x".repeat(201) }])
     assert.equal((await wait(body)).status, 400, JSON.stringify(body));
-  const batch = await full.as("/api/browser/desktop/input", { method: "POST", body: { actions: [{ type: "press", name: "Search" }, { type: "fill", fields: [{ label: "Search", text: "diapers" }], submit: true }], describe: true } });
+  const batch = await full.as("/api/browser/desktop/input", { method: "POST", body: { actions: [{ type: "press", name: "Search" }, { type: "fill", fields: [{ label: "Search", text: "diapers" }], submit: true }], describe: true, full: true } });
   assert.equal(batch.status, 200, JSON.stringify(batch.body));
   assert.equal(batch.body.done, 2);
   assert.deepEqual(log.filter(([op]) => op === "act").map(([, , action]) => action.type), ["press", "fill"]);
