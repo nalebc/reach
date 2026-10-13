@@ -30,7 +30,7 @@ import { useViewportBox } from "./useViewportBox";
 import { type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
-import { MoveOffer } from "./MoveChat";
+import { MoveItems } from "./MoveChat";
 import type { AgentHealth, AgentSession } from "./agent-sessions";
 import { BrandCourier } from "./ReachIdentity";
 import { ClawChatCost } from "./OpenClawSpend";
@@ -169,6 +169,7 @@ function Conversation({
   }, []);
   useViewportBox(surface, narrow);
   const [moving, setMoving] = useState(false);
+  const [forkPoint, setForkPoint] = useState<string | undefined>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const threadActions = useRef<HTMLDetailsElement>(null);
@@ -337,15 +338,16 @@ function Conversation({
             {onOpenChat && (
               <button
                 className="claw-menu-item"
-                aria-label="Continue in another app"
+                aria-label="Fork chat…"
                 aria-expanded={moving}
                 onClick={() => {
                   closeMenu();
+                  setForkPoint(undefined);
                   setMoving(!moving);
                 }}
               >
                 <GitFork size={18} />
-                Continue in another app
+                Fork chat…
               </button>
             )}
             {!!deviceRequests && (
@@ -405,11 +407,14 @@ function Conversation({
       )}
       {moving && onOpenChat && (
         <div className="claw-move">
-          <MoveOffer
+          <MoveItems
             peer={peer}
-            session={{ agent: "openclaw", id: current.key, title: current.title }}
+            session={{ agent: "openclaw", id: current.key, title: current.title, through: forkPoint }}
             health={health}
             logos={logos}
+            open
+            onOpen={() => setMoving(true)}
+            onBack={() => setMoving(false)}
             onMoved={onOpenChat}
           />
         </div>
@@ -455,6 +460,7 @@ function Conversation({
             >
               {item.role !== "user" && item.role !== "assistant" && <small>System</small>}
               <AgentMarkdown text={item.text} />
+              {onOpenChat && <button className="claw-text-button" aria-label="Fork from here" onClick={() => { setForkPoint(item.id); setMoving(true); scroll.current?.scrollTo?.({ top: 0 }); }}><GitFork size={14} /> Fork from here</button>}
               {item.sentTo && <small className="claw-sent">Sent to {channelName(item.sentTo)}</small>}
               {item.role === "assistant" && (
                 <ClawRelayAction

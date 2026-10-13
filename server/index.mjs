@@ -3963,6 +3963,14 @@ export async function createReach(overrides = {}) {
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
+  app.post("/api/sessions/:agent/:id/fork", async (req, res) => {
+    macOwner(req);
+    const forked = await agentSessions.fork(req.params.agent, req.params.id, {
+      to: req.body?.to, through: req.body?.through ?? null, authorize: () => req.reauthorize(),
+    });
+    record("session", `Forked a chat in ${agentName(forked.agent)}`);
+    res.json(forked);
+  });
   app.post("/api/sessions/:agent/:id/draft", async (req, res) => {
     macOwner(req);
     const text = req.body?.text;

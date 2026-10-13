@@ -22,6 +22,7 @@ import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibil
 export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature, wizardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const skippedLast = (job) => (job.state?.lastRunStatus ?? job.state?.lastStatus) === "skipped";
 // Gateway errors can embed downstream provider credentials, not just the
 // Gateway's own token. Publish fixed descriptions, never arbitrary error text.
 const unconfirmedRun =
@@ -42,6 +43,8 @@ const publicGatewayError = (value) => {
   if (!text) return "";
   // This exact local status is safe even if echoed by a Gateway.
   if (text === unconfirmedRun) return unconfirmedRun;
+  if (/system-owned/i.test(text))
+    return "OpenClaw manages this schedule itself. Change it in OpenClaw.";
   if (/protocol mismatch/i.test(text))
     return "Reach and OpenClaw use incompatible connection versions. Update Reach to reconnect.";
   if (/credit balance|quota|billing|rate.?limit|429/i.test(text))
@@ -1325,6 +1328,7 @@ export function createOpenClaw({
         canAdd: can("cron.add"),
         canRun: can("cron.run"),
         canRemove: can("cron.remove"),
+        canSwitchHeartbeat: can("config.get") && can("config.patch"),
         hasMore: result.hasMore === true,
         nextOffset: result.nextOffset ?? offset + result.jobs.length,
         jobs: result.jobs.map((j) => ({
@@ -1342,7 +1346,11 @@ export function createOpenClaw({
               : typeof j.state?.lastStatus === "string"
                 ? j.state.lastStatus
                 : "idle",
-          error: redact(j.state?.lastError || ""),
+          // A skipped run's "error" is only why it was skipped.
+          error: skippedLast(j) ? "" : redact(j.state?.lastError || ""),
+          note: skippedLast(j) ? schedulesFeature.skipNote(j.state?.lastError) : "",
+          managed: schedulesFeature.ownedByOpenClaw(j),
+          heartbeat: schedulesFeature.isHeartbeat(j),
           delivery:
             j.delivery?.mode === "announce"
               ? j.delivery.channel && j.delivery.channel !== "last"
@@ -1687,6 +1695,9 @@ export function createOpenClaw({
         version,
         historyLimit: limit,
         mayHaveOlder: messages.length >= limit,
+        // The phone displays text, but a fork must not silently omit other
+        // content blocks (attachments, thinking and structured tool calls).
+        incompleteForFork: messages.some(m => Array.isArray(m.content) && m.content.some(p => p?.type !== "text")),
       };
     },
     async send(

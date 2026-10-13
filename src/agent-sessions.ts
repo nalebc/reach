@@ -71,7 +71,7 @@ export type AgentSession = {
   // Continued from a chat with the other agent, as if forked (move.mjs).
   movedFrom?: { agent: string; id: string; title?: string };
   // Where this chat was continued with another agent.
-  movedTo?: { agent: string; id: string; at?: number }[];
+  movedTo?: { agent: string; id: string; at?: number; fork?: boolean; upTo?: string }[];
 };
 export type AgentQuestion = {
   question: string;
@@ -814,9 +814,9 @@ export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back. resume: the new agent is told to keep going
 // (resumeError: moved, but that message couldn't go).
-export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string, { resume = false } = {}) => {
+export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string, { resume = false, fork = false, through = undefined }: { resume?: boolean; fork?: boolean; through?: string } = {}) => {
   const moved = await post<{ agent?: unknown; id?: unknown; resumed?: unknown; resumeError?: unknown } | null>(
-    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to, ...(resume ? { resume: true } : {}) },
+    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/${fork ? "fork" : "move"}`, { to, ...(resume ? { resume: true } : {}), ...(through ? { through } : {}) },
   );
   // A successful HTTP status does not prove the destination is usable. Keep
   // the source open on incompatible replies; the server may already have

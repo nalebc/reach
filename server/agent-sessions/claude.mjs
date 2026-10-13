@@ -349,6 +349,29 @@ export function createClaudeSessions({
       }
       return { session: await summary(found, (await records()).get(id)), items: parsed.items, memory: parsed.memory || null };
     },
+    // Copy native records, including compaction, thinking, tool calls and
+    // attachments. Re-rendering visible text would lose Claude's context.
+    async fork(id, { through = null, authorize = () => {} } = {}) {
+      authorize();
+      const found = await locate(id);
+      if (!found) throw Object.assign(new Error("Unknown session."), { status: 404 });
+      const source = await fs.readFile(found.file, "utf8");
+      const rows = source.split("\n").filter(Boolean).map(line => JSON.parse(line));
+      if (through) {
+        const point = rows.findIndex(row => row.uuid === through ||
+          (row.type === "assistant" && Array.isArray(row.message?.content) && row.message.content.some((_, n) => `${row.uuid}:${n}` === through)));
+        if (point < 0) throw Object.assign(new Error("That message isn't in this chat."), { status: 404 });
+        const row = rows[point];
+        if (row.uuid !== through) row.message.content = row.message.content.slice(0, Number(through.slice(row.uuid.length + 1)) + 1);
+        rows.splice(point + 1);
+      }
+      const target = randomUUID();
+      authorize();
+      await fs.writeFile(path.join(path.dirname(found.file), `${target}.jsonl`),
+        rows.map(row => JSON.stringify({ ...row, sessionId: target })).join("\n") + "\n",
+        { flag: "wx", mode: 0o600 });
+      return { id: target };
+    },
     // A new chat that continues one moved here from another agent: a
     // transcript of its own (never over an existing one), in its folder's
     // real path (the nearest that still exists), as Claude Code writes them.

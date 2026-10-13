@@ -175,3 +175,10 @@
   flex: none;
   opacity: 0.5;
 }
+
+.fork-explanation {
+  margin: 4px 10px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.7;
+}

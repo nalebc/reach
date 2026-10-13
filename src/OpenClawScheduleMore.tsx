@@ -15,6 +15,9 @@ export type ClawJob = {
   lastRunAt: number;
   status: string;
   error: string;
+  note?: string;
+  managed?: boolean;
+  heartbeat?: boolean;
   delivery: string;
 };
 type Run = {
@@ -24,6 +27,7 @@ type Run = {
   tokens: number;
   model: string;
   error: string;
+  note?: string;
   deliveryError: string;
   chat: { key: string; title: string } | null;
 };
@@ -189,6 +193,7 @@ function RunHistory({ peer, id }: { peer: Peer; id: string }) {
               <div className="claw-sched-meta">
                 {!!r.durationMs && <span>{took(r.durationMs)}</span>}
                 {!!r.tokens && <span>{tokens(r.tokens)}</span>}
+                {r.note && <span>{r.note}</span>}
                 {r.chat && <span className="claw-sched-chat">{r.chat.title}</span>}
               </div>
               {(r.error || r.deliveryError) && <p className="claw-sched-error">{r.error || r.deliveryError}</p>}

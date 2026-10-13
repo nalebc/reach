@@ -1278,6 +1278,19 @@ test("OpenClaw inventories expose display fields and redact credentials, without
             payload: { message: "private" },
             delivery: { mode: "announce", channel: "telegram", to: "private" },
           },
+          {
+            id: "beat",
+            name: "heartbeat-main",
+            declarationKey: "heartbeat:main",
+            enabled: true,
+            schedule: { kind: "every", everyMs: 1800000 },
+            state: {
+              lastRunAtMs: 80,
+              lastRunStatus: "skipped",
+              lastError: "heartbeat skipped: empty-heartbeat-file",
+            },
+            payload: { kind: "heartbeat" },
+          },
         ],
         hasMore: true,
         nextOffset: 50,
@@ -1299,6 +1312,12 @@ test("OpenClaw inventories expose display fields and redact credentials, without
   const jobs = await c.automations({ offset: 50, query: "Daily" });
   assert.equal(jobs.jobs[0].delivery, "telegram");
   assert.equal(jobs.jobs[0].error, "OpenClaw reports an authentication problem. Check OpenClaw on this computer.");
+  assert.equal(jobs.jobs[0].managed, false);
+  // A skipped heartbeat isn't a failure, and OpenClaw keeps it as its own.
+  assert.deepEqual(
+    [jobs.jobs[1].status, jobs.jobs[1].error, jobs.jobs[1].note, jobs.jobs[1].managed],
+    ["skipped", "", "Nothing to check: the heartbeat's task list is empty.", true],
+  );
   assert.equal(jobs.hasMore, true);
   assert.deepEqual(calls.find((c) => c.method === "cron.list").params, {
     includeDisabled: true,
@@ -1508,6 +1527,9 @@ test("a schedule made from Reach is a fixed cron job of its own; run now and del
   await assert.rejects(c.addAutomation({ name: "x", message: "y", expr: "0 9 * * *" }), /did not confirm/);
   handle((req) => (req.method === "cron.run" ? { payload: { ok: false, reason: "already-running" } } : undefined));
   await assert.rejects(c.runAutomation({ id: "job-1" }), /already running/);
+  // OpenClaw's own monitors refuse removal: said plainly, not as a generic error.
+  handle((req) => (req.method === "cron.remove" ? { error: { message: "Error: system-owned monitor jobs cannot be removed by cron clients" } } : undefined));
+  await assert.rejects(c.removeAutomation({ id: "job-1" }), /^Error: OpenClaw manages this schedule itself\. Change it in OpenClaw\.$/);
   // A Gateway older than the key refuses it: added once more without it.
   handle((req) => req.method === "cron.add"
     ? "declarationKey" in req.params
