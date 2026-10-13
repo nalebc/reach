@@ -56,7 +56,14 @@ async function workspace({ url, place, state } = {}) {
   localStorage.setItem("reach.active", peer.id);
   localStorage.setItem("reach.chatAgent", "codex");
   if (place) sessionStorage.setItem("reach.place", JSON.stringify({ peer: peer.id, ...place }));
-  if (state) dom.window.history.replaceState(state, "");
+  // Two entries of "the page before" (another document on a phone): Back
+  // landing on one is the reload the owner saw. jsdom has one document, so
+  // each landing is counted instead.
+  dom.window.history.replaceState({ oldPage: true }, "");
+  dom.window.history.pushState({ oldPage: true }, "");
+  dom.window.history.pushState(state ?? null, "");
+  let landed = 0;
+  dom.window.addEventListener("popstate", () => dom.window.history.state?.oldPage && landed++);
   const { default: App } = await dom.load("/src/App.tsx");
   const view = await dom.render(dom.React.createElement(App));
   const $ = (selector) => dom.document.querySelector(selector);
@@ -66,17 +73,22 @@ async function workspace({ url, place, state } = {}) {
     [...dom.document.querySelectorAll("button")].find(
       (b) => b.getAttribute("aria-label") === label || (b.querySelector(".more-row-label, .gs-label")?.textContent || b.textContent).trim() === label,
     );
+  // Nothing went wrong, and Back never left this page.
+  const clean = () => {
+    assert.deepEqual(dom.errors, []);
+    assert.equal(landed, 0, "never back on the page before");
+  };
   const close = async () => {
     await view.unmount();
     globalThis.WebSocket = socket;
     await dom.close();
   };
-  return { dom, $, on, reach, button, close };
+  return { dom, $, on, reach, button, clean, close };
 }
 const card = (dom) => dom.waitFor(() => [...dom.document.querySelectorAll(".chat-card")].find((c) => /Fix login/.test(c.textContent)));
 
 test("a chat, then back: its list, then Home; never a reload", async () => {
-  const { dom, $, on, reach, button, close } = await workspace();
+  const { dom, $, on, reach, button, clean, close } = await workspace();
   try {
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 }, "Home is the first entry");
@@ -95,14 +107,14 @@ test("a chat, then back: its list, then Home; never a reload", async () => {
     dom.window.history.back();
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 });
-    assert.deepEqual(dom.errors, []);
+    clean();
   } finally {
     await close();
   }
 });
 
 test("More, Settings, Agents & people: back twice comes back the same way", async () => {
-  const { dom, on, reach, button, close } = await workspace();
+  const { dom, on, reach, button, clean, close } = await workspace();
   try {
     await on("overview");
     button("More workspace options").click();
@@ -119,14 +131,16 @@ test("More, Settings, Agents & people: back twice comes back the same way", asyn
     dom.window.history.back();
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 });
-    assert.deepEqual(dom.errors, []);
+    clean();
   } finally {
     await close();
   }
 });
 
-test("switching tabs adds no entry: back from any tab is Home", async () => {
-  const { dom, on, reach, button, close } = await workspace();
+// Not quite "tabs only replace": Home stays under the tabs, so the first tab
+// opened from Home adds the one entry back to it; after that, tabs replace.
+test("Home is under every tab; switching between tabs adds no entry", async () => {
+  const { dom, on, reach, button, clean, close } = await workspace();
   try {
     await on("overview");
     const start = dom.window.history.length;
@@ -150,14 +164,14 @@ test("switching tabs adds no entry: back from any tab is Home", async () => {
     dom.window.history.back();
     await on("overview");
     assert.equal(reach().i, 0);
-    assert.deepEqual(dom.errors, []);
+    clean();
   } finally {
     await close();
   }
 });
 
 test("with a chat open, the Home tab stays on Home: the chat's entry goes first", async () => {
-  const { dom, $, on, reach, button, close } = await workspace();
+  const { dom, $, on, reach, button, clean, close } = await workspace();
   try {
     await on("overview");
     button("Chat").click();
@@ -169,14 +183,37 @@ test("with a chat open, the Home tab stays on Home: the chat's entry goes first"
     await settle(100);
     assert.ok($(".main-content.page-overview"), "still on Home once the chat's entry is popped");
     assert.deepEqual(reach(), { page: "overview", i: 0 });
-    assert.deepEqual(dom.errors, []);
+    clean();
+  } finally {
+    await close();
+  }
+});
+
+// jsdom works out both steps from the same entry, so it lands on Home either
+// way; a phone may take the second from Home, past it. App's leaveTo ignores
+// a step asked for while one is under way.
+test("a double tap on Home with a chat open steps back once, never past Home", async () => {
+  const { dom, $, on, reach, button, clean, close } = await workspace();
+  try {
+    await on("overview");
+    button("Chat").click();
+    (await card(dom)).click();
+    await dom.waitFor(() => $(".as-page"));
+    await settle();
+    assert.equal(reach().i, 2);
+    button("Home").click();
+    button("Home").click();
+    await on("overview");
+    await settle(150);
+    assert.deepEqual(reach(), { page: "overview", i: 0 });
+    clean();
   } finally {
     await close();
   }
 });
 
 test("a notification's link straight into a chat: back is its list, then Home", async () => {
-  const { dom, $, on, reach, close } = await workspace({ url: `https://reach.test/?page=sessions&agent=codex&id=${CODEX}` });
+  const { dom, $, on, reach, clean, close } = await workspace({ url: `https://reach.test/?page=sessions&agent=codex&id=${CODEX}` });
   try {
     await dom.waitFor(() => $(".as-page"));
     await settle();
@@ -187,7 +224,7 @@ test("a notification's link straight into a chat: back is its list, then Home", 
     assert.ok($(".main-content.page-sessions"));
     dom.window.history.back();
     await on("overview");
-    assert.deepEqual(dom.errors, []);
+    clean();
   } finally {
     await close();
   }
@@ -195,7 +232,7 @@ test("a notification's link straight into a chat: back is its list, then Home", 
 
 test("after a reload in a chat (an interface rebuild), the chat has its parent in the new page", async () => {
   // The entry kept the old page's marks; the place says which chat was open.
-  const { dom, $, reach, close } = await workspace({
+  const { dom, $, reach, clean, close } = await workspace({
     state: { reach: { page: "sessions", i: 2 }, reachChat: true },
     place: { page: "sessions", chat: { agent: "codex", id: CODEX } },
   });
@@ -208,7 +245,7 @@ test("after a reload in a chat (an interface rebuild), the chat has its parent i
     await dom.waitFor(() => !$(".as-page"));
     assert.ok($(".main-content.page-sessions"), "the list, in this page: no reload");
     assert.deepEqual(reach(), { page: "sessions", i: 1 });
-    assert.deepEqual(dom.errors, []);
+    clean();
   } finally {
     await close();
   }

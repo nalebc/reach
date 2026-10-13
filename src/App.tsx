@@ -530,6 +530,9 @@ function ReachWorkspace() {
   // open above it, then goes on. Otherwise that view, closing as it unmounts,
   // popped its entry after the new page's and brought the old page back.
   const leaveTo = (i: number, then: () => void) => {
+    // Already on the way (a double tap): the entry isn't reached yet, and a
+    // second step from it would run past Home, out of this page.
+    if (afterStep.current) return;
     const n = stackDepth() - i;
     if (n <= 0) return then();
     afterStep.current = then;
