@@ -109,6 +109,15 @@ export default function AgentPage({
     }
   });
   const guide = (access.guide || "").split("\n").filter((line) => line.trim());
+  const showGuide = useCallback((open: boolean) => {
+    setGuideOpen(open);
+    try {
+      if (open) sessionStorage.removeItem(GUIDE_CLOSED);
+      else sessionStorage.setItem(GUIDE_CLOSED, "1");
+    } catch {
+      /* Storage may be off: open again next time. */
+    }
+  }, []);
   const [activity, setActivity] = useState("");
   const [status, setStatus] = useState<{
     text: string;
@@ -228,21 +237,16 @@ export default function AgentPage({
       reload={reload}
     >
       <div className="agent-page ap-workspace-content">
-        {guide.length > 0 && (
-          // Read by the agent once it's in, on every section: what it may
-          // do here and the owner's rules, from its access now.
+        {guide.length > 0 && active !== "screen" && (
+          // Read by the agent once it's in: what it may do here and the
+          // owner's rules, from its access now. On Screen it's a popup over
+          // the picture instead (AgentScreen), which stays the whole view.
           <details
             className="ap-guide"
             open={guideOpen}
             onToggle={(e) => {
               const open = e.currentTarget.open;
-              setGuideOpen(open);
-              try {
-                if (open) sessionStorage.removeItem(GUIDE_CLOSED);
-                else sessionStorage.setItem(GUIDE_CLOSED, "1");
-              } catch {
-                /* Storage may be off: open again next time. */
-              }
+              if (open !== guideOpen) showGuide(open);
             }}
           >
             <summary>
@@ -291,6 +295,9 @@ export default function AgentPage({
               status={status}
               tell={tell}
               ended={ended}
+              guide={guide}
+              guideOpen={guideOpen}
+              onGuide={showGuide}
             />
           </div>
         )}

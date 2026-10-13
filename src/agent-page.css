@@ -36,6 +36,10 @@
 .ap-guide ul { margin: 0; padding: 0 14px 6px; list-style: none; display: grid; }
 .ap-guide li { padding: 8px 0; border-top: 1px solid var(--ag-line, rgba(255, 255, 255, 0.06)); line-height: 1.4; color: var(--ag-ink-2, #93a198); }
 .ap-guide li:first-child { color: var(--ag-ink, #e9eee9); }
+/* The same lines in a popup over the screen, which keeps its whole height. */
+.ap-guide-list { margin: 0; padding: 0; list-style: none; display: grid; font-size: 14px; }
+.ap-guide-list li { padding: 9px 0; border-top: 1px solid var(--ag-line, rgba(255, 255, 255, 0.06)); line-height: 1.4; }
+.ap-guide-list li:first-child { border-top: 0; }
 .ap-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
 .ap-pill[aria-pressed="true"] { border-color: var(--ag-accent, #b9efd4); color: var(--ag-accent, #b9efd4); }
 .ap-pill.is-primary { background: var(--ag-accent, #b9efd4); border-color: transparent; color: #10221a; font-weight: 600; }
