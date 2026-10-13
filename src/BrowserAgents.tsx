@@ -54,6 +54,8 @@ type AgentAction = { id: string; at: number; kind: string; text: string; app?: s
 // One stretch of an agent's work: Reach's typical time per call and the
 // agent's own between calls (server/agent-timings.mjs).
 type AgentPace = { from: number; to: number; calls: number; reachMs: number; agentMs: number };
+// What the owner reads of one agent: its actions, and its pace.
+type AgentDid = { actions: AgentAction[]; pace?: AgentPace[] };
 const seconds = (ms: number) =>
   ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : ms < 120_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
 type Props = {
@@ -162,11 +164,11 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
         }),
         // What this one agent did, newest first; an older Reach has no log.
         focus
-          ? request<{ actions: AgentAction[]; pace?: AgentPace[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: deadline.signal }).catch((failure) => {
-              if (failure?.status === 404) return { actions: [] as AgentAction[] };
+          ? request<AgentDid>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: deadline.signal }).catch((failure): AgentDid => {
+              if (failure?.status === 404) return { actions: [] };
               throw failure;
             })
-          : Promise.resolve({ actions: [] as AgentAction[] }),
+          : Promise.resolve<AgentDid>({ actions: [] }),
       ]);
       deadline.dispose();
       if (!controller.signal.aborted) {
@@ -274,7 +276,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
     const agentRecords = records.filter((record) => record.clientId === agent.id);
     // What it did, newest first, with one quiet line on each stretch's pace
     // where that stretch ended.
-    const did = [
+    const did: { at: number; item?: AgentAction; stretch?: AgentPace }[] = [
       ...actions.map((item) => ({ at: item.at, item })),
       ...pace.map((stretch) => ({ at: stretch.to, stretch })),
     ].sort((a, b) => b.at - a.at);
