@@ -104,6 +104,7 @@ import {
   setAgentMode,
   setAgentModel,
   stopSession,
+  tooOldLine,
   uploadImage,
   uploadFile,
   usageLink,
@@ -2229,8 +2230,9 @@ export default function AgentSessionView({
     agent === "claude" && info.held !== "reach" ? info.live?.where : undefined;
   // Reach replies through the claude command on the Mac (Claude Code's CLI),
   // which signs in on its own: the Claude app's sign-in isn't shared with it.
+  // (Too old for Reach, signing in wouldn't help: its line says what does.)
   const claudeSignedOut =
-    !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
+    !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn && !claudeHealth.tooOld;
   // No Claude Code at all (only the Claude app, or neither): a message goes
   // through the Claude app only when it lists this chat and is open.
   const claudeMissing =
@@ -2244,11 +2246,17 @@ export default function AgentSessionView({
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
           ? `Open in another Claude Code process on your ${word}.`
+          // Older than Reach works with: said before a message is refused
+          // for it (the chat still reads; writing stays on).
+          : claudeHealth?.tooOld
+            ? tooOldLine("Claude Code", claudeHealth.tooOld.to)
           : claudeMissing
             ? `Claude Code isn't installed on your ${word}. Install it from Chat to reply here.`
           // In the Claude app, working or asking: nothing to say (Oct 9: "it
           // is unnecessary"); what you send goes next in the same session.
           : ""
+      : codexHealth?.tooOld
+        ? tooOldLine("Codex", codexHealth.tooOld.to)
       : codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? `Codex is signed out on your ${word}.`
         : "";
@@ -2314,7 +2322,7 @@ export default function AgentSessionView({
   const needsSignIn =
     agent === "claude"
       ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
-      : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn;
+      : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn && !codexHealth.tooOld;
 
   const modelId = choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;

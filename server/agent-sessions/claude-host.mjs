@@ -6,7 +6,7 @@
 // session id, replayed user messages, API errors, results, set_model and
 // set_permission_mode. Permission requests (can_use_tool) and their answers
 // follow the shapes in the CLI's own code; they need a signed-in turn to see.
-import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent } from "./compatibility.mjs";
+import { uncertainDelivery, object, validateQuestions, compatibilityError, probeAgent, reportTooOld, tooOldError } from "./compatibility.mjs";
 import { elicitationPrompt, elicitationAnswer } from "./elicitation.mjs";
 import { createClaudeRewinds } from "./claude-rewinds.mjs";
 import { editDiff } from "./claude-transcript.mjs";
@@ -659,7 +659,9 @@ export function createClaudeHost({
     if (!bash) throw bad(`Claude Code needs Git Bash on this ${computerWord(platform)}. Install Git for Windows, then try again.`, 503);
     const compatible = await check(claude);
     authorize();
-    if (compatible.status === "incompatible") throw compatibilityError("claude", "CLI");
+    // Too old: its version and the one to update to (compatibility.mjs);
+    // any other mismatch is Reach's to fix.
+    if (compatible.status === "incompatible") throw reportTooOld(compatible) ? tooOldError(compatible) : compatibilityError("claude", "CLI");
     if (compatible.status !== "available")
       throw bad("Couldn’t check Claude Code’s connection. Try again in a moment, or use the screen or terminal.", 503);
     if (closed) throw bad("Claude session service is closed.", 503);

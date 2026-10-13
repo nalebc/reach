@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import {
   createAgentProbe,
+  OLDEST_WORKING,
+  reportTooOld,
   runToFile,
+  tooOld,
+  tooOldError,
   validateQuestions,
   validateCodexResult,
 } from "../server/agent-sessions/compatibility.mjs";
@@ -48,11 +52,91 @@ test("CLI probes share work, expire, and detect replaced executables without sen
 test("an agent older than Reach works with is named, with the version to update to", async () => {
   const at = (version, text = help) => createAgentProbe({ stat: () => ({}), run: async (_, args) => ({ stdout: args[0] === "--version" ? version : text }) });
   const old = await at("2.1.258 (Claude Code)", help.replace(" --permission-prompts --permission-prompt-tool", ""))("claude", "/fake");
-  assert.deepEqual(old, { version: "2.1.258", status: "incompatible", reason: "Claude Code 2.1.258 is older than Reach works with: update it to 2.1.259 or newer, or use the screen or terminal." });
+  assert.deepEqual(old, {
+    version: "2.1.258",
+    status: "incompatible",
+    agent: "claude",
+    to: "2.1.259",
+    reason: "Claude Code 2.1.258 is older than Reach works with. Update it to 2.1.259 or newer to use it here.",
+  });
   assert.equal((await at("2.1.259 (Claude Code)")("claude", "/fake")).status, "available");
-  assert.match((await at("codex-cli 0.147.0", "start")("codex", "/fake")).reason, /^Codex 0\.147\.0 is older than Reach works with: update it to 0\.148\.0 or newer/);
+  assert.equal((await at("codex-cli 0.147.0", "start")("codex", "/fake")).reason, "Codex 0.147.0 is older than Reach works with. Update it to 0.148.0 or newer to use it here.");
   assert.equal((await at("codex-cli 0.148.0", "start")("codex", "/fake")).status, "available");
   assert.match((await at("2.1.300 (Claude Code)", "--input-format")("claude", "/fake")).reason, /Update Reach/, "newer and missing: Reach must change");
+});
+test("the floors: OpenClaw from 2026.2.26; a version Reach can't read is never too old", () => {
+  assert.equal(OLDEST_WORKING.openclaw, "2026.2.26");
+  assert.deepEqual(tooOld("openclaw", "2026.2.25"), {
+    version: "2026.2.25",
+    status: "incompatible",
+    agent: "openclaw",
+    to: "2026.2.26",
+    reason: "OpenClaw 2026.2.25 is older than Reach works with. Update it to 2026.2.26 or newer to use it here.",
+  });
+  for (const version of ["2026.2.26", "2026.3.13", "2026.10.2", null, "", "dev", "2026.2"])
+    assert.equal(tooOld("openclaw", version), null, String(version));
+  assert.equal(tooOld("gemini", "0.0.1"), null, "no floor, never too old");
+  // The error says the same, with what a phone may read; the generic one stays.
+  const error = tooOldError(tooOld("codex", "0.147.0"));
+  assert.equal(error.message, "Codex 0.147.0 is older than Reach works with. Update it to 0.148.0 or newer to use it here.");
+  assert.equal(error.code, "AGENT_INCOMPATIBLE");
+  assert.equal(error.status, 409);
+  assert.equal(error.retryable, false);
+  assert.equal(error.uncertain, false);
+  assert.deepEqual(error.update, { agent: "codex", from: "0.147.0", to: "0.148.0" });
+  assert.equal(tooOldError({ agent: "openclaw", to: "2026.2.26" }).message, "OpenClaw is older than Reach works with. Update it to 2026.2.26 or newer to use it here.");
+  assert.equal(reportTooOld({ status: "incompatible", reason: "Required agent commands are unavailable. Update Reach or use the screen or terminal." }), null);
+  assert.equal(reportTooOld({ status: "available", version: "2.1.300" }), null);
+});
+test("a Codex too old for Reach: its chats are read; anything else is refused, said with the version to update to", async (t) => {
+  let report = tooOld("codex", "0.147.0");
+  let shape = "ok";
+  const { daemon, calls } = transport(
+    t,
+    (m) => (m.method === "thread/list" && shape === "odd" ? { result: { data: "changed" } } : { result: m.method === "turn/start" ? { turn: { id: "t1" } } : { data: [] } }),
+    { check: async () => report },
+  );
+  // Listing and reading go to it as before.
+  assert.deepEqual(await daemon.rpc("thread/list"), { data: [] });
+  assert.equal((await daemon.compatibility()).status, "incompatible");
+  // Sending is refused before anything goes to Codex: not "Update Reach".
+  for (const method of ["turn/start", "thread/start", "thread/queue/add"])
+    await assert.rejects(daemon.rpc(method, {}), (error) => {
+      assert.equal(error.message, "Codex 0.147.0 is older than Reach works with. Update it to 0.148.0 or newer to use it here.");
+      assert.equal(error.code, "AGENT_INCOMPATIBLE");
+      assert.deepEqual(error.update, { agent: "codex", from: "0.147.0", to: "0.148.0" });
+      assert.equal(error.uncertain, false);
+      return true;
+    });
+  assert.equal(calls.some((m) => ["turn/start", "thread/start", "thread/queue/add"].includes(m.method)), false);
+  // A reply an older Codex shapes differently is said as its being too old.
+  shape = "odd";
+  await assert.rejects(daemon.rpc("thread/list"), /Codex 0\.147\.0 is older than Reach works with/);
+  // Updated: works again at once, nothing held.
+  shape = "ok";
+  report = { status: "available", version: "0.150.0" };
+  assert.deepEqual(await daemon.rpc("turn/start", {}), { turn: { id: "t1" } });
+  assert.equal((await daemon.compatibility()).status, "available");
+});
+test("a Codex whose service won't start: too old is said as too old, anything else stays as it was", async (t) => {
+  const { daemon } = transport(t, () => ({ result: { data: [] } }), {
+    check: async () => tooOld("codex", "0.120.0"),
+    run: async () => {
+      throw new Error("error: unrecognized subcommand 'daemon'");
+    },
+  });
+  await assert.rejects(daemon.rpc("thread/list"), (error) => {
+    assert.equal(error.message, "Codex 0.120.0 is older than Reach works with. Update it to 0.148.0 or newer to use it here.");
+    return true;
+  });
+  const { daemon: other } = transport(t, () => ({ result: { data: [] } }), {
+    check: async () => ({ status: "incompatible", version: "0.200.0", reason: "Required agent commands are unavailable. Update Reach or use the screen or terminal." }),
+  });
+  await assert.rejects(other.rpc("thread/list"), (error) => {
+    assert.match(error.message, /^Codex's CLI interface is incompatible with Reach\. Update Reach/);
+    assert.equal(error.update, undefined);
+    return true;
+  });
 });
 
 test("a help text cut short is read again, and never makes the agent incompatible", async () => {

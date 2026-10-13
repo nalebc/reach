@@ -16,6 +16,10 @@ import {
 import { createAgentSessions, nativeLink } from "../server/agent-sessions/index.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { createCodexDaemon } from "../server/agent-sessions/codex-daemon.mjs";
+import { tooOld, tooOldError } from "../server/agent-sessions/compatibility.mjs";
+import { readyForTasks } from "../server/agent-sessions/workflows.mjs";
+import { continueUnavailable } from "../server/agent-sessions/auto-continue.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const line = (o) => JSON.stringify(o);
@@ -445,6 +449,76 @@ test("the merged list sorts, marks live sessions and survives one agent failing"
       ["gemini", "Gemini CLI", false],
     ],
   );
+});
+
+// Older than Reach works with (compatibility.mjs): installed, named with the
+// version to update to, and never offered for new work: not a workflow's
+// task, not continued in, not moved into. Its chats still list.
+test("an agent too old for Reach is said so in health and left out of new work", async (t) => {
+  let claudeReport = tooOld("claude", "2.1.200");
+  const daemon = createCodexDaemon({
+    locate: async () => "/fake/codex",
+    run: async () => ({ stdout: '{"socketPath":"/fake.sock"}' }),
+    check: async () => tooOld("codex", "0.147.0"),
+  });
+  t.after(() => daemon.close());
+  const sessions = createAgentSessions({
+    daemon,
+    codex: {
+      list: async () => [{ agent: "codex", id: ID, updatedAt: 2 }],
+      // An old Codex's service may not even answer its account.
+      health: async () => {
+        throw tooOldError(tooOld("codex", "0.147.0"));
+      },
+    },
+    claude: {
+      list: async () => [{ agent: "claude", id: "a", updatedAt: 1 }],
+      starts: async () => [],
+      health: async () => ({ agent: "claude", installed: true, signedIn: true, usable: true }),
+    },
+    claudeCompatibility: async () => claudeReport,
+    // A Gateway that refused Reach's v3 device signature (no version said).
+    openClaw: { tooOld: () => ({ to: "2026.2.26" }), canMove: () => false, connected: () => false },
+    live: async () => new Map(),
+    detect: async () => [{ agent: "openclaw", name: "OpenClaw", installed: true, signedIn: false, supported: true }],
+  });
+  const health = await sessions.health();
+  const [codex, claude, openclaw] = ["codex", "claude", "openclaw"].map((a) => health.find((h) => h.agent === a));
+  assert.deepEqual(codex.tooOld, { version: "0.147.0", to: "0.148.0" });
+  assert.equal(codex.installed, true);
+  assert.equal(codex.error, undefined, "its line says it, not an error");
+  assert.deepEqual(codex.needs, ["update"]);
+  assert.deepEqual(claude.tooOld, { version: "2.1.200", to: "2.1.259" });
+  assert.equal(claude.signedIn, true, "what it said of itself stays");
+  assert.deepEqual(claude.needs, ["update"]);
+  assert.deepEqual(openclaw.tooOld, { to: "2026.2.26" });
+  assert.deepEqual(openclaw.needs, ["update"]);
+  assert.equal(openclaw.canTakeMoves, false);
+  // Its chats still list.
+  assert.deepEqual((await sessions.list()).sessions.map((s) => s.id).sort(), [ID, "a"].sort());
+  // Never a workflow's task, never continued in.
+  assert.deepEqual(readyForTasks(health), []);
+  assert.equal(continueUnavailable("claude", health), "Update needed");
+  assert.equal(continueUnavailable("openclaw", health), "Update needed");
+  // Never moved into: said with the version, before anything is written.
+  await assert.rejects(sessions.moveOnly("codex", ID, { to: "claude" }), (error) => {
+    assert.equal(error.message, "Claude Code 2.1.200 is older than Reach works with. Update it to 2.1.259 or newer to use it here.");
+    return true;
+  });
+  await assert.rejects(sessions.moveOnly("claude", "a", { to: "openclaw" }), {
+    message: "OpenClaw is older than Reach works with. Update it to 2026.2.26 or newer to use it here.",
+  });
+  // Updated: offered again.
+  claudeReport = { status: "available", version: "2.1.296" };
+  const after = (await sessions.health()).find((h) => h.agent === "claude");
+  assert.equal(after.tooOld, undefined);
+  assert.equal(after.needs, undefined);
+  assert.deepEqual(readyForTasks([after]), ["claude"]);
+  assert.equal(continueUnavailable("claude", [after]), "");
+  // A version Reach can't read, or a check not done, is no reason to leave it out.
+  assert.deepEqual(readyForTasks([{ ...after, compatibility: null }]), ["claude"]);
+  assert.deepEqual(readyForTasks([{ ...after, compatibility: { status: "incompatible", reason: "Update Reach" } }]), []);
+  assert.deepEqual(readyForTasks([{ ...after, compatibility: { status: "unavailable" } }]), []);
 });
 
 test("session routes are owner-only", async () => {

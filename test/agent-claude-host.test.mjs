@@ -14,6 +14,7 @@ import path from "node:path";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import { createClaudeImports } from "../server/agent-sessions/claude-import.mjs";
 import { createOutbox } from "../server/agent-sessions/outbox.mjs";
+import { tooOld } from "../server/agent-sessions/compatibility.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -121,6 +122,33 @@ test("a temporarily unavailable Claude probe asks to retry rather than update Re
     return true;
   });
   assert.equal(claude.runs.length, 0);
+});
+
+// Older than Reach works with (compatibility.mjs): the message names both
+// versions, not "Update Reach", and nothing is started; any other mismatch
+// still says Reach must change.
+test("a Claude Code too old for Reach is refused in its own words, with the version to update to", async (t) => {
+  const claude = fakeClaude(), h = host(claude, { check: async () => tooOld("claude", "2.1.200") });
+  t.after(() => h.close());
+  await assert.rejects(h.send(ID, { text: "hello", cwd: "/work/app" }), (error) => {
+    assert.equal(error.message, "Claude Code 2.1.200 is older than Reach works with. Update it to 2.1.259 or newer to use it here.");
+    assert.equal(error.code, "AGENT_INCOMPATIBLE");
+    assert.equal(error.status, 409);
+    assert.equal(error.retryable, false);
+    assert.deepEqual(error.update, { agent: "claude", from: "2.1.200", to: "2.1.259" });
+    return true;
+  });
+  assert.equal(claude.runs.length, 0);
+  const other = fakeClaude(), changed = host(other, {
+    check: async () => ({ status: "incompatible", version: "2.1.300", reason: "Required agent commands are unavailable. Update Reach or use the screen or terminal." }),
+  });
+  t.after(() => changed.close());
+  await assert.rejects(changed.send(ID, { text: "hello", cwd: "/work/app" }), (error) => {
+    assert.match(error.message, /^Claude's CLI interface is incompatible with Reach\. Update Reach/);
+    assert.equal(error.update, undefined);
+    return true;
+  });
+  assert.equal(other.runs.length, 0);
 });
 
 test("Claude stream handling preserves the specific incompatible feature", async (t) => {
