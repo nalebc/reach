@@ -315,9 +315,11 @@ export default function AgentScreen({
     } catch (e) {
       // A capture that never answers is said, never waited on in silence.
       if (timedOut && mounted.current) {
+        setWaiting("");
         setScreenError("The Mac's screen isn't answering. Still trying…");
         backoff.current = 1000;
       } else if (!controller.signal.aborted && mounted.current) {
+        setWaiting("");
         setScreenError((e as Error).message || "The screen could not be read.");
         backoff.current = 300;
         ended(e);

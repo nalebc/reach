@@ -1262,3 +1262,18 @@ test("while the owner uses the Mac, the agent's live picture waits calmly and co
   await dom.waitFor(() => c.querySelector(".ap-frame img"), 6000);
   assert.equal(c.querySelector(".ap-placeholder.is-waiting"), null);
 });
+
+test("after the owner's turn, a different refusal is said as itself, not as the wait", async () => {
+  let answer = "held";
+  const { c } = await open(full, {
+    screen: () =>
+      answer === "held"
+        ? reply({ error: "The owner is using the Mac. The agent waits until they're done.", kind: "paused", holder: "The owner", retryInMs: 90000 }, 409)
+        : reply({ error: "Reach is paused. The Mac waits until it resumes." }, 409),
+  });
+  await dom.waitFor(() => c.querySelector(".ap-placeholder.is-waiting"));
+  answer = "paused";
+  const said = await dom.waitFor(() => !c.querySelector(".ap-placeholder.is-waiting") && c.querySelector(".ap-placeholder"), 6000);
+  assert.match(said.textContent, /Reach is paused/);
+  assert.doesNotMatch(said.textContent, /owner is using/);
+});

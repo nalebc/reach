@@ -126,11 +126,12 @@ real-device checks that are still open.
   one line, a tap made while control's connection blinks goes once it is back
   (within a second, never later), and click feedback is a small wave in Reach
   green, shown only for a click the computer did (none while only watching).
-- The live screen on a phone hitched every 10–25 s at full size (a 2868×1862
-  stream the iPhone's decoder kept failing on). Phones start at 1920 across, a
-  step down keeps the last picture crisp, and the smaller size is remembered
-  for the session. On Windows, a sideways scroll now goes the same way as on a
-  Mac.
+- The live screen on a phone hitched every 10–25 s at full size: the iPhone's
+  video decoder kept failing on a 2868×1862 stream (and once at 2150×1396).
+  The cause isn't established; as a mitigation, not yet checked on the
+  iPhone, phones start at 1920 across, a step down keeps the last picture
+  crisp, and the smaller size is remembered for the session. On Windows, a
+  sideways scroll now goes the same way as on a Mac.
 - Screen sharing with a browser agent dropped for seconds at a time. The
   foreground `tailscale serve` and `tailscale funnel` processes that carried
   the routes kept exiting (124 and 65 relaunches in one day's log, through a
