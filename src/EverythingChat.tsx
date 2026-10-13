@@ -27,6 +27,7 @@ import { modelDisplayName } from "./ModelSheet";
 import { RunCommandContext, SessionLinkContext } from "./AgentMarkdown";
 import AgentAccess from "./AgentAccess";
 import AgentUpdate, { useTerminalRun } from "./AgentUpdate";
+import { SyncLine } from "./KeepInSync";
 import OpenClawSpace from "./OpenClawSpace";
 import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
 import { ClawTooOld } from "./OpenClawHealth";
@@ -593,6 +594,7 @@ export function NewChat({
           speed={speed}
           busy={modelsLoading || busy}
           error={modelError}
+          footer={agent === "codex" && !flow && models.some((m) => m.needsServiceUpdate) ? <SyncLine peer={peer} id="codex-service" onDone={() => setModelReload((n) => n + 1)} /> : undefined}
           onRetry={() => setModelReload((n) => n + 1)}
           onPick={(next, done) => {
             if (next.speed) return setSpeed(next.speed);

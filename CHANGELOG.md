@@ -10,6 +10,14 @@ release notes, so date the heading before tagging.
 
 ### Added
 
+- 2026-10-13: Reach keeps what it drives in sync. When Codex's service runs
+  behind the Codex CLI (0.158 against 0.162, so GPT-6.1 Sol stayed greyed
+  out), Needs you, Settings → Updates and Codex's model list say "Update
+  Codex's service to use … and newer models" with Update. One tap runs
+  `codex app-server daemon update` with the Codex Reach uses, after saying
+  which working Codex chats it may stop, then reconnects and reads the
+  models again. Claude Code, Codex and OpenClaw updates show in the same
+  list, once per version pair. Nothing updates without the owner's tap.
 - 2026-10-13: Fork a chat from any message into another app ("Fork chat…" in
   a chat's menu, or from an earlier message). Claude forks natively, keeping
   compaction, thinking and complete tool records; Codex forks through the

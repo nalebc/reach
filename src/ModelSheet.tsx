@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, LoaderCircle } from "lucide-react";
 import { effortLabel, type AgentModel, type AgentName } from "./agent-sessions";
@@ -34,6 +34,9 @@ type Props = {
   onAgain?: () => void;
   onPick: (choice: ModelChoice) => void;
   onClose: () => void;
+  // Codex: over its greyed-out models, what unlocks them (an update to its
+  // service: KeepInSync.tsx SyncLine).
+  footer?: ReactNode;
 };
 
 // A chat may use a model the connection's picker no longer lists. Its real
@@ -297,6 +300,7 @@ export function CodexConfigureSheet(props: Props) {
         <h2>Configure</h2>
       </header>
       <Status {...props} empty={!models.length} />
+      {props.footer}
       <ModelRows models={models} model={model} current={current} busy={busy} onPick={(m) => onPick({ model: m.id, effort: effortFor(m, effort) })} />
       {!!current?.speeds?.length && <SpeedRow speeds={current.speeds} speed={props.speed || current.defaultSpeed || "default"} onPick={(id) => onPick({ speed: id })} />}
       <button className="ms-done" onClick={onClose}>Done</button>
