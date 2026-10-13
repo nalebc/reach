@@ -14,7 +14,13 @@ const probeAction = source.match(/'probe'\s*\{([^\r\n]+)\}/)[1];
 
 test("Windows implements the advertised field probe with a bounded read-only hit test and the same focus eligibility", () => {
   assert.match(fieldProbe, /AutomationElement\.FromPoint\(new Point\(x,y\)\)/);
-  assert.match(fieldProbe, /worker\.Join\(250\)/);
+  // 250 ms once UI Automation is up; a look before then gets 1 s, since its
+  // client starts on the first call (warmed as the helper starts).
+  assert.match(fieldProbe, /worker\.Join\(warm\?250:1000\)/);
+  assert.match(fieldProbe, /public static void Warm\(\)/);
+  assert.match(source, /\[ReachDesktopFieldProbe\]::Warm\(\)/);
+  // Each look's thread takes the helper's per-monitor DPI awareness.
+  assert.match(fieldProbe, /SetThreadDpiAwarenessContext\(new IntPtr\(-4\)\);result=Read/);
   assert.match(fieldProbe, /worker!=null && worker\.IsAlive/);
   assert.match(fieldProbe, /depth<4/);
   assert.match(fieldProbe, /!info\.IsOffscreen/);
