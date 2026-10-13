@@ -8,6 +8,7 @@ import {
   needsOnboarding,
   readProgress,
   linkProblem,
+  httpsPage,
   SETUP_SECTIONS,
 } from "../scripts/setup.mjs";
 import { accountApproval, configure, readPreferences } from "../scripts/configure.mjs";
@@ -462,6 +463,30 @@ test("Windows: a fresh run is Tailscale, then the HTTPS link; no account setting
   assert.equal(progress.done, true);
   assert.equal(readPreferences(root), null, "no account settings saved");
   assert.equal(needsOnboarding(root), false, "a finished Windows setup isn't offered again");
+});
+
+// HTTPS off: Tailscale's own one-button page for this computer (the link
+// `tailscale serve` prints), not the DNS page to search (Oct 12, a friend's
+// Windows PC). The DNS page only when Tailscale names no computer.
+test("HTTPS certificates off: Tailscale's one-button page for this computer opens, on a Mac and a Windows PC", async (t) => {
+  for (const make of [deps, windows]) {
+    const root = tmp(t);
+    const states = [{ ...READY, Self: { ID: "n6Z7YR2CNTRL" }, CertDomains: [] }, READY];
+    const opened = [];
+    const printed = [];
+    await runSetup(root, {
+      only: "link",
+      deps: make(scene(), {
+        status: async () => states.shift() || READY,
+        open: async (url) => opened.push(url),
+        print: (m) => printed.push(m),
+      }),
+    });
+    assert.deepEqual(opened, ["https://login.tailscale.com/f/serve?node=n6Z7YR2CNTRL"]);
+    assert.match(printed.join("\n"), /Turn on HTTPS for your tailnet: press Enable on this page/);
+  }
+  assert.equal(httpsPage({ Self: { ID: "n../../x" } }), "https://login.tailscale.com/admin/dns", "only a node ID as Tailscale writes it");
+  assert.equal(httpsPage({}), "https://login.tailscale.com/admin/dns");
 });
 
 test("Windows: HTTPS certificates off: the DNS page opens, the wait says how to pick up", async (t) => {

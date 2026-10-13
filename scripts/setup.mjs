@@ -26,6 +26,18 @@ const DNS_PAGE = "https://login.tailscale.com/admin/dns";
 // mac.tail1.ts.net) and HTTPS certificates, both switches on one Tailscale
 // page. Funnel (the start page for phones without the app) is allowed with
 // one click when Reach first starts, so it doesn't hold setup up.
+// HTTPS certificates: Tailscale's own one-button page for this computer,
+// the one `tailscale serve` names when they're off ("Serve is not enabled
+// on your tailnet. To enable, visit: …/f/serve?node=…"), so a first user
+// (Oct 12, a friend's Windows PC) presses Enable instead of finding the
+// switch on the DNS page. The DNS page when Tailscale doesn't name this
+// computer. Only the tailnet's admin can turn it on: no program here can.
+export function httpsPage(status) {
+  const node = status?.Self?.ID;
+  return typeof node === "string" && /^n[A-Za-z0-9]{4,64}$/.test(node)
+    ? `https://login.tailscale.com/f/serve?node=${node}`
+    : DNS_PAGE;
+}
 export function linkProblem(status) {
   if (status?.CurrentTailnet?.MagicDNSEnabled === false) return "magicdns";
   if (!status?.CertDomains?.length) return "https";
@@ -199,19 +211,22 @@ function makeSteps(root, deps) {
             const name = connection?.Self?.DNSName?.replace(/\.$/, "");
             return { note: name || "ready" };
           }
+          const page = problem === "magicdns" ? DNS_PAGE : httpsPage(connection);
           if (problem !== shown) {
             shown = problem;
             print(
               problem === "magicdns"
-                ? `  Turn on MagicDNS for your tailnet: one switch on this page (opening it):\n  ${DNS_PAGE}`
-                : `  Turn on HTTPS certificates for your tailnet: one click on this page (opening it):\n  ${DNS_PAGE}`,
+                ? `  Turn on MagicDNS for your tailnet: one switch on this page (opening it):\n  ${page}`
+                : page === DNS_PAGE
+                  ? `  Turn on HTTPS certificates for your tailnet: one click on this page (opening it):\n  ${page}`
+                  : `  Turn on HTTPS for your tailnet: press Enable on this page (opening it):\n  ${page}`,
             );
             print(`  Waiting… (Ctrl+C to stop; ${command} picks up here)`);
-            await (deps.open || openPage)(DNS_PAGE);
+            await (deps.open || openPage)(page);
           }
           if (Date.now() > deadline)
             throw Error(
-              `${problem === "magicdns" ? "MagicDNS" : "HTTPS certificates"} is still off. Turn it on at ${DNS_PAGE}, then run ${command} again.`,
+              `${problem === "magicdns" ? "MagicDNS" : "HTTPS certificates"} is still off. Turn it on at ${page}, then run ${command} again.`,
             );
           await sleep(1500);
         }
