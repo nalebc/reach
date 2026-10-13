@@ -206,7 +206,9 @@ export default function QueuedMessages({
     orderRef.current = ids;
     setOrder(ids);
     try {
-      await onReorder?.(ids.filter((id) => byId.get(id) && movable(byId.get(id)!)));
+      // Everything in the Mac's queue (one being handed over too: its
+      // place there doesn't change), not what only shows here.
+      await onReorder?.(ids.filter((id) => byId.has(id) && !byId.get(id)?.held));
       // Accepted, but if the Mac's queue never takes the new order, show the
       // Mac's order again rather than one it doesn't have.
       clearTimeout(settle.current);

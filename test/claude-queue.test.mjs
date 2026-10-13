@@ -158,6 +158,44 @@ test("the queue takes a new order and Send now, never moving the one being hande
   assert.equal(outbox.list(A)[0].now, true);
 });
 
+// A new order dragged on the phone goes to the queue each app delivers from:
+// Codex's own (thread/queue/reorder via codexLive, so its app and CLI show
+// it), Claude's outbox (the one being handed over stays first). Gemini CLI
+// has no queue: refused, never faked.
+test("a dragged order goes to each app's own queue: Codex's native one, Claude's outbox; Gemini has none", async () => {
+  const { createAgentSessions } = await import("../server/agent-sessions/index.mjs");
+  const outbox = createOutbox();
+  const [a, b, c] = ["first", "second", "third"].map((text) => outbox.add(A, { text, via: "app" }));
+  const codexOrders = [];
+  const sessions = createAgentSessions({
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: {},
+    codexLive: { drives: () => false, reorderQueued: async (thread, order) => { codexOrders.push([thread, order]); return { reordered: true }; } },
+    claude: {},
+    claudeHost: { onRelease() {} },
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks: { close() {} },
+    outbox,
+    queueMs: 60_000,
+    typeIntoApp: true, claudeCompose: { deliver: async () => { throw Object.assign(new Error("not now"), { waiting: true }); } },
+  });
+  try {
+    assert.deepEqual(await sessions.reorderQueued("codex", B, ["q2", "q1"]), { reordered: true });
+    assert.deepEqual(codexOrders, [[B, ["q2", "q1"]]]);
+    assert.deepEqual(await sessions.reorderQueued("claude", A, [c.id, a.id, b.id]), { reordered: true });
+    assert.deepEqual(outbox.list(A).map((m) => m.text), ["third", "first", "second"]);
+    // One the queue no longer has (sent meanwhile): the phone is told, nothing moves.
+    await assert.rejects(sessions.reorderQueued("claude", A, [a.id, b.id]), (e) => e.status === 409);
+    assert.deepEqual(outbox.list(A).map((m) => m.text), ["third", "first", "second"]);
+    await assert.rejects(sessions.reorderQueued("claude", A, "nope"), (e) => e.status === 400);
+    await assert.rejects(sessions.reorderQueued("gemini", A, [a.id]));
+    assert.equal(codexOrders.length, 1);
+  } finally {
+    sessions.close();
+  }
+});
+
 // Send now to a chat the Claude app couldn't show: Reach retried at once, over
 // and over, switching the Claude app to that chat and back about every second,
 // pulling the person at the Mac back to the Claude app (and beeping). Send
