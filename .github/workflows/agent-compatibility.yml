@@ -16,15 +16,22 @@ jobs:
         include:
           - agent: claude
             package: "@anthropic-ai/claude-code@latest"
+            node: 22
           - agent: codex
             package: "@openai/codex@latest"
+            node: 22
+          # Starts a throwaway Gateway of its own (scripts/openclaw-canary.mjs).
+          # OpenClaw 2026.9 and later refuse Node older than 24.16.
+          - agent: openclaw
+            package: "openclaw@latest"
+            node: 24
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
       - run: npm ci
       - name: Install published CLI in disposable runner
