@@ -51,6 +51,11 @@ export type BrowserAgentSession = EditableAccess & {
 };
 // One thing an agent did on the Mac (server/agent-actions.mjs).
 type AgentAction = { id: string; at: number; kind: string; text: string; app?: string; ok: boolean; reason?: string };
+// One stretch of an agent's work: Reach's typical time per call and the
+// agent's own between calls (server/agent-timings.mjs).
+type AgentPace = { from: number; to: number; calls: number; reachMs: number; agentMs: number };
+const seconds = (ms: number) =>
+  ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : ms < 120_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
 type Props = {
   peer: Peer;
   device: Device;
@@ -110,6 +115,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
   const [records, setRecords] = useState<BrowserRequest[]>([]);
   const [currentRequests, setCurrentRequests] = useState<BrowserRequest[]>([]);
   const [actions, setActions] = useState<AgentAction[]>([]);
+  const [pace, setPace] = useState<AgentPace[]>([]);
   const [admissions, setAdmissions] = useState<AgentAdmission[]>([]);
   const [connectionReview, setConnectionReview] =
     useState<AgentAdmission | null>(null);
@@ -156,7 +162,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
         }),
         // What this one agent did, newest first; an older Reach has no log.
         focus
-          ? request<{ actions: AgentAction[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: deadline.signal }).catch((failure) => {
+          ? request<{ actions: AgentAction[]; pace?: AgentPace[] }>(peer, `/api/agents/actions?${new URLSearchParams({ clientId: focus, limit: "200" })}`, { signal: deadline.signal }).catch((failure) => {
               if (failure?.status === 404) return { actions: [] as AgentAction[] };
               throw failure;
             })
@@ -165,7 +171,10 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
       deadline.dispose();
       if (!controller.signal.aborted) {
         const [sessions, requests, history, connections, did] = results;
-        if (did.status === "fulfilled" && Array.isArray(did.value?.actions)) setActions(did.value.actions);
+        if (did.status === "fulfilled" && Array.isArray(did.value?.actions)) {
+          setActions(did.value.actions);
+          setPace(Array.isArray(did.value.pace) ? did.value.pace.filter((item) => Number.isFinite(item?.to) && Number.isFinite(item?.reachMs) && Number.isFinite(item?.agentMs)) : []);
+        }
         if (
           sessions.status === "fulfilled" &&
           Array.isArray(sessions.value?.agents)
@@ -263,6 +272,32 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
   const body = (agent: BrowserAgentSession) => {
     const active = activeSession(agent, now);
     const agentRecords = records.filter((record) => record.clientId === agent.id);
+    // What it did, newest first, with one quiet line on each stretch's pace
+    // where that stretch ended.
+    const did = [
+      ...actions.map((item) => ({ at: item.at, item })),
+      ...pace.map((stretch) => ({ at: stretch.to, stretch })),
+    ].sort((a, b) => b.at - a.at);
+    const didList = did.length > 0 && (
+      <ol className="ag-log ba-did" aria-label="What it did">
+        {did.map(({ item, stretch }) =>
+          item ? (
+            <li key={item.id} className={item.ok ? "" : "is-refused"}>
+              <div>
+                <strong>{item.text}</strong>
+                <time dateTime={new Date(item.at).toISOString()}>{time(item.at)}</time>
+              </div>
+              {item.app && <small>{item.app}</small>}
+              {!item.ok && <p className="ba-log-error">{item.reason ? `Refused: ${item.reason}` : "Refused"}</p>}
+            </li>
+          ) : stretch ? (
+            <li key={`pace-${stretch.from}`} className="ba-pace">
+              <small>{`Reach ${seconds(stretch.reachMs)} · agent ${seconds(stretch.agentMs)}`}</small>
+            </li>
+          ) : null,
+        )}
+      </ol>
+    );
     const pending = active
       ? currentRequests.filter((record) => record.clientId === agent.id && pendingRecord(record, now))
       : [];
@@ -442,20 +477,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
           {pastPage ? (
             <>
               <h2 className="gs-title">Activity</h2>
-            {actions.length > 0 && (
-              <ol className="ag-log ba-did" aria-label="What it did">
-                {actions.map((item) => (
-                  <li key={item.id} className={item.ok ? "" : "is-refused"}>
-                    <div>
-                      <strong>{item.text}</strong>
-                      <time dateTime={new Date(item.at).toISOString()}>{time(item.at)}</time>
-                    </div>
-                    {item.app && <small>{item.app}</small>}
-                    {!item.ok && <p className="ba-log-error">{item.reason ? `Refused: ${item.reason}` : "Refused"}</p>}
-                  </li>
-                ))}
-              </ol>
-            )}
+            {didList}
             {agentRecords.length ? (
               <ol className="ag-log">
                 {agentRecords.map((record) => (
@@ -483,7 +505,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
                   </li>
                 ))}
               </ol>
-            ) : !actions.length ? (
+            ) : !did.length ? (
               <p className="ag-quiet">
                 {pastPage
                   ? "No activity recorded."
@@ -497,20 +519,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
               Activity <span className="ag-fold-count">{actions.length + agentRecords.length}</span>
               <ChevronDown size={15} />
             </summary>
-            {actions.length > 0 && (
-              <ol className="ag-log ba-did" aria-label="What it did">
-                {actions.map((item) => (
-                  <li key={item.id} className={item.ok ? "" : "is-refused"}>
-                    <div>
-                      <strong>{item.text}</strong>
-                      <time dateTime={new Date(item.at).toISOString()}>{time(item.at)}</time>
-                    </div>
-                    {item.app && <small>{item.app}</small>}
-                    {!item.ok && <p className="ba-log-error">{item.reason ? `Refused: ${item.reason}` : "Refused"}</p>}
-                  </li>
-                ))}
-              </ol>
-            )}
+            {didList}
             {agentRecords.length ? (
               <ol className="ag-log">
                 {agentRecords.map((record) => (
@@ -538,7 +547,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
                   </li>
                 ))}
               </ol>
-            ) : !actions.length ? (
+            ) : !did.length ? (
               <p className="ag-quiet">
                 {pastPage
                   ? "No activity recorded."

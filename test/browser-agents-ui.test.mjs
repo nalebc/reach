@@ -152,6 +152,30 @@ test("successful activity responses show the agent's actions without a load warn
   assert.doesNotMatch(view.container.textContent, historyWarning);
 });
 
+// Oct 12: where an agent's time goes. One quiet line per stretch of work,
+// where it ended among what it did: Reach's time per call, and the agent's.
+test("each stretch's pace is one quiet line among what the agent did", async () => {
+  const now = Date.now();
+  mock({
+    agents: [session("one")],
+    responses: { "/api/agents/actions": () => reply({ more: false,
+      actions: [
+        { id: "a2", at: now - 1_000, kind: "type", text: "Typed “diapers”", ok: true },
+        { id: "a1", at: now - 600_000, kind: "open", text: "Opened Google Chrome", ok: true },
+      ],
+      pace: [
+        { from: now - 5_000, to: now - 500, calls: 3, reachMs: 420, agentMs: 28_400 },
+        { from: now - 900_000, to: now - 590_000, calls: 12, reachMs: 12_500, agentMs: 130_000 },
+      ] }) },
+  });
+  const view = await render(element({ focus: "one" }));
+  await dom.waitFor(() => view.container.querySelector(".ba-pace"));
+  const lines = [...view.container.querySelectorAll(".ba-did > li")].map((item) => (item.querySelector("strong") || item).textContent.trim());
+  assert.deepEqual(lines, ["Reach 0.4 s · agent 28 s", "Typed “diapers”", "Reach 13 s · agent 2 min", "Opened Google Chrome"]);
+  assert.equal(view.container.querySelectorAll(".ba-pace time").length, 0, "quiet: no time of its own");
+  assert.doesNotMatch(view.container.textContent, /Nothing yet/);
+});
+
 test("empty activity and an older computer without an action log show no load warning", async () => {
   for (const responses of [{}, { "/api/agents/actions": () => reply({}, 404) }]) {
     mock({ agents: [session("one")], responses });
