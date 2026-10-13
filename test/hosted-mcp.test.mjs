@@ -209,6 +209,12 @@ both("a hosted agent at its own address discovers Reach, registers, connects wit
   assert.equal(init.status, 200, init.text);
   assert.equal(init.json.result.protocolVersion, "2025-06-18");
   assert.equal(init.json.result.serverInfo.name, "reach");
+  // What it may do and the rules (its invite message was two lines), from
+  // its access now: a connector is a program, so no Sign in.
+  assert.equal(init.json.result.instructions, `You can read files in "work". No screen, no commands.\nYour access lasts until I end it.\nAsk me before paying, sending or deleting anything.\nDon't share your Reach credentials.`);
+  assert.ok(!init.text.includes(grant.invitation) && !init.text.includes(f.root), "never the invitation or a path");
+  const access = (await f.rpc(c, tokens.access_token, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "reach_access", arguments: {} } })).json;
+  assert.match(JSON.parse(access.result.content[0].text).guide, /^You can read files in "work"\./, "reach_access says it again");
   assert.equal((await f.rpc(c, tokens.access_token, { jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
   const list = (await f.rpc(c, tokens.access_token, { jsonrpc: "2.0", id: 2, method: "tools/list" })).json.result.tools.map((tool) => tool.name);
   assert.ok(list.includes("reach_list_files") && list.includes("reach_read_file"), list.join());

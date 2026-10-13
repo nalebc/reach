@@ -114,6 +114,7 @@ import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
 import { createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
 import { createAgentRuntimes, fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
+import { agentGuide } from "./agent-guide.mjs";
 import { agentAskSocket } from "./agent-sessions/agent-asks.mjs";
 import { keepRuntime } from "./runtime-archive.mjs";
 import { startInTerminal } from "../scripts/stop.mjs";
@@ -1999,6 +2000,8 @@ export async function createReach(overrides = {}) {
       // The runtime this computer serves agents: one on an older copy
       // fetches it below and offers the new tools (scripts/agent-remote.mjs).
       ...(req.client.kind === "agent" && agentRuntime() && { runtime: agentRuntime() }),
+      // What it may do and the rules, for the agent itself (reach_device).
+      ...(req.client.kind === "agent" && { guide: guideFor(req.client, { page: fromBrowserPage(req) }) }),
       // A copy too old to update itself: how to replace it, once.
       ...updateNotice({ client: req.client, req, served: servedRuntime(), host: (() => { try { return new URL(config.publicOrigin).hostname; } catch { return ""; } })() }),
     });
@@ -2194,6 +2197,13 @@ export async function createReach(overrides = {}) {
   };
   // The runtime each command-line agent says it runs (agent-runtimes.mjs).
   const agentRuntimes = createAgentRuntimes({ current: () => agentRuntime() });
+  // What an agent is told about its own access when it connects and when it
+  // asks (agent-guide.mjs): from the access it has now, its folders by name.
+  // `page`: its browser page, which signs in with Sign in.
+  function guideFor(client, { page = false } = {}) {
+    const name = (folder) => { try { return fileRootName(folder); } catch { return path.basename(folder) || folder; } };
+    return agentGuide(client, { word: computerWord(hostPlatform), folders: (client?.agentRoots || []).map(name), page });
+  }
   // Where guests may go: Reach's port on your Reach computers.
   const guestReach = async () => {
     const st = await readStatus();
@@ -2642,6 +2652,7 @@ export async function createReach(overrides = {}) {
   permissionRoutes(app, permissionRequests);
   browserAccessRoutes(app, {
     agentRuntime,
+    guide: guideFor,
     servedRuntime,
     noteAgentRuntime: (client, value) => agentRuntimes.note(client, value),
     toolsStandingAllowed: () => !!guestKeys?.configured(),
@@ -5417,6 +5428,8 @@ export async function createReach(overrides = {}) {
         available: () => !paused && transportAvailable,
         computerName: config.name,
         dataDir: config.dataDir,
+        // Told at initialize: a hosted agent is a program, never its page.
+        guide: (client) => guideFor(client),
         claimed: agentClaimed,
         dispatch: hostedDispatch,
         onFlood: (count) => {

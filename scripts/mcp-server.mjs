@@ -50,6 +50,16 @@ export const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 // the same over stdio and at Reach's own /mcp endpoint (server/hosted-mcp.mjs).
 // Kept to a line: the tools' own names and descriptions carry the rest.
 export const serverInstructions = (scopes, profile = "full") => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." + (profile === "compact" ? " This is the compact catalog: reach_discover finds all permitted tools and their schemas; reach_execute calls them. Use waitFor and observe together on navigation and actions." : "") } : {};
+// Those, then what this agent may do and its rules, from its access now
+// (server/agent-guide.mjs, said by the computer): the invite message is two
+// lines, so this is where an agent first reads them.
+export const withGuide = (told, guide) => {
+  const text = [told?.instructions, typeof guide === "string" ? guide.trim() : ""].filter(Boolean).join("\n\n");
+  return text ? { instructions: text } : {};
+};
+// How long initialize waits for the computer to say it: a connection still
+// starting answers without it (reach_device and reach_access say it too).
+const GUIDE_WAIT_MS = 5000;
 
 const location = {
   root: {
@@ -62,7 +72,7 @@ const location = {
 export const tools = [
   {
     name: "reach_device",
-    description: "Read the connected computer and its shared folders.",
+    description: "Read the connected computer, its shared folders, and your guide: what you may do there and the owner's rules.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -443,6 +453,7 @@ export function serveMcp({
   // (agent-runtimes.mjs): the owner sees which agents run what.
   report = undefined,
   upgradeWaitMs = UPGRADE_WAIT_MS,
+  guideWaitMs = GUIDE_WAIT_MS,
   now = Date.now,
 }) {
   const write = (message) =>
@@ -458,6 +469,15 @@ export function serveMcp({
   const said = (route) => {
     const sha = current || report;
     return typeof sha === "string" && SHA256.test(sha) ? `${route}${route.includes("?") ? "&" : "?"}runtime=${sha}` : route;
+  };
+  // What the computer says this agent may do, now; "" when it doesn't
+  // answer in time (an older computer says nothing).
+  const guide = () => {
+    let timer;
+    return Promise.race([
+      Promise.resolve().then(() => api(said("/api/device"))).then((device) => (typeof device?.guide === "string" ? device.guide : "")),
+      new Promise((resolve) => { timer = setTimeout(resolve, guideWaitMs, ""); }),
+    ]).catch(() => "").finally(() => clearTimeout(timer));
   };
   const tried = new Map(); // sha256 → when it was last tried
   // Fails closed: a runtime that can't be fetched, doesn't match its hash or
@@ -502,7 +522,7 @@ export function serveMcp({
           protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name, version: "0.1.0" },
-          ...serverInstructions(scopes, profile),
+          ...withGuide(serverInstructions(scopes, profile), liveScopes ? await guide() : ""),
         };
       else if (r.method === "ping") result = {};
       // Not offered, so an orderly client never asks; one that asks anyway

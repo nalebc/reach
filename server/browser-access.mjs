@@ -103,6 +103,9 @@ export function browserAccessRoutes(
     // Whether this computer makes invite keys: Always over Tools needs the
     // agent on its own invited device.
     toolsStandingAllowed = () => false,
+    // What the agent may do and the rules, from its access now
+    // (agent-guide.mjs): its reach_access and its page show them.
+    guide = () => "",
   },
 ) {
   const owner = (req) => {
@@ -409,7 +412,9 @@ export function browserAccessRoutes(
   app.get("/api/browser", async (req, res) => {
     const client = browser(req);
     const notice = runtimeSaid(req, client);
-    res.json({ ...(await browserView(req, client)), ...notice });
+    // Here, not in browserView: every tool call reads that one.
+    const told = client.kind === "agent" ? guide(client, { page: fromBrowserPage(req) }) : "";
+    res.json({ ...(await browserView(req, client)), ...notice, ...(told ? { guide: told } : {}) });
   });
   // Reach's own tools for this agent: the list it offers and, per call, the
   // request to make, from this computer's code, so an agent's copy offers

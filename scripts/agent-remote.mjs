@@ -751,6 +751,26 @@ export function ownRuntime({ file = self(), bundle = isBundle() } = {}) {
   if (!bundle) return undefined;
   try { return sha256(fs.readFileSync(file)); } catch { return undefined; }
 }
+// What the computer tells a joined agent about its access (its guide on
+// /api/device), as plain lines: "" when it doesn't say in time. Nothing in
+// it can drive the terminal it's printed to.
+export async function joinedGuide(api, { waitMs = 15000 } = {}) {
+  let timer;
+  try {
+    const sha = ownRuntime();
+    const device = await Promise.race([
+      api(sha ? `/api/device?runtime=${sha}` : "/api/device"),
+      new Promise((_, reject) => { timer = setTimeout(reject, waitMs, Error("The computer didn't say in time.")); }),
+    ]);
+    return typeof device?.guide === "string"
+      ? device.guide.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, "").trim()
+      : "";
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
 export function runtimeUpdater({ home, api, file = self(), bundle = isBundle(), env = process.env, replaceSelf = true, log = (line) => process.stderr.write(line + "\n") }) {
   if (!bundle || updatesOff(env)) return null;
   let current;
@@ -942,7 +962,7 @@ export async function join(o) {
     // computer's private address first; the public link only when it
     // doesn't answer. Checked again on every call.
     const privately = funnel && !!link.private && (await reachableDirect(link.private));
-    let admissionApi;
+    let admissionApi, node;
     if (funnel) {
       // No Tailscale key: every request signed by this agent's own key
       // (scripts/agent-funnel.mjs), to whichever address answers.
@@ -961,7 +981,7 @@ export async function join(o) {
           "This machine isn't on that tailnet, and the link has no Tailscale key. Ask the owner to set up invite links in Reach (Share → Set up), then invite the agent again.",
         );
       process.stderr.write("Reach: joining the tailnet…\n");
-      const node = await connectTailnet({ home, conn, ...link });
+      node = await connectTailnet({ home, conn, ...link });
       admissionApi = tailnetApi(node, link.origin, "");
     }
     let joined = await admissionApi("/api/invitations/redeem", "POST", { invitation: link.secret });
@@ -988,10 +1008,24 @@ export async function join(o) {
     const several = connections(home).length > 1;
     const run = `node ${quote(self())} mcp${several ? ` --computer ${name}` : ""}`;
     const server = several ? `reach-${name}` : "reach";
+    // What it may do and the rules, as the computer says them now (the
+    // invite message is two lines): with its new credential, the way it
+    // came in. A guide that doesn't come never undoes the join.
+    const guide = await joinedGuide(
+      funnel
+        ? funnelApi({ conn, credential })
+        : direct
+          ? directApi(link.origin, joined.token, o.allowLocal)
+          : tailnetApi(node, link.origin, joined.token, { timeoutMs: 15000 }),
+    );
     process.stdout.write(
       [
         `Connected to ${credential.computer}${direct ? " (direct, through Tailscale on this machine)" : funnel ? privately ? " (through the owner's tailnet; its public link when that's away)" : " (through its public link)" : ""}.`,
         `Access: ${joined.scopes.filter((s) => s !== "device").join(", ")}, until ${new Date(joined.expiresAt).toLocaleString()}.`,
+        "",
+        ...(guide
+          ? ["Your instructions from the owner (Reach's tools give them again any time):", ...guide.split("\n").map((line) => `  ${line}`)]
+          : ["Your instructions from the owner: once Reach is added below, reach_device or reach_access gives them."]),
         "",
         "Add it to your agent (once):",
         `  Claude Code:  claude mcp add --scope user ${server} -- ${run}`,
