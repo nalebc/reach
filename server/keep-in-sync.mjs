@@ -93,7 +93,17 @@ export function openClawSource({ tooOld }) {
   };
 }
 
-export function createKeepInSync({ sources = [], dataDir = null, onChange = () => {}, record = () => {}, now = Date.now } = {}) {
+export function createKeepInSync({
+  sources = [],
+  dataDir = null,
+  onChange = () => {},
+  record = () => {},
+  now = Date.now,
+  // A Reach terminal an update ran in has ended (or is gone).
+  terminalEnded = () => false,
+  // A look older than this is taken again when the phone asks.
+  staleMs = 60_000,
+} = {}) {
   const dismissedFile = dataDir ? path.join(dataDir, "sync-dismissed.json") : null;
   let dismissed = {};
   try { dismissed = JSON.parse(fs.readFileSync(dismissedFile, "utf8")) || {}; } catch { /* none */ }
@@ -107,17 +117,34 @@ export function createKeepInSync({ sources = [], dataDir = null, onChange = () =
     const item = await Promise.resolve().then(() => source.check(options)).catch(() => null);
     return item ? { ...item, id: source.id, name: source.name, icon: source.icon || "mac" } : null;
   }
+  let checkedAt = 0;
   function refresh({ fresh = false } = {}) {
     refreshing ||= (async () => {
       const next = new Map();
       for (const [i, item] of (await Promise.all(sources.map((s) => checkOne(s, { fresh })))).entries())
         if (item) next.set(sources[i].id, item);
-      const before = JSON.stringify([...snapshot]);
+      const before = JSON.stringify([...snapshot, ...runs]);
       snapshot = next;
-      if (JSON.stringify([...snapshot]) !== before) changed();
+      checkedAt = now();
+      // An update in a terminal: done once the piece reads current (or
+      // another version), stopped once its terminal ended with it behind.
+      for (const [id, run] of runs) {
+        if (run.state !== "started") continue;
+        const item = snapshot.get(id);
+        if (!item || item.state === "current" || item.from !== run.from)
+          runs.set(id, { ...run, state: "done", message: `${item?.name || byId.get(id)?.name} is ${shortVersion(item?.from || run.to)}`, at: now() });
+        else if (terminalEnded(run.terminal)) runs.set(id, { ...run, state: "failed", message: "Update stopped.", at: now() });
+      }
+      if (JSON.stringify([...snapshot, ...runs]) !== before) changed();
       return list();
     })().finally(() => { refreshing = null; });
     return refreshing;
+  }
+  // What the phone reads: looked at again when it's a while old or an
+  // update is under way (cached feeds and probes keep that cheap).
+  function look() {
+    const moving = [...runs.values()].some((r) => r.state === "started" || r.state === "updating");
+    return moving || now() - checkedAt > staleMs ? refresh() : Promise.resolve(list());
   }
   const working = (id) => {
     try { return Number(byId.get(id)?.working?.()) || 0; } catch { return 0; }
@@ -133,7 +160,7 @@ export function createKeepInSync({ sources = [], dataDir = null, onChange = () =
   // Needs you: what's behind or too old, once per version pair (Not now
   // keeps that pair away), not while it's updating.
   function offers() {
-    return list().filter((item) => ["behind", "too-old"].includes(item.state) && dismissed[item.id] !== pairOf(item) && runs.get(item.id)?.state !== "updating");
+    return list().filter((item) => ["behind", "too-old"].includes(item.state) && dismissed[item.id] !== pairOf(item) && !["updating", "started"].includes(runs.get(item.id)?.state));
   }
   function dismiss(id, pair) {
     const item = snapshot.get(id);
@@ -202,7 +229,7 @@ export function createKeepInSync({ sources = [], dataDir = null, onChange = () =
   function close() {
     if (timer) { clearTimeout(timer.first); clearInterval(timer); timer = null; }
   }
-  return { refresh, list, offers, dismiss, start, watch, close, pairOf };
+  return { refresh, look, list, offers, dismiss, start, watch, close, pairOf };
 }
 
 // The Needs you card for one piece. Behind is quiet (no push); too old for

@@ -35,7 +35,7 @@ export function useSync(peer: Peer | undefined, enabled = true) {
   }, [peer?.id, peer?.url, peer?.token, enabled]);
   useEffect(() => { void load(); }, [load]);
   // While one updates, look every few seconds.
-  const updating = items.some((i) => i.run?.state === "updating");
+  const updating = items.some((i) => i.run?.state === "updating" || i.run?.state === "started");
   useEffect(() => {
     if (!updating) return;
     const timer = setInterval(() => void load(), 3000);

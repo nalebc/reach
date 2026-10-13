@@ -238,6 +238,12 @@ test("Update runs as the owner only, never for guests or agents (Needs you and S
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   const agent = reach.auth.issue("agent", ["terminal", "files"], "agent");
   const other = reach.auth.issue("linked", ALL_SCOPES, "linked-mac");
+  // A person's credential, with every scope (as browser-multi-agent-security sets one up).
+  const guest = reach.auth.issue("guest", ALL_SCOPES, "guest");
+  const store = path.join(root, ".reach", "clients.json");
+  const clients = JSON.parse(await fs.readFile(store, "utf8"));
+  clients.find((c) => c.id === guest.clientId).guestRoots = [root];
+  await fs.writeFile(store, JSON.stringify(clients));
   const call = (token, route, body) =>
     fetch(`${url}${route}`, {
       method: body ? "POST" : "GET",
@@ -245,7 +251,7 @@ test("Update runs as the owner only, never for guests or agents (Needs you and S
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
   try {
-    for (const who of [agent, other]) {
+    for (const who of [agent, other, guest]) {
       assert.equal((await call(who.token, "/api/sessions/keep-in-sync")).status, 403);
       assert.equal((await call(who.token, "/api/sessions/keep-in-sync/codex-service", { action: "update" })).status, 403);
     }
@@ -255,7 +261,8 @@ test("Update runs as the owner only, never for guests or agents (Needs you and S
     const needs = await (await call(owner.token, "/api/notifications")).json();
     const card = needs.items.find((i) => i.source === "sync");
     assert.ok(card, "a Needs you card");
-    assert.equal((await call(agent.token, `/api/notifications/${encodeURIComponent(card.id)}/actions`, { revision: card.revision, action: "update" })).status, 403);
+    for (const who of [agent, guest])
+      assert.equal((await call(who.token, `/api/notifications/${encodeURIComponent(card.id)}/actions`, { revision: card.revision, action: "update" })).status, 403);
     assert.deepEqual(ran, []);
     const answered = await call(owner.token, `/api/notifications/${encodeURIComponent(card.id)}/actions`, { revision: card.revision, action: "update" });
     assert.equal(answered.status, 200);
@@ -265,4 +272,34 @@ test("Update runs as the owner only, never for guests or agents (Needs you and S
     await reach.close();
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("an update in a Reach terminal: no card meanwhile, done once current, stopped once its terminal ends behind", async () => {
+  let installed = "2.1.291";
+  let ended = false;
+  const claude = (terminal) => agentSource("claude", {
+    updates: { status: async () => (installed === "2.1.295" ? { state: "current", installed, latest: "2.1.295" } : { state: "available", installed, latest: "2.1.295" }) },
+    update: async () => ({ terminal: { id: terminal } }),
+  });
+  const sync = createKeepInSync({ terminalEnded: () => ended, staleMs: 0, sources: [claude("t1")] });
+  await sync.refresh();
+  assert.equal(sync.offers().length, 1);
+  assert.equal((await sync.start("claude")).state, "started");
+  await sync.look();
+  assert.equal(sync.offers().length, 0, "not offered again while it runs");
+  installed = "2.1.295";
+  await sync.look();
+  assert.deepEqual([sync.list()[0].run.state, sync.list()[0].run.message], ["done", "Claude Code is 2.1.295"]);
+  assert.equal(sync.offers().length, 0);
+  // Its terminal ended with it still behind: stopped, and offered again.
+  installed = "2.1.291";
+  const again = createKeepInSync({ terminalEnded: () => ended, staleMs: 0, sources: [claude("t2")] });
+  await again.refresh();
+  await again.start("claude");
+  await again.look();
+  assert.equal(again.list()[0].run.state, "started");
+  ended = true;
+  await again.look();
+  assert.deepEqual([again.list()[0].run.state, again.list()[0].run.message], ["failed", "Update stopped."]);
+  assert.equal(again.offers().length, 1);
 });

@@ -3463,6 +3463,9 @@ export async function createReach(overrides = {}) {
     dataDir: config.dataDir,
     record: (title) => record("update", title),
     onChange: () => notifications.wake?.(),
+    terminalEnded: (id) => {
+      try { const t = terminals.get(id); return !t || t.status === "exited"; } catch { return true; }
+    },
     sources: [
       codexServiceSource({
         status: () => agentSessions.codexService?.(),
@@ -3486,7 +3489,7 @@ export async function createReach(overrides = {}) {
   };
   app.get("/api/sessions/keep-in-sync", maintenanceLimit, async (req, res) => {
     syncOwner(req);
-    res.set("Cache-Control", "no-store").json({ items: req.query.fresh === "1" ? await keepInSync.refresh({ fresh: true }) : keepInSync.list() });
+    res.set("Cache-Control", "no-store").json({ items: req.query.fresh === "1" ? await keepInSync.refresh({ fresh: true }) : await keepInSync.look() });
   });
   app.post("/api/sessions/keep-in-sync/:id", maintenanceLimit, async (req, res) => {
     syncOwner(req);
