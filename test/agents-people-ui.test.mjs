@@ -287,6 +287,8 @@ test("a browser agent's sheet holds its live panel; stopped agents leave the lis
   await click(sheet.querySelector('[aria-label="Close panel"]'));
   const ended = rowNamed(c, "Ended");
   assert.equal(ended.querySelector(".gs-value").textContent, "1");
+  // Each page is an entry of Reach's back stack (src/nav-history.ts).
+  const under = dom.window.history.state?.reach?.i ?? 0;
   await click(ended);
   await dom.waitFor(() => c.querySelector('.ppl-page [data-agent-id="old-2"]'));
   assert.match(c.querySelector('.ppl-page [data-agent-id="old-2"]').textContent, /Old helper.*Stopped/);
@@ -295,10 +297,12 @@ test("a browser agent's sheet holds its live panel; stopped agents leave the lis
   // Its own page, then back twice: Ended, then the list.
   await click(c.querySelector('.ppl-page [data-agent-id="old-2"]'));
   await dom.waitFor(() => c.querySelector('.ppl-page [aria-label="Back to Ended"]'));
+  assert.equal(dom.window.history.state.reach.i, under + 2);
   await click(c.querySelector('[aria-label="Back to Ended"]'));
   await dom.waitFor(() => c.querySelector('.ppl-page [data-agent-id="old-2"]'));
   await click([...c.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back to Agents & people"));
   await dom.waitFor(() => c.querySelector(".ppl-head"));
+  assert.equal(dom.window.history.state?.reach?.i ?? 0, under);
 });
 
 // Oct 13 (owner: "only small, compact modals"): someone's access is a long
