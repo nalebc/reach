@@ -145,13 +145,15 @@ export default function ScreenActions({
   };
   const keyTile = (key: string, compact: boolean) => {
     const keys = shortcutText(platform, modifiers, key);
+    // Its name starts with what it shows ("Left", "T"), then what it sends.
+    const word = compact ? key.toUpperCase() : keyWord(platform, key);
     return (
       <KeyTile
         key={key}
         Icon={compact ? undefined : KEY_ICONS[key]}
-        glyph={compact ? key.toUpperCase() : undefined}
-        label={compact ? undefined : keyWord(platform, key)}
-        name={`Press ${keys}`}
+        glyph={compact ? word : undefined}
+        label={compact ? undefined : word}
+        name={keys === word ? word : `${word}, ${keys}`}
         shortcut={keys}
         flip={key === "delete"}
         disabled={disabled}
@@ -187,7 +189,9 @@ export default function ScreenActions({
                     key={chip.id}
                     type="button"
                     className="key-chip"
-                    aria-label={chip.name}
+                    // A Mac chip is a symbol, named in words; elsewhere the
+                    // word on the chip is its name (Win, Ctrl).
+                    aria-label={platform === "darwin" ? chip.name : chip.symbol}
                     aria-pressed={held.includes(chip.id)}
                     title={chip.name}
                     disabled={disabled}

@@ -97,7 +97,7 @@ for (const platform of ["darwin", "win32"])
 test("More opens the rest in place: the other shortcuts and the key composer, no picker", async () => {
   for (const [platform, chips, rest] of [
     ["darwin", [["⌘", "Command"], ["⌥", "Option"], ["⌃", "Control"], ["⇧", "Shift"]], ["Ctrl ↑", "Ctrl ←", "Ctrl →"]],
-    ["win32", [["Win", "Windows"], ["Ctrl", "Control"], ["Alt", "Alt"], ["Shift", "Shift"]], ["Win Tab", "Win Ctrl ←", "Win Ctrl →"]],
+    ["win32", [["Win", "Win"], ["Ctrl", "Ctrl"], ["Alt", "Alt"], ["Shift", "Shift"]], ["Win Tab", "Win Ctrl ←", "Win Ctrl →"]],
   ]) {
     const { render } = keys({ platform });
     const view = await render();
@@ -122,13 +122,21 @@ test("More opens the rest in place: the other shortcuts and the key composer, no
     // Named keys as tiles; function keys, letters and digits one more tap away.
     assert.equal(tiles(named).length, 14);
     assert.ok(tiles(named).every((t) => t.querySelector("svg")));
+    assert.equal(label(tiles(named)[0]), platform === "darwin" ? "Return" : "Enter");
     assert.equal(
-      label(named.querySelector('[aria-label^="Press"]')),
-      platform === "darwin" ? "Return" : "Enter",
+      named.querySelector(`[title="←"]`).getAttribute("aria-label"),
+      "Left, ←",
+      "a key's name starts with its word, then what it sends",
     );
     assert.equal(c.querySelector(".key-pad"), null);
     await click(c.querySelector(".key-expand"));
     assert.equal(tiles(c.querySelector(".key-pad")).length, 12 + 26 + 10);
+    // Voice control: every tile's name starts with the words it shows.
+    for (const tile of c.querySelectorAll(".key-tile"))
+      assert.ok(
+        tile.getAttribute("aria-label").startsWith(tile.textContent),
+        `${tile.textContent} is named ${tile.getAttribute("aria-label")}`,
+      );
     // The old picker is gone: no select, no Send key, no sideways strip.
     assert.equal(c.querySelector("select"), null);
     assert.ok(![...c.querySelectorAll("button")].some((b) => /Send key|Other keys/.test(b.textContent)));
@@ -150,7 +158,7 @@ test("the composer sends the chips with the key in one tap, then lets go (Mac)",
   assert.equal(named(c, "Command").getAttribute("aria-pressed"), "true");
   assert.equal(preview.textContent, "⇧⌘ + …", "a tiny preview of what's held");
   // The key's name says the whole combination it will send.
-  const ret = named(c, "Press Shift ⌘ Return");
+  const ret = named(c, "Return, Shift ⌘ Return");
   assert.ok(ret, "Return names the combination");
   assert.equal(ret.title, "Shift ⌘ Return");
   assert.equal(sent.length, 0, "holding a chip sends nothing");
@@ -165,7 +173,7 @@ test("the composer sends the chips with the key in one tap, then lets go (Mac)",
   assert.ok([...c.querySelectorAll(".key-chip")].every((b) => b.getAttribute("aria-pressed") === "false"));
   assert.equal(preview.textContent, "");
   // With no chip held, a key goes alone.
-  await click(named(c, "Press ⌫"));
+  await click(named(c, "Delete, ⌫"));
   assert.deepEqual(sent.at(-1).action, { type: "key", key: "backspace" });
   // A chip tapped twice lets go before anything is sent.
   await click(named(c, "Option"));
@@ -181,15 +189,16 @@ test("the composer on Windows: Win Ctrl Alt Shift, letters and F-keys behind one
   const c = view.container;
   await click(more(c));
   await click(c.querySelector(".key-expand"));
-  await click(named(c, "Control"));
+  await click(named(c, "Ctrl"));
+  assert.equal(named(c, "Ctrl").title, "Control");
   await click(named(c, "Alt"));
   assert.equal(c.querySelector(".key-preview").textContent, "Ctrl + Alt + …");
-  const letter = named(c, "Press Ctrl Alt T");
+  const letter = named(c, "T, Ctrl Alt T");
   assert.equal(letter.textContent, "T");
   await click(letter);
-  await click(named(c, "Windows"));
-  await click(named(c, "Press Win F4"));
-  await click(named(c, "Press 7"));
+  await click(named(c, "Win"));
+  await click(named(c, "F4, Win F4"));
+  await click(named(c, "7"));
   assert.deepEqual(
     sent.map((s) => s.action),
     [
@@ -213,7 +222,7 @@ test("control off: every key and chip is disabled and nothing is sent", async ()
   const senders = [...c.querySelectorAll(".key-tile, .key-chip")];
   assert.ok(senders.length > 60);
   assert.ok(senders.every((b) => b.disabled), "all disabled");
-  for (const b of [senders[0], named(c, "Command"), named(c, "Press Return")]) await click(b);
+  for (const b of [senders[0], named(c, "Command"), named(c, "Return")]) await click(b);
   assert.deepEqual(sent, [], "no key, no fake feedback");
   assert.equal(named(c, "Command").getAttribute("aria-pressed"), "false");
   await view.unmount();
