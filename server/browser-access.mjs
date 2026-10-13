@@ -18,7 +18,7 @@ import { protectedAppReason, terminalLikeApp } from "./agent-guard.mjs";
 import { browserToolRequest, savedToolName, SAVED_TOOLS_HINT, compactTools } from "./browser-tools.mjs";
 import { toolsFor } from "../scripts/mcp-server.mjs";
 import { fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
-import { describeScreen, normalizeAction } from "./agent-desktop.mjs";
+import { normalizeAction } from "./agent-desktop.mjs";
 import { createObservations, observationOptions, SETTLE, settleScreen, waitOptions, waitForScreen } from "./desktop-observation.mjs";
 import { actionWords } from "./agent-actions.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
@@ -1080,14 +1080,14 @@ export function browserAccessRoutes(
       const found = await desktop.find(client, body, () => presetClient(req, "browser:control"));
       // It may have scrolled: what changed is counted from this look on.
       if (!found.found) observations.forget(client);
-      else observations.remember(client, found);
       if (!found.found) return { found: false, app: found.app, title: found.title, truncated: found.truncated,
         screenText: `Not in this window: ${JSON.stringify(body.text ?? body.name)}.${found.truncated ? " The window was too large to read fully." : ""}` };
+      const view = observations(client, found);
       const { items, texts, fields, ...rest } = found;
       const what = `[${rest.n ?? "?"}] ${rest.role}${rest.name !== undefined ? ` "${rest.name}"` : ` "${rest.text}"`}`;
       const where = rest.inView ? (rest.scrolled ? ", scrolled into view" : ", in view") : `, ${rest.direction} the visible part by about ${rest.distance} px: scroll that way, then find again`;
       const lead = `Found ${what}${rest.matches > 1 ? ` (${rest.matches} matches; the first)` : ""}${where}.\n\n`;
-      return { ...rest, screenText: lead + describeScreen({ ...rest, items, texts }) };
+      return { ...rest, outputTruncated: view.outputTruncated, screenText: lead + view.text };
     });
   });
   // The front window's whole text, 12000 characters a call (reach_read_page).

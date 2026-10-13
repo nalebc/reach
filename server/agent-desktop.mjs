@@ -63,7 +63,7 @@ const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox",
 export const controlLine = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
   (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
   (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
-export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
+export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}, { truncate = true } = {}) {
   const control = controlLine;
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
@@ -85,7 +85,8 @@ export function describeScreen({ app = "", title = "", snapshot = "", windowRef 
   const form = fields.length
     ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}; a value from your vault with "secret":true.`
     : "";
-  return (head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
+  const text = head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
+  return truncate ? text.slice(0, 30000) : text;
 }
 
 // The numbered controls and visible text as the agent receives them, bounded,

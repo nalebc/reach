@@ -27,8 +27,8 @@ export const deterministicToolName = item => `reach_tool_${item.id}`;
 // How acting goes, said the same way by every tool that acts and by the
 // agent's guide (agent-guide.mjs), so on every connection (Oct 12: "make
 // navigation super fast and smooth"): one turn per step, not act, look, act.
-export const ACT_AND_SEE = "Acting answers with the screen as text, only what changed since your last look (full: true for all of it), so don't look again; describe: false skips it.";
-export const GO_FAST = "Act and you get the screen back as text: don't look again. Batch up to 10 actions in one reach_act. Use reach_wait_for instead of looking again and again.";
+export const ACT_AND_SEE = "Acting answers with the screen as text, only what changed since your last look (full: true for all of it); use that result for your next decision. When no screen state is needed, describe: false returns only the action receipt and skips the read and settling wait.";
+export const GO_FAST = "Act and you get the screen back as text; use that result for your next decision. Batch up to 10 actions in one reach_act and observe once at the end. Use describe: false when you need only the action receipt; observe: {query, maxChars} for relevant text. Prefer stable element refs. Use reach_wait_for instead of looking again and again.";
 const requestId = { ...string(36), pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "A fresh UUID for a new operation. Reuse it after a lost response; effects will never be repeated." };
 const toolDefinitionSchema = object({ protocol: kinds("reach.tool.v1"), id: { ...string(48), pattern: "^[a-z][a-z0-9_]*$" }, title: string(80), description: string(500), origins: { type: "array", minItems: 1, maxItems: 4, items: string(2000) }, inputs: { type: "object", maxProperties: 12, additionalProperties: true }, steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", maxProperties: 8, additionalProperties: true } } }, ["protocol", "id", "title", "description", "origins", "inputs", "steps"]);
 const location = { root, path: relativePath };

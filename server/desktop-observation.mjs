@@ -60,13 +60,13 @@ export async function waitForScreen({ read, changed, authorize, wanted, now = Da
 // wait-change where it has one (no reads, so no snapshot spent), else reads
 // compared by what they show. Never longer than `capMs`, authorized on every
 // round; an explicit waitFor replaces it.
-export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300 };
+export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300, refreshMs: 600 };
 const loading = (screen) => (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
 const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
 export async function settleScreen({ read, changed, authorize, capMs, minMs = 0, quietMs = SETTLE.quietMs, now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const start = now(), end = start + capMs;
-  let revision, moved = false, fresh = false, screen = null, last = null, watch = changed;
+  let revision, moved = false, fresh = false, screen = null, last = null, watch = changed, readAt = -Infinity;
   const still = () => moved || now() - start >= minMs;
   while (now() < end) {
     authorize();
@@ -79,9 +79,11 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
       authorize();
       if (Number.isSafeInteger(result?.revision)) revision = result.revision;
       if (result?.changed) { moved = true; fresh = false; continue; }
-      // Still, and already read since it last changed: keep waiting.
-      if (!still() || (screen && fresh)) continue;
+      // Apps do not always emit an accessibility notification when loading
+      // finishes. Recheck a loading screen occasionally even without one.
+      if (!still() || (screen && fresh && now() - readAt < SETTLE.refreshMs)) continue;
       screen = await read();
+      readAt = now();
       fresh = true;
       authorize();
       // A page still loading: its changes are coming, within the cap.
@@ -97,6 +99,14 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
     last = seen;
     if (settled) break;
     await sleep(Math.max(0, Math.min(quietMs, end - now())));
+  }
+  // If the deadline follows a change or a fallback sleep, the previous
+  // read is no longer current. The caller must receive a fresh observation,
+  // including when a page stopped loading without an AX notification.
+  if (screen && now() >= end && (!fresh || loading(screen) || !watch)) {
+    authorize();
+    screen = await read();
+    authorize();
   }
   return { screen, settledMs: now() - start };
 }
@@ -192,7 +202,10 @@ export function createObservations({ now = Date.now } = {}) {
     const lead = options.sinceSnapshot ? (compatible
       ? `Changes since ${options.sinceSnapshot}.${result.removed?.length ? " Removed: " + result.removed.map(item => item.ref || item.name || item.text).join(", ") : ""}\n`
       : "Previous snapshot unavailable or context changed; full observation follows.\n") : "";
-    const description = lead + describeScreen(result);
+    // Measure the complete description before limiting it. The formatter's
+    // own default cap otherwise hides truncation and seeds deltas from
+    // controls the agent never received.
+    const description = lead + describeScreen(result, { truncate: false });
     // Only what changed, against the last whole look of this same window.
     const whole = !options.query && !options.within && !options.sinceSnapshot;
     const seen = entry.seen;
@@ -212,7 +225,7 @@ export function createObservations({ now = Date.now } = {}) {
   };
   // A look given whole some other way (reach_find), or a screen the agent
   // may not have seen whole (a find that scrolled and found nothing).
-  observe.remember = (client, screen) => { entryOf(client).seen = baseline(screen); };
+  observe.remember = (client, screen) => { entryOf(client).seen = describeScreen(screen, { truncate: false }).length <= 30000 ? baseline(screen) : null; };
   observe.forget = (client) => { entryOf(client).seen = null; };
   return observe;
 }

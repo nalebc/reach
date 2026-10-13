@@ -59,3 +59,19 @@ test("absence requires a complete read; predicates and options are bounded", () 
   assert.throws(() => observationOptions({ maxChars: 1000000 }));
   assert.throws(() => observationOptions({ displayId: -1 }));
 });
+
+test("large descriptions report truncation and never seed a delta from unseen controls", () => {
+  const observe = createObservations();
+  const items = Array.from({ length: 250 }, (_, index) => button(`e-${index + 1}`, `Action ${index + 1}`, "Context ".repeat(50)));
+  const first = observe(client, screen("large-one", items));
+  assert.equal(first.outputTruncated, true);
+  assert.ok(first.text.length <= 30000);
+  assert.match(first.text, /output limited/);
+  assert.doesNotMatch(first.text, /Action 250/);
+  const next = observe(client, screen("large-two", items), {}, { changes: true });
+  assert.notEqual(next.diff, true, "an incomplete look cannot establish that nothing changed");
+  assert.equal(next.outputTruncated, true);
+  const scoped = observe(client, screen("large-three", items), { query: "Action 250", maxChars: 1000 });
+  assert.equal(scoped.outputTruncated, false);
+  assert.match(scoped.text, /Action 250/);
+});

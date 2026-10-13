@@ -88,6 +88,33 @@ test("without a change signal, reads compared by what they show, the same rules 
   assert.ok(flicker.settledMs <= SETTLE.actMs && reads <= 5, `${reads} reads`);
 });
 
+test("settling refreshes a loading screen when the app omits change notifications", async () => {
+  let clock = 0, reads = 0;
+  const result = await settleScreen({
+    now: () => clock, capMs: SETTLE.openMs, authorize() {},
+    changed: async (_, ms) => { clock += ms; return { revision: 1, changed: false }; },
+    read: async () => { reads++; return clock < 600
+      ? screenOf("Loading", [{ role: "Button", name: "Stop loading this page" }])
+      : screenOf("Ready"); },
+  });
+  assert.equal(result.screen.title, "Ready");
+  assert.ok(result.settledMs < SETTLE.openMs, "do not spend the whole cap on a stale loading screen");
+  assert.equal(reads, 2);
+});
+
+test("changes at the settle deadline cannot return a previously read screen", async () => {
+  let clock = 0, rounds = 0, reads = 0;
+  const result = await settleScreen({
+    now: () => clock, capMs: SETTLE.actMs, authorize() {},
+    changed: async (_, ms) => { clock += ms; return { revision: ++rounds, changed: rounds > 1 }; },
+    read: async () => { reads++; return clock < SETTLE.actMs
+      ? screenOf("Loading", [{ role: "Button", name: "Stop loading this page" }])
+      : screenOf("Ready"); },
+  });
+  assert.equal(result.screen.title, "Ready");
+  assert.equal(reads, 2, "one initial read and one fresh read at the deadline");
+});
+
 // The stand-in Mac behind the routes: its screen as the accessibility tree
 // reads it, a change signal, and the native helper's own check of a
 // snapshot and number (it keeps 16 snapshots; an older one is refused).
@@ -179,6 +206,28 @@ test("opening a page waits for it to settle, bounded, and answers with its scree
   // Asked directly, the routes answer as they always did.
   assert.deepEqual((await agent.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://www.ubereats.com" } })).body, { ok: true, app: "Browser", bundle: "com.browser" });
   assert.equal((await agent.as("/api/browser/desktop/open-url", { method: "POST", body: { url: "https://www.ubereats.com", describe: false } })).status, 400);
+});
+
+test("finding a control reports a limited screen and the next action keeps the full observation", privateIngressTest, async (t) => {
+  const large = screenOf("Large form", Array.from({ length: 250 }, (_, index) => ({
+    n: index + 1, ref: `e-${index + 1}`, role: "Button", name: `Action ${index + 1}`,
+    context: "Context ".repeat(50), x: 0, y: index / 250, w: 0.1, h: 0.001,
+  })));
+  const mac = standIn({ pages: [large] });
+  mac.extras.find = async (client, input, authorize) => ({
+    ...await mac.extras.elements(client, authorize), found: true, inView: true,
+    n: 1, role: "Button", name: "Action 1", matches: 1,
+  });
+  const f = await presetFixture(t, { desktopExtras: mac.extras });
+  const agent = await f.join({ preset: "full" });
+  const found = await call(agent, "reach_find", { name: "Action 1" });
+  assert.equal(found.status, 200);
+  assert.equal(found.body.result.outputTruncated, true);
+  assert.match(found.body.result.screenText, /output limited/);
+  const acted = await call(agent, "reach_act", { action: { type: "key", key: "tab" } });
+  assert.equal(acted.status, 200);
+  assert.equal(acted.body.result.screen.outputTruncated, true);
+  assert.notEqual(acted.body.result.screen.diff, true);
 });
 
 test("where the screen can't be read as text, acting answers as it always did", privateIngressTest, async (t) => {
