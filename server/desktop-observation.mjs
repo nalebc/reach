@@ -1,5 +1,5 @@
 import { fail, isPlainRecord, hasReviewControls } from "./core.mjs";
-import { controlLine, describeScreen } from "./agent-desktop.mjs";
+import { controlLine, describeScreen, screenActionHint } from "./agent-desktop.mjs";
 
 const words = value => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 export function observationOptions(value = {}) {
@@ -124,6 +124,7 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
 // CHANGES_SHARE of the whole text.
 export const CHANGES_MS = 5 * 60_000;
 export const CHANGES_SHARE = 0.5;
+export const observationGrant = client => JSON.stringify([client.id, client.expiresAt, client.scopes, client.policy]);
 const textLine = (line) => (line.heading ? `# ${line.text}` : line.text);
 const keyed = (items) => {
   const seen = new Map();
@@ -150,7 +151,7 @@ export function screenChanges(before, screen) {
   const was = tally(before.texts || []), now = tally(screen.texts || []);
   for (const [line, count] of now) for (let i = was.get(line) || 0; i < count; i++) lines.push(`+ ${line}`);
   for (const [line, count] of was) for (let i = now.get(line) || 0; i < count; i++) lines.push(`- ${line}`);
-  const click = `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${screen.snapshot}","n":NUMBER}}.`;
+  const click = screenActionHint(screen);
   return [`${screen.app || ""}${screen.title ? ` — ${screen.title}` : ""}`,
     lines.length ? `Changed since your last look; the rest is as it was, numbers included. ${click}` : `Nothing changed since your last look. ${click}`,
     ...lines].join("\n") + (screen.truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
@@ -163,7 +164,7 @@ export function screenChanges(before, screen) {
 export function createObservations({ now = Date.now } = {}) {
   const clients = new Map();
   const entryOf = (client) => {
-    const fingerprint = JSON.stringify([client.expiresAt, client.scopes, client.policy]);
+    const fingerprint = observationGrant(client);
     let entry = clients.get(client.id);
     if (!entry || entry.fingerprint !== fingerprint) entry = { fingerprint, snapshots: new Map(), seen: null };
     clients.delete(client.id); clients.set(client.id, entry);

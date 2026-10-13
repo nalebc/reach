@@ -131,6 +131,7 @@ export default function Screen({
     [quality] = useState("auto"),
     [revision, setRevision] = useState(0);
   const [mode, setMode] = useState("direct"),
+    [touchAssist, setTouchAssist] = useState(true),
     [drag, setDrag] = useState(false),
     [clickMode, setClickMode] = useState("left"),
     [feedback, setFeedback] = useState("");
@@ -857,6 +858,7 @@ export default function Screen({
           )}
           <DesktopSurface
             touchScroll
+            touchAssist={device.platform === "darwin" && touchAssist}
             focusRect={askRect}
             canvas={stream.canvas}
             width={stream.width}
@@ -1160,6 +1162,14 @@ export default function Screen({
               )}
               {panel === "touch" && (
                 <div className="gs-group">
+                  {canControl && device.platform === "darwin" && (
+                    <button className="gs-row" aria-pressed={touchAssist}
+                      onClick={() => setTouchAssist(!touchAssist)}>
+                      <MousePointerClick />
+                      <span className="gs-label">Touch assistance</span>
+                      <span className="gs-value">{touchAssist ? "On" : "Off"}</span>
+                    </button>
+                  )}
                   {canControl && (
                     <label className="gs-row">
                       <Hand />

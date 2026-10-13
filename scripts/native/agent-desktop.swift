@@ -1271,15 +1271,21 @@ func frameOf(_ element: AXUIElement) -> CGRect? {
 }
 struct ElementReference { let element: AXUIElement; let window: AXUIElement?; let pid: pid_t; let role: String; let name: String; let context: String; let display: CGDirectDisplayID; var at: Date }
 var elementReferences: [String: ElementReference] = [:]
-func rememberElement(_ element: AXUIElement, prefix: String, window: AXUIElement? = nil, name: String = "", context: String = "") -> String {
-  let now = Date(), pid = pidOf(element)
-  elementReferences = elementReferences.filter { now.timeIntervalSince($0.value.at) < 300 }
-  if let pair = elementReferences.first(where: { $0.key.hasPrefix(prefix + "-") && $0.value.pid == pid && CFEqual($0.value.element, element) && $0.value.name == name && $0.value.context == context && $0.value.display == displayID() && (($0.value.window == nil && window == nil) || ($0.value.window != nil && window != nil && CFEqual($0.value.window!, window!))) }) {
+var elementReferencesPrunedAt = Date.distantPast
+func rememberElement(_ element: AXUIElement, prefix: String, window: AXUIElement? = nil, name: String = "", context: String = "", role: String? = nil) -> String {
+  let now = Date(), pid = pidOf(element), display = displayID()
+  // A snapshot registers hundreds of controls. Prune once per second,
+  // while checking every reused reference's expiry even between prunes.
+  if now.timeIntervalSince(elementReferencesPrunedAt) >= 1 {
+    elementReferences = elementReferences.filter { now.timeIntervalSince($0.value.at) < 300 }
+    elementReferencesPrunedAt = now
+  }
+  if let pair = elementReferences.first(where: { now.timeIntervalSince($0.value.at) < 300 && $0.key.hasPrefix(prefix + "-") && $0.value.pid == pid && CFEqual($0.value.element, element) && (role == nil || $0.value.role == role) && $0.value.name == name && $0.value.context == context && $0.value.display == display && (($0.value.window == nil && window == nil) || ($0.value.window != nil && window != nil && CFEqual($0.value.window!, window!))) }) {
     elementReferences[pair.key]?.at = now; return pair.key
   }
   if elementReferences.count >= 2048, let oldest = elementReferences.min(by: { $0.value.at < $1.value.at }) { elementReferences.removeValue(forKey: oldest.key) }
   let ref = prefix + "-" + UUID().uuidString.lowercased()
-  elementReferences[ref] = ElementReference(element: element, window: window, pid: pid, role: string(element, kAXRoleAttribute), name: name, context: context, display: displayID(), at: now)
+  elementReferences[ref] = ElementReference(element: element, window: window, pid: pid, role: role ?? string(element, kAXRoleAttribute), name: name, context: context, display: display, at: now)
   return ref
 }
 func referencedControl(_ ref: String, _ rules: Rules) throws -> (Control, Screen) {
@@ -1765,6 +1771,9 @@ func pressMenu(_ names: [String], _ rules: Rules) throws -> [String: Any] {
 // number can be pressed later.
 func snapshotPayload(_ screen: Screen) -> [String: Any] {
   let id = String(UUID().uuidString.prefix(8).lowercased())
+  // These controls came from one read. Capture its window once and reuse
+  // the roles already read, instead of making two AX calls per control.
+  let window = elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute)
   snapshots.append((id: id, pid: screen.pid, controls: screen.controls))
   snapshotDisplays[id] = displayID()
   if snapshots.count > 16 { snapshots.removeFirst(snapshots.count - 16) }
@@ -1775,8 +1784,7 @@ func snapshotPayload(_ screen: Screen) -> [String: Any] {
      "w": Double(rect.width / display.width), "h": Double(rect.height / display.height)]
   }
   let items: [[String: Any]] = screen.controls.enumerated().map { index, item in
-    let window = elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute)
-    var entry: [String: Any] = ["ref": rememberElement(item.element, prefix: "e", window: window, name: item.name, context: item.context), "context": item.context, "n": index + 1, "role": String(item.role.dropFirst(2)), "name": item.name, "secure": item.secure]
+    var entry: [String: Any] = ["ref": rememberElement(item.element, prefix: "e", window: window, name: item.name, context: item.context, role: item.role), "context": item.context, "n": index + 1, "role": String(item.role.dropFirst(2)), "name": item.name, "secure": item.secure]
     if let value = screen.values[index] { entry["value"] = value }
     return entry.merging(place(item.frame)) { first, _ in first }
   }
@@ -1785,7 +1793,7 @@ func snapshotPayload(_ screen: Screen) -> [String: Any] {
     if screen.headings.contains(where: { $0.contains(CGPoint(x: rect.midX, y: rect.midY)) }) { entry["heading"] = true }
     return entry.merging(place(rect)) { first, _ in first }
   }
-  return ["ok": true, "snapshot": id, "windowRef": elementAttr(AXUIElementCreateApplication(screen.pid), kAXFocusedWindowAttribute).map { rememberElement($0, prefix: "w") } ?? "", "revision": screenRevision, "displayId": displayID(), "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
+  return ["ok": true, "snapshot": id, "windowRef": window.map { rememberElement($0, prefix: "w") } ?? "", "revision": screenRevision, "displayId": displayID(), "app": screen.app, "title": screen.title, "items": items, "texts": lines, "truncated": screen.truncated]
 }
 // Something in the front window by its words (reach_find): a control by name
 // (and role), or text, anywhere in the window, what is scrolled out of view

@@ -231,5 +231,91 @@
       ]
     }
   },
-  "inspectedCommit": "f77016f9ef48e23c55b7f27b5ba29349078db32f"
+  "inspectedCommit": "f77016f9ef48e23c55b7f27b5ba29349078db32f",
+  "followup": {
+    "scope": "No restart or live desktop interaction. Inert route fixtures, fake native accessibility objects and a compile-only production helper check.",
+    "catalog": {
+      "fullTools": 50,
+      "compactTools": 12,
+      "fullBytes": 71945,
+      "compactBytes": 24955
+    },
+    "observationTextBytes": {
+      "full": 9454,
+      "scoped": 140,
+      "delta": 168
+    },
+    "nativeSnapshot": {
+      "controls": 250,
+      "beforeFromSource": {
+        "focusedWindowLookups": 251,
+        "roleLookupsCold": 251
+      },
+      "afterHarness": {
+        "focusedWindowLookups": 1,
+        "roleLookupsCold": 1,
+        "roleLookupsWarm": 0
+      },
+      "note": "Snapshot formatting only; excludes accessibility traversal, model latency and input execution. Before counts derived from the previous source; after counts asserted by the native harness."
+    },
+    "trailingConditionWait": {
+      "beforeReadsFromSource": 2,
+      "afterReadsInReadyFixture": 1,
+      "guards": [
+        "same permission grant",
+        "same display selection",
+        "no later action or wait",
+        "no separate final condition"
+      ]
+    },
+    "diagnosticOutputAfter": {
+      "error": "The helper stopped.",
+      "status": 503,
+      "kind": "unavailable",
+      "helperReason": "timeout",
+      "helperOperation": "elements",
+      "helperDispatch": "completion_unknown"
+    },
+    "validation": {
+      "initialFocusedTests": {
+        "passed": 109,
+        "failed": 0,
+        "files": [
+          "test/agent-helper-diagnostics.test.mjs",
+          "test/agent-transport.test.mjs",
+          "test/mcp-navigation.test.mjs",
+          "test/desktop-observation.test.mjs",
+          "test/agent-speed.test.mjs",
+          "test/agent-desktop.test.mjs",
+          "test/browser-tools.test.mjs",
+          "test/agent-guide.test.mjs"
+        ]
+      },
+      "finalObservationTests": {
+        "passed": 30,
+        "failed": 0,
+        "files": [
+          "test/mcp-navigation.test.mjs",
+          "test/desktop-observation.test.mjs",
+          "test/agent-speed.test.mjs"
+        ]
+      },
+      "nativeHarness": {
+        "passed": 1,
+        "failed": 0,
+        "file": "test/agent-navigation-native.test.mjs"
+      },
+      "productionHelperOptimizedCompile": "passed; temporary binary never executed and removed",
+      "liveNavigationRun": false,
+      "restartedReach": false
+    },
+    "sourceSha256": {
+      "scripts/native/agent-desktop.swift": "d9f7a60dea77ce7176ec43da59293303ce4335462d2f8aa56d8e888986c473e7",
+      "server/agent-desktop.mjs": "32f2eb4c011c578dd681824e11e9302034ace07c80783de3388b3a8e56336a83",
+      "server/agent-transport.mjs": "95cb6543c26c8364ae6db9eb125ecebd80b189aa307a5a3926167693036a0195",
+      "server/browser-access.mjs": "005d1f9a12491806927a1b7c97456653a487f0e523be095661b1490401d9d621",
+      "server/browser-tools.mjs": "f26622952f2a94df739dde8cdc92e47b43181059f9a415279aab8b3d8274644a",
+      "server/desktop-observation.mjs": "4e1f7a009ccf801794c1574735c15d2b7800527d23b22e401aa4c08228dd031e"
+    }
+  }
 }

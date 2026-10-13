@@ -13,6 +13,7 @@ export type InputResult = {
   text?: string;
   skipped?: boolean;
   target?: TextTarget;
+  point?: { x: number; y: number };
 };
 type Pending = {
   action: DesktopAction;

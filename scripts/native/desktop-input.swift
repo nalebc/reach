@@ -2,6 +2,39 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+// BEGIN TOUCH GEOMETRY
+// Rank the distance to real control edges in the finger's ellipse, rather
+// than to control centers (which unfairly favors small controls). A close
+// second choice or a disabled closest control leaves the tap alone.
+struct TouchCandidate {
+  let frame: CGRect
+  let enabled: Bool
+}
+func touchChoice(_ at: CGPoint, _ radius: CGSize, _ candidates: [TouchCandidate]) -> (Int, CGPoint)? {
+  guard radius.width > 0, radius.height > 0 else { return nil }
+  var ranked: [(Int, Double, CGPoint)] = []
+  for (index, candidate) in candidates.enumerated() {
+    let r = candidate.frame
+    guard !r.isNull, r.width > 0, r.height > 0 else { continue }
+    // An exact hit, including a disabled control, is never redirected.
+    if r.contains(at) { return nil }
+    let dx = max(r.minX - at.x, 0, at.x - r.maxX) / radius.width
+    let dy = max(r.minY - at.y, 0, at.y - r.maxY) / radius.height
+    let distance = hypot(dx, dy)
+    guard distance <= 1 else { continue }
+    let inside = r.insetBy(dx: min(2, r.width / 4), dy: min(2, r.height / 4))
+    let point = CGPoint(x: max(inside.minX, min(inside.maxX, at.x)),
+      y: max(inside.minY, min(inside.maxY, at.y)))
+    ranked.append((index, distance, point))
+  }
+  ranked.sort { $0.1 < $1.1 }
+  guard let first = ranked.first, candidates[first.0].enabled,
+    ranked.count == 1 || ranked[1].1 - first.1 > 0.2
+  else { return nil }
+  return (first.0, first.2)
+}
+// END TOUCH GEOMETRY
+
 final class Input: @unchecked Sendable {
   let lock = NSLock()
   let source = CGEventSource(stateID: .hidSystemState)
@@ -314,6 +347,91 @@ final class Input: @unchecked Sendable {
     AXValueGetValue(position as! AXValue, .cgPoint, &origin)
     AXValueGetValue(size as! AXValue, .cgSize, &extent)
     return CGRect(origin: origin, size: extent)
+  }
+  // A near miss from a finger only. Read the live window under the tap,
+  // bounded to 120 ms and 512 nodes. Incomplete/opaque trees keep the exact
+  // point. No labels, text, screenshots, or cached target positions.
+  func touchPoint(_ at: CGPoint, _ tolerance: [String: Any]) -> CGPoint {
+    guard let x = tolerance["x"] as? Double, let y = tolerance["y"] as? Double,
+      x.isFinite, y.isFinite, x > 0, y > 0, x <= 0.1, y <= 0.1
+    else { return at }
+    let bounds = CGDisplayBounds(display)
+    let radius = CGSize(width: min(44, x * max(0, bounds.width - 1)),
+      height: min(44, y * max(0, bounds.height - 1)))
+    let until = Date().addingTimeInterval(0.12)
+    func read(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+      guard Date() < until else { return nil }
+      AXUIElementSetMessagingTimeout(element, 0.008)
+      var value: CFTypeRef?
+      return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+    }
+    let roles: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+      "AXMenuButton", "AXLink", "AXMenuItem", "AXTab", "AXDisclosureTriangle",
+      "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.008)
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
+      let original = hit else { return at }
+    var current = original
+    // Preserve exact hits on a control or its text/icon descendants.
+    for _ in 0..<6 where Date() < until {
+      if roles.contains(read(current, kAXRoleAttribute) as? String ?? "") { return at }
+      guard let parent = read(current, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+      current = parent as! AXUIElement
+    }
+    let root: AXUIElement
+    if read(original, kAXRoleAttribute) as? String == "AXWindow" { root = original }
+    else if let window = read(original, kAXWindowAttribute),
+      CFGetTypeID(window) == AXUIElementGetTypeID() { root = window as! AXUIElement }
+    else { return at }
+    let near = CGRect(x: at.x - radius.width, y: at.y - radius.height,
+      width: radius.width * 2, height: radius.height * 2).intersection(bounds)
+    let names = [kAXRoleAttribute, kAXPositionAttribute, kAXSizeAttribute,
+      kAXEnabledAttribute, kAXChildrenAttribute] as CFArray
+    var queue: [(AXUIElement, Int)] = [(root, 0)], head = 0
+    var candidates: [TouchCandidate] = [], elements: [AXUIElement] = []
+    while head < queue.count, Date() < until {
+      let (element, depth) = queue[head]; head += 1
+      AXUIElementSetMessagingTimeout(element, 0.008)
+      var values: CFArray?
+      guard AXUIElementCopyMultipleAttributeValues(element, names,
+        AXCopyMultipleAttributeOptions(), &values) == .success,
+        let v = values as? [AnyObject], v.count == 5 else { return at }
+      var frame: CGRect?
+      if CFGetTypeID(v[1]) == AXValueGetTypeID(), CFGetTypeID(v[2]) == AXValueGetTypeID(),
+        AXValueGetType(v[1] as! AXValue) == .cgPoint, AXValueGetType(v[2] as! AXValue) == .cgSize {
+        var origin = CGPoint.zero, size = CGSize.zero
+        AXValueGetValue(v[1] as! AXValue, .cgPoint, &origin)
+        AXValueGetValue(v[2] as! AXValue, .cgSize, &size)
+        frame = CGRect(origin: origin, size: size).intersection(bounds)
+      }
+      if let frame, frame.width > 0, frame.height > 0, !frame.intersects(near) { continue }
+      if roles.contains(v[0] as? String ?? ""), let frame {
+        candidates.append(TouchCandidate(frame: frame, enabled: v[3] as? Bool ?? false))
+        elements.append(element)
+        continue
+      }
+      if let children = v[4] as? [AXUIElement], !children.isEmpty {
+        guard depth < 48, queue.count + children.count <= 512 else { return at }
+        queue.append(contentsOf: children.map { ($0, depth + 1) })
+      }
+    }
+    guard head == queue.count, Date() < until,
+      let (index, point) = touchChoice(at, radius, candidates) else { return at }
+    // Prove the candidate is actually visible here; trees can include
+    // covered controls and scrolled-away rows. Never cross into an overlay.
+    hit = nil
+    guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success,
+      var checked = hit else { return at }
+    for _ in 0..<6 where Date() < until {
+      if CFEqual(checked, elements[index]) { return point }
+      guard let parent = read(checked, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+      checked = parent as! AXUIElement
+    }
+    return at
   }
   func windowOf(_ element: AXUIElement, until: Date = .distantFuture) -> AXUIElement? {
     if let window = attribute(element, kAXWindowAttribute),
@@ -629,6 +747,9 @@ final class Input: @unchecked Sendable {
         x: bounds.minX + x * max(0, bounds.width - 1),
         y: bounds.minY + y * max(0, bounds.height - 1))
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
+      if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
+        point = touchPoint(point, tolerance)
+      }
       func post(_ kind: CGEventType, _ b: CGMouseButton, _ count: Int = 1) {
         let e = CGEvent(
           mouseEventSource: source, mouseType: kind, mouseCursorPosition: point, mouseButton: b)
@@ -652,6 +773,9 @@ final class Input: @unchecked Sendable {
           post(button == .left ? .leftMouseDown : .rightMouseDown, button, c)
           post(button == .left ? .leftMouseUp : .rightMouseUp, button, c)
         }
+        return ["point": [
+          "x": min(1, max(0, (point.x - bounds.minX) / max(1, bounds.width - 1))),
+          "y": min(1, max(0, (point.y - bounds.minY) / max(1, bounds.height - 1)))]]
       }
     } else if type == "scroll" {
       let dx = p["dx"] as? Double ?? 0

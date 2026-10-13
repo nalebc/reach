@@ -19,7 +19,7 @@ import { browserToolRequest, savedToolName, SAVED_TOOLS_HINT, compactTools } fro
 import { toolsFor } from "../scripts/mcp-server.mjs";
 import { fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { normalizeAction } from "./agent-desktop.mjs";
-import { createObservations, observationOptions, SETTLE, settleScreen, waitOptions, waitForScreen } from "./desktop-observation.mjs";
+import { createObservations, observationGrant, observationOptions, SETTLE, settleScreen, waitOptions, waitForScreen } from "./desktop-observation.mjs";
 import { actionWords } from "./agent-actions.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
 
@@ -790,7 +790,7 @@ export function browserAccessRoutes(
     try { const value = await work(); if (!res.headersSent) res.json(value); }
     catch (error) {
       const { status, ...details } = agentErrorDetails(error);
-      if (res.headersSent || !status || !details.kind || (status >= 500 && !details.helperReason)) throw error;
+      if (res.headersSent || !status || !details.kind || (status >= 500 && !details.helperReason && details.kind !== "setup_required")) throw error;
       res.status(status).json(details);
     }
   };
@@ -805,7 +805,7 @@ export function browserAccessRoutes(
   // The screen as text after acting (describe, observe or waitFor), read
   // once the screen has settled (`settle`: desktop-observation.mjs SETTLE),
   // or once what waitFor waits for is there.
-  const observeAfter = async (req, result, body, settle = null) => {
+  const observeAfter = async (req, result, body, settle = null, observed = null) => {
     if (!body.observe && !body.describe && !body.waitFor) return result;
     // Asked for the screen alone (every tool that acts does, unless told
     // describe: false): only where this computer reads screens as text, and
@@ -818,7 +818,10 @@ export function browserAccessRoutes(
       const changed = desktop.waitForChange ? (revision, ms) => desktop.waitForChange(client, revision, ms, authorize) : null;
       const waited = body.waitFor ? await waitForScreen({ read, authorize, wanted: body.waitFor, changed }) : null;
       const settled = !waited && settle ? await settleScreen({ read, changed, authorize, ...settle }) : null;
-      const screen = waited?.screen || settled?.screen || await read();
+      // A trailing condition wait already read and authorized the screen.
+      // Reuse it only under the same grant and display, with no later action or wait.
+      const reusable = !body.waitFor && !settle && observed && observed.grant === observationGrant(client) && (observed.displayId ?? null) === (options.displayId ?? null);
+      const screen = waited?.screen || settled?.screen || (reusable ? observed.screen : await read());
       // Only what changed since the agent's last whole look, unless it asks
       // for all of it (full).
       const view = observations(authorize(), screen, options, { changes: true, full: body.full === true });
@@ -927,8 +930,9 @@ export function browserAccessRoutes(
     if (typed > BATCH.text) throw fail(400, "Type at most 2000 characters in one batch.");
     await answer(res, async () => {
       const started = Date.now(), results = [];
-      let stopped = null;
+      let stopped = null, observed = null;
       for (const [index, item] of list.entries()) {
+        observed = null;
         // A hold or slow drag that would end past the budget doesn't start.
         const lasts = item?.type === "wait" ? 0 : (item?.holdMs || 0) + (item?.durationMs || 0);
         if (Date.now() - started + lasts > BATCH.ms) {
@@ -936,12 +940,15 @@ export function browserAccessRoutes(
           break;
         }
         if (item?.type === "wait_for") {
-          const { type, displayId, ...condition } = item;
+          const { type, displayId: rawDisplayId, ...condition } = item;
+          const { displayId } = observationOptions(rawDisplayId === undefined ? {} : { displayId: rawDisplayId });
           try {
+            let grant;
             const waited = await waitForScreen({ authorize,
               wanted: { ...condition, timeoutMs: Math.min(condition.timeoutMs ?? 8000, Math.max(0, BATCH.ms - (Date.now() - started))) },
-              read: () => desktop.elements(client, authorize, { displayId }),
+              read: () => { grant = observationGrant(authorize()); return desktop.elements(client, authorize, { displayId }); },
               changed: desktop.waitForChange ? (revision, ms) => desktop.waitForChange(client, revision, ms, authorize) : null });
+            observed = { screen: waited.screen, displayId, grant };
             if (!waited.found) { stopped = { index, kind: "retry", error: "The expected screen did not appear. Later actions were not run." }; break; }
             results.push({ found: true, waitedMs: waited.waitedMs });
           } catch (error) {
@@ -973,8 +980,8 @@ export function browserAccessRoutes(
       }
       const reply = { ok: !stopped, done: results.length, results, ...(stopped ? { stopped } : {}) };
       // Ending on a wait, the screen is as waited for.
-      const settle = ["wait", "wait_for"].includes(list[results.length - 1]?.type) ? null : { capMs: SETTLE.actMs };
-      return observeAfter(req, reply, stopped ? { ...body, waitFor: undefined } : body, settle);
+      const settle = observed || ["wait", "wait_for"].includes(list[results.length - 1]?.type) ? null : { capMs: SETTLE.actMs };
+      return observeAfter(req, reply, stopped ? { ...body, waitFor: undefined } : body, settle, observed);
     });
   });
   // The Mac waits for its own screen to show some text or a control (a page

@@ -18,6 +18,7 @@ import ScreenConnection from "./ScreenConnection";
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
 type Point = { x: number; y: number };
+type Touch = { x: number; y: number };
 // A click the Mac acknowledged, drawn as a wave where it landed: one ring
 // for a click, two quick ones for a double-click, an inward ring for a
 // right-click. Nothing for a drag, and nothing until the Mac said it's done.
@@ -58,6 +59,7 @@ export default function DesktopSurface({
   focusRect,
   typing = false,
   touchScroll = false,
+  touchAssist = false,
   idle,
   blocked = "",
   waitForControl = false,
@@ -97,8 +99,10 @@ export default function DesktopSurface({
   // An area to open on (fractions of the screen): a Mac dialog to answer.
   focusRect?: { x: number; y: number; width: number; height: number } | null;
   typing?: boolean;
-  // Direct swipes scroll the computer; Pan & zoom remains available in options.
+  // Direct swipes scroll at Fit and pan when zoomed; two fingers scroll.
   touchScroll?: boolean;
+  // macOS can recover a nearby miss using the live control bounds.
+  touchAssist?: boolean;
   // Shown instead of "Live view is paused" while nothing streams.
   idle?: ReactNode;
   // Why a tap can't reach the computer now (control off, reconnecting…):
@@ -124,6 +128,7 @@ export default function DesktopSurface({
   const pendingTap = useRef<{
     point: Point;
     right: boolean;
+    touch?: Touch;
     at: number;
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
@@ -133,6 +138,8 @@ export default function DesktopSurface({
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<{
     start: Point;
+    point: Point | null;
+    touch?: Touch;
     last: Point;
     at: number;
     moved: boolean;
@@ -252,7 +259,7 @@ export default function DesktopSurface({
       if (!waiting) return;
       clearTimeout(waiting.timer);
       pendingTap.current = null;
-      if (performance.now() - waiting.at <= TAP_RETRY_MS) click(waiting.point, waiting.right, waiting.at);
+      if (performance.now() - waiting.at <= TAP_RETRY_MS) click(waiting.point, waiting.right, waiting.at, waiting.touch);
       else onFeedback(notSentLine("control came back too late"));
       return;
     }
@@ -317,6 +324,7 @@ export default function DesktopSurface({
           baseH,
           size.width,
           size.height,
+          48,
         ),
       );
     }
@@ -345,7 +353,7 @@ export default function DesktopSurface({
     left = (size.width - imageW) / 2 + view.x,
     top = (size.height - imageH) / 2 + view.y;
   const bounded = (scale: number, x: number, y: number) =>
-    boundView(scale, x, y, baseW, baseH, size.width, size.height);
+    boundView(scale, x, y, baseW, baseH, size.width, size.height, 48);
   const local = (x: number, y: number) => {
     const b = stage.current!.getBoundingClientRect();
     return { x: x - b.left, y: y - b.top };
@@ -385,16 +393,16 @@ export default function DesktopSurface({
   };
   // A tap while control is coming back waits for it, briefly; then it is
   // said, not dropped in silence.
-  const holdTap = (point: Point, right: boolean, at: number) => {
+  const holdTap = (point: Point, right: boolean, at: number, touch?: Touch) => {
     dropTap();
     const timer = setTimeout(() => {
       if (pendingTap.current?.timer !== timer) return;
       pendingTap.current = null;
       onFeedback(notSentLine(blockedRef.current || "control is reconnecting"));
     }, Math.max(0, at + TAP_RETRY_MS - performance.now()));
-    pendingTap.current = { point, right, at, timer };
+    pendingTap.current = { point, right, at, timer, touch };
   };
-  const click = (point: Point, right: boolean, at: number) => {
+  const click = (point: Point, right: boolean, at: number, touch?: Touch) => {
     const id = ++serial.current;
     const kind: WaveKind = right || clickMode === "right" ? "right" : clickMode === "double" ? "double" : "click";
     onFeedback("");
@@ -403,25 +411,38 @@ export default function DesktopSurface({
       ...point,
       button: kind === "right" ? "right" : "left",
       count: kind === "double" ? 2 : 1,
+      ...(touch && kind !== "right" ? { touch } : {}),
     })
-      .then(() => {
-        wave(point, kind);
+      .then((result) => {
+        const actual = (result as { point?: Point } | null)?.point;
+        const landed = actual && [actual.x, actual.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)
+          ? actual : point;
+        if (id === serial.current) moveCursor(landed);
+        wave(landed, kind);
         if (id === serial.current && kind !== "right") {
           // The host can acknowledge before Safari delivers the tap's click.
           // Wait for that click to open the keyboard before confirming focus.
           const field = tappedField.current;
           if (field?.point === point) {
+            field.point = landed;
+            // A corrected near miss needs the Mac's focus check; the
+            // touch-down probe described the uncorrected location.
+            if (Math.hypot(landed.x - point.x, landed.y - point.y) > 1e-8) {
+              tappedField.current = null;
+              onTextTarget(landed);
+              return;
+            }
             field.acknowledged = true;
             return;
           }
-          onTextTarget(point);
+          onTextTarget(landed);
         }
       })
       .catch((error: Error & { notSent?: boolean }) => {
         // Never reached the Mac (its connection blinked before it went):
         // it waits for control to come back, if that's soon.
         if (error?.notSent && performance.now() - at < TAP_RETRY_MS) {
-          holdTap(point, right, at);
+          holdTap(point, right, at, touch);
           return;
         }
         onFeedback(notSentLine(error?.message || "the computer didn't answer"));
@@ -433,9 +454,9 @@ export default function DesktopSurface({
   };
   // A tap on the picture: sent, or held a moment while control comes back,
   // or said why not. Only watching, there is no mark at all.
-  const tap = (point: Point, right = false) => {
-    if (canControl) return click(point, right, performance.now());
-    if (waitForControl) return holdTap(point, right, performance.now());
+  const tap = (point: Point, right = false, touch?: Touch) => {
+    if (canControl) return click(point, right, performance.now(), touch);
+    if (waitForControl) return holdTap(point, right, performance.now(), touch);
     onFeedback(blocked || "View only · tap Control to use it");
   };
   // A wheel or a laptop's two-finger swipe scrolls the computer in every
@@ -476,6 +497,11 @@ export default function DesktopSurface({
           : normalized(event.clientX, event.clientY);
       gesture.current = {
         start: p,
+        point,
+        // Tolerance is measured on the rendered image, so zooming reduces
+        // it on the Mac. Mouse, Pencil, trackpad and drags stay exact.
+        touch: touchAssist && mode === "direct" && event.pointerType === "touch" && imageW > 0 && imageH > 0
+          ? { x: Math.min(0.1, 10 / imageW), y: Math.min(0.1, 10 / imageH) } : undefined,
         last: p,
         at: performance.now(),
         moved: false,
@@ -520,6 +546,7 @@ export default function DesktopSurface({
         point &&
         mode !== "pan" &&
         canControl &&
+        (event.pointerType !== "touch" || mode !== "direct" || view.scale <= 1.01 || drag) &&
         event.button <= 0
       ) {
         moveCursor(point);
@@ -656,6 +683,7 @@ export default function DesktopSurface({
       g.moved &&
       touchScroll &&
       mode === "direct" &&
+      g.scale <= 1.01 &&
       canControl &&
       event.pointerType === "touch"
     ) {
@@ -678,6 +706,9 @@ export default function DesktopSurface({
     clearTimeout(hold.current);
     pointers.current.delete(event.pointerId);
     if (!g) return;
+    const lifted = local(event.clientX, event.clientY);
+    if (Math.hypot(lifted.x - g.start.x, lifted.y - g.start.y) > 8)
+      g.moved = true;
     // A finger lifting ends the two-finger scroll: its last steps go now.
     if (g.two === "scroll") flushScroll();
     if (g.held) {
@@ -704,14 +735,14 @@ export default function DesktopSurface({
       !g.moved &&
       // Only watching (or control coming back), a long press is a tap too:
       // it is held for control or said why, never lost.
-      (performance.now() - g.at < 400 || !canControl) &&
+      (performance.now() - g.at < 400 || !canControl || (mode === "direct" && g.scale > 1.01 && !drag)) &&
       mode !== "pan" &&
       event.button !== 2
     ) {
       const point =
         mode === "trackpad"
           ? cursorRef.current
-          : normalized(event.clientX, event.clientY);
+          : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY);
       if (point) {
         onInteraction();
         const answer = probeAnswer.current;
@@ -737,7 +768,7 @@ export default function DesktopSurface({
             at: performance.now(),
             acknowledged: false,
           };
-        tap(point);
+        tap(point, false, g.touch);
       }
     }
     if (!pointers.current.size) {
@@ -764,7 +795,7 @@ export default function DesktopSurface({
         className={`remote-stage${touching ? " is-touching" : ""}`}
         ref={stage}
         tabIndex={0}
-        aria-label={`Remote desktop. ${mode === "trackpad" ? "Trackpad mode moves the cursor." : "Tap to click."} Pinch to zoom. Long press to drag.`}
+        aria-label={`Remote desktop. ${mode === "trackpad" ? "Trackpad mode moves the cursor." : "Tap to click."} Pinch to zoom. ${view.scale > 1.01 ? "Swipe to pan. Use Drag in Touch options to drag on the computer." : "Long press to drag."} Two fingers to scroll.`}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
@@ -921,7 +952,7 @@ export default function DesktopSurface({
                 Pinch to zoom ·{" "}
                 {mode === "trackpad"
                   ? "two fingers to scroll"
-                  : "drag the view to pan"}
+                  : view.scale > 1.01 || mode === "pan" ? "swipe to pan · two fingers to scroll" : "swipe to scroll"}
               </span>
             )}
           </div>

@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 
 // Compile the production reference resolver against inert accessibility
 // objects. This never inspects or controls the owner's desktop.
-test("native control references reject recycled rows, focus changes, detached elements and expired grants", { skip: process.platform !== "darwin" || !process.env.REACH_TEST_APP_NATIVE, timeout: 180000 }, async () => {
+test("native snapshots avoid repeated AX reads and references reject changed controls and expired grants", { skip: process.platform !== "darwin" || !process.env.REACH_TEST_APP_NATIVE, timeout: 180000 }, async () => {
   const source = await fs.readFile(new URL("../scripts/native/agent-desktop.swift", import.meta.url), "utf8");
   const section = (start, end) => {
     const at = source.indexOf(start), stop = source.indexOf(end, at + start.length);
@@ -25,10 +25,12 @@ struct Refusal: Error {}
 func refuse(_ message: String, _ kind: String = "blocked") throws -> Never { throw Refusal() }
 let kAXRoleAttribute = "role", kAXSubroleAttribute = "subrole", kAXTitleAttribute = "title", kAXDescriptionAttribute = "description", kAXValueAttribute = "value", kAXParentAttribute = "parent", kAXChildrenAttribute = "children", kAXEnabledAttribute = "enabled", kAXFocusedWindowAttribute = "window"
 var props: [Int: [String: Any]] = [1: ["role": "AXButton", "parent": 2, "title": "Open"], 2: ["role": "AXRow", "parent": 3, "title": "Invoice A"], 3: ["role": "AXWindow", "title": "Invoices"]]
-func attr(_ element: Int, _ key: String) -> Any? { props[element]?[key] }
+var windowReads = 0, roleReads = 0
+var screenRevision: UInt64 = 0
+func attr(_ element: Int, _ key: String) -> Any? { if key == "role" { roleReads += 1 }; return props[element]?[key] }
 func string(_ element: Int, _ key: String) -> String { attr(element, key) as? String ?? "" }
 var focusedWindow = 3, currentDisplay: UInt32 = 2
-func elementAttr(_ element: Int, _ key: String) -> Int? { key == "window" ? focusedWindow : attr(element, key) as? Int }
+func elementAttr(_ element: Int, _ key: String) -> Int? { if key == "window" { windowReads += 1; return focusedWindow }; return attr(element, key) as? Int }
 func AXUIElementCreateApplication(_ pid: pid_t) -> Int { 42 }
 func CFEqual(_ a: Int, _ b: Int) -> Bool { a == b }
 func pidOf(_ element: Int) -> pid_t { 42 }
@@ -70,14 +72,51 @@ currentDisplay = 7
 assert(ref != rememberElement(1, prefix: "e", window: 3, name: "Open", context: "Invoice A"))
 assert(elementReferences[ref]?.display == 2)
 print("OK references")
+
+// Registration between periodic prunes must never revive an expired ref.
+currentDisplay = 2
+elementReferences[ref]?.at = Date(timeIntervalSinceNow: -301)
+elementReferencesPrunedAt = Date()
+let renewed = rememberElement(1, prefix: "e", window: 3, name: "Open", context: "Invoice A", role: "AXButton")
+assert(renewed != ref)
+let changedRole = rememberElement(1, prefix: "e", window: 3, name: "Open", context: "Invoice A", role: "AXLink")
+assert(changedRole != renewed)
+elementReferencesPrunedAt = Date(timeIntervalSinceNow: -2)
+_ = rememberElement(1, prefix: "e", window: 3, name: "Open", context: "Invoice A", role: "AXButton")
+assert(elementReferences[ref] == nil)
+
+let controls: [Control] = (1000..<1250).map { element in
+  props[element] = ["role": "AXButton", "parent": 2, "title": "Open"]
+  return Control(element: element, role: "AXButton", name: "Open", secure: false, frame: frameOf(element)!, context: "Invoice A")
+}
+let screen = Screen(pid: 42, app: "Fixture", bundle: "fixture", title: "Invoices", controls: controls, values: [0: "Draft"], texts: [], headings: [], truncated: false, display: displayBounds())
+windowReads = 0; roleReads = 0
+let payload = snapshotPayload(screen)
+let items = payload["items"] as! [[String: Any]]
+assert(items.count == 250)
+assert(windowReads == 1, "The focused window must be read once, not once per control")
+assert(roleReads == 1, "Control roles are already known; only the new window ref needs a role read")
+assert(items[0]["n"] as? Int == 1 && items[0]["value"] as? String == "Draft")
+for item in items {
+  let entry = elementReferences[item["ref"] as! String]!
+  assert(entry.role == "AXButton" && entry.window == 3 && entry.display == 2 && entry.context == "Invoice A")
+}
+windowReads = 0; roleReads = 0
+let again = snapshotPayload(screen)
+let nextItems = again["items"] as! [[String: Any]]
+assert(windowReads == 1 && roleReads == 0)
+assert(items.map { $0["ref"] as! String } == nextItems.map { $0["ref"] as! String })
+assert(payload["snapshot"] as! String != again["snapshot"] as! String)
+print("OK snapshots: 250 controls, 1 focused-window read, 1 cold / 0 warm role reads")
 `;
   try {
-    const program = stubs + section("struct Control {", "func frameOf(") + section("struct ElementReference {", "func labelName(") + harness;
+    const program = stubs + section("struct Control {", "func frameOf(") + section("struct ElementReference {", "func labelName(") + section("func snapshotPayload(", "// Something in the front window") + harness;
     await fs.writeFile(path.join(dir, "main.swift"), program);
     const compiled = spawnSync("xcrun", ["swiftc", "-module-cache-path", path.join(dir, "modules"), "main.swift", "-o", "navigation"], { cwd: dir, encoding: "utf8", timeout: 160000 });
     assert.equal(compiled.status, 0, compiled.stderr);
     const run = spawnSync(path.join(dir, "navigation"), [], { encoding: "utf8", timeout: 10000 });
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /OK references/);
+    assert.match(run.stdout, /OK snapshots: 250 controls, 1 focused-window read/);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

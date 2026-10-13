@@ -362,7 +362,7 @@ test("after acting, only what changed since the last whole look; the whole text 
   assert.equal(after.diff, true);
   assert.equal(after.text, [
     "Google Chrome — Amazon.com : diapers",
-    `Changed since your last look; the rest is as it was, numbers included. Click a [number] with reach_act {"action":{"type":"element","snapshot":"${typed.snapshot}","n":NUMBER}}.`,
+    'Changed since your last look; the rest is as it was, numbers included. Click a {ref} with reach_act {"action":{"type":"element","ref":"REF"}}.',
     `~ [4] {e-searchfield-search-amazon} SearchField "Search Amazon" = "diapers size 1"`,
   ].join("\n"));
   assert.ok(after.saved > 1000, `${after.saved} tokens spared`);
@@ -429,7 +429,7 @@ test("through the routes: whole first, then what changed, a stale snapshot refus
   assert.notEqual(screen.snapshot, first);
   assert.equal(screen.text, [
     "Google Chrome — Amazon.com : diapers",
-    `Changed since your last look; the rest is as it was, numbers included. Click a [number] with reach_act {"action":{"type":"element","snapshot":"${screen.snapshot}","n":NUMBER}}.`,
+    'Changed since your last look; the rest is as it was, numbers included. Click a {ref} with reach_act {"action":{"type":"element","ref":"REF"}}.',
     `~ [4] {e-searchfield-search-amazon} SearchField "Search Amazon" = "diapers size 1"`,
   ].join("\n"));
   // Another page: the whole of it.
