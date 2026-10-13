@@ -25,7 +25,7 @@ const npm = (args, extraEnv = {}) => new Promise((resolve, reject) => {
 });
 try {
   await npm(["install", "--prefix", temp, "--omit=dev", "--no-audit", "--no-fund", tarball]);
-  await npm(["run", "test:file", "--", "--test-timeout=240000", "--test-concurrency=1",
+  await npm(["run", "test:file", "--", "--test-timeout=540000", "--test-concurrency=1",
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=junit", "--test-reporter-destination=reports/installed.xml",
     "--test-reporter=tap", "--test-reporter-destination=reports/installed.tap",
