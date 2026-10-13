@@ -2,7 +2,7 @@ import { browserIdleEnded, fail, isPlainRecord } from './core.mjs';
 
 // Owner controls stay outside the browser agent route allowlist. An agent name
 // is a label; only the server-created invitation ID identifies a session.
-export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null, actions = null, pauses = null }) {
+export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinator, endClient, endSession = () => {}, onStopped = () => {}, desktop = null, actions = null, pauses = null, timings = null }) {
   const owner = (req) => {
     const client = req.reauthorize();
     if (client.kind !== 'device' || !client.scopes?.includes('admin'))
@@ -41,13 +41,16 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
     res.json({ agents, at });
   });
   // What one agent did on the Mac, newest first (server/agent-actions.mjs):
-  // ?clientId=…&before=<ms>&limit=<n>.
+  // ?clientId=…&before=<ms>&limit=<n>. With one agent, its pace too: each
+  // stretch of work, Reach's time per call and its own (agent-timings.mjs).
   app.get('/api/agents/actions', (req, res) => {
     owner(req);
     if (!actions) throw fail(503, 'The agent action log is unavailable.');
     const { clientId, before, limit } = req.query;
     if (Object.keys(req.query).some((key) => !['clientId', 'before', 'limit'].includes(key))) throw fail(400, 'Choose an agent, a time to read back from, and how many.');
-    res.json(actions.list({ ...(clientId !== undefined ? { clientId } : {}), ...(before !== undefined ? { before: Number(before) } : {}), ...(limit !== undefined ? { limit: Number(limit) } : {}) }));
+    const listed = actions.list({ ...(clientId !== undefined ? { clientId } : {}), ...(before !== undefined ? { before: Number(before) } : {}), ...(limit !== undefined ? { limit: Number(limit) } : {}) });
+    const pace = timings && typeof clientId === 'string' && before === undefined ? timings.stretches(clientId) : [];
+    res.json({ ...listed, ...(pace.length ? { pace } : {}) });
   });
   // Pause one preset agent: it keeps looking, its actions wait until resumed.
   // Kept in Reach's own store (agent-pauses.mjs), on every computer: the Mac's

@@ -10,6 +10,17 @@ release notes, so date the heading before tagging.
 
 ### Changed
 
+- 2026-10-12: Agents on the Mac take one turn per step. Every tool that acts
+  (reach_act, press, fill, and opening an app, page, bank, file or window)
+  answers with the screen as text once it has settled (about a second after
+  an action, up to three after an open), so an agent doesn't look again;
+  `describe: false` skips it. After the first look that text is only what
+  changed (`+`, `~`, `-` lines; every control not listed keeps its number),
+  or all of it with `full: true`; what that spares is counted in the savings
+  ledger as `screen-diff`. Each agent's calls are timed, with no content: its
+  Activity shows one quiet line per stretch of work, "Reach 0.4 s · agent
+  28 s".
+
 - 2026-10-12: An agent too old for Reach is skipped, not offered: Claude Code
   older than 2.1.259, Codex older than 0.148.0, and now OpenClaw older than
   2026.2.26 (its Gateway refuses the v3 device signature Reach joins with).

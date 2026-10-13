@@ -49,7 +49,7 @@ export const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 // What a client is told at initialize when the agent may drive the browser:
 // the same over stdio and at Reach's own /mcp endpoint (server/hosted-mcp.mjs).
 // Kept to a line: the tools' own names and descriptions carry the rest.
-export const serverInstructions = (scopes, profile = "full") => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." + (profile === "compact" ? " This is the compact catalog: reach_discover finds all permitted tools and their schemas; reach_execute calls them. Use waitFor and observe together on navigation and actions." : "") } : {};
+export const serverInstructions = (scopes, profile = "full") => scopes?.includes("browser:control") ? { instructions: "Check reach_tools before using the screen. For a list of items, use reach_tool_batch. For a bank, use reach_open_bank." + (profile === "compact" ? " This is the compact catalog: reach_discover finds all permitted tools and their schemas; reach_execute calls them." : "") } : {};
 // Those, then what this agent may do and its rules, from its access now
 // (server/agent-guide.mjs, said by the computer): the invite message is two
 // lines, so this is where an agent first reads them.
@@ -342,10 +342,17 @@ async function appAction(api, a) {
   return { done: true, ...(await api(route)) };
 }
 // A result as MCP content: a picture as an image, the screen described as
-// plain text, the rest as JSON text.
+// plain text, the rest as JSON text. An action's answer with the screen
+// after it: what was done as JSON, a blank line, then the screen as plain
+// text as a look gives it (not escaped inside the JSON), in the one block
+// every client hands its model.
 export function toContent(result) {
   if (result && typeof result.screenText === "string")
     return [{ type: "text", text: result.screenText }];
+  if (result && result.screen && typeof result.screen === "object" && typeof result.screen.text === "string") {
+    const { screen: { text, ...screen }, ...rest } = result;
+    return [{ type: "text", text: `${JSON.stringify({ ...rest, screen }, null, 2)}\n\n${text}` }];
+  }
   if (
     result &&
     typeof result.image === "string" &&

@@ -58,10 +58,12 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 // title, then what is there in reading order, each control inline as
 // [n] Role "name" (= what a field holds), clickable by its number.
 const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
+// One control as the screen text shows it (and its changes, desktop-observation.mjs).
+export const controlLine = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+  (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
+  (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
 export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
-  const control = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
-    (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
-    (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+  const control = controlLine;
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
     ...texts.map((line) => ({ x: line.x, mid: line.y + line.h / 2, line: line.heading ? `# ${line.text}` : line.text })),

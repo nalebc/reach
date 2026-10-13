@@ -74,6 +74,7 @@ import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
+import { createAgentTimings } from "./agent-timings.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
 import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
@@ -191,6 +192,8 @@ export async function createReach(overrides = {}) {
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
   const agentActions = overrides.agentActions || createAgentActions({ file: path.join(config.dataDir, "agent-actions.jsonl") });
   const logAction = (client, entry) => { try { agentActions.add(client, entry); } catch { /* the log never stops an action */ } };
+  // Reach's time and the agent's for each call, beside that log.
+  const agentTimings = overrides.agentTimings || createAgentTimings({ file: path.join(config.dataDir, "agent-timings.jsonl") });
   const settings = { screen: config.screen, ...loadJson(settingsFile, {}) };
   config.screen = settings.screen === true;
   // Written by the Mac app, which owns the macOS privacy permissions.
@@ -1964,6 +1967,9 @@ export async function createReach(overrides = {}) {
     };
     next();
   });
+  // How long each of an agent's calls takes here, and the agent between
+  // them (agent-timings.mjs): no content, only kinds and times.
+  app.use("/api", (req, res, next) => agentTimings.middleware(req, res, next));
   app.get("/api/device", async (req, res) => {
     agentRuntimes.note(req.client, req.query.runtime, { program: !fromBrowserPage(req) });
     const tools = req.client.scopes.includes("codex")
@@ -2567,7 +2573,7 @@ export async function createReach(overrides = {}) {
     endSession(id);
   };
   browserAgentRoutes(app, {
-    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions,
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions, timings: agentTimings,
     pauses: { has: agentPaused, set: pauseAgent },
     onStopped: (client) => {
       void releaseGuest(client);
@@ -2683,6 +2689,8 @@ export async function createReach(overrides = {}) {
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
+    // Screen text an agent didn't read again (savings.mjs, "screen-diff").
+    savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
       // A Windows Reach has no public link without browser sign-in.
       if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
