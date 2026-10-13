@@ -5099,9 +5099,10 @@ test("a message sent while the agent works goes a moment after it stops, and its
   await typeInto($(".as-composer textarea"), "zq-stop two");
   await click(button("Send"));
   const row = (words) => $$(".qm-row").find((r) => r.textContent.includes(words));
-  // Claude's queue stacks them: opened, each one shows.
-  await click(await dom.waitFor(() => $(".qm-head")));
+  // Claude's queue lists each one, as Codex's (no fold); phone copies have no handle.
   await dom.waitFor(() => row("zq-stop one") && row("zq-stop two"));
+  assert.equal($(".qm-head"), null);
+  assert.equal(row("zq-stop two").querySelector(".qm-grip"), null);
   // Only the phone's copy: Remove lets it go, and asks the Mac nothing.
   const sent = mac.sent.length;
   await click(row("zq-stop two").querySelector("[aria-label='Remove queued message']"));
