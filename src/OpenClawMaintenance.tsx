@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
-  ArrowUpCircle,
-  CheckCircle2,
+  CircleArrowUp,
+  CircleCheck,
   ChevronRight,
   CircleAlert,
   FileText,
-  Loader2,
+  LoaderCircle,
   RotateCw,
   Wrench,
 } from "lucide-react";
@@ -60,7 +60,7 @@ const actions = {
   update: {
     label: "Update OpenClaw",
     short: "Install configured release",
-    icon: ArrowUpCircle,
+    icon: CircleArrowUp,
     active: "Updating OpenClaw…",
     description:
       "Install the version from OpenClaw’s configured release channel, then restart its Gateway. If dependencies or additional repairs are needed, Reach will show the required changes for your approval. This can take several minutes and interrupt conversations. An older configured version may cause a downgrade.",
@@ -94,14 +94,18 @@ export function ClawMaintenance({
   onChanged,
   onViewOutput,
   onOpenLogs,
+  start = null,
 }: {
   peer: Peer;
   onChanged: () => Promise<void>;
   onViewOutput: (title: string, lines: string[]) => void;
   onOpenLogs: () => void;
+  // Opened to confirm this action at once (Update, for an OpenClaw too old
+  // for Reach: OpenClawHealth.tsx ClawTooOld).
+  start?: Action | null;
 }) {
   const [job, setJob] = useState<ClawJob | null>(null);
-  const [choice, setChoice] = useState<Action | null>(null);
+  const [choice, setChoice] = useState<Action | null>(start);
   const [reviewing, setReviewing] = useState(false);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -233,7 +237,7 @@ export function ClawMaintenance({
     <section className="claw-maintenance" aria-label="Gateway actions">
       {loading && (
         <p className="claw-maintenance-loading" role="status">
-          <Loader2 size={15} className="spin" /> Checking recent activity…
+          <LoaderCircle size={15} className="spin" /> Checking recent activity…
         </p>
       )}
       {job && (
@@ -245,9 +249,9 @@ export function ClawMaintenance({
         >
           <div className="claw-operation-heading">
             {running ? (
-              <Loader2 size={20} className="spin" />
+              <LoaderCircle size={20} className="spin" />
             ) : job.status === "done" ? (
-              <CheckCircle2 size={20} />
+              <CircleCheck size={20} />
             ) : (
               <CircleAlert size={20} />
             )}

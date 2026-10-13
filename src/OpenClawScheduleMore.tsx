@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { request, post, type Peer } from "./api";
 import { clawBase, useClawCatalog } from "./OpenClawControls";
 import { cronFor } from "./OpenClawSetup";
@@ -15,6 +15,9 @@ export type ClawJob = {
   lastRunAt: number;
   status: string;
   error: string;
+  note?: string;
+  managed?: boolean;
+  heartbeat?: boolean;
   delivery: string;
 };
 type Run = {
@@ -24,6 +27,7 @@ type Run = {
   tokens: number;
   model: string;
   error: string;
+  note?: string;
   deliveryError: string;
   chat: { key: string; title: string } | null;
 };
@@ -189,6 +193,7 @@ function RunHistory({ peer, id }: { peer: Peer; id: string }) {
               <div className="claw-sched-meta">
                 {!!r.durationMs && <span>{took(r.durationMs)}</span>}
                 {!!r.tokens && <span>{tokens(r.tokens)}</span>}
+                {r.note && <span>{r.note}</span>}
                 {r.chat && <span className="claw-sched-chat">{r.chat.title}</span>}
               </div>
               {(r.error || r.deliveryError) && <p className="claw-sched-error">{r.error || r.deliveryError}</p>}
@@ -203,7 +208,7 @@ function RunHistory({ peer, id }: { peer: Peer; id: string }) {
       )}
       {(busy || more !== null) && (
         <button type="button" className="claw-sched-pill" disabled={busy} onClick={() => more !== null && void load(more)}>
-          {busy ? <Loader2 size={13} className="spin" /> : "More runs"}
+          {busy ? <LoaderCircle size={13} className="spin" /> : "More runs"}
         </button>
       )}
     </div>
@@ -280,7 +285,7 @@ function EditSchedule({
       </p>
     ) : (
       <p className="claw-note" role="status">
-        <Loader2 size={14} className="spin" />
+        <LoaderCircle size={14} className="spin" />
       </p>
     );
 
@@ -430,7 +435,7 @@ function EditSchedule({
           Cancel
         </button>
         <button className="claw-primary" disabled={!ready || busy}>
-          {busy ? <Loader2 size={15} className="spin" /> : null}Save
+          {busy ? <LoaderCircle size={15} className="spin" /> : null}Save
         </button>
       </div>
     </form>

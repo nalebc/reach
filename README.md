@@ -114,7 +114,7 @@ The terminal says **✔ 3. Your phone — connected** when it's in. Later, when 
 
 ### Install
 
-**From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
+**From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22.12. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
 ```sh
 git clone --branch v0.1.1 https://github.com/nalebc/reach.git

@@ -13,7 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  AlignLeft,
+  TextAlignStart,
   ArrowUp,
   Check,
   ChevronDown,
@@ -27,7 +27,7 @@ import {
   Ellipsis,
   Laptop,
   Clock,
-  Loader2,
+  LoaderCircle,
   Mic,
   Monitor,
   Plus,
@@ -38,11 +38,10 @@ import {
   GitFork,
   AtSign,
   ImageIcon,
-  SearchCheck,
   Workflow,
   RefreshCw,
   RotateCcw,
-  Trash2,
+  Trash,
   Square,
   Terminal,
   TriangleAlert,
@@ -59,12 +58,12 @@ import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
 import QueuedMessages from "./QueuedMessages";
 import { ClaudeModelSheet, CodexConfigureSheet, CodexEffortStrip, currentModel, modelDisplayName } from "./ModelSheet";
-import { ContinuedIn, MoveHint, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
+import { ContinuedIn, MoveItems, moveBlocked, movedChat, moveTargets } from "./MoveChat";
 import UsageStrip from "./UsageStrip";
 import { AutoContinueSheet, RelaySheet, RelayStrip, SecondOpinionButton, SecondOpinionSheet, armedAutoContinue, type RelayStarted } from "./Relays";
 import { HelperBadge, TeamStrip, teamHelping, teamLedBy, teamToolLabel } from "./Teams";
 import MascotTyping from "./MascotTyping";
-import { SkillChip, SlashMenu, runSlashCommand, useSlashMenu } from "./SlashMenu";
+import { SkillChip, SlashMenu, useSlashMenu } from "./SlashMenu";
 import { useAppIcon } from "./app-icons";
 import { CLAUDE_DECISIONS, DECISIONS } from "./decision-words";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -104,6 +103,7 @@ import {
   setAgentMode,
   setAgentModel,
   stopSession,
+  tooOldLine,
   uploadImage,
   uploadFile,
   usageLink,
@@ -175,7 +175,7 @@ const SKIN = {
   claude: {
     placeholder: "Reply to Claude",
     app: "Claude app",
-    menu: AlignLeft,
+    menu: TextAlignStart,
     compose: ClaudeNewChat,
     where: Laptop,
     disclaimer: "Claude is AI and can make mistakes.",
@@ -184,7 +184,7 @@ const SKIN = {
   gemini: {
     placeholder: "Type your message or @path/to/file",
     app: "Gemini CLI",
-    menu: AlignLeft,
+    menu: TextAlignStart,
     compose: SquarePen,
     where: Terminal,
     disclaimer: "",
@@ -196,13 +196,13 @@ function ReplyActions({
   text,
   disclaimer,
   onSecondOpinion,
-  onRelay,
+  onFork,
 }: {
   text: string;
   disclaimer: string;
   // Another agent reviews this reply's turn, or carries it on (Relays.tsx).
   onSecondOpinion?: () => void;
-  onRelay?: () => void;
+  onFork?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const canShare =
@@ -234,12 +234,8 @@ function ReplyActions({
             <Share size={19} />
           </button>
         )}
+        {onFork && <button className="as-icon" aria-label="Fork from here" onClick={onFork}><GitFork size={15} /></button>}
         {onSecondOpinion && <SecondOpinionButton labelled onClick={onSecondOpinion} />}
-        {onRelay && (
-          <button className="relay-opinion" aria-label="Hand off this reply" onClick={onRelay}>
-            <Workflow size={17} /> <span>Hand off</span>
-          </button>
-        )}
       </div>
       {disclaimer && <p className="as-disclaimer">{disclaimer}</p>}
     </div>
@@ -492,7 +488,7 @@ function ToolRun({ items }: { items: SessionItem[] }) {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        {running && <Loader2 size={13} className="spin" />}
+        {running && <LoaderCircle size={13} className="spin" />}
         <span>{text}</span>
         {added > 0 && <b className="plus">+{added}</b>}
         {removed > 0 && <b className="minus">-{removed}</b>}
@@ -950,7 +946,7 @@ function ImageViewer({
       {count > 1 && <span className="as-viewer-count">{at + 1} / {count}</span>}
       {!current ? (
         <span className="as-viewer-wait" aria-label="Loading">
-          <Loader2 size={26} className="spin" />
+          <LoaderCircle size={26} className="spin" />
         </span>
       ) : current.url ? (
         <img src={current.url} alt="" />
@@ -1147,7 +1143,7 @@ function AskingCard({
                 disabled={!!busy}
                 onClick={() => void press(label)}
               >
-                {busy === label ? <Loader2 size={14} className="spin" /> : label}
+                {busy === label ? <LoaderCircle size={14} className="spin" /> : label}
               </button>
             ))}
           </div>
@@ -1161,7 +1157,7 @@ function AskingCard({
                 <div className="as-prompt-actions as-app-card-actions">
                   {card.more.map((label) => (
                     <button key={label} disabled={!!busy} onClick={() => void press(label)}>
-                      {busy === label ? <Loader2 size={14} className="spin" /> : label}
+                      {busy === label ? <LoaderCircle size={14} className="spin" /> : label}
                     </button>
                   ))}
                 </div>
@@ -1172,7 +1168,7 @@ function AskingCard({
         </>
       ) : answerable && !failed ? (
         <p className="as-reason as-app-card-loading">
-          <Loader2 size={14} className="spin" /> Getting the choices from the {where}…
+          <LoaderCircle size={14} className="spin" /> Getting the choices from the {where}…
         </p>
       ) : (
         <>
@@ -1203,7 +1199,7 @@ function AskingCard({
                     }
                   }}
                 >
-                  {enabling ? <Loader2 size={14} className="spin" /> : "Answer Claude from your phone"}
+                  {enabling ? <LoaderCircle size={14} className="spin" /> : "Answer Claude from your phone"}
                 </button>
               )}
               {answerable && failed && <button onClick={() => load()}>Try again</button>}
@@ -1257,14 +1253,14 @@ function ConsentCard({
       )}
       <div className="as-consent-actions">
         <button disabled={!!busy} onClick={() => void act("deny")}>
-          {busy === "deny" ? <Loader2 size={14} className="spin" /> : deny}
+          {busy === "deny" ? <LoaderCircle size={14} className="spin" /> : deny}
         </button>
         <button
           className="primary"
           disabled={!!busy}
           onClick={() => void act("allow")}
         >
-          {busy === "allow" ? <Loader2 size={14} className="spin" /> : allow}
+          {busy === "allow" ? <LoaderCircle size={14} className="spin" /> : allow}
         </button>
       </div>
     </section>
@@ -1458,7 +1454,7 @@ export function PromptCard({
                   disabled={!!busy || prompt.attempted}
                   onClick={() => void act(key, { decision: key })}
                 >
-                  {busy === key ? <Loader2 size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
+                  {busy === key ? <LoaderCircle size={14} className="spin" /> : PLAN_CHOICES[key.slice(5)] || key.slice(5)}
                 </button>
               ))}
           </div>
@@ -1477,7 +1473,7 @@ export function PromptCard({
                 aria-label="What to change in the plan"
               />
               <button type="submit" disabled={!!busy || prompt.attempted}>
-                {busy === "keepPlanning" ? <Loader2 size={14} className="spin" /> : "Keep planning"}
+                {busy === "keepPlanning" ? <LoaderCircle size={14} className="spin" /> : "Keep planning"}
               </button>
             </form>
           )}
@@ -1558,7 +1554,7 @@ export function PromptCard({
                   })
                 }
               >
-                {busy ? <Loader2 size={14} className="spin" /> : "Submit"}
+                {busy ? <LoaderCircle size={14} className="spin" /> : "Submit"}
               </button>
             ) : (
               <button
@@ -1585,7 +1581,7 @@ export function PromptCard({
               onClick={() => void act(key, { decision: key })}
             >
               {busy === key ? (
-                <Loader2 size={14} className="spin" />
+                <LoaderCircle size={14} className="spin" />
               ) : prompt.kind === "dialog" ? (
                 "Cancel request"
               ) : (
@@ -2176,7 +2172,9 @@ export default function AgentSessionView({
     const timed = times.some((t) => typeof t === "number");
     for (const m of info.movedTo || []) {
       let place = blocks.length - 1;
-      if (m.at && timed) {
+      const point = m.upTo ? blocks.findIndex(b => b.type === "tools" ? b.items.some(item => item.id === m.upTo) : b.item.id === m.upTo) : -1;
+      if (point >= 0) place = point;
+      else if (m.at && timed) {
         place = -1;
         times.forEach((t, i) => {
           if (typeof t === "number" && t <= m.at!) place = i;
@@ -2229,8 +2227,9 @@ export default function AgentSessionView({
     agent === "claude" && info.held !== "reach" ? info.live?.where : undefined;
   // Reach replies through the claude command on the Mac (Claude Code's CLI),
   // which signs in on its own: the Claude app's sign-in isn't shared with it.
+  // (Too old for Reach, signing in wouldn't help: its line says what does.)
   const claudeSignedOut =
-    !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn;
+    !!claudeHealth && claudeHealth.installed && !claudeHealth.signedIn && !claudeHealth.tooOld;
   // No Claude Code at all (only the Claude app, or neither): a message goes
   // through the Claude app only when it lists this chat and is open.
   const claudeMissing =
@@ -2244,11 +2243,17 @@ export default function AgentSessionView({
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
         : elsewhere && elsewhere !== "claude-app"
           ? `Open in another Claude Code process on your ${word}.`
+          // Older than Reach works with: said before a message is refused
+          // for it (the chat still reads; writing stays on).
+          : claudeHealth?.tooOld
+            ? tooOldLine("Claude Code", claudeHealth.tooOld.to)
           : claudeMissing
             ? `Claude Code isn't installed on your ${word}. Install it from Chat to reply here.`
           // In the Claude app, working or asking: nothing to say (Oct 9: "it
           // is unnecessary"); what you send goes next in the same session.
           : ""
+      : codexHealth?.tooOld
+        ? tooOldLine("Codex", codexHealth.tooOld.to)
       : codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? `Codex is signed out on your ${word}.`
         : "";
@@ -2314,7 +2319,7 @@ export default function AgentSessionView({
   const needsSignIn =
     agent === "claude"
       ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
-      : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn;
+      : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn && !codexHealth.tooOld;
 
   const modelId = choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
@@ -2550,14 +2555,11 @@ export default function AgentSessionView({
       setRewinding((r) => (r ? { ...r, busy: "", error: (e as Error).message } : r));
     }
   };
-  // A new chat with everything up to this message (the Codex app's Fork).
-  const forkFrom = async (turnId: string) => {
-    try {
-      const r = await runSlashCommand(peer, initial, "fork", turnId);
-      if (r.session) onSelect(r.session as AgentSession);
-    } catch (e) {
-      setProblem((e as Error).message);
-    }
+  const forkFrom = (item: SessionItem) => {
+    setForkPoint(item.id);
+    setAutomation(false);
+    setContinuing(true);
+    setDetails(true);
   };
   const saveLastEdit = async () => {
     if (!editingLast || editingLast.busy) return;
@@ -2593,8 +2595,10 @@ export default function AgentSessionView({
   const [details, setDetails] = useState(false);
   // The ⋯ menu turned into the apps to continue the chat in (MoveItems).
   const [continuing, setContinuing] = useState(false);
+  const [forkPoint, setForkPoint] = useState<string | undefined>();
+  const [automation, setAutomation] = useState(false);
   useEffect(() => {
-    if (!details) setContinuing(false);
+    if (!details) { setContinuing(false); setForkPoint(undefined); setAutomation(false); }
   }, [details]);
   // A second opinion on a reply, or a relay for when this chat's agent
   // finishes (Relays.tsx). One just set up shows at once, before the list has it.
@@ -2801,7 +2805,7 @@ export default function AgentSessionView({
               <skin.compose size={19} />
             </button>
           )}
-          {/* The chat's menu (details, "Continue now in…"): a plain ⋯, still. */}
+          {/* The chat's menu (details and forks): a plain ⋯, still. */}
           <button
             className="as-icon"
             aria-label="More"
@@ -2814,15 +2818,12 @@ export default function AgentSessionView({
         </span>
       </header>
       {helping && <HelperBadge team={helping.team} task={helping.task} logos={logos} onOpen={(c) => onSelect(chatOf(c))} />}
-      {items && items.length > 2 && !helping && !ledTeam && (
-        <MoveHint session={info} health={health} logos={logos} onOpen={() => (setDetails(true), setContinuing(true))} />
-      )}
       {details && (
         <>
           {/* A tap anywhere else closes the menu. */}
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
-            {!continuing && <div className="as-details-head">
+            {!continuing && !automation && <div className="as-details-head">
               {renaming !== null && (agent === "claude" || agent === "codex") ? (
                 <form
                   className="as-rename"
@@ -2855,38 +2856,44 @@ export default function AgentSessionView({
                 {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>}
-            {/* Passing the work to another agent, each row named by when
-                (Oct 9: "Hand off and continue in are confusing"). */}
-            {!continuing && <div className="as-menu-section" role="presentation">Another agent</div>}
-            {/* Continue this chat in the other app. */}
-            <MoveItems
+            {!automation && <MoveItems
               peer={peer}
-              session={info}
+              session={{ ...info, through: forkPoint }}
               health={health}
               logos={logos}
               word={word}
               open={continuing}
-              onOpen={() => setContinuing(true)}
-              onBack={() => setContinuing(false)}
+              onOpen={() => { setForkPoint(undefined); setContinuing(true); }}
+              onBack={() => { setForkPoint(undefined); setContinuing(false); }}
               onMoved={(s) => {
                 setDetails(false);
                 onSelect(s);
               }}
-            />
+            />}
             {!continuing && (
               <>
+                {!automation && <button className="relay-menu-item" role="menuitem" aria-label="Automation" onClick={() => setAutomation(true)}>
+                  <Workflow size={18} />
+                  <span className="move-item-text"><span>Automation</span></span>
+                  {autoOn && <small className="relay-menu-value">On</small>}
+                  <ChevronRight size={16} />
+                </button>}
+                {automation && <>
+                  <button className="move-item move-section-back" role="menuitem" onClick={() => setAutomation(false)}>
+                    <ChevronLeft size={16} /><span>Automation</span>
+                  </button>
                 {/* Its work goes on to another agent once this turn ends (Relays.tsx). */}
                 <button
                   className="relay-menu-item"
                   role="menuitem"
                   onClick={() => {
                     setDetails(false);
-                    setRelaySheet({ mode: "relay", finish: true });
+                    setRelaySheet({ mode: "relay", ...(working ? { finish: true } : {}) });
                   }}
                 >
                   <Workflow size={18} />
                   <span className="move-item-text">
-                    <span>When this finishes…</span>
+                    <span>{working ? "When this finishes…" : "Hand off work…"}</span>
                   </span>
                   <ChevronRight size={16} />
                 </button>
@@ -2900,21 +2907,8 @@ export default function AgentSessionView({
                     {autoOn && <small className="relay-menu-value">On</small>}
                   </button>
                 )}
-                {!!lastReply && (
-                  <button
-                    className="relay-menu-item"
-                    role="menuitem"
-                    onClick={() => {
-                      setDetails(false);
-                      setRelaySheet({ mode: "opinion" });
-                    }}
-                  >
-                    <SearchCheck size={18} />
-                    <span className="move-item-text">
-                      <span>Review reply</span>
-                    </span>
-                  </button>
-                )}
+                </>}
+                {!automation && <>
                 {/* Its account's limits (UsageRing.tsx), as on the chat list. */}
                 {nearLimit && (
                   <button
@@ -2948,9 +2942,10 @@ export default function AgentSessionView({
                       }
                     }}
                   >
-                    <Trash2 size={18} /> Delete chat
+                    <Trash size={18} /> Delete chat
                   </button>
                 )}
+                </>}
               </>
             )}
           </div>
@@ -2964,7 +2959,7 @@ export default function AgentSessionView({
             <p className="as-rewind-quote">{visibleUserText(rewinding.item.text).slice(0, 200)}</p>
             {rewinding.busy === "preview" ? (
               <p>
-                <Loader2 size={14} className="spin" /> Checking what would change…
+                <LoaderCircle size={14} className="spin" /> Checking what would change…
               </p>
             ) : rewinding.preview && rewinding.preview.files.length ? (
               <p>
@@ -2981,19 +2976,19 @@ export default function AgentSessionView({
             <div className="as-rewind-actions">
               {!!rewinding.preview?.files.length && rewinding.preview.canRewind && rewinding.preview.conversation !== false && (
                 <button className="primary" disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: true }, "both")}>
-                  {rewinding.busy === "both" ? <Loader2 size={14} className="spin" /> : "Restore code and conversation"}
+                  {rewinding.busy === "both" ? <LoaderCircle size={14} className="spin" /> : "Restore code and conversation"}
                 </button>
               )}
               {/* The first message has no conversation before it (the server refuses), and a
                   preview that failed (the chat held elsewhere) leaves nothing to restore. */}
               {rewinding.preview?.conversation !== false && (
                 <button className={rewinding.preview?.files.length ? "" : "primary"} disabled={!!rewinding.busy || (!rewinding.preview && !!rewinding.error)} onClick={() => void doRewind({ code: false, conversation: true }, "conversation")}>
-                  {rewinding.busy === "conversation" ? <Loader2 size={14} className="spin" /> : "Restore conversation"}
+                  {rewinding.busy === "conversation" ? <LoaderCircle size={14} className="spin" /> : "Restore conversation"}
                 </button>
               )}
               {!!rewinding.preview?.files.length && rewinding.preview.canRewind && (
                 <button disabled={!!rewinding.busy} onClick={() => void doRewind({ code: true, conversation: false }, "code")}>
-                  {rewinding.busy === "code" ? <Loader2 size={14} className="spin" /> : "Restore code only"}
+                  {rewinding.busy === "code" ? <LoaderCircle size={14} className="spin" /> : "Restore code only"}
                 </button>
               )}
               <button className="quiet" disabled={!!rewinding.busy && rewinding.busy !== "preview"} onClick={() => setRewinding(null)}>
@@ -3034,7 +3029,7 @@ export default function AgentSessionView({
         ) : null}
         {!items ? (
           <p className="as-note">
-            <Loader2 size={15} className="spin" /> Opening…
+            <LoaderCircle size={15} className="spin" /> Opening…
           </p>
         ) : (
           placeMoves(blocks.map((b, i) =>
@@ -3075,7 +3070,7 @@ export default function AgentSessionView({
                     Cancel
                   </button>
                   <button type="submit" className="primary" disabled={editingLast.busy || !editingLast.text.trim()}>
-                    {editingLast.busy ? <Loader2 size={14} className="spin" /> : "Send"}
+                    {editingLast.busy ? <LoaderCircle size={14} className="spin" /> : "Send"}
                   </button>
                 </span>
               </form>
@@ -3084,9 +3079,9 @@ export default function AgentSessionView({
                 key={b.item.id}
                 text={b.item.text}
                 side="user"
-                bare={!b.item.text.trim()}
+                bare={!b.item.text.trim() && !b.item.images}
                 onEdit={b.item.id === lastEditable ? () => setEditingLast({ id: b.item.id, turnId: b.item.turnId!, text: visibleUserText(b.item.text), busy: false }) : undefined}
-                onFork={agent === "codex" && b.item.turnId ? () => void forkFrom(b.item.turnId!) : undefined}
+                onFork={() => forkFrom(b.item)}
                 // Not while the Claude app or a terminal runs it: the server refuses (rewind it there).
                 onRewind={agent === "claude" && !b.item.slash && info.status !== "running" && info.status !== "waiting" && info.live?.where !== "claude-app" && info.live?.where !== "terminal" ? () => void openRewind(b.item) : undefined}
               >
@@ -3168,6 +3163,7 @@ export default function AgentSessionView({
                 key={b.item.id}
                 text={b.item.text}
                 side="assistant"
+                onFork={() => forkFrom(b.item)}
                 bare={i === blocks.length - 1 && replyActions}
                 onSecondOpinion={b.item.kind === "text" && b.item.text.trim() ? () => setRelaySheet({ mode: "opinion", item: b.item.id }) : undefined}
               >
@@ -3181,9 +3177,9 @@ export default function AgentSessionView({
         {replyActions && (
             <ReplyActions
               text={lastReply}
+              onFork={lastBlock?.type === "item" ? () => forkFrom(lastBlock.item) : undefined}
               disclaimer={skin.disclaimer}
               onSecondOpinion={() => setRelaySheet({ mode: "opinion", ...(lastBlock?.type === "item" ? { item: lastBlock.item.id } : {}) })}
-              onRelay={() => setRelaySheet({ mode: "relay" })}
             />
           )}
         {pending
@@ -3634,7 +3630,7 @@ export default function AgentSessionView({
                       <img src={a.url} alt="" />
                     )}
                     {!a.id && !a.error && (
-                      <Loader2 size={16} className="spin" />
+                      <LoaderCircle size={16} className="spin" />
                     )}
                     <button
                       aria-label={a.file ? "Remove file" : "Remove image"}
@@ -3798,7 +3794,7 @@ export default function AgentSessionView({
                 onClick={() => void (memo.state === "recording" ? memo.stop() : memo.start())}
               >
                 {memo.state === "working" ? (
-                  <Loader2 size={16} className="spin" />
+                  <LoaderCircle size={16} className="spin" />
                 ) : memo.state === "recording" ? (
                   <span className="as-mic-time">
                     {Math.floor(memo.seconds / 60)}:{String(memo.seconds % 60).padStart(2, "0")}
@@ -3827,7 +3823,7 @@ export default function AgentSessionView({
                 onClick={() => void send()}
               >
                 {sending ? (
-                  <Loader2 size={16} className="spin" />
+                  <LoaderCircle size={16} className="spin" />
                 ) : (
                   <ArrowUp size={18} />
                 )}

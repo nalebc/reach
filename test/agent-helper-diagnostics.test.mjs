@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { AgentDesktopHelper } from "../server/agent-desktop.mjs";
+import { agentErrorDetails } from "../server/agent-transport.mjs";
 
 const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
 function inert(t) {
@@ -59,6 +60,21 @@ test("helper timeout diagnostics preserve the startup operation and 503, not a p
   diagnostic((await ready).error, "timeout", "rules", "completion_unknown");
   diagnostic((await queued).error, "timeout", "act", "not_dispatched");
   assert.deepEqual(w.writes.map(item => item.op), ["rules"]);
+});
+
+test("navigation helper failures retain their operation and dispatch state across the transport boundary", async t => {
+  for (const op of ["elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]) {
+    const w = inert(t);
+    const active = outcome(w.helper.send({ op, privatePath: "/PRIVATE" }));
+    const queued = outcome(w.helper.send({ op }));
+    w.child.emit("exit", 99);
+    for (const [request, dispatch] of [[active, "completion_unknown"], [queued, "not_dispatched"]]) {
+      const { error } = await request;
+      diagnostic(error, "process_exit", op, dispatch);
+      assert.deepEqual(agentErrorDetails(error), { error: error.message, status: 503, kind: "unavailable", helperReason: "process_exit", helperOperation: op, helperDispatch: dispatch });
+    }
+    assert.equal(w.writes.length, 1);
+  }
 });
 
 test("serialization and stdin write failures report dispatch conservatively without retrying", async t => {

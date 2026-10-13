@@ -6,7 +6,9 @@ import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typed
 import { actionWords } from "./agent-actions.mjs";
 import { presetScopes } from "./agent-presets.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { ownerHoldRefusal } from "./screen.mjs";
 import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-identity.mjs";
+import { agentErrorKinds as KINDS, desktopHelperOperations } from "./agent-transport.mjs";
 
 // This Mac's screen and input for preset agents, through the native checker
 // (scripts/native/agent-desktop.swift): one helper process per agent session,
@@ -15,7 +17,6 @@ import { appLabel, windowsAppId, windowsExePath, windowsPath } from "./app-ident
 // of its actions extends, and the others are told who has it. Screenshots are
 // reads, serialised per agent (a second request shares or waits for the first). The owner's own hands (checked natively) and the
 // owner's phone (checked here) always come first.
-const KINDS = { blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 };
 const refusal = (value) => Object.assign(fail(KINDS[value.kind] || 403, String(value.error || "The Mac couldn't do that.").slice(0, 300)), { kind: value.kind || "blocked", ...(Array.isArray(value.candidates) ? { candidates: value.candidates.slice(0, 8) } : {}) });
 const number = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const KEYS = new Set(["return", "enter", "tab", "space", "delete", "backspace", "escape", "esc", "left", "right", "down", "up", "forwarddelete", "home", "end", "pageup", "pagedown",
@@ -56,12 +57,19 @@ export function reachAddresses(config = {}, { hostname = os.hostname() } = {}) {
 
 // The front window as one readable text (reach_describe_screen): its app and
 // title, then what is there in reading order, each control inline as
-// [n] Role "name" (= what a field holds), clickable by its number.
+// [n] {ref} Role "name" (= what a field holds), clickable by its live ref.
 const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox", "SecureTextField"]);
-export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}) {
-  const control = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
-    (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
-    (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+// One control as the screen text shows it (and its changes, desktop-observation.mjs).
+export const controlLine = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
+  (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
+  (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+export function screenActionHint({ snapshot = "", items = [] } = {}) {
+  const refs = items.some(item => item.ref);
+  return [refs ? 'Click a {ref} with reach_act {"action":{"type":"element","ref":"REF"}}.' : "",
+    snapshot && (!refs || items.some(item => !item.ref)) ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : ""].filter(Boolean).join(" ");
+}
+export function describeScreen({ app = "", title = "", snapshot = "", windowRef = "", displayId, items = [], texts = [], truncated = false } = {}, { truncate = true } = {}) {
+  const control = controlLine;
   const entries = [
     ...items.map((item) => ({ x: item.x, mid: item.y + item.h / 2, line: control(item) })),
     ...texts.map((line) => ({ x: line.x, mid: line.y + line.h / 2, line: line.heading ? `# ${line.text}` : line.text })),
@@ -75,14 +83,14 @@ export function describeScreen({ app = "", title = "", snapshot = "", windowRef 
   }
   for (const row of rows) row.parts = row.parts.sort((a, b) => a.x - b.x).map((entry) => entry.line);
   const head = [`${app}${title ? ` — ${title}` : ""}`,
-    (windowRef ? `Window ${windowRef}${displayId ? ` · display ${displayId}` : ""}. Controls have stable refs: reach_act {"action":{"type":"element","ref":"e-…"}}. ` : "") +
-    (snapshot ? `Click a [number] with reach_act {"action":{"type":"element","snapshot":"${snapshot}","n":NUMBER}}.` : ""), ""];
+    (windowRef ? `Window ${windowRef}${displayId ? ` · display ${displayId}` : ""}. ` : "") + screenActionHint({ snapshot, items }), ""];
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
   const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
   const form = fields.length
     ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}; a value from your vault with "secret":true.`
     : "";
-  return (head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "")).slice(0, 30000);
+  const text = head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
+  return truncate ? text.slice(0, 30000) : text;
 }
 
 // The numbered controls and visible text as the agent receives them, bounded,
@@ -234,7 +242,7 @@ const HELPER_FAILURES = {
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
-const HELPER_OPERATIONS = new Set(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]);
+const HELPER_OPERATIONS = new Set(desktopHelperOperations);
 const helperFailure = (reason, request, dispatched = false) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
@@ -339,6 +347,10 @@ export function createAgentDesktop(config, {
   home = os.homedir(),
   verifyClient = () => undefined,
   phoneControls = () => false,
+  // You (or a full-access person) using the Mac through Reach's screen:
+  // { name, retryInMs } while agents wait (server/screen.mjs OwnerHold).
+  // Every look and every action waits, not only input.
+  ownerUsing = () => null,
   automationControls = () => false,
   // When a chat last drove the Mac (desktop-automation.mjs changedAt): an
   // agent's picture from before then may show the wrong window.
@@ -404,6 +416,10 @@ export function createAgentDesktop(config, {
         !Number.isFinite(latest.expiresAt) || latest.expiresAt <= now() || !presetScopes(latest.policy).includes(scope) || !latest.scopes?.includes(scope))
       throw fail(403, "This agent's access to the Mac has changed or ended.");
     if (paused()) throw fail(409, "Reach is paused. The Mac waits until it resumes.");
+    // Checked on every call and again after each native answer (checkState):
+    // a picture taken as the owner started is dropped, not handed over.
+    const hold = ownerUsing();
+    if (hold) throw ownerHoldRefusal(hold, platform);
     return latest;
   };
   const session = async (client) => {
@@ -431,6 +447,8 @@ export function createAgentDesktop(config, {
         throw fail(403, "This agent's access changed. Refresh before using the Mac again.");
       return current;
     } catch (error) {
+      // The owner's hold is a wait, not a changed grant: the helper stays.
+      if (error?.kind === "paused") throw error;
       state.helper.stop();
       if (sessions.get(client.id) === state) sessions.delete(client.id);
       throw error;

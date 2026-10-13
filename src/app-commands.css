@@ -1,7 +1,5 @@
-/* Shortcuts panel: commands for the app in front on the computer. */
-.app-commands {
-  margin-bottom: 18px;
-}
+/* Every command of the app in front, searched in place under its tiles
+   (key-tiles.css). The list scrolls down, never sideways. */
 .app-commands-search {
   margin: 14px 0 8px;
 }
@@ -10,7 +8,9 @@
   margin: 0;
   padding: 0;
   max-height: 46dvh;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .app-commands-list li button {
   width: 100%;
@@ -29,6 +29,7 @@
 }
 .app-commands-list li button > span {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .app-commands-list small {
   display: block;
@@ -43,8 +44,4 @@
 }
 .app-commands-list .muted {
   padding: 12px 4px;
-}
-.screen-more-toggle {
-  margin-top: 8px;
-  color: var(--muted, #93a096);
 }

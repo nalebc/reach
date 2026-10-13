@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeftRight, ArrowRight, ChevronLeft, ChevronRight, Loader2, MessageSquare, MoreHorizontal } from "lucide-react";
+import { GitFork, ChevronLeft, ChevronRight, LoaderCircle, MessageSquare, Ellipsis } from "lucide-react";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import {
   agentLabel,
@@ -11,6 +11,7 @@ import {
 } from "./agent-sessions";
 import type { Peer } from "./api";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
+import { computerWord } from "./pause";
 import "./move-chat.css";
 
 // Continuing a chat in another app, as if it had been forked in the same app
@@ -20,7 +21,7 @@ import "./move-chat.css";
 // whole folder at once next to its name on the Chats list.
 
 // What a chat needs to be moved: which app and chat it is.
-export type MoveSource = { agent: string; id: string; title?: string; cwd?: string };
+export type MoveSource = { agent: string; id: string; title?: string; cwd?: string; through?: string };
 
 // The apps Reach chats with, in the order offered.
 const APPS = ["codex", "claude", "openclaw"];
@@ -34,6 +35,8 @@ export function moveBlocked(to: string, health: AgentHealth[], word = "Mac") {
   const name = agentLabel(to);
   if (!h) return "";
   if (!h.installed) return `${name} isn't installed on your ${word}.`;
+  // Older than Reach works with (OpenClaw's Gateway too).
+  if (h.tooOld) return `Update ${name} to ${h.tooOld.to} or newer to move chats there.`;
   if (h.needs?.includes("git")) return `${name} needs Git for Windows on your ${word}.`;
   // OpenClaw's own Gateway answers for it when the chat moves, if it can
   // take one (older Gateways can't add the history).
@@ -65,6 +68,13 @@ export function moveChoices(agent: string, health: AgentHealth[], word = "Mac") 
     .sort((a, b) => rank(a.to) - rank(b.to) || a.name.localeCompare(b.name));
 }
 
+// Same-app forks belong in the same picker as cross-app continuations.
+export function forkChoices(agent: string, health: AgentHealth[], word: string) {
+  const choices = moveChoices(agent, health, word);
+  if (APPS.includes(agent)) choices.push({ to: agent, name: agentLabel(agent), blocked: moveBlocked(agent, health, word) });
+  return choices;
+}
+
 // The chat to open once moved (the server fills in the rest when it loads).
 export const movedChat = (from: MoveSource, to: { agent: string; id: string }): AgentSession =>
   ({
@@ -84,139 +94,8 @@ export const movedChat = (from: MoveSource, to: { agent: string; id: string }): 
     movedFrom: { agent: from.agent, id: from.id, title: from.title },
   }) as AgentSession;
 
-// The hint is shown twice at most, never again once tapped or a chat has moved.
-const HINT = "reach.moveHint";
-const HINT_TIMES = 2;
-const hintSeen = () => {
-  try {
-    return Number(localStorage.getItem(HINT) || 0);
-  } catch {
-    return 99;
-  }
-};
-const noteHint = (value: number) => {
-  try {
-    localStorage.setItem(HINT, String(value));
-  } catch {
-    /* only a hint */
-  }
-};
-
-// "Continue in Codex": one tap says what happens, the next one moves it.
-function MoveRow({
-  peer,
-  session,
-  to,
-  health,
-  logos,
-  word,
-  onMoved,
-  usage,
-}: {
-  peer: Peer;
-  session: MoveSource;
-  to: string;
-  health: AgentHealth[];
-  logos: AgentLogos;
-  word?: string;
-  onMoved: (s: AgentSession) => void;
-  usage: boolean;
-}) {
-  const name = agentLabel(to);
-  const from = agentLabel(session.agent);
-  const blocked = moveBlocked(to, health, word);
-  const [asking, setAsking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState("");
-  const go = async () => {
-    setBusy(true);
-    setProblem("");
-    try {
-      const moved = await moveSession(peer, session, to);
-      noteHint(99);
-      onMoved(movedChat(session, moved));
-    } catch (e) {
-      setProblem((e as Error).message);
-      setBusy(false);
-    }
-  };
-  const says = blocked
-    ? blocked
-    : asking
-      ? `${name} continues with what ${from} knows so far; this chat stays as it is.`
-      : usage
-        ? `Keep going: ${name} picks up this chat where it is.`
-        : `Fork this chat and keep going with ${name}.`;
-  return (
-    <>
-      <button
-        className="move-offer-row"
-        disabled={!!blocked || busy}
-        aria-expanded={asking}
-        onClick={() => (asking ? void go() : setAsking(true))}
-      >
-        <AgentLogo agent={to} name={name} logos={logos} size={24} />
-        <span className="move-offer-text">
-          <strong>{busy ? `Moving to ${name}…` : `Continue in ${name}`}</strong>
-          <small>{says}</small>
-        </span>
-        {busy ? (
-          <Loader2 size={16} className="spin" />
-        ) : asking ? (
-          <span className="move-offer-go">Continue</span>
-        ) : (
-          <ArrowRight size={16} />
-        )}
-      </button>
-      {problem && <small className="move-offer-problem">{problem}</small>}
-    </>
-  );
-}
-
-// One row per app that can take the chat (none: nothing shown).
-export function MoveOffer({
-  peer,
-  session,
-  health,
-  logos,
-  word,
-  onMoved,
-  variant = "row",
-}: {
-  peer: Peer;
-  session: MoveSource;
-  health: AgentHealth[];
-  logos: AgentLogos;
-  word?: string;
-  onMoved: (s: AgentSession) => void;
-  variant?: "row" | "picker" | "usage";
-}) {
-  const targets = moveTargets(session.agent, health);
-  if (!targets.length) return null;
-  return (
-    <div className={`move-offer ${variant}`}>
-      {targets.map((to) => (
-        <MoveRow
-          key={to}
-          peer={peer}
-          session={session}
-          to={to}
-          health={health}
-          logos={logos}
-          word={word}
-          onMoved={onMoved}
-          usage={variant === "usage"}
-        />
-      ))}
-    </div>
-  );
-}
-
-// In a chat's menu (its ⋯, or held on the list): one "Continue now in…" row
-// (now, against the menu's "When this finishes…" and "If usage runs out");
-// a tap turns the menu into the apps found on the Mac, each with its logo
-// (moveChoices). One tap on an app says what happens, the next one moves it;
-// an app that can't take the chat shows, greyed, with why.
+// A single entry in the chat menu, then the destination picker. The second
+// tap confirms the destination after explaining what its fork preserves.
 export function MoveItems({
   peer,
   session,
@@ -238,7 +117,7 @@ export function MoveItems({
   onBack: () => void;
   onMoved: (s: AgentSession) => void;
 }) {
-  const choices = moveChoices(session.agent, health, word);
+  const choices = forkChoices(session.agent, health, word ?? computerWord(peer.platform));
   const [asking, setAsking] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -246,14 +125,13 @@ export function MoveItems({
   useEffect(() => {
     if (!open) (setAsking(""), setProblem(""));
   }, [open]);
+  useEffect(() => { setAsking(""); setProblem(""); }, [session.id, session.agent, session.through]);
   if (!choices.length) return null;
-  const from = agentLabel(session.agent);
   const go = async (to: string) => {
     setBusy(true);
     setProblem("");
     try {
-      const moved = await moveSession(peer, session, to);
-      noteHint(99);
+      const moved = await moveSession(peer, session, to, { fork: true, through: session.through });
       onMoved(movedChat(session, moved));
     } catch (e) {
       setProblem((e as Error).message);
@@ -263,9 +141,9 @@ export function MoveItems({
   if (!open)
     return (
       <button role="menuitem" className="move-item move-continue" onClick={onOpen}>
-        <ArrowLeftRight size={18} />
+        <GitFork size={18} />
         <span className="move-item-text">
-          <span>Continue now in…</span>
+          <span>Fork chat…</span>
         </span>
         <ChevronRight size={16} />
       </button>
@@ -275,9 +153,10 @@ export function MoveItems({
       <button role="menuitem" className="move-item move-section-back" disabled={busy} onClick={onBack}>
         <ChevronLeft size={16} />
         <span className="move-item-text">
-          <span>Continue now in</span>
+          <span>Fork chat</span>
         </span>
       </button>
+      <p className="fork-explanation">{session.through ? "Continue from the selected message." : "Continue from the latest message."} The original chat stays here.</p>
       {choices.map(({ to, name, blocked }) => {
         const here = asking === to;
         if (blocked)
@@ -301,12 +180,12 @@ export function MoveItems({
             <AgentLogo agent={to} name={name} logos={logos} size={20} />
             <span className="move-item-text">
               <span>{name}</span>
-              {here && <small>{problem || `Gets what ${from} knows so far`}</small>}
+              {here && <small>{problem || (to === session.agent && to !== "openclaw" ? "Keeps the native chat context and settings" : "Copies the conversation and tool output; uses this app’s model, tools and permissions")}</small>}
             </span>
             {busy && here ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : here ? (
-              <span className="move-item-go">Continue</span>
+              <span className="move-item-go">Fork</span>
             ) : null}
           </button>
         );
@@ -393,7 +272,6 @@ export function MoveSection({
         failed++;
       }
     }
-    noteHint(99);
     setDone(-1);
     if (failed) {
       setProblem(`${failed} of ${list.length} didn't move. Try again to move just ${failed === 1 ? "that one" : "those"}.`);
@@ -409,7 +287,6 @@ export function MoveSection({
     try {
       const moved = await moveSession(peer, s, to);
       noteSent(sentKey(s, to));
-      noteHint(99);
       setDone(-1);
       setOpen(null);
       go("");
@@ -448,7 +325,7 @@ export function MoveSection({
           <span>{busy && here ? (left > 1 ? `Moving ${done + 1} of ${left}…` : "Moving…") : `Move ${what} to ${app}`}</span>
           <small>{here && problem ? problem : note}</small>
         </span>
-        {busy && here ? <Loader2 size={16} className="spin" /> : here ? <span className="move-item-go">Move</span> : null}
+        {busy && here ? <LoaderCircle size={16} className="spin" /> : here ? <span className="move-item-go">Move</span> : null}
       </button>
     );
   };
@@ -464,7 +341,7 @@ export function MoveSection({
           go("");
         }}
       >
-        <MoreHorizontal size={16} />
+        <Ellipsis size={16} />
       </button>
       {open && (
         // Stays while chats move, so the count shows.
@@ -530,42 +407,6 @@ export function MoveSection({
   );
 }
 
-// A quiet line under the chat's header, twice at most; a tap opens ⋯.
-export function MoveHint({
-  session,
-  health,
-  logos,
-  onOpen,
-}: {
-  session: AgentSession;
-  health: AgentHealth[];
-  logos: AgentLogos;
-  onOpen: () => void;
-}) {
-  const targets = moveTargets(session.agent, health).filter((t) => !moveBlocked(t, health));
-  const [shown] = useState(() => hintSeen() < HINT_TIMES && !session.movedFrom);
-  const show = shown && targets.length > 0;
-  useEffect(() => {
-    if (show) noteHint(hintSeen() + 1);
-  }, [show]);
-  if (!show) return null;
-  const to = targets[0];
-  const where = targets.length === 1 ? agentLabel(to) : "another app";
-  return (
-    <button
-      className="move-hint"
-      onClick={() => {
-        noteHint(99);
-        onOpen();
-      }}
-    >
-      <AgentLogo agent={to} name={agentLabel(to)} logos={logos} size={16} />
-      <span>New: continue this chat in {where}</span>
-      <ChevronRight size={14} />
-    </button>
-  );
-}
-
 // Where a chat was continued elsewhere: the way there (`moves`: the ones
 // that go at this point of the chat; all of them by default).
 export function ContinuedIn({
@@ -585,7 +426,7 @@ export function ContinuedIn({
       {moves.map((m) => (
         <button key={`${m.agent}:${m.id}`} onClick={() => onOpen(movedChat(session, m))}>
           <AgentLogo agent={m.agent} name={agentLabel(m.agent)} logos={logos} size={18} />
-          <span>Continued in {agentLabel(m.agent)}</span>
+          <span>{m.fork ? "Forked in" : "Continued in"} {agentLabel(m.agent)}</span>
           <ChevronRight size={14} />
         </button>
       ))}

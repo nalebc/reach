@@ -432,6 +432,24 @@ both("declined goes back as access_denied; PKCE must match and a code is spent b
   assert.throws(() => f.reach.auth.redeemFunnelBrowser(fourth.invitation, crypto.randomBytes(32).toString("base64url")), { status: 401 });
 });
 
+// Oct 12: a hosted agent with Full control is told, as every connection
+// tells it, how to go fast (browser-tools.mjs GO_FAST): at initialize, once,
+// after Reach's own line. (Its tools are toolsFor's, as for the agent's copy:
+// test/agent-speed.test.mjs compares them word for word. This fixture's Mac
+// has no tailnet for the host guard, so a screen preset's tool calls stop
+// there.)
+both("a hosted Full control agent is told at initialize how to go fast, once", { skip: !posix, timeout: 30000 }, async (t) => {
+  const { GO_FAST } = await import("../server/browser-tools.mjs");
+  const f = await fixture(t);
+  const grant = f.invite({ preset: "full", fullControlVersion: 1, folders: undefined });
+  const { tokens } = await f.connect(grant.connector);
+  const init = (await f.rpc(grant.connector, tokens.access_token, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "grok", version: "1" } } })).json;
+  const told = init.result.instructions;
+  assert.match(told, /^Check reach_tools before using the screen\./);
+  assert.equal(told.split(GO_FAST).length, 2, told);
+  assert.match(told, /^You have full control of my .+ as my user account/m);
+});
+
 test("a hosted invitation is a public-link invitation", () => {
   assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "tailnet", hosted: true }), /public link/);
   assert.throws(() => validatePresetInvitation({ name: "Claude", preset: "full", fullControlVersion: 1, ttlSeconds: 3600, transport: "funnel", hosted: "yes" }), /public link/);

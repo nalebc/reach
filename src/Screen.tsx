@@ -15,12 +15,15 @@ import {
   Ellipsis,
   ClipboardPaste,
   ChevronRight,
+  ChevronLeft,
+  LayoutGrid,
   AppWindow,
   Hand,
   MousePointerClick,
   Move,
   Unplug,
   Activity,
+  Bot,
 } from "lucide-react";
 import { pasteFromPhone } from "./phone-paste";
 import { Device, Peer, post, request } from "./api";
@@ -31,11 +34,13 @@ import QuickLauncher from "./QuickLauncher";
 import ScreenPopup from "./ScreenPopup";
 import RemoteTyping from "./RemoteTyping";
 import ScreenActions, { type ScreenAction } from "./ScreenActions";
+import { screenActionGroups, shortcutText } from "./screen-action-catalog";
 import { CLIPBOARD_BYTES, copyRemoteSelection, fitBytes } from "./remote-copy";
 import type { TextTarget } from "./desktop-input-queue";
 import DesktopSurface from "./DesktopSurface";
 import { useScreenPresentation } from "./useScreenPresentation";
 import { useImmersiveChrome } from "./useImmersiveChrome";
+import { useScreenChrome } from "./useScreenChrome";
 import NativeRemoteTyping from "./NativeRemoteTyping";
 import { useAppContext } from "./useAppContext";
 import { allCommands, contextPicks, type ContextAction } from "./app-context";
@@ -43,11 +48,12 @@ import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
-import { computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
+import { agentsWaitIn, computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
 import "./screen-immersive.css";
 import "./screen-ask.css";
 import "./settings-list.css";
 import "./screen-bar.css";
+import "./screen-chrome.css";
 import { MacPasswordField } from "./NeedsYou";
 type Display = {
   id: string;
@@ -125,6 +131,7 @@ export default function Screen({
     [quality] = useState("auto"),
     [revision, setRevision] = useState(0);
   const [mode, setMode] = useState("direct"),
+    [touchAssist, setTouchAssist] = useState(true),
     [drag, setDrag] = useState(false),
     [clickMode, setClickMode] = useState("left"),
     [feedback, setFeedback] = useState("");
@@ -174,6 +181,10 @@ export default function Screen({
   const controlKey = controlIn(changes);
   // Someone else on the Mac now (a person in control, an agent acting).
   const using = usingIn(changes);
+  // Your input holds agents off the screen until 2 minutes after you stop
+  // (server/screen.mjs OwnerHold): one quiet pill, with "Let them back".
+  const agentsWait = agentsWaitIn(changes);
+  const [lettingBack, setLettingBack] = useState(false);
   useEffect(() => {
     setHolder((was) => {
       if (was) setError("");
@@ -221,9 +232,31 @@ export default function Screen({
   const frameRate = `${stream.fps ? `${stream.fps} fps` : "Still"}${stream.cap ? ` · up to ${stream.cap}` : ""}`;
   const send = async (action: DesktopAction) => {
     if (!usable && action.type !== "release")
-      throw Error("Wait for a fresh screen and enable control.");
+      throw Object.assign(Error("Wait for a fresh screen and enable control."), { notSent: true });
     return input.send(action);
   };
+  // Why a tap on the picture can't reach the computer now, in one line
+  // (src/DesktopSurface.tsx says it; nothing is ever dropped in silence).
+  const stalePicture = Date.now() - stream.updated >= 10000;
+  const tapBlocked = !live
+    ? "Live view is paused"
+    : !stream.ready
+      ? "Waiting for the picture"
+      : !canControl
+        ? "View only"
+        : !control
+          ? holder?.canTakeOver
+            ? `${holder.name} is controlling · tap Take over`
+            : "View only · tap Control to use it"
+          : input.reconnecting
+            ? "Reconnecting controls…"
+            : !input.ready
+              ? "Connecting controls…"
+              : stalePicture
+                ? "The picture is out of date"
+                : "";
+  // Control is on and its connection is coming back: a tap waits a moment.
+  const tapWaits = control && !input.ready && live && visible && stream.ready;
   const detectTyping = async (point: { x: number; y: number }) => {
     if (!input.typing) return;
     const epoch = typingEpoch.current;
@@ -332,8 +365,17 @@ export default function Screen({
   // Typing doesn't unmount when the picture goes stale: queued edits stay.
   const typingAllowed = control && input.ready && live && visible;
   const typing = !!typingTarget && typingAllowed && !panel;
-  const { fullscreen, expanded, mobile, toggleFullscreen } =
+  const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
+  // Fullscreen: Reach's controls in the room the picture leaves, never over
+  // the Mac's menu bar or Dock (src/screen-chrome.ts). While typing, the
+  // keyboard's own layout stands.
+  if (stream.width > 0 && stream.height > 0)
+    aspect.current = stream.width / stream.height;
+  const chrome = useScreenChrome(viewer, fullscreen && !typing, aspect.current);
+  // A phone turned sideways opened fullscreen by itself and closes it when
+  // turned back: the rail needn't hold that button.
+  const turnToLeave = chrome?.placement === "side" && landscape;
   // Fullscreen hides the bars until the screen is touched; they stay while
   // something needs attention.
   const chromeShown = useImmersiveChrome(
@@ -352,6 +394,27 @@ export default function Screen({
     input.send,
     control && input.ready && stream.ready && live && visible && !typing,
   );
+  // The bar's desktop switcher: the catalog's own keys for this computer
+  // (Ctrl ←/→ and Ctrl ↑ on a Mac; Win Ctrl ←/→ and Win Tab on Windows).
+  const desktopItems = screenActionGroups(device.platform).flatMap((group) => group.items);
+  const desktopActions = (
+    [
+      ["previous-desktop", ChevronLeft],
+      ["all-windows", LayoutGrid],
+      ["next-desktop", ChevronRight],
+    ] as const
+  ).flatMap(([id, Icon]) => {
+    const item = desktopItems.find((entry) => entry.id === id);
+    return item
+      ? [{
+          id,
+          label: item.label,
+          Icon,
+          keys: shortcutText(device.platform, item.modifiers, item.key),
+          action: { type: "key", key: item.key, modifiers: item.modifiers } as DesktopAction,
+        }]
+      : [];
+  });
   const contextActions = contextPicks(
     device.platform,
     appContext.app,
@@ -480,6 +543,20 @@ export default function Screen({
     });
     typingEditor.current?.focus({ preventScroll: true });
   };
+  // Done with the Mac: your control ends and agents have it back now, not 2
+  // minutes from now.
+  const letAgentsBack = async () => {
+    setLettingBack(true);
+    if (control) release();
+    try {
+      await post(peer, "/api/screen/agents-back", {});
+      if (mounted.current) setFeedback("Agents are back");
+    } catch (e) {
+      if (mounted.current) setError((e as Error).message);
+    } finally {
+      if (mounted.current) setLettingBack(false);
+    }
+  };
   const toggleViewing = async (value: boolean) => {
     setBusy(true);
     setError("");
@@ -597,11 +674,34 @@ export default function Screen({
       if (mounted.current) setClipboardBusy(false);
     }
   };
-  // The viewer keeps its shape while it connects: with no picture yet the
-  // stream is 0 wide, and the box (with the plug-in scene in it) collapsed
-  // to a thin bar. The last screen's shape, or 16:10 the first time.
-  if (stream.width > 0 && stream.height > 0)
-    aspect.current = stream.width / stream.height;
+  // The viewer keeps its shape while it connects (aspect, set above): with no
+  // picture yet the stream is 0 wide, and the box (with the plug-in scene in
+  // it) collapsed to a thin bar. The last screen's shape, or 16:10 at first.
+  const statusText = paused
+    ? "Paused"
+    : stream.error && !stream.ready
+      ? "Can't show the screen"
+      : !live
+        ? "Paused"
+        : stream.connecting
+          ? stream.ready
+            ? stream.cause || "Reconnecting…"
+            : stream.cause || "Connecting…"
+          : stream.ready
+            ? stream.slow
+              ? "Slow connection · lowering quality"
+              : device.name
+            : "Connecting…";
+  // The one line over the bar: what just happened, else who else is there.
+  const caption =
+    feedback ||
+    (control && !input.ready
+      ? input.reconnecting
+        ? "Reconnecting controls…"
+        : "Connecting controls…"
+      : !control && using
+        ? `${using} is using the ${computerWord(device.platform)}`
+        : "");
   const reconnect = () => {
     release();
     setLive(true);
@@ -674,8 +774,10 @@ export default function Screen({
           style={
             {
               "--screen-aspect": aspect.current,
+              ...(chrome && { "--screen-rail": `${chrome.rail}px` }),
             } as React.CSSProperties
           }
+          data-chrome={chrome?.placement}
           className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"} ${stream.ready && stream.width ? "" : "screen-waiting"}`}
         >
           <div className="screen-toolbar simple-screen-toolbar">
@@ -683,21 +785,14 @@ export default function Screen({
               <span
                 className={`screen-status-dot ${live && stream.ready && !stream.connecting ? (stream.slow ? "slow" : "active") : ""}`}
               />
-              {paused
-                ? "Paused"
-                : stream.error && !stream.ready
-                  ? "Can't show the screen"
-                  : !live
-                    ? "Paused"
-                    : stream.connecting
-                    ? stream.ready
-                      ? stream.cause || "Reconnecting…"
-                      : stream.cause || "Connecting…"
-                    : stream.ready
-                      ? stream.slow
-                        ? "Slow connection · lowering quality"
-                        : device.name
-                      : "Connecting…"}
+              {/* In the side rail only news is said (not the computer's
+                  name): the dot says the rest. */}
+              <span
+                className="screen-state-text"
+                {...(statusText !== device.name && { "data-news": "" })}
+              >
+                {statusText}
+              </span>
             </span>
           </div>
           {expanded && (
@@ -763,6 +858,7 @@ export default function Screen({
           )}
           <DesktopSurface
             touchScroll
+            touchAssist={device.platform === "darwin" && touchAssist}
             focusRect={askRect}
             canvas={stream.canvas}
             width={stream.width}
@@ -773,6 +869,8 @@ export default function Screen({
             }
             stale={live && !paused && stream.ready && stream.connecting}
             canControl={usable}
+            blocked={tapBlocked}
+            waitForControl={tapWaits}
             initialCursor={input.initialCursor}
             mode={mode}
             drag={drag}
@@ -844,18 +942,27 @@ export default function Screen({
           {/* Every control in one small bar floating at the bottom center:
               Control, keyboard, paste, fullscreen, and one menu (keys, apps, options). */}
           <div className="simple-screen-dock screen-bar-dock">
-            {(feedback || (control && !input.ready)) ? (
+            {caption && (
               <span className="simple-screen-caption" role="status">
-                {feedback ||
-                  (input.reconnecting
-                    ? "Reconnecting controls…"
-                    : "Connecting controls…")}
+                {caption}
               </span>
-            ) : !control && using ? (
-              <span className="simple-screen-caption" role="status">
-                {using} is using the {computerWord(device.platform)}
+            )}
+            {/* One line at a time over the bar: the pill steps back while
+                a passing caption is said (the row keeps its height). */}
+            {agentsWait && !caption && (
+              <span className="screen-agents-wait" role="status" data-immersive-keep>
+                <Bot size={14} aria-hidden="true" />
+                <span>Agents wait · 2 min after you stop</span>
+                <button
+                  type="button"
+                  disabled={lettingBack}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => void letAgentsBack()}
+                >
+                  Let them back
+                </button>
               </span>
-            ) : null}
+            )}
             <div
               className="screen-bar"
               role="toolbar"
@@ -905,13 +1012,32 @@ export default function Screen({
                   <ClipboardPaste size={18} />
                 </button>
               )}
-              <button
-                aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                aria-pressed={fullscreen}
-                onClick={() => void toggleFullscreen()}
-              >
-                {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-              </button>
+              {/* Desktops, as the keys menu sends them: previous, all
+                  windows, next. Smaller, together, no words. */}
+              {control && !typing && (
+                <span className="screen-bar-group" role="group" aria-label="Desktops">
+                  {desktopActions.map(({ id, label, keys, Icon, action }) => (
+                    <button
+                      key={id}
+                      aria-label={label}
+                      title={`${label} · ${keys}`}
+                      disabled={!usable || helperBusy}
+                      onClick={() => void runHelper({ label, keys, action })}
+                    >
+                      <Icon size={18} />
+                    </button>
+                  ))}
+                </span>
+              )}
+              {!turnToLeave && (
+                <button
+                  aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                  aria-pressed={fullscreen}
+                  onClick={() => void toggleFullscreen()}
+                >
+                  {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+                </button>
+              )}
               <button
                 aria-label="Screen options"
                 aria-haspopup="dialog"
@@ -965,10 +1091,12 @@ export default function Screen({
                   )}
                   {control && (
                     <ScreenActions
-                      strip
                       platform={device.platform}
                       disabled={!usable || helperBusy}
                       run={(helper) => void runHelper(helper)}
+                      shownAbove={
+                        appContext.app ? contextActions.map((item) => item.label) : []
+                      }
                     />
                   )}
                   {(control || (canControl && device.capabilities.apps)) && (
@@ -1034,6 +1162,14 @@ export default function Screen({
               )}
               {panel === "touch" && (
                 <div className="gs-group">
+                  {canControl && device.platform === "darwin" && (
+                    <button className="gs-row" aria-pressed={touchAssist}
+                      onClick={() => setTouchAssist(!touchAssist)}>
+                      <MousePointerClick />
+                      <span className="gs-label">Touch assistance</span>
+                      <span className="gs-value">{touchAssist ? "On" : "Off"}</span>
+                    </button>
+                  )}
                   {canControl && (
                     <label className="gs-row">
                       <Hand />

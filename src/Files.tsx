@@ -16,27 +16,27 @@ import { isNative, saveBlob } from "./native";
 import {
   Archive,
   Check,
-  CheckCircle2,
+  CircleCheck,
   Circle,
   ChevronDown,
   ChevronLeft,
-  Code2,
+  CodeXml,
   Eye,
   Copy,
   Download,
   File,
-  FileAudio,
+  FileHeadphone,
   FileSpreadsheet,
   FileText,
   FolderInput,
-  FileVideo,
+  FilePlay,
   FolderOpen,
   FolderPlus,
   Image,
   LayoutGrid,
   List as ListIcon,
-  Loader2,
-  MoreHorizontal,
+  LoaderCircle,
+  Ellipsis,
   Package,
   Plus,
   Presentation,
@@ -90,11 +90,11 @@ const FileMarkdown = lazy(() => import("./FileMarkdown"));
 const kindIcons: Record<FileKind, typeof File> = {
   folder: Folder,
   image: Image,
-  video: FileVideo,
-  audio: FileAudio,
+  video: FilePlay,
+  audio: FileHeadphone,
   pdf: FileText,
   archive: Archive,
-  code: Code2,
+  code: CodeXml,
   sheet: FileSpreadsheet,
   slides: Presentation,
   doc: FileText,
@@ -628,7 +628,7 @@ export default function Files({
               disabled={unzipping.includes(file.path)}
             >
               {unzipping.includes(file.path) ? (
-                <Loader2 size={16} className="spin" />
+                <LoaderCircle size={16} className="spin" />
               ) : (
                 <FolderInput size={16} />
               )}
@@ -729,7 +729,7 @@ export default function Files({
                   aria-label="Select files"
                   onClick={startSelecting}
                 >
-                  <CheckCircle2 size={19} />
+                  <CircleCheck size={19} />
                   <span>Select</span>
                 </button>
                 <button
@@ -749,7 +749,7 @@ export default function Files({
                   aria-expanded={panel === "options"}
                   onClick={() => toggle("options")}
                 >
-                  <MoreHorizontal size={20} />
+                  <Ellipsis size={20} />
                 </button>
                 {canWrite && (
                   <button
@@ -865,7 +865,7 @@ export default function Files({
             </label>
             <div className="files-tiles">
               <button onClick={startSelecting}>
-                <CheckCircle2 size={18} /> Select files
+                <CircleCheck size={18} /> Select files
               </button>
               <button onClick={refresh}>
                 <RefreshCw size={18} className={busyLoading ? "spin" : ""} />
@@ -1099,7 +1099,7 @@ export default function Files({
                               );
                             }}
                           >
-                            <MoreHorizontal size={18} />
+                            <Ellipsis size={18} />
                           </button>
                         ) : (
                           <span className="file-more" />
@@ -1201,7 +1201,7 @@ export default function Files({
                 }}
               >
                 {pickedArchives.some((f) => unzipping.includes(f.path)) ? (
-                  <Loader2 size={16} className="spin" />
+                  <LoaderCircle size={16} className="spin" />
                 ) : (
                   <FolderInput size={16} />
                 )}{" "}
@@ -1297,7 +1297,7 @@ const shownPicked = (entries: FileEntry[], picked: string[]) =>
 function PickMark({ on }: { on: boolean }) {
   return (
     <span className={`file-pick ${on ? "is-on" : ""}`} aria-hidden="true">
-      {on ? <CheckCircle2 size={22} /> : <Circle size={22} />}
+      {on ? <CircleCheck size={22} /> : <Circle size={22} />}
     </span>
   );
 }
@@ -1440,7 +1440,7 @@ function SendToAgent({
         )}
         <button className="button primary" disabled={!target || sending}>
           {sending ? (
-            <Loader2 size={16} className="spin" />
+            <LoaderCircle size={16} className="spin" />
           ) : (
             <Send size={16} />
           )}
@@ -1469,7 +1469,7 @@ function ShareChip({
       onClick={onShare}
     >
       {state === "preparing" ? (
-        <Loader2 size={16} className="spin" />
+        <LoaderCircle size={16} className="spin" />
       ) : (
         <Share2 size={16} />
       )}
@@ -1715,7 +1715,7 @@ function Viewer({
               onClick={() => sharer.share(file)}
             >
               {shareState === "preparing" ? (
-                <Loader2 size={18} className="spin" />
+                <LoaderCircle size={18} className="spin" />
               ) : (
                 <Share2 size={19} />
               )}
@@ -1756,7 +1756,7 @@ function Viewer({
               aria-pressed={source}
               onClick={() => setSource(true)}
             >
-              <Code2 size={16} /> Source
+              <CodeXml size={16} /> Source
             </button>
           </div>
         )}
@@ -1764,7 +1764,7 @@ function Viewer({
           className={`file-viewer-body ${image ? "is-image" : ""} ${pdf ? "is-pdf" : ""} ${mode === "document" ? "is-document" : ""}`}
         >
           {loading ? (
-            <Loader2 className="spin" size={24} aria-label="Loading preview" />
+            <LoaderCircle className="spin" size={24} aria-label="Loading preview" />
           ) : error ? (
             <div className="file-viewer-empty">
               <KindIcon entry={file} native={icon} size={30} />
@@ -1786,7 +1786,7 @@ function Viewer({
           ) : pdf ? (
             <Suspense
               fallback={
-                <Loader2
+                <LoaderCircle
                   className="spin"
                   size={24}
                   aria-label="Loading PDF preview"
@@ -1798,7 +1798,7 @@ function Viewer({
           ) : text && (isMarkdown(file.name) || kind === "code") ? (
             <Suspense
               fallback={
-                <Loader2
+                <LoaderCircle
                   className="spin"
                   size={24}
                   aria-label="Loading text preview"

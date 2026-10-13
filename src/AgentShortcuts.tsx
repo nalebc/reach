@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Trash2, Zap } from "lucide-react";
+import { Trash, Zap } from "lucide-react";
 import { request, type Peer } from "./api";
 import { usePageVisible } from "./page-visible";
 import { SwitchLine } from "./agent-ui";
@@ -245,7 +245,7 @@ export default function AgentShortcuts({
                 aria-label={`Delete ${item.name}`}
                 onClick={() => void mutate(item, "DELETE")}
               >
-                <Trash2 size={14} /> Delete
+                <Trash size={14} /> Delete
               </button>
             </div>
           </div>

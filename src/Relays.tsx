@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Info, Loader2, Plus, RefreshCw, SearchCheck, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Info, LoaderCircle, Plus, RefreshCw, SearchCheck, Workflow, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import ChatSheet from "./ChatSheet";
@@ -207,7 +207,7 @@ export function RelayStrip({
             )}
             {r.state === "waiting" && (
               <button className="relay-row-action" disabled={busy === r.id} aria-label="Cancel handoff" onClick={() => void cancel(r)}>
-                {busy === r.id ? <Loader2 size={14} className="spin" /> : "Cancel"}
+                {busy === r.id ? <LoaderCircle size={14} className="spin" /> : "Cancel"}
               </button>
             )}
           </div>
@@ -378,7 +378,7 @@ export function SecondOpinionSheet({
           )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={busy || !reviewer} onClick={() => void ask()}>
-            {busy ? <Loader2 size={16} className="spin" /> : `Ask ${reviewer === session.agent ? `a new ${agentLabel(reviewer)} chat` : agentLabel(reviewer)}`}
+            {busy ? <LoaderCircle size={16} className="spin" /> : `Ask ${reviewer === session.agent ? `a new ${agentLabel(reviewer)} chat` : agentLabel(reviewer)}`}
           </button>
         </>
       ) : (
@@ -592,7 +592,7 @@ export function RelaySheet({
           )}
           {problem && <p className="relay-problem" role="alert">{problem}</p>}
           <button className="relay-go" disabled={!ready || busy} onClick={() => void go()}>
-            {busy ? <Loader2 size={16} className="spin" /> : finish ? "Hand off when it finishes" : item || (when === "now" && !working && hasReply) ? "Hand off now" : "Hand off after reply"}
+            {busy ? <LoaderCircle size={16} className="spin" /> : finish ? "Hand off when it finishes" : item || (when === "now" && !working && hasReply) ? "Hand off now" : "Hand off after reply"}
           </button>
         </>
       ) : (
@@ -733,13 +733,13 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     {!on ? (
       <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
-        {busy ? <Loader2 size={16} className="spin" /> : "Turn on"}
+        {busy ? <LoaderCircle size={16} className="spin" /> : "Turn on"}
       </button>
     ) : (
       <>
         {changed && (
           <button className="relay-go" disabled={!ready || busy} onClick={() => void save()}>
-            {busy ? <Loader2 size={16} className="spin" /> : "Save order"}
+            {busy ? <LoaderCircle size={16} className="spin" /> : "Save order"}
           </button>
         )}
         <button className="relay-off" disabled={busy} onClick={() => void turnOff()}>Turn off</button>

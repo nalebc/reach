@@ -1,4 +1,4 @@
-import { uncertainDelivery, probeAgent } from "./compatibility.mjs";
+import { uncertainDelivery, probeAgent, reportTooOld, tooOldError } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,6 +32,7 @@ import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
 import { prepareOwners, useOwnersFolder } from "../windows-owners.mjs";
 import { agentName, createMoves, handoff, moveTurns, openClawNotes, resumeText } from "./move.mjs";
+import { forkNotes } from "./portable-history.mjs";
 import { createGeminiSessions } from "./gemini.mjs";
 import { createAgentWatch } from "./agent-watch.mjs";
 import { createCodexMethods, createSlashCommands } from "./commands.mjs";
@@ -97,6 +98,20 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
 
 // An agent that isn't on this computer: said so, never shown as an error.
 const notInstalled = (reason) => ["AGENT_NOT_INSTALLED", "ENOENT"].includes(reason?.code);
+// Too old for Reach (compatibility.mjs): installed (its version was read),
+// never offered for new work (needs: an update), and the phone names the
+// version to update to. Its own check's error is that, said there.
+export function agedOut(entry, report = entry.compatibility) {
+  const old = reportTooOld(report);
+  if (!old) return entry;
+  const { error, ...rest } = entry;
+  return {
+    ...rest,
+    installed: true,
+    tooOld: { version: old.version, to: old.to },
+    needs: [...new Set([...(Array.isArray(rest.needs) ? rest.needs : []), "update"])],
+  };
+}
 
 // The claude executable as the owner's login shell finds it (Reach may run
 // with a shorter PATH than their terminal).
@@ -358,6 +373,8 @@ export function createAgentSessions({
         held: (id) => claudeHost.drives(id),
         describe: async (id) => {
           const { session } = await claude.read(id, { limit: 1 });
+          const origin = moves.into("claude", id);
+          if (!session.inApp && session.updatedAt <= origin?.at) Object.assign(session, origin.to.settings || {});
           return {
             cwd: session.cwd,
             title: session.title,
@@ -1141,6 +1158,7 @@ export function createAgentSessions({
     const h = await openClaw.history(key, 1000);
     return {
       session: { title: h.session?.title || "", cwd: os.homedir(), model: h.session?.model || "" },
+      incomplete: h.mayHaveOlder === true || h.incompleteForFork === true,
       items: (h.items || []).map((m) => ({
         id: String(m.id),
         role: m.tool ? "tool" : ["user", "assistant"].includes(m.role) ? m.role : "system",
@@ -1234,7 +1252,10 @@ export function createAgentSessions({
     // Continued from the other agent: said in the list, with its app.
     for (const s of sessions) {
       const origin = moves.into(s.agent, s.id);
-      if (origin) s.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
+      if (origin) {
+        s.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
+        if (origin.fork) { s.createdAt = origin.at; s.updatedAt = Math.max(s.updatedAt || 0, origin.at); }
+      }
     }
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     return {
@@ -1275,23 +1296,72 @@ export function createAgentSessions({
         return { ...moved, resumed: false, resumeError: e?.message || "The message to continue couldn't be sent." };
       }
     },
-    async moveOnly(agent, id, { to, authorize = () => {}, cwd = "" } = {}) {
+    async fork(agent, id, { to = agent, through = null, authorize = () => {} } = {}) {
+      if (through !== null && (typeof through !== "string" || !through || through.length > 500))
+        throw Object.assign(new Error("Choose a message to fork from."), { status: 400 });
+      return this.moveOnly(agent, id, { to, through, fork: true, authorize });
+    },
+    async moveOnly(agent, id, { to, authorize = () => {}, cwd = "", through = null, fork = false } = {}) {
       authorize();
       if (!movable().includes(agent)) adapter(agent);
-      if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
+      // Never into an agent too old for Reach (a Claude Code chat would be
+      // written, then refuse to go on): said with the version to update to.
+      const report =
+        to === agent ? null
+        : to === "codex" ? await Promise.resolve(daemon.compatibility?.()).catch(() => null)
+        : to === "claude" ? await Promise.resolve(claudeCompatibility()).catch(() => null)
+        : null;
+      const aged = to === "openclaw" ? openClaw?.tooOld?.() : reportTooOld(report);
+      if (aged?.to) throw tooOldError({ agent: to, version: aged.version, to: aged.to });
+      if ((!fork && to === agent) || !movable().includes(to)) throw Object.assign(new Error("Choose an app that can continue chats."), { status: 400 });
       const key = `${agent}:${id}`;
       if (moving.has(key)) throw Object.assign(new Error("This chat is already moving."), { status: 409 });
       moving.add(key);
       try {
         if (agent === "codex") codexWhole.delete(id);
         const source = await history(agent, id);
+        if (fork && source.incomplete) throw Object.assign(new Error("OpenClaw hasn't provided the complete history. This chat cannot be forked without losing context."), { status: 409 });
         authorize();
-        const { items, memory } = source;
+        let { items, memory } = source;
+        if (through) {
+          const point = items.findIndex(item => item.id === through);
+          if (point < 0) throw Object.assign(new Error("That message isn't in this chat."), { status: 404 });
+          items = items.slice(0, point + 1);
+          if (memory && memory.from > point) memory = null;
+        }
         // A priority continuation remembers the original project even while
         // passing through OpenClaw, whose chats have no project folder.
         const session = agent === "openclaw" && cwd ? { ...source.session, cwd } : source.session;
         const from = agentName(agent);
         const title = session.title || "";
+        if (fork && to === agent && (agent === "codex" || agent === "claude")) {
+          let target;
+          let settings;
+          if (agent === "codex") {
+            const turnId = through ? items.at(-1)?.turnId : null;
+            if (through && !turnId) throw Object.assign(new Error("Codex cannot fork this message without its turn ID."), { status: 409 });
+            if (through && source.items.slice(items.length).some(item => item.turnId === turnId))
+              throw Object.assign(new Error("Codex forks complete turns. Choose the last reply in this turn, or fork into another app."), { status: 409 });
+            authorize();
+            const result = await daemon.rpc("thread/fork", { threadId: id, excludeTurns: true, ...(turnId ? { lastTurnId: turnId } : {}) });
+            target = result?.thread?.id;
+            if (!target || target === id) throw new Error("Codex didn't confirm a new fork.");
+            daemon.rpc("thread/unsubscribe", { threadId: target }).catch(() => {});
+            const mode = chatModes.get(id) || session.mode;
+            if (mode) chatModes.set(target, mode);
+          } else {
+            ({ id: target } = await claude.fork(id, { through, authorize }));
+            const current = (await (through ? claude.read(target, { limit: 1 }) : this.read(agent, id, { limit: 1 }))).session;
+            settings = Object.fromEntries(["model", "mode", "effort", "ultracode"].filter(key => current[key] != null).map(key => [key, current[key]]));
+            const effort = current.effort;
+            if (effort) claudeEfforts.set(target, effort);
+          }
+          authorize();
+          moves.add({ from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length }, to: { agent: to, id: target, nativeHistory: true, ...(settings ? { settings } : {}) }, fork: true });
+          if (agent === "claude") void claudeImports.add(target);
+          listChanged();
+          return { agent: to, id: target };
+        }
         // A Codex thread doesn't list the history it was given: a chat moved
         // into Codex brings what it continues along again (a Claude Code
         // chat holds its copy in its own transcript).
@@ -1304,7 +1374,12 @@ export function createAgentSessions({
         // Export the entire visible history, including pre-compaction messages.
         // Resolve attachments before creating a target, so a missing image cannot
         // silently turn into a placeholder in an otherwise successful transfer.
-        const complete = to === "codex" || to === "claude" ? (await shown(agent, id, null, new Set(), true)).map(item => ({ ...item })) : null;
+        let complete = to === "codex" || to === "claude" || fork ? (await shown(agent, id, null, new Set(), true)).map(item => ({ ...item })) : null;
+        if (complete && through) {
+          const point = complete.findIndex(item => item.id === through);
+          if (point < 0) throw Object.assign(new Error("That message isn't in this chat."), { status: 404 });
+          complete = complete.slice(0, point + 1);
+        }
         authorize();
         if (complete) for (const item of complete) {
           if (!item.images) continue;
@@ -1327,7 +1402,9 @@ export function createAgentSessions({
           }));
           nativeHistory = true;
         } else if (to === "openclaw") {
-          ({ key: target } = await openClaw.fork({ title, notes: openClawNotes(turns, { note, from }), label: `Moved from ${from}` }, authorize));
+          if (fork && complete.some(item => item.images)) throw Object.assign(new Error("OpenClaw cannot preserve these attachments in a fork. Choose Codex or Claude Code."), { status: 409 });
+          const notes = fork ? forkNotes(complete, from) : openClawNotes(turns, { note, from });
+          ({ key: target } = await openClaw.fork({ title, notes, label: `${fork ? "Forked" : "Moved"} from ${from}` }, authorize));
         } else {
           ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
@@ -1341,6 +1418,7 @@ export function createAgentSessions({
         moves.add({
           from: { agent, id, title, upTo: items.at(-1)?.id || null, count: items.length },
           to: { agent: to, id: target, ...(nativeHistory ? { nativeHistory: true } : {}) },
+          ...(fork ? { fork: true } : {}),
         });
         listChanged();
         return { agent: to, id: target };
@@ -1365,6 +1443,8 @@ export function createAgentSessions({
       }
       // Claude Code keeps sessions per folder: resume it where it began.
       const { session } = await claude.read(id, { limit: 1 });
+      const origin = moves.into("claude", id);
+      if (!session.inApp && !claudeHost.drives(id) && session.updatedAt <= origin?.at) Object.assign(session, origin.to.settings || {});
       // Without a pick: the chat's own mode (its app's, else the one its
       // latest message ran in). Resumed without it, Claude Code fell back to
       // Manual and asked about everything in a chat set to Auto.
@@ -1982,6 +2062,8 @@ export function createAgentSessions({
       // A rewind waiting for its next message: the chat as it stood then.
       const rewound = agent === "claude" ? claudeHost.rewoundTo?.(id) : null;
       const result = await adapter(agent).read(id, rewound ? { ...options, at: rewound === "start" ? null : rewound } : options);
+      if (agent === "claude" && result.session && !result.session.inApp && !claudeHost.drives(id) && result.session.updatedAt <= origin?.at)
+        Object.assign(result.session, origin.to.settings || {});
       if (rewound && result.session) result.session.rewound = true;
       // What its next message will use, shown as its mode.
       if (agent === "codex" && result.session && chatModes.get(id)) result.session.mode = chatModes.get(id);
@@ -2002,6 +2084,7 @@ export function createAgentSessions({
         }
       }
       if (origin) {
+        if (origin.fork) { result.session.createdAt = origin.at; result.session.updatedAt = Math.max(result.session.updatedAt || 0, origin.at); }
         result.session.movedFrom = { agent: origin.from.agent, id: origin.from.id, title: origin.from.title || "" };
         if (!origin.to.nativeHistory && !result.before) {
           const items = await earlier(origin);
@@ -2014,7 +2097,7 @@ export function createAgentSessions({
       }
       // Continued with the other agent: where (the chat ends with a way there).
       const out = moves.outOf(agent, id);
-      if (out.length) result.session.movedTo = out.map((m) => ({ agent: m.to.agent, id: m.to.id, at: m.at }));
+      if (out.length) result.session.movedTo = out.map((m) => ({ agent: m.to.agent, id: m.to.id, at: m.at, ...(m.fork ? { fork: true, upTo: m.from.upTo } : {}) }));
       if (agent === "codex" && codexLive.drives(id)) result.session.held = "reach";
       if (agent === "claude") {
         const running = await liveNow().catch(() => new Map());
@@ -2105,7 +2188,7 @@ export function createAgentSessions({
         Promise.all([claudeApp(), Promise.resolve(claudeOpen()).catch(() => false)]).then(([app, open]) => (app.installed ? { ...app, open: !!open } : app)),
       ]);
       const compatibility = await Promise.allSettled([daemon.compatibility?.() || null, claudeCompatibility()]);
-      const driven = results.slice(0, 2).map((r, i) => ({
+      const driven = results.slice(0, 2).map((r, i) => agedOut({
         ...(r.status === "fulfilled"
           ? r.value
           : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(notInstalled(r.reason) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
@@ -2122,9 +2205,18 @@ export function createAgentSessions({
       const merged = others.map((o) =>
         o.agent === "gemini" && gem?.installed
           ? { ...o, ...gem, name: o.name || "Gemini CLI", supported: true }
-          : // OpenClaw: whether its Gateway can take a moved chat (2026.3.13 can't).
+          : // OpenClaw: whether its Gateway can take a moved chat (2026.3.13 can't),
+            // and one too old for Reach to join (older than 2026.2.26).
             o.agent === "openclaw" && openClaw
-            ? { ...o, canTakeMoves: openClaw.canMove?.() !== false, connected: openClaw.connected?.() === true }
+            ? (() => {
+                const old = openClaw.tooOld?.();
+                return {
+                  ...o,
+                  canTakeMoves: openClaw.canMove?.() !== false,
+                  connected: openClaw.connected?.() === true,
+                  ...(old?.to ? { tooOld: { ...(old.version ? { version: old.version } : {}), to: old.to }, needs: ["update"] } : {}),
+                };
+              })()
             : o,
       );
       if (gem?.installed && !merged.some((o) => o.agent === "gemini")) merged.push({ ...gem, name: "Gemini CLI", supported: true });

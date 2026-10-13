@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { WrapText } from "lucide-react";
+import { TextWrap } from "lucide-react";
 
 // Shared Files reader. Plain logs need no syntax engine or lazy download.
 export default function FileTextPreview({
@@ -31,7 +31,7 @@ export default function FileTextPreview({
           aria-pressed={wrap}
           onClick={() => setWrap((w) => !w)}
         >
-          <WrapText size={16} /> Wrap
+          <TextWrap size={16} /> Wrap
         </button>
       </div>
       <div className="file-code-scroll">

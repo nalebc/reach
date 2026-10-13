@@ -13,6 +13,7 @@ import { arrowKey, controlKey } from "./terminal-keys";
 import { useViewportBox } from "./useViewportBox";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
+  altArrowWords,
   disposeLater,
   plainKeyboard,
   terminalOptions,
@@ -274,6 +275,7 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(mount.current);
     plainKeyboard(term);
+    altArrowWords(term);
     const removeTouch = terminalTouch(mount.current, term);
     terminal.current = term;
     const stopHistory = history.observe(term);

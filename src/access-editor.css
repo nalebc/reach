@@ -125,3 +125,25 @@
   flex-direction: row;
   gap: 8px;
 }
+/* Rows keep to the page's width: a wide field (the end time) shrinks
+   instead of pushing every row past the edge. */
+.access-editor .ag-rows {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* An end time inside a row: a pill, never wider than the row. */
+.access-editor .ag-row-static input.ag-mode {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 70%;
+  height: 36px;
+  margin: 0 0 0 auto;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 99px;
+  background: #ffffff10;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: 14px;
+  color-scheme: dark;
+}

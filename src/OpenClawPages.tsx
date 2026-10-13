@@ -6,7 +6,7 @@ import {
   CalendarClock,
   Gamepad2,
   Hash,
-  Loader2,
+  LoaderCircle,
   MessageCircle,
   MessageSquare,
   Plus,
@@ -30,6 +30,7 @@ import { ClawSpendPill } from "./OpenClawSpend";
 
 const base = "/api/sessions/openclaw";
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const LAST_RUN: Record<string, string> = { ok: "Done", error: "Failed", skipped: "Skipped", running: "Running" };
 
 type Job = {
   id: string;
@@ -41,6 +42,12 @@ type Job = {
   lastRunAt: number;
   status: string;
   error: string;
+  // Why a skipped run was skipped, in Reach's words.
+  note?: string;
+  // OpenClaw's own monitor: it refuses pause, edit and delete.
+  managed?: boolean;
+  // OpenClaw's heartbeat: turned on and off in its config instead.
+  heartbeat?: boolean;
   delivery: string;
 };
 type Jobs = {
@@ -49,6 +56,7 @@ type Jobs = {
   canAdd?: boolean;
   canRun?: boolean;
   canRemove?: boolean;
+  canSwitchHeartbeat?: boolean;
   hasMore?: boolean;
   nextOffset?: number;
   version?: string;
@@ -161,7 +169,7 @@ export function ClawScheduled({ peer, refresh, onBack }: { peer: Peer; refresh: 
       )}
       {!data && !error && (
         <p className="claw-note" role="status">
-          <Loader2 size={14} className="spin" />
+          <LoaderCircle size={14} className="spin" />
           Loading tasks…
         </p>
       )}
@@ -298,6 +306,7 @@ function TaskDetail({
   };
   // A failure in the last day shows in ClawScheduleMore instead.
   const recentFailure = job.status === "error" && Date.now() - job.lastRunAt < 86400000;
+  const switchable = !!job.heartbeat && !!data.canSwitchHeartbeat;
   return (
     <div className="claw-detail">
       <ul className="claw-facts">
@@ -315,7 +324,7 @@ function TaskDetail({
           <li>
             <span>Last run</span>
             <strong>
-              {when(job.lastRunAt)} · {job.status === "ok" ? "Done" : job.status}
+              {when(job.lastRunAt)} · {LAST_RUN[job.status] || job.status}
             </strong>
           </li>
         )}
@@ -329,7 +338,9 @@ function TaskDetail({
         </li>
       </ul>
       {job.error && !recentFailure && <p className="claw-error">{job.error}</p>}
-      <ClawScheduleMore peer={peer} job={job} canEdit={!!data.canEdit} onChanged={onChanged} />
+      {job.note && <p className="claw-note">{job.note}</p>}
+      {job.managed && !switchable && <p className="claw-note">OpenClaw manages this one. Change it in OpenClaw.</p>}
+      <ClawScheduleMore peer={peer} job={job} canEdit={!!data.canEdit && !job.managed} onChanged={onChanged} />
       {problem && (
         <p className="claw-error" role="alert">
           {problem}
@@ -349,11 +360,11 @@ function TaskDetail({
               }
             }}
           >
-            {busy === "run" && <Loader2 size={14} className="spin" />}
+            {busy === "run" && <LoaderCircle size={14} className="spin" />}
             {ran ? "Started" : "Run now"}
           </button>
         )}
-        {data.canEdit && (
+        {data.canEdit && !job.managed && (
           <button
             type="button"
             className="claw-pill"
@@ -363,11 +374,25 @@ function TaskDetail({
               if (await act("pause", "automations", { id: job.id, enabled: !job.enabled })) onChanged();
             }}
           >
-            {busy === "pause" && <Loader2 size={14} className="spin" />}
+            {busy === "pause" && <LoaderCircle size={14} className="spin" />}
             {job.enabled ? "Pause" : "Resume"}
           </button>
         )}
-        {data.canRemove && (
+        {switchable && (
+          <button
+            type="button"
+            className="claw-pill"
+            aria-label={`Turn ${job.enabled ? "off" : "on"} ${job.name}`}
+            disabled={!!busy}
+            onClick={async () => {
+              if (await act("pause", "automations/heartbeat", { id: job.id, on: !job.enabled })) onChanged();
+            }}
+          >
+            {busy === "pause" && <LoaderCircle size={14} className="spin" />}
+            {job.enabled ? "Turn off" : "Turn on"}
+          </button>
+        )}
+        {data.canRemove && !job.managed && (
           <button
             type="button"
             className={`claw-pill danger${removing ? " claw-delete-ask" : ""}`}
@@ -379,7 +404,7 @@ function TaskDetail({
               if (await act("remove", "automations/remove", { id: job.id })) onRemoved();
             }}
           >
-            {busy === "remove" && <Loader2 size={14} className="spin" />}
+            {busy === "remove" && <LoaderCircle size={14} className="spin" />}
             {removing ? "Tap again to delete" : "Delete"}
           </button>
         )}
@@ -462,7 +487,7 @@ export function ClawCustomize({
               }
             }}
           >
-            {busy ? <Loader2 size={18} className="spin" /> : <RotateCw size={18} />}
+            {busy ? <LoaderCircle size={18} className="spin" /> : <RotateCw size={18} />}
           </button>
         }
       />
@@ -480,7 +505,7 @@ export function ClawCustomize({
       <div className="claw-group" role="group" aria-label="Messaging apps">
         {!data && !error && (
           <p className="claw-note claw-group-note" role="status">
-            <Loader2 size={14} className="spin" />
+            <LoaderCircle size={14} className="spin" />
             Loading apps…
           </p>
         )}

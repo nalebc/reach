@@ -16,11 +16,13 @@ import * as skillsFeature from "./openclaw-skills.mjs";
 import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 import { openClawShell } from "./openclaw-run.mjs";
+import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibility.mjs";
 
 // Features in files of their own, each adding its routes.
 export const FEATURES = [usageFeature, healthFeature, schedulesFeature, watchFeature, agentsFeature, skillsFeature, onboardFeature, wizardFeature];
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const skippedLast = (job) => (job.state?.lastRunStatus ?? job.state?.lastStatus) === "skipped";
 // Gateway errors can embed downstream provider credentials, not just the
 // Gateway's own token. Publish fixed descriptions, never arbitrary error text.
 const unconfirmedRun =
@@ -41,6 +43,8 @@ const publicGatewayError = (value) => {
   if (!text) return "";
   // This exact local status is safe even if echoed by a Gateway.
   if (text === unconfirmedRun) return unconfirmedRun;
+  if (/system-owned/i.test(text))
+    return "OpenClaw manages this schedule itself. Change it in OpenClaw.";
   if (/protocol mismatch/i.test(text))
     return "Reach and OpenClaw use incompatible connection versions. Update Reach to reconnect.";
   if (/credit balance|quota|billing|rate.?limit|429/i.test(text))
@@ -304,7 +308,19 @@ export function createOpenClaw({
   retryGraceMs = 15000,
   // Sends kept to answer a retry of the same request ID (see send).
   maxSends = 2048,
+  // A Gateway too old for Reach is joined again only this often (or at once
+  // after an update or restart from Reach), not on every phone's look.
+  agedRetryMs = 60000,
 } = {}) {
+  // OpenClaw older than Reach works with (2026.2.26): refusing Reach's v3
+  // device signature, or saying an older version as it lets Reach in.
+  // { version ("" when it refused before saying), to, until }.
+  let aged = null;
+  const agedOut = (version = "") => {
+    aged = { version, to: OLDEST_WORKING.openclaw, until: now() + agedRetryMs };
+    return agedError();
+  };
+  const agedError = () => tooOldError({ agent: "openclaw", version: aged.version, to: aged.to });
   let socket,
     connecting,
     ready = false,
@@ -472,6 +488,8 @@ export function createOpenClaw({
     if (closed) return Promise.reject(connectionError());
     if (ready) return Promise.resolve();
     if (connecting) return connecting;
+    // Too old a moment ago: said again without dialing it.
+    if (aged && now() < aged.until) return Promise.reject(agedError());
     connecting = (async () => {
       const config = await configuration();
       if (closed) throw connectionError();
@@ -563,6 +581,14 @@ export function createOpenClaw({
                     invalidParams: /invalid \S+ params/i.test(
                       String(frame.error?.message || ""),
                     ),
+                    // Reach's connect, refused for its device signature:
+                    // OpenClaw before 2026.2.26 checks only v1/v2 signatures
+                    // ("device signature invalid"), and Reach signs v3.
+                    signatureRefused:
+                      waiter.method === "connect" &&
+                      /\bsignature invalid\b|\binvalid (?:device )?signature\b/i.test(
+                        String(frame.error?.message || ""),
+                      ),
                   },
                 ),
               );
@@ -616,10 +642,21 @@ export function createOpenClaw({
               },
             }).then((hello) => {
               if (socket !== ws) return finish(connectionError());
-              serverVersion =
+              const version =
                 typeof hello?.server?.version === "string"
                   ? hello.server.version.slice(0, 40)
                   : "";
+              // Older than Reach works with, as it says itself: left, not
+              // used. A version it doesn't say, or not wholly in OpenClaw's
+              // year.month.day form (a build of its own, or other text, which
+              // never reaches a phone), isn't.
+              if (version.length <= 32 && /^\d{4}\.\d+\.\d+(?:[-+][\w.]+)?$/.test(version) && tooOld("openclaw", version)) {
+                finish(agedOut(version));
+                changed();
+                return;
+              }
+              aged = null;
+              serverVersion = version;
               methods = Array.isArray(hello?.features?.methods)
                 ? new Set(hello.features.methods)
                 : null;
@@ -627,7 +664,13 @@ export function createOpenClaw({
               changed();
               finish();
               probeInject();
-            }, finish);
+            }, (error) => {
+              // Noted even when its socket closed first: the next look says it.
+              if (error?.signatureRefused) {
+                finish(agedOut());
+                changed();
+              } else finish(error);
+            });
           } else {
             const p = frame.payload || {};
             for (const listener of eventListeners) {
@@ -666,6 +709,8 @@ export function createOpenClaw({
       });
     })().catch((error) => {
       connecting = null;
+      // Its configuration gone: nothing here is too old any more.
+      if (error?.notSetUp) aged = null;
       throw error;
     });
     return connecting;
@@ -1283,6 +1328,7 @@ export function createOpenClaw({
         canAdd: can("cron.add"),
         canRun: can("cron.run"),
         canRemove: can("cron.remove"),
+        canSwitchHeartbeat: can("config.get") && can("config.patch"),
         hasMore: result.hasMore === true,
         nextOffset: result.nextOffset ?? offset + result.jobs.length,
         jobs: result.jobs.map((j) => ({
@@ -1300,7 +1346,11 @@ export function createOpenClaw({
               : typeof j.state?.lastStatus === "string"
                 ? j.state.lastStatus
                 : "idle",
-          error: redact(j.state?.lastError || ""),
+          // A skipped run's "error" is only why it was skipped.
+          error: skippedLast(j) ? "" : redact(j.state?.lastError || ""),
+          note: skippedLast(j) ? schedulesFeature.skipNote(j.state?.lastError) : "",
+          managed: schedulesFeature.ownedByOpenClaw(j),
+          heartbeat: schedulesFeature.isHeartbeat(j),
           delivery:
             j.delivery?.mode === "announce"
               ? j.delivery.channel && j.delivery.channel !== "last"
@@ -1486,6 +1536,13 @@ export function createOpenClaw({
     redact: (value) => redact(value),
     // Whether Reach's Gateway connection is open now (relays, workflows).
     connected: () => ready,
+    // The Gateway is older than Reach works with: { version (when it said),
+    // to }, until Reach joins it again and finds it isn't; else null.
+    tooOld: () => (aged ? { ...(aged.version ? { version: aged.version } : {}), to: aged.to } : null),
+    // Join it again at the next look (an update or a restart from Reach).
+    recheck() {
+      if (aged) aged.until = 0;
+    },
     // The connected Gateway's own version ("" before connecting).
     server: () => ({ version: serverVersion }),
     // Approvals came or went (notifications look then, not on a beat).
@@ -1513,6 +1570,10 @@ export function createOpenClaw({
           // Installed here, its Gateway just isn't running (gatewayStart).
           ...(error.gatewayDown ? { canStart: true } : {}),
           ...(error.notSetUp ? { notSetUp: true } : {}),
+          // Too old for Reach: the phone names the version to update to.
+          ...(error.update && aged
+            ? { tooOld: { ...(aged.version ? { version: aged.version } : {}), to: aged.to } }
+            : {}),
           revision,
           version,
         };
@@ -1634,6 +1695,9 @@ export function createOpenClaw({
         version,
         historyLimit: limit,
         mayHaveOlder: messages.length >= limit,
+        // The phone displays text, but a fork must not silently omit other
+        // content blocks (attachments, thinking and structured tool calls).
+        incompleteForFork: messages.some(m => Array.isArray(m.content) && m.content.some(p => p?.type !== "text")),
       };
     },
     async send(
@@ -1994,7 +2058,7 @@ export function createOpenClaw({
     },
     // Whether this Gateway can take a chat moved from another agent.
     canMove: () =>
-      !methods || methods.has("chat.inject") || injectable === true,
+      !aged && (!methods || methods.has("chat.inject") || injectable === true),
     // A chat moved here from another agent (agent-sessions/move.mjs): a new
     // session named after it, its history added as notes (OpenClaw's app
     // shows them and its agent reads them; nothing runs until a message).

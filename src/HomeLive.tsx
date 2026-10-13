@@ -7,7 +7,7 @@ import {
   Bot,
   Check,
   ChevronRight,
-  Loader2,
+  LoaderCircle,
   MessageSquare,
   Monitor,
   Pencil,
@@ -797,7 +797,7 @@ export default function HomeLive({
                 <span className="story-ring new">
                   <span>
                     {busy ? (
-                      <Loader2 size={22} className="spin" />
+                      <LoaderCircle size={22} className="spin" />
                     ) : (
                       <Plus size={24} />
                     )}

@@ -7,10 +7,14 @@ export function boundView(
   baseH: number,
   width: number,
   height: number,
+  edgeTravel = 0,
 ): View {
   scale = Math.max(1, Math.min(4, scale));
-  const maxX = Math.max(0, (baseW * scale - width) / 2),
-    maxY = Math.max(0, (baseH * scale - height) / 2);
+  // Let screen-edge controls move clear of a finger, the safe area and Fit.
+  // At Fit the entire display stays centered; zooming adds a little travel.
+  const edge = scale > 1 ? edgeTravel : 0;
+  const maxX = Math.max(0, (baseW * scale - width) / 2) + edge,
+    maxY = Math.max(0, (baseH * scale - height) / 2) + edge;
   return {
     scale,
     x: Math.max(-maxX, Math.min(maxX, x)),
@@ -42,6 +46,7 @@ export function pinchView(
     baseH,
     width,
     height,
+    48,
   );
 }
 

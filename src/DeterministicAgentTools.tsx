@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
-  CheckCircle2,
-  Code2,
+  CircleCheck,
+  CodeXml,
   FileText,
   Mail,
   Package,
@@ -432,7 +432,7 @@ export default function DeterministicAgentTools({
     <section className="atl-results" aria-label="Tool results">
       <div className="atl-result-heading">
         {result.status === "completed" ? (
-          <CheckCircle2 size={18} />
+          <CircleCheck size={18} />
         ) : (
           <ShieldCheck size={18} />
         )}
@@ -719,7 +719,7 @@ export default function DeterministicAgentTools({
             })
           }
         >
-          <Code2 size={14} /> View definition
+          <CodeXml size={14} /> View definition
         </button>
         {inspection !== null && (
           <pre className="atl-definition">
@@ -806,7 +806,7 @@ export default function DeterministicAgentTools({
         >
           <div className="aw-section-heading">
             <h2>
-              <Code2 size={18} /> Create a deterministic tool
+              <CodeXml size={18} /> Create a deterministic tool
             </h2>
             <button
               type="button"

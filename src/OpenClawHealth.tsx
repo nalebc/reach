@@ -10,11 +10,12 @@ import {
   ChevronRight,
   CircleAlert,
   FileText,
-  Loader2,
+  LoaderCircle,
   RefreshCw,
   Server,
 } from "lucide-react";
 import { request, type Peer } from "./api";
+import { tooOldLine } from "./agent-sessions";
 import { ClawMaintenance } from "./OpenClawMaintenance";
 import { ClawDialog } from "./OpenClawDialog";
 import { ClawLogViewer } from "./OpenClawLogViewer";
@@ -182,6 +183,49 @@ export function ClawHealthPill({
   );
 }
 
+// OpenClaw's Gateway older than Reach works with (server/openclaw.mjs): one
+// line naming the version to update to, and Update, which opens OpenClaw's
+// own update (ClawMaintenance's, `openclaw update`), confirmed first.
+export function ClawTooOld({ peer, to, onChanged }: { peer: Peer; to: string; onChanged?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [preview, setPreview] = useState<{ title: string; lines: string[] } | "logs" | null>(null);
+  return (
+    <>
+      <div className="chat-status agent-update too-old" role="status">
+        <span>{tooOldLine("OpenClaw", to)}</span>
+        <button className="as-banner-btn primary" onClick={() => setOpen(true)}>
+          Update
+        </button>
+      </div>
+      {open && (
+        <ClawDialog
+          title="Update OpenClaw"
+          subtitle={`OpenClaw · ${peer.name || "This computer"}`}
+          className="claw-gateway"
+          onClose={() => setOpen(false)}
+        >
+          <div className="claw-gateway-body">
+            <ClawMaintenance
+              peer={peer}
+              start="update"
+              onChanged={async () => onChanged?.()}
+              onViewOutput={(title, lines) => setPreview({ title, lines })}
+              onOpenLogs={() => setPreview("logs")}
+            />
+          </div>
+          {preview && (
+            <ClawLogViewer
+              peer={peer}
+              output={preview === "logs" ? undefined : preview}
+              onClose={() => setPreview(null)}
+            />
+          )}
+        </ClawDialog>
+      )}
+    </>
+  );
+}
+
 function HealthSheet({
   peer,
   health,
@@ -239,7 +283,7 @@ function HealthSheet({
         <div className="claw-check-time" role="status">
           {refreshing ? (
             <>
-              <Loader2 size={13} className="spin" /> Refreshing status…
+              <LoaderCircle size={13} className="spin" /> Refreshing status…
             </>
           ) : (
             `Checked ${checked}`

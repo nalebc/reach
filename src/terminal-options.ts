@@ -20,10 +20,34 @@ export function terminalOptions(): ITerminalOptions {
       magenta: "#c7a8e9",
       cyan: "#86d0bd",
       white: "#e5ece6",
+      // xterm draws its own scrollbar; its width is in styles.css.
+      scrollbarSliderBackground: "#354635",
+      scrollbarSliderHoverBackground: "#354635",
+      scrollbarSliderActiveBackground: "#354635",
     },
     scrollback: 5000,
     convertEol: false,
   };
+}
+
+// Option (Alt) + ← / → jump a word, as they did before xterm 6, which now
+// sends them as bare modified arrows (ESC [1;3D) that shells don't bind.
+// Same bytes xterm 5 sent: the Mac's ESC b / ESC f, elsewhere Ctrl + arrow.
+export function altArrowWords(term: Terminal) {
+  const mac = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(
+    navigator.platform,
+  );
+  const words: Record<string, string> = mac
+    ? { ArrowLeft: "\x1bb", ArrowRight: "\x1bf" }
+    : { ArrowLeft: "\x1b[1;5D", ArrowRight: "\x1b[1;5C" };
+  term.attachCustomKeyEventHandler((event) => {
+    const word = words[event.key];
+    if (!word || event.type !== "keydown" || !event.altKey) return true;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return true;
+    event.preventDefault();
+    term.input(word);
+    return false;
+  });
 }
 
 // Keystrokes go straight to the computer; the phone must not rewrite them.

@@ -14,7 +14,7 @@ const exec = promisify(execFile);
 // launch: no node_modules, setup stamp or git checkout is carried over.
 test("portable archive: first launch installs and builds, serves the phone, and update names the archive", {
   skip: process.platform === "win32" || !process.env.REACH_TEST_PORTABLE_ARCHIVE,
-  timeout: 240000,
+  timeout: 540000,
 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-portable-install-"));
   let child, exited;
@@ -61,7 +61,9 @@ test("portable archive: first launch installs and builds, serves the phone, and 
   let output = "";
   child.stdout.on("data", data => { output += data; });
   child.stderr.on("data", data => { output += data; });
-  for (const until = Date.now() + 210000; !/Pairing code: \d{4} \d{4}/.test(output);) {
+  // npm ci fills an empty cache from the registry: usually under a minute,
+  // but a slow registry stretched it past 3.5 min in the 0.1.1 PR. A hang still fails.
+  for (const until = Date.now() + 480000; !/Pairing code: \d{4} \d{4}/.test(output);) {
     if (child.exitCode !== null || child.signalCode !== null || Date.now() > until) {
       const log = await fs.readFile(path.join(state, "setup.log"), "utf8").catch(() => "");
       assert.fail(`Portable first launch did not become ready:\n${output.slice(-3000)}\n${log.slice(-3000)}`);

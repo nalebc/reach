@@ -1,10 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createObservations, observationOptions, screenMatches, waitForScreen, waitOptions } from "../server/desktop-observation.mjs";
+import { createObservations, observationOptions, screenChanges, screenMatches, waitForScreen, waitOptions } from "../server/desktop-observation.mjs";
+import { describeScreen } from "../server/agent-desktop.mjs";
 
 const client = { id: "agent", expiresAt: 100, scopes: ["browser:control"], policy: { preset: "full" } };
 const button = (ref, name, context = "Invoices") => ({ ref, n: Number(ref.slice(2)), role: "Button", name, context, x: 0, y: 0, w: 0.1, h: 0.1 });
 const screen = (snapshot, items) => ({ snapshot, app: "Browser", title: "Invoices", displayId: 1, revision: 0, items, texts: [], truncated: false });
+
+test("full and changed observations prefer direct refs, with numbered targeting for older helpers", () => {
+  const current = screen("one", [button("e-1", "Open")]);
+  for (const text of [describeScreen(current), screenChanges(current, { ...current, snapshot: "two" })]) {
+    assert.match(text, /"type":"element","ref":"REF"/);
+    assert.doesNotMatch(text, /"snapshot":/);
+  }
+  const { ref, ...legacy } = current.items[0];
+  const old = screen("old", [legacy]);
+  for (const text of [describeScreen(old), screenChanges(old, old)]) assert.match(text, /"snapshot":"old","n":NUMBER/);
+  const mixed = describeScreen(screen("mixed", [legacy, button("e-2", "New")]));
+  assert.match(mixed, /"ref":"REF"/);
+  assert.match(mixed, /"snapshot":"mixed","n":NUMBER/);
+});
 
 test("scoped observations preserve target numbers and stable references", () => {
   const observe = createObservations();
@@ -58,4 +73,20 @@ test("absence requires a complete read; predicates and options are bounded", () 
   assert.throws(() => waitOptions({ text: "x", name: "y" }));
   assert.throws(() => observationOptions({ maxChars: 1000000 }));
   assert.throws(() => observationOptions({ displayId: -1 }));
+});
+
+test("large descriptions report truncation and never seed a delta from unseen controls", () => {
+  const observe = createObservations();
+  const items = Array.from({ length: 250 }, (_, index) => button(`e-${index + 1}`, `Action ${index + 1}`, "Context ".repeat(50)));
+  const first = observe(client, screen("large-one", items));
+  assert.equal(first.outputTruncated, true);
+  assert.ok(first.text.length <= 30000);
+  assert.match(first.text, /output limited/);
+  assert.doesNotMatch(first.text, /Action 250/);
+  const next = observe(client, screen("large-two", items), {}, { changes: true });
+  assert.notEqual(next.diff, true, "an incomplete look cannot establish that nothing changed");
+  assert.equal(next.outputTruncated, true);
+  const scoped = observe(client, screen("large-three", items), { query: "Action 250", maxChars: 1000 });
+  assert.equal(scoped.outputTruncated, false);
+  assert.match(scoped.text, /Action 250/);
 });

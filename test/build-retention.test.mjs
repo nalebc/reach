@@ -14,7 +14,7 @@ test("full builds preserve old lazy chunks for phones still using the previous i
     await fs.writeFile(path.join(root, "viewer.js"), 'export default "old viewer";');
     const options = {
       configFile: false, root, logLevel: "silent",
-      build: { ...config.build, rollupOptions: { input: path.join(root, "index.html") } },
+      build: { ...config.build, rolldownOptions: { input: path.join(root, "index.html") } },
     };
     await build(options);
     const assets = path.join(root, "dist/assets");

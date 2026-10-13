@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 
 // The browser tailnet path (no Tailscale app): requests and WebSockets travel
 // through the page's own node. These fakes stand in for the Go side.
@@ -10,12 +10,7 @@ async function load(file) {
     new URL(`../src/${file}`, import.meta.url),
     "utf8",
   );
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  });
+  const outputText = transpile(source);
   return import(
     `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
   );

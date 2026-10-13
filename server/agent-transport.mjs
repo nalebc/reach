@@ -6,16 +6,12 @@ export const agentRequestTimeout = (route, method = "GET") =>
     /^\/api\/browser\/mcp\/call\?runtime=[a-f0-9]{64}$/.test(route)
   ) ? 70000 : 35000;
 
-const kinds = new Set([
-  "busy",
-  "paused",
-  "retry",
-  "blocked",
-  "invalid",
-  "unavailable",
-]);
+export const agentErrorKinds = Object.freeze({ blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 });
+const kinds = new Set(Object.keys(agentErrorKinds));
 const helperReasons = new Set(["timeout", "process_exit", "process_error", "stdin_error", "write_error", "invalid_reply", "oversized_reply", "unexpected_reply", "stopped"]);
-const helperOperations = new Set(["rules", "catalog", "shot", "front", "act", "open", "unknown"]);
+// The producer and every transport use the same bounded operation vocabulary.
+export const desktopHelperOperations = Object.freeze(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]);
+const helperOperations = new Set([...desktopHelperOperations, "unknown"]);
 const helperDispatches = new Set(["completion_unknown", "not_dispatched"]);
 const clean = (value, max) =>
   typeof value === "string"
@@ -41,13 +37,16 @@ export function agentErrorDetails(error) {
     result.status = status;
   if (kinds.has(body.kind)) {
     result.kind = body.kind;
-    if (body.kind === "busy") {
+    // Busy: another agent, for seconds. Paused: a person using the Mac
+    // (server/screen.mjs ownerHoldRefusal), back up to 2 minutes after
+    // their last input.
+    if (body.kind === "busy" || body.kind === "paused") {
       if (typeof body.holder === "string")
         result.holder = clean(body.holder, 100);
       if (
         Number.isFinite(body.retryInMs) &&
         body.retryInMs >= 0 &&
-        body.retryInMs <= 60000
+        body.retryInMs <= (body.kind === "busy" ? 60000 : 120000)
       )
         result.retryInMs = Math.ceil(body.retryInMs);
     }

@@ -113,30 +113,6 @@
     max-width: 270px;
     margin: 0 auto;
   }
-  .modal,
-  .modal.wide {
-    width: calc(100% - 16px);
-    max-width: none;
-    margin: auto auto 8px;
-    padding: 0;
-    border-radius: 24px;
-    max-height: calc(100dvh - env(safe-area-inset-top) - 20px);
-  }
-  .modal-inner {
-    padding: 22px 20px calc(20px + env(safe-area-inset-bottom));
-  }
-  .modal .modal-header {
-    position: sticky;
-    top: -22px;
-    background: #191d20;
-    z-index: 1;
-    padding: 12px 0;
-    margin-top: -12px;
-  }
-  .modal .icon-button {
-    min-height: 44px;
-    min-width: 44px;
-  }
 }
 @media (max-width: 360px) {
   .main-content {
@@ -217,14 +193,6 @@
     font-size: 14px;
     font-weight: 500;
   }
-}
-.modal,
-.modal-inner {
-  background: #141b23;
-  border-color: #ffffff16;
-}
-.modal .modal-header {
-  background: #141b23;
 }
 
 /* Onboarding stays readable above the native phone keyboard. */
@@ -327,34 +295,6 @@
 .screen-typing .simple-screen-caption {
   display: none;
 }
-.action-modifiers {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.action-modifiers button {
-  min-height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #ffffff06;
-  font-size: 12px;
-}
-.action-modifiers button[aria-pressed="true"] {
-  color: var(--lime);
-  border-color: #b9f7e870;
-  background: #b9f7e81a;
-}
-.action-key-picker {
-  display: flex;
-  gap: 10px;
-}
-.action-key-picker select {
-  min-width: 0;
-  flex: 1;
-  min-height: 44px;
-}
-
 /* Phones and tablets use bottom navigation in either orientation. No drawer. */
 @media (max-width: 1024px), (pointer: coarse) {
   .app-shell > .sidebar {

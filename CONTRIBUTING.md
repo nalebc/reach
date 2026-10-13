@@ -4,7 +4,7 @@ Reach is an early-access project. Open an issue describing the problem before a 
 
 ## Develop
 
-Use Node.js 22 or newer and the Go version in `tailnet/go.mod`. Install dependencies with `npm ci`. Use `npm run build` to compile the frontend and the `reach` CLI to manage the companion. Read [AGENTS.md](AGENTS.md) before changing a running installation. Work on a test account or disposable folders when exercising computer control.
+Use Node.js 22.12 or newer and the Go version in `tailnet/go.mod`. Install dependencies with `npm ci`. Use `npm run build` to compile the frontend and the `reach` CLI to manage the companion. Read [AGENTS.md](AGENTS.md) before changing a running installation. Work on a test account or disposable folders when exercising computer control.
 
 Before submitting:
 

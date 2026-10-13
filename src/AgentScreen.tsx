@@ -6,17 +6,19 @@ import {
   ArrowUp,
   CornerDownLeft,
   Eye,
+  Hand,
   KeyRound,
   Keyboard,
   Command,
   Hash,
   Maximize,
   Minimize,
-  MoreHorizontal,
+  Ellipsis,
   ShieldCheck,
   ZoomIn,
 } from "lucide-react";
 import { peerFetch, request, type Peer } from "./api";
+import { computerWord } from "./pause";
 import ScreenActions from "./ScreenActions";
 import ScreenPopup from "./ScreenPopup";
 import "./screen-bar.css";
@@ -167,6 +169,9 @@ export default function AgentScreen({
   );
   const [hiddenCount, setHiddenCount] = useState(0);
   const [screenError, setScreenError] = useState("");
+  // Someone is using the Mac through Reach ("The owner is using the Mac"):
+  // the agent waits, the picture comes back when they're done.
+  const [waiting, setWaiting] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [front, setFront] = useState("");
   const [sheet, setSheet] = useState<"" | "type" | "signin">("");
@@ -274,6 +279,22 @@ export default function AgentScreen({
       }
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
+        // The owner (or someone they trust) is using the Mac: a calm wait,
+        // not an error. The last picture goes too: it's theirs for now.
+        if (response.status === 409 && body.kind === "paused") {
+          if (!mounted.current) return;
+          if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+          objectUrl.current = "";
+          setImageUrl("");
+          setImageAt(null);
+          setScreenError("");
+          setWaiting(
+            String(body.error || "").split(/\.\s/)[0] ||
+              `The owner is using the ${computerWord(peer.platform)}`,
+          );
+          backoff.current = Math.min(3000, Math.max(1000, Number(body.retryInMs) || 3000));
+          return;
+        }
         throw Object.assign(
           Error(body.error || "The screen could not be read."),
           { status: response.status },
@@ -287,6 +308,7 @@ export default function AgentScreen({
       setImageUrl(url);
       setImageAt(new Date());
       setScreenError("");
+      setWaiting("");
       try {
         const meta = JSON.parse(response.headers.get("X-Reach-Screen") || "{}");
         setHiddenCount(Number(meta.hidden) || 0);
@@ -302,9 +324,11 @@ export default function AgentScreen({
     } catch (e) {
       // A capture that never answers is said, never waited on in silence.
       if (timedOut && mounted.current) {
+        setWaiting("");
         setScreenError("The Mac's screen isn't answering. Still trying…");
         backoff.current = 1000;
       } else if (!controller.signal.aborted && mounted.current) {
+        setWaiting("");
         setScreenError((e as Error).message || "The screen could not be read.");
         backoff.current = 300;
         ended(e);
@@ -899,7 +923,9 @@ export default function AgentScreen({
         : lastClick
       : null;
   const stale = !!imageAt && now - imageAt.getTime() > STALE_MS;
-  const live = !imageAt
+  const live = waiting
+    ? "Waiting"
+    : !imageAt
     ? screenError
       ? `No picture: ${screenError}`
       : "Connecting…"
@@ -1016,13 +1042,16 @@ export default function AgentScreen({
               hidden={!!zoom}
             />
           ) : (
-            <div className="ap-placeholder" role="status">
-              <Eye size={32} />
+            <div className={`ap-placeholder${waiting ? " is-waiting" : ""}`} role="status">
+              {waiting ? <Hand size={28} /> : <Eye size={32} />}
               <span>
-                {screenError
-                  ? `The screen could not be read: ${screenError}`
-                  : "Waiting for the first picture…"}
+                {waiting
+                  ? waiting
+                  : screenError
+                    ? `The screen could not be read: ${screenError}`
+                    : "Waiting for the first picture…"}
               </span>
+              {waiting && <small>Back when they're done</small>}
             </div>
           )}
           {zoom && imageUrl && <canvas ref={canvasRef} aria-hidden="true" />}
@@ -1087,7 +1116,7 @@ export default function AgentScreen({
           aria-live="off"
           title={hiddenCount ? `${hiddenCount} protected ${hiddenCount === 1 ? "window" : "windows"} left out` : undefined}
         >
-          <span className={`ap-dot${stale || !imageAt ? " is-busy" : ""}`} />
+          <span className={`ap-dot${(stale || !imageAt) && !waiting ? " is-busy" : ""}`} />
           {live}
           {control && (
             <span className="ap-typing">
@@ -1188,7 +1217,7 @@ export default function AgentScreen({
               aria-haspopup="dialog"
               onClick={() => setPanel("more")}
             >
-              <MoreHorizontal size={20} />
+              <Ellipsis size={20} />
             </button>
           )}
         </div>
@@ -1205,8 +1234,11 @@ export default function AgentScreen({
       )}
       {panel === "shortcuts" && control && (
         <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)} returnFocus={() => keysRef.current}>
+          {/* The page's own key row and typed shortcut (below) stand in for
+              the composer: an agent writes "cmd+l" in one step. */}
           <ScreenActions
             platform="darwin"
+            composer={false}
             disabled={!canAct || actionBusy}
             run={({ keys, action }) => {
               setPanel(null);

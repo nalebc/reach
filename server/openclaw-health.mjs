@@ -510,6 +510,8 @@ export function routes(
     try {
       const started = now();
       await restart({ authorize: current, env });
+      // A Gateway found too old is joined again now, not a minute later.
+      client.recheck?.();
       current();
       while (now() - started < waitMs) {
         current();
@@ -540,10 +542,14 @@ export function routes(
       next.recovery = publicRecovery(recovery);
       if (recovery.available) next.status = "awaiting_approval";
     }
+    // An update or repair may have replaced a Gateway too old for Reach:
+    // joined again at the next look.
+    client.recheck?.();
   };
   const rejected = (next, error) => {
     const reason = scrubLine(error?.message || "The maintenance command could not start.");
     Object.assign(next, { status: "failed", message: reason, lines: [...next.lines, reason].slice(-200), finishedAt: now() });
+    client.recheck?.();
   };
   app.post(`${base}/health/maintenance/continue`, async (req, res) => {
     authorize(req)();

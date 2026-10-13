@@ -1,10 +1,10 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom } from "./dom/harness.mjs";
-let dom, terminalTouch, writeSnapshot, plainKeyboard, useScreenPresentation;
+let dom, terminalTouch, writeSnapshot, plainKeyboard, altArrowWords, useScreenPresentation;
 before(async () => {
   dom = await startDom();
-  ({ terminalTouch, writeSnapshot, plainKeyboard } = await dom.load("/src/terminal-options.ts"));
+  ({ terminalTouch, writeSnapshot, plainKeyboard, altArrowWords } = await dom.load("/src/terminal-options.ts"));
   ({ useScreenPresentation } = await dom.load("/src/useScreenPresentation.ts"));
 });
 after(() => dom.close());
@@ -73,6 +73,40 @@ test("snapshot updates keep history in place; following output still follows", (
   const textarea = dom.document.createElement("textarea");
   plainKeyboard({ textarea });
   assert.equal(textarea.style.fontSize, "16px", "focus must not trigger Safari's small-input zoom");
+});
+
+test("Option + arrows jump a word, the bytes xterm 5 sent", (t) => {
+  t.after(() => delete dom.window.navigator.platform);
+  const keyboard = (platform) => {
+    Object.defineProperty(dom.window.navigator, "platform", { value: platform, configurable: true });
+    let handler;
+    const sent = [];
+    altArrowWords({ attachCustomKeyEventHandler: (h) => { handler = h; }, input: (data) => sent.push(data) });
+    const press = (key, modifiers = {}, type = "keydown") => {
+      const event = new dom.window.KeyboardEvent(type, { key, cancelable: true, ...modifiers });
+      return { passed: handler(event), prevented: event.defaultPrevented };
+    };
+    return { sent, press };
+  };
+  const mac = keyboard("MacIntel");
+  assert.deepEqual(mac.press("ArrowLeft", { altKey: true }), { passed: false, prevented: true });
+  mac.press("ArrowRight", { altKey: true });
+  assert.deepEqual(mac.sent, ["\x1bb", "\x1bf"]);
+  // Everything else is xterm's own.
+  for (const [key, modifiers, type] of [
+    ["ArrowLeft", {}],
+    ["ArrowLeft", { altKey: true, shiftKey: true }],
+    ["ArrowLeft", { altKey: true, ctrlKey: true }],
+    ["ArrowLeft", { altKey: true, metaKey: true }],
+    ["ArrowLeft", { altKey: true }, "keyup"],
+    ["ArrowUp", { altKey: true }],
+    ["b", { altKey: true }],
+  ]) assert.equal(mac.press(key, modifiers, type).passed, true, `${key} ${JSON.stringify(modifiers)} ${type ?? ""}`);
+  assert.equal(mac.sent.length, 2);
+  const pc = keyboard("Win32");
+  pc.press("ArrowLeft", { altKey: true });
+  pc.press("ArrowRight", { altKey: true });
+  assert.deepEqual(pc.sent, ["\x1b[1;5D", "\x1b[1;5C"]);
 });
 
 test("screen fullscreen opened from a scrolled page fits the visible viewport and restores the page", async () => {

@@ -59,7 +59,7 @@ before(async () => {
       mac.archives.push([`${agent}:${id}`, JSON.parse(init.body).archived]);
       return { archived: JSON.parse(init.body).archived };
     };
-    routes[`/api/sessions/${agent}/${id}/move`] = (init) => {
+    routes[`/api/sessions/${agent}/${id}/fork`] = routes[`/api/sessions/${agent}/${id}/move`] = (init) => {
       mac.moves.push({ from: `${agent}:${id}`, body: JSON.parse(init.body) });
       return mac.moveReply !== undefined ? mac.moveReply : { agent: JSON.parse(init.body).to, id: NEW };
     };
@@ -149,18 +149,18 @@ test("the chat's ⋯ menu has one Continue in… row; it lists the apps with the
   assert.equal(offer(menu).length, 0);
   assert.doesNotMatch(menu.textContent, /Open in the/);
   assert.equal(menu.querySelector(".agent-logo"), null);
-  assert.equal(menu.querySelector(".move-continue").textContent, "Continue now in…");
+  assert.equal(menu.querySelector(".move-continue").textContent, "Fork chat…");
   const item = await continueIn();
   // The menu is the apps now, with a way back.
-  assert.equal(menu.querySelector(".move-section-back").textContent, "Continue now in");
+  assert.equal(menu.querySelector(".move-section-back").textContent, "Fork chat");
   assert.equal(menu.querySelector(".relay-menu-item"), null);
   assert.equal(menu.querySelector(".as-menu-section"), null, "no group name over the apps");
   assert.ok(item.querySelector(".agent-logo"), "with the app's logo");
   assert.equal(item.textContent, "Codex");
   await click(item);
   assert.equal(item.querySelector(".move-item-text > span").textContent, "Codex");
-  assert.equal(item.querySelector(".move-item-text small").textContent, "Gets what Claude Code knows so far");
-  assert.equal(item.querySelector(".move-item-go").textContent, "Continue");
+  assert.equal(item.querySelector(".move-item-text small").textContent, "Copies the conversation and tool output; uses this app’s model, tools and permissions");
+  assert.equal(item.querySelector(".move-item-go").textContent, "Fork");
   assert.deepEqual(mac.moves, []);
   await click(item);
   await dom.waitFor(() => selected.length);
@@ -186,33 +186,38 @@ test("an app that can't take the chat now shows greyed, saying why", async () =>
   await click(button("More"));
   await continueIn();
   const rows = $$(APP);
-  assert.equal(rows.length, 1);
+  assert.equal(rows.length, 2);
   assert.ok(rows[0].classList.contains("blocked"));
   assert.equal(rows[0].disabled, true);
   assert.equal(rows[0].textContent, "CodexCodex is out of usage.");
 });
 
-test("a quiet line under the header says so twice at most; a tap opens ⋯ on its apps", async () => {
+test("forking an earlier message uses the shared destination picker and sends the selected point", async () => {
   dom.window.localStorage.setItem("reach.moveHint", "0");
-  await open(claudeChat());
-  const hint = await dom.waitFor(() => $(".move-hint"));
-  assert.match(hint.textContent, /New: continue this chat in Codex$/);
-  await click(hint);
-  assert.equal((await dom.waitFor(() => $(APP))).textContent, "Codex");
-  // Tapped once: never again.
-  for (const view of views.splice(0)) await view.unmount();
-  await open(claudeChat());
-  await settle(100);
-  assert.equal($(".move-hint"), null, "a dismissed hint stays dismissed on the next chat");
-  for (const view of views.splice(0)) await view.unmount();
-  // Not tapped: shown on the second chat opened, not on the third.
-  dom.window.localStorage.setItem("reach.moveHint", "1");
-  await open(claudeChat());
-  await dom.waitFor(() => $(".move-hint"));
-  for (const view of views.splice(0)) await view.unmount();
-  await open(claudeChat());
-  await settle(100);
-  assert.equal($(".move-hint"), null);
+  const selected = await open(claudeChat());
+  assert.equal($(".move-hint"), null, "no extra transfer hint under the header");
+  await click($$("button[aria-label='Fork from here']")[1]);
+  const menu = await dom.waitFor(() => $(".as-details"));
+  assert.match(menu.textContent, /selected message/);
+  const destination = [...menu.querySelectorAll(APP)].find(b => b.textContent === "Codex");
+  await click(destination);
+  await click(destination);
+  await dom.waitFor(() => selected.length === 1);
+  assert.deepEqual(mac.moves[0].body, { to: "codex", through: "a1" });
+});
+
+test("the same app is offered and Back clears an earlier fork point", async () => {
+  const selected = await open(claudeChat());
+  await click($$("button[aria-label='Fork from here']")[1]);
+  await click($(".move-section-back"));
+  await continueIn();
+  const same = $$(APP).find(b => b.textContent === "Claude Code");
+  await click(same);
+  assert.match(same.textContent, /native chat context and settings/);
+  await click(same);
+  await dom.waitFor(() => selected.length === 1);
+  assert.deepEqual(mac.moves[0].body, { to: "claude" });
+  assert.equal(selected[0].agent, "claude");
 });
 
 test("in the list, a chat continued from the other app says so, with that app's logo", async () => {
@@ -253,6 +258,7 @@ test("every app found is listed in the same order; OpenClaw when its Gateway can
     ["OpenClaw", "Update OpenClaw on your Mac to move chats there."],
     ["Antigravity", "Reach can't continue chats in Antigravity yet."],
     ["Gemini CLI", "Reach only reads Gemini CLI chats."],
+    ["Claude Code", "ready"],
   ]);
   for (const view of views.splice(0)) await view.unmount();
   await open(claudeChat(), apps(true));
@@ -390,10 +396,10 @@ test("holding a chat shows its menu (Open, New chat in its folder, Continue in�
   const menu = $(".chat-popover");
   assert.ok(menu, "menu shows");
   assert.match(menu.querySelector(".chat-popover-head").textContent, /Sign up/);
-  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Continue now in…", "Archive"]);
-  // Continue now in… turns the menu into the apps, with a way back.
+  assert.deepEqual(menuRows(), ["Open", "New chat in app", "Fork chat…", "Archive"]);
+  // Fork chat… turns the menu into the apps, with a way back.
   await click($(".chat-popover .move-continue"));
-  assert.deepEqual(menuRows(), ["Continue now in", "Codex"]);
+  assert.deepEqual(menuRows(), ["Fork chat", "Codex", "Claude Code"]);
   await click($(".chat-popover .move-section-back"));
   await click($$(".chat-popover .move-item").find((b) => b.textContent.includes("New chat in app")));
   assert.deepEqual(news, ["/work/app"]);

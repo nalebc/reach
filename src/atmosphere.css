@@ -177,16 +177,6 @@ select:focus {
   background: #25352e;
   border-color: #6f9b7d66;
 }
-.modal {
-  background: #1b2124;
-  border-color: #ffffff24;
-  border-radius: 22px;
-  box-shadow: 0 40px 120px #0008;
-}
-.modal::backdrop {
-  background: #080c0f99;
-  backdrop-filter: blur(9px);
-}
 .sheet {
   background: #1b2124;
 }
@@ -711,39 +701,6 @@ select:focus {
   background: #ffffff08;
   border: 1px solid var(--border);
   border-radius: 12px;
-}
-.screen-action-groups h3 {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 18px 0 9px;
-}
-.screen-helper-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-.screen-helper-action {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 56px;
-  padding: 12px;
-  text-align: left;
-  color: var(--text);
-  background: #ffffff06;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  font: inherit;
-  font-size: 12px;
-}
-.screen-helper-action small {
-  display: block;
-  margin-top: 4px;
-  font-size: 10px;
-  color: var(--muted);
-}
-.screen-helper-action:hover:not(:disabled) {
-  background: #ffffff10;
 }
 .quick-action-icon.codex {
   color: #ceefc4;

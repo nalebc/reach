@@ -3,7 +3,7 @@ import {
   ArrowUpRight,
   RefreshCw,
   FolderOpen,
-  Loader2,
+  LoaderCircle,
   Plus,
   Search,
   ShieldCheck,
@@ -871,7 +871,7 @@ export default function ChatList({
             {needsYou(s) ? (
               <span className="chat-row-status waiting" aria-label="Needs you" title="Needs you"><span className="chat-state-dot" /></span>
             ) : s.status === "running" ? (
-              <Loader2 className="chat-row-status spin" size={17} aria-label="Working" />
+              <LoaderCircle className="chat-row-status spin" size={17} aria-label="Working" />
             ) : null}
             <time
               className="chat-card-time"
@@ -974,7 +974,7 @@ export default function ChatList({
         <ChatComingSoon app={picked} logos={logos} />
       ) : !sessions ? (
         <p className="chat-list-note" role="status">
-          <Loader2 size={15} className="spin" /> Finding your conversations…
+          <LoaderCircle size={15} className="spin" /> Finding your conversations…
         </p>
       ) : !found.length && setup && !q ? null : !found.length ? (
         <div className="chat-list-empty">

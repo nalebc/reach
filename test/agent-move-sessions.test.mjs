@@ -271,3 +271,101 @@ test("a move asked to keep going tells the new agent to continue, and a failed m
   assert.match(kept.resumeError, /busy/);
   fs.rmSync(failing.root, { recursive: true, force: true });
 });
+
+test("forking an earlier message into another app excludes later messages and tool results", async t => {
+  const { root, daemon, sessions } = setup();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await sessions.fork("claude", CLAUDE, { to: "codex", through: "a1:0" });
+  const params = daemon.calls.find(([m]) => m === "thread/fork")[1];
+  const archive = fs.readFileSync(params.path, "utf8");
+  assert.match(archive, /Build the login page/);
+  assert.match(archive, /Done: the login page is built/);
+  assert.doesNotMatch(archive, /Now add tests|all 12 passed|Tests pass/);
+  const source = await sessions.read("claude", CLAUDE, {});
+  assert.ok(source.items.some(i => i.text === "Tests pass."));
+  assert.equal(source.session.movedTo[0].upTo, "a1:0");
+  assert.equal(source.session.movedTo[0].fork, true);
+});
+
+test("Claude's native fork keeps compaction and complete tool records without rewriting the source", async t => {
+  const { root, projects, sessions } = setup();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(projects, "-work-app");
+  const source = fs.readFileSync(path.join(dir, `${CLAUDE}.jsonl`), "utf8");
+  const fork = await sessions.fork("claude", CLAUDE, { to: "claude" });
+  const rows = fs.readFileSync(path.join(dir, `${fork.id}.jsonl`), "utf8").trim().split("\n").map(JSON.parse);
+  const original = source.trim().split("\n").map(JSON.parse);
+  assert.deepEqual(rows.map(row => ({ ...row, sessionId: CLAUDE })), original);
+  assert.equal(fs.readFileSync(path.join(dir, `${CLAUDE}.jsonl`), "utf8"), source);
+  const page = await sessions.read("claude", fork.id, {});
+  assert.ok(page.items.some(i => i.detail?.includes("all 12 passed")));
+  assert.equal(page.session.model, "claude-opus-5-5");
+});
+
+test("Claude forks precisely at a text block, including earlier context but no subsequent tool calls", async t => {
+  const { root, projects, sessions } = setup();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fork = await sessions.fork("claude", CLAUDE, { through: "a2:0" });
+  const archive = fs.readFileSync(path.join(projects, "-work-app", `${fork.id}.jsonl`), "utf8");
+  const last = JSON.parse(archive.trim().split("\n").at(-1));
+  assert.deepEqual(last.message.content, [{ type: "text", text: "Adding tests." }]);
+  assert.match(archive, /isCompactSummary/);
+  assert.doesNotMatch(archive, /tool_use|all 12 passed|Tests pass/);
+});
+
+test("Codex forks natively through the selected completed turn, preserving native context", async t => {
+  const items = [
+    { id: "u1", turnId: "t1", role: "user", kind: "text", text: "First" },
+    { id: "a1", turnId: "t1", role: "assistant", kind: "text", text: "Answer" },
+    { id: "u2", turnId: "t2", role: "user", kind: "text", text: "Later" },
+  ];
+  const { root, daemon, sessions } = setup({ "thread/fork": { thread: { id: NEW_CODEX } } }, {}, { [CODEX]: items });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(sessions.fork("codex", CODEX, { through: "u1" }), /complete turns/);
+  assert.equal(daemon.calls.length, 0, "never silently includes a later reply");
+  await sessions.fork("codex", CODEX, { through: "a1" });
+  assert.deepEqual(daemon.calls.find(([m]) => m === "thread/fork")[1], { threadId: CODEX, lastTurnId: "t1", excludeTurns: true });
+});
+
+test("invalid fork points fail before creating a chat", async t => {
+  const { root, daemon, sessions } = setup();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(sessions.fork("claude", CLAUDE, { to: "codex", through: "missing" }), e => e.status === 404);
+  await assert.rejects(sessions.fork("claude", CLAUDE, { through: {} }), e => e.status === 400);
+  assert.equal(daemon.calls.length, 0);
+});
+
+test("OpenClaw forks carry long tool output without clipping; incomplete source history is refused", async t => {
+  const output = "tool output ".repeat(10000);
+  const forks = [];
+  const openClaw = { canMove: () => true, fork: async body => (forks.push(body), { key: "new-claw" }), history: async () => ({ items: [], mayHaveOlder: true }) };
+  const { root, sessions } = setup({}, { openClaw }, { [CODEX]: [
+    { id: "u1", role: "user", kind: "text", text: "Run it" },
+    { id: "tool1", role: "tool", kind: "command", text: "test", detail: output },
+  ] });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await sessions.fork("codex", CODEX, { to: "openclaw" });
+  assert.ok(forks[0].notes.slice(1).join("").includes(output));
+  assert.ok(forks[0].notes.every(note => note.length <= 50000));
+  await assert.rejects(sessions.fork("openclaw", "source", { to: "codex" }), /complete history/);
+  assert.equal(forks.length, 1);
+});
+
+test("fork routes require the owner and pass the exact selected point with reauthorization", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-fork-route-"));
+  const calls = [];
+  const reach = await createReach({ roots: [root], dataDir: path.join(root, ".reach"),
+    agentSessions: { fork: async (...args) => (calls.push(args), { agent: "codex", id: NEW_CODEX }) } });
+  await new Promise(r => reach.server.listen(0, "127.0.0.1", r));
+  t.after(async () => { reach.server.close(); await reach.close?.(); fs.rmSync(root, { recursive: true, force: true }); });
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const agent = reach.auth.issue("agent", ["terminal", "files"], "agent");
+  const fork = token => fetch(`http://127.0.0.1:${reach.server.address().port}/api/sessions/claude/${CLAUDE}/fork`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ to: "codex", through: "a1:0" }),
+  });
+  assert.equal((await fork(agent.token)).status, 403);
+  assert.equal(calls.length, 0);
+  assert.equal((await fork(owner.token)).status, 200);
+  assert.equal(calls[0][2].through, "a1:0");
+  assert.equal(typeof calls[0][2].authorize, "function");
+});

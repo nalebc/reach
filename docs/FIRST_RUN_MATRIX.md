@@ -46,7 +46,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | ID | Case | Expected | Type | Test | Status |
 | --- | --- | --- | --- | --- | --- |
 | H1 | Node 22+ is on PATH | Reach uses it | P | CI `./reach --help` | CI only |
-| H2 | Node is missing or older than 22 | Reach downloads its pinned private Node and checks its hash | U | `installable` (version/hash parity) | passed Oct 10 |
+| H2 | Node is missing or older than 22.12 | Reach downloads its pinned private Node and checks its hash | U | `installable` (version/hash parity) | passed Oct 10 |
 | H3 | No internet, curl, tar, or checksum tool | Names the missing tool before downloading; offers installing it or Node.js 22+. A failed download leaves no partial runtime | P, M | `launcher-script`, M7 | passed Oct 11 (isolated tools); Ubuntu device check remains M7 |
 | H4 | Unsupported OS or CPU | Git Bash on Windows is sent to `.\reach.cmd`; another computer is named, with installing Node.js 22+ yourself as the way | U | `launcher-script` | fixed, passed Oct 10 |
 | H5 | `npm ci` or the build fails | Names the likely fix (build tools, internet, disk), then `.reach/setup.log` | P | `setup-blockers` | fixed, passed Oct 10 |

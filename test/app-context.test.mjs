@@ -1,18 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import { KEYS, MODIFIERS, inputAction } from "../server/desktop-protocol.mjs";
 
 const read = (path) => fs.readFile(new URL(path, import.meta.url), "utf8");
 const moduleUrl = (source) =>
   `data:text/javascript;base64,${Buffer.from(
-    ts.transpileModule(source, {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-      },
-    }).outputText,
+    transpile(source),
   ).toString("base64")}`;
 const catalogUrl = moduleUrl(await read("../src/screen-action-catalog.ts"));
 const { contextPicks, allCommands } = await import(

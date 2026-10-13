@@ -4,7 +4,7 @@ Reach ships as a computer companion plus a phone web interface. Native iOS is an
 
 ## Build and verify a candidate
 
-Use Node.js 22 or newer (`.nvmrc`) and Go at the version specified in `tailnet/go.mod`. On Linux, node-pty may need a compiler. From a clean source checkout:
+Use Node.js 22.12 or newer (`.nvmrc`) and Go at the version specified in `tailnet/go.mod`. On Linux, node-pty may need a compiler. From a clean source checkout:
 
 ```sh
 npm ci

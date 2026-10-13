@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Plug } from "lucide-react";
+import { CircleCheck, Plug } from "lucide-react";
 import { request, type Peer } from "./api";
 import type { ServiceConnector } from "../server/browser-tools.mjs";
 import "./service-tools.css";
@@ -395,7 +395,7 @@ export default function ServiceAgentTools({
             {result[connector.id] && (
               <div className="service-result" role="status">
                 <strong>
-                  <CheckCircle2 size={16} /> Completed
+                  <CircleCheck size={16} /> Completed
                 </strong>
                 {result[connector.id].data.summary && (
                   <p className="service-summary">

@@ -308,7 +308,10 @@ test("an idle chat's reply can go now into a chat you pick", async (t) => {
   mac.answers["/api/sessions/relays"] = { relay: relayOf({ state: "done", next: 1, steps: [{ kind: "send", to: { agent: "claude", id: CLAUDE, title: "Refactor auth" } }] }), opened: { agent: "claude", id: CLAUDE } };
   await open(codexSession(), both(), { everyone: [codexSession(), claudeSession(), claudeSession({ id: NEW, title: "Old", archived: true })] });
   assert.equal(button("When this finishes"), undefined, "idle: no chip above the box");
-  await click(await dom.waitFor(() => button("Hand off this reply")));
+  assert.equal(button("Hand off this reply"), undefined);
+  await click(button("More"));
+  await click(button("Automation"));
+  await click(button("Hand off work…"));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
   assert.equal(sheet.querySelector('.relay-when [aria-checked="true"]').textContent, "Now — latest reply");
   const destination = sheet.querySelector('select[aria-label="Where should the work go?"]');
@@ -334,7 +337,10 @@ test("handoff review uses a new chat and clears follow-ups when switching destin
   t.after(() => delete routes["/api/sessions/relays"]);
   mac.answers["/api/sessions/relays"] = { relay: relayOf({ steps: [{ kind: "review", agent: "claude" }] }) };
   await open(codexSession(), both());
-  await click(await dom.waitFor(() => button("Hand off this reply")));
+  assert.equal(button("Hand off this reply"), undefined);
+  await click(button("More"));
+  await click(button("Automation"));
+  await click(button("Hand off work…"));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
   await click(sheet.querySelector(".handoff-followups summary"));
   await click(button("Add a review of the finished work"));
@@ -1030,10 +1036,11 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   await click(await dom.waitFor(() => button("More")));
   // Another agent, each row named by when (Oct 9: "Hand off and continue in are confusing").
   const menu = await dom.waitFor(() => $(".as-details"));
-  assert.equal(menu.querySelector(".as-menu-section").textContent, "Another agent");
+  assert.equal(menu.querySelector(".as-menu-section"), null);
   const rows = [...menu.querySelectorAll('[role="menuitem"]')].map(b => b.textContent.trim());
-  assert.deepEqual(rows.slice(0, 3), ["Continue now in…", "When this finishes…", "If usage runs out"]);
+  assert.deepEqual(rows.slice(0, 2), ["Fork chat…", "Automation"]);
   assert.equal(rows.some(r => r === "Hand off" || r === "Auto-continue" || r === "Continue in…"), false);
+  await click(button("Automation"));
   await click($$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
   assert.equal(sheet.querySelector("h2").textContent, "If usage runs out");
@@ -1051,6 +1058,7 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex", "gemini", "openclaw"]);
   // The menu says On; its sheet says where it goes and turns it off.
   await click(button("More"));
+  await click(button("Automation"));
   const item = await dom.waitFor(() => $$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out")));
   assert.equal(item.querySelector(".relay-menu-value").textContent, "On");
   await click(item);
@@ -1079,6 +1087,7 @@ test("auto-continue's order changes while it's on: Save order puts a new one in 
   await open(codexSession(), both(), { relays: [armed] });
   await dom.waitFor(() => $(".as-auto-on"));
   await click(button("More"));
+  await click(button("Automation"));
   await click(await dom.waitFor(() => $$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out"))));
   await dom.waitFor(() => $(".continue-on"));
   assert.deepEqual($$(".continue-priority strong").map(n => n.textContent), ["Codex", "Claude Code", "Gemini CLI", "OpenClaw"]);
@@ -1102,6 +1111,7 @@ test("a new order that can't start says auto-continue is off and offers to enabl
   mac.answers["/api/sessions/relays/r1/cancel"] = { cancelled: true };
   await open(codexSession(), both(), { relays: [relayOf({ trigger: "usage", priority: ["codex", "claude"] })] });
   await click(await dom.waitFor(() => button("More")));
+  await click(button("Automation"));
   await click(await dom.waitFor(() => $$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out"))));
   await dom.waitFor(() => $(".continue-on"));
   await click(button("Move Claude Code up"));
@@ -1133,6 +1143,7 @@ test("auto-continue remembers the selected priority and requires another availab
   dom.window.localStorage.setItem("reach-continue-priority:mac", JSON.stringify(["claude", "codex"]));
   await open(codexSession(), both());
   await click(await dom.waitFor(() => button("More")));
+  await click(button("Automation"));
   await click($$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out")));
   await dom.waitFor(() => $(".continue-priority"));
   assert.deepEqual($$(".continue-priority strong").map(n => n.textContent), ["Claude Code", "Codex", "Gemini CLI", "OpenClaw"]);

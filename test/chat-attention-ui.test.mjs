@@ -11,6 +11,8 @@ const peer = {
 };
 const health = ["codex", "claude", "openclaw"].map((agent) => ({
   agent,
+  // As the Mac names it (server/agent-sessions KNOWN_AGENTS).
+  ...(agent === "openclaw" && { name: "OpenClaw" }),
   installed: true,
   signedIn: true,
   supported: true,

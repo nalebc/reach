@@ -4,7 +4,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Check, Copy, Loader2, RefreshCw, Search } from "lucide-react";
+import { Check, Copy, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { request, type Peer } from "./api";
 import { clawBase } from "./OpenClawControls";
 import { ClawDialog } from "./OpenClawDialog";
@@ -170,7 +170,7 @@ export function ClawLogViewer({
       <div className="file-viewer-body" aria-busy={busy}>
         {busy && !text ? (
           <div className="claw-viewer-empty" role="status">
-            <Loader2 className="spin" size={24} />
+            <LoaderCircle className="spin" size={24} />
             <p>Loading logs…</p>
           </div>
         ) : problem ? (

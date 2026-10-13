@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import {
   findCodexExecutable,
   bundledCodexPaths,
@@ -11,15 +11,7 @@ import {
   deviceCapabilities,
 } from "../server/capabilities.mjs";
 import { createReach } from "../server/index.mjs";
-const { outputText } = ts.transpileModule(
-  await fs.readFile(new URL("../src/capabilities.ts", import.meta.url), "utf8"),
-  {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  },
-);
+const outputText = transpile(await fs.readFile(new URL("../src/capabilities.ts", import.meta.url), "utf8"));
 const { workspaceCapabilities, pageAccessible, morePlaces } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

@@ -1,13 +1,18 @@
 import crypto from 'node:crypto';
 import { fail, isPlainRecord, hasReviewControls } from './core.mjs';
 import { protectBrowserApp, protectedBrowserAppReason, isolatedControlReason } from './browser-protected-apps.mjs';
+import { ownerHoldRefusal } from './screen.mjs';
 
 const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy, client.scopes, client.tailscale]);
 const clean = (text) => String(text || '').replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ').slice(0, 180);
 const visibleRequest = ({ fingerprint: ignored, identity: hidden, ...request }) => structuredClone(request);
 // Every target and additional grant is scoped to the invitation UUID and its
 // complete current permissions. No agent-controlled PID/window identity is used.
-export function createBrowserAppAccess({ native, verifyClient, screenAvailable, persistRestriction = () => { throw fail(503, "App restrictions cannot be saved. End the invitation instead."); }, notify = () => {}, record = () => {}, now = Date.now }) {
+export function createBrowserAppAccess({ native, verifyClient, screenAvailable, persistRestriction = () => { throw fail(503, "App restrictions cannot be saved. End the invitation instead."); }, notify = () => {}, record = () => {}, now = Date.now,
+  // You using the Mac through Reach's screen (server/screen.mjs OwnerHold):
+  // app windows aren't looked at either until it ends.
+  ownerUsing = () => null, platform = process.platform }) {
+  const notHeld = () => { const hold = ownerUsing(); if (hold) throw ownerHoldRefusal(hold, platform); };
   const sessions = new Map(), requests = new Map(), rates = new Map();
   let closed = false, catalogCache = null, catalogUntil = 0, catalogFlight = null;
   const grantChanges = new Set();
@@ -95,7 +100,7 @@ export function createBrowserAppAccess({ native, verifyClient, screenAvailable, 
     const controller = new AbortController();
     state.operations.add(controller);
     const check = () => {
-      authorize();clientNow(client);
+      authorize();clientNow(client);notHeld();
       const app = {id:item.appId,identity:item.identity,bundleId:item.bundleId,name:item.appName};
       const mode = grant(client,state,app);
       if(controller.signal.aborted || grantChanges.has(client.id) || session(client)!==state || state.targets.get(id)!==item || item.expiresAt<=now() || mode==='hidden' || (control && mode!=='control'))
@@ -122,13 +127,14 @@ export function createBrowserAppAccess({ native, verifyClient, screenAvailable, 
       return {controlAvailable:false,controlReason:isolatedControlReason,apps:apps.map((app) => ({id:app.id,name:app.name,mode:grant(client,state,app),protected:!!app.protected,...(app.reason?{reason:clean(app.reason)}:{})})), requests:this.listClient(client)};
     },
     async windows(client,appId,authorize) {
+      notHeld();
       rate(client,'windows',120);
       if(grantChanges.has(client?.id))throw fail(409,'App permissions are changing. Refresh before continuing.');
       const state = session(client), apps = await catalog(authorize), app = apps.find((app) => app.id === appId);
       authorize();clientNow(client);
       if (!app || grant(client,state,app) === 'hidden') throw fail(403,'Ask the owner to share this app first.');
       const result = await native.windows(app.id,authorize,app.identity);
-      authorize();clientNow(client);
+      authorize();clientNow(client);notHeld();
       if (grantChanges.has(client.id) || session(client)!==state || grant(client,state,app)==='hidden') throw fail(403,'App access changed.');
       const windows=[];const keep=new Set();
       for (const value of (result.windows||[]).slice(0,30)) {
@@ -143,6 +149,7 @@ export function createBrowserAppAccess({ native, verifyClient, screenAvailable, 
       return {windows};
     },
     async capture(client,id,authorize) {
+      notHeld();
       rate(client,'capture',180);
       const {state,item}=await target(client,id,false,authorize);
       const pending=operation(client,state,item,id,false,authorize);

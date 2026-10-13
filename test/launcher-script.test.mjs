@@ -34,7 +34,7 @@ test("H4: Git Bash on Windows is pointed to reach.cmd; another computer is named
   const pi = computer(t, { system: "Linux", machine: "armv7l" }).run();
   assert.equal(pi.status, 1);
   assert.match(pi.stderr, /this computer is Linux armv7l/);
-  assert.match(pi.stderr, /Node\.js 22 or newer installed yourself/);
+  assert.match(pi.stderr, /Node\.js 22\.12 or newer installed yourself/);
 });
 
 test("H3: no curl, or no internet: what to do, not curl's own error", unix, (t) => {
@@ -62,3 +62,15 @@ for (const [missing, omit] of [["tar", ["tar"]], ["shasum or sha256sum", ["shasu
     assert.doesNotMatch(result.stderr, /download-attempted/);
   });
 }
+
+test("H2: a system Node 22 older than 22.12 is passed over for Reach's own (Vite 8 builds on 22.12)", unix, (t) => {
+  const machine = computer(t);
+  const bin = path.join(machine.dir, "bin"), preload = path.join(machine.dir, "old-node.mjs");
+  fs.writeFileSync(preload, 'Object.defineProperty(process.versions, "node", { value: "22.11.0" });\n');
+  fs.writeFileSync(path.join(bin, "node"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} --import ${JSON.stringify(preload)} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const result = machine.run();
+  assert.equal(result.status, 1);
+  // It went for its own runtime: here, with no curl, it says how to get one.
+  assert.match(result.stderr, /Reach needs curl to download Node\.js.*Node\.js 22\.12 or newer/);
+});

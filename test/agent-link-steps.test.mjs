@@ -9,7 +9,7 @@ import path from "node:path";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
 import express from "express";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import { createPublicStart } from "../server/public-start.mjs";
 import { serveBuild } from "../server/delivery.mjs";
 import { agentSteps, stepsCommand, wantsPage, windowsStepsCommand, YOUR_LINK } from "../server/agent-steps.mjs";
@@ -184,9 +184,7 @@ test("Windows: the same steps in PowerShell, checked against the link's r=", () 
 });
 
 async function loadTs(file) {
-  const { outputText } = ts.transpileModule(await fsp.readFile(new URL(`../src/${file}`, import.meta.url), "utf8"), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-  });
+  const outputText = transpile(await fsp.readFile(new URL(`../src/${file}`, import.meta.url), "utf8"));
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 

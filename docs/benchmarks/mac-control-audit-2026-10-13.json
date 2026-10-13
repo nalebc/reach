@@ -1,0 +1,321 @@
+{
+  "schema": "reach.mac-control-audit.v1",
+  "date": "2026-10-13",
+  "baselineCommit": "8575a059c6cb8ed3840f7f285ad1fe7139b139ad",
+  "scope": "Reach source, synthetic observations, inert local MCP/CLI fixture and invalid-browser native transport. No real desktop action or model run.",
+  "catalog": {
+    "fullTools": 50,
+    "compactTools": 12,
+    "fullBytes": 71879,
+    "compactBytes": 24917,
+    "toolNames": [
+      "reach_access",
+      "reach_request_permission",
+      "reach_screenshot",
+      "reach_front",
+      "reach_windows",
+      "reach_describe_screen",
+      "reach_elements",
+      "reach_find",
+      "reach_menus",
+      "reach_read_page",
+      "reach_press",
+      "reach_fill",
+      "reach_wait_for",
+      "reach_act",
+      "reach_desktop_apps",
+      "reach_open_app",
+      "reach_open_bank",
+      "reach_open_url",
+      "reach_focus_window",
+      "reach_mac_shortcuts",
+      "reach_run_mac_shortcut",
+      "reach_open_file",
+      "reach_tools",
+      "reach_tool_protocol",
+      "reach_define_tool",
+      "reach_tool_operation",
+      "reach_shortcuts",
+      "reach_record_shortcut",
+      "reach_save_shortcut",
+      "reach_discard_shortcut",
+      "reach_run_shortcut",
+      "reach_tool_batch",
+      "reach_tool_builtin_open_gmail",
+      "reach_tool_builtin_open_walmart",
+      "reach_tool_builtin_gmail_find",
+      "reach_tool_builtin_gmail_open",
+      "reach_tool_builtin_gmail_attachment",
+      "reach_tool_builtin_walmart_find",
+      "reach_tool_builtin_walmart_receipt",
+      "reach_tool_builtin_walmart_track",
+      "reach_tool_builtin_gmail_draft",
+      "reach_list_files",
+      "reach_search_files",
+      "reach_read_file",
+      "reach_change_file",
+      "reach_shell",
+      "reach_shell_history",
+      "reach_discover",
+      "reach_execute",
+      "reach_displays"
+    ]
+  },
+  "regressions": {
+    "before": {
+      "deadlineScreen": {
+        "returned": "Loading",
+        "reads": 1,
+        "elapsedMs": 1000
+      },
+      "largeDescription": {
+        "chars": 30000,
+        "outputTruncated": false,
+        "lastControlVisible": false,
+        "nextIsDelta": true,
+        "nextSaysUnchanged": true
+      }
+    },
+    "after": {
+      "missedNotification": {
+        "returned": "Ready",
+        "reads": 2,
+        "elapsedMs": 900
+      },
+      "deadlineScreen": {
+        "returned": "Ready",
+        "reads": 2,
+        "elapsedMs": 1000
+      },
+      "largeDescription": {
+        "chars": 29921,
+        "outputTruncated": true,
+        "lastControlVisible": false,
+        "nextIsDelta": false,
+        "nextSaysUnchanged": false
+      }
+    }
+  },
+  "nativeTransport": {
+    "workerStartupMs": 300,
+    "coldProcess": {
+      "p50Ms": 145.63,
+      "p95Ms": 161.04
+    },
+    "warmWorker": {
+      "p50Ms": 0.36,
+      "p95Ms": 1.69
+    },
+    "samplesPerMode": 8,
+    "method": "node scripts/benchmark-agent-navigation.mjs --native-worker; invalid browser, no app interaction"
+  },
+  "cliAndMcp": {
+    "scenario": "real admitted read-only credential; reach_front; loopback HTTP; inert desktop adapter; source runtime",
+    "summaryMs": {
+      "cliHelpProcessBaseline": {
+        "samples": 12,
+        "min": 52.323,
+        "median": 55.394,
+        "p95": 62.212,
+        "max": 62.212
+      },
+      "cliProcessPerCall": {
+        "samples": 12,
+        "min": 61.721,
+        "median": 67.063,
+        "p95": 80.026,
+        "max": 80.026
+      },
+      "mcpProcessInitialize": {
+        "samples": 12,
+        "min": 58.905,
+        "median": 62.366,
+        "p95": 70.612,
+        "max": 70.612
+      },
+      "mcpProcessInitializeAndDiscover": {
+        "samples": 12,
+        "min": 63.029,
+        "median": 67.504,
+        "p95": 76.553,
+        "max": 76.553
+      },
+      "mcpColdFirstCallAfterDiscovery": {
+        "samples": 12,
+        "min": 1.753,
+        "median": 2.07,
+        "p95": 3.048,
+        "max": 3.048
+      },
+      "mcpColdStartThroughFirstResult": {
+        "samples": 12,
+        "min": 64.805,
+        "median": 70.11,
+        "p95": 79.273,
+        "max": 79.273
+      },
+      "mcpWarmCall": {
+        "samples": 40,
+        "min": 1.257,
+        "median": 1.452,
+        "p95": 1.986,
+        "max": 2.442
+      }
+    },
+    "requestCounts": {
+      "cliPerCall": {
+        "samples": 12,
+        "min": 3,
+        "median": 3,
+        "p95": 3,
+        "max": 3
+      },
+      "mcpSetup": {
+        "samples": 12,
+        "min": 3,
+        "median": 3,
+        "p95": 3,
+        "max": 3
+      },
+      "mcpPerCall": {
+        "samples": 40,
+        "min": 1,
+        "median": 1,
+        "p95": 1,
+        "max": 1
+      }
+    },
+    "limitations": [
+      "No model inference, WAN/Tailscale latency, TLS handshakes, physical desktop execution or external providers are measured.",
+      "Cold means a fresh process; operating-system code and filesystem caches are not flushed. Alternating CLI/MCP order reduces order bias.",
+      "CLI timing includes process startup, live access discovery, execution and process exit. MCP cold total ends at its first result and excludes shutdown.",
+      "Warm MCP reuses one stdio process after initialization and discovery. Current CLI starts a fresh process for every command; it has no equivalent warm process mode.",
+      "CLI help is a lower-bound process/import baseline, not an isolated measurement of all startup work in call or MCP modes.",
+      "Host CPU load is not controlled. Results are comparative evidence for this fixture, not a production latency guarantee."
+    ]
+  },
+  "diagnosticGap": {
+    "input": {
+      "error": "The helper stopped.",
+      "status": 503,
+      "kind": "unavailable",
+      "helperReason": "timeout",
+      "helperOperation": "elements",
+      "helperDispatch": "completion_unknown"
+    },
+    "output": {
+      "error": "The helper stopped.",
+      "status": 503,
+      "kind": "unavailable"
+    }
+  },
+  "validation": {
+    "focusedTests": {
+      "passed": 85,
+      "failed": 0,
+      "note": "Initial seven-file run: 85 passed. A subsequent extra deadline test is verified in the final two-file observation run."
+    },
+    "transportBenchmark": {
+      "passed": 1,
+      "failed": 0
+    },
+    "liveNavigationRun": false,
+    "restartedReach": false,
+    "productionTimingsAvailable": false,
+    "finalObservationTests": {
+      "passed": 22,
+      "failed": 0,
+      "files": [
+        "test/agent-speed.test.mjs",
+        "test/desktop-observation.test.mjs"
+      ]
+    }
+  },
+  "inspectedCommit": "f77016f9ef48e23c55b7f27b5ba29349078db32f",
+  "followup": {
+    "scope": "No restart or live desktop interaction. Inert route fixtures, fake native accessibility objects and a compile-only production helper check.",
+    "catalog": {
+      "fullTools": 50,
+      "compactTools": 12,
+      "fullBytes": 71945,
+      "compactBytes": 24955
+    },
+    "observationTextBytes": {
+      "full": 9454,
+      "scoped": 140,
+      "delta": 168
+    },
+    "nativeSnapshot": {
+      "controls": 250,
+      "beforeFromSource": {
+        "focusedWindowLookups": 251,
+        "roleLookupsCold": 251
+      },
+      "afterHarness": {
+        "focusedWindowLookups": 1,
+        "roleLookupsCold": 1,
+        "roleLookupsWarm": 0
+      },
+      "note": "Snapshot formatting only; excludes accessibility traversal, model latency and input execution. Before counts derived from the previous source; after counts asserted by the native harness."
+    },
+    "trailingConditionWait": {
+      "beforeReadsFromSource": 2,
+      "afterReadsInReadyFixture": 1,
+      "guards": [
+        "same permission grant",
+        "same display selection",
+        "no later action or wait",
+        "no separate final condition"
+      ]
+    },
+    "diagnosticOutputAfter": {
+      "error": "The helper stopped.",
+      "status": 503,
+      "kind": "unavailable",
+      "helperReason": "timeout",
+      "helperOperation": "elements",
+      "helperDispatch": "completion_unknown"
+    },
+    "validation": {
+      "initialFocusedTests": {
+        "passed": 109,
+        "failed": 0,
+        "files": [
+          "test/agent-helper-diagnostics.test.mjs",
+          "test/agent-transport.test.mjs",
+          "test/mcp-navigation.test.mjs",
+          "test/desktop-observation.test.mjs",
+          "test/agent-speed.test.mjs",
+          "test/agent-desktop.test.mjs",
+          "test/browser-tools.test.mjs",
+          "test/agent-guide.test.mjs"
+        ]
+      },
+      "finalObservationTests": {
+        "passed": 30,
+        "failed": 0,
+        "files": [
+          "test/mcp-navigation.test.mjs",
+          "test/desktop-observation.test.mjs",
+          "test/agent-speed.test.mjs"
+        ]
+      },
+      "nativeHarness": {
+        "passed": 1,
+        "failed": 0,
+        "file": "test/agent-navigation-native.test.mjs"
+      },
+      "productionHelperOptimizedCompile": "passed; temporary binary never executed and removed",
+      "liveNavigationRun": false,
+      "restartedReach": false
+    },
+    "sourceSha256": {
+      "scripts/native/agent-desktop.swift": "d9f7a60dea77ce7176ec43da59293303ce4335462d2f8aa56d8e888986c473e7",
+      "server/agent-desktop.mjs": "32f2eb4c011c578dd681824e11e9302034ace07c80783de3388b3a8e56336a83",
+      "server/agent-transport.mjs": "95cb6543c26c8364ae6db9eb125ecebd80b189aa307a5a3926167693036a0195",
+      "server/browser-access.mjs": "005d1f9a12491806927a1b7c97456653a487f0e523be095661b1490401d9d621",
+      "server/browser-tools.mjs": "f26622952f2a94df739dde8cdc92e47b43181059f9a415279aab8b3d8274644a",
+      "server/desktop-observation.mjs": "4e1f7a009ccf801794c1574735c15d2b7800527d23b22e401aa4c08228dd031e"
+    }
+  }
+}

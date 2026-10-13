@@ -22,6 +22,25 @@ export const WORKFLOW_AGENTS = ["codex", "claude"];
 // in the folder; it doesn't plan (it can't look through the project, and
 // Reach can't keep it to reading).
 export const WORKFLOW_AGENTS_CLAW = [...WORKFLOW_AGENTS, "openclaw"];
+// Codex and Claude Code as tasks may be given to them now (health() in
+// agent-sessions/index.mjs): installed, signed in, not out of usage, nothing
+// still needed on the computer (Git for Windows, an update), and a command
+// check that didn't fail (one too old, or missing what Reach runs, would
+// only refuse the task; not checked yet is no reason to leave one out).
+export const readyForTasks = (health = []) =>
+  health
+    .filter(
+      (h) =>
+        WORKFLOW_AGENTS.includes(h.agent) &&
+        h.installed &&
+        h.signedIn &&
+        h.usable !== false &&
+        !h.error &&
+        !h.tooOld &&
+        !h.needs?.length &&
+        !["unavailable", "incompatible"].includes(h.compatibility?.status),
+    )
+    .map((h) => h.agent);
 export const WORKFLOW_LIMITS = {
   tasks: 20,
   // Tasks at work at once, in all (builds: one at a time in a folder).

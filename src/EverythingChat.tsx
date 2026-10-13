@@ -11,7 +11,7 @@ import {
   Image as ImageIcon,
   Bell,
   BellRing,
-  Loader2,
+  LoaderCircle,
   Plus,
   ShieldAlert,
   ShieldCheck,
@@ -29,6 +29,7 @@ import AgentAccess from "./AgentAccess";
 import AgentUpdate, { useTerminalRun } from "./AgentUpdate";
 import OpenClawSpace from "./OpenClawSpace";
 import { ClawModelControls, useClawCatalog } from "./OpenClawControls";
+import { ClawTooOld } from "./OpenClawHealth";
 import ChatList, {
   ChatAppSwitch,
   ChatComingSoon,
@@ -612,7 +613,7 @@ export function NewChat({
                   title={i.error}
                 >
                   <img src={i.url} alt="" />
-                  {!i.id && !i.error && <Loader2 size={16} className="spin" />}
+                  {!i.id && !i.error && <LoaderCircle size={16} className="spin" />}
                   <button
                     aria-label="Remove image"
                     onClick={() => {
@@ -730,7 +731,7 @@ export function NewChat({
             onClick={() => void start()}
           >
             {busy ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : (
               <ArrowUp size={21} />
             )}
@@ -812,7 +813,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }:
         </>
       ) : step === "running" ? (
         <p className="chat-setup-running">
-          <Loader2 size={14} className="spin" /> Installing {name} on your {word}…
+          <LoaderCircle size={14} className="spin" /> Installing {name} on your {word}…
           {line && <code>{line}</code>}
         </p>
       ) : step === "installed" ? (
@@ -823,7 +824,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }:
             </p>
           ) : (
             <p className="chat-setup-running">
-              <Loader2 size={14} className="spin" /> {name} is installed. Looking for it…
+              <LoaderCircle size={14} className="spin" /> {name} is installed. Looking for it…
             </p>
           )}
           <div className="chat-setup-actions">
@@ -914,6 +915,9 @@ function AgentStatus({
 }) {
   if (!health) return null;
   const name = agentLabel(agent);
+  // Older than Reach works with: one line, the version to update to, and
+  // Update when Reach can run it (AgentUpdate.tsx). Not offered meanwhile.
+  if (health.tooOld) return <AgentUpdate peer={peer} agent={agent} tooOld={health.tooOld} onUpdated={recheck} />;
   if (health.error)
     return <div className="chat-setup" role="status">
       <strong>Couldn’t check {name}</strong>
@@ -982,7 +986,7 @@ function OutOfUsage({ peer, agent, name, health }: { peer: Peer; agent: AgentNam
           disabled={back.busy}
           onClick={() => void back.toggle()}
         >
-          {back.busy ? <Loader2 size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
+          {back.busy ? <LoaderCircle size={14} className="spin" /> : back.on ? <BellRing size={14} /> : <Bell size={14} />}
         </button>
         {upgradeUrl && (
           <a
@@ -1264,6 +1268,7 @@ export default function EverythingChat({
     ]),
   );
   const status = health.find((h) => h.agent === newAgent);
+  const clawTooOld = health.find((h) => h.agent === "openclaw")?.tooOld;
   const reviewNeeds = open ? allNeeds.filter((item) => item.key.startsWith("mac:")) : needs;
   // A chat the All page points at, as the list has it (or enough to open it).
   const openRef = (ref: { agent: string; id: string; title?: string }) =>
@@ -1350,7 +1355,9 @@ export default function EverythingChat({
           notice={app.supported && appHealth?.installed && !needsSetup ? <AgentUpdate peer={peer} agent={agent} /> : undefined}
           workflows={flowEntry}
           projects={(shared || own).projects}
-          errors={errors[app.agent] ? { [app.agent]: errors[app.agent] } : {}}
+          // Too old: its line above says it (a too-old Codex lists its chats,
+          // or says the same when even that fails).
+          errors={errors[app.agent] && !appHealth?.tooOld ? { [app.agent]: errors[app.agent] } : {}}
           failure={failure} onOpen={openChat}
           onNew={(cwd) => { setNewFolder(cwd || ""); setSheet("new"); }}
           pending={pending} onReview={() => setSheet("review")} />
@@ -1423,12 +1430,19 @@ export default function EverythingChat({
               logos={logos}
               pending={appPending}
               health={health}
-              notes={{ gemini: "Read only" }}
+              notes={{
+                gemini: "Read only",
+                // Older than Reach works with (its line says which version).
+                ...Object.fromEntries(health.filter((h) => h.tooOld).map((h) => [h.agent, "Update needed"])),
+              }}
             />
           }
           onClose={() => (setSheet(""), setNewKind(""))}
         >
-          {newApp.agent === "openclaw" ? (
+          {newApp.agent === "openclaw" && clawTooOld ? (
+            // Its Gateway is older than Reach works with: no new chat there.
+            <ClawTooOld peer={peer} to={clawTooOld.to} onChanged={recheck} />
+          ) : newApp.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat
               key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
@@ -1707,7 +1721,7 @@ function NewClawChat({
             disabled={!text.trim() || busy}
           >
             {busy ? (
-              <Loader2 size={16} className="spin" />
+              <LoaderCircle size={16} className="spin" />
             ) : (
               <ArrowUp size={21} />
             )}

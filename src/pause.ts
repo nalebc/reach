@@ -26,6 +26,17 @@ export function usingIn(changes?: string): string {
   }
 }
 
+// Agents wait while you use the screen (server/screen.mjs OwnerHold): the
+// computer says so to you and full-access people while an agent could look.
+export function agentsWaitIn(changes?: string): boolean {
+  if (!changes) return false;
+  try {
+    return JSON.parse(changes).agentsWait === true;
+  } catch {
+    return false;
+  }
+}
+
 export function pausedIn(
   changes?: string,
   device?: { paused?: boolean } | null,

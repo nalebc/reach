@@ -87,7 +87,7 @@ test("history: past runs with tokens, redacted errors and listed chats only", as
   assert.equal(out.runs.length, 2);
   assert.deepEqual(out.runs[0], {
     at: 1900, status: "error", durationMs: 102457, tokens: 28763, model: "",
-    error: "OpenClaw reported an error.", deliveryError: "",
+    error: "OpenClaw reported an error.", note: "", deliveryError: "",
     chat: { key: "agent:main:cron:job-1:run:abcdef123456", title: "Run abcdef12" },
   });
   assert.equal(out.runs[1].tokens, 12);
@@ -96,6 +96,29 @@ test("history: past runs with tokens, redacted errors and listed chats only", as
   assert.equal(JSON.stringify(out).includes("model output"), false);
   assert.equal(out.hasMore, true);
   assert.equal(out.nextOffset, 20);
+});
+
+test("history: a skipped run says why in Reach's words, never as an error", async () => {
+  const { run } = fixture({
+    handle: {
+      "cron.runs": () => ({
+        entries: [
+          { ts: 3000, jobId: "job-1", status: "skipped", error: "heartbeat skipped: empty-heartbeat-file" },
+          { ts: 2000, jobId: "job-1", status: "skipped", error: "heartbeat skipped: something-new" },
+          { ts: 1000, jobId: "job-1", status: "skipped", error: "token sk-live leaked" },
+        ],
+      }),
+    },
+  });
+  const out = await run(`GET ${base}/automations/history`, { query: { id: "job-1" } });
+  assert.deepEqual(
+    out.runs.map((r) => [r.error, r.note]),
+    [
+      ["", "Nothing to check: the heartbeat's task list is empty."],
+      ["", ""],
+      ["", ""],
+    ],
+  );
 });
 
 test("unsupported Gateways hide history and edit", async () => {
@@ -214,4 +237,62 @@ test("edit: an unconfirmed save is an error", async () => {
     drift.run(`POST ${base}/automations/edit`, { body: { ...edit, expr: "0 9 * * *", tz: "Europe/Paris" } }),
     { status: 502 },
   );
+});
+
+// OpenClaw's heartbeat: on and off through its config, confirmed by the schedule.
+const beat = (over = {}) =>
+  cronJob({
+    id: "beat",
+    name: "heartbeat-main",
+    declarationKey: "heartbeat:main",
+    sessionTarget: "main",
+    schedule: { kind: "every", everyMs: 3600000 },
+    payload: { kind: "heartbeat" },
+    delivery: undefined,
+    ...over,
+  });
+const heartbeatFixture = (config, job = beat()) => {
+  const jobs = [job];
+  const f = fixture({
+    jobs,
+    handle: {
+      "config.get": () => ({ valid: true, hash: "h1", config }),
+      "config.patch": (p) => {
+        const every = JSON.parse(p.raw).agents.defaults.heartbeat.every;
+        jobs[0].enabled = every !== "0m";
+        return { ok: true };
+      },
+    },
+  });
+  return { ...f, jobs };
+};
+
+test("heartbeat: turned off and back on in OpenClaw's config, keeping its interval", async () => {
+  const config = { agents: { defaults: { heartbeat: { agentId: "main" } }, entries: { main: { name: "Main" } } } };
+  const { run, calls, auths } = heartbeatFixture(config);
+  assert.deepEqual(await run(`POST ${base}/automations/heartbeat`, { body: { id: "beat", on: false } }), { enabled: false });
+  const patch = calls.find(([m]) => m === "config.patch")[1];
+  assert.deepEqual(JSON.parse(patch.raw), { agents: { defaults: { heartbeat: { every: "0m" } } } });
+  assert.equal(patch.baseHash, "h1");
+  assert.ok(auths.length >= 2);
+  assert.deepEqual(await run(`POST ${base}/automations/heartbeat`, { body: { id: "beat", on: true } }), { enabled: true });
+  const back = calls.filter(([m]) => m === "config.patch")[1][1];
+  assert.deepEqual(JSON.parse(back.raw), { agents: { defaults: { heartbeat: { every: "60m" } } } });
+});
+
+test("heartbeat: only the plain one, from a sound config; anything else is changed in OpenClaw", async () => {
+  const refuse = async (config, body, pattern, job) => {
+    const { run, calls } = heartbeatFixture(config, job);
+    await assert.rejects(run(`POST ${base}/automations/heartbeat`, { body }), pattern);
+    assert.equal(calls.some(([m]) => m === "config.patch"), false);
+  };
+  const off = { id: "beat", on: false };
+  await refuse({ agents: { entries: { main: { heartbeat: { every: "1h" } } } } }, off, /set per agent/);
+  await refuse({ agents: { list: [{ id: "main", heartbeat: {} }] } }, off, /set per agent/);
+  await refuse({ agent: { heartbeat: { every: "1h" } } }, off, /set per agent/);
+  await refuse({ agents: { entries: { main: "odd" } } }, off, /set per agent/);
+  await refuse({}, off, /isn't|Only OpenClaw's heartbeat/, cronJob({ id: "beat" }));
+  await refuse({}, { id: "beat" }, /on or off/);
+  const { run } = fixture({ jobs: [beat()], handle: { "config.get": () => ({ valid: false, config: {} }) } });
+  await assert.rejects(run(`POST ${base}/automations/heartbeat`, { body: off }), /config has errors/);
 });

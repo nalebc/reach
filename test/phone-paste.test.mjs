@@ -1,19 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 
 // Paste from the phone: its clipboard onto the computer's, then the paste
 // shortcut for that computer. Refusals and oversized text say why.
-const { outputText } = ts.transpileModule(
-  await fs.readFile(new URL("../src/phone-paste.ts", import.meta.url), "utf8"),
-  {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  },
-);
+const outputText = transpile(await fs.readFile(new URL("../src/phone-paste.ts", import.meta.url), "utf8"));
 const { pasteFromPhone, PASTE_LIMIT } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

@@ -108,32 +108,30 @@
   "runtime": 154
  },
  "countsByDecision": {
-  "code-changed": 16,
-  "proposed-dismissal": 193
+  "code-changed": 22,
+  "proposed-dismissal": 187
  },
  "countsByDecisionInChangedFiles": {
-  "code-changed": 12,
-  "proposed-dismissal": 139
+  "code-changed": 15,
+  "proposed-dismissal": 136
  },
  "dismissalsByReason": {
   "false positive": 68,
   "used in tests": 24,
-  "won't fix": 101
+  "won't fix": 95
  },
  "dismissalsByRule": {
   "js/bad-code-sanitization": {
    "false positive": 1,
    "used in tests": 9
   },
-  "js/clear-text-storage-of-sensitive-data": {
-   "won't fix": 3
-  },
+  "js/clear-text-storage-of-sensitive-data": {},
   "js/file-access-to-http": {
    "won't fix": 8,
    "used in tests": 1
   },
   "js/file-system-race": {
-   "won't fix": 27,
+   "won't fix": 24,
    "false positive": 1,
    "used in tests": 10
   },
@@ -262,13 +260,15 @@
     173,
     174
    ],
-   "question": "GET/PUT /api/files/text resolve and confine the path, then read/write it by pathname. A same-user process can swap a symlink in between (documented residual, docs/SECURITY.md:72). Note that this includes a sandboxed job of a non-browser agent with exec: its sandbox denies Reach's data dir but lets it write its shared folder. docs/SECURITY.md:71 already says shell-capable agents are not sandboxed by API scopes. Accept (won't fix) or move these routes to the descriptor helper browser agents use."
+   "question": "GET/PUT /api/files/text resolve and confine the path, then read/write it by pathname. A same-user process can swap a symlink in between (documented residual, docs/SECURITY.md:72). Note that this includes a sandboxed job of a non-browser agent with exec: its sandbox denies Reach's data dir but lets it write its shared folder. docs/SECURITY.md:71 already says shell-capable agents are not sandboxed by API scopes. Accept (won't fix) or move these routes to the descriptor helper browser agents use.",
+   "answer": "Fix (owner, 2026-10-12): c890d83b, with text edits one at a time."
   },
   {
    "alerts": [
     169
    ],
-   "question": "Full control's direct write branch (lstat then open by path) keeps the same-user swap residual; Full control is OS-user power by design. Accept (won't fix)?"
+   "question": "Full control's direct write branch (lstat then open by path) keeps the same-user swap residual; Full control is OS-user power by design. Accept (won't fix)?",
+   "answer": "Fix (owner, 2026-10-12): c890d83b, with text edits one at a time."
   },
   {
    "alerts": [
@@ -276,15 +276,22 @@
     139,
     140
    ],
-   "question": "A guest's pending admission receipt (request secret and the invitation secret) is kept in sessionStorage so a reload resumes the wait. Accept (won't fix, documented at docs/SECURITY.md:140), or drop it on reload at the cost of a re-join."
+   "question": "A guest's pending admission receipt (request secret and the invitation secret) is kept in sessionStorage so a reload resumes the wait. Accept (won't fix, documented at docs/SECURITY.md:140), or drop it on reload at the cost of a re-join.",
+   "answer": "Fix (owner, 2026-10-12): 77b6bc50, receipts in the page's memory only."
   }
  ],
  "summary": {
   "openAlerts": 209,
-  "fixedInCode": 16,
+  "fixedInCode": 22,
   "fixedInCodeProduction": [
    67,
+   138,
+   139,
+   140,
    163,
+   169,
+   173,
+   174,
    243,
    251,
    252
@@ -302,22 +309,23 @@
    240,
    241
   ],
-  "proposedDismissals": 193,
+  "proposedDismissals": 187,
   "proposedDismissalsByReason": {
    "false positive": 68,
    "used in tests": 24,
-   "won't fix": 101
+   "won't fix": 95
   },
-  "ownerDecides": [
+  "ownerDecides": [],
+  "rateLimitGroupDecision": 56,
+  "unsureOrOpen": [],
+  "ownerFixed": [
    138,
    139,
    140,
    169,
    173,
    174
-  ],
-  "rateLimitGroupDecision": 56,
-  "unsureOrOpen": []
+  ]
  },
  "limitations": [
   "No CodeQL run after the changes: the 16 fixed alerts are expected to close on the next hosted analysis but are unproven; each has a fallbackDismissal. #67 is fixed for real but will likely stay open (the rule looks for rate-limit middleware), as may #163, #251 and #252 if the rule pairs other checks with the new reads/writes.",
@@ -325,7 +333,8 @@
   "The exact gate set (163) cannot be listed (100 annotations). Alerts in files the PR changes: 151; on changed lines: 27; matched to annotations: 101. Every alert has a verdict, so the gate is covered whichever 163 they are.",
   "Evidence lines point at the branch tree (codeql-pr18-triage); the alert location is the analysed line (12d654a0 / PR head). Evidence was gathered with read-only reviews per rule group and re-located by exact text; the lead re-checked the hosted-MCP, agent-guard, residual and rate-limit outliers.",
   "Windows-only test changes (#241 in windows-desktop-native) were not exercised on this Mac (skipped); first-install-source is Linux-only and skipped here; first-install-e2e ran with dist/ and tailnet/dist linked from the main checkout's build (this worktree has none).",
-  "Not in scope but found while reviewing: agent-guard.mjs:324 lets `open -b com.apple.systempreferences`, `open x-apple.systempreferences:…` and `open /Applications/X.app/` through the typed-command deny list (not a security boundary under Apps, docs/SECURITY.md:23); hosted-mcp loadClients could use Object.hasOwn; GET /api/device/runtime (#83) reads and hashes the runtime on every call; codex chat creation (#131) and download links (#92) have no per-client cap."
+  "Not in scope but found while reviewing: agent-guard.mjs:324 lets `open -b com.apple.systempreferences`, `open x-apple.systempreferences:…` and `open /Applications/X.app/` through the typed-command deny list (not a security boundary under Apps, docs/SECURITY.md:23); hosted-mcp loadClients could use Object.hasOwn; GET /api/device/runtime (#83) reads and hashes the runtime on every call; codex chat creation (#131) and download links (#92) have no per-client cap.",
+  "Owner fixes (138-140, 169, 173, 174): no CodeQL run after them; each keeps its earlier dismissal as fallbackDismissal. Other file routes (content download, download link, document text, upload, folder changes) still use a path again after checking it. Windows has no O_NOFOLLOW, so there the comparison after opening is the whole check."
  ],
  "alerts": [
   {
@@ -4751,18 +4760,25 @@
    "newOnPr18": false,
    "priorStatus": "documented-design-risk",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:77). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in 77b6bc50 (codeql-owner-fixes, cherry-picked onto reconcile-a)",
+   "commit": "77b6bc50",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). A waiting agent's admission receipt (the request secret, and the invitation it came with) was kept in sessionStorage so a reload resumed the wait. Now receipts live in the page's memory only and no longer carry the invitation; nothing of the wait is written to storage, and receipts an older Reach saved in a tab are deleted on load. The cost: a reload while waiting ends the wait and the agent needs a new invitation; the request it left expires within five minutes.",
    "evidence": [
     "src/GuestAccess.tsx:77",
     "src/GuestAccess.tsx:135",
     "docs/SECURITY.md:140"
    ],
-   "ownerDecides": true
+   "tests": [
+    "agent-admission-ui: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:77). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 139,
@@ -4787,18 +4803,25 @@
    "newOnPr18": false,
    "priorStatus": "documented-design-risk",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:86-93). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in 77b6bc50 (codeql-owner-fixes, cherry-picked onto reconcile-a)",
+   "commit": "77b6bc50",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). A waiting agent's admission receipt (the request secret, and the invitation it came with) was kept in sessionStorage so a reload resumed the wait. Now receipts live in the page's memory only and no longer carry the invitation; nothing of the wait is written to storage, and receipts an older Reach saved in a tab are deleted on load. The cost: a reload while waiting ends the wait and the agent needs a new invitation; the request it left expires within five minutes.",
    "evidence": [
     "src/GuestAccess.tsx:85",
     "src/GuestAccess.tsx:135",
     "docs/SECURITY.md:140"
    ],
-   "ownerDecides": true
+   "tests": [
+    "agent-admission-ui: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:86-93). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 140,
@@ -4823,18 +4846,25 @@
    "newOnPr18": false,
    "priorStatus": "documented-design-risk",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:101). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in 77b6bc50 (codeql-owner-fixes, cherry-picked onto reconcile-a)",
+   "commit": "77b6bc50",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). A waiting agent's admission receipt (the request secret, and the invitation it came with) was kept in sessionStorage so a reload resumed the wait. Now receipts live in the page's memory only and no longer carry the invitation; nothing of the wait is written to storage, and receipts an older Reach saved in a tab are deleted on load. The cost: a reload while waiting ends the wait and the agent needs a new invitation; the request it left expires within five minutes.",
    "evidence": [
     "src/GuestAccess.tsx:101",
     "src/GuestAccess.tsx:135",
     "docs/SECURITY.md:140"
    ],
-   "ownerDecides": true
+   "tests": [
+    "agent-admission-ui: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "By design: the pending admission receipt (request secret, invitation secret) is kept in sessionStorage so a reload resumes the wait (src/GuestAccess.tsx:101). Documented at docs/SECURITY.md:140; scripts in that browser profile are inside the trust boundary."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 142,
@@ -5781,12 +5811,11 @@
    "newOnPr18": false,
    "priorStatus": "local-mutation-residual",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "The direct lstat-then-open branch runs only for Full control (Files returns via the descriptor helper at server/browser-access.mjs:1140-1146), which is OS-user access by design (index.mjs:2577). A same-user symlink swap is a documented residual (docs/SECURITY.md:72)."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in c890d83b",
+   "commit": "c890d83b",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). Files' text view and save (GET/PUT /api/files/text) and Full control's write and copy open the file once (server/confined-file.mjs: never through a final link, never waiting on a pipe), then run the folder check again on where the path leads, down to the very file opened (device and inode), before a byte is read or written. Text edits are applied one at a time, so two edits from the same read never both win (reconciled from codeql-owner-fixes e3818c79).",
    "evidence": [
     "server/browser-access.mjs:1140",
     "server/browser-access.mjs:1150",
@@ -5795,7 +5824,16 @@
     "server/index.mjs:2577",
     "docs/SECURITY.md:72"
    ],
-   "ownerDecides": true
+   "tests": [
+    "confined-file: pass",
+    "integration: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "The direct lstat-then-open branch runs only for Full control (Files returns via the descriptor helper at server/browser-access.mjs:1140-1146), which is OS-user access by design (index.mjs:2577). A same-user symlink swap is a documented residual (docs/SECURITY.md:72)."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 170,
@@ -5893,12 +5931,11 @@
    "newOnPr18": false,
    "priorStatus": "local-mutation-residual",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "resolve() realpath-confines the path to the client's roots and private-data rules (server/index.mjs:2773, :2583) before stat/readFile; browser agents use the descriptor helper (:2767). A concurrent symlink swap is a documented residual (docs/SECURITY.md:72)."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in c890d83b",
+   "commit": "c890d83b",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). Files' text view and save (GET/PUT /api/files/text) and Full control's write and copy open the file once (server/confined-file.mjs: never through a final link, never waiting on a pipe), then run the folder check again on where the path leads, down to the very file opened (device and inode), before a byte is read or written. Text edits are applied one at a time, so two edits from the same read never both win (reconciled from codeql-owner-fixes e3818c79).",
    "evidence": [
     "server/index.mjs:2766",
     "server/index.mjs:2767",
@@ -5908,7 +5945,16 @@
     "server/index.mjs:2583",
     "docs/SECURITY.md:72"
    ],
-   "ownerDecides": true
+   "tests": [
+    "confined-file: pass",
+    "integration: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "resolve() realpath-confines the path to the client's roots and private-data rules (server/index.mjs:2773, :2583) before stat/readFile; browser agents use the descriptor helper (:2767). A concurrent symlink swap is a documented residual (docs/SECURITY.md:72)."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 174,
@@ -5933,12 +5979,11 @@
    "newOnPr18": false,
    "priorStatus": "local-mutation-residual",
    "priorDecisionPr10": "carried-forward",
-   "decision": "proposed-dismissal",
-   "verdict": "dismiss: won't fix",
-   "dismissal": {
-    "reason": "won't fix",
-    "comment": "resolve() realpath-confines the path to the client's roots and private-data rules (server/index.mjs:2832, :2583) before stat/read/write; preset agents can't call PUT /files/text. A concurrent symlink swap is a documented residual (docs/SECURITY.md:72)."
-   },
+   "decision": "code-changed",
+   "verdict": "fixed in c890d83b",
+   "commit": "c890d83b",
+   "classification": "production",
+   "reason": "Owner chose to fix (2026-10-12). Files' text view and save (GET/PUT /api/files/text) and Full control's write and copy open the file once (server/confined-file.mjs: never through a final link, never waiting on a pipe), then run the folder check again on where the path leads, down to the very file opened (device and inode), before a byte is read or written. Text edits are applied one at a time, so two edits from the same read never both win (reconciled from codeql-owner-fixes e3818c79).",
    "evidence": [
     "server/index.mjs:2821",
     "server/index.mjs:2832",
@@ -5948,7 +5993,16 @@
     "server/agent-presets.mjs:159",
     "docs/SECURITY.md:72"
    ],
-   "ownerDecides": true
+   "tests": [
+    "confined-file: pass",
+    "integration: pass"
+   ],
+   "fallbackDismissal": {
+    "reason": "won't fix",
+    "comment": "resolve() realpath-confines the path to the client's roots and private-data rules (server/index.mjs:2832, :2583) before stat/read/write; preset agents can't call PUT /files/text. A concurrent symlink swap is a documented residual (docs/SECURITY.md:72)."
+   },
+   "ownerDecides": false,
+   "ownerDecision": "fix (2026-10-12)"
   },
   {
    "number": 175,

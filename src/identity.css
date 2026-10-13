@@ -161,8 +161,7 @@ select:focus {
   }
 }
 .panel,
-.pair-card,
-.modal {
+.pair-card {
   background: #191e1b;
   border-color: #dbe9d41c;
   box-shadow: none;
@@ -317,14 +316,6 @@ select {
   background: #151f18;
   border-color: var(--border);
   border-radius: 12px;
-}
-.modal::backdrop {
-  background: #060e0acf;
-  backdrop-filter: blur(8px);
-}
-.modal h2 {
-  font-weight: 500;
-  letter-spacing: -0.6px;
 }
 
 /* Original SVG artwork: real CSS animation, with a static reduced-motion pose. */

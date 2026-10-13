@@ -10,6 +10,16 @@ export function portableMessages(items) {
     return { role, text, at: i.at, images: i.imageData || [] };
   }).filter(m => m.text || m.images.length);
 }
+// OpenClaw's injection endpoint accepts text notes. Split long messages;
+// never clip them or summarize away tool output as the old move path did.
+export function forkNotes(items, from, max = 50_000) {
+  const notes = [`Forked from ${from}. Continue the conversation below from where it stops.`];
+  for (const message of portableMessages(items)) {
+    const text = `**${message.role === 'user' ? 'You' : from}:**\n${message.text}`;
+    for (let offset = 0; offset < text.length; offset += max) notes.push(text.slice(offset, offset + max));
+  }
+  return notes;
+}
 export function codexArchive({ id = randomUUID(), cwd, items, from, name, now = Date.now() }) {
   const messages = portableMessages(items);
   messages.push({ role: 'assistant', text: `Continued with Codex · earlier messages are from ${from}`, at: now, images: [] });

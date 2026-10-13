@@ -52,7 +52,7 @@ before(async () => {
         before: null,
       }),
       [`/api/sessions/claude/${CLAUDE}/live`]: async () => (await settle(60), live),
-      [`/api/sessions/claude/${CLAUDE}/move`]: (init) => {
+      [`/api/sessions/claude/${CLAUDE}/fork`]: (init) => {
         claw.moves.push(["claude", JSON.parse(init.body).to]);
         claw.listed = [{ key: KEY, title: "Login page", agentId: "main", channel: "webchat", updatedAt: Date.now(), model: "claude-opus-4-6", status: "idle" }];
         return { agent: "openclaw", id: KEY };
@@ -74,7 +74,7 @@ before(async () => {
         before: null,
       }),
       [`/api/sessions/codex/${NEW}/live`]: async () => (await settle(60), live),
-      [`/api/sessions/openclaw/${encodeURIComponent(KEY)}/move`]: (init) => {
+      [`/api/sessions/openclaw/${encodeURIComponent(KEY)}/fork`]: (init) => {
         claw.moves.push(["openclaw", JSON.parse(init.body).to]);
         return { agent: "codex", id: NEW };
       },
@@ -103,7 +103,7 @@ const click = async (el) => {
   el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle();
 };
-const rowFor = (name) => $$(".move-offer-row").find((r) => r.textContent.includes(`Continue in ${name}`));
+const rowFor = (name) => $$(".claw-move .move-item:not(.move-section-back)").find(r => r.querySelector(".move-item-text > span")?.textContent === name);
 
 test("a chat offers every app that can take it, and moved to OpenClaw, opens there on the new session", async () => {
   const view = await dom.render(
@@ -122,7 +122,7 @@ test("a chat offers every app that can take it, and moved to OpenClaw, opens the
   // Codex and OpenClaw; Gemini CLI listed too, greyed: Reach only reads it.
   assert.deepEqual(
     apps().map((r) => [r.querySelector(".move-item-text > span").textContent, r.disabled]),
-    [["Codex", false], ["OpenClaw", false], ["Gemini CLI", true]],
+    [["Codex", false], ["OpenClaw", false], ["Gemini CLI", true], ["Claude Code", false]],
   );
   await click(itemFor("OpenClaw"));
   // One tap says what happens; the next one moves it.
@@ -146,11 +146,11 @@ test("an OpenClaw chat continues in Codex or Claude Code from its header", async
   );
   views.push(view);
   await click(await dom.waitFor(() => $$("button").find((b) => b.textContent.includes("Login page"))));
-  await click(await dom.waitFor(() => button("Continue in another app")));
+  await click(await dom.waitFor(() => button("Fork chat…")));
   await dom.waitFor(() => rowFor("Codex"));
   assert.deepEqual(
-    $$(".claw-move .move-offer-row strong").map((s) => s.textContent),
-    ["Continue in Codex", "Continue in Claude Code"],
+    $$(".claw-move .move-item:not(.move-section-back) .move-item-text > span").map((s) => s.textContent),
+    ["Codex", "Claude Code", "Gemini CLI", "OpenClaw"],
   );
   await click(rowFor("Codex"));
   await click(rowFor("Codex"));

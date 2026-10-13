@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
-import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent } from "./compatibility.mjs";
+import { object, compatibilityError, uncertainDelivery, validateCodexResult, readOnlyRpc, probeAgent, reportTooOld, tooOldError } from "./compatibility.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { computerWord } from "../computer-word.mjs";
@@ -144,6 +144,10 @@ export function createCodexDaemon({
   let closed = false;
   let version = null;
   let serviceVersion = null;
+  // A Codex older than Reach works with (compatibility.mjs), as last read:
+  // its chats are still listed and read (read and list calls); anything
+  // else is refused with its version and the one to update to.
+  let old = null;
   // Off until Codex changes version: a method Codex says it doesn't have
   // (-32601). Everything else odd (a message Reach can't read, a reply in a
   // shape it doesn't know, a notification it couldn't take) fails that call
@@ -160,6 +164,7 @@ export function createCodexDaemon({
   };
   async function compatibility() {
     const report = await check(await locate());
+    old = reportTooOld(report);
     if (version !== report.version) {
       const upgraded = version !== null;
       issues.clear(); recent.clear(); version = report.version;
@@ -180,7 +185,7 @@ export function createCodexDaemon({
     const codex = await locate();
     if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503, code: "AGENT_NOT_INSTALLED" });
     const report = await compatibility();
-    if (!["available", "degraded"].includes(report.status)) throw compatibilityError("codex", "CLI");
+    if (!["available", "degraded"].includes(report.status) && !reportTooOld(report)) throw compatibilityError("codex", "CLI");
     const cli = spawnable(codex);
     const { stdout } = await run(cli.file, [...cli.args, "app-server", "daemon", "start"], {
       timeout: 20000,
@@ -346,9 +351,16 @@ export function createCodexDaemon({
     ...(defaults ? { defaults: () => defaults() } : {}),
     async rpc(method, params = {}) {
       if (closed) throw closedError();
+      // Too old: only reading goes to it, and what fails then is said as its
+      // being too old (an older Codex's replies, or its service not opening).
+      const work = !readOnlyRpc(method);
+      // Looked at again first (cached; a Codex just updated is a new file).
+      if (old && work) await compatibility().catch(() => {});
+      if (old && work) throw tooOldError(old);
+      const outdated = (error) => (old ? tooOldError(old) : error);
       if (issues.size) await compatibility();
-      if (issues.has(method)) throw issues.get(method);
-      if (recent.has("protocol") && Date.now() < protocolUntil) throw recent.get("protocol");
+      if (issues.has(method)) throw outdated(issues.get(method));
+      if (recent.has("protocol") && Date.now() < protocolUntil) throw outdated(recent.get("protocol"));
       if (!ready)
         ready = open().catch((e) => {
           const failed = socket;
@@ -358,8 +370,16 @@ export function createCodexDaemon({
           fail("Codex initialization failed.");
           throw e;
         });
-      await ready;
-      return send(method, params);
+      try {
+        await ready;
+      } catch (error) {
+        throw outdated(error);
+      }
+      // Found too old as this connection opened (its first check).
+      if (old && work) throw tooOldError(old);
+      return send(method, params).catch((error) => {
+        throw error?.code === "AGENT_INCOMPATIBLE" ? outdated(error) : error;
+      });
     },
     onNotification(listener) {
       listeners.add(listener);

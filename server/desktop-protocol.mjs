@@ -89,7 +89,13 @@ export function inputAction(value) {
       count = value.count ?? 1;
     if (!["left", "right"].includes(button) || ![1, 2].includes(count))
       throw fail(400, "Invalid mouse button or click count.");
-    return { type, x: value.x, y: value.y, button, count };
+    const touch = value.touch;
+    if (touch !== undefined &&
+      (type !== "click" || button !== "left" || !touch ||
+        ![touch.x, touch.y].every((n) => Number.isFinite(n) && n > 0 && n <= 0.1)))
+      throw fail(400, "Invalid touch tolerance.");
+    return { type, x: value.x, y: value.y, button, count,
+      ...(touch ? { touch: { x: touch.x, y: touch.y } } : {}) };
   }
   if (type === "scroll") {
     const dx = value.dx ?? 0,

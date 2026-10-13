@@ -71,7 +71,7 @@ export type AgentSession = {
   // Continued from a chat with the other agent, as if forked (move.mjs).
   movedFrom?: { agent: string; id: string; title?: string };
   // Where this chat was continued with another agent.
-  movedTo?: { agent: string; id: string; at?: number }[];
+  movedTo?: { agent: string; id: string; at?: number; fork?: boolean; upTo?: string }[];
 };
 export type AgentQuestion = {
   question: string;
@@ -164,10 +164,17 @@ export type AgentHealth = {
   // OpenClaw: its Gateway answers (it has no sign-in of its own).
   connected?: boolean;
   // What it needs on the computer before it can run: "git", Git for Windows
-  // for Claude Code on Windows (installed from the phone, agent "git").
+  // for Claude Code on Windows (installed from the phone, agent "git");
+  // "update", a newer version (tooOld says which).
   needs?: string[];
+  // Older than Reach works with (server: agent-sessions/compatibility.mjs):
+  // not offered for new work; its chats still read. version: as read (none
+  // when OpenClaw refused before saying); to: the version to update to.
+  tooOld?: { version?: string; to: string };
   error?: string;
 };
+// One short line for an agent too old for Reach.
+export const tooOldLine = (name: string, to: string) => `Update ${name} to ${to} or newer to use it here.`;
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
 export const resetUsage = (peer: Peer, agent: AgentName) =>
   post<{ outcome: "reset" | "nothingToReset" | "noCredit" | "alreadyRedeemed" }>(peer, "/api/sessions/usage/reset", { agent });
@@ -807,9 +814,9 @@ export const readAsking = (peer: Peer, s: { agent: AgentName; id: string }) =>
 // Continues a chat with the other agent, as if forked in the same app: the
 // new chat's address comes back. resume: the new agent is told to keep going
 // (resumeError: moved, but that message couldn't go).
-export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string, { resume = false } = {}) => {
+export const moveSession = async (peer: Peer, s: { agent: string; id: string }, to: string, { resume = false, fork = false, through = undefined }: { resume?: boolean; fork?: boolean; through?: string } = {}) => {
   const moved = await post<{ agent?: unknown; id?: unknown; resumed?: unknown; resumeError?: unknown } | null>(
-    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/move`, { to, ...(resume ? { resume: true } : {}) },
+    peer, `/api/sessions/${s.agent}/${encodeURIComponent(s.id)}/${fork ? "fork" : "move"}`, { to, ...(resume ? { resume: true } : {}), ...(through ? { through } : {}) },
   );
   // A successful HTTP status does not prove the destination is usable. Keep
   // the source open on incompatible replies; the server may already have

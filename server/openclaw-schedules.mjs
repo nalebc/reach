@@ -18,6 +18,42 @@ const validId = (id) => {
 };
 const text = (v, max) => (typeof v === "string" && v.length <= max && !/[\x00-\x1f]/.test(v) ? v : "");
 
+// A skipped run isn't a failure: OpenClaw names why in its error field
+// ("heartbeat skipped: empty-heartbeat-file"). Said in Reach's words, fixed
+// strings only; a reason Reach doesn't know says nothing.
+const SKIPS = {
+  "empty-heartbeat-file": "Nothing to check: the heartbeat's task list is empty.",
+};
+export const skipNote = (error) =>
+  SKIPS[/^heartbeat skipped: ([\w-]+)$/.exec(typeof error === "string" ? error : "")?.[1]] || "";
+
+// OpenClaw's own monitors (a heartbeat, a skill review): it refuses to edit,
+// pause or remove them for any client. Run now still works.
+export const ownedByOpenClaw = (job) =>
+  typeof job?.declarationKey === "string" && /^(heartbeat|skill-collection-review):/.test(job.declarationKey);
+
+// OpenClaw's heartbeat schedule, made from its config ("heartbeat:<agent>").
+export const isHeartbeat = (job) =>
+  typeof job?.declarationKey === "string" && job.declarationKey.startsWith("heartbeat:") && job.payload?.kind === "heartbeat";
+
+// Reach turns a heartbeat on or off only when one setting decides it:
+// agents.defaults.heartbeat. An agent's own heartbeat (in agents.entries or
+// agents.list) or the older top-level agent.heartbeat overrides it, so those
+// are changed in OpenClaw.
+const isRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function plainHeartbeat(cfg) {
+  if (!isRecord(cfg) || cfg.agent?.heartbeat !== undefined) return false;
+  const agents = cfg.agents === undefined ? {} : cfg.agents;
+  if (!isRecord(agents)) return false;
+  if (agents.defaults !== undefined && !isRecord(agents.defaults)) return false;
+  if (agents.defaults?.heartbeat !== undefined && !isRecord(agents.defaults.heartbeat)) return false;
+  const entries = [
+    ...(isRecord(agents.entries) ? Object.values(agents.entries) : agents.entries === undefined ? [] : [null]),
+    ...(Array.isArray(agents.list) ? agents.list : agents.list === undefined ? [] : [null]),
+  ];
+  return entries.every((a) => isRecord(a) && a.heartbeat === undefined);
+}
+
 async function findJob(client, id) {
   for (let page = 0, offset = 0; page < MAX_PAGES; page++) {
     const result = await client.call("cron.list", { includeDisabled: true, limit: PAGE, offset });
@@ -106,12 +142,63 @@ export function routes(app, client, ctx) {
           durationMs: num(e.durationMs),
           tokens,
           model: text(e.model, 120),
-          error: client.redact(typeof e.error === "string" ? e.error : ""),
+          error: e.status === "skipped" ? "" : client.redact(typeof e.error === "string" ? e.error : ""),
+          note: e.status === "skipped" ? skipNote(e.error) : "",
           deliveryError: client.redact(typeof e.deliveryError === "string" ? e.deliveryError : ""),
           chat: listed.has(key) ? { key, title: chatTitle(key, listed.get(key)) } : null,
         };
       }),
     });
+  });
+
+  // On and off live in OpenClaw's config, not the schedule (OpenClaw refuses
+  // cron edits to its heartbeat): every "0m" turns it off, the schedule's own
+  // interval back on. OpenClaw reloads it live; done once the schedule shows it.
+  app.post(`${base}/automations/heartbeat`, async (req, res) => {
+    const auth = authorize(req);
+    auth();
+    if (!["cron.list", "config.get", "config.patch"].every((m) => client.can(m)))
+      throw fail(409, "This OpenClaw can't turn its heartbeat on or off from Reach. Change it in OpenClaw.");
+    const { id, on } = req.body || {};
+    validId(id);
+    if (typeof on !== "boolean") throw fail(400, "Choose on or off.");
+    const job = await findJob(client, id);
+    if (!isHeartbeat(job)) throw fail(409, "Only OpenClaw's heartbeat turns on and off here.");
+    if (job.enabled === on) return res.json({ enabled: on });
+    const snapshot = await client.call("config.get", {});
+    if (snapshot?.valid === false || !isRecord(snapshot?.config))
+      throw fail(409, "OpenClaw's config has errors. Fix it on this computer first.");
+    if (!plainHeartbeat(snapshot.config))
+      throw fail(409, "This heartbeat is set per agent. Change it in OpenClaw.");
+    const everyMs = job.schedule?.kind === "every" && Number.isInteger(job.schedule.everyMs) ? job.schedule.everyMs : 0;
+    const every = !on ? "0m" : everyMs >= 60000 ? `${Math.round(everyMs / 60000)}m` : "30m";
+    auth();
+    let refused = false;
+    try {
+      // Built from validated values only, never from the snapshot.
+      await client.call(
+        "config.patch",
+        {
+          raw: JSON.stringify({ agents: { defaults: { heartbeat: { every } } } }),
+          ...(typeof snapshot.hash === "string" ? { baseHash: snapshot.hash } : {}),
+          note: `Reach: heartbeat ${on ? "on" : "off"}`,
+        },
+        auth,
+      );
+    } catch (e) {
+      if (e?.status === 401 || e?.status === 403) throw e;
+      if (/usage limit/i.test(String(e?.message || ""))) throw fail(429, "OpenClaw takes 3 changes a minute. Try again shortly.");
+      // OpenClaw may have saved it and be restarting to apply it: the
+      // schedule says whether it took.
+      refused = true;
+    }
+    for (let i = 0; i < 20; i++) {
+      const job = await findJob(client, id).catch(() => null);
+      if (job?.enabled === on) return res.json({ enabled: on });
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (refused) throw fail(409, "OpenClaw didn't accept this change. Refresh, then try again.");
+    throw fail(502, "OpenClaw saved it but hasn't applied it yet. Refresh in a moment.");
   });
 
   app.get(`${base}/automations/job`, async (req, res) => {

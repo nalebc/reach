@@ -10,7 +10,7 @@ $entry = Join-Path $root 'bin\reach.mjs'
 $node = Get-Command node -ErrorAction SilentlyContinue
 $npm = Get-Command npm -ErrorAction SilentlyContinue
 if ($node -and $npm) {
-    & $node.Source -e 'process.exit(parseInt(process.versions.node)>=22?0:1)'
+    & $node.Source -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)'
     if ($LASTEXITCODE -eq 0) {
         & $node.Source $entry @args
         exit $LASTEXITCODE
@@ -24,7 +24,7 @@ $builds = @{
     'ARM64' = @('win-arm64', '33dad22e4cef5ee8f9fbb1b0d037fdacd0e56d12a4580f0d63f68b894deab535')
 }
 if (-not [Environment]::Is64BitOperatingSystem -or -not $builds.ContainsKey($arch)) {
-    [Console]::Error.WriteLine("Reach sets itself up on 64-bit Windows (x64 or ARM64); this PC is $arch. Install Node.js 22 or newer from https://nodejs.org, then run .\reach.cmd again.")
+    [Console]::Error.WriteLine("Reach sets itself up on 64-bit Windows (x64 or ARM64); this PC is $arch. Install Node.js 22.12 or newer from https://nodejs.org, then run .\reach.cmd again.")
     exit 1
 }
 $target, $sha = $builds[$arch]
@@ -50,7 +50,7 @@ if (-not (Test-Path $exe)) {
             } catch { if ($try -lt 3) { Start-Sleep -Seconds (5 * $try) } }
         }
         if (-not $got) {
-            [Console]::Error.WriteLine("Reach couldn't download Node.js (no internet here?). Connect, then run .\reach.cmd again; or install Node.js 22 or newer from https://nodejs.org.")
+            [Console]::Error.WriteLine("Reach couldn't download Node.js (no internet here?). Connect, then run .\reach.cmd again; or install Node.js 22.12 or newer from https://nodejs.org.")
             exit 1
         }
         if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha) {

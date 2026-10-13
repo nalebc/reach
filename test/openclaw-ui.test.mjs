@@ -62,6 +62,7 @@ let dom,
   settingsSent = [],
   scheduleChanges = [],
   scheduleEnabled = true,
+  canSwitchHeartbeat = true,
   setupCalls = [],
   whatsappStatus = "connected",
   settingsFail = false,
@@ -146,15 +147,32 @@ before(async () => {
               error: "",
               delivery: "whatsapp",
             },
+            {
+              id: "beat",
+              name: "heartbeat-main",
+              agentId: "main",
+              enabled: true,
+              schedule: "Every 30 minutes",
+              nextRunAt: Date.now() + 1800000,
+              lastRunAt: Date.now() - 60000,
+              status: "skipped",
+              error: "",
+              note: "Nothing to check: the heartbeat's task list is empty.",
+              managed: true,
+              heartbeat: true,
+              delivery: "No external delivery",
+            },
           ],
           canEdit: true,
           canAdd: true,
           canRun: true,
           canRemove: true,
+          canSwitchHeartbeat,
           hasMore: false,
         };
       },
       [base + "/automations/new"]: (init) => (setupCalls.push(["new", JSON.parse(init.body)]), { id: "job-2" }),
+      [base + "/automations/heartbeat"]: (init) => (setupCalls.push(["heartbeat", JSON.parse(init.body)]), { enabled: false }),
       [base + "/automations/run"]: (init) => (setupCalls.push(["run", JSON.parse(init.body)]), { ran: true }),
       [base + "/automations/remove"]: (init) => (setupCalls.push(["remove", JSON.parse(init.body)]), { removed: true }),
       [base + "/channels/add"]: (init) => (setupCalls.push(["add", JSON.parse(init.body)]), { added: true }),
@@ -649,6 +667,42 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await click("Choose an app, OpenClaw selected");
   dom.document.querySelector("[role=menuitemradio][aria-label=Codex]").click();
   await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+});
+
+test("OpenClaw's own heartbeat: a skip is a plain note, and it turns off instead of pausing or deleting", async () => {
+  setupCalls = [];
+  await mount();
+  await click("Scheduled");
+  await dom.waitFor(() => button("heartbeat-main"));
+  await click("heartbeat-main");
+  await dom.waitFor(() => button("Run heartbeat-main now"));
+  const sheet = dom.document.querySelector('[role="dialog"]');
+  assert.match(sheet.textContent, /Last run.*· Skipped/);
+  assert.match(sheet.textContent, /task list is empty/);
+  assert.doesNotMatch(sheet.textContent, /OpenClaw manages this one/);
+  assert.equal(sheet.querySelector(".claw-error"), null);
+  assert.ok(!button("Pause heartbeat-main"));
+  assert.ok(!button("Delete heartbeat-main"));
+  assert.ok(!button("Edit heartbeat-main"));
+  assert.ok(button("History heartbeat-main"));
+  await click("Turn off heartbeat-main");
+  await dom.waitFor(() => setupCalls.some(([k]) => k === "heartbeat"));
+  assert.deepEqual(setupCalls.find(([k]) => k === "heartbeat")[1], { id: "beat", on: false });
+});
+
+test("a heartbeat this OpenClaw can't switch says where to change it", async () => {
+  canSwitchHeartbeat = false;
+  try {
+    await mount();
+    await click("Scheduled");
+    await dom.waitFor(() => button("heartbeat-main"));
+    await click("heartbeat-main");
+    await dom.waitFor(() => button("Run heartbeat-main now"));
+    assert.match(dom.document.querySelector('[role="dialog"]').textContent, /OpenClaw manages this one/);
+    assert.ok(!button("Turn off heartbeat-main"));
+  } finally {
+    canSwitchHeartbeat = true;
+  }
 });
 
 test("missing things are asked for: a schedule is added, run and deleted; advanced setup stays in Reach; WhatsApp links by QR", async () => {

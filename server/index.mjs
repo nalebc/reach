@@ -74,6 +74,7 @@ import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
+import { createAgentTimings } from "./agent-timings.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
 import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
@@ -91,7 +92,7 @@ import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
-import { ScreenControl, actsAsOwner, pausedMessage } from "./screen.mjs";
+import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
@@ -131,7 +132,7 @@ import { createUsageWatch } from "./agent-sessions/usage-watch.mjs";
 import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
-import { createWorkflows } from "./agent-sessions/workflows.mjs";
+import { createWorkflows, readyForTasks } from "./agent-sessions/workflows.mjs";
 import { createTeamBridge, teamPipe } from "./agent-sessions/team-bridge.mjs";
 import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
 import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
@@ -191,6 +192,8 @@ export async function createReach(overrides = {}) {
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
   const agentActions = overrides.agentActions || createAgentActions({ file: path.join(config.dataDir, "agent-actions.jsonl") });
   const logAction = (client, entry) => { try { agentActions.add(client, entry); } catch { /* the log never stops an action */ } };
+  // Reach's time and the agent's for each call, beside that log.
+  const agentTimings = overrides.agentTimings || createAgentTimings({ file: path.join(config.dataDir, "agent-timings.jsonl") });
   const settings = { screen: config.screen, ...loadJson(settingsFile, {}) };
   config.screen = settings.screen === true;
   // Written by the Mac app, which owns the macOS privacy permissions.
@@ -266,6 +269,18 @@ export async function createReach(overrides = {}) {
     return client;
   };
   const settingBinding = (client) => `setting:faceIdForAgents:${client.id}`;
+  // A Face ID answer checked on a signed-in route (the setting, an agent's
+  // approval): refused, its 401 is marked so its reason ("for an earlier
+  // attempt", "took too long"…) reaches the phone, not the routes' usual
+  // "Access expired or was revoked.".
+  const faceIdAnswer = (check) => {
+    try {
+      return check();
+    } catch (e) {
+      if (e?.status === 401) e.passkey = true;
+      throw e;
+    }
+  };
   let privateServer, privateSocket;
   const approvalCleanup = approvals
     ? setInterval(() => approvals.list(), 30000)
@@ -455,6 +470,10 @@ export async function createReach(overrides = {}) {
   const terminalPingMs = overrides.terminalPingMs || 30000;
   let refusedFullAt = 0;
   const screenControl = new ScreenControl();
+  // You using the Mac through Reach's screen holds agents off it, looks
+  // included, until 2 minutes after your last input (server/screen.mjs).
+  // Never part of blocked() below: chats' Claude app messages don't wait on it.
+  const ownerHold = overrides.ownerHold || new OwnerHold();
   let agentDesktop = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
     // Why chats' Claude app work waits, named on the waiting message.
@@ -741,9 +760,7 @@ export async function createReach(overrides = {}) {
       relays,
       availableAgents: async () => {
         const [health, claw] = await Promise.allSettled([agentSessions.health(), openClaw.overview()]);
-        const ready = health.status === "fulfilled" ? health.value.filter((h) =>
-          ["codex", "claude"].includes(h.agent) && h.installed && h.signedIn && h.usable !== false && !h.error && h.compatibility?.status !== "unavailable"
-        ).map((h) => h.agent) : [];
+        const ready = health.status === "fulfilled" ? readyForTasks(health.value) : [];
         if (claw.status === "fulfilled" && claw.value.connected) ready.push("openclaw");
         return ready;
       },
@@ -944,6 +961,7 @@ export async function createReach(overrides = {}) {
     screenAvailable: () => browserScreenAvailable() && !paused && transportAvailable,
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
+    ownerUsing: () => ownerHold.active(), platform: overrides.platform || process.platform,
   });
   // The owner's pause of one agent ("it can look, not touch"), on every
   // computer: it used to live in the Mac-only desktop service below, so off a
@@ -962,6 +980,7 @@ export async function createReach(overrides = {}) {
       const held = screenControl.holder();
       return held?.person ? held.name || "Someone" : !!held || screenControl.inputStopping();
     },
+    ownerUsing: () => ownerHold.active(),
     // A chat waiting on an agent gets the next turn (the agent's input waits a
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
@@ -972,6 +991,21 @@ export async function createReach(overrides = {}) {
   const screenAgentIds = () => auth.list()
     .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
     .map((client) => client.id);
+  // Agents that look at the screen at all: these presets, and those shown
+  // only chosen app windows.
+  // Only an agent that joined counts: an invitation nobody opened (or one
+  // that lapsed, or waits for your approval) can't touch the screen, so it
+  // doesn't put up "Agents wait" (an unused Always invite did, Oct 13).
+  const screenAgentsPresent = () => auth.list().some((client) => client.kind === "agent" &&
+    client.policy?.browser === true && (client.policy.preset !== undefined || client.policy.screen === "apps") && client.expiresAt > Date.now() &&
+    (client.status === undefined || client.status === "accepted"));
+  // Your input went through Reach's screen (a tap, a key, a scroll): agents
+  // wait. Input on one of Reach's hidden app displays doesn't touch the
+  // screen agents use, so it doesn't hold them. The phones hear at once.
+  const ownerUsed = (client, display) => {
+    if (display && display !== "primary" && appThreads.ownsDisplay(display)) return;
+    if (ownerHold.note(client)) for (const nudge of presenceNudges) nudge();
+  };
   // The owner pauses (or resumes) one agent: the desktop, where there is one,
   // lets go of what the agent holds first, then the pause is kept. A pause
   // that can't be saved still holds now (507, agent-pauses.mjs).
@@ -1540,23 +1574,50 @@ export async function createReach(overrides = {}) {
     ownDevice(req);
     res.json({ passkeys: passkeys.list() });
   });
+  // A refused add says why, in Reach's terminal and in the security record,
+  // never with anything of the answer itself: the owner's adds were refused
+  // for days with nothing said on the Mac (Oct 13). The same reason again
+  // within 10 s is said once.
+  let refusedAdd = { line: "", at: 0 };
+  const notAdded = (e) => {
+    const line = `Face ID not added: ${e?.status ? e.message : `Reach couldn't check it (${e?.name || "an error"} on this computer).`}`;
+    if (line !== refusedAdd.line || Date.now() - refusedAdd.at > 10000) {
+      console.log(`Reach: ${line}`);
+      record("security", line);
+    }
+    refusedAdd = { line, at: Date.now() };
+  };
   app.post("/api/auth/passkeys/options", (req, res) => {
-    const client = ownDevice(req);
-    res.json(
-      passkeys.registrationOptions(
-        client.id,
-        req.reachIdentity.login || config.tailscaleOwner.login,
-      ),
-    );
+    try {
+      const client = ownDevice(req);
+      res.json(
+        passkeys.registrationOptions(
+          client.id,
+          req.reachIdentity.login || config.tailscaleOwner.login,
+        ),
+      );
+    } catch (e) {
+      notAdded(e);
+      throw e;
+    }
   });
   app.post("/api/auth/passkeys", (req, res) => {
-    const client = ownDevice(req);
-    const added = passkeys.register(
-      client.id,
-      req.body?.credential,
-      req.body?.label,
-    );
-    record("security", `Face ID added (${added.label})`);
+    let added;
+    try {
+      const client = ownDevice(req);
+      added = passkeys.register(
+        client.id,
+        req.body?.credential,
+        req.body?.label,
+      );
+    } catch (e) {
+      notAdded(e);
+      throw e;
+    }
+    // The label is the phone's own words: one line in the log, always.
+    const label = String(added.label).replace(/[\r\n]+/g, " ");
+    console.log(`Reach: Face ID added (${label}).`);
+    record("security", `Face ID added (${label})`);
     res.status(201).json(added);
   });
   app.delete("/api/auth/passkeys/:id", (req, res) => {
@@ -1958,7 +2019,13 @@ export async function createReach(overrides = {}) {
     res.json = (body) => {
       if (res.statusCode < 400 && !stillAllowed(verify(req, credential)))
         res.status(401);
-      if (res.statusCode === 401)
+      // A refused Face ID answer keeps its own reason while the credential
+      // is still good (faceIdAnswer): said as "Access expired or was
+      // revoked.", it read on the phone as its own access gone (Oct 13).
+      if (
+        res.statusCode === 401 &&
+        !(body?.passkey === true && stillAllowed(verify(req, credential)))
+      )
         return json({
           error: "Access expired or was revoked.",
         });
@@ -1966,6 +2033,9 @@ export async function createReach(overrides = {}) {
     };
     next();
   });
+  // How long each of an agent's calls takes here, and the agent between
+  // them (agent-timings.mjs): no content, only kinds and times.
+  app.use("/api", (req, res, next) => agentTimings.middleware(req, res, next));
   app.get("/api/device", async (req, res) => {
     agentRuntimes.note(req.client, req.query.runtime, { program: !fromBrowserPage(req) });
     const tools = req.client.scopes.includes("codex")
@@ -2085,7 +2155,7 @@ export async function createReach(overrides = {}) {
       let faceId = null;
       if (body.credential !== undefined) {
         if (!passkeys?.has()) throw fail(404, "Face ID isn't set up on this computer.");
-        faceId = passkeys.verifyAssertion(settingBinding(client), body.credential);
+        faceId = faceIdAnswer(() => passkeys.verifyAssertion(settingBinding(client), body.credential));
       } else if (!body.faceIdForAgents && faceIdForAgents())
         throw fail(403, "Face ID turns this off. Use the phone that has it.");
       settings.faceIdForAgents = body.faceIdForAgents;
@@ -2353,7 +2423,7 @@ export async function createReach(overrides = {}) {
     let faceId = null;
     if (body.credential !== undefined) {
       const binding = admissionBinding(req, faceIdOwner(req));
-      faceId = passkeys.verifyAssertion(binding, body.credential);
+      faceId = faceIdAnswer(() => passkeys.verifyAssertion(binding, body.credential));
     }
     if (!faceId && body.decision === "approve" && faceIdForAgents())
       throw fail(403, "Face ID confirms agent approvals on this computer. Approve with Face ID on your phone, or turn it off in Settings → Agents.");
@@ -2569,7 +2639,7 @@ export async function createReach(overrides = {}) {
     endSession(id);
   };
   browserAgentRoutes(app, {
-    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions,
+    auth, approvals: browserApprovals, appAccess: browserAppAccess, coordinator: browserOperations, endClient, endSession, desktop: agentDesktop, actions: agentActions, timings: agentTimings,
     pauses: { has: agentPaused, set: pauseAgent },
     onStopped: (client) => {
       void releaseGuest(client);
@@ -2685,6 +2755,8 @@ export async function createReach(overrides = {}) {
     protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
+    // Screen text an agent didn't read again (savings.mjs, "screen-diff").
+    savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
       // A Windows Reach has no public link without browser sign-in.
       if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
@@ -2859,6 +2931,28 @@ export async function createReach(overrides = {}) {
       .set("Cache-Control", "no-store")
       .json({ icons: Object.fromEntries(types.map((t, i) => [t, found[i]])) });
   });
+  // Read, compared and written through one handle, proven to be the file
+  // checked (confined-file.mjs): a link or another file put in its place
+  // meanwhile is never written. Written in place, so its links and
+  // permissions stay as they were.
+  const editText = async (file, place, body) => {
+    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
+    try {
+      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
+      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
+      if (previous.includes(0))
+        throw fail(415, "Binary files cannot be edited as text.");
+      if (hash(previous) !== body.sha256)
+        throw fail(409, "This file changed. Read it again before writing.");
+      const text = Buffer.from(body.text, "utf8");
+      await handle.truncate(0);
+      await handle.write(text, 0, text.length, 0);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  };
+  let editing = Promise.resolve();
   app.put("/api/files/text", async (req, res) => {
     if (
       typeof req.body?.text !== "string" ||
@@ -2870,27 +2964,14 @@ export async function createReach(overrides = {}) {
         400,
         "Send text up to 128 KiB and the sha256 from the last read.",
       );
-    // Read, compared and written through one handle, proven to be the file
-    // checked (confined-file.mjs): a link or another file put in its place
-    // meanwhile is never written. Written in place, so its links and
-    // permissions stay as they were.
     const place = () => resolve(req.query.root, req.query.path || "", req.client);
     const file = place();
-    const { handle, size } = await openConfined(file, fs.constants.O_RDWR, place);
-    try {
-      const previous = size > 1024 * 1024 ? null : await readUpTo(handle, 1024 * 1024);
-      if (!previous) throw fail(400, "Choose a text file up to 1 MiB.");
-      if (previous.includes(0))
-        throw fail(415, "Binary files cannot be edited as text.");
-      if (hash(previous) !== req.body?.sha256)
-        throw fail(409, "This file changed. Read it again before writing.");
-      const text = Buffer.from(req.body.text, "utf8");
-      await handle.truncate(0);
-      await handle.write(text, 0, text.length, 0);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    // One edit at a time, all files together: each reads, compares and
+    // writes before the next reads, so two edits from the same read can't
+    // both win (the rest get 409). None is refused for waiting.
+    const turn = editing.then(() => editText(file, place, req.body));
+    editing = turn.catch(() => {});
+    await turn;
     record("file", `Updated ${path.basename(file)}`);
     res.json({ ok: true, sha256: hash(req.body?.text) });
   });
@@ -3965,6 +4046,14 @@ export async function createReach(overrides = {}) {
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
+  app.post("/api/sessions/:agent/:id/fork", async (req, res) => {
+    macOwner(req);
+    const forked = await agentSessions.fork(req.params.agent, req.params.id, {
+      to: req.body?.to, through: req.body?.through ?? null, authorize: () => req.reauthorize(),
+    });
+    record("session", `Forked a chat in ${agentName(forked.agent)}`);
+    res.json(forked);
+  });
   app.post("/api/sessions/:agent/:id/draft", async (req, res) => {
     macOwner(req);
     const text = req.body?.text;
@@ -4585,22 +4674,30 @@ export async function createReach(overrides = {}) {
       throw fail(409, "Wait for the previous screen action to finish.");
     inputInFlight = true;
     try {
-      res.json(
-        await screenInput(config, req.body, () => {
-          if (
-            res.destroyed ||
-            !config.screen ||
-            !verify(req, req.headers.authorization?.replace(/^Bearer /, ""))
-          )
-            throw fail(403, "Screen access was turned off or revoked.");
-          screenControl.check(req.client);
-          if (screenControl.inputStopping())
-            throw fail(409, "Wait for the previous desktop input helper to stop.");
-        }),
-      );
+      const done = await screenInput(config, req.body, () => {
+        if (
+          res.destroyed ||
+          !config.screen ||
+          !verify(req, req.headers.authorization?.replace(/^Bearer /, ""))
+        )
+          throw fail(403, "Screen access was turned off or revoked.");
+        screenControl.check(req.client);
+        if (screenControl.inputStopping())
+          throw fail(409, "Wait for the previous desktop input helper to stop.");
+      });
+      ownerUsed(req.client);
+      res.json(done);
     } finally {
       inputInFlight = false;
     }
+  });
+  // "Let them back": agents have the screen again now, not 2 minutes after
+  // your last input. Yours and full-access people's only.
+  app.post("/api/screen/agents-back", (req, res) => {
+    if (!actsAsOwner(req.client))
+      throw fail(403, "Only the owner can let agents back on the screen.");
+    if (ownerHold.release()) for (const nudge of presenceNudges) nudge();
+    res.json({ ok: true });
   });
   app.get("/api/screen", async (req, res) => {
     if (!config.screen)
@@ -4777,8 +4874,14 @@ export async function createReach(overrides = {}) {
                     ? "This file is open in another program. Close it there, then try again."
                     : "Could not complete this action. Check the companion console.",
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
+        // A refused Face ID answer: its reason stays (faceIdAnswer).
+        ...(error.passkey === true ? { passkey: true } : {}),
         // A person waiting for the owner's Allow: their page waits too.
         ...(error.waiting === true ? { waiting: true } : {}),
+        // An agent held off while you use the Mac: who, and when to look again.
+        ...(error.kind === "paused" && Number.isFinite(error.retryInMs)
+          ? { kind: "paused", holder: String(error.holder || ""), retryInMs: error.retryInMs }
+          : {}),
       });
     if (!error.status && !req.aborted) console.error(error.message);
   });
@@ -4916,6 +5019,12 @@ export async function createReach(overrides = {}) {
               const using = held && held.clientId !== client.id ? held.name || "Someone" : agentDesktop?.usingNow?.() || "";
               return using ? { using: String(using).slice(0, 80) } : {};
             })()),
+            // Agents wait while you use the screen (server/screen.mjs
+            // OwnerHold): one quiet pill with "Let them back", for you and
+            // full-access people, only when an agent could look. A flag, not
+            // a countdown, so it changes only when the hold starts or ends.
+            ...(scopes.includes("screen") && actsAsOwner(client) &&
+              ownerHold.active() && screenAgentsPresent() && { agentsWait: true }),
             ...(macTerminals &&
               macTerminalWatch.version && {
                 macTerminals: macTerminalWatch.version,
@@ -4986,6 +5095,8 @@ export async function createReach(overrides = {}) {
         control: screenControl,
         create: overrides.desktopInputFactory,
         platform: overrides.platform || process.platform,
+        // Each input that reached the Mac: agents wait while you use it.
+        used: ownerUsed,
         // A phone app's hidden display: only for those that app is shared with.
         allowDisplay: (client, display) =>
           // The same rule as watching it: every app on it must be theirs.
@@ -5643,6 +5754,9 @@ export async function createReach(overrides = {}) {
       jobs.dispose();
       await Promise.all([apps, closed, terminalExit]);
       clearTimeout(cutoff);
+      // The last agent timings still on their way to disk land before Reach
+      // says it stopped (a test removing the data folder raced them).
+      await agentTimings.flushed?.().catch(() => {});
     },
   };
 }

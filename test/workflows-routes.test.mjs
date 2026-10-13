@@ -120,3 +120,51 @@ test("workflows are written, planned, run and stopped by the owner's devices onl
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// An agent older than Reach works with (agent-sessions/compatibility.mjs,
+// health's tooOld) is never given a task or a plan; updated, it is again.
+test("a workflow never picks an agent too old for Reach", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-workflow-old-"));
+  const started = [];
+  let claude = { agent: "claude", installed: true, signedIn: true, tooOld: { version: "2.1.200", to: "2.1.259" }, needs: ["update"], compatibility: { status: "incompatible", version: "2.1.200", to: "2.1.259", agent: "claude" } };
+  const reach = await createReach({
+    roots: [root],
+    openClaw: { overview: async () => ({ connected: false }), close() {} },
+    dataDir: path.join(root, ".reach"),
+    agentSessions: {
+      list: async () => ({ sessions: [], errors: {} }),
+      health: async () => [{ agent: "codex", installed: true, signedIn: true }, claude],
+      read: async () => ({ session: { status: "running" }, items: [] }),
+      start: async (agent, body) => (started.push({ agent, body }), { threadId: `${agent}-${started.length}` }),
+      send: async () => ({ turnId: "t" }),
+      stop: async () => ({}),
+      models: async () => ({ models: [], modes: [{ id: "auto" }], mode: null }),
+    },
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const call = (route, body) =>
+    fetch(`${url}${route}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const home = os.homedir();
+  try {
+    assert.equal((await call("/api/sessions/workflows/plan", { agent: "claude", cwd: home, text: "Plan it" })).status, 400);
+    const tasks = [{ title: "Check it", agent: "claude", kind: "review", task: "Review it." }];
+    const { workflow } = await (await call("/api/sessions/workflows", { cwd: home, tasks })).json();
+    assert.equal((await call(`/api/sessions/workflows/${workflow.id}/run`, {})).status, 400);
+    assert.equal(started.length, 0);
+    // Updated: picked again.
+    claude = { agent: "claude", installed: true, signedIn: true, compatibility: { status: "available", version: "2.1.296" } };
+    assert.equal((await call(`/api/sessions/workflows/${workflow.id}/run`, {})).status, 200);
+    await waitFor(() => started.length === 1);
+    assert.equal(started[0].agent, "claude");
+  } finally {
+    reach.server.close();
+    await reach.close?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,5 @@
 import { fail, isPlainRecord, hasReviewControls } from "./core.mjs";
-import { describeScreen } from "./agent-desktop.mjs";
+import { controlLine, describeScreen, screenActionHint } from "./agent-desktop.mjs";
 
 const words = value => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 export function observationOptions(value = {}) {
@@ -51,17 +51,132 @@ export async function waitForScreen({ read, changed, authorize, wanted, now = Da
   }
 }
 
+// After an action or an open, the screen an agent gets back is the one the
+// action made, not the one before it: Reach waits until the front window has
+// been still for one short window (no accessibility change), then reads it
+// once. Bounded: about a second after an action, three after opening an app,
+// a page or a file (a page still loading, its Stop button showing, is waited
+// for within that). The same on a Mac and on Windows: the helper's
+// wait-change where it has one (no reads, so no snapshot spent), else reads
+// compared by what they show. Waiting stops at `capMs`; finishing a native
+// read may extend total elapsed time. Authorized on every round; an explicit
+// waitFor replaces it.
+export const SETTLE = { actMs: 1000, openMs: 3000, openMinMs: 800, quietMs: 300, refreshMs: 600 };
+const loading = (screen) => (screen?.items || []).some((item) => item.role === "Button" && /^stop\b/i.test(String(item.name || "")));
+const shown = (screen) => JSON.stringify([screen?.app, screen?.title, (screen?.items || []).map((item) => [item.role, item.name, item.value]), (screen?.texts || []).map((line) => line.text)]);
+export async function settleScreen({ read, changed, authorize, capMs, minMs = 0, quietMs = SETTLE.quietMs, now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  const start = now(), end = start + capMs;
+  let revision, moved = false, fresh = false, screen = null, last = null, watch = changed, readAt = -Infinity;
+  const still = () => moved || now() - start >= minMs;
+  while (now() < end) {
+    authorize();
+    if (watch) {
+      let result;
+      // A helper that can't wait for changes (an older one, or one that
+      // refuses): reads compared by what they show, as with no signal at
+      // all. A read refused is said as any refusal is.
+      try { result = await watch(revision, Math.max(1, Math.min(quietMs, end - now()))); } catch { watch = null; continue; }
+      authorize();
+      if (Number.isSafeInteger(result?.revision)) revision = result.revision;
+      if (result?.changed) { moved = true; fresh = false; continue; }
+      // Apps do not always emit an accessibility notification when loading
+      // finishes. Recheck a loading screen occasionally even without one.
+      if (!still() || (screen && fresh && now() - readAt < SETTLE.refreshMs)) continue;
+      screen = await read();
+      readAt = now();
+      fresh = true;
+      authorize();
+      // A page still loading: its changes are coming, within the cap.
+      if (loading(screen) && now() < end) continue;
+      break;
+    }
+    const next = await read();
+    readAt = now();
+    authorize();
+    const seen = shown(next);
+    if (last !== null && seen !== last) moved = true;
+    const settled = last !== null && seen === last && still() && !loading(next);
+    screen = next;
+    last = seen;
+    if (settled) break;
+    await sleep(Math.max(0, Math.min(quietMs, end - now())));
+  }
+  // If the deadline follows a change or a fallback sleep, the previous
+  // read is no longer current. The caller must receive a fresh observation,
+  // including when a page stopped loading without an AX notification.
+  if (screen && now() >= end && readAt < end && (!fresh || loading(screen) || !watch)) {
+    authorize();
+    screen = await read();
+    authorize();
+  }
+  return { screen, settledMs: now() - start };
+}
+
+// What changed on the screen since the agent last saw it whole (Oct 12:
+// "send only what changed"): controls new (+), changed (~) or gone (-), and
+// text that came (+) or went (-), each line as the whole text shows it. A
+// control whose number moved counts as changed, so every control not listed
+// keeps its number in the new snapshot, which the list names: an element is
+// still clicked by snapshot and number, checked by the Mac as ever. The
+// whole text instead on the first look, another window or page (its title),
+// after CHANGES_MS, when asked (full), or when the list would be more than
+// CHANGES_SHARE of the whole text.
+export const CHANGES_MS = 5 * 60_000;
+export const CHANGES_SHARE = 0.5;
+export const observationGrant = client => JSON.stringify([client.id, client.expiresAt, client.scopes, client.policy]);
+const textLine = (line) => (line.heading ? `# ${line.text}` : line.text);
+const keyed = (items) => {
+  const seen = new Map();
+  return new Map(items.map((item) => {
+    const base = item.ref || JSON.stringify([item.role, item.name, item.context || ""]);
+    const count = seen.get(base) || 0;
+    seen.set(base, count + 1);
+    return [count ? `${base}#${count}` : base, item];
+  }));
+};
+const shownAs = (item) => JSON.stringify([item.n, item.role, item.name, item.value ?? "", item.context ?? "", item.secure === true]);
+const tally = (texts) => {
+  const counts = new Map();
+  for (const line of texts) counts.set(textLine(line), (counts.get(textLine(line)) || 0) + 1);
+  return counts;
+};
+export function screenChanges(before, screen) {
+  const old = keyed(before.items || []), current = keyed(screen.items || []);
+  const lines = [];
+  for (const [key, item] of current)
+    if (!old.has(key)) lines.push(`+ ${controlLine(item)}`);
+    else if (shownAs(old.get(key)) !== shownAs(item)) lines.push(`~ ${controlLine(item)}`);
+  for (const [key, item] of old) if (!current.has(key)) lines.push(`- ${controlLine(item)}`);
+  const was = tally(before.texts || []), now = tally(screen.texts || []);
+  for (const [line, count] of now) for (let i = was.get(line) || 0; i < count; i++) lines.push(`+ ${line}`);
+  for (const [line, count] of was) for (let i = now.get(line) || 0; i < count; i++) lines.push(`- ${line}`);
+  const click = screenActionHint(screen);
+  return [`${screen.app || ""}${screen.title ? ` — ${screen.title}` : ""}`,
+    lines.length ? `Changed since your last look; the rest is as it was, numbers included. ${click}` : `Nothing changed since your last look. ${click}`,
+    ...lines].join("\n") + (screen.truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
+}
+
 // Bounded, per-invitation history. A changed grant discards prior content.
 // Fresh reads always perform live authorization; deltas never authorize input.
-export function createObservations() {
+// `mode.changes`: answer with what changed since the agent's last whole look
+// (after acting); `mode.full` asks for the whole text anyway.
+export function createObservations({ now = Date.now } = {}) {
   const clients = new Map();
-  return (client, screen, raw = {}) => {
-    const options = observationOptions(raw);
-    const fingerprint = JSON.stringify([client.expiresAt, client.scopes, client.policy]);
+  const entryOf = (client) => {
+    const fingerprint = observationGrant(client);
     let entry = clients.get(client.id);
-    if (!entry || entry.fingerprint !== fingerprint) entry = { fingerprint, snapshots: new Map() };
+    if (!entry || entry.fingerprint !== fingerprint) entry = { fingerprint, snapshots: new Map(), seen: null };
     clients.delete(client.id); clients.set(client.id, entry);
     while (clients.size > 64) clients.delete(clients.keys().next().value);
+    return entry;
+  };
+  // What the agent now has of this screen, whole; only that is a baseline.
+  const baseline = (screen) => ({ at: now(), snapshot: screen.snapshot, app: screen.app, title: screen.title, windowRef: screen.windowRef, displayId: screen.displayId,
+    items: structuredClone(screen.items || []), texts: structuredClone(screen.texts || []) });
+  const observe = (client, screen, raw = {}, mode = {}) => {
+    const options = observationOptions(raw);
+    const entry = entryOf(client);
     const previous = entry.snapshots.get(options.sinceSnapshot);
     const compatible = previous && Date.now() - previous.savedAt <= 60000 && previous.app === screen.app && previous.title === screen.title && previous.windowRef === screen.windowRef && previous.displayId === screen.displayId;
     const scoped = item => (!options.within || words(item.context).includes(words(options.within))) &&
@@ -90,9 +205,30 @@ export function createObservations() {
     const lead = options.sinceSnapshot ? (compatible
       ? `Changes since ${options.sinceSnapshot}.${result.removed?.length ? " Removed: " + result.removed.map(item => item.ref || item.name || item.text).join(", ") : ""}\n`
       : "Previous snapshot unavailable or context changed; full observation follows.\n") : "";
-    const description = lead + describeScreen(result);
-    result.text = description.length <= max ? description : description.slice(0, max - 70).replace(/\n[^\n]*$/, "") + "\n… output limited; narrow query/within or increase maxChars.";
-    result.outputTruncated = description.length > max;
+    // Measure the complete description before limiting it. The formatter's
+    // own default cap otherwise hides truncation and seeds deltas from
+    // controls the agent never received.
+    const description = lead + describeScreen(result, { truncate: false });
+    // Only what changed, against the last whole look of this same window.
+    const whole = !options.query && !options.within && !options.sinceSnapshot;
+    const seen = entry.seen;
+    const comparable = mode.changes && !mode.full && whole && seen && now() - seen.at <= CHANGES_MS && seen.app === screen.app && seen.title === screen.title &&
+      seen.windowRef === screen.windowRef && seen.displayId === screen.displayId;
+    const changed = comparable ? screenChanges(seen, screen) : null;
+    const text = changed !== null && changed.length <= CHANGES_SHARE * description.length ? changed : description;
+    result.text = text.length <= max ? text : text.slice(0, max - 70).replace(/\n[^\n]*$/, "") + "\n… output limited; narrow query/within or increase maxChars.";
+    result.outputTruncated = text.length > max;
+    if (text === changed) {
+      result.diff = true;
+      // Tokens the agent didn't read again (about four characters each).
+      result.saved = Math.max(0, Math.ceil((description.length - text.length) / 4));
+    }
+    entry.seen = whole && !result.outputTruncated ? baseline(screen) : null;
     return result;
   };
+  // A look given whole some other way (reach_find), or a screen the agent
+  // may not have seen whole (a find that scrolled and found nothing).
+  observe.remember = (client, screen) => { entryOf(client).seen = describeScreen(screen, { truncate: false }).length <= 30000 ? baseline(screen) : null; };
+  observe.forget = (client) => { entryOf(client).seen = null; };
+  return observe;
 }

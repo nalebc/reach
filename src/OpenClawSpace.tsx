@@ -5,17 +5,17 @@ import {
   ChevronLeft,
   Clock,
   GitFork,
-  Loader2,
+  LoaderCircle,
   Lock,
   MessageSquare,
-  MoreHorizontal,
+  Ellipsis,
   RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Square,
-  Trash2,
+  Trash,
   X,
 } from "lucide-react";
 import { post, type Peer } from "./api";
@@ -30,7 +30,7 @@ import { useViewportBox } from "./useViewportBox";
 import { type AgentLogos } from "./agent-logos";
 import AgentMarkdown from "./AgentMarkdown";
 import { NeedsYouStrip, type NeedItem } from "./NeedsYou";
-import { MoveOffer } from "./MoveChat";
+import { MoveItems } from "./MoveChat";
 import type { AgentHealth, AgentSession } from "./agent-sessions";
 import { BrandCourier } from "./ReachIdentity";
 import { ClawChatCost } from "./OpenClawSpend";
@@ -41,6 +41,7 @@ import { ClawRelayAction } from "./OpenClawRelay";
 import { channelName, usePolling } from "./openclaw-polling";
 import { ClawCustomize, ClawScheduled } from "./OpenClawPages";
 import { ClawPageTop } from "./OpenClawRow";
+import { ClawTooOld } from "./OpenClawHealth";
 import "./openclaw.css";
 import { ChatCompanion } from "./ChatCompanion";
 
@@ -76,6 +77,8 @@ type Overview = {
   canStart?: boolean;
   // Installed, never set up: setup below says it, not an error.
   notSetUp?: boolean;
+  // Its Gateway is older than Reach works with: the version to update to.
+  tooOld?: { version?: string; to: string };
   // What it showed, to wait on its next change (an older Mac has none).
   version?: string;
 };
@@ -166,6 +169,7 @@ function Conversation({
   }, []);
   useViewportBox(surface, narrow);
   const [moving, setMoving] = useState(false);
+  const [forkPoint, setForkPoint] = useState<string | undefined>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const threadActions = useRef<HTMLDetailsElement>(null);
@@ -303,7 +307,7 @@ function Conversation({
         </button>
         <details className="claw-thread-actions" ref={threadActions}>
           <summary className="claw-round" aria-label="OpenClaw conversation actions">
-            <MoreHorizontal size={20} />
+            <Ellipsis size={20} />
           </summary>
           <div className="claw-thread-menu">
             {current.writable === true && (
@@ -334,15 +338,16 @@ function Conversation({
             {onOpenChat && (
               <button
                 className="claw-menu-item"
-                aria-label="Continue in another app"
+                aria-label="Fork chat…"
                 aria-expanded={moving}
                 onClick={() => {
                   closeMenu();
+                  setForkPoint(undefined);
                   setMoving(!moving);
                 }}
               >
                 <GitFork size={18} />
-                Continue in another app
+                Fork chat…
               </button>
             )}
             {!!deviceRequests && (
@@ -376,7 +381,7 @@ function Conversation({
                   }
                 }}
               >
-                {deleting === "busy" ? <Loader2 size={17} className="spin" /> : <Trash2 size={17} />}
+                {deleting === "busy" ? <LoaderCircle size={17} className="spin" /> : <Trash size={17} />}
                 {deleting ? "Tap again to delete" : "Delete chat"}
               </button>
             )}
@@ -402,11 +407,14 @@ function Conversation({
       )}
       {moving && onOpenChat && (
         <div className="claw-move">
-          <MoveOffer
+          <MoveItems
             peer={peer}
-            session={{ agent: "openclaw", id: current.key, title: current.title }}
+            session={{ agent: "openclaw", id: current.key, title: current.title, through: forkPoint }}
             health={health}
             logos={logos}
+            open
+            onOpen={() => setMoving(true)}
+            onBack={() => setMoving(false)}
             onMoved={onOpenChat}
           />
         </div>
@@ -421,7 +429,7 @@ function Conversation({
       >
         {!data && !error && (
           <p className="claw-note" role="status">
-            <Loader2 size={13} className="spin" />
+            <LoaderCircle size={13} className="spin" />
             Loading…
           </p>
         )}
@@ -452,6 +460,7 @@ function Conversation({
             >
               {item.role !== "user" && item.role !== "assistant" && <small>System</small>}
               <AgentMarkdown text={item.text} />
+              {onOpenChat && <button className="claw-text-button" aria-label="Fork from here" onClick={() => { setForkPoint(item.id); setMoving(true); scroll.current?.scrollTo?.({ top: 0 }); }}><GitFork size={14} /> Fork from here</button>}
               {item.sentTo && <small className="claw-sent">Sent to {channelName(item.sentTo)}</small>}
               {item.role === "assistant" && (
                 <ClawRelayAction
@@ -545,7 +554,7 @@ function Conversation({
               aria-label="Send to OpenClaw"
               disabled={!text.trim() || busy || unsettled || !!error || !data}
             >
-              {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={18} strokeWidth={2.4} />}
+              {busy ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={18} strokeWidth={2.4} />}
             </button>
           )}
         </form>
@@ -722,7 +731,17 @@ export default function OpenClawSpace({
                 )}
               </label>
             </div>
-            {(error || (data?.error && !data.notSetUp)) && (
+            {data?.tooOld && !error && (
+              <ClawTooOld
+                peer={peer}
+                to={data.tooOld.to}
+                onChanged={() => {
+                  reload();
+                  onDiscover?.();
+                }}
+              />
+            )}
+            {(error || (data?.error && !data.notSetUp && !data.tooOld)) && (
               <div className="claw-connection-error" role="alert">
                 <p className="claw-error">{error || data?.error}</p>
                 <button className="claw-button" onClick={reload}>Retry connection</button>
@@ -745,7 +764,7 @@ export default function OpenClawSpace({
                   }
                 }}
               >
-                {starting ? <Loader2 size={14} className="spin" /> : null}
+                {starting ? <LoaderCircle size={14} className="spin" /> : null}
                 {starting ? "Starting OpenClaw…" : `Start OpenClaw on ${peer.name}`}
               </button>
             )}
@@ -757,7 +776,7 @@ export default function OpenClawSpace({
             )}
             {!data && !error && (
               <p className="claw-note" role="status">
-                <Loader2 size={14} className="spin" />
+                <LoaderCircle size={14} className="spin" />
                 Finding OpenClaw on {peer.name}…
               </p>
             )}
@@ -794,7 +813,7 @@ export default function OpenClawSpace({
                           </span>
                           <span className="claw-chat-tail">
                             {s.status === "running" ? (
-                              <Loader2 size={15} className="spin" aria-label="Working" />
+                              <LoaderCircle size={15} className="spin" aria-label="Working" />
                             ) : s.status === "waiting" ? (
                               <span className="claw-chat-dot" aria-label="Needs you" />
                             ) : null}

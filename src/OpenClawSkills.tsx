@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import { computerWord } from "./pause";
 import { OpenSetup } from "./OpenClawSetup";
@@ -125,7 +125,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
       )}
       {!data && !error && (
         <p className="claw-note" role="status">
-          <Loader2 size={14} className="spin" />
+          <LoaderCircle size={14} className="spin" />
           Loading skills…
         </p>
       )}
@@ -180,7 +180,7 @@ export function ClawSkills({ peer, query, refresh }: { peer: Peer; query: string
                         <p className={`claw-skill-job ${job.status}`} role="status">
                           {job.status === "running" ? (
                             <>
-                              <Loader2 size={12} className="spin" /> Installing…
+                              <LoaderCircle size={12} className="spin" /> Installing…
                             </>
                           ) : job.status === "done" ? (
                             job.flagged ? "Installed · OpenClaw flagged its code" : "Installed"
@@ -286,7 +286,7 @@ function KeyField({ peer, skill, envName, onSaved }: { peer: Peer; skill: Skill;
         onChange={(e) => setValue(e.target.value)}
       />
       <button type="submit" className="claw-skill-chip" disabled={busy || !value.trim()}>
-        {busy ? <Loader2 size={12} className="spin" /> : null}
+        {busy ? <LoaderCircle size={12} className="spin" /> : null}
         Save
       </button>
       {problem && (
@@ -320,7 +320,7 @@ function SkillValues({ peer, skill, onSaved }: { peer: Peer; skill: Skill; onSav
       onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))} /></label>)}
     <p className="claw-note">Saved to OpenClaw on your computer. Existing values are never shown here.</p>
     <button type="submit" className="claw-skill-chip" disabled={busy || !names.every((name) => values[name]?.trim())}>
-      {busy && <Loader2 size={12} className="spin" />}Save settings
+      {busy && <LoaderCircle size={12} className="spin" />}Save settings
     </button>
     {problem && <p className="claw-error" role="alert">{problem}</p>}
   </form>;
@@ -378,7 +378,7 @@ function SafetyCheck({
         )}
         {!check && !error && (
           <p className="claw-note" role="status">
-            <Loader2 size={14} className="spin" /> Checking…
+            <LoaderCircle size={14} className="spin" /> Checking…
           </p>
         )}
         {check && (
@@ -459,7 +459,7 @@ function SafetyCheck({
                   }
                 }}
               >
-                {busy ? <Loader2 size={14} className="spin" /> : null}
+                {busy ? <LoaderCircle size={14} className="spin" /> : null}
                 {strong ? "Install anyway" : "Yes, install"}
               </button>
             ) : (

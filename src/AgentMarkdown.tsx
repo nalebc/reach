@@ -31,19 +31,58 @@ function SessionLink({ id, children }: { id: string; children: ReactNode }) {
 // headings and tables. Rendered as React elements only; nothing becomes HTML.
 // Secure web links open in a new tab, as in both apps; any other link (plain
 // http, a file path, a relative address that would land inside Reach) shows
-// only its text.
+// only its text. A bare https address is a link too (agents paste PR and run
+// addresses as they are, Oct 13): sentence punctuation after it stays out.
+function bareLink(url: string): [string, string] {
+  let end = url.length;
+  const opens = (u: string) => (u.match(/\(/g) || []).length;
+  const closes = (u: string) => (u.match(/\)/g) || []).length;
+  while (end > 8) {
+    const head = url.slice(0, end);
+    const c = head[end - 1];
+    if (".,;:!?'\"".includes(c) || (c === ")" && closes(head) > opens(head))) end--;
+    else break;
+  }
+  return [url.slice(0, end), url.slice(end)];
+}
+// A secure web address as an href, re-encoded (a well-formed one comes back
+// the same; anything odd is escaped), or null when it isn't one.
+function webHref(url: string): string | null {
+  if (!/^https:\/\/[^\s"<>]+$/i.test(url)) return null;
+  try {
+    return encodeURI(decodeURI(url));
+  } catch {
+    return null;
+  }
+}
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+  const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)|<(https:\/\/[^\s<>]+)>|(https:\/\/[^\s<>"'`]+)/gi;
   let last = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index! > last) out.push(text.slice(last, match.index));
     const k = `${key}-${match.index}`;
+    last = match.index! + match[0].length;
     if (match[1] !== undefined) out.push(<code key={k}>{match[1]}</code>);
-    else if (match[2] !== undefined) out.push(<strong key={k}>{match[2]}</strong>);
-    else if (/^https:\/\/[^\s"<>]+$/i.test(match[4]))
+    else if (match[2] !== undefined) out.push(<strong key={k}>{inline(match[2], k)}</strong>);
+    else if (match[5] !== undefined || match[6] !== undefined) {
+      const [url, after] = match[5] !== undefined ? [match[5], ""] : bareLink(match[6]);
+      const href = webHref(url);
       out.push(
-        <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
+        href ? (
+          <a key={k} href={href} target="_blank" rel="noopener noreferrer">
+            {url}
+          </a>
+        ) : (
+          url
+        ),
+      );
+      if (after) out.push(after);
+      continue;
+    }
+    else if (webHref(match[4]))
+      out.push(
+        <a key={k} href={webHref(match[4])!} target="_blank" rel="noopener noreferrer">
           {match[3]}
         </a>,
       );
@@ -54,7 +93,6 @@ function inline(text: string, key: string): ReactNode[] {
         </SessionLink>,
       );
     else out.push(<u key={k}>{match[3]}</u>);
-    last = match.index! + match[0].length;
   }
   if (last < text.length) out.push(text.slice(last));
   return out;

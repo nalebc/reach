@@ -1,18 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import { RemoteBroadcast } from "../server/remote-screen.mjs";
 const source = await fs.readFile(
   new URL("../src/desktop-input-queue.ts", import.meta.url),
   "utf8",
 );
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-  },
-});
+const outputText = transpile(source);
 const { DesktopInputQueue } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

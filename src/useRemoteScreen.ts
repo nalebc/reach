@@ -15,6 +15,22 @@ const lastMinute = (times: number[], now: number) => [
   ...times.filter((at) => now - at < 60000),
   now,
 ];
+// How far each stream has stepped down, for as long as this page lives: a
+// computer's stream that made this phone's decoder fail starts at the
+// smaller size next time (the Screen tab reopened, Reconnect), instead of
+// climbing back into the same failures (Oct 12).
+const steppedDown = new Map<string, number>();
+// A new page forgets them (and so do tests).
+export const forgetStepDowns = () => steppedDown.clear();
+// The widest picture a phone starts with. Its full width (2868 px on a
+// 440 × 956 pt phone at 3×) made a 2868×1862 H.264 stream (level 5.2) whose
+// decoder failed every 10–25 s on the owner's iPhone, a hitch each time; a
+// phone shows about 2000 px across even on its side, so 1920 loses little.
+// Tablets and computers keep their full width.
+export const PHONE_START_WIDTH = 1920;
+const phoneScreen = () =>
+  Math.min(window.screen?.width || 0, window.screen?.height || 0) > 0 &&
+  Math.min(window.screen.width, window.screen.height) <= 500;
 export function useRemoteScreen(
   peer: Peer,
   enabled: boolean,
@@ -85,15 +101,25 @@ export function useRemoteScreen(
   // only a steady run of them gives up on video.
   const hiccups = useRef<number[]>([]);
   // Steps down from this phone's full resolution, only if its decoder can't
-  // keep up.
-  const [step, setStep] = useState(0);
+  // keep up; remembered for this stream while the page lives.
+  const streamKey = JSON.stringify([peer.url, display, quality, thread ?? ""]);
+  const [step, setStep] = useState(() => steppedDown.get(streamKey) ?? 0);
+  // A step down reconnects at the smaller size: the last picture stays as
+  // it is (not dimmed, no "Reconnecting…") while the new stream starts.
+  const quietRestart = useRef(false);
+  const stepDown = (from: number) => {
+    const next = Math.min(2, from + 1);
+    steppedDown.set(streamKey, next);
+    quietRestart.current = true;
+    setStep(next);
+  };
   useEffect(() => {
     retry.current.reset();
     codecFailures.current = [];
     hiccups.current = [];
     setFallback(false);
     setFallbackReason("");
-    setStep(0);
+    setStep(steppedDown.get(streamKey) ?? 0);
   }, [peer.url, peer.token, display, quality, revision, compatibility, thread]);
   useEffect(() => {
     if (!enabled || !live) {
@@ -153,7 +179,17 @@ export function useRemoteScreen(
       drawnHeight = 0,
       watchdog: ReturnType<typeof setTimeout>;
 
-    if (shown.current === source) {
+    // A planned step down: the picture stays crisp and usable; only if the
+    // smaller stream is slow to come does the screen say it's reconnecting.
+    const quiet = quietRestart.current && shown.current === source;
+    quietRestart.current = false;
+    let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    if (quiet) {
+      quietTimer = setTimeout(
+        () => setState((s) => ({ ...s, connecting: true })),
+        2500,
+      );
+    } else if (shown.current === source) {
       holdFrame();
       setState((s) => ({
         ...s,
@@ -264,6 +300,7 @@ export function useRemoteScreen(
       shown.current = source;
       lost.current = null;
       clearHold();
+      clearTimeout(quietTimer);
       // The computer sends a real frame at least every second, even when
       // nothing changed: 10 s of silence means the connection is gone.
       deadline(10000);
@@ -360,7 +397,7 @@ export function useRemoteScreen(
       if (giveUp) fail(error, true, true);
       else if (smaller) {
         hiccups.current = [];
-        setStep((n) => n + 1);
+        stepDown(step);
       }
     };
     const metrics = setInterval(() => {
@@ -386,7 +423,8 @@ export function useRemoteScreen(
         Math.max(window.screen?.width || 0, window.screen?.height || 0) *
           (window.devicePixelRatio || 1),
       );
-      const maxWidth = Math.round(full * 0.75 ** step);
+      const start = phoneScreen() ? Math.min(full, PHONE_START_WIDTH) : full;
+      const maxWidth = Math.round(start * 0.75 ** step);
       socket.send(
         JSON.stringify({
           type: "auth",
@@ -530,7 +568,7 @@ export function useRemoteScreen(
         if (decoder.decodeQueueSize > (decoded ? 4 : 60)) {
           if (++backlogs >= 3 && step < 2) {
             report(`decoder falling behind at ${meta.width}×${meta.height}`);
-            setStep((n) => n + 1);
+            stepDown(step);
           }
           decoder.reset();
           configured = "";
@@ -609,6 +647,7 @@ export function useRemoteScreen(
       painter.stop();
       socket.close();
       if (decoder && decoder.state !== "closed") decoder.close();
+      clearTimeout(quietTimer);
     };
   }, [
     peer.url,
