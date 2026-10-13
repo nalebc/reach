@@ -20,3 +20,13 @@ paths = ['''^test/''']
 [[allowlists]]
 description = "Synthetic key shapes in the OpenClaw scrubbing tests"
 paths = ['''^test/openclaw-health\.test\.mjs$''']
+
+# Benchmark evidence records each source file's SHA-256 under the file's
+# name ("browser-access.mjs": "<64 hex>"), which the heuristic rule reads as
+# a key. Only that rule, only there, and only for a bare SHA-256.
+[[allowlists]]
+description = "SHA-256 checksums of source files in benchmark evidence"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^docs/benchmarks/[^/]+\.json$''']
+regexes = ['''^[0-9a-f]{64}$''']
