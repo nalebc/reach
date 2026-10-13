@@ -16,6 +16,7 @@ import {
   faceIdReady,
   sameComputer,
   signWithFaceId,
+  unlockWords,
   type FaceOptions,
 } from "./passkeys";
 import { scopeLabel } from "./scope-words";
@@ -188,6 +189,8 @@ export function AgentAdmissionReview({
   const [finished, setFinished] = useState(false);
   const [codeMatches, setCodeMatches] = useState(false);
   const pending = useRef(false);
+  // The phone's own word for it (Settings → Agents names it the same).
+  const said = unlockWords();
   const expired = admission.expiresAt <= now || finished;
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -227,7 +230,7 @@ export function AgentAdmissionReview({
         if (!live) return;
         // No Face ID on the computer anymore: the code alone approves.
         if (e.status === 404) setFaceRequired(false);
-        else setError(e.message || "Face ID isn't ready. Try again.");
+        else setError(e.message || `${said.Word} isn't ready. Try again.`);
       },
     );
     return () => {
@@ -243,7 +246,7 @@ export function AgentAdmissionReview({
         ? signWithFaceId(faceOptions)
         : null;
     if (decision === "approve" && faceRequired && !answer) {
-      setError("Face ID isn't ready yet. Try again.");
+      setError(`${said.Word} isn't ready yet. Try again.`);
       setFaceAttempt((n) => n + 1);
       return;
     }
@@ -272,7 +275,7 @@ export function AgentAdmissionReview({
       const faceIdFailed =
         !!answer && (!err.status || err.status === 400 || err.status === 401);
       setError(
-        faceIdFailed ? err.body?.error || faceIdError(err) : err.message,
+        faceIdFailed ? err.body?.error || faceIdError(err, said) : err.message,
       );
       if (!faceIdFailed && [401, 404, 409, 410].includes(err.status || 0))
         setFinished(true);
@@ -716,7 +719,7 @@ export function AgentAdmissionReview({
         {faceRequired && !expired && (
           <p className="admission-faceid">
             <ScanFace size={14} aria-hidden="true" />
-            Face ID confirms approvals
+            {said.title} confirms approvals
           </p>
         )}
         <div className="agent-admission-actions">
@@ -735,7 +738,7 @@ export function AgentAdmissionReview({
             {busy
               ? "Responding…"
               : faceRequired
-                ? "Approve with Face ID"
+                ? `Approve with ${said.word}`
                 : "Approve connection"}
           </button>
         </div>

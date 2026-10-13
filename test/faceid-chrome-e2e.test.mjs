@@ -265,6 +265,15 @@ test(
         `${what} didn't happen. The page says: ${JSON.stringify(await text())}; its errors: ${JSON.stringify(tab.problems)}`,
       );
     };
+    // The same, for something on this side (what Reach was asked).
+    const until = async (what, check, ms = 15000) => {
+      const deadline = Date.now() + ms;
+      while (!check()) {
+        if (Date.now() > deadline)
+          throw Error(`${what} didn't happen. Reach got: ${serve.seen.join(", ")}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
     const find = (label) =>
       `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} || b.getAttribute("aria-label") === ${JSON.stringify(label)})`;
     // A finger's tap, at the button: a real user gesture.
@@ -286,14 +295,20 @@ test(
 
     // Settings → Face ID: add this phone's.
     await open();
-    await waitFor("the add button, ready", `(() => { const b = ${find("Use Face ID")}; return !!b && !b.disabled; })()`);
-    assert.match(await text(), /Face ID/);
+    await waitFor("the add button", `!!${find("Use Face ID")}`);
+    // What it's for, said on the page in this phone's words.
+    assert.match(
+      await text(),
+      /A new browser of yours \(another browser on this iPhone, or a new one with your passkeys\) signs in with Face ID instead of a code at your Mac\. Agents & people can require it to approve agents\./,
+    );
+    // Its challenge comes before the tap (Safari shows Face ID from a tap only).
+    const challenges = () => serve.seen.filter((r) => r === "POST /api/auth/passkeys/options").length;
+    await until("the challenge", () => challenges() === 1);
     await tap("Use Face ID");
     await waitFor(
       "the add finishing",
-      `(() => !${find("Use Face ID")} || /Added|Last used|isn't|didn't|refused|Try again|cancelled|attempt/i.test(document.body.innerText))()`,
+      `/Added\\. |can't|isn't|didn't|refused|Try again|cancelled|attempt|expired/i.test(document.body.innerText)`,
     );
-    await new Promise((r) => setTimeout(r, 300));
     assert.equal(
       saved().length,
       1,
@@ -311,8 +326,19 @@ test(
     assert.equal(key.backupEligible, true, "a synced passkey: backup eligible");
     assert.equal(key.alg, -7);
     assert.deepEqual(key.transports, ["internal"]);
-    await waitFor("its row", `/iPhone/.test(document.body.innerText) && /Added/.test(document.body.innerText)`);
+    // On: its row, checked, added today; and the line says what changed.
+    await waitFor("its row", `/iPhone\\s*Added today/.test(document.body.innerText)`);
+    assert.equal(await tab.evaluate(`!!document.querySelector(".faceid-on")`), true, "the green check");
+    assert.match(await text(), /Added\. New browsers of yours can sign in with Face ID now\./);
+    assert.ok(logged.includes("Reach: Face ID added (iPhone)."), logged.join("\n"));
     assert.ok(!logged.some((l) => /Face ID not added/.test(l)), logged.join("\n"));
+    // Again from the same phone: its passkey is already there, and it says so.
+    await waitFor("the next challenge", `!!${find("Add Face ID on this iPhone")}`);
+    await until("the next challenge, once the answer was in", () => challenges() === 2);
+    await tap("Add Face ID on this iPhone");
+    await waitFor("its answer", `/already added/.test(document.body.innerText)`);
+    assert.match(await text(), /This iPhone's Face ID is already added\./);
+    assert.equal(saved().length, 1);
 
     // What it's for: a new browser of yours (another browser on this phone,
     // a new phone with your synced passkeys) signs in with it instead of a
@@ -325,26 +351,29 @@ test(
       const credential = await window.__signWithFaceId(options.json);
       const used = await call("/api/auth/requests/" + asked.json.id + "/passkey", { secret: asked.json.secret, credential });
       const polled = await call("/api/auth/requests/" + asked.json.id, { secret: asked.json.secret });
-      return { offered: asked.json.passkey, used: used.status, error: used.json.error, status: polled.json.status, token: !!polled.json.token };
+      return { offered: asked.json.passkey, used: used.status, error: used.json.error || "", status: polled.json.status, token: !!polled.json.token };
     })()`);
     serve.from.ip = PHONE;
-    assert.deepEqual(signIn, { offered: true, used: 200, error: undefined, status: "approved", token: true });
+    assert.deepEqual(signIn, { offered: true, used: 200, error: "", status: "approved", token: true });
 
     // Settings → Agents: the switch, on with a tap, off with Face ID.
     const agents = (on) => `(() => { const s = document.querySelector('[role="switch"]'); return !!s && s.getAttribute("aria-checked") === "${on}"; })()`;
     await open("?agents");
     await waitFor("the switch", agents(false));
     const switchName = await tab.evaluate(`document.querySelector('[role="switch"]').getAttribute("aria-label")`);
+    assert.equal(switchName, "Face ID confirms approvals");
     await tap(switchName);
     await waitFor("on", agents(true));
     // Its Face ID challenge comes before the tap.
-    await new Promise((r) => setTimeout(r, 500));
+    const asked = () => serve.seen.filter((r) => r === "POST /api/settings/passkey/options").length;
+    await until("the switch's challenge", () => asked() === 1);
     await tap(switchName);
     await waitFor("off with Face ID", `${agents(false)} || !!document.querySelector(".gs-foot")`);
     assert.equal(
       await tab.evaluate(agents(false)),
       true,
-      `still on. The page says: ${JSON.stringify(await text())}`,
+      `still on. The page says: ${JSON.stringify(await text())}; Reach got: ${serve.seen.slice(-6).join(", ")}`,
     );
+    assert.equal(asked(), 1, "no new challenge while Face ID was up");
   },
 );

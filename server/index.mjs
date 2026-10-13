@@ -269,6 +269,18 @@ export async function createReach(overrides = {}) {
     return client;
   };
   const settingBinding = (client) => `setting:faceIdForAgents:${client.id}`;
+  // A Face ID answer checked on a signed-in route (the setting, an agent's
+  // approval): refused, its 401 is marked so its reason ("for an earlier
+  // attempt", "took too long"…) reaches the phone, not the routes' usual
+  // "Access expired or was revoked.".
+  const faceIdAnswer = (check) => {
+    try {
+      return check();
+    } catch (e) {
+      if (e?.status === 401) e.passkey = true;
+      throw e;
+    }
+  };
   let privateServer, privateSocket;
   const approvalCleanup = approvals
     ? setInterval(() => approvals.list(), 30000)
@@ -1558,22 +1570,47 @@ export async function createReach(overrides = {}) {
     ownDevice(req);
     res.json({ passkeys: passkeys.list() });
   });
+  // A refused add says why, in Reach's terminal and in the security record,
+  // never with anything of the answer itself: the owner's adds were refused
+  // for days with nothing said on the Mac (Oct 13). The same reason again
+  // within 10 s is said once.
+  let refusedAdd = { line: "", at: 0 };
+  const notAdded = (e) => {
+    const line = `Face ID not added: ${e?.status ? e.message : `Reach couldn't check it (${e?.name || "an error"} on this computer).`}`;
+    if (line !== refusedAdd.line || Date.now() - refusedAdd.at > 10000) {
+      console.log(`Reach: ${line}`);
+      record("security", line);
+    }
+    refusedAdd = { line, at: Date.now() };
+  };
   app.post("/api/auth/passkeys/options", (req, res) => {
-    const client = ownDevice(req);
-    res.json(
-      passkeys.registrationOptions(
-        client.id,
-        req.reachIdentity.login || config.tailscaleOwner.login,
-      ),
-    );
+    try {
+      const client = ownDevice(req);
+      res.json(
+        passkeys.registrationOptions(
+          client.id,
+          req.reachIdentity.login || config.tailscaleOwner.login,
+        ),
+      );
+    } catch (e) {
+      notAdded(e);
+      throw e;
+    }
   });
   app.post("/api/auth/passkeys", (req, res) => {
-    const client = ownDevice(req);
-    const added = passkeys.register(
-      client.id,
-      req.body?.credential,
-      req.body?.label,
-    );
+    let added;
+    try {
+      const client = ownDevice(req);
+      added = passkeys.register(
+        client.id,
+        req.body?.credential,
+        req.body?.label,
+      );
+    } catch (e) {
+      notAdded(e);
+      throw e;
+    }
+    console.log(`Reach: Face ID added (${added.label}).`);
     record("security", `Face ID added (${added.label})`);
     res.status(201).json(added);
   });
@@ -1976,7 +2013,13 @@ export async function createReach(overrides = {}) {
     res.json = (body) => {
       if (res.statusCode < 400 && !stillAllowed(verify(req, credential)))
         res.status(401);
-      if (res.statusCode === 401)
+      // A refused Face ID answer keeps its own reason while the credential
+      // is still good (faceIdAnswer): said as "Access expired or was
+      // revoked.", it read on the phone as its own access gone (Oct 13).
+      if (
+        res.statusCode === 401 &&
+        !(body?.passkey === true && stillAllowed(verify(req, credential)))
+      )
         return json({
           error: "Access expired or was revoked.",
         });
@@ -2106,7 +2149,7 @@ export async function createReach(overrides = {}) {
       let faceId = null;
       if (body.credential !== undefined) {
         if (!passkeys?.has()) throw fail(404, "Face ID isn't set up on this computer.");
-        faceId = passkeys.verifyAssertion(settingBinding(client), body.credential);
+        faceId = faceIdAnswer(() => passkeys.verifyAssertion(settingBinding(client), body.credential));
       } else if (!body.faceIdForAgents && faceIdForAgents())
         throw fail(403, "Face ID turns this off. Use the phone that has it.");
       settings.faceIdForAgents = body.faceIdForAgents;
@@ -2374,7 +2417,7 @@ export async function createReach(overrides = {}) {
     let faceId = null;
     if (body.credential !== undefined) {
       const binding = admissionBinding(req, faceIdOwner(req));
-      faceId = passkeys.verifyAssertion(binding, body.credential);
+      faceId = faceIdAnswer(() => passkeys.verifyAssertion(binding, body.credential));
     }
     if (!faceId && body.decision === "approve" && faceIdForAgents())
       throw fail(403, "Face ID confirms agent approvals on this computer. Approve with Face ID on your phone, or turn it off in Settings → Agents.");
@@ -4816,6 +4859,8 @@ export async function createReach(overrides = {}) {
                     ? "This file is open in another program. Close it there, then try again."
                     : "Could not complete this action. Check the companion console.",
         ...(error.canNarrowDefault === true ? { canNarrowDefault: true } : {}),
+        // A refused Face ID answer: its reason stays (faceIdAnswer).
+        ...(error.passkey === true ? { passkey: true } : {}),
         // A person waiting for the owner's Allow: their page waits too.
         ...(error.waiting === true ? { waiting: true } : {}),
         // An agent held off while you use the Mac: who, and when to look again.
