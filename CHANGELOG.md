@@ -13,6 +13,17 @@ real-device checks that are still open.
 
 ### Added
 
+- The owner comes first on the screen. Input through Reach's screen from the
+  owner (or a full-access person) holds every agent off it, its looks
+  included (screenshots, describe, read, its live picture), with kind
+  `paused`, who is using it and `retryInMs`; agents get it back 2 minutes
+  after the last input through Reach, or at once from "Let them back" on the
+  quiet "Agents wait · 2 min after you stop" pill. Chats' Claude app messages
+  never wait on it. The agent's live picture shows a calm "The owner is using
+  the Mac".
+- Two fingers scroll the computer, up, down and sideways, in every touch mode
+  (pinch still zooms), and the bar has a desktop switcher while controlling:
+  previous desktop, all windows, next desktop.
 - Face ID confirms agent approvals, a switch in Settings → Agents for the
   owner's own devices once Face ID is set up on the computer. With it on,
   approving an agent's first connection on the phone asks for Face ID, and the
@@ -107,6 +118,19 @@ real-device checks that are still open.
 
 ### Fixed
 
+- Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
+  They now take the room the picture leaves (a rail at the side on a phone
+  turned sideways, rows above and below when upright), and hiding them never
+  moves the picture.
+- Taps that did nothing: every tap now reaches the computer or says why in
+  one line, a tap made while control's connection blinks goes once it is back
+  (within a second, never later), and click feedback is a small wave in Reach
+  green, shown only for a click the computer did (none while only watching).
+- The live screen on a phone hitched every 10–25 s at full size (a 2868×1862
+  stream the iPhone's decoder kept failing on). Phones start at 1920 across, a
+  step down keeps the last picture crisp, and the smaller size is remembered
+  for the session. On Windows, a sideways scroll now goes the same way as on a
+  Mac.
 - Screen sharing with a browser agent dropped for seconds at a time. The
   foreground `tailscale serve` and `tailscale funnel` processes that carried
   the routes kept exiting (124 and 65 relaunches in one day's log, through a
