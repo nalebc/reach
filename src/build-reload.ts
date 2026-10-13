@@ -6,6 +6,7 @@
 // the chat back at its end (Oct 8). The Mac's live connection says
 // which interface it serves (presence `changes.build`). Foreground checks also
 // cover restored pages and browsers whose connection uses a different port.
+import { reloadFromBase } from "./nav-history";
 let first: string | null = null;
 let waiting = false;
 let generation = 0;
@@ -49,7 +50,9 @@ export function inUse(doc: Document = document, now = Date.now()) {
   return !doc.hidden && now - touched < IDLE_MS;
 }
 function queueUpdate({
-  reload = () => location.replace(freshInterfaceUrl(location.href)),
+  // From this document's first entry (src/nav-history.ts): the new interface
+  // replaces it and no entry of the old one is left for Back to reload.
+  reload = () => reloadFromBase(() => location.replace(freshInterfaceUrl(location.href))),
   busy = () => busyHere() || inUse(),
   wait = (f) => setTimeout(f, 5000),
 }: UpdateOptions) {

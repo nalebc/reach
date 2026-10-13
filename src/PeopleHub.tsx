@@ -52,6 +52,7 @@ import { InviteChooser } from "./invite-menu";
 import "./settings-list.css";
 import "./invite-sheet.css";
 import "./people-hub.css";
+import { pushInPage } from "./nav-history";
 
 // Who can use this computer, as one short ChatGPT-style list: agents first,
 // then people, then your own devices. "+" invites; a row opens what that one
@@ -372,7 +373,7 @@ export default function PeopleHub({
       hubScroll.current = scrollerOf(hub.current)?.scrollTop || 0;
       opener.current = document.activeElement as HTMLElement | null;
     }
-    window.history.pushState({ ...window.history.state, reachPeople: next }, "");
+    pushInPage({ reachPeople: next });
     pushed.current = depth(next);
     pushing.current = true;
     setPage(next);
