@@ -81,7 +81,15 @@ export async function run(suite) {
     // One folder of native helper builds for the whole suite (named by source
     // hash, built whole or not at all), not one per test's data folder.
     builds = process.platform === "darwin" ? fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-builds-")) : null;
-    if (builds) nativeEnv.REACH_TEST_NATIVE_DIR = builds;
+    if (builds) {
+      nativeEnv.REACH_TEST_NATIVE_DIR = builds;
+      // Compiled before any test, as Reach compiles it at start: an agent's
+      // file request has 30 seconds, and a cold Intel runner took longer to
+      // compile it inside the first one (Oct 12, PR 21).
+      process.env.REACH_TEST_NATIVE_DIR = builds;
+      const { desktopBinary } = await import("../../server/desktop-native.mjs");
+      await desktopBinary({ dataDir: builds }, "browser-files");
+    }
     const child = spawn(process.execPath, args, { stdio: "inherit", env: { ...process.env, ...nativeEnv } });
     child.on("error", error => { console.error(error.message); process.exitCode = 1; });
     const code = await new Promise(resolve => child.on("close", (code, signal) => resolve(signal ? 1 : code ?? 1)));

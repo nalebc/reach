@@ -107,7 +107,7 @@ import { createNotifications, readAttention } from "./notifications.mjs";
 import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
-import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
+import { DesktopInput, desktopBinary, desktopDisplays } from "./desktop-native.mjs";
 import { prepareOwners } from "./windows-owners.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
@@ -489,6 +489,11 @@ export async function createReach(overrides = {}) {
   // (node --test) never reach for the real agents.
   if (!overrides.agentSessions && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => agentSessions.warm?.());
+  // The helper agents' file requests go through on a Mac, compiled once per
+  // version of its source: at start, not inside an agent's first request,
+  // which has 30 seconds (a cold Intel Mac compiles it for longer).
+  if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void desktopBinary(config, "browser-files").catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
