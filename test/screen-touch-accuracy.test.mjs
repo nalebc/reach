@@ -83,7 +83,7 @@ func node(_ role: String, _ frame: CGRect, _ enabled: Bool = true) -> AXUIElemen
 }
 func number(_ element: AXUIElement) -> Int { objects.firstIndex { CFEqual($0, element) }! }
 func CGDisplayBounds(_ display: CGDirectDisplayID) -> CGRect { displayBounds }
-func CGDisplayIsActive(_ display: CGDirectDisplayID) -> Int32 { 1 }
+func CGDisplayIsActive(_ display: CGDirectDisplayID) -> boolean_t { 1 }
 func AXIsProcessTrusted() -> Bool { true }
 func AXUIElementCreateSystemWide() -> AXUIElement { root }
 @discardableResult func AXUIElementSetMessagingTimeout(_ element: AXUIElement, _ seconds: Float) -> AXError { .success }
