@@ -4691,7 +4691,11 @@ export async function createReach(overrides = {}) {
     const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
     res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
   });
-  serveBuild(app, express, dist);
+  serveBuild(app, express, dist, {
+    // Its agent links' start page: the one address, without Reach's port.
+    agentStart: () => (config.publicOrigin?.startsWith("https://") ? `https://${new URL(config.publicOrigin).hostname}` : ""),
+    platform: hostPlatform,
+  });
   // A folder the Mac itself keeps from Reach (Desktop, Documents, Downloads,
   // a disk: macOS's privacy settings, per app). "Your computer has not
   // granted access" read on the phone as Reach refusing its owner (Oct 7):

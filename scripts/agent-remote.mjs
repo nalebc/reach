@@ -78,9 +78,16 @@ export function parseAgentLink(text, { allowLocal = false } = {}) {
     throw Error("This agent link is incomplete. Copy the whole link again.");
   const key = params.get("k") || "";
   const hostname = params.get("h") || "";
+  // r=: the SHA-256 of the runtime the computer named when it invited (its
+  // steps checked the download against it; join checks itself too). One
+  // that isn't a hash is a link cut short.
+  const runtime = params.get("r");
+  if (runtime !== null && !/^[0-9a-f]{64}$/.test(runtime))
+    throw Error("This agent link is incomplete. Copy the whole link again.");
   return {
     start: link.origin,
     ...invites[0],
+    ...(runtime ? { runtime } : {}),
     ...(funnel ? { funnel: true, public: link.origin, private: invites[0].origin !== link.origin ? invites[0].origin : null } : {}),
     key: /^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(key) ? key : "",
     hostname: /^rg-[a-z0-9]{4}-[a-z0-9]{10}$/.test(hostname) ? hostname : "",
@@ -928,11 +935,26 @@ export const quote = (s, platform = process.platform) =>
     : /^[\w./~-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
 
 
+// Whether this copy is the runtime its link names (r=): the second check,
+// on the agent's own machine, after its steps checked the download (security
+// audit M8). Run from source there is no one file to name, so it can't say.
+export function runtimeMismatch(link, { file = self(), bundle = isBundle() } = {}) {
+  if (!link?.runtime || !bundle) return false;
+  try {
+    return sha256(fs.readFileSync(file)) !== link.runtime;
+  } catch {
+    return true;
+  }
+}
+
 export async function join(o) {
   const link = parseAgentLink(
     o._[1] && o._[1] !== "-" ? o._[1] : await readStdin(),
     o,
   );
+  // Before anything is used or made: the invitation is good once.
+  if (runtimeMismatch(link))
+    throw Error("This copy of Reach for agents isn't the runtime your link names. Open your link and follow its steps again: they download the right one.");
   const home = agentHome();
   const name =
     new URL(link.origin).hostname

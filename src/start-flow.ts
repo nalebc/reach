@@ -146,6 +146,10 @@ export type GuestLink = {
   invites: { origin: string; secret: string }[];
   // An agent joining through the computer's public link (no Tailscale key).
   funnel?: boolean;
+  // An agent's link: the SHA-256 of the runtime the computer named (r=).
+  // Its steps and `agent.mjs join` refuse any other (security audit M8).
+  // Nothing else reads it.
+  runtime?: string;
 };
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 export function parseGuestLink(hash: string, fallbackOrigin = ""): GuestLink {
@@ -194,6 +198,7 @@ export function guestLinkUrl(
   if (link.hostname) params.set("h", link.hostname);
   for (const x of link.invites) params.append("i", `${x.origin}~${x.secret}`);
   if (link.funnel) params.set("t", "funnel");
+  if (link.runtime && /^[0-9a-f]{64}$/.test(link.runtime)) params.set("r", link.runtime);
   return `${start}${path}#${params.toString()}`;
 }
 

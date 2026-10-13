@@ -612,6 +612,8 @@ export default function PeopleHub({
                     hostname: "",
                     invites: [{ origin: new URL(peer.url).origin, secret: r.invitation }],
                     funnel: true,
+                    // Its steps check the download against this.
+                    runtime: r.runtime,
                   }, "/agent")
                 : r.url,
             keyed: true,
