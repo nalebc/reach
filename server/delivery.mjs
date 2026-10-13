@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { rateLimit } from "express-rate-limit";
 import { agentSteps, agentStepsPage, wantsPage } from "./agent-steps.mjs";
 
 const accepts = (req, encoding) =>
@@ -43,7 +44,14 @@ export function serveBuild(app, express, dist, { agentStart = () => "", platform
   // An agent's link opened from the tailnet (the same address as the public
   // start page): its steps as text to a program, the start page with them in
   // it to a browser, as public-start.mjs does for the internet.
-  app.get("/agent", (req, res, next) => {
+  // A page anyone on the tailnet can open: it reads start.html each time
+  // (the interface rebuilds while Reach runs), so at most 120 a minute.
+  const stepsLimit = rateLimit({
+    windowMs: 60_000, limit: 120, keyGenerator: () => "agent-steps",
+    standardHeaders: "draft-8", legacyHeaders: false, identifier: "agent-steps",
+    message: "Too many requests for this page. Try again in a minute.",
+  });
+  app.get("/agent", stepsLimit, (req, res, next) => {
     const start = agentStart();
     if (!start) return next();
     const text = agentSteps(start, { platform });

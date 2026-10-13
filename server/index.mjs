@@ -493,8 +493,10 @@ export async function createReach(overrides = {}) {
   // The helper agents' file requests go through on a Mac, compiled once per
   // version of its source: at start, not inside an agent's first request,
   // which has 30 seconds (a cold Intel Mac compiles it for longer).
+  // Stopped when Reach stops, as its other start-time builds are.
+  const warming = new AbortController();
   if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
-    server.once("listening", () => void desktopBinary(config, "browser-files").catch(() => {}));
+    server.once("listening", () => void desktopBinary(config, "browser-files", { signal: warming.signal }).catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
@@ -5578,6 +5580,7 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      warming.abort();
       maintenanceStore.shutdown();
       // Asked to stop: the next start isn't after an unexpected end, even if
       // what follows takes too long and the launcher exits anyway.
