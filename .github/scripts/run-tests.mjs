@@ -31,8 +31,6 @@ export const suites = {
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
-    // Keeping what Reach drives in sync: Codex's service update (Oct 13).
-    "keep-in-sync",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
