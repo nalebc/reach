@@ -274,8 +274,12 @@ test(
         await new Promise((r) => setTimeout(r, 50));
       }
     };
-    const find = (label) =>
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} || b.getAttribute("aria-label") === ${JSON.stringify(label)})`;
+    // The label travels as base64 and is decoded in the page: no code is
+    // built from text.
+    const find = (label) => {
+      const b64 = Buffer.from(String(label), "utf8").toString("base64");
+      return `(() => { const want = new TextDecoder().decode(Uint8Array.from(atob("${b64}"), (c) => c.charCodeAt(0))); return [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === want || b.getAttribute("aria-label") === want); })()`;
+    };
     // A finger's tap, at the button: a real user gesture.
     const tap = async (label) => {
       const at = await tab.evaluate(
@@ -290,7 +294,7 @@ test(
     };
     await open();
     await tab.evaluate(
-      `localStorage.setItem("e2e.peer", ${JSON.stringify(JSON.stringify({ id: "mac-a", name: "Mac A", url: origin, token: phone.token, platform: "darwin" }))})`,
+      `localStorage.setItem("e2e.peer", atob("${Buffer.from(JSON.stringify({ id: "mac-a", name: "Mac A", url: origin, token: phone.token, platform: "darwin" })).toString("base64")}"))`,
     );
 
     // Settings → Face ID: add this phone's.
