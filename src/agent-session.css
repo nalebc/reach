@@ -438,6 +438,8 @@ button.as-title:active {
   text-decoration: underline;
   text-decoration-color: var(--as-faint);
   text-underline-offset: 2px;
+  /* A long address (a PR, a run) breaks rather than widening the bubble. */
+  overflow-wrap: anywhere;
 }
 /* A link to another Claude session: drawn as a link, opens it in this chat. */
 .md .md-session-link {

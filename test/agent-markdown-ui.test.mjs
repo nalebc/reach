@@ -163,3 +163,28 @@ test("a shell block has a play button that runs its command; other code, or no c
   assert.equal(plain.container.querySelectorAll("pre").length, 4);
   await plain.unmount();
 });
+
+test("a bare https address is a tappable link; punctuation, code and plain http stay text", async () => {
+  const view = await dom.render(React.createElement(AgentMarkdown, {
+    text: "PR: https://github.com/nalebc/reach/pull/26. Run (https://github.com/nalebc/reach/actions/runs/1), and **see https://example.test/a_(b)** or <https://example.test/c>. Not `https://example.test/code` nor http://example.test/plain.",
+  }));
+  const links = [...view.container.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.textContent, a.getAttribute("target"), a.getAttribute("rel")]);
+  assert.deepEqual(links.map(([href]) => href), [
+    "https://github.com/nalebc/reach/pull/26",
+    "https://github.com/nalebc/reach/actions/runs/1",
+    "https://example.test/a_(b)",
+    "https://example.test/c",
+  ]);
+  for (const [href, text, target, rel] of links) {
+    assert.equal(text, href, "the address shows as itself");
+    assert.equal(target, "_blank");
+    assert.equal(rel, "noopener noreferrer");
+  }
+  const text = view.container.textContent;
+  assert.match(text, /pull\/26\. Run \(/, "the full stop and the bracket stay outside the link");
+  assert.match(text, /runs\/1\), and/);
+  assert.equal(view.container.querySelector("strong a")?.getAttribute("href"), "https://example.test/a_(b)", "a link inside bold");
+  assert.equal(view.container.querySelector("code").textContent, "https://example.test/code", "code stays code");
+  assert.match(text, /http:\/\/example\.test\/plain/, "plain http stays text");
+  await view.unmount();
+});
