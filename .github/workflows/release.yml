@@ -218,7 +218,8 @@ jobs:
             printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$RUNNER_TEMP/first-publish.npmrc"
             export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/first-publish.npmrc"
           fi
-          npm publish "candidate/nalebc-reach-$VERSION.tgz" --ignore-scripts --provenance --access public --registry=https://registry.npmjs.org
+          # "./" keeps it a file: npm reads "candidate/x.tgz" as GitHub user/repo.
+          npm publish "./candidate/nalebc-reach-$VERSION.tgz" --ignore-scripts --provenance --access public --registry=https://registry.npmjs.org
       - id: github-release
         name: Create or complete the exact GitHub release without replacing assets
         env:

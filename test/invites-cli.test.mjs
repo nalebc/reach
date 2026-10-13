@@ -4,10 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setupInvites, KEYS_PAGE } from "../scripts/invites.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // `reach setup invites`: paste one token, see exactly what Reach adds, and
 // it's done. The by-hand path stays for anyone who prefers it.
-const TOKEN = "tskey-api-kAbc123CNTRL-SecretPart9";
+const TOKEN = tskey("api-kAbc123CNTRL-SecretPart9");
 
 function fakeApi(policy) {
   const api = { policy, clients: [] };
@@ -25,7 +26,7 @@ function fakeApi(policy) {
     const auth = init.headers?.Authorization;
     if (auth === "Bearer oauth-x") {
       if (route === "/tailnet/-/devices") return reply(200, { devices: [] });
-      if (route === "/tailnet/-/keys" && method === "POST") return reply(200, { id: "a1", key: "tskey-auth-a1-x" });
+      if (route === "/tailnet/-/keys" && method === "POST") return reply(200, { id: "a1", key: tskey("auth-a1-x") });
       return reply(200, {});
     }
     if (auth !== `Bearer ${TOKEN}`) return reply(401, {});
@@ -34,7 +35,7 @@ function fakeApi(policy) {
     if (route === "/tailnet/-/acl" && method === "POST") return (api.policy = init.body), reply(200, init.body);
     if (route === "/tailnet/-/keys" && method === "POST") {
       api.clients.push(JSON.parse(init.body));
-      return reply(200, { id: "k1CNTRL", key: "tskey-client-k1CNTRL-secret" });
+      return reply(200, { id: "k1CNTRL", key: tskey("client-k1CNTRL-secret") });
     }
     return reply(404, {});
   };

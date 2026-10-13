@@ -5,11 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 import { parsePolicy } from "../server/tailnet-policy.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // Invite links set up from one pasted Tailscale API access token: Reach adds
 // its tag and grant to the policy (checked by Tailscale, never overwriting a
 // concurrent edit), creates its own limited OAuth client, keeps only that.
-const TOKEN = "tskey-api-kAbc123CNTRL-SecretPart9";
+const TOKEN = tskey("api-kAbc123CNTRL-SecretPart9");
 const POLICY = `// my policy
 {
 \t"grants": [
@@ -48,7 +49,7 @@ function fakeTailscale({ policy = POLICY, invalid = "", raceOnWrite = false, eta
       if (route === "/tailnet/-/acl" && method === "GET")
         return reply(200, init.headers?.Accept === "application/json" ? parsePolicy(api.policy) : api.policy);
       if (route === "/tailnet/-/keys" && method === "POST")
-        return reply(200, { id: `a${++api.authKeys}`, key: `tskey-auth-a${api.authKeys}-x` });
+        return reply(200, { id: `a${++api.authKeys}`, key: tskey(`auth-a${api.authKeys}-x`) });
       if (route.startsWith("/tailnet/-/keys/") && method === "DELETE") { api.deletedAuthKeys.push(route.split("/").pop()); return reply(200, {}); }
       return reply(404, {});
     }
@@ -146,10 +147,10 @@ test("a wrong or expired token: a plain message, nothing changed", async (t) => 
   const dir = setupDir(t);
   const api = fakeTailscale();
   const keys = createGuestKeys({ dataDir: dir, self: "dev-a", request: api.request });
-  await assert.rejects(keys.setupFromAccessToken({ accessToken: "tskey-client-nope-x", ...where }), /starts with tskey-api-/);
+  await assert.rejects(keys.setupFromAccessToken({ accessToken: tskey("client-nope-x"), ...where }), /starts with tskey-api-/);
   assert.deepEqual(api.calls, [], "a malformed token never leaves the computer");
   await assert.rejects(
-    keys.setupFromAccessToken({ accessToken: "tskey-api-kOld999CNTRL-expired", ...where }),
+    keys.setupFromAccessToken({ accessToken: tskey("api-kOld999CNTRL-expired"), ...where }),
     /didn't accept that token/,
   );
   assert.equal(api.writes, 0);
@@ -371,7 +372,7 @@ for (const phase of ["status", "validate", "oauth", "devices", "probe-delete"]) 
 
 test("manual OAuth setup also rechecks owner access after token refresh", routeTest, async t => {
   const pause = gate(), api = fakeTailscale();
-  const client = { id: "manualCNTRL", key: "tskey-client-manualCNTRL-secret" };
+  const client = { id: "manualCNTRL", key: tskey("client-manualCNTRL-secret") };
   api.clients.push(client);
   const request = api.request;
   api.request = async (url, init) => {
@@ -405,7 +406,7 @@ for (const route of ["/api/guests/key", "/api/guests"]) {
   for (const phase of ["oauth", "mint"]) {
     test(`person invitation ${route} revoked during ${phase} leaves no new network key or record`, routeTest, async t => {
       const pause = gate(), api = fakeTailscale();
-      api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+      api.clients.push({ id: "fixtureCNTRL", key: tskey("client-fixtureCNTRL-secret") });
       const request = api.request;
       api.request = async (url, init) => {
         const response = await request(url, init), pathname = new URL(url).pathname;
@@ -416,7 +417,7 @@ for (const route of ["/api/guests/key", "/api/guests"]) {
       const f = await routeFixture(t, { api });
       t.after(() => pause.release());
       fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
-        version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+        version: 1, clientId: "fixtureCNTRL", clientSecret: tskey("client-fixtureCNTRL-secret"),
       }), { mode: 0o600 });
       const body = route === "/api/guests" ? { name: "Synthetic visitor", ttlSeconds: 600, roots: [0], key: true } : { ttlSeconds: 600 };
       const pending = f.post(f.phone.token, body, route);
@@ -468,10 +469,10 @@ test("an invite key is made only while the policy keeps guests to Reach, checked
 
 test("from the phone: an open policy makes no invite key", routeTest, async (t) => {
   const api = fakeTailscale({ policy: `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}` });
-  api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+  api.clients.push({ id: "fixtureCNTRL", key: tskey("client-fixtureCNTRL-secret") });
   const f = await routeFixture(t, { api });
   fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
-    version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+    version: 1, clientId: "fixtureCNTRL", clientSecret: tskey("client-fixtureCNTRL-secret"),
   }), { mode: 0o600 });
   for (const [route, body] of [["/api/guests/key", { ttlSeconds: 600 }], ["/api/guests", { name: "Visitor", ttlSeconds: 600, roots: [0], key: true }]]) {
     const refused = await f.post(f.phone.token, body, route);
@@ -486,14 +487,14 @@ test("from the phone: an open policy makes no invite key", routeTest, async (t) 
 // long as the access lasts, by the Mac, whatever the phone sends.
 test("Always over Tools needs invite keys; its device lasts as long as its access", { ...routeTest, skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async (t) => {
   const api = fakeTailscale();
-  api.clients.push({ id: "fixtureCNTRL", key: "tskey-client-fixtureCNTRL-secret" });
+  api.clients.push({ id: "fixtureCNTRL", key: tskey("client-fixtureCNTRL-secret") });
   const f = await routeFixture(t, { api });
   const body = { name: "Builder", transport: "tailnet", preset: "files", folders: [{ root: 0, path: "" }], standing: true };
   const refused = await f.post(f.phone.token, body, "/api/agents/browser-invitations");
   assert.equal(refused.status, 409, refused.text);
   assert.match(refused.json.error, /invite links/);
   fs.writeFileSync(path.join(f.dir, "private", "tailscale-oauth.json"), JSON.stringify({
-    version: 1, clientId: "fixtureCNTRL", clientSecret: "tskey-client-fixtureCNTRL-secret",
+    version: 1, clientId: "fixtureCNTRL", clientSecret: tskey("client-fixtureCNTRL-secret"),
   }), { mode: 0o600 });
   const made = await f.post(f.phone.token, body, "/api/agents/browser-invitations");
   assert.equal(made.status, 201, made.text);

@@ -117,19 +117,19 @@ The terminal says **✔ 3. Your phone — connected** when it's in. Later, when 
 **From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
 
 ```sh
-git clone --branch v0.1.0 https://github.com/nalebc/reach.git
+git clone --branch v0.1.1 https://github.com/nalebc/reach.git
 cd reach
 ./reach
 ```
 
-`--branch v0.1.0` installs the latest release. `main` carries changes that aren't released yet.
+`--branch v0.1.1` installs the latest release. `main` carries changes that aren't released yet.
 
 On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
 
 **On a Windows PC (experimental, not yet verified on a physical PC).** In PowerShell:
 
 ```powershell
-git clone --branch v0.1.0 https://github.com/nalebc/reach.git
+git clone --branch v0.1.1 https://github.com/nalebc/reach.git
 cd reach
 .\reach.cmd
 ```
@@ -185,7 +185,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 
 ## Status
 
-Early access (0.1.0). macOS comes first, and testing on physical phones is still in progress. Install from source until the npm package is published.
+Early access (0.1.1). macOS comes first, and testing on physical phones is still in progress.
 
 ## Contributing
 

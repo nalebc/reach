@@ -5,7 +5,9 @@
 //   continues through logicalParentUuid.
 // - Results of parallel tool calls branch off the chain; they are attached to
 //   their tool_use by id, wherever they sit in the file.
-// - Messages typed while a turn runs are "queued_command" attachments.
+// - Messages typed while a turn runs are "queued_command" attachments: the
+//   person's carried humanTurn: true, and from 2.1.29x commandMode "prompt"
+//   instead (Claude Code's own notices: "task-notification").
 // - Until Claude Code takes them, they wait in its queue: "queue-operation"
 //   lines outside the chain (enqueue; dequeue, remove, popAll).
 // Nothing here executes or follows paths from the transcript.
@@ -14,6 +16,12 @@ import crypto from "node:crypto";
 import { attachedFiles, repeatedImages, visibleUserText } from "./message-text.mjs";
 import { partLabel, partLabels } from "./message-parts.mjs";
 
+// A message the person typed while Claude worked. Claude Code 2.1.296
+// writes no humanTurn, only commandMode "prompt", and Reach hid every such
+// message from the phone though Claude had it (Oct 13). A mode it doesn't
+// know stays hidden, as an old humanTurn: false does.
+const typedByPerson = (a) =>
+  a?.type === "queued_command" && (a.humanTurn === true || (a.humanTurn === undefined && a.commandMode === "prompt"));
 const clip = (text, max) => {
   const value = String(text ?? "");
   if (value.length <= max) return value;
@@ -289,7 +297,7 @@ function slimEntry(e, results, maxOutput) {
   if (e.type === "system" && e.subtype === "local_command") out.content = clip(String(e.content ?? ""), Math.max(maxOutput, 20000));
   if (e.type === "attachment") {
     const a = e.attachment || {};
-    out.attachment = a.type === "queued_command" ? { type: a.type, humanTurn: a.humanTurn, prompt: a.prompt } : { type: a.type };
+    out.attachment = a.type === "queued_command" ? { type: a.type, humanTurn: a.humanTurn, commandMode: a.commandMode, prompt: a.prompt } : { type: a.type };
   }
   if (e.message && (e.type === "user" || e.type === "assistant")) {
     const content = e.message.content;
@@ -465,7 +473,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
         // A command's output can be the newest message too.
         // So can a message typed while it works: the app shows it at once,
         // not when Claude next writes.
-        const queued = slim.type === "attachment" && slim.attachment?.type === "queued_command" && slim.attachment.humanTurn;
+        const queued = slim.type === "attachment" && typedByPerson(slim.attachment);
         if (slim.uuid && (slim.type === "user" || slim.type === "assistant" || queued || (slim.type === "system" && slim.subtype === "local_command")) && !slim.isSidechain) last = slim;
         // Claude's usage as this session last saw it: a limit it hit (Claude
         // Code writes it here, with when the limit resets) or an answer since.
@@ -523,7 +531,7 @@ export function createClaudeTranscript({ maxOutput = 4000 } = {}) {
           if (output) items.push({ id: e.uuid, role: "system", kind: "output", text: output, at });
         } else if (e.type === "attachment") {
           const a = e.attachment || {};
-          if (a.type === "queued_command" && a.humanTurn && a.prompt) {
+          if (typedByPerson(a) && a.prompt) {
             // Typed while it worked; with a picture, its words and pictures
             // come as pieces (it showed "[object Object],[object Object]").
             const pieces = Array.isArray(a.prompt) ? a.prompt : [{ type: "text", text: String(a.prompt) }];

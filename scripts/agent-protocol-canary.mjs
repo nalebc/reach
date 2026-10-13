@@ -38,16 +38,21 @@ export async function protocolCanary(agent, executable) {
         cwd: dir, env: { ...env, CLAUDE_CONFIG_DIR: dir, CI: "1" }, stdio: ["pipe", "pipe", "pipe"],
       });
       let done = false, buffer = "";
+      let said = "";
       const finish = (error) => {
         if (done) return; done = true; clearTimeout(timer);
         child.stdin.destroy(); child.kill();
-        error ? reject(Error(error)) : resolve({ initialize: "passed", modelTurns: 0 });
+        // What Claude Code itself said, so a failure in CI names its cause.
+        const tail = said.replace(/\s+/g, " ").trim().slice(-300);
+        error ? reject(Error(`${error}${tail ? ` It said: ${tail}` : ""}`)) : resolve({ initialize: "passed", modelTurns: 0 });
       };
-      const timer = setTimeout(() => finish("Claude initialization timed out."), 15000);
+      // A first start on a fresh runner takes longer than a laptop's.
+      const timer = setTimeout(() => finish("Claude initialization timed out."), 45000);
       child.on("error", () => finish("Claude could not initialize."));
       child.on("exit", () => finish("Claude exited without an initialization acknowledgement."));
       child.stdin.on("error", () => finish("Claude initialization transport failed."));
-      child.stderr.resume();
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => { said = (said + chunk).slice(-4000); });
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", chunk => {
         buffer += chunk;

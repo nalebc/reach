@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import ts from "typescript";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 async function load(file) {
   const { outputText } = ts.transpileModule(
@@ -142,7 +143,7 @@ const memory = (initial = {}) =>
     initial,
   );
 const link = {
-  key: "tskey-auth-test123456-abcdef",
+  key: tskey("auth-test123456-abcdef"),
   hostname: "rg-ab12-abcdefghij",
   invites: [{ origin: "https://mac.tail.ts.net:8443", secret: "a".repeat(43) }],
 };
@@ -169,7 +170,7 @@ test("reopening the same link keeps its joined device; a different invite clears
   const next = {
     ...link,
     hostname: "rg-ab12-klmnopqrst",
-    key: "tskey-auth-replacement123456-abcdef",
+    key: tskey("auth-replacement123456-abcdef"),
     invites: [{ ...link.invites[0], secret: "b".repeat(43) }],
   };
   assert.deepEqual(flow.resumeGuestStart(next, session, local), next);

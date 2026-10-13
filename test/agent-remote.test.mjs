@@ -18,6 +18,7 @@ import {
   viaShared,
 } from "../scripts/agent-remote.mjs";
 import { readTailnetManifest } from "../server/public-start.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 // The agent's side of an invitation: one command joins, MCP serves the tools,
 // and stdout carries nothing but results and JSON-RPC.
@@ -27,13 +28,13 @@ const SECRET = "a".repeat(43);
 
 test("agent links: only /agent links on a tailnet, one computer each", () => {
   const link = parseAgentLink(
-    `https://mac.tail1.ts.net/agent#k=tskey-auth-abc123def456&h=rg-ab12-abcdefghij&i=${encodeURIComponent(`https://mac.tail1.ts.net:8443~${SECRET}`)}`,
+    `https://mac.tail1.ts.net/agent#k=${tskey("auth-abc123def456")}&h=rg-ab12-abcdefghij&i=${encodeURIComponent(`https://mac.tail1.ts.net:8443~${SECRET}`)}`,
   );
   assert.deepEqual(link, {
     start: "https://mac.tail1.ts.net",
     origin: "https://mac.tail1.ts.net:8443",
     secret: SECRET,
-    key: "tskey-auth-abc123def456",
+    key: tskey("auth-abc123def456"),
     hostname: "rg-ab12-abcdefghij",
   });
   const i = `i=https://mac.tail1.ts.net:8443~${SECRET}`;
@@ -111,7 +112,7 @@ test(
       const seen = [];
       globalThis.fetch = async (url) => { seen.push(String(url)); throw new TypeError("offline (test)"); };
       const make = await loadTailnet(${JSON.stringify({ execFile: path.join(dir, m.exec), wasmFile: path.join(dir, m.wasm) })});
-      const node = make({ hostname: "reach-agent-test", authKey: "tskey-auth-test0000000000", stateStorage: { getState: () => "", setState() {} } });
+      const node = make({ hostname: "reach-agent-test", authKey: ${JSON.stringify(tskey("auth-test0000000000"))}, stateStorage: { getState: () => "", setState() {} } });
       node.start({ state() {}, authURL() {} });
       const t0 = Date.now();
       while (!seen.some((u) => u.includes("/key?")) && Date.now() - t0 < 40000) await new Promise((r) => setTimeout(r, 100));

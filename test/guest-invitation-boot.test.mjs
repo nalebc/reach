@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { startDom, settle } from "./dom/harness.mjs";
+import { tskey } from "./helpers/fake-keys.mjs";
 
 const origin = "https://guest-boot.tail.ts.net";
 const oldSecret = "a".repeat(43), newSecret = "b".repeat(43);
@@ -27,7 +28,7 @@ async function boot(t, { secret = newSecret, refuse = false, hash, saved = old()
   const sessionKey = "reach.guest-session", ownerKey = "reach.devices";
   dom.window.sessionStorage.setItem(sessionKey, JSON.stringify(saved));
   dom.window.localStorage.setItem(ownerKey, "owner-pairing-unchanged");
-  dom.window.history.replaceState(null, "", "/guest" + (hash ?? `#${new URLSearchParams({ i: `${origin}~${secret}`, k: "tskey-auth-never-store-this-key" })}`));
+  dom.window.history.replaceState(null, "", "/guest" + (hash ?? `#${new URLSearchParams({ i: `${origin}~${secret}`, k: tskey("auth-never-store-this-key") })}`));
   globalThis.fetch = dom.window.fetch = async (input, init = {}) => {
     const url = new URL(input);
     assert.equal(url.origin, origin);
@@ -104,7 +105,7 @@ test("reordered copies of the same invitation preserve already delivered peers w
   saved.invitationId = createHash("sha256").update(JSON.stringify([[origin, oldSecret], [second, otherSecret]])).digest("hex");
   const hash = "#" + new URLSearchParams([
     ["i", `${second}~${otherSecret}`], ["i", `${origin}~${oldSecret}`],
-    ["k", "tskey-auth-a-different-enrollment-key"],
+    ["k", tskey("auth-a-different-enrollment-key")],
   ]);
   const f = await boot(t, { hash, saved });
   await f.dom.waitFor(() => /Previous guest/.test(f.view.container.textContent));

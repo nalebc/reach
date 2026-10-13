@@ -1,6 +1,6 @@
 # Release verification
 
-Reach ships as a computer companion plus a phone web interface. Native iOS is an optional developer build. Treat 0.1.0 as early access until the real-device checks below are recorded. Automated tests do not certify latency, OS permission dialogs, or every future Claude/Codex update.
+Reach ships as a computer companion plus a phone web interface. Native iOS is an optional developer build. Treat 0.1.x as early access until the real-device checks below are recorded. Automated tests do not certify latency, OS permission dialogs, or every future Claude/Codex update.
 
 ## Build and verify a candidate
 

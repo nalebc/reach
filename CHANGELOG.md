@@ -6,6 +6,33 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
+## [0.1.1] — 2026-10-12
+
+The first release on npm: 0.1.0's publish step failed, so 0.1.0 is a source
+tag only.
+
+### Changed
+
+- When the tailnet has HTTPS off, setup opens Tailscale's own page for this
+  computer, where one press of **Enable** turns it on, instead of the DNS
+  settings page.
+- An agent whose Claude Code is older than 2.1.259, or whose Codex is older
+  than 0.148.0, is named as too old, with the version to update to, instead of
+  failing later. Older versions lack the permission and thread APIs Reach uses;
+  each floor was found by running the releases one by one.
+
+### Fixed
+
+- A message typed on the phone while Claude Code 2.1.296 or newer was working
+  vanished from the chat although Claude received it. Claude Code now records
+  it as a queued prompt without the old marker; Reach shows it again.
+- Release workflow: `npm publish` was given `candidate/<file>.tgz`, which npm
+  reads as a GitHub repository, not a file. It publishes `./candidate/…` now,
+  and a CI policy test refuses a bare path.
+- CI: the published-CLI compatibility check tries twice, waits longer and
+  quotes the CLI when it fails; the iOS simulator launch gets a third try;
+  test fixtures no longer look like Tailscale keys to secret scanners.
+
 ## [0.1.0] — 2026-10-12
 
 First public release candidate. Early access: see `docs/RELEASE.md` for the
