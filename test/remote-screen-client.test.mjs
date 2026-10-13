@@ -76,7 +76,7 @@ class FakeDecoder {
 const keyframe = { key: true, timestamp: 0, width: 1320, height: 2868, codec: "avc1.64002a" };
 const delta = { ...keyframe, key: false };
 
-let dom, React, useRemoteScreen, saved;
+let dom, React, useRemoteScreen, forgetStepDowns, PHONE_START_WIDTH, saved;
 before(async () => {
   dom = await startDom({ mobile: true });
   saved = { WebSocket: globalThis.WebSocket };
@@ -91,7 +91,7 @@ before(async () => {
   Object.defineProperty(dom.window.screen, "height", { value: 956, configurable: true });
   Object.defineProperty(dom.window, "devicePixelRatio", { value: 3, configurable: true });
   React = dom.React;
-  ({ useRemoteScreen } = await dom.load("/src/useRemoteScreen.ts"));
+  ({ useRemoteScreen, forgetStepDowns, PHONE_START_WIDTH } = await dom.load("/src/useRemoteScreen.ts"));
 });
 after(async () => {
   globalThis.WebSocket = saved.WebSocket;
@@ -100,7 +100,9 @@ after(async () => {
   await dom?.close();
 });
 
-async function watch(platform = "darwin") {
+async function watch(platform = "darwin", { remember = false } = {}) {
+  // Each test starts fresh unless it checks what the page remembered.
+  if (!remember) forgetStepDowns();
   FakeSocket.all.length = 0;
   FakeDecoder.all.length = 0;
   let stream;
@@ -122,13 +124,27 @@ async function watch(platform = "darwin") {
 }
 const auth = (i) => FakeSocket.all[i].sent.find((m) => m.type === "auth");
 
-test("the stream asks for this phone's full resolution, on H.264", async () => {
+// Oct 12: the full 2868×1862 stream restarted the iPhone's decoder every
+// 10–25 s. A phone starts at 1920 across (it shows about 2000 px even on its
+// side); a tablet or a computer keeps its full resolution.
+test("the stream starts at a size a phone decodes reliably, on H.264; tablets keep their full resolution", async () => {
   const { view } = await watch();
+  assert.equal(PHONE_START_WIDTH, 1920);
   assert.deepEqual(
     { format: auth(0).format, maxWidth: auth(0).maxWidth },
-    { format: "h264", maxWidth: 2868 },
+    { format: "h264", maxWidth: 1920 },
   );
   await view.unmount();
+  Object.defineProperty(dom.window.screen, "width", { value: 1024, configurable: true });
+  Object.defineProperty(dom.window.screen, "height", { value: 1366, configurable: true });
+  try {
+    const tablet = await watch();
+    assert.equal(auth(0).maxWidth, Math.min(3840, 1366 * 3), "its full resolution");
+    await tablet.view.unmount();
+  } finally {
+    Object.defineProperty(dom.window.screen, "width", { value: 440, configurable: true });
+    Object.defineProperty(dom.window.screen, "height", { value: 956, configurable: true });
+  }
 });
 
 test("a server asking to reconnect keeps H.264, never still images", async () => {
@@ -206,7 +222,7 @@ test("a decoder still starting up is not reset for its queue, nor the stream ste
   socket.frame(20, delta);
   assert.equal(starting.state, "unconfigured");
   await view.unmount();
-  assert.equal(auth(0).maxWidth, 2868);
+  assert.equal(auth(0).maxWidth, 1920);
 });
 
 test("a decoder failing before its first frame gets the phone a moment before the next", async () => {
@@ -284,10 +300,43 @@ test("a third mid-stream decoder failure in a minute steps the video down a size
   assert.match(socket.sent.filter((m) => m.type === "diagnostic").at(-1).text, /stepping down from 1320×2868/);
   await dom.waitFor(() => FakeSocket.all[1]?.sent.length, 3000);
   assert.equal(auth(1).format, "h264", "still video");
-  assert.equal(auth(1).maxWidth, Math.round(2868 * 0.75), "one size smaller");
+  assert.equal(auth(1).maxWidth, Math.round(1920 * 0.75), "one size smaller");
   assert.equal(state().fallback, false);
   await view.unmount();
   assert.deepEqual(dom.errors, []);
+});
+
+// "The live screen degrades and never stops": a step down keeps the last
+// picture as it was (not dimmed, no "Reconnecting…", still usable), and the
+// page remembers it, so the Screen reopened doesn't climb back into failures.
+test("a step down keeps the picture crisp while the smaller stream starts, and is remembered", async () => {
+  const { view, state } = await watch();
+  const socket = FakeSocket.all[0];
+  socket.says({ type: "ready", format: "h264", display: "1" });
+  for (let id = 1; id <= 3; id++) {
+    socket.frame(id, keyframe);
+    FakeDecoder.all.at(-1).shows();
+    if (id === 1) await settle(20);
+    FakeDecoder.all.at(-1).fails();
+  }
+  await dom.waitFor(() => FakeSocket.all[1]?.sent.length, 3000);
+  assert.equal(state().ready, true, "the last picture stays");
+  assert.equal(state().connecting, false, "not dimmed, nothing to say");
+  assert.equal(state().cause, "");
+  // The smaller stream's first picture: on with it, still quiet.
+  const next = FakeSocket.all[1];
+  next.says({ type: "ready", format: "h264", display: "1" });
+  next.frame(1, { ...keyframe, width: 990, height: 2151 });
+  FakeDecoder.all.at(-1).init.output({ displayWidth: 990, displayHeight: 2151, close() {} });
+  await dom.waitFor(() => state().width === 990);
+  assert.equal(state().connecting, false);
+  await view.unmount();
+  // Reopened: it starts at the size that worked.
+  const again = await watch("darwin", { remember: true });
+  assert.equal(auth(0).maxWidth, Math.round(1920 * 0.75));
+  await again.view.unmount();
+  // A step down that takes long says so (then the picture dims).
+  forgetStepDowns();
 });
 
 // A blip used to blank the screen into the loading scene, wait up to 30 s,
