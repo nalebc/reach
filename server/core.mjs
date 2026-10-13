@@ -422,6 +422,49 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       changeClients((latest) => { for (const c of latest) if (ended.includes(c.id)) { c.expiresAt = now; c.idleEndedAt = now; } return latest; });
     return ended;
   }
+  // An invitation nobody ever joined with goes for good a day after its
+  // chance to join ended (the owner, Oct 13: a 15-minute link to a 10-year
+  // Always grant sat in Agents & people as "Request expired" until 2036).
+  // Its chance: an unopened link's join window (a person's lasts as long as
+  // their access), or the request an agent made with it, declined or left to
+  // run out. Within the day the owner can still send a new link, which starts
+  // a new window. Anything that ever held a credential, or that the owner
+  // approved, is never cleared here.
+  const UNOPENED_KEEP_MS = 86400_000;
+  const neverJoined = (c) =>
+    isPlainRecord(c) && (c.kind === "guest" || (c.kind === "agent" && c.policy?.invite === true)) &&
+    !c.hash && !c.pendingHash && !c.retiredHashes?.length && !c.redeemedAt && !c.macEntry &&
+    !ownerApproved(c) && !c.approvedBinding && !c.onceJoined &&
+    !(c.usedAt > 0) && !(c.rotatedAt > 0) && !c.idleEndedAt;
+  // When its chance ended: Infinity while it lasts, and for anything else.
+  // A value that isn't a time keeps the record (NaN is never long ago).
+  const chanceEnded = (c, now) => {
+    if (!neverJoined(c)) return Infinity;
+    if (!c.admission)
+      return typeof c.inviteHash === "string" && !c.browserBinding && !c.tailscale
+        ? Math.min(c.inviteExpiresAt ?? Infinity, c.expiresAt)
+        : Infinity;
+    if (c.admission.moved || ["approved", "collected"].includes(c.admission.status) ||
+        !["denied", "expired"].includes(admissionStatus(c, now))) return Infinity;
+    // No decision time is kept: a request is answered before its own
+    // deadline, so the deadline is never earlier than the answer.
+    return Math.min(c.admission.expiresAt, c.expiresAt);
+  };
+  const unopenedLapsed = (c, now) => now - chanceEnded(c, now) > UNOPENED_KEEP_MS;
+  // Removes them (index.mjs ends each the way removing it does, and records
+  // it). The records as they were.
+  function clearUnopened(now = Date.now()) {
+    const stored = loadJson(file, []);
+    if (!Array.isArray(stored) || !stored.some((c) => unopenedLapsed(c, now))) return [];
+    let cleared = [];
+    changeClients((latest) => {
+      // Checked again under the lock: a new link sent meanwhile keeps it.
+      cleared = latest.filter((c) => unopenedLapsed(c, now));
+      for (const c of cleared) rememberEnded(c);
+      return latest.filter((c) => !cleared.includes(c));
+    });
+    return cleared;
+  }
   // The same trade for a public-link agent, with the key that signs for it.
   function rotateFunnelCredential(token, keyThumbprint) {
     const current = verifyFunnel(token, keyThumbprint);
@@ -1522,6 +1565,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         result = { clientId: client.id, joinBy: client.expiresAt };
         return latest;
       }
+      // Joined before: never cleared as an unopened invitation (clearUnopened).
+      if (client.hash || client.redeemedAt || client.admission?.status === "collected") client.onceJoined = true;
       for (const key of ["hash", "browserBinding", "admission", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
       client.inviteHash = client.linkHash;
       client.inviteExpiresAt = Math.min(client.expiresAt, now + 900000);
@@ -2011,6 +2056,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     hostedConnectors,
     splitHostedToken,
     endIdle,
+    clearUnopened,
     // Reach is reachable again: waiting agents get their minute anew.
     restartQuietClock: () => { authStarted = Date.now(); },
     // Called with an agent whose replaced credential was used again.
