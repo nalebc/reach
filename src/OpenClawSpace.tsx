@@ -41,6 +41,7 @@ import { ClawRelayAction } from "./OpenClawRelay";
 import { channelName, usePolling } from "./openclaw-polling";
 import { ClawCustomize, ClawScheduled } from "./OpenClawPages";
 import { ClawPageTop } from "./OpenClawRow";
+import { ClawTooOld } from "./OpenClawHealth";
 import "./openclaw.css";
 import { ChatCompanion } from "./ChatCompanion";
 
@@ -76,6 +77,8 @@ type Overview = {
   canStart?: boolean;
   // Installed, never set up: setup below says it, not an error.
   notSetUp?: boolean;
+  // Its Gateway is older than Reach works with: the version to update to.
+  tooOld?: { version?: string; to: string };
   // What it showed, to wait on its next change (an older Mac has none).
   version?: string;
 };
@@ -722,7 +725,17 @@ export default function OpenClawSpace({
                 )}
               </label>
             </div>
-            {(error || (data?.error && !data.notSetUp)) && (
+            {data?.tooOld && !error && (
+              <ClawTooOld
+                peer={peer}
+                to={data.tooOld.to}
+                onChanged={() => {
+                  reload();
+                  onDiscover?.();
+                }}
+              />
+            )}
+            {(error || (data?.error && !data.notSetUp && !data.tooOld)) && (
               <div className="claw-connection-error" role="alert">
                 <p className="claw-error">{error || data?.error}</p>
                 <button className="claw-button" onClick={reload}>Retry connection</button>

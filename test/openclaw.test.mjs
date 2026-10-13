@@ -1953,6 +1953,70 @@ test("Reach negotiates both Gateway protocol 3 and 4 with the same signed device
   }
 });
 
+// OpenClaw before 2026.2.26 accepts only v1/v2 device signatures; Reach signs
+// v3 (scripts/openclaw-canary.mjs). Its refusal, or a version below that,
+// is said as too old with the version to update to, and it isn't dialed
+// again on every look: once a minute, or at once after Reach updates or
+// restarts it (recheck).
+test("an OpenClaw too old for Reach is named with the version to update to, and not dialed on every look", async (t) => {
+  let clock = 1000;
+  const { c, handle, sockets } = await fixture(t, { now: () => clock, agedRetryMs: 60000 });
+  let answer = { error: { code: "INVALID_REQUEST", message: "device signature invalid" } };
+  handle((req) => (req.method === "connect" ? answer : undefined));
+  const refused = await c.overview();
+  assert.equal(refused.connected, false);
+  assert.equal(refused.error, "OpenClaw is older than Reach works with. Update it to 2026.2.26 or newer to use it here.");
+  assert.deepEqual(refused.tooOld, { to: "2026.2.26" });
+  assert.equal(refused.canStart, undefined, "nothing to start: it runs");
+  assert.deepEqual(c.tooOld(), { to: "2026.2.26" });
+  assert.equal(c.connected(), false);
+  assert.equal(c.canMove(), false, "never a move's target");
+  await assert.rejects(c.call("sessions.list"), { message: refused.error, code: "AGENT_INCOMPATIBLE" });
+  // Phones looking again meanwhile: said again, nothing dialed.
+  for (let i = 0; i < 5; i++) assert.equal((await c.overview()).error, refused.error);
+  assert.equal(sockets.length, 1);
+  // A minute on: joined again, and it now says an older version itself.
+  clock += 60000;
+  answer = { payload: { type: "hello-ok", protocol: 3, server: { version: "2026.2.25" } } };
+  const older = await c.overview();
+  assert.equal(sockets.length, 2);
+  assert.equal(older.connected, false);
+  assert.equal(older.error, "OpenClaw 2026.2.25 is older than Reach works with. Update it to 2026.2.26 or newer to use it here.");
+  assert.deepEqual(older.tooOld, { version: "2026.2.25", to: "2026.2.26" });
+  assert.equal(c.connected(), false, "left, not used");
+  assert.equal(sockets[1].readyState, 3);
+  // Updated from Reach: joined again at once, and it works.
+  answer = { payload: { type: "hello-ok", protocol: 3, server: { version: "2026.2.26" } } };
+  c.recheck();
+  const back = await c.overview();
+  assert.equal(back.connected, true);
+  assert.equal(back.tooOld, undefined);
+  assert.equal(c.tooOld(), null);
+  assert.equal(c.canMove(), true);
+});
+test("only a refused signature or an older version it says is too old for Reach", async (t) => {
+  for (const [answer, connected] of [
+    // Any other refusal says what it did, and is tried again on the next look.
+    [{ error: { code: "UNAUTHORIZED", message: "unauthorized: gateway token mismatch" } }, false],
+    // A version Reach can't read, or a build of its own, is no reason.
+    [{ payload: { type: "hello-ok", protocol: 3 } }, true],
+    [{ payload: { type: "hello-ok", protocol: 3, server: { version: "dev" } } }, true],
+    [{ payload: { type: "hello-ok", protocol: 4, server: { version: "2026.10.2" } } }, true],
+  ]) {
+    const { c, handle, sockets } = await fixture(t);
+    handle((req) => (req.method === "connect" ? answer : undefined));
+    const first = await c.overview();
+    assert.equal(first.connected, connected, JSON.stringify(answer));
+    assert.equal(first.tooOld, undefined);
+    assert.equal(c.tooOld(), null);
+    if (!connected) {
+      assert.doesNotMatch(first.error, /older than Reach/);
+      await c.overview();
+      assert.equal(sockets.length, 2, "dialed again");
+    }
+  }
+});
+
 test("a future protocol mismatch explains the compatibility problem without echoing Gateway text", async (t) => {
   const { c, handle } = await fixture(t);
   handle(req => req.method === "connect" ? { error: { code: "INVALID_REQUEST", message: "protocol mismatch: private downstream details" } } : undefined);

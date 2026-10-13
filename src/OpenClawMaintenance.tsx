@@ -94,14 +94,18 @@ export function ClawMaintenance({
   onChanged,
   onViewOutput,
   onOpenLogs,
+  start = null,
 }: {
   peer: Peer;
   onChanged: () => Promise<void>;
   onViewOutput: (title: string, lines: string[]) => void;
   onOpenLogs: () => void;
+  // Opened to confirm this action at once (Update, for an OpenClaw too old
+  // for Reach: OpenClawHealth.tsx ClawTooOld).
+  start?: Action | null;
 }) {
   const [job, setJob] = useState<ClawJob | null>(null);
-  const [choice, setChoice] = useState<Action | null>(null);
+  const [choice, setChoice] = useState<Action | null>(start);
   const [reviewing, setReviewing] = useState(false);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);

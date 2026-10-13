@@ -6,6 +6,8 @@ export function continueUnavailable(agent, health = []) {
   if (!canContinue(agent)) return "Read-only in Reach";
   const h = health.find((h) => h.agent === agent);
   if (!h?.installed) return "Not installed";
+  // Older than Reach works with (compatibility.mjs): never continued in.
+  if (h.tooOld) return "Update needed";
   if (agent === "openclaw") {
     if (!h.connected) return "Not connected";
     if (h.canTakeMoves !== true) return "Chat transfer unavailable";

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { request, type Peer, type Session } from "./api";
-import { agentUpdates, updateAgent, type AgentName, type AgentUpdateInfo } from "./agent-sessions";
+import { agentLabel, agentUpdates, tooOldLine, updateAgent, type AgentName, type AgentUpdateInfo } from "./agent-sessions";
 import { computerWord } from "./pause";
 
 // A Reach terminal running an installer or updater: its newest line while
@@ -57,7 +57,21 @@ export function useTerminalRun(peer: Peer, id: string | null, onEnd: (ok: boolea
 // of it (server/agent-updates.mjs). Its maker's command shown first, run once
 // confirmed in a Reach terminal, then checked again. Nothing shows when it's
 // current, can't be told, or updates with an app.
-export default function AgentUpdate({ peer, agent }: { peer: Peer; agent: AgentName }) {
+// tooOld (an agent older than Reach works with, AgentHealth.tooOld): its one
+// line shows whatever the check says ("Update Claude Code to 2.1.259 or newer
+// to use it here."), with Update when Reach can run one; onUpdated then reads
+// the agents again, so one no longer too old is offered again.
+export default function AgentUpdate({
+  peer,
+  agent,
+  tooOld,
+  onUpdated,
+}: {
+  peer: Peer;
+  agent: AgentName;
+  tooOld?: { to: string };
+  onUpdated?: () => void;
+}) {
   const [info, setInfo] = useState<AgentUpdateInfo | null>(null);
   const [command, setCommand] = useState("");
   const [step, setStep] = useState<"" | "confirm" | "running" | "failed" | "done">("");
@@ -77,9 +91,12 @@ export default function AgentUpdate({ peer, agent }: { peer: Peer; agent: AgentN
     setProblem("");
     if (agent === "claude" || agent === "codex") void check();
   }, [peer.id, agent]);
+  const updated = useRef(onUpdated);
+  updated.current = onUpdated;
   const line = useTerminalRun(peer, step === "running" ? terminal : null, (ok) => {
     setStep(ok ? "done" : "failed");
     void check(true);
+    updated.current?.();
   });
   const ask = async () => {
     setProblem("");
@@ -108,14 +125,15 @@ export default function AgentUpdate({ peer, agent }: { peer: Peer; agent: AgentN
       setLaunching(false);
     }
   };
-  if (!info) return null;
-  const name = info.name;
-  if (step === "done")
-    return info.state === "current" ? (
+  if (!info && !tooOld) return null;
+  const name = info?.name || agentLabel(agent);
+  if (step === "done" && info?.state === "current")
+    return (
       <div className="chat-status agent-update" role="status">
         <span>{name} updated to {info.installed}</span>
       </div>
-    ) : null;
+    );
+  if (step === "done" && !tooOld) return null;
   if (step === "confirm")
     return (
       <div className="chat-status agent-update open">
@@ -135,13 +153,19 @@ export default function AgentUpdate({ peer, agent }: { peer: Peer; agent: AgentN
         </span>
       </div>
     );
-  if (info.state !== "available" && step !== "failed") return null;
+  const offered = info?.state === "available";
+  if (!offered && !tooOld && step !== "failed") return null;
   return (
-    <div className="chat-status agent-update">
+    <div className={`chat-status agent-update${tooOld ? " too-old" : ""}`} role={tooOld ? "status" : undefined}>
       <span className={step === "failed" || problem ? "chat-setup-problem" : undefined}>
-        {problem || (step === "failed" ? `Update stopped.${line ? ` ${line}` : ""}` : `${name} ${info.latest} is out`)}
+        {problem ||
+          (step === "failed"
+            ? `Update stopped.${line ? ` ${line}` : ""}`
+            : tooOld
+              ? tooOldLine(name, tooOld.to)
+              : `${name} ${info?.latest} is out`)}
       </span>
-      {info.state === "available" && (
+      {offered && (
         <button className="as-banner-btn primary" onClick={() => void ask()}>
           {step === "failed" ? "Try again" : "Update"}
         </button>

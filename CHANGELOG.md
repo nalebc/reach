@@ -6,6 +6,23 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
+## [Unreleased]
+
+### Changed
+
+- 2026-10-12: An agent too old for Reach is skipped, not offered: Claude Code
+  older than 2.1.259, Codex older than 0.148.0, and now OpenClaw older than
+  2026.2.26 (its Gateway refuses the v3 device signature Reach joins with).
+  New chat, moving a chat, relays, auto-continue and workflows leave it out.
+  Where it would be, one line names the version to update to ("Update Claude
+  Code to 2.1.259 or newer to use it here."), with **Update** when Reach can
+  run that update: the one it already offers for a newer version, or
+  OpenClaw's own. Its chats still list and open (a Codex's while its
+  session service still starts). A message sent to one is
+  refused with the same words, not "Update Reach". A Gateway found too old
+  is tried again once a minute, or at once after an update or restart from
+  Reach, not on every look.
+
 ## [0.1.1] — 2026-10-12
 
 The first release on npm: 0.1.0's publish step failed, so 0.1.0 is a source

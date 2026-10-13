@@ -1,4 +1,4 @@
-import { uncertainDelivery, probeAgent } from "./compatibility.mjs";
+import { uncertainDelivery, probeAgent, reportTooOld, tooOldError } from "./compatibility.mjs";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -97,6 +97,20 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
 
 // An agent that isn't on this computer: said so, never shown as an error.
 const notInstalled = (reason) => ["AGENT_NOT_INSTALLED", "ENOENT"].includes(reason?.code);
+// Too old for Reach (compatibility.mjs): installed (its version was read),
+// never offered for new work (needs: an update), and the phone names the
+// version to update to. Its own check's error is that, said there.
+export function agedOut(entry, report = entry.compatibility) {
+  const old = reportTooOld(report);
+  if (!old) return entry;
+  const { error, ...rest } = entry;
+  return {
+    ...rest,
+    installed: true,
+    tooOld: { version: old.version, to: old.to },
+    needs: [...new Set([...(Array.isArray(rest.needs) ? rest.needs : []), "update"])],
+  };
+}
 
 // The claude executable as the owner's login shell finds it (Reach may run
 // with a shorter PATH than their terminal).
@@ -1278,6 +1292,15 @@ export function createAgentSessions({
     async moveOnly(agent, id, { to, authorize = () => {}, cwd = "" } = {}) {
       authorize();
       if (!movable().includes(agent)) adapter(agent);
+      // Never into an agent too old for Reach (a Claude Code chat would be
+      // written, then refuse to go on): said with the version to update to.
+      const report =
+        to === agent ? null
+        : to === "codex" ? await Promise.resolve(daemon.compatibility?.()).catch(() => null)
+        : to === "claude" ? await Promise.resolve(claudeCompatibility()).catch(() => null)
+        : null;
+      const aged = to === "openclaw" ? openClaw?.tooOld?.() : reportTooOld(report);
+      if (aged?.to) throw tooOldError({ agent: to, version: aged.version, to: aged.to });
       if (to === agent || !movable().includes(to)) throw Object.assign(new Error("Choose another app."), { status: 400 });
       const key = `${agent}:${id}`;
       if (moving.has(key)) throw Object.assign(new Error("This chat is already moving."), { status: 409 });
@@ -2105,7 +2128,7 @@ export function createAgentSessions({
         Promise.all([claudeApp(), Promise.resolve(claudeOpen()).catch(() => false)]).then(([app, open]) => (app.installed ? { ...app, open: !!open } : app)),
       ]);
       const compatibility = await Promise.allSettled([daemon.compatibility?.() || null, claudeCompatibility()]);
-      const driven = results.slice(0, 2).map((r, i) => ({
+      const driven = results.slice(0, 2).map((r, i) => agedOut({
         ...(r.status === "fulfilled"
           ? r.value
           : { agent: ["codex", "claude"][i], installed: false, signedIn: false, ...(notInstalled(r.reason) ? {} : { error: r.reason?.message || "Could not check this app. Try again." }) }),
@@ -2122,9 +2145,18 @@ export function createAgentSessions({
       const merged = others.map((o) =>
         o.agent === "gemini" && gem?.installed
           ? { ...o, ...gem, name: o.name || "Gemini CLI", supported: true }
-          : // OpenClaw: whether its Gateway can take a moved chat (2026.3.13 can't).
+          : // OpenClaw: whether its Gateway can take a moved chat (2026.3.13 can't),
+            // and one too old for Reach to join (older than 2026.2.26).
             o.agent === "openclaw" && openClaw
-            ? { ...o, canTakeMoves: openClaw.canMove?.() !== false, connected: openClaw.connected?.() === true }
+            ? (() => {
+                const old = openClaw.tooOld?.();
+                return {
+                  ...o,
+                  canTakeMoves: openClaw.canMove?.() !== false,
+                  connected: openClaw.connected?.() === true,
+                  ...(old?.to ? { installed: true, tooOld: { ...(old.version ? { version: old.version } : {}), to: old.to }, needs: ["update"] } : {}),
+                };
+              })()
             : o,
       );
       if (gem?.installed && !merged.some((o) => o.agent === "gemini")) merged.push({ ...gem, name: "Gemini CLI", supported: true });

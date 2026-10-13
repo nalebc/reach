@@ -164,10 +164,17 @@ export type AgentHealth = {
   // OpenClaw: its Gateway answers (it has no sign-in of its own).
   connected?: boolean;
   // What it needs on the computer before it can run: "git", Git for Windows
-  // for Claude Code on Windows (installed from the phone, agent "git").
+  // for Claude Code on Windows (installed from the phone, agent "git");
+  // "update", a newer version (tooOld says which).
   needs?: string[];
+  // Older than Reach works with (server: agent-sessions/compatibility.mjs):
+  // not offered for new work; its chats still read. version: as read (none
+  // when OpenClaw refused before saying); to: the version to update to.
+  tooOld?: { version?: string; to: string };
   error?: string;
 };
+// One short line for an agent too old for Reach.
+export const tooOldLine = (name: string, to: string) => `Update ${name} to ${to} or newer to use it here.`;
 // Spends one Codex rate-limit reset (the Codex app's "Reset usage").
 export const resetUsage = (peer: Peer, agent: AgentName) =>
   post<{ outcome: "reset" | "nothingToReset" | "noCredit" | "alreadyRedeemed" }>(peer, "/api/sessions/usage/reset", { agent });

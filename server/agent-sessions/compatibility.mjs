@@ -237,22 +237,48 @@ export function validateCodexResult(method, result) {
 // Bounded, account-free probes. Cache by executable metadata, so an in-place
 // upgrade is noticed even before the TTL expires. Failed probes expire sooner.
 // The oldest releases with everything Reach uses, found by testing each
-// release (Oct 13): Claude Code 2.1.259 brought --permission-prompts (how
+// release (Oct 12–13): Claude Code 2.1.259 brought --permission-prompts (how
 // the phone answers its permission prompts), Codex 0.148.0 the queue of
-// messages sent while it works. Older ones are named, with what to do,
-// rather than "Update Reach" (what an old Claude Code was told before).
-export const OLDEST_WORKING = { claude: "2.1.259", codex: "0.148.0" };
+// messages sent while it works, OpenClaw 2026.2.26 the v3 device signature
+// Reach signs its Gateway connection with (scripts/openclaw-canary.mjs).
+// Older ones are named, with the version to update to, rather than "Update
+// Reach" (what an old Claude Code was told before), and aren't offered.
+export const OLDEST_WORKING = { claude: "2.1.259", codex: "0.148.0", openclaw: "2026.2.26" };
+const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", openclaw: "OpenClaw" };
 const olderThan = (version, floor) => {
   const a = String(version).split(/[.+-]/).slice(0, 3).map(Number), b = floor.split(".").map(Number);
   for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
   return false;
 };
+// "OpenClaw 2026.2.25 is older than…"; without a version read ("OpenClaw is
+// older than…") only where something else proved it (a Gateway refusing
+// Reach's v3 signature).
+export const tooOldReason = (agent, version, to = OLDEST_WORKING[agent]) =>
+  `${AGENT_NAMES[agent]}${version ? ` ${version}` : ""} is older than Reach works with. Update it to ${to} or newer to use it here.`;
+// A version Reach can't read is never too old (nor known to work: the
+// command check still decides).
 export function tooOld(agent, version) {
   const floor = OLDEST_WORKING[agent];
   if (!floor || !version || !/^\d+\.\d+\.\d+/.test(version) || !olderThan(version, floor)) return null;
-  const name = agent === "codex" ? "Codex" : "Claude Code";
-  return { version, status: "incompatible", reason: `${name} ${version} is older than Reach works with: update it to ${floor} or newer, or use the screen or terminal.` };
+  return { version, status: "incompatible", agent, to: floor, reason: tooOldReason(agent, version, floor) };
 }
+// What refuses work for an agent that's too old: its own words, with the
+// version to update to (update: for a phone that reads it), never "Update
+// Reach". Same code as compatibilityError, so whatever passes that on
+// (claude-host's stream errors) passes this on too.
+export const tooOldError = (old) =>
+  Object.assign(new Error(old.reason || tooOldReason(old.agent, old.version, old.to)), {
+    status: 409,
+    code: "AGENT_INCOMPATIBLE",
+    feature: "CLI",
+    uncertain: false,
+    retryable: false,
+    update: { agent: old.agent, ...(old.version ? { from: old.version } : {}), to: old.to },
+  });
+// A probe's report that says too old (status incompatible, with the version
+// to update to); anything else, null.
+export const reportTooOld = (report) =>
+  report?.status === "incompatible" && typeof report.to === "string" && Object.hasOwn(OLDEST_WORKING, report.agent) ? report : null;
 export function createAgentProbe({
   run = runToFile,
   stat = fs.statSync,

@@ -131,7 +131,7 @@ import { createUsageWatch } from "./agent-sessions/usage-watch.mjs";
 import { createTurnWatch, usageLimited } from "./agent-sessions/turn-watch.mjs";
 import { createRelays } from "./agent-sessions/relays.mjs";
 import { createTeams } from "./agent-sessions/teams.mjs";
-import { createWorkflows } from "./agent-sessions/workflows.mjs";
+import { createWorkflows, readyForTasks } from "./agent-sessions/workflows.mjs";
 import { createTeamBridge, teamPipe } from "./agent-sessions/team-bridge.mjs";
 import { MAX_MENTIONS, mentionBlock, withMentions } from "./agent-sessions/chat-context.mjs";
 import { createJournal, turnEvent } from "./agent-sessions/journal.mjs";
@@ -741,9 +741,7 @@ export async function createReach(overrides = {}) {
       relays,
       availableAgents: async () => {
         const [health, claw] = await Promise.allSettled([agentSessions.health(), openClaw.overview()]);
-        const ready = health.status === "fulfilled" ? health.value.filter((h) =>
-          ["codex", "claude"].includes(h.agent) && h.installed && h.signedIn && h.usable !== false && !h.error && h.compatibility?.status !== "unavailable"
-        ).map((h) => h.agent) : [];
+        const ready = health.status === "fulfilled" ? readyForTasks(health.value) : [];
         if (claw.status === "fulfilled" && claw.value.connected) ready.push("openclaw");
         return ready;
       },
