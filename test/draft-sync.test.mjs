@@ -1,10 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
-const { outputText } = ts.transpileModule(await fs.readFile(new URL("../src/draft-sync.ts", import.meta.url), "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-});
+import { transpile } from "./helpers/transpile.mjs";
+const outputText = transpile(await fs.readFile(new URL("../src/draft-sync.ts", import.meta.url), "utf8"));
 const { createDraftSync } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("drafts coalesce, stay ordered through slow writes, and flush before Send", async () => {

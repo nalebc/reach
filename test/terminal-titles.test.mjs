@@ -1,14 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 
 // Terminal names as people read them: Mac window titles become the project
 // and what runs in it, with agents recognized for their logos.
-const { outputText } = ts.transpileModule(
-  await fs.readFile(new URL("../src/terminal-titles.ts", import.meta.url), "utf8"),
-  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } },
-);
+const outputText = transpile(await fs.readFile(new URL("../src/terminal-titles.ts", import.meta.url), "utf8"));
 const { describeMacTerminal, describeReachTerminal } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

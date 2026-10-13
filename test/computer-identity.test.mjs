@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import {
   identityDigest,
   computerIdentity,
@@ -11,12 +11,7 @@ import {
 import { createReach } from "../server/index.mjs";
 const sourceUrl = new URL("../src/api.ts", import.meta.url);
 const source = await fs.readFile(sourceUrl, "utf8");
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-  },
-});
+const outputText = transpile(source);
 // A data URL has no relative module base. Keep the actual production helper,
 // resolving its import against the original TypeScript file before loading.
 const resolvedOutput = outputText.replaceAll(

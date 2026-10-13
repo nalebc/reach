@@ -1,20 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 
-const { outputText } = ts.transpileModule(
-  await fs.readFile(
+const outputText = transpile(await fs.readFile(
     new URL("../src/guest-network.ts", import.meta.url),
     "utf8",
-  ),
-  {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  },
-);
+  ));
 const { observeGuestNetwork } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );

@@ -1,19 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import ts from "typescript";
+import { transpile } from "./helpers/transpile.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
 
 async function load(file) {
-  const { outputText } = ts.transpileModule(
-    await fs.readFile(new URL(`../src/${file}`, import.meta.url), "utf8"),
-    {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-      },
-    },
-  );
+  const outputText = transpile(await fs.readFile(new URL(`../src/${file}`, import.meta.url), "utf8"));
   return import(
     `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
   );
