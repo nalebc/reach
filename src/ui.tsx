@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useRef } from "react";
 import {
   X,
   LoaderCircle,
@@ -94,17 +94,30 @@ export function Modal({
   wide?: boolean;
   className?: string;
 }) {
+  const marker = useRef<HTMLSpanElement>(null);
+  // A drag down that doesn't close it (a page going back to its sheet, a
+  // sheet busy connecting) springs it back instead of leaving it off-screen.
+  const close = () => {
+    onClose();
+    setTimeout(() => {
+      const dialog = marker.current?.closest("dialog");
+      if (!dialog?.open || !dialog.style.translate) return;
+      dialog.style.transition = "translate 0.24s cubic-bezier(0.2, 0.8, 0.2, 1)";
+      dialog.style.translate = "";
+    });
+  };
   return (
     <ScreenPopup
       title={title}
       heading={heading}
-      onClose={onClose}
+      onClose={close}
       className={["reach-sheet", wide && "wide", footer && "has-foot", className]
         .filter(Boolean)
         .join(" ")}
     >
       {children}
       {footer && <div className="reach-sheet-foot">{footer}</div>}
+      <span ref={marker} hidden />
     </ScreenPopup>
   );
 }

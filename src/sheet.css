@@ -326,6 +326,13 @@
   .screen-popup.reach-sheet.is-page {
     height: calc(100dvh - 35px - env(safe-area-inset-top));
   }
+  /* A page has its back chevron, not a grabber: no drag there. */
+  .screen-popup.reach-sheet.is-page .sheet-handle {
+    display: none;
+  }
+  .screen-popup.reach-sheet.is-page .screen-popup-body {
+    padding-top: 14px;
+  }
   .screen-popup.reach-sheet .screen-popup-body {
     padding: 0 18px max(18px, env(safe-area-inset-bottom));
   }
