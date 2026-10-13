@@ -36,17 +36,24 @@ public class ReachDesktopInput {
 # allow one background look, bounded to 250 ms, without piling up workers.
 Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Point].Assembly.Location) -TypeDefinition @'
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Automation;
 public class ReachDesktopFieldProbe {
- static readonly object gate=new object(); static Thread worker;
+ [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+ static readonly object gate=new object(); static Thread worker; static volatile bool warm;
+ // UI Automation's first call in a process starts its client (seconds on a
+ // cold PC): started with the helper, so a finger's first look isn't the
+ // one that pays for it. Each look's thread uses the helper's DPI awareness
+ // (per-monitor v2), so its points are the same pixels as the click's.
+ public static void Warm(){var t=new Thread(()=>{try{SetThreadDpiAwarenessContext(new IntPtr(-4));AutomationElement.FromPoint(new Point(0,0));}catch{}warm=true;});t.IsBackground=true;t.SetApartmentState(ApartmentState.MTA);t.Start();}
  public static int At(double x,double y){lock(gate){
   if(worker!=null && worker.IsAlive)return 0;
   int result=0;
-  worker=new Thread(()=>{try{result=Read(x,y);}catch{}});
+  worker=new Thread(()=>{try{SetThreadDpiAwarenessContext(new IntPtr(-4));result=Read(x,y);warm=true;}catch{}});
   worker.IsBackground=true;worker.SetApartmentState(ApartmentState.MTA);worker.Start();
-  return worker.Join(250)?result:0;
+  return worker.Join(warm?250:1000)?result:0;
  }}
  static int Read(double x,double y){
   AutomationElement element=AutomationElement.FromPoint(new Point(x,y));
@@ -66,6 +73,7 @@ public class ReachDesktopFieldProbe {
 }
 '@
 [ReachDesktopInput]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
+[ReachDesktopFieldProbe]::Warm()
 # The display list: asked as -Display list. A bare --list never reached
 # $Display (PowerShell reads a leading dash as a parameter name), so the
 # helper waited for input and the screen never loaded (Oct 12).
