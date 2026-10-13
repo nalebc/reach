@@ -45,6 +45,16 @@ function bareLink(url: string): [string, string] {
   }
   return [url.slice(0, end), url.slice(end)];
 }
+// A secure web address as an href, re-encoded (a well-formed one comes back
+// the same; anything odd is escaped), or null when it isn't one.
+function webHref(url: string): string | null {
+  if (!/^https:\/\/[^\s"<>]+$/i.test(url)) return null;
+  try {
+    return encodeURI(decodeURI(url));
+  } catch {
+    return null;
+  }
+}
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
   const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)|<(https:\/\/[^\s<>]+)>|(https:\/\/[^\s<>"'`]+)/gi;
@@ -57,9 +67,10 @@ function inline(text: string, key: string): ReactNode[] {
     else if (match[2] !== undefined) out.push(<strong key={k}>{inline(match[2], k)}</strong>);
     else if (match[5] !== undefined || match[6] !== undefined) {
       const [url, after] = match[5] !== undefined ? [match[5], ""] : bareLink(match[6]);
+      const href = webHref(url);
       out.push(
-        /^https:\/\/[^\s"<>]+$/i.test(url) ? (
-          <a key={k} href={url} target="_blank" rel="noopener noreferrer">
+        href ? (
+          <a key={k} href={href} target="_blank" rel="noopener noreferrer">
             {url}
           </a>
         ) : (
@@ -69,9 +80,9 @@ function inline(text: string, key: string): ReactNode[] {
       if (after) out.push(after);
       continue;
     }
-    else if (/^https:\/\/[^\s"<>]+$/i.test(match[4]))
+    else if (webHref(match[4]))
       out.push(
-        <a key={k} href={match[4]} target="_blank" rel="noopener noreferrer">
+        <a key={k} href={webHref(match[4])!} target="_blank" rel="noopener noreferrer">
           {match[3]}
         </a>,
       );

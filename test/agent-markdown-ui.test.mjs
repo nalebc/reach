@@ -188,3 +188,13 @@ test("a bare https address is a tappable link; punctuation, code and plain http 
   assert.match(text, /http:\/\/example\.test\/plain/, "plain http stays text");
   await view.unmount();
 });
+
+test("a link's address comes back as written when it's well formed, and escaped when it isn't", async () => {
+  const view = await dom.render(React.createElement(AgentMarkdown, {
+    text: "https://example.test/a%20b?q=1&r=two#frag and [x](https://example.test/%E2%9C%93) and https://example.test/%zz",
+  }));
+  const hrefs = [...view.container.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+  assert.deepEqual(hrefs, ["https://example.test/a%20b?q=1&r=two#frag", "https://example.test/%E2%9C%93"]);
+  assert.match(view.container.textContent, /https:\/\/example\.test\/%zz/, "a malformed address stays text");
+  await view.unmount();
+});
