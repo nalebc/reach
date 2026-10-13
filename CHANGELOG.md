@@ -8,7 +8,37 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-13: Fork a chat from any message into another app ("Fork chat…" in
+  a chat's menu, or from an earlier message). Claude forks natively, keeping
+  compaction, thinking and complete tool records; Codex forks through the
+  chosen completed turn; OpenClaw takes long tool output split, never
+  clipped. Later messages stay out, and the source chat is never rewritten.
+- 2026-10-13: The owner comes first on the screen. Input through Reach's screen from the
+  owner (or a full-access person) holds every agent off it, its looks
+  included (screenshots, describe, read, its live picture), with kind
+  `paused`, who is using it and `retryInMs`; agents get it back 2 minutes
+  after the last input through Reach, or at once from "Let them back" on the
+  quiet "Agents wait · 2 min after you stop" pill. Chats' Claude app messages
+  never wait on it. The agent's live picture shows a calm "The owner is using
+  the Mac".
+- 2026-10-13: Two fingers scroll the computer, up, down and sideways, in every touch mode
+  (pinch still zooms), and the bar has a desktop switcher while controlling:
+  previous desktop, all windows, next desktop.
+
 ### Changed
+
+- 2026-10-12: Dependencies: Vite 8, xterm 6 (addon-fit 0.11), esbuild 0.28,
+  jsdom 30, lucide-react 1.53, TypeScript 7 and the current GitHub Actions.
+  A source checkout now builds on Node 22.12 or newer; `./reach` and
+  `reach.cmd` fetch Reach's own Node below that. npm installs still run on any
+  Node 22.
+
+- 2026-10-13: OpenClaw's heartbeat: a skipped run is a quiet note in Reach's
+  words ("Nothing to check: the heartbeat's task list is empty."), schedules
+  OpenClaw owns say to change them in OpenClaw, and the heartbeat turns off
+  and on from Reach when one setting (agents.defaults.heartbeat) decides it.
 
 - 2026-10-12: Agents on the Mac take one turn per step. Every tool that acts
   (reach_act, press, fill, and opening an app, page, bank, file or window)
@@ -33,6 +63,23 @@ release notes, so date the heading before tagging.
   refused with the same words, not "Update Reach". A Gateway found too old
   is tried again once a minute, or at once after an update or restart from
   Reach, not on every look.
+
+### Fixed
+
+- 2026-10-13: Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
+  They now take the room the picture leaves (a rail at the side on a phone
+  turned sideways, rows above and below when upright), and hiding them never
+  moves the picture.
+- 2026-10-13: Taps that did nothing: every tap now reaches the computer or says why in
+  one line, a tap made while control's connection blinks goes once it is back
+  (within a second, never later), and click feedback is a small wave in Reach
+  green, shown only for a click the computer did (none while only watching).
+- 2026-10-13: The live screen on a phone hitched every 10–25 s at full size: the iPhone's
+  video decoder kept failing on a 2868×1862 stream (and once at 2150×1396).
+  The cause isn't established; as a mitigation, not yet checked on the
+  iPhone, phones start at 1920 across, a step down keeps the last picture
+  crisp, and the smaller size is remembered for the session. On Windows, a
+  sideways scroll now goes the same way as on a Mac.
 
 ## [0.1.1] — 2026-10-12
 
@@ -68,17 +115,6 @@ real-device checks that are still open.
 
 ### Added
 
-- The owner comes first on the screen. Input through Reach's screen from the
-  owner (or a full-access person) holds every agent off it, its looks
-  included (screenshots, describe, read, its live picture), with kind
-  `paused`, who is using it and `retryInMs`; agents get it back 2 minutes
-  after the last input through Reach, or at once from "Let them back" on the
-  quiet "Agents wait · 2 min after you stop" pill. Chats' Claude app messages
-  never wait on it. The agent's live picture shows a calm "The owner is using
-  the Mac".
-- Two fingers scroll the computer, up, down and sideways, in every touch mode
-  (pinch still zooms), and the bar has a desktop switcher while controlling:
-  previous desktop, all windows, next desktop.
 - Face ID confirms agent approvals, a switch in Settings → Agents for the
   owner's own devices once Face ID is set up on the computer. With it on,
   approving an agent's first connection on the phone asks for Face ID, and the
@@ -173,20 +209,6 @@ real-device checks that are still open.
 
 ### Fixed
 
-- Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
-  They now take the room the picture leaves (a rail at the side on a phone
-  turned sideways, rows above and below when upright), and hiding them never
-  moves the picture.
-- Taps that did nothing: every tap now reaches the computer or says why in
-  one line, a tap made while control's connection blinks goes once it is back
-  (within a second, never later), and click feedback is a small wave in Reach
-  green, shown only for a click the computer did (none while only watching).
-- The live screen on a phone hitched every 10–25 s at full size: the iPhone's
-  video decoder kept failing on a 2868×1862 stream (and once at 2150×1396).
-  The cause isn't established; as a mitigation, not yet checked on the
-  iPhone, phones start at 1920 across, a step down keeps the last picture
-  crisp, and the smaller size is remembered for the session. On Windows, a
-  sideways scroll now goes the same way as on a Mac.
 - Screen sharing with a browser agent dropped for seconds at a time. The
   foreground `tailscale serve` and `tailscale funnel` processes that carried
   the routes kept exiting (124 and 65 relaunches in one day's log, through a
