@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppWindow,
   ArrowRight,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -9,6 +10,7 @@ import {
   Folder,
   Lock,
   Search,
+  ShieldCheck,
   Terminal,
 } from "lucide-react";
 import { fileBlob, peerFetch, request, type FileEntry, type Peer } from "./api";
@@ -44,6 +46,9 @@ export type PresetAccess = {
   hidden?: { id: string; name?: string }[];
   // Always access: no end time; the same link brings the agent back.
   standing?: boolean;
+  // What it may do and the owner's rules, a line each, from its access now
+  // (server/agent-guide.mjs): the invite message no longer carries them.
+  guide?: string;
   browserTools?: BrowserAccess["browserTools"];
   savedTools?: BrowserAccess["savedTools"];
   services?: BrowserAccess["services"];
@@ -56,6 +61,8 @@ type DesktopApp = {
   runsCommands?: boolean;
 };
 type Listing = { items: FileEntry[]; truncated?: boolean };
+// Closed by the agent: kept closed in this tab, reloads included.
+const GUIDE_CLOSED = "reach.agent-guide-closed";
 
 type Props = {
   peer: Peer;
@@ -94,6 +101,23 @@ export default function AgentPage({
             : "access",
   );
   const [toolQuery, setToolQuery] = useState("");
+  const [guideOpen, setGuideOpen] = useState(() => {
+    try {
+      return sessionStorage.getItem(GUIDE_CLOSED) !== "1";
+    } catch {
+      return true;
+    }
+  });
+  const guide = (access.guide || "").split("\n").filter((line) => line.trim());
+  const showGuide = useCallback((open: boolean) => {
+    setGuideOpen(open);
+    try {
+      if (open) sessionStorage.removeItem(GUIDE_CLOSED);
+      else sessionStorage.setItem(GUIDE_CLOSED, "1");
+    } catch {
+      /* Storage may be off: open again next time. */
+    }
+  }, []);
   const [activity, setActivity] = useState("");
   const [status, setStatus] = useState<{
     text: string;
@@ -213,6 +237,29 @@ export default function AgentPage({
       reload={reload}
     >
       <div className="agent-page ap-workspace-content">
+        {guide.length > 0 && active !== "screen" && (
+          // Read by the agent once it's in: what it may do here and the
+          // owner's rules, from its access now. On Screen it's a popup over
+          // the picture instead (AgentScreen), which stays the whole view.
+          <details
+            className="ap-guide"
+            open={guideOpen}
+            onToggle={(e) => {
+              const open = e.currentTarget.open;
+              if (open !== guideOpen) showGuide(open);
+            }}
+          >
+            <summary>
+              <ShieldCheck size={15} /> Your instructions
+              <ChevronDown size={14} />
+            </summary>
+            <ul>
+              {guide.map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          </details>
+        )}
         {status.text && active !== "screen" && (
           <p
             className={`ap-status ${status.tone}`}
@@ -248,6 +295,9 @@ export default function AgentPage({
               status={status}
               tell={tell}
               ended={ended}
+              guide={guide}
+              guideOpen={guideOpen}
+              onGuide={showGuide}
             />
           </div>
         )}

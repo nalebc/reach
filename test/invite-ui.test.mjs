@@ -90,8 +90,13 @@ function computers({ keyed = true, failOn = "", guests = [], policyBlock = false
     }
     if (u.pathname === "/api/agents/invitations" && init.method === "POST")
       return reply(201, { invitation: secret("z"), clientId: `agent-${host}`, expiresAt: Date.now() + body.ttlSeconds * 1000, joinBy: Date.now() + 900000, scopes: ["device", "files:read"], runtime: RUNTIME });
-    if (/^\/api\/guests\/[^/]+\/link$/.test(u.pathname) && init.method === "POST")
-      return reply(200, { invitation: secret("n"), clientId: u.pathname.split("/")[3], expiresAt: Date.now() + 3600000 });
+    if (/^\/api\/guests\/[^/]+\/link$/.test(u.pathname) && init.method === "POST") {
+      const id = u.pathname.split("/")[3];
+      // A browser agent through the public link: its page, and the runtime its tools pin.
+      const funnel = guests.find((g) => g.id === id)?.browserTransport === "funnel";
+      return reply(200, { invitation: secret("n"), clientId: id, expiresAt: Date.now() + 3600000,
+        ...(funnel ? { url: `https://${host}.t.ts.net/agent-browser#invite=${secret("n")}`, transport: "funnel", runtime: RUNTIME } : {}) });
+    }
     if (u.pathname.startsWith("/api/clients/") && init.method === "DELETE") return reply(200, { ok: true });
     return reply(404, { error: "This action does not exist." });
   };
@@ -539,6 +544,33 @@ test("someone who hasn't opened their link: a new one, the old one stops working
   assert.equal(new URL(copied).pathname, "/guest");
   assert.deepEqual(link.invites, [{ origin: "https://mac-a.t.ts.net:8443", secret: secret("n") }]);
   assert.equal(link.key, KEY.key);
+  await view.unmount();
+});
+
+// A Tools agent's new link explains itself (its /agent steps), so it carries
+// the runtime's SHA-256 the steps check the download against.
+test("a Tools agent's new link carries the runtime it pins", async () => {
+  const later = Date.now() + 2 * 3600 * 1000;
+  computers({
+    guests: [{ id: "g4", kind: "agent", name: "Otter", status: "invited", expiresAt: later, scopes: ["device", "browser:read"], browserTransport: "funnel", policy: { browser: true, preset: "readonly", invite: true } }],
+  });
+  localStorage.setItem("reach.invite-forms", JSON.stringify({ g4: "tools" }));
+  const view = await hub({ toast: () => {} });
+  const c = view.container;
+  await settle(40);
+  await openRow(c, "Otter");
+  await click(c.querySelector('[aria-label="New invite link for Otter"]'));
+  await settle(40);
+  let copied = "";
+  Object.defineProperty(dom.window.navigator, "clipboard", { value: { writeText: async (t) => { copied = t; } }, configurable: true });
+  await click(c.querySelector('[aria-label="Copy Otter’s link"]'));
+  const url = new URL(copied);
+  assert.equal(url.pathname, "/agent");
+  const params = new URLSearchParams(url.hash.slice(1));
+  assert.equal(params.get("t"), "funnel");
+  assert.equal(params.get("r"), RUNTIME);
+  assert.equal(params.get("i"), `https://mac-a.t.ts.net:8443~${secret("n")}`);
+  localStorage.removeItem("reach.invite-forms");
   await view.unmount();
 });
 test("access names", () => {

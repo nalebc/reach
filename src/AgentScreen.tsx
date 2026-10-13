@@ -13,6 +13,7 @@ import {
   Maximize,
   Minimize,
   MoreHorizontal,
+  ShieldCheck,
   ZoomIn,
 } from "lucide-react";
 import { peerFetch, request, type Peer } from "./api";
@@ -141,6 +142,9 @@ export default function AgentScreen({
   status,
   tell,
   ended,
+  guide = [],
+  guideOpen = false,
+  onGuide = () => {},
 }: {
   peer: Peer;
   access: PresetAccess;
@@ -149,6 +153,11 @@ export default function AgentScreen({
   status: { text: string; tone: Tone };
   tell: (text: string, tone?: Tone) => void;
   ended: (e: unknown) => void;
+  // The agent's instructions, a line each (AgentPage): here a popup over
+  // the screen, never a block that pushes the picture down.
+  guide?: string[];
+  guideOpen?: boolean;
+  onGuide?: (open: boolean) => void;
 }) {
   const control = !!access.control;
   const [imageUrl, setImageUrl] = useState("");
@@ -1151,6 +1160,17 @@ export default function AgentScreen({
                 <Icon size={17} />
               </button>
             ))}
+          {guide.length > 0 && (
+            <button
+              type="button"
+              aria-label="Your instructions"
+              title="Your instructions"
+              aria-haspopup="dialog"
+              onClick={() => onGuide(true)}
+            >
+              <ShieldCheck size={18} />
+            </button>
+          )}
           <button
             type="button"
             aria-label={full ? "Exit full screen" : "Full screen"}
@@ -1173,6 +1193,16 @@ export default function AgentScreen({
           )}
         </div>
       </div>
+      {guide.length > 0 && guideOpen && active && !panel && (
+        // Read once on arrival, then closed; the shield button opens it again.
+        <ScreenPopup title="Your instructions" onClose={() => onGuide(false)}>
+          <ul className="ap-guide-list">
+            {guide.map((line, index) => (
+              <li key={index}>{line}</li>
+            ))}
+          </ul>
+        </ScreenPopup>
+      )}
       {panel === "shortcuts" && control && (
         <ScreenPopup title="Shortcuts" onClose={() => setPanel(null)} returnFocus={() => keysRef.current}>
           <ScreenActions

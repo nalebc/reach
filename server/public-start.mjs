@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { agentSteps, agentStepsPage, wantsPage } from "./agent-steps.mjs";
 
 // The one public part of Reach: the start page a phone opens before it is on
 // the tailnet, through Tailscale Funnel. It serves only fixed files that hold
@@ -69,8 +70,12 @@ export function publicStartHandler({
   // Whether a new browser can sign in with Face ID alone right now
   // (server/face-join.mjs).
   faceId = () => false,
+  // What the steps at /agent call this computer (computer-word.mjs).
+  platform = process.platform,
 }) {
   const publicHost = new URL(privateOrigin).hostname;
+  // Where an agent's link points, and its runtime comes from.
+  const agentStart = home || `https://${publicHost}`;
   const config = () =>
     JSON.stringify({
       product: "Reach",
@@ -125,6 +130,23 @@ export function publicStartHandler({
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found.");
   };
+  // An agent's link explains itself: its steps as text to a program (curl,
+  // a fetch tool), the start page with them in it to a browser. Nothing
+  // from the request goes in (its fragment never arrives anyway).
+  const agentPage = (req, res) => {
+    const text = agentSteps(agentStart, { platform });
+    let body = text, type = "text/plain; charset=utf-8";
+    if (wantsPage(req.headers.accept)) {
+      try {
+        body = agentStepsPage(fs.readFileSync(path.join(dist, "start.html"), "utf8"), text);
+        type = "text/html; charset=utf-8";
+      } catch {
+        return notFound(res);
+      }
+    }
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-cache", Vary: "Accept", "Content-Length": Buffer.byteLength(body) });
+    res.end(req.method === "HEAD" ? undefined : body);
+  };
   return (req, res) => {
     res.setHeader("Content-Security-Policy", PUBLIC_CSP);
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -147,7 +169,8 @@ export function publicStartHandler({
     const url = (req.url || "/").split("?")[0];
     if (url === "/agent-browser")
       return send(req, res, path.join(dist, "agent.html"), "no-store");
-    if (url === "/" || url === "/guest" || url === "/agent")
+    if (url === "/agent") return agentPage(req, res);
+    if (url === "/" || url === "/guest")
       return send(req, res, path.join(dist, "start.html"), "no-cache");
     if (url === "/reach-start.json") {
       const body = config();

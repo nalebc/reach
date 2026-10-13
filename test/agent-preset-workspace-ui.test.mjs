@@ -1005,6 +1005,54 @@ test("Files describes only shared files, without offering absent screen controls
   assert.match(c.querySelector(".ap-file pre").textContent, /# Notes/);
 });
 
+// Oct 12: the invite message is two lines; once in, the agent reads what it
+// may do and the owner's rules on its page (its guide from /api/browser), a
+// row a line. On Screen a popup it closes once read (the picture keeps its
+// whole height); elsewhere a block, folded once read.
+test("the agent's instructions show on its page once it's in, then fold away", async () => {
+  const CLOSED = "reach.agent-guide-closed";
+  dom.window.sessionStorage.removeItem(CLOSED);
+  const guide = 'You get only "Notes", on my screen. Nothing else.\nFill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale.\nAsk me before paying, sending or deleting anything.\nDon\'t share your Reach credentials.';
+  const lines = (root) => [...root.querySelectorAll("li")].map((li) => li.textContent);
+  const { c } = await open({ ...full, preset: "apps", presetName: "Apps", shell: false, write: false, roots: [], guide });
+  // Screen: a popup over the picture, never a block above it.
+  const popup = await dom.waitFor(() => c.querySelector('dialog[aria-label="Your instructions"]'));
+  assert.deepEqual(lines(popup), guide.split("\n"));
+  assert.equal(c.querySelector("details.ap-guide"), null, "nothing pushes the screen down");
+  await click(popup.querySelector('[aria-label="Close panel"]'));
+  assert.equal(c.querySelector('dialog[aria-label="Your instructions"]'), null);
+  assert.equal(dom.window.sessionStorage.getItem(CLOSED), "1", "read: kept closed in this tab");
+  // The shield on the screen's bar opens it again.
+  await click(c.querySelector('button[aria-label="Your instructions"]'));
+  assert.ok(c.querySelector('dialog[aria-label="Your instructions"]'));
+  await click(c.querySelector('dialog[aria-label="Your instructions"] [aria-label="Close panel"]'));
+  // Elsewhere, a block, folded now it's been read.
+  await click(c.querySelector('[aria-label="More workspace sections"]'));
+  await click(c.querySelector('#agent-nav-access'));
+  const block = await dom.waitFor(() => c.querySelector("details.ap-guide"));
+  assert.equal(block.open, false);
+  assert.equal(block.querySelector("summary").textContent.trim(), "Your instructions");
+  assert.deepEqual(lines(block), guide.split("\n"));
+  for (const view of views) await view.unmount();
+  views.clear();
+  // Files (no screen): the block, open the first time.
+  dom.window.sessionStorage.removeItem(CLOSED);
+  const files = await open({ ...full, preset: "files", presetName: "Files", screen: false, control: false, open: false, shell: false, write: false, guide: 'You can read files in "Home". No screen, no commands.' });
+  const first = await dom.waitFor(() => files.c.querySelector("details.ap-guide"));
+  assert.equal(first.open, true);
+  first.open = false;
+  first.dispatchEvent(new dom.window.Event("toggle"));
+  await settle(20);
+  assert.equal(dom.window.sessionStorage.getItem(CLOSED), "1");
+  dom.window.sessionStorage.removeItem(CLOSED);
+  for (const view of views) await view.unmount();
+  views.clear();
+  // A computer that says none: nothing.
+  const older = await open({ ...full });
+  assert.equal(older.c.querySelector(".ap-guide"), null);
+  assert.equal(older.c.querySelector('[aria-label="Your instructions"]'), null);
+});
+
 test("the agent page renders without React warnings", () =>
   assert.deepEqual(dom.errors, []));
 

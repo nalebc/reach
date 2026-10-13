@@ -29,7 +29,7 @@ import { atomicJson, loadJson, sameHash } from "./core.mjs";
 import { browserRouteAllowed } from "./browser-access.mjs";
 import { permittedPath, sourceKey } from "./funnel-agent.mjs";
 import { agentErrorDetails, agentRequestError, agentRequestTimeout } from "./agent-transport.mjs";
-import { PROTOCOLS, serverInstructions, toContent, toolsFor } from "../scripts/mcp-server.mjs";
+import { PROTOCOLS, serverInstructions, toContent, toolsFor, withGuide } from "../scripts/mcp-server.mjs";
 import { isScreenImageRoute } from "../scripts/agent-client.mjs";
 
 const ACCESS_SECONDS = 3600;
@@ -165,6 +165,9 @@ export function createHostedMcp({
   // One of the agent's tool calls, carried to Reach's inner routes with the
   // context the endpoint verified: (context, {timeout}) → {status, headers, bytes}.
   dispatch,
+  // What the agent may do and its rules, from its access now
+  // (server/agent-guide.mjs), told at initialize.
+  guide = () => "",
   now = Date.now,
 }) {
   const hosts = new Set([new URL(origin).host, ...(privateOrigin ? [new URL(privateOrigin).host] : [])]);
@@ -441,6 +444,10 @@ export function createHostedMcp({
     try { error = JSON.parse(text); } catch { /* plain text */ }
     throw agentRequestError(response.status, error);
   };
+  // Its guide never keeps it from connecting.
+  const guideOf = (client) => {
+    try { return guide(client); } catch { return ""; }
+  };
   const unauthorized = (res, base, connector) => json(res, 401, { error: "invalid_token", error_description: "Connect to Reach first." }, {
     "WWW-Authenticate": `Bearer realm="Reach", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp/${connector}"`,
     "Cache-Control": "no-store",
@@ -455,7 +462,7 @@ export function createHostedMcp({
             // No stream back to the client here, so no change notices.
             capabilities: { tools: {} },
             serverInfo: { name: "reach", version: "0.1.0" },
-            ...serverInstructions(client.scopes, toolProfile),
+            ...withGuide(serverInstructions(client.scopes, toolProfile), guideOf(client)),
           } };
         case "ping": return { result: {} };
         case "tools/list": {

@@ -50,9 +50,9 @@ test("Connector makes a hosted public-link invitation and shows the connector ad
   assert.match(c.textContent, / is invited/);
   assert.equal(c.querySelector(".ag-done-url").textContent, "https://mac.tail.ts.net/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   assert.match(c.textContent, /custom MCP connector/);
+  // A line and the address: what it may do and the rules come at connect.
   const message = c.querySelector("textarea.browser-invite-message").value;
-  assert.ok(message.includes(`https://mac.tail.ts.net/mcp/${"a".repeat(43)}`), message);
-  assert.match(message, /custom MCP connector/);
-  assert.match(message, /You get full control of my Mac/);
+  assert.equal(message, `Add this as a custom MCP connector, then I approve the code it shows. Keep the address to yourself.\n\nhttps://mac.tail.ts.net/mcp/${"a".repeat(43)}`);
+  assert.doesNotMatch(message, /full control/);
   assert.equal(made[1], "https://mac.tail.ts.net/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 });

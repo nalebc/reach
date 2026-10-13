@@ -558,12 +558,14 @@ async function main() {
   // Signing in with Face ID again: this browser's old device goes first.
   forgetIfFresh();
   // An agent's invitation opened in a browser: it stays unused, for the agent.
+  // The steps the server put in the page (for agents that read pages as
+  // text) give way to what the link is for.
   if (location.pathname === "/agent") {
     history.replaceState(null, "", "/agent");
     render({
       title: "This link is for an AI agent",
       detail:
-        "Give it to your agent (Claude Code, Codex…) with the command Reach showed you. It joins by itself.",
+        "Paste it in your agent’s chat (Claude Code, Codex…). It reads the steps here and joins by itself, then you approve its code in Reach.",
     });
     return;
   }
