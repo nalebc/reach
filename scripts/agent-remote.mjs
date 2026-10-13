@@ -1035,7 +1035,7 @@ export async function join(o) {
     // came in. A guide that doesn't come never undoes the join.
     const guide = await joinedGuide(
       funnel
-        ? funnelApi({ conn, credential })
+        ? funnelApi({ conn, credential, gatewayOptions: o.send ? { send: o.send } : {} })
         : direct
           ? directApi(link.origin, joined.token, o.allowLocal)
           : tailnetApi(node, link.origin, joined.token, { timeoutMs: 15000 }),

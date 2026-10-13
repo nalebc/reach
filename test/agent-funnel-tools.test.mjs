@@ -75,6 +75,9 @@ test("a terminal agent joins through the public link with no Tailscale key, then
   try { assert.equal(await join({ _: ["join", link], send: f.send }), 0); }
   finally { process.stdout.write = stdout; clearInterval(approve); }
   assert.match(writes.join(""), /Connected to Fixture Mac \(through its public link\)/);
+  // Its instructions, from the computer through the same public link, with
+  // its new credential (the invite message is two lines).
+  assert.match(writes.join(""), /\n  You can read and change files in "work"\. No screen, no commands\.\n  Ask me before paying, sending or deleting anything\.\n/);
   const conn = path.join(home, "mac");
   const credential = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
   assert.equal(credential.via, "funnel");
