@@ -62,6 +62,10 @@ export async function startDom({
 
   // Expose the page as globals before React loads: react-dom decides at
   // import time whether it runs in a browser.
+  // The components' sockets are Node's own WebSocket, which builds its events
+  // on whatever global Event exists when it first loads: load it now, before
+  // the page's Event replaces Node's, or its error events can't be sent.
+  void globalThis.WebSocket;
   const saved = new Map();
   const define = (name, value) => {
     saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
