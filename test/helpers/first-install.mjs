@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { cleanPreload } from "./clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST } from "./fake-tailscale.mjs";
 
@@ -39,9 +40,18 @@ export async function finishFirstSetup(reach, { link, source = false } = {}) {
 // persisted setup, Serve/Funnel ingress and device approval. Only external
 // Tailscale, OS app launching and process inventory are simulated. No source
 // directory or saved preferences; no access to this machine's Reach state.
-export async function firstInstall(t, { missing = false, status = {}, funnelDenied = false, interactive = true, userApp = false, source = false } = {}) {
+//
+// `real` (the user journeys, test/journeys): this computer as it is, on a
+// Mac or a Windows PC. Its own login shell for Reach's terminals, its apps
+// and agents found as they are (nothing hidden), its screen, and the
+// folders a first run shares (Home and the whole computer). The home and
+// Reach's state are still this test's own, Tailscale is still the stand-in,
+// and web pages still aren't opened on the computer. `tailscale`: more of
+// the stand-in's scenario (its version, say).
+export async function firstInstall(t, { missing = false, status = {}, funnelDenied = false, interactive = true, userApp = false, source = false, real = false, tailscale = {} } = {}) {
   if (source && process.platform !== "linux")
     throw Error("The cold source-install harness runs only on Linux, with fake Tailscale; it must not discover a host's Tailscale app.");
+  const windows = process.platform === "win32";
   // Point at a clean npm install to run the same cases against the actual
   // release artifact; otherwise use the current checkout's package files.
   const packageRoot = path.resolve(source ? "." : process.env.REACH_TEST_PACKAGE || ".");
@@ -62,12 +72,14 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     for (const name of ["main.go", "go.mod", "go.sum"])
       await fs.copyFile(path.join(packageRoot, "tailnet", name), path.join(app, "tailnet", name));
   } else {
+    // Windows links folders as junctions, which need no privilege.
+    const folder = windows ? "junction" : "dir";
     for (const name of ["dist", "tailnet"])
-      await fs.symlink(path.join(packageRoot, name), path.join(app, name), "dir");
-    await fs.symlink(dependencies, path.join(app, "node_modules"), "dir");
+      await fs.symlink(path.join(packageRoot, name), path.join(app, name), folder);
+    await fs.symlink(dependencies, path.join(app, "node_modules"), folder);
   }
   await fs.copyFile(path.join(packageRoot, "package.json"), path.join(app, "package.json"));
-  const fake = await fakeTailscale(temp, { setup: status, funnelDenied, identities: {
+  const fake = await fakeTailscale(temp, { ...tailscale, setup: status, funnelDenied, identities: {
     "100.64.0.21": identity("phone-app"),
     "100.64.0.22": identity("phone-browser"),
     "100.64.0.23": identity("other-account", 99),
@@ -92,12 +104,15 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     const exec = cp.execFile, sync = cp.execFileSync;
     const exists = fs.existsSync;
     fs.existsSync = file => ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'].includes(file) ? false : exists(file);
+    // What opens a page on the computer: its browser, never started here. A
+    // real computer's apps and files still open (the journeys' Apps).
+    const page = (args) => !${real} || (Array.isArray(args[0]) && args[0].some(arg => /^https?:/i.test(String(arg))));
     cp.execFile = function(file, ...args) {
       // Hosted Linux images can provide /usr/bin/go even after PATH is
       // restricted. This scenario explicitly represents a computer without
       // Go: let the real spawn return ENOENT for that one optional tool.
       if (${source} && file === 'go') file = ${JSON.stringify(path.join(temp, "no-go"))};
-      if (['open', '/usr/bin/open', 'xdg-open', 'explorer.exe'].includes(file))
+      if (['open', '/usr/bin/open', 'xdg-open', 'explorer.exe'].includes(file) && page(args))
         return exec(process.execPath, ['-e', ''], args.find(value => typeof value === 'function'));
       return exec.call(this, file, ...args);
     };
@@ -109,30 +124,53 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     };
     // npm/build subprocesses really have pipes. Only Reach's own prompt
     // process represents the terminal; otherwise Vite expects TTY methods.
-    const reachTTY = ${interactive} && ['/scripts/bootstrap.mjs', '/bin/reach.mjs'].some(suffix => (process.argv[1] || '').endsWith(suffix));
+    // (Windows names the script with backslashes.)
+    const script = (process.argv[1] || '').replaceAll('\\\\', '/');
+    const reachTTY = ${interactive} && ['/scripts/bootstrap.mjs', '/bin/reach.mjs'].some(suffix => script.endsWith(suffix));
     Object.defineProperty(process.stdin, 'isTTY', { value: reachTTY, configurable: true });
     Object.defineProperty(process.stdout, 'isTTY', { value: reachTTY, configurable: true });
-    if ((process.argv[1] || '').endsWith('/scripts/bootstrap.mjs'))
+    if (script.endsWith('/scripts/bootstrap.mjs'))
       fs.writeFileSync(${JSON.stringify(bootstrapPid)}, String(process.pid));
     syncBuiltinESMExports();
   `);
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("REACH_"))),
-    HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHELL: shell, TERM: "dumb",
+    HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHELL: real ? process.env.SHELL || "/bin/zsh" : shell, TERM: "dumb",
     REACH_HOME: state, REACH_CODEX: path.join(temp, "no-codex"),
     ...(userApp ? {} : { REACH_TAILSCALE: fake.cli }),
     REACH_SUPERVISED: "1",
+    // One folder of native helper builds for every test that shares it.
+    ...(real && process.env.REACH_TEST_NATIVE_DIR ? { REACH_TEST_NATIVE_DIR: process.env.REACH_TEST_NATIVE_DIR } : {}),
   };
   delete env.NODE_TEST_CONTEXT;
+  if (windows) {
+    // A Windows PC's own folders on the PATH (named in any case there), the
+    // temporary home as the profile, no shell variable, and a process list
+    // naming no other Reach: under a test runner the real one leads up to
+    // GitHub's runner service, which Reach rightly takes for another app.
+    // `real` keeps the PC's own profile (a disposable runner's), so what an
+    // installer puts in its known folders is where Reach looks; a Mac's
+    // journeys keep a home of their own, never touching its owner's.
+    const system = env.SystemRoot || "C:\\Windows";
+    for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
+    env.Path = ["System32", "", "System32\\Wbem", "System32\\WindowsPowerShell\\v1.0"].map((dir) => path.win32.join(system, dir)).join(";");
+    if (real) delete env.HOME;
+    else env.USERPROFILE = home;
+    delete env.SHELL;
+    const processes = path.join(temp, "processes.json");
+    await fs.writeFile(processes, JSON.stringify({ processes: [] }));
+    env.REACH_TEST_WINDOWS_PROCESSES = processes;
+  }
+  // As URLs: Windows' absolute paths aren't ones for --import.
   const entry = [
-    "--import", path.resolve("test/helpers/runaway-guard.mjs"),
-    "--import", cleanPreload, "--import", tailnetPreload(fake.state), "--import", osPreload,
+    "--import", pathToFileURL(path.resolve("test/helpers/runaway-guard.mjs")).href,
+    ...(real ? [] : ["--import", cleanPreload]), "--import", tailnetPreload(fake.state), "--import", pathToFileURL(osPreload).href,
     path.join(app, "bin/reach.mjs"),
   ];
   let child, exited, output = "", cursor = 0, startedAt = 0, spawned = false;
   const start = () => {
     output = ""; cursor = 0; startedAt = Date.now(); spawned = false;
-    const args = ["--folder", shared, "--no-stay-awake"];
+    const args = [...(real ? [] : ["--folder", shared]), "--no-stay-awake"];
     child = source
       ? spawn("/bin/sh", [path.join(app, "reach"), ...args], { env: {
         ...env, NODE_OPTIONS: entry.slice(0, -1).map(arg => JSON.stringify(arg)).join(" "),
@@ -189,7 +227,12 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
       try { await exited; } finally { clearTimeout(forced); }
     }
   };
-  t.after(async () => { await stop(); await fs.rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); });
+  t.after(async () => {
+    await stop();
+    // The linked folders go first, as links: never what they point at.
+    if (!source) for (const name of ["dist", "tailnet", "node_modules"]) await fs.rm(path.join(app, name), { force: true }).catch(() => {});
+    await fs.rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  });
   const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method } = {}) => {
     const routes = await fake.read();
     const target = routes.serve.Web?.[`${HOST}:${port || (funnelDenied ? 8443 : 443)}`]?.Handlers?.["/"]?.Proxy;
@@ -218,7 +261,8 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
   };
   start();
   return {
-    app, home, state, shared, fake, until, request, stop,
+    // The computer's home as Reach sees it (a real PC's own profile, `real`).
+    app, home: real && windows ? os.homedir() : home, state, shared, fake, until, request, stop, temp, env,
     output: () => output, answer: text => child.stdin.write(text + "\n"),
     installTailscale: () => fs.rename(fake.cli + ".uninstalled", fake.cli),
     cli: args => new Promise((resolve, reject) => {
