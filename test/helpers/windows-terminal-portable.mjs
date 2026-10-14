@@ -15,7 +15,9 @@ import { windowsProcesses } from "../../server/windows-processes.mjs";
 // SHA-256 GitHub publishes for the asset (the release notes publish none).
 // It runs portable (settings beside it, never the PC's own), from a folder
 // with a space in its name, put first on PATH for the test and every Reach it
-// starts. Only on Windows, only for tests.
+// starts. Only on Windows, only for tests. While any Windows Terminal runs, it
+// takes the consoles Windows hands over (each instance registers for them),
+// so the portable one is ended as soon as its tests are done.
 export const PORTABLE = {
   version: "1.25.2733.0",
   assets: {
@@ -57,7 +59,9 @@ export function useWindowsTerminal() {
     const bytes = Buffer.from(await response.arrayBuffer());
     const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
     if (sha256 !== asset.sha256) throw Error(`${asset.name} isn't the one GitHub published: SHA-256 ${sha256}, expected ${asset.sha256}.`);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach windows terminal-"));
+    // Its long name (never C:\Users\RUNNER~1\…): Windows names a running
+    // program by it, and that's how its processes are found to be ended.
+    const dir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "reach windows terminal-"));
     const zip = path.join(dir, asset.name);
     fs.writeFileSync(zip, bytes);
     const unpacked = path.join(dir, "unpacked");
@@ -77,12 +81,25 @@ export function useWindowsTerminal() {
 export async function endWindowsTerminal({ nativeDir } = {}) {
   const terminal = ready && (await ready.catch(() => null));
   if (!terminal || terminal.source !== "portable") return;
-  try {
-    const inside = (await windowsProcesses({ nativeDir })).filter((p) => p.path && p.path.toLowerCase().startsWith(terminal.folder.toLowerCase()));
+  const folder = `${terminal.folder.toLowerCase()}\\`;
+  for (let round = 0; round < 3; round++) {
+    let inside = [];
+    try {
+      inside = (await windowsProcesses({ nativeDir })).filter((p) => p.path && p.path.toLowerCase().startsWith(folder));
+    } catch {}
+    if (!inside.length) break;
     for (const p of inside) await run("taskkill.exe", ["/PID", String(p.pid), "/T", "/F"], { windowsHide: true }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  ready = null;
+  // Best effort: a file Windows still holds stays in the temp folder.
+  try {
+    fs.rmSync(terminal.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
   } catch {}
-  fs.rmSync(terminal.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 }
+/** Whether a running program is this test's Windows Terminal (the portable one by its path; the PC's own by its name). */
+export const isTerminal = (process, terminal) =>
+  !!process && /^WindowsTerminal\.exe$/i.test(process.image) && (!terminal.exe || String(process.path).toLowerCase() === terminal.exe.toLowerCase());
 
 /**
  * Why Windows Terminal shows nothing, when it doesn't: whether its program

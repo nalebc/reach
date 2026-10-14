@@ -8,7 +8,7 @@ import { once } from "node:events";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startInConsole } from "../scripts/stop.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
-import { endWindowsTerminal, useWindowsTerminal, whyNoWindowsTerminal, windowsTerminalTabs } from "./helpers/windows-terminal-portable.mjs";
+import { endWindowsTerminal, isTerminal, useWindowsTerminal, whyNoWindowsTerminal, windowsTerminalTabs } from "./helpers/windows-terminal-portable.mjs";
 
 // One Reach per computer, restarts and updates on a real Windows PC (audit
 // #10, #11), on GitHub's Windows runner: the real launcher reads the PC's
@@ -158,7 +158,7 @@ setInterval(() => {
   // console Windows handed over), showing a tab titled Reach.
   const hosts = chain.map((pid) => byPid.get(pid)).filter((p) => /^WindowsTerminal\.exe$/i.test(p.image));
   assert.equal(hosts.length, 1, `Windows Terminal runs it: ${chain.map((pid) => byPid.get(pid).image).join(" < ")}`);
-  if (terminal.exe) assert.equal(String(hosts[0].path).toLowerCase(), terminal.exe.toLowerCase(), "the Windows Terminal Reach found on PATH");
+  assert.ok(isTerminal(hosts[0], terminal), `the Windows Terminal Reach found (${terminal.wt}): ${hosts[0].path}`);
   const tabs = (await windowsTerminalTabs()).filter((w) => w.pid === hosts[0].pid);
   assert.ok(tabs.some((w) => w.tabs.some((tab) => /^Reach\b/.test(tab.name))), `a tab titled Reach: ${JSON.stringify(tabs)}`);
 });
