@@ -913,6 +913,36 @@ button.as-title:active {
 .as-hint.bad {
   color: var(--as-minus);
 }
+.as-unsent-list {
+  max-height: min(180px, 25dvh);
+  overflow-y: auto;
+}
+.as-unsent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  color: var(--as-text);
+  font-size: 12.5px;
+}
+.as-unsent > span {
+  flex: 1;
+  min-width: 0;
+}
+.as-unsent strong,
+.as-unsent small {
+  display: block;
+}
+.as-unsent small {
+  overflow: hidden;
+  color: var(--as-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.as-unsent .as-banner-btn {
+  padding: 5px 10px;
+  font-size: inherit;
+}
 .as-field {
   position: relative;
   display: flex;

@@ -25,6 +25,8 @@ export const suites = {
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
+    // Bug bash recovery: shared chat/file UI and native input refusals.
+    "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).

@@ -78,6 +78,7 @@ import {
   downloadThroughBrowser,
   downloadWithProgress,
   sendToComputer,
+  sourceFileGone,
   uploadFiles as startUploads,
 } from "./transfers";
 import { useFileTypeIcons } from "./app-icons";
@@ -1543,6 +1544,7 @@ function Viewer({
     [loading, setLoading] = useState(true),
     [copied, setCopied] = useState(false),
     [target, setTarget] = useState(""),
+    [sendError, setSendError] = useState(""),
     [sending, setSending] = useState(false);
   useEffect(() => {
     const element = dialog.current;
@@ -1820,7 +1822,7 @@ function Viewer({
             <select
               aria-label="Destination computer"
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
+              onChange={(e) => { setTarget(e.target.value); setSendError(""); }}
             >
               <option value="">Send to another computer…</option>
               {others.map((p) => (
@@ -1834,13 +1836,16 @@ function Viewer({
               disabled={!target || sending}
               onClick={async () => {
                 setSending(true);
+                setSendError("");
                 try {
                   const dest = peers.find((p) => p.id === target)!;
                   // Progress, resume and errors show in the transfer tray.
                   await sendToComputer(peer, root, file, dest);
                   toast(`Sent to ${dest.name}’s shared folder`);
                 } catch (e) {
-                  if (isGone(e)) gone();
+                  if (sourceFileGone(e)) gone();
+                  else if ((e as Error).name !== "AbortError")
+                    setSendError(`Couldn’t send to ${peers.find((p) => p.id === target)?.name || "that computer"}. ${(e as Error).message}`);
                 } finally {
                   setSending(false);
                 }
@@ -1849,6 +1854,7 @@ function Viewer({
               <Send size={15} />
               {sending ? "Sending…" : "Send"}
             </button>
+            {sendError && <p className="file-viewer-send-error" role="alert">{sendError}</p>}
           </footer>
         )}
       </div>
