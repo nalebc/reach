@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FilePlus, FolderPlus, Pencil, Save, Trash, X } from "lucide-react";
 import { request, type Peer } from "./api";
 import "./agent-desktop.css";
@@ -18,11 +18,20 @@ export default function AgentFileChanges({ peer, root, dir, file, onChanged, onE
   const [newFile, setNewFile] = useState("");
   const [newFolder, setNewFolder] = useState("");
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(file?.text ?? "");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
-  useEffect(() => { setEditing(false); setConfirmDelete(false); setDraft(file?.text ?? ""); }, [file?.path]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Another file (or none): not editing, nothing waiting to be deleted. Set
+  // in the render that shows it. An effect did it a moment later, so a tap
+  // on Edit that landed first was undone and the editor never opened (Oct 14).
+  const [shown, setShown] = useState(file?.path);
+  if (shown !== file?.path) {
+    setShown(file?.path);
+    setEditing(false);
+    setConfirmDelete(false);
+    setDraft(file?.text ?? "");
+  }
   const change = async (body: Record<string, unknown>, done: string, opened?: { path: string; text: string } | null) => {
     if (busy) return;
     setBusy(true); setNote("");
