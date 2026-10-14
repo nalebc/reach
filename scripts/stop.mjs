@@ -7,7 +7,7 @@ import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
 import { command } from "./home.mjs";
 import { loginScript } from "./login-start.mjs";
 import { windowsPath } from "../server/app-identity.mjs";
-import { windowsTerminalExe } from "../server/windows-shell.mjs";
+import { fileExists, windowsTerminalExe } from "../server/windows-shell.mjs";
 import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // `reach stop` / `reach restart`: every Reach running on this computer (one
@@ -433,7 +433,7 @@ export function startInConsole(root, {
   args = "",
   env = process.env,
   node = process.execPath,
-  exists = fs.existsSync,
+  exists = fileExists,
   run = (file, argv, options) => execFileSync(file, argv, options),
 } = {}) {
   const system = windowsFolder(env);
