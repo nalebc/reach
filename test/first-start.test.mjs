@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { installMeanwhile, seconds } from "../scripts/first-start.mjs";
+import { installMeanwhile, installsWhileSetup, seconds } from "../scripts/first-start.mjs";
 import { runSetup, readProgress } from "../scripts/setup.mjs";
 import { ensureTailscale } from "../scripts/tailscale-connect.mjs";
 
@@ -161,4 +161,22 @@ test("durations read as people say them", () => {
   assert.equal(seconds(42_000), "42 s");
   assert.equal(seconds(120_000), "2 min");
   assert.equal(seconds(130_400), "2 min 10 s");
+});
+
+// Audit #31: a Windows PC's first run sets up while npm installs, as a Mac's
+// does. Which starts do: a checkout's first, in a terminal, on any platform.
+test("H14 on every platform: a checkout's first start in a terminal installs while setup asks; nothing else does", () => {
+  const first = { packaged: false, local: false, service: false, tty: true };
+  assert.equal(installsWhileSetup(first), true);
+  for (const [why, start] of [
+    ["an installed package ships ready", { ...first, packaged: true }],
+    ["local only: no setup", { ...first, local: true }],
+    ["the background service can't ask", { ...first, service: true }],
+    ["no terminal to ask in", { ...first, tty: false }],
+  ])
+    assert.equal(installsWhileSetup(start), false, why);
+  const source = fs.readFileSync(new URL("../scripts/bootstrap.mjs", import.meta.url), "utf8");
+  const guided = source.slice(source.indexOf("const guided ="), source.indexOf("let installing = null;"));
+  assert.match(guided, /installsWhileSetup\(/);
+  assert.doesNotMatch(guided, /win32|platform/, "no platform is left out");
 });

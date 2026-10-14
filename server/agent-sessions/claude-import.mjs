@@ -17,21 +17,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { claudeAppInstalled, claudeAppRecords } from "./claude-app-paths.mjs";
+import { windowsPresence } from "../windows-presence.mjs";
+import { windowsProcesses } from "../windows-processes.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RECORDS = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
 
-// Seconds since the last keyboard, mouse or trackpad input on this Mac.
-export async function idleSeconds(run = exec) {
+// Seconds since the last keyboard, mouse or trackpad input on this Mac (on
+// a Windows PC, from its own reading: windows-presence.mjs).
+export async function idleSeconds(run = exec, { platform = process.platform, presence = windowsPresence } = {}) {
+  if (platform === "win32") return (await presence()).idleSeconds;
   const { stdout } = await run("/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4"], { timeout: 5000 });
   const m = stdout.match(/"HIDIdleTime" = (\d+)/);
   return m ? Number(m[1]) / 1e9 : null;
 }
 
 // Whether this Mac's screen is locked (its console session says so), null
-// when it can't tell. Locked, nothing can be typed into any app.
-export async function screenLocked(run = exec) {
+// when it can't tell. Locked, nothing can be typed into any app. A Windows
+// PC: its session's lock and its input desktop (windows-presence.mjs).
+export async function screenLocked(run = exec, { platform = process.platform, presence = windowsPresence } = {}) {
+  if (platform === "win32") return (await presence()).locked;
   const { stdout } = await run("/usr/sbin/ioreg", ["-n", "Root", "-d", "1"], { timeout: 5000 });
   const m = stdout.match(/"CGSSessionScreenIsLocked"=(Yes|No)/);
   return m ? m[1] === "Yes" : null;
@@ -56,7 +62,46 @@ const PS_ENV = { ...process.env, LC_ALL: "C", LANG: "C" };
 // The app's own executable path, for when macOS's list can't say.
 const APP_PATH = /\/Claude\.app\/Contents\/MacOS\/Claude$/;
 
-export async function claudeAppRunning(run = exec) {
+// The Claude app on a Windows PC, as macOS's list finds it on a Mac: its
+// program by its full path, in its installer's folder
+// (%LOCALAPPDATA%\AnthropicClaude) or its package's
+// (WindowsApps\Claude_<version>_<arch>__<publisher id>), never one of
+// Electron's own processes (--type=…). Claude Code is claude.exe too (its
+// installer's, the app's own copy in its data folder, the ones Reach
+// starts): none of them is the app. A process whose path Windows won't say
+// isn't counted.
+const PACKAGED_APP = /\\windowsapps\\claude_[^\\]+__[a-z0-9]{13}\\/i;
+export function claudeAppMain(rows, { env = process.env, home = os.homedir() } = {}) {
+  const local = Object.entries(env).find(([key]) => key.toUpperCase() === "LOCALAPPDATA")?.[1] || path.win32.join(home, "AppData", "Local");
+  const installer = `${local.replace(/[\\/]+$/, "")}\\AnthropicClaude\\`.toLowerCase();
+  return rows.filter((p) => {
+    if (typeof p?.path !== "string" || path.win32.basename(p.path).toLowerCase() !== "claude.exe") return false;
+    const where = p.path.toLowerCase();
+    return (where.startsWith(installer) || PACKAGED_APP.test(where)) && !/(^|\s)--type=/.test(p.commandLine || "");
+  });
+}
+// One reading of the PC's processes for the checks made together (whether
+// the app runs, since when), as each costs a helper run.
+let reading = null;
+function claudeAppOnWindows(processes) {
+  if (processes) return Promise.resolve().then(processes).then((rows) => claudeAppMain(rows));
+  if (reading && Date.now() - reading.at < 2000) return reading.found;
+  const found = windowsProcesses().then((rows) => claudeAppMain(rows));
+  reading = { at: Date.now(), found };
+  found.catch(() => {
+    if (reading?.found === found) reading = null;
+  });
+  return found;
+}
+
+export async function claudeAppRunning(run = exec, { platform = process.platform, processes } = {}) {
+  if (platform === "win32") {
+    try {
+      return (await claudeAppOnWindows(processes)).length > 0;
+    } catch {
+      return false;
+    }
+  }
   if (await claudeAppPid(run)) return true;
   try {
     const { stdout } = await run("/bin/ps", ["-axo", "comm="], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
@@ -70,7 +115,7 @@ export async function claudeAppRunning(run = exec) {
 // local_<id>.json, under one folder per account and organization.
 export function inClaudeApp(
   id,
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
 ) {
   const name = `local_${id}.json`;
   const dirs = (dir) => {
@@ -89,11 +134,12 @@ export function inClaudeApp(
 // folder used in the last month.
 export async function claudeAppAccess({
   app = "/Applications/Claude.app",
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
   registry = () => new Map(),
   now = Date.now,
+  installed = () => claudeAppInstalled({ app }),
 } = {}) {
-  if (!fs.existsSync(app)) return { installed: false, signedIn: false };
+  if (!installed()) return { installed: false, signedIn: false };
   let running = false;
   try {
     running = [...registry().values()].some((e) => e.where === "claude-app");
@@ -113,7 +159,15 @@ export async function claudeAppAccess({
 }
 
 // When the Claude app was opened (ms), or null while it's closed.
-export async function claudeAppStartedAt(run = exec) {
+export async function claudeAppStartedAt(run = exec, { platform = process.platform, processes } = {}) {
+  if (platform === "win32") {
+    try {
+      const times = (await claudeAppOnWindows(processes)).map((p) => p.startedAt).filter((at) => Number.isFinite(at));
+      return times.length ? Math.min(...times) : null;
+    } catch {
+      return null;
+    }
+  }
   const START = /^(\w{3} \w{3} +\d+ [\d:]+ \d{4})(?: +(.+))?$/;
   const pid = await claudeAppPid(run);
   if (pid) {
@@ -140,7 +194,7 @@ export async function claudeAppStartedAt(run = exec) {
 // The sessions the Claude app lists, the one on screen first: each record
 // notes when its session was last shown (lastFocusedAt).
 export function claudeAppShown(
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
 ) {
   const found = [];
   const dirs = (dir) => {
@@ -190,7 +244,9 @@ export function createClaudeRefresh({
   idle = idleSeconds,
   startedAt = claudeAppStartedAt,
   shown = () => claudeAppShown(),
-  reload = reloadClaudeWindow,
+  // A Windows PC has no way yet to reload the app's window: there it shows
+  // Reach's replies once it's opened again.
+  reload = process.platform === "darwin" ? reloadClaudeWindow : null,
   // A question or permission prompt open in the app: not now.
   asking = () => false,
   awayMs = 2 * 60 * 1000,
@@ -233,6 +289,8 @@ export function createClaudeRefresh({
   };
   async function round(guard) {
     if (!pending.size) return;
+    // Nothing to reload it with: let go, never tried again every round.
+    if (!reload) return done();
     // Closed: it reads every session afresh when it opens.
     const launched = await startedAt();
     if (launched == null) return done();
@@ -290,7 +348,7 @@ export function createClaudeRefresh({
 
 // The account's folder of records the app uses now: the one holding its
 // most recently written record, and that record, to check its shape.
-export function newestRecords(records = RECORDS) {
+export function newestRecords(records = claudeAppRecords()) {
   let best = null;
   const dirs = (dir) => {
     try {
@@ -336,7 +394,7 @@ const APP_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 // Writes the app's record for a session; true when the app has a record for
 // it now (written here or already there).
-export function writeClaudeRecord(id, info, { records = RECORDS, now = Date.now } = {}) {
+export function writeClaudeRecord(id, info, { records = claudeAppRecords(), now = Date.now } = {}) {
   if (!UUID.test(id) || !info || typeof info.cwd !== "string" || !path.isAbsolute(info.cwd)) return false;
   if (inClaudeApp(id, records)) return true;
   const target = newestRecords(records);

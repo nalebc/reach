@@ -80,6 +80,23 @@ export async function trustedSocket(file, { uid = process.getuid?.(), platform =
   throw refuse("links");
 }
 
+// Whether a named pipe is served by this very account's own process, with no
+// one else able to serve it too (owners.cs's answer). Unlike trustedPipe,
+// this never fails open: a missing, unreadable or partial answer is false.
+// Reach's permission hook (scripts/agent-hook.mjs) uses it to be sure the
+// pipe it reached is the owner's Reach before it trusts an "allow"; if it
+// can't be sure, it prints nothing and Claude Code's own dialog decides, as
+// the whole feature does whenever anything is in doubt.
+export function pipeServedByMe(seen) {
+  if (!seen || typeof seen !== "object" || seen.error) return false;
+  if (!SID.test(seen.self) || !SID.test(seen.owner) || !SID.test(seen.user) || !Array.isArray(seen.serves)) return false;
+  const yours = [seen.self, ...(Array.isArray(seen.logon) ? seen.logon.filter((sid) => SID.test(sid)) : [])];
+  const trusted = (sid) => yours.includes(sid) || SYSTEM.includes(sid);
+  if (!trusted(seen.owner)) return false; // made by you, Windows or an administrator
+  if (seen.user !== seen.self) return false; // served by your own process, this account
+  return seen.serves.every((sid) => trusted(sid) || OWNER_NAMES.includes(sid)); // no one else's to serve
+}
+
 async function trustedPipe(file, owner) {
   const refuse = (reason) => refusal(file, reason);
   if (typeof file !== "string" || !PIPE.test(file)) throw refuse("pipe");
