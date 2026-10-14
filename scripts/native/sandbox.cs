@@ -905,8 +905,9 @@ static class NativeProc {
       SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
       return new JobObject(handle);
     }
-    // The Full-control shell's job (§3.2, §6): die-on-exception and the UI
-    // restrictions, but no caps and NOT kill-on-close, so a normal completion
+    // The Full-control shell's job: die-on-exception, with no UI restrictions
+    // or capabilities. Full control has the owner's OS access, as on a Mac.
+    // NOT kill-on-close, so a normal completion
     // leaves `start`-ed background apps running (the Mac's process-group kill
     // leaves them too); the helper terminates the job only on abort or timeout.
     public static JobObject CreateForShell() {
@@ -915,8 +916,6 @@ static class NativeProc {
       var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
       ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
       SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
-      var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS(); ui.UIRestrictionsClass = UILIMIT_ALL;
-      SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
       return new JobObject(handle);
     }
     public int ActiveProcesses() {

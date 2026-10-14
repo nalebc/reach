@@ -166,9 +166,11 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   await assert.rejects(tool("files", "reach_read_file", { root: 0, path: ".ssh/key" }), e => e.status === 403);
   const shellRoot = clients.full.access.roots.find(root => root.path.toLowerCase() === shared.toLowerCase());
   assert.ok(shellRoot, "Full control includes the synthetic project folder");
-  const shell = await tool("full", "reach_shell", { command: "Write-Output 'synthetic shell result'", root: shellRoot.index, cwd: "" });
+  const fixtureCommand = `'${consoleFixture.replaceAll("'", "''")}'`;
+  const shell = await tool("full", "reach_shell", { command: `& ${fixtureCommand} clipboard-set 'synthetic shell clipboard'; & ${fixtureCommand} clipboard-get; Write-Output 'synthetic shell result'`, root: shellRoot.index, cwd: "" });
   assert.equal(shell.exitCode, 0);
   assert.match(shell.output, /synthetic shell result/);
+  assert.match(shell.output, /synthetic shell clipboard/, "Full control retains the owner's clipboard access, as on the Mac");
   await tool("full", "reach_screenshot");
   assert.equal((await request("/api/browser/agents/pause", { method: "POST", body: { clientId: clients.full.id, paused: true } })).status, 200);
   await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => e.status === 409 && e.kind === "paused");
