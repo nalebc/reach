@@ -36,6 +36,7 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   const note = `${marker("note")}\nA second line, with an accent: déjà vu ✓\n`;
   const file = path.join(computer.reach.home, "Journey notes.txt");
   fs.writeFileSync(file, note);
+  t.after(() => fs.rmSync(file, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
   await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
@@ -66,6 +67,13 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   await page.tap({ selector: `[aria-label="Locations"] button`, text: drive }, drive);
   await page.see(() => document.querySelector(".files-title")?.innerText?.trim(), `${drive}'s files`, 30000);
   const listed = await page.see({ js: `(() => { const n = (${names})(); return ${JSON.stringify(everyone)}.every((x) => n.includes(x)) && n; })()` }, `${everyone.join(", ")} at ${drive}'s top`, 30000);
+  // Each drawn as the computer's own file browser draws it (Finder's or
+  // File Explorer's icons), not Reach's stand-in glyphs.
+  await page.see(
+    () => [...document.querySelectorAll(".file-main")].filter((b) => /Folder/.test(b.innerText)).every((b) => b.querySelector(".file-kind.is-native img")),
+    `the drive's folders with ${windows ? "File Explorer's" : "Finder's"} own folder icon`,
+    60000,
+  );
   await page.shot("drive");
   // On a Mac, Reach hides only what starts with a dot; Finder also hides
   // what has its hidden flag (bin, usr, Volumes… at the top), which Node

@@ -148,10 +148,14 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     // temporary home as the profile, no shell variable, and a process list
     // naming no other Reach: under a test runner the real one leads up to
     // GitHub's runner service, which Reach rightly takes for another app.
+    // `real` keeps the PC's own profile (a disposable runner's), so what an
+    // installer puts in its known folders is where Reach looks; a Mac's
+    // journeys keep a home of their own, never touching its owner's.
     const system = env.SystemRoot || "C:\\Windows";
     for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
     env.Path = ["System32", "", "System32\\Wbem", "System32\\WindowsPowerShell\\v1.0"].map((dir) => path.win32.join(system, dir)).join(";");
-    env.USERPROFILE = home;
+    if (real) delete env.HOME;
+    else env.USERPROFILE = home;
     delete env.SHELL;
     const processes = path.join(temp, "processes.json");
     await fs.writeFile(processes, JSON.stringify({ processes: [] }));
@@ -257,7 +261,8 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
   };
   start();
   return {
-    app, home, state, shared, fake, until, request, stop, temp, env,
+    // The computer's home as Reach sees it (a real PC's own profile, `real`).
+    app, home: real && windows ? os.homedir() : home, state, shared, fake, until, request, stop, temp, env,
     output: () => output, answer: text => child.stdin.write(text + "\n"),
     installTailscale: () => fs.rename(fake.cli + ".uninstalled", fake.cli),
     cli: args => new Promise((resolve, reject) => {

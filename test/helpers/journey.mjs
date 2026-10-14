@@ -5,6 +5,7 @@ import https from "node:https";
 import net from "node:net";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { firstInstall, setupMenu } from "./first-install.mjs";
@@ -54,6 +55,58 @@ const run = promisify(execFile);
 export const marker = (kind) => `reach-${kind}-${crypto.randomBytes(4).toString("hex")}`;
 // The lines a terminal shows, each trimmed.
 export const lines = (text) => String(text).split("\n").map((line) => line.trim());
+
+// A window on the computer's main display that turns from orange to green
+// when a click reaches it, above every other window: on a Mac
+// test/fixtures/mac/click-target.swift, built as Reach builds its helpers;
+// on a PC a WinForms window, in physical pixels. Returns its middle as a
+// share of the display ({ x, y }, 0 to 1), a spot inside it away from the
+// middle (`aside`), and how many clicks reached it
+// (read on the computer, apart from Reach). Gone when the test ends.
+const WINDOWS_TARGET = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class ReachJourneyDpi { [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr v); }
+'@
+[ReachJourneyDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
+$out = $env:REACH_TARGET_OUT
+$f = New-Object System.Windows.Forms.Form
+$f.FormBorderStyle = 'None'; $f.TopMost = $true; $f.StartPosition = 'Manual'; $f.ShowInTaskbar = $false
+$f.Left = 160; $f.Top = 200; $f.Width = 420; $f.Height = 260
+$f.BackColor = [System.Drawing.Color]::FromArgb(255, 140, 0)
+$script:clicks = 0
+$f.Add_MouseDown({ $script:clicks++; $f.BackColor = [System.Drawing.Color]::FromArgb(0, 190, 50); [IO.File]::WriteAllText("$out.clicks", [string]$script:clicks) })
+$f.Add_Shown({ $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; [IO.File]::WriteAllText("$out.ready", "$($f.Left + $f.Width / 2 - $b.Left),$($f.Top + $f.Height / 2 - $b.Top),$($b.Width),$($b.Height),$($f.Width),$($f.Height)") })
+$timer = New-Object System.Windows.Forms.Timer; $timer.Interval = 120000; $timer.Add_Tick({ $f.Close() }); $timer.Start()
+[System.Windows.Forms.Application]::Run($f)
+`;
+export async function clickTarget(t, dir) {
+  const out = path.join(dir, "target");
+  let child;
+  if (windows) {
+    child = (await import("node:child_process")).spawn(
+      "powershell.exe",
+      ["-NoProfile", "-STA", "-EncodedCommand", Buffer.from(WINDOWS_TARGET, "utf16le").toString("base64")],
+      { env: { ...process.env, REACH_TARGET_OUT: out }, stdio: "ignore" },
+    );
+  } else {
+    const binary = path.join(dir, "click-target");
+    await run("/usr/bin/xcrun", ["swiftc", "-O", path.resolve("test/fixtures/mac/click-target.swift"), "-o", binary], { timeout: 180000 });
+    child = (await import("node:child_process")).spawn(binary, [out], { stdio: "ignore" });
+  }
+  t.after(() => child.kill());
+  for (const end = Date.now() + 60000; !fs.existsSync(`${out}.ready`); await sleep(100))
+    if (Date.now() > end || child.exitCode !== null) throw Error("The click target didn't open.");
+  const [x, y, width, height, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
+  return {
+    at: { x: x / width, y: y / height },
+    // Inside it, away from its middle (where the pointer ends up).
+    aside: { x: (x + w / 4) / width, y: (y + h / 4) / height },
+    clicks: () => (fs.existsSync(`${out}.clicks`) ? Number(fs.readFileSync(`${out}.clicks`, "utf8")) : 0),
+  };
+}
 
 // A terminal window opened on the computer itself, as its owner opens one,
 // titled `title`: on a Mac a new Terminal window (Terminal's own scripting,
@@ -323,6 +376,46 @@ async function signIn(page, computer) {
   await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code"), "signed in, past the connect page", 60000);
 }
 
+// The colour a PNG shows at its middle: { r, g, b } (8-bit RGB or RGBA,
+// as Chrome's screenshots are).
+function middleOfPng(png) {
+  let at = 8, width = 0, height = 0, type = 0;
+  const data = [];
+  while (at < png.length) {
+    const length = png.readUInt32BE(at);
+    const kind = png.toString("latin1", at + 4, at + 8);
+    const body = png.subarray(at + 8, at + 8 + length);
+    if (kind === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      type = body[9];
+    } else if (kind === "IDAT") data.push(body);
+    at += 12 + length;
+  }
+  const channels = type === 6 ? 4 : 3;
+  const raw = zlib.inflateSync(Buffer.concat(data));
+  const stride = width * channels;
+  const rows = [];
+  let previous = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const left = i >= channels ? line[i - channels] : 0;
+      const up = previous[i];
+      const corner = i >= channels ? previous[i - channels] : 0;
+      const p = left + up - corner;
+      const paeth = Math.abs(p - left) <= Math.abs(p - up) && Math.abs(p - left) <= Math.abs(p - corner) ? left : Math.abs(p - up) <= Math.abs(p - corner) ? up : corner;
+      line[i] = (line[i] + [0, left, up, (left + up) >> 1, paeth][filter]) & 255;
+    }
+    rows.push(line);
+    previous = line;
+  }
+  const row = rows[height >> 1];
+  const x = (width >> 1) * channels;
+  return { r: row[x], g: row[x + 1], b: row[x + 2] };
+}
+
 // What a journey does with the page: open, look, tap, type, and keep a
 // screenshot of each step.
 function phonePage(t, tab, { name, origin }) {
@@ -410,6 +503,12 @@ function phonePage(t, tab, { name, origin }) {
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
+  // Touch and hold, for `ms`.
+  const hold = async (x, y, ms = 800) => {
+    await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await sleep(ms);
+    await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
   const tap = async (target, description = target?.selector ? `${target.selector} (${target.text})` : String(target), ms = 20000) => {
     const at = await see({ js: find(target) }, `${description} to tap`, ms, () => tab.evaluate("JSON.stringify(window.__journeyFind || [])"));
     await touch(at.x, at.y);
@@ -425,6 +524,13 @@ function phonePage(t, tab, { name, origin }) {
     shot,
     tap,
     touch,
+    hold,
+    // The colour the phone shows at a point of the page, as a person sees
+    // it (its screen, not what a page script can read back).
+    pixel: async (x, y) => {
+      const { data } = await tab.send("Page.captureScreenshot", { format: "png", clip: { x: x - 1, y: y - 1, width: 3, height: 3, scale: 1 } });
+      return middleOfPng(Buffer.from(data, "base64"));
+    },
     evaluate: (expression) => tab.evaluate(expression),
     // Whether the page shows `what` now, without waiting.
     shows: async (what) =>
