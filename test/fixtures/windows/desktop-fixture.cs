@@ -74,6 +74,7 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc each, IntPtr data);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int max);
@@ -137,6 +138,7 @@ static class DesktopFixture {
     }
     if (args.Length >= 2 && (args[0] == "medium" || args[0] == "medium-shown")) return Medium(args);
     if (args.Length == 2 && args[0] == "close") return Close(new IntPtr(long.Parse(args[1])));
+    if (args.Length == 1 && args[0] == "minimize-consoles") return MinimizeConsoles();
     if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), 0);
     if (args.Length == 4 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), uint.Parse(args[3]));
     if (args.Length == 1 && args[0] == "buttons") { Console.WriteLine((GetAsyncKeyState(1) & 0x8000) != 0 ? "left down" : "left up"); return 0; }
@@ -161,7 +163,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe", "close" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe", "close", "minimize-consoles" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -414,6 +416,33 @@ static class DesktopFixture {
       Thread.Sleep(25);
     }
     return IsWindow(window) ? 1 : 0;
+  }
+
+  // Console windows already on the desktop before any test, minimized. Only
+  // their programs' file names are printed, never a title or a path.
+  static int MinimizeConsoles() {
+    var owners = new System.Collections.Generic.List<string>();
+    EnumWindowsProc each = (window, data) => {
+      var kind = new StringBuilder(256);
+      GetClassNameW(window, kind, kind.Capacity);
+      if (!IsWindowVisible(window) || kind.ToString() != "ConsoleWindowClass") return true;
+      uint pid;
+      GetWindowThreadProcessId(window, out pid);
+      string name = "?";
+      IntPtr process = OpenProcess(0x1000, false, (int)pid);
+      if (process != IntPtr.Zero) {
+        var image = new StringBuilder(32768); int size = image.Capacity;
+        if (QueryFullProcessImageNameW(process, 0, image, ref size)) name = Path.GetFileName(image.ToString());
+        CloseHandle(process);
+      }
+      ShowWindow(window, 6); // SW_MINIMIZE
+      owners.Add("\"" + name.Replace("\\", "").Replace("\"", "") + "\"");
+      return true;
+    };
+    EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    Console.WriteLine("{\"minimized\":[" + string.Join(",", owners.ToArray()) + "]}");
+    return 0;
   }
 
   static int Click(int x, int y, uint expectedPid) {
