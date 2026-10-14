@@ -247,7 +247,9 @@ test("two phones confirming the same install at once: only one terminal", async 
   const reach = await createReach({
     roots: [root], dataDir: path.join(root, ".reach"), screen: false,
     agentSessions: { list: async () => ({ sessions: [], errors: {} }), health: async () => [] },
-    agentInstallPlan: async (agent) => { await gate; return { agent, name: "OpenClaw", command: "synthetic-installer-never-run", lead: "export PATH='/x':\"$PATH\"" }; },
+    // Its lead as each computer's installs write one: shell text on a Mac,
+    // PowerShell on Windows (OpenClaw's own Node first: agent-install.mjs).
+    agentInstallPlan: async (agent) => { await gate; return { agent, name: "OpenClaw", command: "synthetic-installer-never-run", lead: process.platform === "win32" ? "& 'C:\\x\\node-only.ps1'" : "export PATH='/x':\"$PATH\"" }; },
     terminals: {
       create: (options) => (created.push(options), { id: `t${created.length}`, status: "running" }),
       list: () => [], get: (id) => ({ id, status: "running" }), dispose: () => {},
@@ -270,7 +272,7 @@ test("two phones confirming the same install at once: only one terminal", async 
     assert.equal(created.length, 1);
     assert.match(created[0].command, process.platform === "win32"
       // The program's own exit code (only Claude Code's irm | iex installer says 0).
-      ? /^\$ErrorActionPreference = 'Stop'; try \{ synthetic-installer-never-run; exit \$LASTEXITCODE/
+      ? /^\$ErrorActionPreference = 'Stop'; try \{ & 'C:\\x\\node-only\.ps1'; synthetic-installer-never-run; exit \$LASTEXITCODE/
       : /^set -o pipefail; export PATH='\/x'/);
     // Its terminal still runs: a third confirm waits too; showing the plan doesn't.
     assert.equal((await install({ confirm: true })).status, 409);

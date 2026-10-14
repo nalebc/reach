@@ -2,6 +2,7 @@ import { loadPty, releaseExitedPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
 import { powershellCall } from "./powershell.mjs";
+import { windowsTerminal } from "./windows-shell.mjs";
 const pty = loadPty();
 // The last lines a shell printed, as plain text, for the Home cards. Full-screen
 // programs (Codex, vim) redraw with cursor moves, so they get no preview.
@@ -27,7 +28,7 @@ export function terminalPreview(buffer, lines = 2) {
 }
 export class Terminals {
   sessions = new Map();
-  create({ cwd, name, clientId, cols = 90, rows = 28, command = "", input = "" }) {
+  create({ cwd, name, clientId, cols = 90, rows = 28, command = "", input = "", powershell = false }) {
     if (
       [...this.sessions.values()].filter((s) => s.status === "running")
         .length >= 12
@@ -53,13 +54,20 @@ export class Terminals {
       COLORTERM: "truecolor",
     };
     for (const k of Object.keys(env)) if (k.startsWith("REACH_")) delete env[k];
-    const shell =
-      process.platform === "win32"
-        ? "powershell.exe"
-        : process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
+    // Windows: the owner's own shell, as $SHELL is on a Mac (windows-shell.mjs).
+    // An agent's command needs one that runs a program by its path:
+    // PowerShell or cmd; with another (bash, WSL), PowerShell opens for it.
+    // An install or update is PowerShell's own text (agent-install.mjs):
+    // always PowerShell, whatever the owner's shell.
+    const chosen = process.platform === "win32" ? windowsTerminal({ command, powershell, call: powershellCall }) : null;
+    const windows = chosen?.shell;
+    const typed = chosen ? chosen.typed : command;
+    const shell = windows
+      ? windows.file
+      : process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
     const proc = pty.spawn(
       shell,
-      process.platform === "win32" ? ["-NoLogo"] : ["-l"],
+      windows ? windows.args : ["-l"],
       {
         name: "xterm-256color", cols, rows, cwd, env,
         // The bundled ConPTY releases its native host on natural shell exit.
@@ -97,8 +105,8 @@ export class Terminals {
     });
     this.sessions.set(session.id, session);
     // Server-resolved agent command (never client text), run once the shell
-    // starts; on Windows a quoted path is called (&), as PowerShell needs.
-    if (command) proc.write(`${process.platform === "win32" ? powershellCall(command) : command}\r`);
+    // starts, written as that shell runs a program (& in PowerShell).
+    if (command) proc.write(`${typed}\r`);
     // Or text the person chose to run (a chat's play button), typed as they
     // would type it: each line ends with Enter.
     else if (input) proc.write(`${input.replace(/\r?\n/g, "\r")}\r`);

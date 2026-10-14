@@ -20,6 +20,13 @@ test("dependency recovery is based on a known blocker and never executes output"
     (await updateRecovery(evidence, { platform: "linux" })).available,
     false,
   );
+  // OpenClaw 2026.10.3's own launcher words the range ", or" (found on Windows).
+  const launcher = await updateRecovery("openclaw requires Node >=24.16.0 <25, or >=26.1.0.\ndetected Node 22.12.0", {
+    platform: "darwin",
+    access: async () => {},
+  });
+  assert.equal(launcher.available, true);
+  assert.deepEqual(launcher.minimum, [24, 16, 0]);
   assert.equal(
     (await updateRecovery("requires Node >=28.0.0", { platform: "darwin" }))
       .available,
@@ -42,7 +49,10 @@ test("approved installation preserves other runtimes and rechecks authorization 
   });
   const calls = [];
   let allowed = true;
+  // A Mac's recovery, wherever the test runs (a Windows host takes its own
+  // way: test/windows-openclaw.test.mjs).
   const deps = {
+    platform: "darwin",
     env: { PATH: "/bin" },
     authorize: () => {
       if (!allowed) throw Error("revoked");

@@ -6,6 +6,59 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
+## [Unreleased]
+
+### Added
+
+- 2026-10-13: On a Windows PC, as on a Mac (passing on GitHub's Windows
+  runner, not yet on a physical PC):
+  - Reach's icon in the notification area: on or paused, messages from the
+    phone waiting for their Claude app chat, and Pause or Resume.
+  - Apps show their own icons and the agents their logos, drawn by Windows.
+  - Word, RTF and OpenDocument files preview as text (Word 97-2003's .doc
+    stays a download).
+  - Voice memos become words on the PC, through Windows' own speech
+    recognizer; the recording stays attached when it can't.
+  - Reach's terminals open your own shell: Windows Terminal's default
+    profile, else PowerShell 7, else Windows PowerShell.
+  - Drives attached after Reach started appear in Files.
+  - The Claude desktop app's chats, archive and links, whether it came from
+    its installer or as a package (Microsoft Store, WinGet).
+  - The phone names the launcher as the computer runs it (`reach`, `./reach`
+    or `.\reach.cmd`).
+- 2026-10-13: OpenClaw on a Windows PC, natively, as on a Mac: installed,
+  set up with a model provider's key, given more keys and Telegram, Discord,
+  Slack or WhatsApp from the phone, with its health, Doctor, updates and
+  Node recovery. Install runs OpenClaw's own PowerShell installer in a Reach
+  terminal. OpenClaw needs Node 24.16 or newer: on a PC with an older Node,
+  the install sheet says so and Reach first adds a Node for OpenClaw only,
+  with OpenClaw's own installer, keeping the PC's Node as it is. Keys go to
+  OpenClaw only, never on a command line. Telegram's token file is closed to
+  everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
+  phone says so on a PC. Not yet run on a physical Windows PC.
+
+### Changed
+
+- 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
+  nothing to turn on. `REACH_WINDOWS_ACCOUNT` is gone. Setup asks for your
+  Tailscale account, as on a Mac, and a PC paired by code before asks once at
+  its next start. Invite links for people and agents, the start page, the
+  agent gateway, hosted MCP, Face ID sign-in for a new browser and linked
+  computers (a Mac and a PC, or two PCs) come with it. A PC that can't hold
+  the route yet uses a pairing code and says why in its terminal,
+  `.\reach.cmd status`, `approve`, `link` and on the phone. That covers
+  Tailscale older than 1.104 or without its network adapter, Reach's folders
+  not private, or Tailscale's own connections not recognised. In the last
+  case Reach starts again on pairing codes at once, and tries the route again
+  a day later or after Tailscale changes. An older Tailscale no longer stops
+  setup: the account is kept and used once Tailscale is updated. Phones that
+  joined a PC with a pairing code ask to be approved once, as on a Mac. Not
+  yet run on a physical Windows PC.
+- 2026-10-13: A linked computer's ticket no longer approves a request made
+  from the computer itself (a browser on it): only the code typed there
+  does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
+  whoever is signed in to it.
+
 ## [0.2.0] — 2026-10-13
 
 Faster agents, an owner-first screen with gestures you can feel, modern
