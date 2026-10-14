@@ -10,6 +10,39 @@ release notes, so date the heading before tagging.
 
 ### Added
 
+- 2026-10-13: On a Windows PC, as on a Mac (passing on GitHub's Windows
+  runner, not yet on a physical PC):
+  - Reach's icon in the notification area: on or paused, messages from the
+    phone waiting for their Claude app chat, and Pause or Resume.
+  - Apps show their own icons and the agents their logos, drawn by Windows.
+  - Word, RTF and OpenDocument files preview as text (Word 97-2003's .doc
+    stays a download).
+  - Voice memos become words on the PC, through Windows' own speech
+    recognizer; the recording stays attached when it can't.
+  - Reach's terminals open your own shell: Windows Terminal's default
+    profile, else PowerShell 7, else Windows PowerShell.
+  - Drives attached after Reach started appear in Files.
+  - The Claude desktop app's chats, archive and links, whether it came from
+    its installer or as a package (Microsoft Store, WinGet).
+  - The phone names the launcher as the computer runs it (`reach`, `./reach`
+    or `.\reach.cmd`).
+- 2026-10-13: OpenClaw on a Windows PC, natively, as on a Mac: installed,
+  set up with a model provider's key, given more keys and Telegram, Discord,
+  Slack or WhatsApp from the phone, with its health, Doctor, updates and
+  Node recovery. Install runs OpenClaw's own PowerShell installer in a Reach
+  terminal. OpenClaw needs Node 24.16 or newer: on a PC with an older Node,
+  the install sheet says so and Reach first adds a Node for OpenClaw only,
+  with OpenClaw's own installer, keeping the PC's Node as it is. Keys go to
+  OpenClaw only, never on a command line. Telegram's token file is closed to
+  everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
+  phone says so on a PC. Not yet run on a physical Windows PC.
+- 2026-10-14: Beside OpenClaw's own Windows app, Reach uses the Gateway the
+  app keeps in WSL instead of setting OpenClaw up a second time: chats,
+  keys, Telegram, Doctor and starting the Gateway, with OpenClaw's commands
+  run inside the app's WSL distro and every secret on stdin. Discord and
+  Slack go through OpenClaw's guided setup there, and repairs and updates
+  stay with the app. Not yet run against the app on a physical PC.
+
 - 2026-10-13: Hear the computer on your phone. A speaker in Screen's bar
   plays what the Mac or Windows PC plays, never its microphone, for you and
   people with full access (invited people with less access and agents never
@@ -26,6 +59,78 @@ release notes, so date the heading before tagging.
   capture on a Mac (macOS 26.6) and end to end in headless Chrome under
   Reach's own page policy; Safari on an iPhone and a real Windows PC are
   still to try.
+- 2026-10-14: On a Windows PC, Reach tells when the Claude app is open, from
+  the PC's process list (the app's own program, never Claude Code's
+  claude.exe): a chat the open app lists isn't deleted under it, and chats
+  started from the phone join its list once nobody is at the PC, through the
+  import link the Mac's app takes (not yet tried with the Windows app). Unlike a
+  Mac, the app's window isn't reloaded after Reach replies yet: it shows
+  them once the app is opened again. A Claude Code record whose process id
+  Windows has since given to another program no longer makes its chat read
+  as held: Reach compares the start Claude Code noted with the PC's own. Not
+  yet run on a physical PC.
+- 2026-10-13: Windows keeps Reach running and reachable as a Mac does.
+  `.\reach.cmd setup background` (or `install`) adds a task of yours that
+  starts Reach when you sign in, in your session, with no window: the live
+  screen and control work while you're signed in, new phones are approved
+  with `approve`, and it starts again after a crash. While Reach runs, the PC
+  stays awake in the Mac's three modes, and `status` says so. The old
+  `npm run install-service` Startup entry, which started a Reach no phone
+  could reach, is removed. Built, not yet run on a physical Windows PC.
+- 2026-10-13: One Reach per Windows PC, as on a Mac. Reach reads the PC's
+  process list, so a second one from any folder is refused with where the
+  first runs; `status` shows whichever Reach runs with its routes and sleep
+  prevention; `stop` asks first and stops every Reach; an agent's `restart`
+  asks on your phone; restarts and phone updates open Reach in a window of
+  its own titled Reach; `update` stops Reach before replacing its files. A
+  first run sets up while it installs, as on a Mac. Built, not yet run on a
+  physical Windows PC.
+- 2026-10-14: A Windows PC's live screen is H.264 video with nothing to
+  install, as a Mac's is, instead of still images at up to 20 a second.
+  Reach's helper captures with Desktop Duplication (only what changed, the
+  pointer drawn from its own shape; GDI where that isn't available) and
+  encodes with Media Foundation's H.264 encoder, the graphics card's first,
+  else Microsoft's own. As on a Mac it sends nothing while nothing moves,
+  says "Windows PC locked" on the lock screen, starts a fresh picture when
+  the phone asks, and names its colours (BT.709). Windows N and KN editions
+  without the Media Feature Pack, and Windows Server without Media
+  Foundation, have no H.264 encoder: there Reach uses FFmpeg's video if it's
+  installed, else still images, and its log and the Screen page (Screen
+  options → Connection → Video) say which and why. Installing either later
+  needs no restart. Proven on GitHub's Windows runner (Microsoft's software
+  encoder, Desktop Duplication, frames decoded by Chrome's WebCodecs); not
+  yet run on a physical PC, with a graphics card's encoder, several
+  displays or Remote Desktop.
+
+### Changed
+
+- 2026-10-14: A Mac installs OpenClaw with OpenClaw's own installer
+  (install.sh), as a Windows PC uses install.ps1, so npm 12's script policy
+  and Node are handled by OpenClaw. On a Mac or PC whose Node is older than
+  24.16, the install sheet says so and Reach first adds a Node for OpenClaw
+  only with OpenClaw's own installer, in the same words on both; the
+  computer's own Node is never replaced. Updates that need a newer Node are
+  recovered the same way on both. Setup no longer starts a second Gateway
+  beside one already answering on OpenClaw's port, on a Mac too.
+- 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
+  nothing to turn on. `REACH_WINDOWS_ACCOUNT` is gone. Setup asks for your
+  Tailscale account, as on a Mac, and a PC paired by code before asks once at
+  its next start. Invite links for people and agents, the start page, the
+  agent gateway, hosted MCP, Face ID sign-in for a new browser and linked
+  computers (a Mac and a PC, or two PCs) come with it. A PC that can't hold
+  the route yet uses a pairing code and says why in its terminal,
+  `.\reach.cmd status`, `approve`, `link` and on the phone. That covers
+  Tailscale older than 1.104 or without its network adapter, Reach's folders
+  not private, or Tailscale's own connections not recognised. In the last
+  case Reach starts again on pairing codes at once, and tries the route again
+  a day later or after Tailscale changes. An older Tailscale no longer stops
+  setup: the account is kept and used once Tailscale is updated. Phones that
+  joined a PC with a pairing code ask to be approved once, as on a Mac. Not
+  yet run on a physical Windows PC.
+- 2026-10-13: A linked computer's ticket no longer approves a request made
+  from the computer itself (a browser on it): only the code typed there
+  does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
+  whoever is signed in to it.
 
 ## [0.2.0] — 2026-10-13
 
