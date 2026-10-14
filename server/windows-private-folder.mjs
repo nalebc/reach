@@ -13,7 +13,7 @@ const exec = promisify(execFile);
 // its state where every signed-in user may change it. Browser sign-in keeps
 // an OAuth client there that can make keys and remove devices, and runs a
 // helper from there that decides what is Tailscale: so first, each launch
-// with REACH_WINDOWS_ACCOUNT=1 (and `invites`, before it saves that client)
+// with browser sign-in (and `invites`, before it saves that client)
 // tightens Reach's own folders, then a checker compiled just now confirms
 // nobody else can read or change them, nor change Reach's code. Anything it
 // can't confirm is refused, with the folder named.

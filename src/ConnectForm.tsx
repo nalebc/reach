@@ -37,6 +37,8 @@ type Method = {
   login?: string;
   // This browser signed in with Face ID here before (its access ended).
   faceJoin?: boolean;
+  // How Reach is run on that computer: reach, ./reach or .\reach.cmd.
+  command?: string;
 };
 type Pending = {
   id: string;
@@ -526,7 +528,7 @@ export default function ConnectForm({
               <strong className="approval-code">{pending.verification}</strong>
               {faceNote && <p className="form-note">{faceNote}</p>}
               <span className="form-note">
-                Reach in the background? Run <code>./reach approve</code> there.
+                Reach in the background? Run <code>{method?.command || "reach"} approve</code> there.
               </span>
             </>
           )}
