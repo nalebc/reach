@@ -32,7 +32,7 @@ export const suites = {
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
-    "portable-history", "transfer-context", "agent-move-sessions", "move-provider-authorization",
+    "portable-history", "transfer-context", "agent-move", "agent-move-sessions", "move-provider-authorization",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).

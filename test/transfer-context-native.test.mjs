@@ -46,8 +46,9 @@ test("native Codex loads bounded context and preserves the full imported transcr
   const baseURL = `http://127.0.0.1:${endpoint.address().port}/v1`;
   await fs.writeFile(path.join(home, "config.toml"), `model = "gpt-6.1-sol"\nmodel_provider = "transfer_fixture"\n[model_providers.transfer_fixture]\nname = "Transfer fixture"\nbase_url = "${baseURL}"\nwire_api = "responses"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`);
   const file = path.join(dir, "history.jsonl");
-  const huge = "Old answer " + "x".repeat(600_000);
-  const archive = codexArchive({ cwd: dir, items: [{ role: "user", kind: "text", text: "Original task" }, { role: "assistant", kind: "text", text: huge }, { role: "user", kind: "text", text: "Latest task" }], from: "Claude Code", context: { items: [{ role: "user", kind: "text", text: "Latest task" }], summary: "The original work is done. Next step: Windows." }, archivePath: file });
+  const huge = "😀".repeat(300_000);
+  const recent = [{ role: "assistant", kind: "text", text: huge }, { role: "user", kind: "text", text: "Latest task" }];
+  const archive = codexArchive({ cwd: dir, items: [{ role: "user", kind: "text", text: "Original task" }, ...recent], from: "Claude Code", context: { items: recent, summary: "The original work is done. Next step: Windows." }, archivePath: file });
   await fs.writeFile(file, archive.lines.map(JSON.stringify).join("\n") + "\n");
   child = spawn(process.env.REACH_TEST_CODEX_BINARY, ["app-server"], { cwd: dir, env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "pipe"] });
   lines = readline.createInterface({ input: child.stdout });
@@ -81,7 +82,7 @@ test("native Codex loads bounded context and preserves the full imported transcr
   assert.match(modelContext, /The original work is done\. Next step: Windows\./);
   assert.match(modelContext, /Latest task/);
   assert.match(modelContext, /Original task/);
-  assert.ok(!modelContext.includes("x".repeat(1000)), "pre-compaction history is excluded from inference");
+  assert.ok(!modelContext.includes("😀".repeat(1000)), "pre-compaction history is excluded from inference");
 });
 
 test("native Claude loads the same bounded continuation without losing its complete archive", {
