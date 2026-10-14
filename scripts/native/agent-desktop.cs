@@ -191,7 +191,10 @@ static class Json {
       while (at < s.Length && s[at] >= '0' && s[at] <= '9') at++;
       if (at == digits) throw new FormatException("number");
     }
-    double value = double.Parse(s.Substring(start, at - start), NumberStyles.Float, CultureInfo.InvariantCulture);
+    double value;
+    // Out of a double's range: the .NET Framework throws where newer .NETs give infinity.
+    try { value = double.Parse(s.Substring(start, at - start), NumberStyles.Float, CultureInfo.InvariantCulture); }
+    catch (OverflowException) { throw new FormatException("number"); }
     if (double.IsInfinity(value) || double.IsNaN(value)) throw new FormatException("number");
     return value;
   }

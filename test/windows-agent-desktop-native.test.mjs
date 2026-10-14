@@ -58,7 +58,11 @@ test.before(async () => {
 });
 test.after(async () => {
   for (const child of children) try { child.kill(); } catch {}
-  if (work) fs.rmSync(work, { recursive: true, force: true });
+  if (!work) return;
+  // What the launchers started outlives them: every program run from here, by name.
+  const programs = fs.readdirSync(work, { recursive: true }).filter((name) => /\.exe$/i.test(name)).map((name) => path.basename(name));
+  for (const image of new Set(programs)) await exec(path.join(SYSTEM32, "taskkill.exe"), ["/F", "/IM", image], { windowsHide: true }).catch(() => {});
+  fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
 });
 
 // The helper as Reach starts it: detached, its own environment, Reach's pid.
@@ -96,7 +100,8 @@ const rulesFor = (preset, extra = {}, guard = {}) =>
   nativeRules({ preset, ...extra }, { hosts: ["localhost:8443"], titles: ["reach"], protectedPaths: [], home: os.homedir(), platform: "win32", ...guard });
 
 // A fixture window: a copy of the fixture under its own name (an app is its
-// .exe), started visibly; its JSON once shown.
+// .exe), started visibly; its JSON once shown. No title names Reach: a window
+// that does is Reach's own to every narrower preset.
 async function window(t, name, title, color, [x, y, width, height], ...flags) {
   const exe = path.join(work, `${name}.exe`);
   fs.copyFileSync(fixtureGui, exe);
@@ -180,11 +185,11 @@ test("probe: what this runner is, and the helper built and answering within its 
 });
 
 test("screenshots: View blacks out protected windows, captionless ones too; Apps shows only the chosen app; Full control everything", { skip, timeout: 300000 }, async (t) => {
-  const target = await window(t, "target", "Reach test target", "FF8C00", [40, 40, 360, 260]);
+  const target = await window(t, "target", "Sample test target", "FF8C00", [40, 40, 360, 260]);
   const vault = await window(t, "vault", "Password Manager", "1E50FF", [440, 40, 300, 200]);
   const popup = await window(t, "popup", "Password Manager", "20C040", [440, 300, 260, 140], "popup");
-  const other = await window(t, "other", "Reach test other", "9030C0", [40, 340, 340, 200]);
-  const tool = await window(t, "tool", "Reach test tool", "F0F0F0", [60, 60, 120, 90], "topmost", "tool");
+  const other = await window(t, "other", "Sample test other", "9030C0", [40, 340, 340, 200]);
+  const tool = await window(t, "tool", "Sample test tool", "F0F0F0", [60, 60, 120, 90], "topmost", "tool");
   await sleep(1000);
   const h = helper(t);
   assert.equal((await h.send({ op: "rules", ...rulesFor("readonly") })).ok, true);
@@ -220,9 +225,9 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
 });
 
 test("Reach's own console window is closed to the agent whatever its title, and requests flow after the probe", { skip, timeout: 300000 }, async (t) => {
-  // Reach's stand-in in a classic console window titled "Windows PowerShell",
-  // at medium integrity as on a PC.
-  const conhost = spawn(fixtureConsole, ["medium", path.join(SYSTEM32, "conhost.exe"), fixtureConsole, "sleeper", work, "reach", "Windows PowerShell"], { stdio: ["ignore", "ignore", "pipe"], detached: true, windowsHide: true });
+  // Reach's stand-in in a console window of its own titled "Windows
+  // PowerShell", at medium integrity as on a PC.
+  const conhost = spawn(fixtureConsole, ["medium-shown", fixtureConsole, "sleeper", work, "reach", "Windows PowerShell"], { stdio: ["ignore", "ignore", "pipe"], detached: true, windowsHide: true });
   children.add(conhost);
   t.after(() => { try { conhost.kill(); } catch {} });
   let launcher = "";
@@ -264,7 +269,7 @@ test("Reach's own console window is closed to the agent whatever its title, and 
 });
 
 test("input reaches a window at the helper's own integrity: clicks, typing in any script, a chord, a scroll, a drag", { skip, timeout: 300000 }, async (t) => {
-  const target = await window(t, "input", "Reach input target", "FF8C00", [40, 40, 560, 380], "medium");
+  const target = await window(t, "input", "Sample input target", "FF8C00", [40, 40, 560, 380], "medium");
   const h = helper(t, { medium: true });
   const ready = await h.send({ op: "rules", ...rulesFor("full") });
   note({ input: { ready } });
@@ -302,7 +307,7 @@ test("paste: the agent's text and then the owner's own, both kept out of Clipboa
   await until(() => fs.existsSync(path.join(work, "watch.json")), "the clipboard watcher");
   const watched = () => (fs.existsSync(path.join(work, "watch.log")) ? fs.readFileSync(path.join(work, "watch.log"), "utf8") : "");
   await exec(fixtureConsole, ["clipboard-set", "owner's text"], { windowsHide: true });
-  const target = await window(t, "paste", "Reach paste target", "FF8C00", [60, 60, 520, 320], "medium");
+  const target = await window(t, "paste", "Sample paste target", "FF8C00", [60, 60, 520, 320], "medium");
   const h = helper(t, { medium: true });
   assert.equal((await h.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const at = fractions((await h.send({ op: "displays" })).displays);
@@ -329,9 +334,9 @@ test("paste: the agent's text and then the owner's own, both kept out of Clipboa
 });
 
 test("refused: a protected window, a password box, an elevated window (Rule T), an elevated window in front (Rule F), an elevated helper (Rule S)", { skip, timeout: 300000 }, async (t) => {
-  const target = await window(t, "chosen", "Reach chosen target", "FF8C00", [40, 40, 420, 300], "medium");
+  const target = await window(t, "chosen", "Sample chosen target", "FF8C00", [40, 40, 420, 300], "medium");
   const vault = await window(t, "vault2", "Password Manager", "1E50FF", [500, 40, 300, 220], "medium");
-  const admin = await window(t, "admin", "Reach elevated target", "30A0A0", [500, 320, 300, 200]);
+  const admin = await window(t, "admin", "Sample elevated target", "30A0A0", [500, 320, 300, 200]);
   const h = helper(t, { medium: true });
   const rules = rulesFor("apps", { apps: [{ id: target.exe, bundleId: "exe:chosen.exe", name: "chosen" }, { id: admin.exe, bundleId: "", name: "admin" }] });
   assert.equal((await h.send({ op: "rules", ...rules })).ok, true);
@@ -364,7 +369,7 @@ test("refused: a protected window, a password box, an elevated window (Rule T), 
 });
 
 test("a held button is let go when the helper's input ends, and when Reach's process is killed", { skip, timeout: 300000 }, async (t) => {
-  const target = await window(t, "held", "Reach held target", "FF8C00", [40, 40, 520, 360], "medium");
+  const target = await window(t, "held", "Sample held target", "FF8C00", [40, 40, 520, 360], "medium");
   const h = helper(t, { medium: true });
   assert.equal((await h.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const at = fractions((await h.send({ op: "displays" })).displays);
@@ -396,7 +401,7 @@ test("a held button is let go when the helper's input ends, and when Reach's pro
 
 
 test("UI Automation: the window's controls by role, a press and a fill by name, find, read, windows, menus, wait-change and focus", { skip, timeout: 300000 }, async (t) => {
-  const target = await window(t, "controls", "Reach controls target", "FF8C00", [40, 40, 600, 420], "medium");
+  const target = await window(t, "controls", "Sample controls target", "FF8C00", [40, 40, 600, 420], "medium");
   const vault = await window(t, "vault3", "Password Manager", "1E50FF", [660, 40, 300, 220], "medium");
   const h = helper(t, { medium: true });
   const ready = await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: target.exe, bundleId: "", name: "controls" }] }) });
@@ -426,7 +431,7 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   assert.equal(found.found, true, JSON.stringify(found).slice(0, 300));
   // windows: the chosen app's window; the protected one isn't named at all
   const windows = await h.send({ op: "windows" });
-  assert.ok(windows.windows.some((item) => item.title === "Reach controls target"));
+  assert.ok(windows.windows.some((item) => item.title === "Sample controls target"));
   assert.ok(!JSON.stringify(windows).includes("Password Manager"), "protected windows aren't listed");
   // menus: the classic menu with its shortcut; a menu press runs the item
   const menus = await h.send({ op: "menus", menu: "File" });
@@ -443,8 +448,8 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   assert.equal(change.changed, true, JSON.stringify(change));
   // focus: the window by its ref; whether Windows let it come forward is recorded
   await clickAt(vault.x + 80, vault.y + 12);
-  const ref = windows.windows.find((item) => item.title === "Reach controls target").id;
-  const focused = await h.send({ op: "focus", id: ref, title: "Reach controls target" });
+  const ref = windows.windows.find((item) => item.title === "Sample controls target").id;
+  const focused = await h.send({ op: "focus", id: ref, title: "Sample controls target" });
   note({ focus: focused });
   assert.equal(focused.ok, true, JSON.stringify(focused));
   await h.close();
@@ -636,11 +641,20 @@ test("bank sites in Edge and Chrome: the page's and a frame's address read, Tran
     await clickAt(x + Math.round(width / 2), y + height - 40);
     return { x, y, width, height };
   };
-  const readUntil = (want, what) => until(async () => { const answer = await h.send({ op: "read" }); return answer.ok && answer.text?.includes(want) ? answer : null; }, what, 60000);
-  const button = (name, what) => until(async () => {
+  // Waits that say what they last saw.
+  const seenLast = (check, what) => {
+    let last = null;
+    return until(async () => { const [done, seen] = await check(); last = seen; return done; }, what, 60000)
+      .catch((error) => { throw Error(`${error.message}; last: ${JSON.stringify(last)?.slice(0, 1500)}`); });
+  };
+  const readUntil = (want, what) => seenLast(async () => {
+    const answer = await h.send({ op: "read" });
+    return [answer.ok && answer.text?.includes(want) ? answer : null, { ...answer, text: answer.text?.slice(0, 600) }];
+  }, what);
+  const button = (name, what) => seenLast(async () => {
     const answer = await h.send({ op: "elements" });
-    return answer.ok && answer.items?.find((item) => item.name === name && item.role === "Button");
-  }, what, 60000);
+    return [answer.ok && answer.items?.find((item) => item.name === name && item.role === "Button"), answer.ok ? answer.items?.map((item) => `${item.role}:${item.name}`).slice(0, 80) : answer];
+  }, what);
   const click = async (item, record) => {
     const point = { x: item.x + item.w / 2, y: item.y + item.h / 2 };
     let answer;

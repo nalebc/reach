@@ -16,13 +16,13 @@
 //       Prints each pixel of a JPEG as "r,g,b", one line each.
 //   frame <window handle>
 //       Prints the window's frame as "x,y,width,height".
-//   medium <program> [arguments...]
-//       Runs a program unelevated, as the signed-in user's own programs run
-//       (the shell's token: User Account Control's filtered one), with this
-//       process's standard handles and environment, and exits with its code.
-//       Where the shell's token can't be had, a restricted copy of this
-//       process's (no administrators' rights, medium integrity). GitHub's
-//       runners run everything elevated; Reach on a PC doesn't.
+//   medium <program> [arguments...] | medium-shown <program> [arguments...]
+//       Runs a program unelevated at medium integrity (Windows' Basic User
+//       token: no administrators' rights), with this process's standard
+//       handles and environment, and exits with its code. A console program
+//       runs without a console, as Reach starts its helpers; medium-shown
+//       gives it a console window of its own. GitHub's runners run
+//       everything elevated (their shell too); Reach on a PC doesn't.
 //   integrity
 //       Prints this process's integrity level and whether it's elevated.
 //   click <x> <y>
@@ -81,13 +81,13 @@ static class DesktopFixture {
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info, int size, out int needed);
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, int index);
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attributes, int level, int type, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SaferCreateLevel(uint scope, uint level, uint flags, out IntPtr handle, IntPtr reserved);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SaferComputeTokenFromLevel(IntPtr level, IntPtr token, out IntPtr result, uint flags, IntPtr reserved);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SaferCloseLevel(IntPtr handle);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr text);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder command, uint flags, IntPtr environment, string directory,
-    ref STARTUPINFO startup, out PROCESS_INFORMATION information);
-  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-  [DllImport("kernel32.dll")] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+  static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string text, uint revision, out IntPtr descriptor, out uint size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSidW(string sid, out IntPtr result);
   [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -117,7 +117,7 @@ static class DesktopFixture {
       Console.WriteLine(rect.Left + "," + rect.Top + "," + (rect.Right - rect.Left) + "," + (rect.Bottom - rect.Top));
       return 0;
     }
-    if (args.Length >= 2 && args[0] == "medium") return Medium(args);
+    if (args.Length >= 2 && (args[0] == "medium" || args[0] == "medium-shown")) return Medium(args);
     if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]));
     if (args.Length == 1 && args[0] == "buttons") { Console.WriteLine((GetAsyncKeyState(1) & 0x8000) != 0 ? "left down" : "left up"); return 0; }
     if (args.Length == 3 && args[0] == "clipboard-watch") return Watch(args[1], args[2]);
@@ -140,7 +140,7 @@ static class DesktopFixture {
     Console.Error.WriteLine("usage: " + string.Join("|", Kinds) + "|env-report");
     return 2;
   }
-  static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "click", "buttons",
+  static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
     "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity" };
 
   static string Quote(string text) {
@@ -225,68 +225,66 @@ static class DesktopFixture {
   // A restricted copy of this process's token: administrators deny-only, no
   // privileges, medium integrity.
   static int Medium(string[] args) {
-    IntPtr token, restricted, admins, medium;
-    if (!OpenProcessToken(GetCurrentProcess(), 0x0002 | 0x0008 | 0x0001 | 0x0080, out token)) return Fail("token");
-    if (!ConvertStringSidToSidW("S-1-5-32-544", out admins) || !ConvertStringSidToSidW("S-1-16-8192", out medium)) return Fail("sid");
-    var deny = new[] { new SID_AND_ATTRIBUTES { Sid = admins, Attributes = 0 } };
-    if (!CreateRestrictedToken(token, 0x1, 1, deny, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) return Fail("restricted");
-    var label = new TOKEN_MANDATORY_LABEL { Label = new SID_AND_ATTRIBUTES { Sid = medium, Attributes = 0x20 } };
-    int size = Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + GetLengthSid(medium);
-    IntPtr buffer = Marshal.AllocHGlobal(size);
-    Marshal.StructureToPtr(label, buffer, false);
-    if (!SetTokenInformation(restricted, 25, buffer, size)) return Fail("integrity");
+    IntPtr token = UnelevatedToken();
+    if (token == IntPtr.Zero) return Fail("token");
     var command = new StringBuilder();
     for (int i = 1; i < args.Length; i++) {
       if (i > 1) command.Append(' ');
       command.Append(args[i].IndexOf(' ') >= 0 || args[i].Length == 0 ? "\"" + args[i] + "\"" : args[i]);
     }
-    // A console program's own console stays out of sight.
-    bool console = Subsystem(args[1]) == 3;
-    var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), dwFlags = 0x100 | (console ? 0x1 : 0), wShowWindow = 0,
+    // A console program runs without a console, as Reach starts its helpers
+    // (detached); medium-shown gives it a console window of its own.
+    bool console = Subsystem(args[1]) == 3, shown = args[0] == "medium-shown";
+    var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), dwFlags = shown ? 0 : 0x100,
       hStdInput = GetStdHandle(-10), hStdOutput = GetStdHandle(-11), hStdError = GetStdHandle(-12) };
     var started = new PROCESS_INFORMATION();
-    IntPtr shell = ShellToken();
-    // The handles and the environment this process was given, exactly.
-    foreach (IntPtr handle in new[] { startup.hStdInput, startup.hStdOutput, startup.hStdError }) SetHandleInformation(handle, 1, 1);
-    IntPtr environment = OwnEnvironment();
-    bool ran = shell != IntPtr.Zero && CreateProcessWithTokenW(shell, 0, null, new StringBuilder(command.ToString()), 0x400, environment, null, ref startup, out started);
-    if (!ran) {
-      startup.dwFlags = 0x100;
-      // Without a console of its own: a restricted token gets none.
-      if (!CreateProcessAsUserW(restricted, null, command, IntPtr.Zero, IntPtr.Zero, true, console ? 0x8u : 0, IntPtr.Zero, null, ref startup, out started)) return Fail("start");
-    }
+    uint flags = !console ? 0u : shown ? 0x10u : 0x8u;
+    if (!CreateProcessAsUserW(token, null, command, IntPtr.Zero, IntPtr.Zero, !shown, flags, IntPtr.Zero, null, ref startup, out started)) return Fail("start");
     WaitForSingleObject(started.hProcess, 0xFFFFFFFF);
     uint code;
     GetExitCodeProcess(started.hProcess, out code);
     return (int)code;
   }
-  static IntPtr OwnEnvironment() {
-    var names = new System.Collections.Generic.List<string>();
-    foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) names.Add((string)entry.Key);
-    names.Sort(StringComparer.OrdinalIgnoreCase);
-    var block = new StringBuilder();
-    foreach (string name in names) block.Append(name).Append('=').Append(Environment.GetEnvironmentVariable(name)).Append('\0');
-    return Marshal.StringToHGlobalUni(block.Append('\0').ToString());
-  }
-  // The signed-in user's shell's token, as a primary one: what their own
-  // unelevated programs run with. IntPtr.Zero when there's no shell.
-  static IntPtr ShellToken() {
-    int session = System.Diagnostics.Process.GetCurrentProcess().SessionId;
-    foreach (var shell in System.Diagnostics.Process.GetProcessesByName("explorer")) {
-      try {
-        if (shell.SessionId != session) continue;
-        IntPtr process = OpenProcess(0x1000, false, shell.Id), token, primary;
-        if (process == IntPtr.Zero) continue;
-        bool opened = OpenProcessToken(process, 0x0001 | 0x0002 | 0x0008, out token);
-        CloseHandle(process);
-        if (!opened) continue;
-        bool duplicated = DuplicateTokenEx(token, 0x02000000, IntPtr.Zero, 2, 1, out primary);
-        CloseHandle(token);
-        if (duplicated) return primary;
-      } catch (Exception) {
-      }
+  // This user without administrators' rights, as User Account Control's
+  // filtered token has them: Windows' Basic User level (runas
+  // /trustlevel:0x20000), else a restricted copy of this process's token;
+  // at medium integrity, and owning what it creates (an elevated token's
+  // objects belong to Administrators, whom this one is denied as).
+  static IntPtr UnelevatedToken() {
+    IntPtr token = IntPtr.Zero, level, own, admins, medium;
+    if (SaferCreateLevel(2, 0x20000, 1, out level, IntPtr.Zero)) {
+      if (!SaferComputeTokenFromLevel(level, IntPtr.Zero, out token, 0, IntPtr.Zero)) token = IntPtr.Zero;
+      SaferCloseLevel(level);
     }
-    return IntPtr.Zero;
+    if (token == IntPtr.Zero) {
+      if (!OpenProcessToken(GetCurrentProcess(), 0x0002 | 0x0008 | 0x0001 | 0x0080, out own) || !ConvertStringSidToSidW("S-1-5-32-544", out admins)) return IntPtr.Zero;
+      var deny = new[] { new SID_AND_ATTRIBUTES { Sid = admins, Attributes = 0 } };
+      if (!CreateRestrictedToken(own, 0x1, 1, deny, 0, IntPtr.Zero, 0, IntPtr.Zero, out token)) return IntPtr.Zero;
+    }
+    if (!ConvertStringSidToSidW("S-1-16-8192", out medium)) return IntPtr.Zero;
+    var label = new TOKEN_MANDATORY_LABEL { Label = new SID_AND_ATTRIBUTES { Sid = medium, Attributes = 0x20 } };
+    int size = Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + GetLengthSid(medium);
+    IntPtr buffer = Marshal.AllocHGlobal(size);
+    Marshal.StructureToPtr(label, buffer, false);
+    if (!SetTokenInformation(token, 25, buffer, size)) return IntPtr.Zero;
+    string user = UserSid(token);
+    IntPtr descriptor, dacl;
+    uint length;
+    bool present, defaulted;
+    if (user == null || !ConvertStringSecurityDescriptorToSecurityDescriptorW("D:(A;;GA;;;" + user + ")(A;;GA;;;SY)", 1, out descriptor, out length) ||
+        !GetSecurityDescriptorDacl(descriptor, out present, out dacl, out defaulted)) return IntPtr.Zero;
+    IntPtr holder = Marshal.AllocHGlobal(IntPtr.Size);
+    Marshal.WriteIntPtr(holder, dacl);
+    return SetTokenInformation(token, 6, holder, IntPtr.Size) ? token : IntPtr.Zero;
+  }
+  static string UserSid(IntPtr token) {
+    int size;
+    GetTokenInformation(token, 1, IntPtr.Zero, 0, out size);
+    if (size <= 0) return null;
+    IntPtr user = Marshal.AllocHGlobal(size);
+    IntPtr text;
+    if (!GetTokenInformation(token, 1, user, size, out size) || !ConvertSidToStringSidW(Marshal.ReadIntPtr(user), out text)) return null;
+    return Marshal.PtrToStringUni(text);
   }
   // A program's subsystem from its PE header: 2 windows, 3 console.
   static int Subsystem(string file) {
