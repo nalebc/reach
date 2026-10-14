@@ -139,6 +139,11 @@ test("Windows background mode: the task's Reach and the console programs it star
   await sleep(5000);
   watching = false;
   await tree;
+  const during = events();
+  // The watch itself, checked: a console window opened on purpose is seen.
+  execFile(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", '"start "Reach test window" cmd.exe /d /c ping -n 4 127.0.0.1 >nul"'], { windowsVerbatimArguments: true, windowsHide: true }, () => {});
+  const control = await until(() => events().slice(during.length).find((e) => e.shown && CONSOLES.test(e.class)), "the watcher seeing a console window opened on purpose", 30000);
+  t.diagnostic(`the control window: ${JSON.stringify(control)}`);
   fs.writeFileSync(stop, "");
 
   // What it ran: the task's starter and everything under it.
@@ -157,9 +162,9 @@ test("Windows background mode: the task's Reach and the console programs it star
   const ran = [...ours].map((pid) => seen.get(pid)?.image).filter(Boolean);
   t.diagnostic(`the task ran: ${[...new Set(ran)].join(", ")}`);
   assert.ok(ran.some((image) => /^powershell\.exe$/i.test(image)), "console programs ran under it");
-  const shown = events().filter((e) => e.shown);
+  const shown = during.filter((e) => e.shown);
   t.diagnostic(`windows shown meanwhile: ${JSON.stringify(shown.map(({ pid, class: kind, title }) => ({ pid, kind, title, image: seen.get(pid)?.image })))}`);
-  const mine = events().find((e) => e.session !== undefined && e.pid === undefined);
+  const mine = during.find((e) => e.session !== undefined && e.pid === undefined);
   t.diagnostic(`watcher's session ${mine?.session}`);
   assert.deepEqual(shown.filter((e) => ours.has(e.pid) || CONSOLES.test(e.class)), [], "no window from the task's programs, and no console window at all");
 });
