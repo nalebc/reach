@@ -18,17 +18,21 @@ export function useAppContext(
   const [app, setApp] = useState<HostApp | null>(null);
   const [items, setItems] = useState<MenuItem[]>([]);
   const stamp = useRef<string | undefined>(undefined);
-  const failures = useRef(0);
+  const unsupported = useRef(false);
+  const generation = useRef(0);
+  const enabled = useRef(active);
+  enabled.current = active;
   const sendRef = useRef(send);
   sendRef.current = send;
   const refresh = useCallback(async () => {
-    if (failures.current >= 3 || document.hidden) return;
+    if (!enabled.current || unsupported.current || document.hidden) return;
+    const mine = generation.current;
     try {
       const result = (await sendRef.current({
         type: "context",
         ...(stamp.current ? { since: stamp.current } : {}),
       })) as unknown as ContextResult;
-      failures.current = 0;
+      if (mine !== generation.current || !enabled.current) return;
       if (!result.app) {
         setApp(null);
         return;
@@ -43,17 +47,29 @@ export function useAppContext(
         stamp.current = result.stamp;
         setItems(result.items ?? []);
       }
-    } catch {
-      // Older hosts reject the action; stop asking after a few failures.
-      failures.current++;
+    } catch (error) {
+      if (mine !== generation.current || !enabled.current) return;
+      // Only an explicit unsupported action identifies an older host. Native
+      // refusals and connection errors can recover on the next ordinary poll.
+      unsupported.current =
+        /^Unsupported (desktop action|input(?: type)?)\.?$/i.test(
+          (error as Error)?.message || "",
+        );
+      stamp.current = undefined;
+      setApp(null);
+      setItems([]);
     }
   }, []);
   useEffect(() => {
     if (!active) return;
-    failures.current = 0;
+    generation.current++;
+    unsupported.current = false;
     void refresh();
     const timer = setInterval(() => void refresh(), 2500);
-    return () => clearInterval(timer);
+    return () => {
+      generation.current++;
+      clearInterval(timer);
+    };
   }, [active, refresh]);
   return { app: active ? app : null, items, refresh };
 }

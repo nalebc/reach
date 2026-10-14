@@ -158,4 +158,9 @@ test("an OpenClaw chat continues in Codex or Claude Code from its header", async
   assert.deepEqual(claw.moves, [["openclaw", "codex"]]);
   // The Codex chat opens, continuing the OpenClaw one.
   await dom.waitFor(() => $$(".as-divider").some((d) => d.textContent.includes("earlier messages are from OpenClaw")));
+  // And stays open: OpenClaw's own back entry, left as it closed, never
+  // takes the new chat's entry with it (the chat closed itself, Oct 13).
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok($$(".as-divider").some((d) => d.textContent.includes("earlier messages are from OpenClaw")), "the Codex chat is still open");
+  assert.equal(dom.window.history.state?.reachChat, true, "the open chat has its back entry");
 });

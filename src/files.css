@@ -1256,13 +1256,22 @@ input.files-switch[type="checkbox"]:focus-visible {
 }
 .file-viewer-send {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
   border-top: 1px solid #d3ead212;
 }
 .file-viewer-send select {
   flex: 1;
+  min-width: 0;
   min-height: 40px;
+}
+.file-viewer-send-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: #ef9b9b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 /* Select mode: a check beside each item, as in the Files app. */
 .files-text-tool {

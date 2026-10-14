@@ -70,6 +70,21 @@
   background: var(--lime);
   color: var(--lime-ink);
 }
+/* Sound on its way: the speaker breathes until it plays. */
+.screen-bar button.screen-bar-pending svg {
+  animation: screen-bar-pending 1.2s ease-in-out infinite;
+}
+@keyframes screen-bar-pending {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen-bar button.screen-bar-pending svg {
+    animation: none;
+    opacity: 0.6;
+  }
+}
 .screen-bar button:disabled {
   opacity: 0.38;
   cursor: default;

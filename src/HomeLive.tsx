@@ -47,7 +47,8 @@ import { useTerminalPeeks } from "./useTerminalPeeks";
 import { useShortcuts } from "./shortcuts";
 import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
-import { hasAccessNow, listedAccess, statusIn, type AccessSession } from "./access-list";
+import { accessOf, hasAccessNow, listedAccess, statusIn, type AccessSession } from "./access-list";
+import { Mascot } from "./Mascot";
 import { computerWord, pausedIn } from "./pause";
 import "./home-live.css";
 
@@ -607,7 +608,7 @@ export default function HomeLive({
   // read when Home opens, when someone connects or leaves, and when a new
   // request comes in. Never on a timer.
   const [access, setAccess] = useState<
-    { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[]
+    { id: string; name: string; kind?: string; status?: string; expiresAt?: number; mascot?: number }[]
   >([]);
   const hereKey = here.map((d) => d.id).join(",");
   const requestsKey = (() => {
@@ -624,7 +625,7 @@ export default function HomeLive({
     if (!features.owner || !visible) return;
     let live = true;
     void Promise.allSettled([
-      request<{ clients?: { id: string; name: string; kind?: string; status?: string; expiresAt?: number }[] }>(peer, "/api/clients"),
+      request<{ clients?: { id: string; name: string; kind?: string; status?: string; expiresAt?: number; mascot?: number }[] }>(peer, "/api/clients"),
       request<{ agents?: AccessSession[] }>(peer, "/api/browser/agents"),
     ]).then(([clients, agents]) => {
       if (!live) return;
@@ -648,14 +649,18 @@ export default function HomeLive({
   }).length;
   // Faces: who's here first, then who else may come in.
   const faces = [
-    ...here.map((d) => ({ id: d.id, here: true, agent: isAgent(d), glyph: <DeviceGlyph device={d} size={13} /> })),
+    ...here.map((d) => {
+      const who = accessOf(d.access, access, d.name);
+      return { id: d.id, here: true, agent: isAgent(d), face: !!who, glyph: who ? <Mascot id={who.id} drawn={who.mascot} /> : <DeviceGlyph device={d} size={13} /> };
+    }),
     ...invited
       .filter((c) => !here.some((d) => d.id === c.id || d.name === c.name))
       .map((c) => ({
         id: c.id,
         here: false,
         agent: c.kind === "agent",
-        glyph: c.kind === "agent" ? <Sparkles size={13} /> : <b>{c.name.trim().slice(0, 1).toUpperCase()}</b>,
+        face: true,
+        glyph: <Mascot id={c.id} drawn={c.mascot} />,
       })),
   ].slice(0, 4);
   const accessTitle = controlling
@@ -743,7 +748,7 @@ export default function HomeLive({
             <span className="home-access-faces" aria-hidden="true">
               {faces.length ? (
                 faces.map((f) => (
-                  <i key={f.id} className={`${f.here ? "here" : ""}${f.agent ? " agent" : ""}`}>
+                  <i key={f.id} className={`${f.here ? "here" : ""}${f.agent ? " agent" : ""}${f.face ? " has-mascot" : ""}`}>
                     {f.glyph}
                   </i>
                 ))

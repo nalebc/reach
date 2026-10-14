@@ -96,6 +96,7 @@ import {
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { SoundHub, soundPreparer } from "./screen-sound.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
   AppThreads,
@@ -224,6 +225,12 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  // Agents and people invited before mascots draw theirs now, once.
+  try {
+    auth.dressMascots();
+  } catch {
+    /* an unreadable access store stays locked (503) as before */
+  }
   const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
   // Any process on this Mac can claim one of your devices' Tailscale
   // identities on Reach's private socket, so an identity alone never approves
@@ -561,6 +568,12 @@ export async function createReach(overrides = {}) {
   const remoteScreens = new RemoteScreenHub(
     config,
     overrides.remoteScreenFactory,
+  );
+  // The computer's sound, for the phones listening beside its live screen
+  // (server/screen-sound.mjs): one capture for all of them.
+  const screenSound = new SoundHub(
+    overrides.soundFactory ||
+      soundPreparer(config, { platform: overrides.platform || process.platform, desktopBinary, windowsBinary }),
   );
   // Apps on your phone: each runs on its own hidden display on the Mac.
   const appThreads = new AppThreads({
@@ -911,6 +924,7 @@ export async function createReach(overrides = {}) {
         browserScreenSnapshots.stop(PAUSED);
         remoteScreens.stop(PAUSED, true);
         appScreens.stop(PAUSED, true);
+        screenSound.stop(PAUSED, true);
         // Nothing on a paused Mac captures its screen (Oct 12: the Mac's
         // screen-sharing mark stayed on, so Netflix wouldn't play): the
         // dialog watcher stops, and a screen helper an earlier Reach left
@@ -2212,6 +2226,7 @@ export async function createReach(overrides = {}) {
       browserScreenSnapshots.stop();
       remoteScreens.stop();
       appScreens.stop();
+      screenSound.stop("Screen viewing is off.");
       appThreads.closeAll()?.catch?.(() => {});
       closeInput();
     }
@@ -5012,6 +5027,7 @@ export async function createReach(overrides = {}) {
     "/ws/terminal",
     "/ws/screen",
     "/ws/screen-input",
+    "/ws/screen-sound",
     "/ws/presence",
   ];
   // Live connections the host guard turned away, last logged when (per
@@ -5441,6 +5457,94 @@ export async function createReach(overrides = {}) {
       ws.on("error", () => {});
       return;
     }
+    if (req.url === "/ws/screen-sound") {
+      // The computer's sound beside its live screen: for you and people with
+      // full access (never anyone else, agents included), while its screen may
+      // be watched and Reach isn't paused, and never in a browser on the
+      // computer itself, which would play it into what it captures.
+      let credential;
+      const reject = (message, status = 403) => {
+        screenSound.remove(ws);
+        if (ws.readyState === WebSocket.OPEN) {
+          const retryable = ![400, 401, 403, 404].includes(status);
+          ws.send(JSON.stringify({ type: "error", error: message, status, retryable }));
+          ws.close(status === 401 ? 4001 : retryable ? 1012 : 4003, "Sound ended");
+        }
+      };
+      const refusal = (client) => {
+        if (!["darwin", "win32"].includes(overrides.platform || process.platform))
+          return "Sound comes from a Mac or a Windows PC.";
+        if (!client.scopes.includes("screen") || !actsAsOwner(client))
+          return "Only the owner and people with full access hear this computer.";
+        if (!config.screen) return "Turn on screen viewing first.";
+        return "";
+      };
+      const authorized = () => {
+        const client = credential && verify(req, credential);
+        if (!client) {
+          const interruption = transientDenial(req, credential);
+          reject(interruption || "Sound access expired or was revoked.", interruption ? 503 : 401);
+          return false;
+        }
+        const refused = refusal(client);
+        if (refused) {
+          reject(refused);
+          return false;
+        }
+        if (paused) {
+          reject(PAUSED, 423);
+          return false;
+        }
+        return true;
+      };
+      const deadline = setTimeout(() => ws.terminate(), 5000);
+      const expiryCheck = setInterval(() => {
+        if (credential) authorized();
+      }, 1000);
+      expiryCheck.unref();
+      let starting = false;
+      ws.on("message", async (buffer, binary) => {
+        try {
+          if (binary) throw fail(400, "Send a sound protocol message.");
+          const message = JSON.parse(buffer.toString());
+          if (!credential) {
+            if (starting) return;
+            if (message.type !== "auth" || typeof message.token !== "string")
+              throw fail(401, "Authenticate first.");
+            const client = verify(req, message.token);
+            if (!client) throw fail(401, "Pair this device again.");
+            const refused = refusal(client);
+            if (refused) throw fail(403, refused);
+            notPaused();
+            if (!Array.isArray(message.codecs) || !message.codecs.includes("adpcm"))
+              throw fail(400, "This browser can't play the computer's sound.");
+            starting = true;
+            // The visitor's word for where it is: it can only refuse.
+            if (sameComputer(req, await ownTailscaleIps()))
+              throw fail(403, "Sound plays on your phone or another device, not on this computer itself.");
+            if (ws.readyState !== WebSocket.OPEN) return;
+            credential = message.token;
+            ws.clientId = client.id;
+            expires(client);
+            clearTimeout(deadline);
+            if (authorized()) screenSound.add(ws, authorized);
+          } else {
+            if (!authorized()) return;
+            if (message.type !== "ack") throw fail(400, "Unsupported sound message.");
+            screenSound.ack(ws, message.seq);
+          }
+        } catch (e) {
+          reject(e.message, e.status || 400);
+        }
+      });
+      ws.on("close", () => {
+        clearTimeout(deadline);
+        clearInterval(expiryCheck);
+        screenSound.remove(ws);
+      });
+      ws.on("error", () => {});
+      return;
+    }
 
     let session, listener, credential;
     let authorizedAt = 0;
@@ -5849,6 +5953,7 @@ export async function createReach(overrides = {}) {
       browserScreenSnapshots.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);
+      screenSound.stop("Reach is shutting down.", true);
       // Requests still running (a phone's download, a long poll) get a
       // moment to finish, then their connections are cut: quitting never
       // waits on a phone.

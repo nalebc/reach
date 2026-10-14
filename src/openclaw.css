@@ -3,9 +3,9 @@
    with a line icon, rounded groups of tinted rows, task cards, pills, one
    white pill for what's next. Few words, no boxes around boxes. */
 .claw-app,
-.reach-chat-sheet.claw-sheet,
 .claw-settings,
-.claw-missing {
+.claw-missing,
+.claw-setup {
   --claw-ink: #ececec;
   --claw-muted: #a1a1a1;
   --claw-faint: #6f6f6f;
@@ -26,8 +26,7 @@
   font: inherit;
   -webkit-tap-highlight-color: transparent;
 }
-.claw-app button:focus-visible,
-.claw-sheet button:focus-visible {
+.claw-app button:focus-visible {
   outline: 2px solid var(--claw-blue);
   outline-offset: 2px;
 }
@@ -456,10 +455,7 @@
   color: var(--claw-faint);
 }
 
-/* ── Sheets: facts as rows, actions as pills ── */
-.reach-chat-sheet.claw-sheet {
-  color: var(--claw-ink);
-}
+/* ── A task's or an app's page: facts as rows, actions as pills ── */
 .claw-facts {
   margin: 0;
   padding: 0;
@@ -494,21 +490,6 @@
 }
 .claw-detail .claw-sched-more {
   margin-top: 14px;
-}
-.claw-sheet-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--claw-line);
-  color: var(--claw-muted);
-  font-size: 14px;
-}
-.claw-sheet .claw-missing {
-  padding: 0;
-  border: 0;
 }
 
 /* ── A conversation ── */
@@ -971,13 +952,6 @@
   gap: 8px;
   margin-top: 14px;
 }
-.reach-chat-sheet .claw-settings.claw-schedule-form {
-  max-height: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-}
 .claw-settings.claw-schedule-form {
   max-height: none;
   margin: 0 0 12px;
@@ -1039,55 +1013,95 @@
   font: inherit;
   font-size: 14px;
 }
-.claw-channel-form {
-  align-self: stretch;
-}
-.claw-app-choice {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-.claw-app-choice button {
-  flex: 1;
-  min-height: 40px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--claw-muted, var(--muted));
-  font: inherit;
-  font-size: 15px;
-}
-.claw-app-choice button.on {
-  background: #ffffff14;
-  color: var(--claw-ink, var(--text-strong));
-}
 @media (max-width: 600px) {
   .claw-settings-fields {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.claw-channel-form {
-  align-self: stretch;
-}
-.claw-app-choice {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.claw-app-choice button {
-  flex: 1;
-  min-height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
+/* ── Pages that were sheets (Oct 13): forms and panels without a box ── */
+/* Not a scroller: its rounded corner clipped the first label's first
+   letter ("Name" read "ame"). */
+.claw-subpage .claw-settings.claw-schedule-form {
+  max-height: none;
+  overflow: visible;
+  margin: 0 0 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: none;
-  color: var(--muted);
+}
+.claw-subpage .claw-missing {
+  padding: 0;
+  border: 0;
+}
+.claw-subpage .claw-facts {
+  margin-bottom: 14px;
+}
+.claw-app .claw-pill.claw-wide {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 18px;
+  font-size: 17px;
+  font-weight: 600;
+}
+/* Add a messaging app: the app as icon tiles, its token, one white pill. */
+.claw-app-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+}
+.claw-app .claw-app-tile {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 86px;
+  padding: 12px 6px;
+  border: 1px solid var(--claw-line);
+  border-radius: 20px;
+  background: var(--claw-group);
+  color: var(--claw-ink);
   font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.claw-app-tile.blue svg { color: #5ea9ff; }
+.claw-app-tile.indigo svg { color: #8b95ff; }
+.claw-app-tile.plum svg { color: #e08ad6; }
+.claw-app-tile.on {
+  border-color: var(--claw-ink);
+  background: var(--claw-field);
+}
+.claw-app-tile:focus-visible {
+  outline: 2px solid var(--claw-blue);
+  outline-offset: 2px;
+}
+.claw-channel-how {
+  margin: 0 2px 14px;
+  color: var(--claw-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.claw-channel-form > label + label {
+  margin-top: 12px;
+}
+.claw-channel-quiet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 4px 0;
+  color: var(--claw-muted);
   font-size: 13px;
 }
-.claw-app-choice button.on {
-  border-color: var(--text-strong);
-  color: var(--text-strong);
-  background: color-mix(in srgb, currentColor 7%, transparent);
+.claw-channel-done {
+  margin: 0 0 22px;
+}
+.claw-channel-done p {
+  margin: 0;
+  color: var(--claw-ink);
+  font-size: 16px;
+  line-height: 1.5;
 }
 
 .claw-message.from-agent {

@@ -37,6 +37,23 @@ release notes, so date the heading before tagging.
   everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
   phone says so on a PC. Not yet run on a physical Windows PC.
 
+- 2026-10-13: Hear the computer on your phone. A speaker in Screen's bar
+  plays what the Mac or Windows PC plays, never its microphone, for you and
+  people with full access (invited people with less access and agents never
+  hear it). It has its own connection, so it never waits behind the picture.
+  A Mac uses the Screen Recording permission the picture already has
+  (ScreenCaptureKit, macOS 13 or newer); Windows needs none (a loopback of its
+  default output). About 0.4 Mbps (IMA ADPCM, 48 kHz stereo), lighter on a
+  slow link (24 kHz, then mono), and skipped rather than late. The phone
+  plays it about a tenth of a second behind, asking iOS to treat it as media
+  playback (Safari 17's audio session) so it should play with the ringer
+  switch on silent; not yet tried on an iPhone. Off each time Screen opens; stopped by
+  leaving Screen, Pause, or turning screen viewing off; not offered in a
+  browser on the computer itself, where it would echo. Checked with a real
+  capture on a Mac (macOS 26.6) and end to end in headless Chrome under
+  Reach's own page policy; Safari on an iPhone and a real Windows PC are
+  still to try.
+
 ### Changed
 
 - 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
