@@ -1,6 +1,7 @@
 // Runs the test files the Windows validation workflow was asked for (names
-// under test/, without .test.mjs), through npm so each carries the runaway
-// guard. Names are checked, never passed to a shell.
+// under test/, without .test.mjs; one folder down too, as journeys/home),
+// through npm so each carries the runaway guard. Names are checked, never
+// passed to a shell.
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,7 +9,7 @@ import { spawnSync } from "node:child_process";
 const names = String(process.env.TESTS || "").split(/\s+/).filter(Boolean);
 if (!names.length) throw Error("Name at least one test file.");
 const files = names.map((name) => {
-  if (!/^[a-z0-9][a-z0-9-]{0,80}$/.test(name)) throw Error(`Not a test name: ${name}`);
+  if (!/^(?:[a-z0-9][a-z0-9-]{0,40}\/)?[a-z0-9][a-z0-9-]{0,80}$/.test(name)) throw Error(`Not a test name: ${name}`);
   const file = `test/${name}.test.mjs`;
   if (!fs.existsSync(file)) throw Error(`No such test: ${file}`);
   return file;

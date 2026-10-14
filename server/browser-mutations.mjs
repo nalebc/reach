@@ -31,7 +31,6 @@ const regular = (stat) => stat.isFile() && stat.nlink === 1 && stat.size <= MAX_
 // uses descriptor-relative native I/O: repeated pathname checks alone cannot
 // prevent another process from swapping parent directories for symbolic links.
 export function validateBrowserMutation(action, authorize, { resolve } = {}) {
-  if (process.platform === "win32") throw fail(403, "Approved file changes are not supported on Windows.");
   if (action?.type !== "terminal-change" || !Number.isSafeInteger(action.root) || action.root < 0 || !safeRelative(action.cwd ?? "", true) || typeof authorize !== "function" || typeof resolve !== "function") throw invalid();
   const spec = parseBrowserMutation(action.command);
   const client = authorize();

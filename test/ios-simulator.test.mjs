@@ -6,9 +6,10 @@ import path from "node:path";
 import http from "node:http";
 import https from "node:https";
 import crypto from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
+import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 
 // Opt-in real WKWebView/native-plugin smoke. Uses a new disposable simulator,
 // a copied app, synthetic files, and a localhost-only Reach fixture. It never
@@ -23,28 +24,6 @@ const enabled = process.platform === "darwin" && !!process.env.REACH_TEST_IOS_AP
 // once the killed process closes its pipes: a killed simctl took 17-64 s more
 // on hosted runners (Oct 12), enough to sink a retry. This rejects at the
 // limit and makes sure the process goes (SIGTERM, then SIGKILL after 5 s).
-function run(command, args, limit) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.setEncoding("utf8").on("data", chunk => { if (stdout.length < 2 << 20) stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", chunk => { if (stderr.length < 1 << 16) stderr += chunk; });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5000);
-      child.stdout.destroy();
-      child.stderr.destroy();
-      reject(Error(`did not finish within ${limit / 1000} s`));
-    }, limit);
-    child.on("error", error => { clearTimeout(timer); reject(error); });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(Error(`exited with ${signal || code}${stderr.trim() ? `: ${stderr.trim().slice(-400)}` : ""}`));
-    });
-  });
-}
-
 // The CI lane's budget (ci.yml passes --test-timeout=600000; this per-test
 // value overrides it, so it must say the same). A passing hosted macos-15 run
 // took 179 s: Reach, a new simulator's cold first boot (51 s), trusting the
@@ -79,7 +58,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // launching a running app returns its pid, install replaces the same app.
   // Each retry waits 5 s longer than the last. The last failure names every
   // attempt; a step that never succeeds fails the test.
-  const sim = async (name, args, { limit = 60000, attempts = 1 } = {}) => {
+  const sim = async (name, args, { limit = 60000, attempts = 1, progress } = {}) => {
     const tries = [];
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, Math.min(5000 * (attempt - 1), Math.max(0, left() - 10000))));
@@ -87,8 +66,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const allowed = Math.min(limit, left());
       const began = Date.now();
       try {
-        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed);
-        steps.push({ step: name, attempt, seconds: since(began), ok: true });
+        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress });
+        steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: "the app requested its test page" } : {}) });
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
       } catch (error) {
@@ -158,6 +137,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const downloadResponded = new Promise(resolve => { noteResponse = resolve; });
   t.after(() => allowDownload());
   let script = "";
+  let pageStarted;
+  const appPage = new Promise(resolve => { pageStarted = resolve; });
   const handler = async (req, res) => {
     res.on("finish", () => {
       if (req.url.startsWith("/api/")) requests.push({ path: req.url.split("?")[0], status: res.statusCode });
@@ -178,6 +159,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       return;
     }
     if (req.url === `${probe}.js`) {
+      pageStarted();
       res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" }).end(script);
       return;
     }
@@ -335,7 +317,11 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   reached("app installed");
   // A fresh device has no running copy to terminate. Stop a half-started copy
   // only on a retry, while retaining the bounded attempts and all app checks.
-  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], { limit: 75000, attempts: 3 });
+  // simctl sometimes stays open after the app has started (PR #45's failing
+  // report recorded Reach API requests during all three launch timeouts).
+  // The copied app requesting this run's unique page proves launch too.
+  // Only its simctl process is stopped; every native smoke check below remains.
+  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], { limit: 75000, attempts: 3, progress: appPage });
   reached("app launched");
   const pageLimit = Math.max(0, Math.min(100000, left()));
   const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);

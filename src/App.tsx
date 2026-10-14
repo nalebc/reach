@@ -1529,7 +1529,7 @@ function PairForm(props: {
       initialUrl={props.initialUrl}
       onPaired={props.onPaired}
       name={deviceLabel()}
-      legacy={(url) => <LegacyPairForm {...props} initialUrl={url} />}
+      legacy={(url, command) => <LegacyPairForm {...props} initialUrl={url} command={command} />}
     />
   );
 }
@@ -1537,10 +1537,12 @@ function LegacyPairForm({
   onPaired,
   initialUrl,
   compact = false,
+  command,
 }: {
   onPaired: (p: Peer) => void;
   initialUrl?: string;
   compact?: boolean;
+  command?: string;
 }) {
   const [url, setUrl] = useState(
       initialUrl || (isNative ? "" : homeOrigin()),
@@ -1614,9 +1616,11 @@ function LegacyPairForm({
       </button>
       <p className="form-note">
         <ShieldCheck size={14} />
-        Codes work once and expire after 10 minutes. Press Enter in your
-        computer’s Reach terminal in local mode, or run ./reach pair for a fresh
-        code.
+        {/* A fresh code the way every Reach gives one (local mode, a
+            Windows PC that can't hold its keyed route, the approval page's
+            fallback), said as that computer runs Reach. */}
+        Codes work once and expire after 10 minutes. For a fresh one, run{" "}
+        {command || "reach"} pair on your computer.
       </p>
     </form>
   );
