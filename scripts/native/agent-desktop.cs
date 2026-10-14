@@ -4028,16 +4028,16 @@ static partial class Desk {
   }
 
   // --- Menus (§8.4): read from the window's own menu bar, invisibly ------------
-  sealed class MenuEntry { public string Title = "", Key = ""; public bool Enabled = true, Checked; public IntPtr Submenu; }
+  sealed class MenuEntry { public string Title = "", Key = ""; public bool Enabled = true, Checked; public IntPtr Submenu; public uint Id; public int Position; }
   static List<MenuEntry> MenuEntries(IntPtr menu) {
     var entries = new List<MenuEntry>();
     int count = Native.GetMenuItemCount(menu);
     for (int i = 0; i < count && i < 200; i++) {
-      var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STRING | Native.MIIM_STATE | Native.MIIM_SUBMENU | Native.MIIM_FTYPE };
+      var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STRING | Native.MIIM_STATE | Native.MIIM_SUBMENU | Native.MIIM_FTYPE | Native.MIIM_ID };
       if (!Native.GetMenuItemInfoW(menu, (uint)i, true, ref info) || (info.fType & Native.MFT_SEPARATOR) != 0) continue;
       // Kept before the string is asked for: that second call needn't keep them.
       IntPtr submenu = info.hSubMenu;
-      uint state = info.fState;
+      uint state = info.fState, id = info.wID;
       string text = "";
       if (info.cch > 0 && info.cch < 4096) {
         IntPtr buffer = Marshal.AllocHGlobal((int)(info.cch + 1) * 2);
@@ -4054,7 +4054,7 @@ static partial class Desk {
       text = text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
       int tab = text.IndexOf('\t');
       var entry = new MenuEntry { Title = (tab >= 0 ? text.Substring(0, tab) : text).Trim(), Key = tab >= 0 ? Limit(text.Substring(tab + 1).Trim(), 12) : "",
-        Enabled = (state & Native.MFS_DISABLED) == 0, Checked = (state & Native.MFS_CHECKED) != 0, Submenu = submenu };
+        Enabled = (state & Native.MFS_DISABLED) == 0, Checked = (state & Native.MFS_CHECKED) != 0, Submenu = submenu, Id = id, Position = i };
       if (entry.Title.Length > 0) entries.Add(entry);
     }
     return entries;
@@ -4145,7 +4145,9 @@ static partial class Desk {
     long root = target.App.Root;
     IntPtr level = Native.GetMenu(new IntPtr(root));
     if (level == IntPtr.Zero) throw new Refusal("This app has no menu bar.", "retry");
+    IntPtr bar = level;
     MenuEntry chosen = null;
+    var steps = new List<KeyValuePair<IntPtr, MenuEntry>>();
     for (int i = 0; i < names.Count; i++) {
       var entries = level == IntPtr.Zero ? new List<MenuEntry>() : MenuEntries(level);
       var graded = entries.ConvertAll(entry => new KeyValuePair<int, double>(SameTitle(entry.Title, names[i]) ? 3 : Policy.NameMatch(entry.Title, names[i]) == 2 ? 2 : 0, double.PositiveInfinity));
@@ -4156,6 +4158,7 @@ static partial class Desk {
         throw new Refusal("No menu item \"" + Limit(names[i], 60) + "\" in " + (i == 0 ? "the menu bar" : names[i - 1]) + ". Read the menus with reach_menus.", "retry");
       }
       chosen = entries[at];
+      steps.Add(new KeyValuePair<IntPtr, MenuEntry>(level, chosen));
       level = chosen.Submenu;
     }
     string title = chosen.Title, word = Policy.Lower(title);
@@ -4168,7 +4171,7 @@ static partial class Desk {
       if (Policy.MentionsReach(title, rules)) throw new Refusal(Policy.ReachReason, "blocked");
       if (rules.ProtectedTitleWords.Exists(protectedWord => protectedWord.Length > 0 && word.Contains(protectedWord)) || word.Contains("inspect element")) throw new Refusal(Policy.ProtectedReason, "blocked");
     }
-    if (!PressThroughUia(root, names)) throw new Refusal("That menu item couldn't be pressed. Use its shortcut key instead.", "retry");
+    if (!PressClassic(new IntPtr(root), bar, steps) && !PressThroughUia(root, names)) throw new Refusal("That menu item couldn't be pressed. Use its shortcut key instead.", "retry");
     var result = Ok();
     result["app"] = target.App.Name;
     result["bundle"] = target.App.Bundle;
@@ -4176,6 +4179,22 @@ static partial class Desk {
     foreach (string name in names) pressed.Add(Limit(name, 80));
     result["pressed"] = string.Join(" " + (char)0x203A + " ", pressed);
     return result;
+  }
+  // A classic menu's item by its own command, as Windows sends it when the
+  // item is chosen, the menu never shown (as a Mac's AXPress): the menus on
+  // its path are first told to get ready, as before they open (an app may dim
+  // the item then), and a dimmed item isn't pressed.
+  static bool PressClassic(IntPtr window, IntPtr bar, List<KeyValuePair<IntPtr, MenuEntry>> path) {
+    var item = path[path.Count - 1];
+    if (item.Value.Id == 0 || item.Value.Id > 0xFFFF) return false;
+    UIntPtr answer;
+    Native.SendMessageTimeoutW(window, Native.WM_INITMENU, bar, IntPtr.Zero, Native.SMTO_ABORTIFHUNG, 500, out answer);
+    for (int i = 0; i + 1 < path.Count; i++)
+      Native.SendMessageTimeoutW(window, Native.WM_INITMENUPOPUP, path[i].Value.Submenu, new IntPtr(path[i].Value.Position & 0xFFFF), Native.SMTO_ABORTIFHUNG, 500, out answer);
+    var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STATE };
+    if (!Native.GetMenuItemInfoW(item.Key, item.Value.Id, false, ref info)) return false;
+    if ((info.fState & Native.MFS_DISABLED) != 0) throw new Refusal("\"" + Limit(item.Value.Title, 60) + "\" is dimmed right now.", "retry");
+    return Native.PostMessageW(window, Native.WM_COMMAND, new IntPtr((int)item.Value.Id), IntPtr.Zero);
   }
   static bool PressThroughUia(long root, List<string> names) {
     try {
@@ -5476,7 +5495,10 @@ static class Native {
   [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
   [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
   [DllImport("kernel32.dll")] public static extern IntPtr GlobalFree(IntPtr memory);
-  public const uint MIIM_STATE = 0x1, MIIM_SUBMENU = 0x4, MIIM_STRING = 0x40, MIIM_FTYPE = 0x100, MFT_SEPARATOR = 0x800, MFS_DISABLED = 0x3, MFS_CHECKED = 0x8;
+  public const uint MIIM_STATE = 0x1, MIIM_ID = 0x2, MIIM_SUBMENU = 0x4, MIIM_STRING = 0x40, MIIM_FTYPE = 0x100, MFT_SEPARATOR = 0x800, MFS_DISABLED = 0x3, MFS_CHECKED = 0x8;
+  public const uint WM_COMMAND = 0x0111, WM_INITMENU = 0x0116, WM_INITMENUPOPUP = 0x0117, SMTO_ABORTIFHUNG = 0x2;
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern IntPtr SendMessageTimeoutW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint ms, out UIntPtr result);
   public const int SW_RESTORE = 9;
   public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
   [StructLayout(LayoutKind.Sequential)]
