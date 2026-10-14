@@ -2,7 +2,9 @@
 
 Status: implementation spec for workstream D in `docs/WINDOWS_AGENT_PARITY.md`, Oct 12 2026, revised after the fix-first review. It replaces the recommendation in `docs/WINDOWS_SIGN_IN_DESIGN.md`.
 
-- It sits behind `REACH_WINDOWS_ACCOUNT=1` and is off by default.
+**Oct 13: no switch.** The owner: "No flag should exist. We should detect platform and support." Wherever this spec says `REACH_WINDOWS_ACCOUNT=1`, read "a Windows PC set up with your account" (`./reach setup`, saved preferences, as on a Mac). Such a PC uses the keyed route when Tailscale (1.104 or newer, with its network adapter), Reach's folders and the peer check allow it, and pairing codes with the reason otherwise. If the route refuses every connection Tailscale makes to it, Reach notes it and starts again on pairing codes at once; it tries the route again a day later or after Tailscale changes (`scripts/launch.mjs`, `sign-in-unrecognised.json`). An older Tailscale no longer stops `configure`: the account is kept, and it says why phones use pairing codes until Tailscale is updated. Face ID join and linked computers (§11, "a later flag") are on too. The rest of this spec describes the Oct 12 state, kept as written.
+
+- It sat behind `REACH_WINDOWS_ACCOUNT=1`, off by default (until Oct 13, above).
 - **What it was checked against:**
   - Tailscale v1.104.0 (`~/go/pkg/mod/tailscale.com@v1.104.0`);
   - the gVisor it pins (`gvisor.dev/gvisor@v0.0.0-20260915211658-a6f909f08a72`);
