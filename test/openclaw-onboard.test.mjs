@@ -382,6 +382,53 @@ test("ClawOnboard: install row, then provider pills and a write-only key", async
   }
 });
 
+// The same on a Windows PC (owner, Oct 13: natively, as on a Mac): its own
+// installer, what Reach adds first said before Run, then the key form.
+test("ClawOnboard on a Windows PC: OpenClaw's installer, the Node it adds said first, then the key form; no Mac", async () => {
+  const sent = [];
+  let status = { installed: false, configured: false, supported: true, providers: ["openrouter", "anthropic", "openai", "google"] };
+  const plan = {
+    agent: "openclaw",
+    name: "OpenClaw",
+    command: "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard",
+    note: "OpenClaw needs Node 24.16 or newer, and this PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this PC's Node as it is.",
+  };
+  const dom = await startDom({
+    routes: {
+      [base + "/onboard/status"]: () => status,
+      "/api/sessions/agent-install/openclaw": (init) => {
+        const body = JSON.parse(init.body);
+        sent.push(["install", body]);
+        return { ...plan, ...(body.confirm ? { terminal: { id: "t1", status: "running" } } : {}) };
+      },
+      "/api/terminals": () => [{ id: "t1", status: "exited", exitCode: 0 }],
+    },
+  });
+  try {
+    const { ClawOnboard } = await dom.load("/src/OpenClawOnboard.tsx");
+    const peer = { id: "pc", url: "https://reach.test", token: "t", platform: "win32" };
+    const view = await dom.render(dom.React.createElement(ClawOnboard, { peer, onDone: () => {} }));
+    const doc = dom.document;
+    const btn = (label) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+    await dom.waitFor(() => btn("Install"));
+    btn("Install").click();
+    await dom.waitFor(() => doc.querySelector(".claw-onboard-command"));
+    assert.equal(doc.querySelector(".claw-onboard-command").textContent, plan.command);
+    assert.equal(doc.querySelector(".claw-onboard-note").textContent, plan.note);
+    status = { ...status, installed: true };
+    btn("Run on Windows PC").click();
+    await dom.waitFor(() => sent.length === 2);
+    assert.deepEqual(sent[1], ["install", { confirm: true }]);
+    await dom.waitFor(() => btn("Accept risk & set up"), 5000);
+    assert.match(doc.querySelector(".claw-onboard-note").textContent, /OpenClaw can run commands on this Windows PC/);
+    assert.doesNotMatch(doc.body.textContent, /\bMac\b|macOS/);
+    await view.unmount();
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await dom.close();
+  }
+});
+
 // Opened again mid-setup (config already written): a spinner, not nothing.
 // Its Gateway service didn't install and Start fails: say so in Reach's words.
 test("ClawOnboard reopened while setting up: waits, then names a partial setup", async () => {

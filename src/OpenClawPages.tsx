@@ -567,7 +567,7 @@ export function ClawCustomize({
             }}
           />
           <div className="claw-sheet-foot">
-            <span>Signal, iMessage, Matrix…</span>
+            <span>{peer.platform === "win32" ? "Signal, Matrix… iMessage needs a Mac." : "Signal, iMessage, Matrix…"}</span>
             <OpenSetup peer={peer} section="channels">
               Other apps
             </OpenSetup>
