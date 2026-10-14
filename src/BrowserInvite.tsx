@@ -37,6 +37,7 @@ import {
   Row,
   Section,
 } from "./invite-menu";
+import { Mascot } from "./Mascot";
 import "./browser-workspace.css";
 import "./agent-invite.css";
 
@@ -238,6 +239,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
   const [copied, setCopied] = useState(false);
   const [shareNote, setShareNote] = useState("");
   const [made, setMade] = useState<{
+    clientId: string;
+    mascot?: number;
     link: string;
     name: string;
     access: string;
@@ -343,6 +346,7 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         runtime?: string;
         privateUrl?: string;
         hosted?: boolean;
+        mascot?: number;
       }>(peer, "/api/agents/browser-invitations", {
         method: "POST",
         signal: controller.signal,
@@ -385,6 +389,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         if (address.protocol !== "https:" || !/^\/mcp\/[A-Za-z0-9_-]{43}$/.test(address.pathname) || address.search || address.hash || address.username || address.password)
           throw Error("The connector address could not be prepared.");
         setMade({
+          clientId: result.clientId,
+          mascot: result.mascot,
           link: address.href,
           name: name.trim(),
           access: PRESET_WORDS[preset].title,
@@ -415,6 +421,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
           runtime: pinnedRuntime(result.runtime),
         }, "/agent");
         setMade({
+          clientId: result.clientId,
+          mascot: result.mascot,
           link,
           name: name.trim(),
           access: PRESET_WORDS[preset].title,
@@ -440,6 +448,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         throw Error("The temporary connection link could not be prepared.");
       const link = url.href;
       setMade({
+        clientId: result.clientId,
+        mascot: result.mascot,
         link,
         name: name.trim(),
         access: PRESET_WORDS[preset].title,
@@ -833,8 +843,9 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
           aria-label="AI browser invite link"
           aria-live="polite"
         >
-          <span className="ag-done-icon">
-            <Check size={27} strokeWidth={1.8} aria-hidden="true" />
+          <span className="ag-done-icon mascot-done has-mascot" aria-hidden="true">
+            <Mascot id={made.clientId} drawn={made.mascot} />
+            <i className="mascot-check"><Check size={12} strokeWidth={3} /></i>
           </span>
           <h3 ref={doneHeading} tabIndex={-1}>
             {made.name} is invited

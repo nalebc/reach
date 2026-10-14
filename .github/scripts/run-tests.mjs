@@ -25,8 +25,12 @@ export const suites = {
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
+    // Bug bash recovery: shared chat/file UI and native input refusals.
+    "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // Mascots for invited agents and people: the shared deck and faces (Oct 13).
+    "mascot-deck", "mascots-ui",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).

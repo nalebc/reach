@@ -1,0 +1,28 @@
+/* An invited agent's or person's face (Mascot.tsx), cut to its avatar's
+   shape. Avatars that show one drop their own fill. */
+.mascot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+.has-mascot {
+  background: none !important;
+}
+/* Just invited: the face it drew, with a check. */
+.mascot-done {
+  position: relative;
+}
+.mascot-done .mascot-check {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #b9efd4;
+  color: #0f1613;
+  box-shadow: 0 0 0 2.5px rgb(0 0 0 / 0.4);
+}
