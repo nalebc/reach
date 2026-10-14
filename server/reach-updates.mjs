@@ -103,6 +103,38 @@ export async function latestRelease({ name = PACKAGE, fetch: get = globalThis.fe
   }
 }
 
+// Windows can't replace the files of a Reach that runs (its folder is its
+// working directory, its native parts are loaded), so there the update the
+// owner confirmed moves to a window of its own, which stops Reach, installs
+// and starts it again (scripts/bootstrap.mjs update). What that window may
+// install is this one request, written here only after the owner's tap:
+// there's no switch an agent could pass to skip the phone.
+export const updateRequestFile = (dataDir) => path.join(dataDir, "update-request.json");
+const REQUEST_MS = 10 * 60_000;
+export function askUpdate(dataDir, version, { now = Date.now() } = {}) {
+  const wanted = parseVersion(version)?.text;
+  if (!wanted) throw new Error("No version to update to.");
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const file = updateRequestFile(dataDir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ version: wanted, requestedAt: now, expiresAt: now + REQUEST_MS }), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  return wanted;
+}
+// Read once and gone: the version asked for, while the request is fresh.
+export function takeUpdateRequest(dataDir, { now = Date.now() } = {}) {
+  const file = updateRequestFile(dataDir);
+  let request = null;
+  try {
+    request = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  fs.rmSync(file, { force: true });
+  const version = parseVersion(request?.version)?.text;
+  return version && Number.isFinite(request.expiresAt) && request.expiresAt > now && request.requestedAt <= now ? version : null;
+}
+
 // The Mac's side: checks now and then, offers an update once per version
 // (Needs you), installs the confirmed one and restarts Reach.
 export function createReachUpdates({
@@ -114,6 +146,9 @@ export function createReachUpdates({
   // Reach restarts on the new version (the same as a restart request:
   // server/index.mjs). Without one (not a Mac), the owner restarts it.
   restart = null,
+  // Windows: the confirmed version's whole update, handed to a window of its
+  // own (above). It stops this Reach; still running a while later, it didn't.
+  handoff = null,
   platform = process.platform,
   now = Date.now,
   onChange = () => {},
@@ -195,6 +230,20 @@ export function createReachUpdates({
     phase = "installing"; target = now_.to; error = "";
     record(`Updating Reach to ${target}`);
     changed();
+    if (handoff) {
+      phase = "restarting";
+      changed();
+      try { handoff(target); }
+      catch (e) { phase = "failed"; error = `The update didn't start (${e?.message || e}).`; record(`Reach ${target} didn't install: ${error}`); changed(); return status(); }
+      const stuck = setTimeout(() => {
+        if (phase !== "restarting") return;
+        phase = "failed"; error = "The update didn't start. Run reach update on this computer.";
+        record(`Reach ${target} didn't install: its window didn't stop Reach`);
+        changed();
+      }, restartGraceMs);
+      stuck.unref?.();
+      return status();
+    }
     let tail = "";
     const keep = (chunk) => { tail = (tail + chunk.toString()).slice(-8192); };
     const finish = (ok, why) => {

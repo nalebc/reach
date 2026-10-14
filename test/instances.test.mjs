@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { alreadyRunning, describe, processTable, reachHosts, sameBoot, stateOf, statusText, whereItRuns, windowsBootTime, windowsImage, windowsReachAlive, withoutHandover } from "../scripts/instances.mjs";
+import { alreadyRunning, describe, processTable, reachHosts, runtimeOf, sameBoot, stateOf, statusText, whereItRuns, windowsBootTime, windowsImage, windowsReachAlive, withoutHandover } from "../scripts/instances.mjs";
 import { stopReach } from "../scripts/stop.mjs";
 
 test("process discovery distinguishes an unavailable inventory from no running Reach", () => {
@@ -216,24 +216,33 @@ test("a Reach started with a relative script path (npm run go) is found through 
   const { reachHosts } = await import("../scripts/instances.mjs");
   const table = [{ pid: 700, ppid: 1, tty: "ttys001", command: "node scripts/bootstrap.mjs" }];
   const found = reachHosts(table, { self: 1, cwdOf: (pid) => (pid === 700 ? "/Users/me/reach" : "") });
-  assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, "/Users/me/reach"]]);
+  // Resolved as this computer resolves a path (a drive in front, on Windows).
+  assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, path.resolve("/Users/me/reach")]]);
 });
 
-// First-run matrix H20: Windows has no ps. `status` names the Reach this
-// folder runs from its own status file, while that process lives, and the
-// running Reach stops when `stop` leaves it a request (no signals there).
-test("Windows status: from the status file, only while its process lives", async () => {
+// First-run matrix H20, now only where Windows' process list can't be read:
+// `status` names the Reach this folder runs from its own status file, while
+// that process lives, with the Mac's lines (audit #32), and the running Reach
+// stops when `stop` leaves it a request (no signals there).
+test("Windows status from the status file: only while its process lives, with the Mac's lines", async () => {
   const { windowsHost, windowsStatusText } = await import("../scripts/instances.mjs");
-  const status = { pid: 4242, startedAt: Date.parse("2026-10-10T09:05:00"), origin: "https://pc.t.ts.net:8443" };
+  const status = { pid: 4242, startedAt: Date.parse("2026-10-10T09:05:00"), origin: "https://pc.t.ts.net:8443", window: true };
   const read = () => JSON.stringify(status);
-  const host = windowsHost("/state", { read, alive: (pid) => pid === 4242 });
+  // Its process, as tasklist would name it (this test may run on a real PC).
+  const live = { image: () => "node.exe", boot: () => undefined };
+  const host = windowsHost("/state", { read, alive: (pid) => pid === 4242, ...live });
   assert.equal(host.pid, 4242);
   const text = windowsStatusText(host, { command: ".\\reach.cmd", now: Date.parse("2026-10-10T12:00:00") });
-  assert.match(text, /^Reach: running in a terminal \(process 4242\), since [^\n]*9:05[^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443$/);
+  assert.match(text, /^Reach: running in a terminal window \(process 4242\), since [^\n]*9:05[^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443$/);
+  const routes = { private: { up: true, since: Date.parse("2026-10-10T09:06:00"), interruptions: 1 }, public: { open: false, since: 0 } };
+  assert.match(
+    windowsStatusText({ ...status, routes, awake: { mode: "ac", active: false }, window: false }, { command: ".\\reach.cmd", now: Date.parse("2026-10-10T12:00:00") }),
+    /^Reach: running in the background, with no window, since [^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443\nPrivate route: up since [^\n]*9:06[^\n]* · 1 interruption\nPublic link: off\nSleep prevention: ac · not active\nIt has no window: it can't take device approvals\. Run \.\\reach\.cmd restart to run it in a window of its own\.$/,
+  );
   // A status file a stopped (or force-ended) Reach left: not running.
-  assert.equal(windowsHost("/state", { read, alive: () => false }), null);
-  assert.equal(windowsHost("/state", { read: () => { throw Object.assign(Error("gone"), { code: "ENOENT" }); } }), null);
-  assert.equal(windowsHost("/state", { read: () => "{\"pid\":\"x\"}", alive: () => true }), null);
+  assert.equal(windowsHost("/state", { read, alive: () => false, ...live }), null);
+  assert.equal(windowsHost("/state", { read: () => { throw Object.assign(Error("gone"), { code: "ENOENT" }); }, ...live }), null);
+  assert.equal(windowsHost("/state", { read: () => "{\"pid\":\"x\"}", alive: () => true, ...live }), null);
   assert.equal(windowsStatusText(null, { command: ".\\reach.cmd" }), "Reach isn't running from this folder. Start it with .\\reach.cmd.");
 });
 
@@ -286,4 +295,162 @@ test("Windows: a recorded Reach is the one running only in the same boot and whi
   assert.equal(windowsReachAlive(record, { ...live, image: () => null }), true, "tasklist can't say: the living id counts");
   assert.equal(windowsReachAlive({ pid: 4242 }, live), true, "an older file without a boot");
   assert.equal(windowsReachAlive({ pid: "x" }, live), false);
+});
+
+// One Reach per computer on Windows (audit #10): every Reach on the PC from
+// its process list (server/windows-processes.mjs), as ps lists them on a Mac.
+// A parent is one only if it started first: Windows hands ids out again.
+const NODEJS = String.raw`"C:\Program Files\nodejs\node.exe"`;
+const PC = [
+  { pid: 100, ppid: 4, image: "explorer.exe", commandLine: String.raw`C:\Windows\Explorer.EXE`, startedAt: 1000 },
+  { pid: 200, ppid: 100, image: "WindowsTerminal.exe", commandLine: "wt", startedAt: 2000 },
+  { pid: 300, ppid: 200, image: "powershell.exe", commandLine: "powershell.exe", startedAt: 3000 },
+  { pid: 310, ppid: 300, image: "powershell.exe", commandLine: String.raw`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\Users\Me\reach\scripts\bootstrap.ps1"`, startedAt: 3100 },
+  { pid: 320, ppid: 310, image: "node.exe", commandLine: String.raw`${NODEJS} C:\Users\Me\reach\bin\reach.mjs`, startedAt: 3200 },
+  { pid: 330, ppid: 320, image: "node.exe", commandLine: String.raw`${NODEJS} C:\Users\Me\reach\scripts\bootstrap.mjs`, startedAt: 3300 },
+  { pid: 341, ppid: 330, image: "powershell.exe", commandLine: "powershell.exe -NoLogo", startedAt: 3410 },
+  { pid: 342, ppid: 341, image: "claude.exe", commandLine: "claude", startedAt: 3420 },
+  { pid: 343, ppid: 341, image: "conhost.exe", commandLine: String.raw`\??\C:\Windows\system32\conhost.exe 0x4`, startedAt: 3411 },
+  { pid: 350, ppid: 330, image: "powershell.exe", commandLine: String.raw`powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File C:\Users\Me\reach\scripts\native\desktop-input.ps1 0`, startedAt: 3500 },
+  { pid: 351, ppid: 330, image: "reach-stay-awake-0123456789ab.exe", commandLine: "reach-stay-awake-0123456789ab.exe always", startedAt: 3510 },
+  // An id Windows gave again: 330's "child" that started before 330 did.
+  { pid: 360, ppid: 330, image: "chrome.exe", commandLine: "chrome.exe", startedAt: 900 },
+  { pid: 400, ppid: 100, image: "Code.exe", commandLine: "Code.exe", startedAt: 4000 },
+  { pid: 410, ppid: 400, image: "pwsh.exe", commandLine: "pwsh.exe", startedAt: 4100 },
+  { pid: 420, ppid: 410, image: "node.exe", commandLine: String.raw`node "C:\My Projects\reach copy\scripts\bootstrap.mjs" --port 4318`, startedAt: 4200 },
+  { pid: 500, ppid: 600, image: "reach-background-0123456789ab.exe", commandLine: "reach-background-0123456789ab.exe --log x --hold y -- node", startedAt: 5000 },
+  { pid: 510, ppid: 500, image: "node.exe", commandLine: String.raw`"C:\Users\Me\.reach\runtime\node-v22.23.3-win-x64\node.exe" "C:\Users\Me\AppData\Roaming\npm\\node_modules\@nalebc\reach\scripts\bootstrap.mjs" --service --port 4318`, startedAt: 5100 },
+  { pid: 600, ppid: 4, image: "svchost.exe", commandLine: null, startedAt: 500 },
+  // Beside them, never a Reach: commands that print, an editor, code for node -e.
+  { pid: 700, ppid: 300, image: "node.exe", commandLine: String.raw`${NODEJS} C:\Users\Me\reach\scripts\bootstrap.mjs status`, startedAt: 7000 },
+  { pid: 710, ppid: 300, image: "node.exe", commandLine: String.raw`node C:\Users\Me\reach\bin\reach.mjs -v`, startedAt: 7100 },
+  { pid: 720, ppid: 300, image: "notepad.exe", commandLine: String.raw`notepad.exe C:\Users\Me\reach\scripts\bootstrap.mjs`, startedAt: 7200 },
+  { pid: 730, ppid: 300, image: "node.exe", commandLine: String.raw`node -e "import('C:/Users/Me/reach/scripts/bootstrap.mjs')"`, startedAt: 7300 },
+  // npm run go: a path relative to a folder its command line doesn't name.
+  { pid: 900, ppid: 300, image: "node.exe", commandLine: String.raw`node scripts\bootstrap.mjs`, startedAt: 9000 },
+  // Another account's: Windows says nothing of it.
+  { pid: 950, ppid: 4, image: "node.exe", commandLine: null, startedAt: null },
+];
+test("Windows: every Reach on the PC from its process list, whatever its folder, and how each runs", async () => {
+  const { windowsReachHosts } = await import("../scripts/instances.mjs");
+  const hosts = windowsReachHosts(PC, { self: 700, runtime: () => ({}) });
+  assert.deepEqual(hosts.map((h) => [h.pid, h.root]), [
+    [330, String.raw`C:\Users\Me\reach`],
+    [420, String.raw`C:\My Projects\reach copy`],
+    [510, String.raw`C:\Users\Me\AppData\Roaming\npm\node_modules\@nalebc\reach`],
+    [900, null],
+  ]);
+  assert.deepEqual(hosts.map(whereItRuns), [
+    "in a terminal window (process 330)",
+    "inside VS Code (process 420), not a window of its own",
+    "as the background service",
+    "in a terminal window (process 900)",
+  ]);
+  const [reach] = hosts;
+  assert.deepEqual(reach.descendants.map((d) => d.pid).sort(), [341, 342, 343, 350, 351], "never what got an old id");
+  assert.deepEqual(reach.terminals, [{ pid: 341, tty: "", shell: "powershell", running: ["claude"] }], "its terminal, not its PowerShell helper");
+  assert.deepEqual(hosts.map((h) => h.startedAt), [3300, 4200, 5100, 9000]);
+  // A Reach with no window of its own, by its status file.
+  const hidden = windowsReachHosts(PC, { self: 700, runtime: (root, pid) => (pid === 330 ? { pid, window: false } : {}) });
+  assert.equal(whereItRuns(hidden[0]), "in the background, with no window");
+  // One folder's.
+  assert.deepEqual(windowsReachHosts(PC, { self: 700, root: String.raw`c:\users\me\REACH`, runtime: () => ({}) }).map((h) => h.pid), [330]);
+});
+
+test("Windows: a second start says where Reach runs and what that costs there; status gives the Mac's lines", async () => {
+  const { windowsReachHosts, startedOf } = await import("../scripts/instances.mjs");
+  const [reach, inCode, service] = windowsReachHosts(PC, { self: 700, runtime: () => ({}) });
+  const started = startedOf([reach, inCode]);
+  assert.deepEqual([...started], [[330, 3300], [420, 4200]], "Windows' list says when each started");
+  const now = new Date(1970, 0, 1, 12, 0).getTime();
+  const one = alreadyRunning([reach], { command: ".\\reach.cmd", now, started: new Map([[330, new Date(1970, 0, 1, 9, 5).getTime()]]) });
+  assert.match(one, /^already running in a terminal window \(process 330\), since [^,]+, from C:\\Users\\Me\\reach\.\nUse that window, or:\n {2}\.\\reach\.cmd restart {3}stop it and start Reach here/);
+  assert.match(alreadyRunning([inCode]), /\nIt ends when VS Code closes\.\n/);
+  assert.doesNotMatch(alreadyRunning([{ ...reach, tty: "" }]), /show or control your screen/, "Windows gives every program in your session the screen");
+  assert.match(alreadyRunning([{ ...reach, tty: "" }]), /\nWith no window it can't take device approvals\.\n/);
+  const runtime = () => ({
+    pid: 330,
+    link: "https://pc.tail.ts.net",
+    routes: { private: { up: true, since: 0, interruptions: 0 }, public: { open: true, since: 0 } },
+    awake: { mode: "always", active: true },
+    signInOff: "Tailscale is older than 1.104; update Tailscale.",
+  });
+  assert.equal(
+    statusText([reach], { command: ".\\reach.cmd", runtime }),
+    "Reach: running in a terminal window (process 330), from C:\\Users\\Me\\reach\nLink: https://pc.tail.ts.net\nPrivate route: up\nPublic link: on, blocked until an invite\nSleep prevention: always · active\nBrowser sign-in is off for now: Tailscale is older than 1.104; update Tailscale.",
+  );
+  assert.match(statusText([inCode], { command: ".\\reach.cmd", runtime: () => ({}) }), /\nIt ends when VS Code closes\. Run \.\\reach\.cmd restart to move it to a window of its own\.$/);
+  assert.match(statusText([service], { command: "reach", runtime: () => ({}), state: () => "C:\\Users\\Me\\.reach" }), /^Reach: running as the background service, from [^\n]+\nLogs: C:\\Users\\Me\\\.reach[\\/]logs$/);
+  // A file another run left: not this Reach's link.
+  assert.equal(runtimeOf({ ...reach }, { read: () => ({ pid: 1, link: "https://old" }) }).link, undefined);
+  // Only this folder's known: said first.
+  assert.match(statusText([], { command: ".\\reach.cmd", partial: "Windows' C# compiler isn't on this PC" }), /^Reach couldn't read this PC's process list \(Windows' C# compiler isn't on this PC\), so it only knows the Reach run from this folder\.\nReach isn't running from this folder\. Start it with \.\\reach\.cmd\.$/);
+});
+
+test("Windows: the app a command runs inside, from its parents: a terminal is none, an editor or an agent is one", async () => {
+  const { windowsHostApp } = await import("../scripts/instances.mjs");
+  const chain = (...images) => images.map((image, i) => ({ pid: 1000 + i, ppid: 1001 + i, image, commandLine: image, startedAt: 1000 + (images.length - i) }));
+  // Nearest first: this node, then its parents.
+  const appOf = (...images) => windowsHostApp(chain(...images), 1000);
+  assert.equal(appOf("node.exe", "powershell.exe", "cmd.exe", "WindowsTerminal.exe", "explorer.exe"), "");
+  assert.equal(appOf("node.exe", "powershell.exe", "explorer.exe"), "", "a console window");
+  for (const terminal of ["warp.exe", "Far.exe", "MobaXterm.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe"])
+    assert.equal(appOf("node.exe", "pwsh.exe", terminal), "", terminal);
+  assert.equal(appOf("node.exe", "powershell.exe", "bash.exe", "claude.exe", "pwsh.exe", "WindowsTerminal.exe"), "Claude", "Claude Code's shell");
+  assert.equal(appOf("node.exe", "cmd.exe", "pwsh.exe", "Code.exe", "explorer.exe"), "VS Code");
+  assert.equal(appOf("node.exe", "powershell.exe", "Codex.exe"), "Codex");
+  assert.equal(appOf("node.exe", "reach-background-0123456789ab.exe", "svchost.exe"), "", "the background task");
+  assert.equal(appOf("node.exe", "powershell.exe", "TOTALCMD64.exe"), "TOTALCMD64");
+  assert.equal(appOf("node.exe", "cmd.exe"), "", "a parent that's gone: no app");
+  assert.equal(appOf("node.exe", "cmd.exe", "System"), "", "Windows itself is nobody's app");
+  assert.equal(appOf("node.exe", "cmd.exe", "smss.exe", "csrss.exe"), "");
+  // A parent that started after its child is another program with an old id.
+  const reused = chain("node.exe", "Code.exe");
+  reused[1].startedAt = 999999;
+  assert.equal(windowsHostApp(reused, 1000), "");
+});
+
+test("Windows: the process list unreadable: the Reach this folder runs, with why", async () => {
+  const { windowsReaches } = await import("../scripts/instances.mjs");
+  const record = { pid: 4242, startedAt: 1, window: true, service: false };
+  for (const [error, why] of [
+    [Object.assign(Error("no csc"), { compiler: false }), "Windows' C# compiler isn't on this PC"],
+    [Object.assign(Error("blocked"), { refused: true }), "Windows wouldn't build or run Reach's helper"],
+    [Object.assign(Error("spawn UNKNOWN"), { code: "UNKNOWN", syscall: "spawn C:\\x.exe" }), "Windows wouldn't build or run Reach's helper"],
+    [Error("it took too long"), "it took too long"],
+    [Error("The process list said something Reach can't read."), "Windows wouldn't say"],
+  ]) {
+    const found = await windowsReaches({ root: "C:\\reach", state: "C:\\reach\\.reach", list: async () => { throw error; }, host: () => record });
+    assert.equal(found.partial, why);
+    assert.deepEqual(found.hosts.map((h) => [h.pid, h.root, h.platform]), [[4242, "C:\\reach", "win32"]]);
+    assert.equal(found.processes, null);
+  }
+  const none = await windowsReaches({ root: "C:\\reach", state: "x", list: async () => { throw Error("x"); }, host: () => null });
+  assert.deepEqual(none.hosts, []);
+  const read = await windowsReaches({ root: "C:\\reach", state: "x", self: 700, list: async () => PC, host: () => assert.fail("not when the list is read") });
+  assert.equal(read.partial, "");
+  assert.deepEqual(read.hosts.map((h) => h.pid), [330, 420, 510, 900]);
+});
+
+test("Windows: a Reach watches for its stop request in its folder and, by its id, in your app data", async (t) => {
+  const { watchStopRequest, personalStopFile } = await import("../scripts/instances.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-personal-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const env = { LOCALAPPDATA: path.join(dir, "local") };
+  const personal = personalStopFile(77, env);
+  assert.equal(personal, path.join(dir, "local", "Reach", "stop", "77.json"));
+  assert.equal(personalStopFile(77, {}), null);
+  fs.mkdirSync(path.dirname(personal), { recursive: true });
+  let stops = 0;
+  const unwatch = watchStopRequest(path.join(dir, "state"), { pid: 77, stop: () => stops++, every: 10, personal });
+  t.after(unwatch);
+  // Left minutes ago by a stop that didn't finish: not acted on, and gone.
+  fs.writeFileSync(personal, JSON.stringify({ pid: 77, at: Date.now() - 10 * 60 * 1000 }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(stops, 0);
+  assert.equal(fs.existsSync(personal), false);
+  fs.writeFileSync(personal, JSON.stringify({ pid: 77, at: Date.now() }));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(stops, 1);
+  assert.equal(fs.existsSync(personal), false);
 });
