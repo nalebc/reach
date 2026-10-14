@@ -98,7 +98,7 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 | **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)        | The same                                                                              |
 | **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | **The Tailscale app**, signed in to the same account and turned on                    |
 
-From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. Windows can't offer browser sign-in yet: its phones always need the app.
+From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. On Windows it also needs Tailscale 1.104 or newer; with an older one, phones join with a pairing code and the app until Tailscale is updated, and Reach says so.
 
 ### What setup walks you through
 
@@ -114,48 +114,31 @@ The terminal says **✔ 3. Your phone — connected** when it's in. Later, when 
 
 ### Install
 
-**From source, on a Mac or Linux computer.** `./reach` installs its own Node.js if yours is older than 22.12. [Go](https://go.dev/dl/) is optional: it builds the in-browser Tailscale client, so phones don't need the Tailscale app.
-
-```sh
-git clone --branch v0.1.1 https://github.com/nalebc/reach.git
-cd reach
-./reach
-```
-
-`--branch v0.1.1` installs the latest release. `main` carries changes that aren't released yet.
-
-On macOS, allow **Screen Recording** and **Accessibility** when asked so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
-
-**On a Windows PC (experimental, not yet verified on a physical PC).** In PowerShell:
-
-```powershell
-git clone --branch v0.1.1 https://github.com/nalebc/reach.git
-cd reach
-.\reach.cmd
-```
-
-Use Reach from your phone or another computer: opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Not yet: phone sign-in from the browser, invite links for people and agents, background mode. Claude Code and Codex chats haven't been verified on Windows.
-
-**With npm.** With [Node.js 22 or newer](https://nodejs.org/):
+With [Node.js 22 or newer](https://nodejs.org/), on a Mac, a Linux computer or a Windows PC:
 
 ```sh
 npm install --global @nalebc/reach
 reach
 ```
 
-It includes the built phone interface and browser connection, so you won't need to clone the repository or install Go. `reach update` installs later releases.
+`reach` sets everything up and shows the code that pairs your phone. New releases come to your phone under **Needs you**; `reach update` installs one from the terminal.
+
+- **Mac:** allow **Screen Recording** and **Accessibility** when asked, so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
+- **Windows (experimental, not yet verified on a physical PC):** use Reach from your phone or another computer; opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Built as on a Mac, with no setting to turn on, but not yet run on a real PC: phone sign-in from the browser, invite links for people and agents, Face ID sign-in and linked computers. Not yet: background mode. Claude Code and Codex chats haven't been verified on Windows.
+
+To build from source (for contributors) or run from a portable folder, see [Install in the guide](docs/GUIDE.md#install).
 
 ### Everyday commands
 
 ```sh
-./reach status    # where Reach runs, and its link
-./reach restart   # stop it and start it again
-./reach stop      # stop it
-./reach pair      # open pairing again, for another phone
-./reach setup     # change setup choices
+reach status    # where Reach runs, and its link
+reach restart   # stop it and start it again
+reach stop      # stop it
+reach pair      # open pairing again, for another phone
+reach setup     # change setup choices
 ```
 
-On Windows, use `.\reach.cmd` in place of `./reach`. In a source checkout, run `./reach cli` once to make `reach` and its commands work from any terminal; keep the checkout, as it links to it. Linux, npm and Windows details are in the [full guide](docs/GUIDE.md#install).
+From a source checkout, the same commands are `./reach …` (`.\reach.cmd …` on Windows). Linux and Windows details are in the [full guide](docs/GUIDE.md#install).
 
 ## Security
 
@@ -172,7 +155,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 | ----------- | ---------------------------------------------------------------------------------- |
 | **macOS**   | Primary: screen, control, files, terminals, chats, agents                          |
 | **Linux**   | Files, terminals and command-line agents; no screen or agent presets               |
-| **Windows** | Experimental, not yet verified on a physical PC: guided setup, pairing code (the phone needs the Tailscale app), files, terminals, screen. No browser sign-in or invite links yet |
+| **Windows** | Experimental, not yet verified on a physical PC: guided setup, browser sign-in and invite links (Tailscale 1.104 or newer; otherwise a pairing code and the Tailscale app, with the reason), files, terminals, screen. No background mode yet |
 | **Phone**   | Safari on iPhone, Chrome on Android. No app needed                                 |
 
 ## Docs
@@ -185,7 +168,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 
 ## Status
 
-Early access (0.1.1). macOS comes first, and testing on physical phones is still in progress.
+Early access (0.2.0). macOS comes first, and testing on physical phones is still in progress.
 
 ## Contributing
 
