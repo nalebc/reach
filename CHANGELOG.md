@@ -8,6 +8,25 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-13: On a Windows PC, as on a Mac (passing on GitHub's Windows
+  runner, not yet on a physical PC):
+  - Reach's icon in the notification area: on or paused, messages from the
+    phone waiting for their Claude app chat, and Pause or Resume.
+  - Apps show their own icons and the agents their logos, drawn by Windows.
+  - Word, RTF and OpenDocument files preview as text (Word 97-2003's .doc
+    stays a download).
+  - Voice memos become words on the PC, through Windows' own speech
+    recognizer; the recording stays attached when it can't.
+  - Reach's terminals open your own shell: Windows Terminal's default
+    profile, else PowerShell 7, else Windows PowerShell.
+  - Drives attached after Reach started appear in Files.
+  - The Claude desktop app's chats, archive and links, whether it came from
+    its installer or as a package (Microsoft Store, WinGet).
+  - The phone names the launcher as the computer runs it (`reach`, `./reach`
+    or `.\reach.cmd`).
+
 ### Changed
 
 - 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
