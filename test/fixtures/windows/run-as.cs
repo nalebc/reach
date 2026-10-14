@@ -7,7 +7,8 @@
 //
 //   run-as.exe sid <user>                         prints the user's SID
 //   run-as.exe desktop grant|revoke <sid>         WinSta0 and its Default desktop
-//   run-as.exe logon-right add|remove <user>      SeInteractiveLogonRight
+//   run-as.exe logon-right add|remove <user> [<right>]
+//                                                 SeInteractiveLogonRight, or the right named
 //   run-as.exe run <user> <password> <dir> wait|nowait <command line>
 //                                                 prints "pid <n>" (and "exit <code>")
 // Failures print "error <Win32 code>" and exit 3. C# 5; mscorlib and System.
@@ -104,8 +105,8 @@ static class RunAs {
         Desktop(args[1] == "grant", new SecurityIdentifier(args[2]));
         return 0;
       }
-      if (args.Length == 3 && args[0] == "logon-right" && (args[1] == "add" || args[1] == "remove")) {
-        LogonRight(args[1] == "add", args[2]);
+      if ((args.Length == 3 || args.Length == 4) && args[0] == "logon-right" && (args[1] == "add" || args[1] == "remove")) {
+        LogonRight(args[1] == "add", args[2], args.Length == 4 ? args[3] : "SeInteractiveLogonRight");
         return 0;
       }
       if (args.Length == 6 && args[0] == "run" && (args[4] == "wait" || args[4] == "nowait"))
@@ -166,7 +167,7 @@ static class RunAs {
     if (!SetUserObjectSecurity(handle, ref information, updated)) throw new Win32Exception();
   }
 
-  static void LogonRight(bool add, string user) {
+  static void LogonRight(bool add, string user, string right) {
     SecurityIdentifier sid = Sid(user);
     byte[] binary = new byte[sid.BinaryLength];
     sid.GetBinaryForm(binary, 0);
@@ -175,7 +176,6 @@ static class RunAs {
     uint status = LsaOpenPolicy(IntPtr.Zero, ref attributes, POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, out policy);
     if (status != 0) throw new Win32Exception(LsaNtStatusToWinError(status));
     try {
-      const string right = "SeInteractiveLogonRight";
       var rights = new LSA_UNICODE_STRING[1];
       rights[0].Buffer = right;
       rights[0].Length = (ushort)(right.Length * 2);
