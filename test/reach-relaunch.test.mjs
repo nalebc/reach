@@ -30,13 +30,30 @@ function run(codes, args = []) {
   `);
   // No real waiting in the test.
   fs.writeFileSync(path.join(dir, "bin", "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  const result = spawnSync("/bin/sh", [path.join(dir, "reach"), ...args], {
-    env: { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}` },
-    encoding: "utf8",
-    timeout: 30000,
-  });
-  const runs = JSON.parse(fs.readFileSync(path.join(dir, "runs.json"), "utf8"));
-  return { status: result.status, out: result.stdout + result.stderr, runs };
+  // The background service runs on Reach's private Node, downloaded the
+  // first time. This test's own Node stands in for it, under the name the
+  // wrapper looks for: each run downloaded Node from nodejs.org, and a slow
+  // download outlasted the 30 s below (no runs.json, Oct 13 and 14).
+  const version = fs.readFileSync(wrapper, "utf8").match(/^VERSION=(\S+)$/m)[1];
+  const target = `${process.platform}-${process.arch}`;
+  const runtime = path.join(dir, ".reach", "runtime", `node-v${version}-${target}`, "bin");
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(runtime, "node"));
+  // And nothing here reaches the internet: a download is refused at once.
+  fs.writeFileSync(path.join(dir, "bin", "curl"), "#!/bin/sh\necho 'curl: no downloads in this test' >&2\nexit 1\n", { mode: 0o755 });
+  try {
+    const result = spawnSync("/bin/sh", [path.join(dir, "reach"), ...args], {
+      env: { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}` },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    const out = result.stdout + result.stderr;
+    const file = path.join(dir, "runs.json");
+    assert.ok(fs.existsSync(file), `./reach ${args.join(" ")} never started Reach (${result.error?.message || `exit ${result.status}`}): ${out}`);
+    return { status: result.status, out, runs: JSON.parse(fs.readFileSync(file, "utf8")) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test("a crash starts Reach again, waiting longer each time, without restart's stopping", { skip }, () => {

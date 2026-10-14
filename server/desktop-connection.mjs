@@ -11,8 +11,9 @@ export function desktopConnection(
     control,
     create = DesktopInput.create,
     // A second helper that only looks where the text fields are, so a scan
-    // never waits behind (or delays) a click. macOS only.
-    scanner = create === DesktopInput.create && process.platform === "darwin"
+    // never waits behind (or delays) a click. Accessibility on a Mac, UI
+    // Automation on Windows; neither sends input or reads field values.
+    scanner = create === DesktopInput.create && ["darwin", "win32"].includes(process.platform)
       ? DesktopInput.create
       : null,
     register = () => {},
