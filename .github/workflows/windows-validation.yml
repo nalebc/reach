@@ -9,7 +9,7 @@ on:
       tests:
         description: Test files under test/, space-separated
         required: false
-        default: windows-desktop-native windows-desktop-e2e
+        default: windows-desktop-native windows-desktop-e2e windows-agent-desktop-native agent-desktop-windows-policy
 permissions:
   contents: read
 concurrency:

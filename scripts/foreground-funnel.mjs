@@ -5,8 +5,8 @@ import { ForegroundServe } from "./foreground-serve.mjs";
 
 const AUTH_URL = /https:\/\/(?:login|console)\.tailscale\.com\/[^\s"']+/;
 
-// Windows' public route with browser sign-in (REACH_WINDOWS_ACCOUNT=1;
-// docs/parity/D-public-door.md §4.9): what EphemeralFunnel is on a Mac, held
+// Windows' public route with browser sign-in
+// (docs/parity/D-public-door.md §4.9): what EphemeralFunnel is on a Mac, held
 // the way Windows holds its private route. A background Funnel route would
 // outlive a crash with the route's key in Tailscale's state, so it's a
 // foreground `tailscale funnel` session, Reach's own child, gone with Reach:
