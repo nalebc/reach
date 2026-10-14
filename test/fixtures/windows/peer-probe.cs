@@ -316,6 +316,11 @@ static class PeerProbe {
     var children = new List<string>();
     var childIds = new List<long>();
     var childCreated = new List<long>();
+    // Other sessions' programs by name (the first of each): the kernel's path
+    // of a process in session 0, asked from wherever this runs.
+    string[] names = { "tailscaled.exe", "services.exe", "lsass.exe", "svchost.exe" };
+    var named = new Dictionary<string, string>();
+    var namedIds = new Dictionary<string, long>();
     while (true) {
       IntPtr buffer = Marshal.AllocHGlobal(size);
       try {
@@ -332,6 +337,14 @@ static class PeerProbe {
             count++;
             long id = Marshal.ReadIntPtr(entry, 0x50).ToInt64();
             long parent = Marshal.ReadIntPtr(entry, 0x58).ToInt64();
+            int nameLength = Marshal.ReadInt16(entry, 0x38) & 0xFFFF;
+            IntPtr nameBuffer = Marshal.ReadIntPtr(entry, 0x40);
+            string entryName = nameBuffer == IntPtr.Zero ? "" : Marshal.PtrToStringUni(nameBuffer, nameLength / 2);
+            foreach (string wanted in names)
+              if (!namedIds.ContainsKey(wanted) && string.Equals(entryName, wanted, StringComparison.OrdinalIgnoreCase)) {
+                namedIds[wanted] = id;
+                named[wanted] = "pid " + id + " session " + Marshal.ReadInt32(entry, 0x64);
+              }
             if (servicePid > 0 && (id == servicePid || parent == servicePid)) {
               int length = Marshal.ReadInt16(entry, 0x38) & 0xFFFF;
               IntPtr image = Marshal.ReadIntPtr(entry, 0x40);
@@ -365,13 +378,14 @@ static class PeerProbe {
     for (int i = 0; i < children.Count; i++)
       Say("child " + children[i] + " after-service " + (serviceCreated > 0 && childCreated[i] >= serviceCreated) + " path " + ImagePath(childIds[i]));
     Say("NtQuerySystemInformation 88 self " + ImagePath(GetCurrentProcessId()));
+    foreach (string wanted in names)
+      if (namedIds.ContainsKey(wanted)) Say("NtQuerySystemInformation 88 " + wanted + " " + named[wanted] + " " + ImagePath(namedIds[wanted]));
     string file = serviceBinary == null ? null : Executable(serviceBinary);
-    if (file != null) {
-      var device = new StringBuilder(1024);
-      int got = QueryDosDeviceW(file.Substring(0, 2), device, device.Capacity);
-      int error = Marshal.GetLastWin32Error();
-      Say("QueryDosDeviceW " + file.Substring(0, 2) + " " + (got == 0 ? Failed(error) : "ok " + device + file.Substring(2)));
-    }
+    string drive = file != null ? file.Substring(0, 2) : "C:";
+    var device = new StringBuilder(1024);
+    int got = QueryDosDeviceW(drive, device, device.Capacity);
+    int error = Marshal.GetLastWin32Error();
+    Say("QueryDosDeviceW " + drive + " " + (got == 0 ? Failed(error) : "ok " + device + (file != null ? file.Substring(2) : "")));
   }
 
   static string ImagePath(long pid) {

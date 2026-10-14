@@ -94,10 +94,13 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   const runAs = path.join(bin, "run-as.exe");
   const bindProbe = path.join(bin, "bind-probe.exe");
   const peerProbe = path.join(bin, "peer-probe.exe");
+  // The helper itself, to run directly in each context (Reach builds its own).
+  const helperCopy = path.join(bin, "tailscaled-peer.exe");
   await compile(path.join(fixtures, "fake-tailscaled.cs"), tailscaled, ["System.ServiceProcess.dll"]);
   await compile(path.join(fixtures, "run-as.cs"), runAs);
   await compile(path.join(fixtures, "bind-probe.cs"), bindProbe);
   await compile(path.join(fixtures, "peer-probe.cs"), peerProbe);
+  await compile(path.join(repo, "scripts", "native", "tailscaled-peer.cs"), helperCopy);
 
   // Two standard users: reachci runs Reach, reachci2 is somebody else on the PC.
   const users = { reachci: password(), reachci2: password() };
@@ -254,22 +257,29 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   t.diagnostic(`scmanager saved descriptor: ${saved.stdout.trim()}${saved.stderr.trim()}`);
   const probeDir = await folder(path.join(CI_ROOT, "as"), "S-1-1-0");
   const probeOut = (label) => path.join(probeDir, `${label}.txt`);
-  const brief = (text) => text.split(/\r?\n/).filter((line) => /^(token (session|integrity|groups)|OpenSCManagerW|OpenServiceW|  QueryServiceStatusEx|exception)/.test(line)).join("\n");
+  const brief = (text) => text.split(/\r?\n/).filter((line) => /^(token (session|integrity|groups)|OpenSCManagerW|OpenServiceW|  QueryService|NtQuerySystemInformation 88|QueryDosDeviceW|exception)/.test(line)).join("\n");
+  // The helper's own first line, run directly (stdin empty: it ends there).
+  const helperLine = (label) => `cmd.exe /c ${helperCopy} < nul > ${quote(probeOut(`helper-${label}`))} 2>&1`;
+  const helperSaid = (label) => readText(probeOut(`helper-${label}`)).replace(/\r?\n/g, " ");
   await run(peerProbe, [probeOut("runner")]);
+  await run(system("cmd.exe"), ["/c", helperLine("runner").replace(/^cmd\.exe \/c /, "")], { windowsVerbatimArguments: true });
   const runnerProbed = readText(probeOut("runner"));
-  t.diagnostic(`peer-probe as the runner:\n${runnerProbed}`);
+  t.diagnostic(`peer-probe as the runner (the helper says: ${helperSaid("runner")}):\n${runnerProbed}`);
   const runnerSession = Number(/^token session (\d+)$/m.exec(runnerProbed)?.[1] ?? NaN);
   const limitedRan = await run(runAs, ["filtered", CI_ROOT, "wait", `${quote(peerProbe)} ${quote(probeOut("limited"))}`]);
-  t.diagnostic(`peer-probe as the runner without elevation (${`${limitedRan.stdout}${limitedRan.stderr}`.trim().replace(/\r?\n/g, ", ")}):\n${brief(readText(probeOut("limited")))}`);
+  await run(runAs, ["filtered", CI_ROOT, "wait", helperLine("limited")]);
+  t.diagnostic(`peer-probe as the runner without elevation (${`${limitedRan.stdout}${limitedRan.stderr}`.trim().replace(/\r?\n/g, ", ")}; the helper says: ${helperSaid("limited")}):\n${brief(readText(probeOut("limited")))}`);
   for (const session of new Set([0, runnerSession])) {
     const label = `reachci-session-${session}`;
     const said = await launch("reachci", `${quote(peerProbe)} ${quote(probeOut(label))}`, { session });
-    t.diagnostic(`peer-probe as reachci, interactive, in session ${session} (${said}):\n${brief(readText(probeOut(label)))}`);
+    await launch("reachci", helperLine(label), { session });
+    t.diagnostic(`peer-probe as reachci, interactive, in session ${session} (${said}; the helper says: ${helperSaid(label)}):\n${brief(readText(probeOut(label)))}`);
   }
   const reachciProbe = path.join(reachciResults, "probe-reachci.txt");
   await asUser("reachci", `${quote(peerProbe)} ${quote(reachciProbe)}`);
   const probed = readText(reachciProbe);
-  t.diagnostic(`peer-probe as reachci, put in the runner's session by the secondary logon service:\n${probed}`);
+  await asUser("reachci", helperLine("secondary"));
+  t.diagnostic(`peer-probe as reachci, put in the runner's session by the secondary logon service (the helper says: ${helperSaid("secondary")}):\n${probed}`);
   const scQc = path.join(reachciResults, "sc-qc.txt");
   await asUser("reachci", `cmd.exe /c ${system("sc.exe")} qc Tailscale > ${quote(scQc)} 2>&1`);
   t.diagnostic(`sc qc Tailscale, the same way: ${readText(scQc).replace(/\r?\n\s*/g, " ")}`);
