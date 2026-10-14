@@ -23,6 +23,7 @@ import MacTerminalView from "./MacTerminalView";
 import TerminalList from "./TerminalList";
 import KeyRow from "./KeyRow";
 import { describeMacTerminal } from "./terminal-titles";
+import { computerWord } from "./pause";
 import { macTerminalsFingerprint } from "./mac-terminal-live";
 import { useFirstTime } from "./first-time";
 import { AgentLogo, useAgentLogos } from "./agent-logos";
@@ -95,7 +96,10 @@ export function TerminalView({
     [macFresh, setMacFresh] = useState(false),
     [slide, setSlide] = useState<"next" | "previous" | "">(""),
     [starting, setStarting] = useState(false);
-  const showMacTabs = desktopTerminals && peer.platform === "darwin";
+  // The computer's own terminal windows: a Mac's, or a Windows PC's.
+  const showMacTabs =
+    desktopTerminals && ["darwin", "win32"].includes(peer.platform);
+  const word = computerWord(peer.platform);
   const macTab = macTabs.find((t) => t.id === macSelected);
   const current = macTab
     ? undefined
@@ -444,9 +448,16 @@ export function TerminalView({
   const openMacTab = async (tab: MacTerminal) => {
     setMenu(null);
     try {
-      await post(peer, `/api/terminals/desktop/${tab.id}/focus`);
+      const shown = await post<{ front?: boolean }>(
+        peer,
+        `/api/terminals/desktop/${tab.id}/focus`,
+      );
+      // Windows often keeps a program in the background from coming forward.
+      if (shown?.front === false)
+        toast("Windows didn't bring it to the front: it's waiting on the taskbar.");
       if (onOpenScreen) onOpenScreen();
-      else toast("Brought to the front on your Mac. Turn on Screen to see it.");
+      else if (shown?.front !== false)
+        toast(`Brought to the front on your ${word}. Turn on Screen to see it.`);
     } catch (e) {
       toast((e as Error).message);
     }
@@ -466,7 +477,7 @@ export function TerminalView({
     const name = describeMacTerminal(tab.name, tab.provider).title;
     if (
       !confirm(
-        `Close “${name}” on your Mac? Anything running in it will stop. If this terminal runs Reach, you will disconnect.`,
+        `Close “${name}” on your ${word}? Anything running in it will stop. If this terminal runs Reach, you will disconnect.`,
       )
     )
       return;
@@ -529,7 +540,7 @@ export function TerminalView({
         {(macTab || current?.status === "running") && (
           <button
             className="terminal-bar-icon terminal-stop"
-            aria-label={macTab ? "Close this tab on your Mac" : "Stop this terminal"}
+            aria-label={macTab ? `Close this tab on your ${word}` : "Stop this terminal"}
             title={macTab ? "Close tab" : "Stop terminal"}
             onClick={() =>
               macTab ? void closeMacTab(macTab) : current && void end(current.id)

@@ -317,11 +317,12 @@ test("without invite keys: one slim line, never in the way; Tailscale sharing on
   await view.unmount();
 });
 
-// First-run matrix T26: a Windows Reach can't make invite keys. The sheet
-// says why instead of a setup that can't work, and Tailscale sharing (the
-// way that does) is open from the start.
+// First-run matrix T26: a computer that can't make invite keys for now (a
+// PC set up for browser sign-in, on pairing codes until Tailscale is new
+// enough). The sheet says why instead of a setup that can't work, and
+// Tailscale sharing (the way that does) is open from the start.
 test("a computer that can't make invite links: says why, no setup, Tailscale sharing open", async () => {
-  const why = "Invite links for people and agents without Tailscale aren't available on Windows yet.";
+  const why = "Invite links are off on this Windows PC for now: Tailscale 1.90.0 is older than 1.104; update Tailscale.";
   const log = computers({ keyed: false, unavailable: why });
   const view = await render();
   const c = view.container;
