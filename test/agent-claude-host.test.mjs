@@ -938,15 +938,62 @@ test("on Windows live Claude sessions come from Claude Code's registry, never ps
     // A record whose pid Windows gave to another program since.
     ["d", { where: "terminal", pid: 14, tty: null, exact: true, busy: true }],
   ]);
-  const live = await liveClaudeSessions([], { run, registry, platform: "win32", ours: (pid) => pid === 13 });
+  // The PC's own list not to hand: tasklist's word.
+  const noList = async () => {
+    throw Error("no process list");
+  };
+  const live = await liveClaudeSessions([], { run, registry, platform: "win32", ours: (pid) => pid === 13, processList: noList });
   assert.deepEqual([...live].map(([id, e]) => [id, e.where, e.pid]), [["a", "terminal", 11], ["b", "claude-app", 12], ["c", "reach", 13]]);
   assert.deepEqual(ran, ["tasklist"]);
   // tasklist failing, or a list it can't read (Reach itself not in it): every
   // record stands, never none (that let Reach write into held chats).
   for (const unreadable of [async () => { throw Error("no tasklist"); }, async () => ({ stdout: "INFO: No tasks are running which match the specified criteria.\r\n" })]) {
-    const unsure = await liveClaudeSessions([], { run: unreadable, registry, platform: "win32" });
+    const unsure = await liveClaudeSessions([], { run: unreadable, registry, platform: "win32", processList: noList });
     assert.deepEqual([...unsure.keys()], ["a", "b", "c", "d"]);
   }
+});
+
+// A pid Windows has given since to another Claude Code or Node: its start
+// isn't the one Claude Code noted (procStartFt), so its record no longer
+// holds the chat (it read as held until the record went).
+test("on Windows a registry record holds its chat only while its pid is the process Claude Code noted, by its start", async () => {
+  const { liveClaudeSessions, windowsStart } = await import("../server/agent-sessions/processes.mjs");
+  const ft = (ms) => String(BigInt(ms) * 10000n + 116444736000000000n);
+  const T = 1760000000000;
+  const rows = [
+    { pid: 11, image: "claude.exe", startedAt: T },
+    // Started after its record was written: another process now.
+    { pid: 12, image: "node.exe", startedAt: T + 500000 },
+    // Windows won't say when.
+    { pid: 13, image: "Claude.exe", startedAt: null },
+    { pid: 14, image: "node.exe", startedAt: T + 900000 },
+    { pid: process.pid, image: "node.exe", startedAt: 1 },
+  ];
+  const registry = () => new Map([
+    ["a", { where: "terminal", pid: 11, tty: null, exact: true, busy: true, procStartFt: ft(T) }],
+    ["b", { where: "terminal", pid: 12, tty: null, exact: true, busy: true, procStartFt: ft(T - 1000) }],
+    ["c", { where: "claude-app", pid: 13, tty: null, exact: true, busy: false, procStartFt: ft(T) }],
+    // A record without the note (an older Claude Code): its program decides.
+    ["d", { where: "terminal", pid: 14, tty: null, exact: true, busy: true }],
+  ]);
+  const run = async () => assert.fail("tasklist isn't needed when the PC's list answers");
+  const live = await liveClaudeSessions([], { run, registry, platform: "win32", processList: async () => rows });
+  assert.deepEqual([...live.keys()], ["a", "c", "d"]);
+  // The list unreadable: tasklist's word, by program only, as before.
+  const tasks = `"node.exe","12","Console","1","1 K"\r\n"node.exe","${process.pid}","Console","1","1 K"\r\n`;
+  const fallback = await liveClaudeSessions([], { run: async () => ({ stdout: tasks }), registry, platform: "win32", processList: async () => { throw Error("no helper"); } });
+  assert.deepEqual([...fallback.keys()], ["b"]);
+  assert.equal(windowsStart(ft(T)), T);
+  for (const bad of [undefined, "", "soon", "-5", "1", "1e20"]) assert.equal(windowsStart(bad), null, String(bad));
+  // Past 3e17 Claude Code itself reads another encoding, never another
+  // process: unknown, so the record stands.
+  const other = String(BigInt(T) * 1000000n);
+  assert.equal(windowsStart(other), null);
+  const kept = await liveClaudeSessions([], {
+    run, platform: "win32", processList: async () => rows,
+    registry: () => new Map([["e", { where: "terminal", pid: 12, tty: null, exact: true, busy: true, procStartFt: other }]]),
+  });
+  assert.deepEqual([...kept.keys()], ["e"]);
 });
 
 // Right after a turn, Reach's own process is still exiting: a message then

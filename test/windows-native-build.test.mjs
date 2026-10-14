@@ -73,6 +73,27 @@ test("a helper is built with the PC's own csc.exe into the data folder, named by
   assert.equal(csc.calls.length, 1);
 });
 
+// The voice memo helper alone gets Windows' speech assembly, looked for
+// beside WPF's, then in the assembly cache (the runner had it in neither
+// the framework's own folder, Oct 13); no other helper is rebuilt for it.
+test("a helper's own extra reference: System.Speech beside WPF's assemblies, else in the assembly cache", async (t) => {
+  const dataDir = await folder(t);
+  const gac = String.raw`C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Speech\v4.0_4.0.0.0__31bf3856ad364e35\System.Speech.dll`;
+  for (const [present, expected] of [
+    [path.win32.join(fx64, "WPF", "System.Speech.dll"), path.win32.join(fx64, "WPF", "System.Speech.dll")],
+    [gac, gac],
+  ]) {
+    const csc = compiler();
+    await windowsBinary({ dataDir }, "transcribe", { ...win, run: csc.run, exists: (file) => only(fx64)(file) || file === present, fresh: true });
+    const references = csc.calls[0].args.filter((arg) => arg.startsWith("/reference:")).map((arg) => arg.slice(11));
+    assert.equal(references.at(-1), expected);
+    assert.equal(references.length, 8);
+  }
+  const other = compiler();
+  await windowsBinary({ dataDir }, "hello", { ...win, run: other.run, exists: only(fx64), fresh: true });
+  assert.ok(!other.calls[0].args.some((arg) => arg.includes("System.Speech")), "only the helper that needs it");
+});
+
 test("two asks at once build once; a newer build removes the older ones of the same helper only", async (t) => {
   const dataDir = await folder(t);
   for (const name of ["reach-hello-aaaaaaaaaaaa.exe", "reach-hello-bbbbbbbbbbbb.exe", "reach-other-cccccccccccc.exe", "reach-hello-dddddddddddd", "notes.txt"])
@@ -141,6 +162,53 @@ test("only Windows builds Windows helpers, and only Reach's own", async (t) => {
     await assert.rejects(windowsBinary({ dataDir }, kind, { ...win, run: csc.run, exists: () => true }), (error) => error.status === 400, kind);
   await assert.rejects(windowsBinary({ dataDir }, "no-such-helper", { ...win, run: csc.run, exists: () => true }), { code: "ENOENT" });
   assert.equal(csc.calls.length, 0);
+});
+
+test("a helper with a manifest beside it is built with it, and named by it too; one without is built as before", async (t) => {
+  const dataDir = await folder(t);
+  const csc = compiler();
+  const file = await windowsBinary({ dataDir }, "agent-desktop", { ...win, run: csc.run, exists: only(fx64) });
+  assert.match(path.basename(file), /^reach-agent-desktop-[0-9a-f]{12}\.exe$/);
+  const manifest = csc.calls[0].args.filter((arg) => arg.startsWith("/win32manifest:"));
+  assert.deepEqual(manifest, [`/win32manifest:${path.resolve("scripts/native/agent-desktop.manifest")}`]);
+  assert.equal(csc.calls[0].args.at(-1), path.resolve("scripts/native/agent-desktop.cs"));
+  // Its manifest: per-monitor DPI aware, never administrator rights.
+  const text = await fs.readFile("scripts/native/agent-desktop.manifest", "utf8");
+  assert.match(text, /<dpiAwareness[^>]*>PerMonitorV2<\/dpiAwareness>/);
+  assert.match(text, /requestedExecutionLevel level="asInvoker" uiAccess="false"/);
+  await windowsBinary({ dataDir }, "hello", { ...win, run: csc.run, exists: only(fx64) });
+  assert.equal(csc.calls[1].args.some((arg) => arg.startsWith("/win32manifest:")), false, "hello.cs has none");
+});
+
+test("a build Windows' antivirus still holds is moved into place once it lets go; one that appeared meanwhile counts", async (t) => {
+  const { renameScanned } = await import("../server/native-build.mjs");
+  const dir = await folder(t);
+  const tmp = path.join(dir, "build.tmp.exe"), file = path.join(dir, "reach-x-0123456789ab.exe");
+  const waits = [];
+  let tries = 0;
+  const busy = (times, code = "EBUSY") => async (from, to) => {
+    if (++tries <= times) throw Object.assign(Error(code), { code });
+    await fs.rename(from, to);
+  };
+  await fs.writeFile(tmp, "MZ");
+  await renameScanned(tmp, file, { rename: busy(3), wait: async (ms) => waits.push(ms) });
+  assert.equal(await fs.readFile(file, "utf8"), "MZ");
+  assert.deepEqual(waits, [100, 200, 400]);
+  // Another caller's build appeared: this one's temporary file goes.
+  await fs.writeFile(tmp, "MZ second");
+  tries = 0;
+  await renameScanned(tmp, file, { rename: busy(1, "EPERM"), wait: async () => {} });
+  assert.equal(existsSync(tmp), false);
+  assert.equal(await fs.readFile(file, "utf8"), "MZ");
+  await fs.rm(file);
+  // Eight tries at most, and only while Windows says the file is in use.
+  await fs.writeFile(tmp, "MZ");
+  tries = 0;
+  waits.length = 0;
+  await assert.rejects(renameScanned(tmp, file, { rename: busy(100, "EACCES"), wait: async (ms) => waits.push(ms) }), { code: "EACCES" });
+  assert.deepEqual(waits, [100, 200, 400, 800, 1600, 1600, 1600, 1600]);
+  tries = 0;
+  await assert.rejects(renameScanned(tmp, file, { rename: busy(1, "ENOSPC"), wait: async () => assert.fail("not retried") }), { code: "ENOSPC" });
 });
 
 test("on real Windows, the PC's own csc.exe builds hello.cs and it runs", {
