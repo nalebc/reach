@@ -83,6 +83,16 @@ const sessionsIn = (dir) =>
     });
 const withSessions = (serve, sessions) =>
   sessions.length ? { ...serve, Foreground: Object.fromEntries(sessions.map((s) => [s.id, s.config])) } : serve;
+// Replaced whole; Windows may refuse a moment while the stand-in reads it.
+const renameOver = async (from, to) => {
+  for (let i = 0; ; i++)
+    try {
+      return await fs.rename(from, to);
+    } catch (error) {
+      if (i >= 50 || !["EPERM", "EBUSY", "EACCES"].includes(error.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+};
 const etagTokens = async (dir, count) => {
   for (let i = 0; i < count; i++) await fs.writeFile(path.join(dir, `fake-tailscale-etag-${Date.now()}-${i}`), "");
 };
@@ -326,7 +336,7 @@ else { process.stderr.write("fake tailscale: unsupported " + args.join(" ") + "\
     const current = JSON.parse(await fs.readFile(state, "utf8"));
     const temporary = state + ".next";
     await fs.writeFile(temporary, JSON.stringify({ ...current, ...(typeof patch === "function" ? patch(current) : patch) }));
-    await fs.rename(temporary, state);
+    await renameOver(temporary, state);
   };
   return {
     cli,
@@ -342,7 +352,7 @@ else { process.stderr.write("fake tailscale: unsupported " + args.join(" ") + "\
       const current = JSON.parse(await fs.readFile(setup, "utf8"));
       const temporary = setup + ".next";
       await fs.writeFile(temporary, JSON.stringify({ ...current, ...value }));
-      await fs.rename(temporary, setup);
+      await renameOver(temporary, setup);
     },
     // Changes the stand-in's own state (its background routes, versions…).
     update,

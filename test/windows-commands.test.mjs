@@ -230,22 +230,33 @@ test("Windows, Tailscale mode: Reach ended outright (a crash), its route ends to
   await routeGone(seen.fake, second);
 });
 
-// A Reach that doesn't stop by itself (it never sees the request here) is
-// ended with its process tree by Windows' own taskkill /T /F, after
-// tasklist says its id is still Node's; its route goes with it.
-test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended with its tree (taskkill), and its route with it", { ...tailscaleWindows, skip: process.platform !== "win32" && "Windows' own taskkill and tasklist" }, async (t) => {
+// A Reach that doesn't stop by itself (it never sees the request here: none
+// is left in its folder or by its id) is ended outright, once Windows' own
+// process list still names it as started then; Windows then ends its route
+// with it (Node's kill-on-close job), with nothing else ended for it.
+test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outright, and its route with it", { ...tailscaleWindows, skip: process.platform !== "win32" && "Windows' own process list" }, async (t) => {
   const { seen, started } = windowsTailscaleReach(t);
   const reach = await started;
   const session = await heldRoute(seen.fake);
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "reach-no-request-"));
   t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  const { windowsProcesses } = await import("../server/windows-processes.mjs");
+  const list = () => windowsProcesses({ nativeDir: path.join(elsewhere, "native") });
+  const listed = (await list()).find((p) => p.pid === reach.child.pid);
+  assert.ok(Number.isFinite(listed?.startedAt), "Windows' process list names it, with when it started");
   const said = [];
   const result = await stopReach(seen.root, {
     platform: "win32",
     yes: true,
     print: (line) => said.push(line),
     state: () => elsewhere,
-    windows: { host: { pid: reach.child.pid }, graceMs: 500 },
+    windows: {
+      env: {},
+      list,
+      graceMs: 500,
+      // This test's Reach only; what it started is left to Windows.
+      reaches: async () => ({ hosts: [{ pid: listed.pid, startedAt: listed.startedAt, root: null, terminals: [], descendants: [] }], partial: "", processes: await list() }),
+    },
   });
   assert.equal(result.stopped, 1);
   assert.deepEqual(said, ["Stopped Reach."]);
