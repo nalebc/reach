@@ -1,4 +1,4 @@
-import test, { after } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -103,13 +103,6 @@ function windowsConsole(t, env, args = []) {
   };
   return { write: (keys) => term.write(keys), waitFor, ended, at: () => raw.length, raw: () => raw, text: () => plain(raw) };
 }
-
-// What's still open once every console has ended, said if anything keeps
-// this file from ending.
-after(() => {
-  const open = process.getActiveResourcesInfo().filter((kind) => kind !== "TTYWrap");
-  if (open.length) console.log(`windows-console: still open after its tests: ${open.join(", ")}`);
-});
 
 // A PC Reach has never run on, without Tailscale yet: the stand-in Tailscale
 // (installed when `install()` says), Program Files where its app appears, the

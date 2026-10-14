@@ -52,6 +52,13 @@ export const suites = {
     "setup", "instances", "stop",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Proof below the phone, workstream U (audit #18-#20, #22, #24): the
+    // stand-in Tailscale's own tailscale.exe and the Tailscale-mode launches
+    // on it; the first run, Ctrl+C and crash relaunch in a real console;
+    // Files' ways out, icons and drives; reach-agent's join, MCP, pipe, keep
+    // and restore, with the PowerShell commands agents are given.
+    "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
+    "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
