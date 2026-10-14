@@ -56,9 +56,15 @@ test("a sandboxed job runs in its grant but can't touch Reach's data or a folder
   assert.equal((await run(system("net.exe"), ["user", user, pw, "/add", "/Y"])).code, 0);
   const sid = (await run(runAs, ["sid", user])).stdout.trim();
   assert.equal((await run(runAs, ["desktop", "grant", sid])).code, 0);
+  // An AppContainer process needs the window station and desktop to admit ALL
+  // APPLICATION PACKAGES (S-1-15-2-1), as a real interactive owner session does
+  // so Store apps run; the synthetic standard-user test desktop is granted it.
+  const ALL_APP_PACKAGES = "S-1-15-2-1";
+  assert.equal((await run(runAs, ["desktop", "grant", ALL_APP_PACKAGES])).code, 0);
   let rightsAdded = false;
   t.after(async () => {
     if (sid) await run(runAs, ["desktop", "revoke", sid]);
+    await run(runAs, ["desktop", "revoke", ALL_APP_PACKAGES]);
     if (rightsAdded) await run(runAs, ["logon-right", "remove", user]);
     await run(system("net.exe"), ["user", user, "/delete"]);
     fs.rmSync(ROOT, { recursive: true, force: true });
