@@ -6,7 +6,11 @@ All notable changes to Reach are recorded here. The format follows
 publishes the section whose heading carries the tagged version as the GitHub
 release notes, so date the heading before tagging.
 
-## [Unreleased]
+## [0.2.0] — 2026-10-13
+
+Faster agents, an owner-first screen with gestures you can feel, modern
+sheets, one-tap updates for what Reach drives, and fixes across Face ID,
+Windows and chats.
 
 ### Added
 
