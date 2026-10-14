@@ -414,7 +414,7 @@ static class Grants {
       bool directory = (attributes & FileAttributes.Directory) != 0;
       if ((attributes & FileAttributes.ReparsePoint) != 0) { if (NativeSec.IsNameSurrogate(entry)) continue; }
       if (!directory && NativeSec.HardLinked(entry)) continue;
-      try { AllowObject(entry, directory, false, allow, false); } catch (Exception) { continue; }
+      try { AllowObject(entry, directory, false, allow, directory); } catch (Exception) { continue; }
       if (directory && (attributes & FileAttributes.ReparsePoint) == 0) ReadWalk(entry, allow, denyPaths, ref seen);
     }
   }
@@ -438,7 +438,7 @@ static class Grants {
         if (NativeSec.IsNameSurrogate(entry)) continue;
       }
       if (!directory && NativeSec.HardLinked(entry)) continue; // an alias to an outside inode: never ACE'd
-      AllowObject(entry, directory, writable, allow, false);
+      AllowObject(entry, directory, writable, allow, directory);
       if (directory && (attributes & FileAttributes.ReparsePoint) == 0) Walk(entry, writable, allow, denyNames, ref seen);
     }
   }
@@ -451,12 +451,23 @@ static class Grants {
   }
 
   static void DenyEverywhere(string path, SecurityIdentifier cap) {
+    int seen = 0;
+    DenyTree(path, cap, ref seen);
+  }
+
+  static void DenyTree(string path, SecurityIdentifier cap, ref int seen) {
+    if (++seen > MaxEntries) throw Sandbox.Refusal(403, "That private folder is too large to protect safely.");
     bool directory = Directory.Exists(path);
     if (!directory && !File.Exists(path)) return;
     InheritanceFlags inheritance = directory ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
     // FullControl denied: no access of any kind for a token carrying the cap.
     var rule = new FileSystemAccessRule(cap, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Deny);
     NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.AddAccessRule(rule); });
+    if (directory) foreach (string child in Directory.EnumerateFileSystemEntries(path)) {
+      FileAttributes attributes = File.GetAttributes(child);
+      if ((attributes & FileAttributes.ReparsePoint) != 0 || ((attributes & FileAttributes.Directory) == 0 && NativeSec.HardLinked(child))) continue;
+      DenyTree(child, cap, ref seen);
+    }
   }
 
   // Revocation (§4.6): the ACEs for a root's capability are removed in a walk
@@ -600,6 +611,23 @@ static class NativeSec {
 // same AppContainer confirms Reach's own listener is unreachable (§5); either
 // failing refuses the launch.
 static class Jobs {
+  static string ProbeCommand(List<string> targets) {
+    // The trusted helper lives beside Reach's private data. An AppContainer
+    // must not read that folder, so it cannot execute a copy of this helper
+    // there. Windows' own PowerShell is readable by application containers;
+    // run only this fixed connection probe, with literal targets encoded as
+    // data. A policy that refuses it leaves the command unavailable.
+    string powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
+    if (!File.Exists(powershell)) throw Sandbox.Refusal(503, "This PC cannot check its sandboxed network access.");
+    StringBuilder script = new StringBuilder("$ErrorActionPreference='Stop'; $targets=@(");
+    for (int i = 0; i < targets.Count; i++) {
+      if (i > 0) script.Append(',');
+      script.Append('\'').Append(targets[i].Replace("'", "''")).Append('\'');
+    }
+    script.Append("); foreach($target in $targets){$at=$target.LastIndexOf(':'); $hostName=$target.Substring(0,$at); $port=[int]$target.Substring($at+1); $client=New-Object Net.Sockets.TcpClient; $open=$false; try{$pending=$client.BeginConnect($hostName,$port,$null,$null); if($pending.AsyncWaitHandle.WaitOne(1500) -and $client.Connected){$client.EndConnect($pending); $open=$true}}catch{}finally{$client.Dispose()}; if($open){[Console]::WriteLine('open '+$target)}else{[Console]::WriteLine('shut '+$target)}}");
+    return Sandbox.ShellCommandLine(powershell, "powershell", "", new List<string> { "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(script.ToString())) });
+  }
+
   public static string Probe(string target) {
     int idx = target.LastIndexOf(':');
     if (idx <= 0) return "shut " + target;
@@ -659,11 +687,14 @@ static class Jobs {
         // §5 self-test: inside this AppContainer, Reach's listener must be
         // unreachable on every local address. Any "open" refuses the launch.
         if (loopback.Count > 0) {
-          string probeLine = "\"" + NativeProc.SelfPath() + "\" netprobe";
-          foreach (string target in loopback) probeLine += " " + target;
+          string probeLine = ProbeCommand(loopback);
           string probeOut = NativeProc.RunContainedCaptured(probeLine, cwd, container, job, timeoutMs < 10000 ? timeoutMs : 10000);
           if (probeOut.IndexOf("open ", StringComparison.Ordinal) >= 0)
             throw Sandbox.Refusal(403, "This PC let a sandboxed command reach Reach itself, so the command was refused.");
+          var answered = new HashSet<string>(probeOut.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.Ordinal);
+          foreach (string target in loopback)
+            if (!answered.Contains("shut " + target))
+              throw Sandbox.Refusal(503, "This PC could not confirm that sandboxed commands cannot reach Reach itself.");
         }
 
         string commandLine = Sandbox.ShellCommandLine(interpreter, interpreterKind, command, shellArgs);
@@ -1446,8 +1477,13 @@ static class NtFiles {
   public static IntPtr OpenAclPath(string path, bool directory) {
     string full = Path.GetFullPath(path);
     if (full.Length < 3 || full[1] != ':' || full[2] != '\\') throw Sandbox.Refusal(403, "Grant a local folder on this PC.");
+    // SetSecurityInfo propagates an inheritable ACE to existing children by
+    // itself, including hard links that our walk deliberately skips. Opening
+    // with MAXIMUM_ALLOWED disables that automatic propagation; we update
+    // only the checked handle and explicitly walk existing descendants.
+    // https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
     return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE,
-      FILE_OPEN, 0x20000 | 0x40000 | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0);
+      FILE_OPEN, 0x02000000, 0);
   }
 
   // Open `name` relative to `parent`, following no reparse point. A reparse in

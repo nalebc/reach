@@ -70,6 +70,8 @@ test("Windows agents join with each preset, use real screen and file helpers, an
     tailscaleIdentity: { lookup: async ip => ip === ips.phone
       ? { Node: { StableID: "phone", User: 42 }, UserProfile: { ID: 42, LoginName: login } }
       : { Node: { StableID: "agent", Tags: ["tag:agent"] } } },
+    browserHostGuard: { lookup: async () => ({ BackendState: "Running", Self: { ID: "host", Online: true },
+      Peer: { phone: { ID: "phone", OS: "iOS", UserID: 42, Online: true } } }) },
     agentDesktopFactory: (config, options) => {
       const desktop = createAgentDesktop(config, { ...options,
         spawnProcess: (file, args, settings) => spawn(consoleFixture, ["medium", file, ...args], settings),
