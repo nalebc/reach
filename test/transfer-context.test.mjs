@@ -80,6 +80,16 @@ test("image-heavy history keeps every attachment in the archive while bounding t
   assert.match(context.map(m => m.content[0].text).join("\n"), /Screenshot 29\n\[1 image\]/);
 });
 
+test("shortened emoji messages remain valid Unicode for native JSON readers", () => {
+  const items = [user("Review emoji text"), reply("😀".repeat(100_000)), user("Continue")];
+  const archive = codexArchive({ ...options, items });
+  const working = archive.lines.at(-1).payload.replacement_history;
+  assert.ok(working.every(m => m.content[0].text.isWellFormed()));
+  const claude = claudeArchive({ ...options, items });
+  assert.ok(claude.at(-1).message.content.isWellFormed());
+  assert.equal(archive.lines.find(l => l.type === "response_item" && l.payload.role === "assistant").payload.content[0].text, items[1].text);
+});
+
 test("small transfers retain their complete active context without adding a compaction", () => {
   const items = [user("Please fix login"), reply("Fixed login")];
   assert.ok(codexArchive({ ...options, items }).lines.every(l => l.type !== "compacted"));
