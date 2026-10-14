@@ -34,6 +34,7 @@ export default function TerminalList({
   macTabs,
   macLoaded,
   macError,
+  macHidden = 0,
   showMac,
   currentKey,
   agents,
@@ -52,6 +53,8 @@ export default function TerminalList({
   macTabs: MacTerminal[];
   macLoaded: boolean;
   macError: string;
+  // Consoles running as administrator, which a Windows PC can't show.
+  macHidden?: number;
   showMac: boolean;
   currentKey: string;
   // Agents installed on the computer; null while still checking. Without
@@ -128,7 +131,8 @@ export default function TerminalList({
     (s) => s.status === "running" || `reach:${s.id}` === currentKey,
   );
   const nothing =
-    !shells.length && (!showMac || (macLoaded && !macTabs.length && !macError));
+    !shells.length &&
+    (!showMac || (macLoaded && !macTabs.length && !macError && !macHidden));
   return (
     <div className="terminal-list">
       {onStart && (
@@ -203,14 +207,16 @@ export default function TerminalList({
           </ul>
         </section>
       )}
-      {showMac && (macTabs.length > 0 || macError || !macLoaded) && (
-        <section aria-label="On your Mac">
-          <h3>On your Mac</h3>
+      {showMac && (macTabs.length > 0 || macError || !macLoaded || macHidden > 0) && (
+        <section aria-label={`On your ${computerWord(peer.platform)}`}>
+          <h3>On your {computerWord(peer.platform)}</h3>
           {macError ? (
             <p className="terminal-list-note">{macError}</p>
           ) : !macLoaded ? (
             <p className="terminal-list-note">
-              Looking for Terminal and iTerm2 windows…
+              {peer.platform === "win32"
+                ? "Looking for Windows Terminal and console windows…"
+                : "Looking for Terminal and iTerm2 windows…"}
             </p>
           ) : (
             <ul className="terminal-group">
@@ -232,7 +238,7 @@ export default function TerminalList({
                     {onCloseMac && (
                       <button
                         className="terminal-row-action"
-                        aria-label={`Close ${tab.name || "this window"} on your Mac`}
+                        aria-label={`Close ${tab.name || "this window"} on your ${computerWord(peer.platform)}`}
                         onClick={() => onCloseMac(tab)}
                       >
                         <Square size={13} />
@@ -243,6 +249,13 @@ export default function TerminalList({
                 ),
               )}
             </ul>
+          )}
+          {macHidden > 0 && (
+            <p className="terminal-list-note">
+              Terminals running as administrator on your{" "}
+              {computerWord(peer.platform)} aren't shown: Windows keeps Reach
+              out of them.
+            </p>
           )}
         </section>
       )}
