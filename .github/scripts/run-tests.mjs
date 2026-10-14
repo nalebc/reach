@@ -35,8 +35,9 @@ export const suites = {
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
     "face-join", "fleet",
-    // Workstreams K and L: the PC's process list (one Reach per computer).
-    "windows-processes",
+    // Workstreams K and L: the PC's process list (one Reach per computer),
+    // and status, stop, restart and Reach's own window on a real PC.
+    "windows-processes", "windows-lifecycle",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],

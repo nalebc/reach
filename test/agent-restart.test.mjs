@@ -167,7 +167,7 @@ test("restart run by an agent in a checkout asks instead of stopping Reach", () 
   const body = source.slice(source.indexOf("async function restart("));
   const ask = body.indexOf("askRestart(");
   assert.ok(ask > 0 && ask < body.indexOf("stopReach(root"), "asks before stopping anything");
-  assert.match(body, /const asker = !packaged && \(foreignApp\(\) \|\|/);
+  assert.match(body, /const asker = !packaged && \(\(await foreignApp\(\)\) \|\|/);
 });
 
 test("interface edits rebuild once per burst of saves and refresh what phones load", async () => {

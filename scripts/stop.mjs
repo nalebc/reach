@@ -18,7 +18,8 @@ import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // The processes and every Reach among them (instances.mjs): one Reach per
 // computer, so stop and restart reach it whichever folder it came from.
-import { processTable, reachHosts, stateOf, stopRequestFile, windowsHost, windowsImage } from "./instances.mjs";
+import { personalStopFile, processTable, reachHosts, stateOf, stopRequestFile, windowsHost, windowsImage, windowsReaches, windowsStarters } from "./instances.mjs";
+import { windowsProcesses } from "../server/windows-processes.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -85,7 +86,7 @@ export async function stopReach(
   } = {},
 ) {
   if (platform === "win32")
-    return stopWindows(root, { yes, restarting, interactive, print, ask, wait, state, ...windows });
+    return stopWindows(root, { yes, restarting, interactive, print, ask, wait, state, self, ...windows });
   const hosts = findReach(null, table(), self);
   const service = platform === "darwin" ? serviceState(root, { run: launchctl, home, uid }) : { loaded: false, ours: false };
   // Reach's one background service, whichever folder installed it.
@@ -170,9 +171,24 @@ export async function stopReach(
   return { stopped, service: serviceRunning, terminals: terminals.length, serviceInstalled: !!service.ours };
 }
 
-// Windows: no ps, no signals. The Reach running from this folder (its status
-// file) is asked through a file it watches (launch.mjs), and stops as Ctrl+C
-// stops it, terminals and all. Only if it doesn't is its process tree ended.
+// Windows: no signals to ask with. Every Reach on the PC (its process list:
+// instances.mjs) is asked through a file it watches (launch.mjs) and stops
+// as Ctrl+C stops it, terminals and all. Only one that doesn't is ended, and
+// only while it's still the very process that was asked (same id, same
+// start: Windows hands ids out again); then what it left running, the same
+// way. Where the process list can't be read, the Reach this folder runs, as
+// FIRST_RUN_MATRIX H20 had it, said as such.
+// The background task (`task`) starts its Reach again when that Reach ends:
+// told not to first, as launchd's bootout does on a Mac.
+const noTask = { state: () => ({ installed: false, ours: false }), hold() {}, release() {}, end() {}, run() {} };
+const living = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
 async function stopWindows(
   root,
   {
@@ -183,19 +199,107 @@ async function stopWindows(
     ask,
     wait,
     state,
-    host = windowsHost(state(root)),
-    alive = (pid) => {
+    self = process.pid,
+    env = process.env,
+    list = () => windowsProcesses({ nativeDir: path.join(state(root), "native") }),
+    reaches = () => windowsReaches({ root, state: state(root), self, list }),
+    alive = living,
+    end = (pid) => process.kill(pid),
+    graceMs = 15000,
+    task = noTask,
+    ...thisFolder
+  },
+) {
+  const found = await reaches();
+  if (found.partial) {
+    print(`Reach couldn't read this PC's process list (${found.partial}), so only the Reach run from this folder is stopped.`);
+    return stopThisFolder(root, { yes, restarting, interactive, print, ask, wait, state, alive, graceMs, host: found.hosts[0] || null, ...thisFolder });
+  }
+  const { hosts, processes } = found;
+  const service = task.state(root);
+  const serviceRunning = hosts.some((h) => h.service) || windowsStarters(processes).length > 0;
+  if (!hosts.length && !serviceRunning) {
+    if (!restarting) print("Reach isn't running.");
+    return { stopped: 0, service: false, terminals: 0, serviceInstalled: !!service.ours };
+  }
+  // What closes with it: said first, and asked about.
+  const terminals = hosts.flatMap((h) => h.terminals);
+  if (terminals.length && !yes) {
+    print(`These terminals in Reach close with it:\n${terminals.map((t) => `  ${t.shell}${t.running.length ? ` (running ${t.running.join(", ")})` : ""}`).join("\n")}`);
+    if (!interactive) throw Error(`Reach has ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} open. Run again with --yes to close them too.`);
+    const answer = await ask(`${restarting ? "Restart" : "Stop"} Reach anyway? [y/N] `);
+    if (!/^y(es)?$/i.test(String(answer).trim())) {
+      print("Nothing was stopped.");
+      return { cancelled: true, stopped: 0, service: false, terminals: 0 };
+    }
+  }
+  if (serviceRunning) task.hold(root);
+  // Each in its own folder's file, and by its id in your app data (a Reach
+  // with another REACH_HOME, or whose folder its command line doesn't name).
+  const files = new Set();
+  for (const host of hosts) {
+    const dirs = host.root ? [state(host.root), state(host.root, undefined, {})] : [];
+    for (const file of [...dirs.map(stopRequestFile), personalStopFile(host.pid, env)].filter(Boolean)) {
       try {
-        process.kill(pid, 0);
-        return true;
-      } catch (error) {
-        return error.code === "EPERM";
-      }
-    },
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(file, JSON.stringify({ pid: host.pid, at: Date.now() }), { mode: 0o600 });
+        files.add(file);
+      } catch {}
+    }
+  }
+  const waitGone = async (left, ms) => {
+    for (const until = Date.now() + ms; left.some((h) => alive(h.pid)) && Date.now() < until; ) await wait(200);
+    return left.filter((h) => alive(h.pid));
+  };
+  const same = (now, p) => p.startedAt != null && !!now?.some((q) => q.pid === p.pid && q.startedAt === p.startedAt);
+  const endAll = async (left) => {
+    const now = await list().catch(() => null);
+    for (const p of left) if (same(now, p)) try { end(p.pid); } catch {}
+  };
+  let left;
+  try {
+    left = await waitGone(hosts, graceMs);
+    if (left.length) {
+      await endAll(left);
+      left = await waitGone(left, 3000);
+    }
+    if (serviceRunning) task.end(root);
+    // Helpers a stopped Reach left running (its tunnel, stay-awake, …).
+    await endAll(hosts.filter((h) => !left.includes(h)).flatMap((h) => h.descendants));
+  } finally {
+    for (const file of files) fs.rmSync(file, { force: true });
+    if (serviceRunning) task.release(root);
+  }
+  if (left.length) throw Error(`Reach (process ${left[0].pid}) did not stop by itself. Close its window, or end it in Task Manager.`);
+  // A restart starts the background task again once every Reach is gone.
+  if (serviceRunning && restarting) task.run(root);
+  const stopped = hosts.filter((h) => !(serviceRunning && h.service)).length;
+  if (serviceRunning && !restarting)
+    print(`The background service stopped; it starts again at your next sign-in, or with ${command} restart.`);
+  if (stopped) print(`Stopped ${stopped === 1 ? "Reach" : `${stopped} Reaches`}${terminals.length ? ` and ${terminals.length} terminal${terminals.length > 1 ? "s" : ""} in it` : ""}.`);
+  return { stopped, service: serviceRunning, terminals: terminals.length, serviceInstalled: !!service.ours };
+}
+
+// Only the Reach this folder runs (its status file), when the PC's process
+// list can't be read: asked first (which terminals are open isn't known),
+// then through its file; ended with its process tree only while its id is
+// still Node.
+async function stopThisFolder(
+  root,
+  {
+    yes,
+    restarting,
+    print,
+    ask,
+    wait,
+    state,
+    interactive,
+    alive,
+    graceMs,
+    host = windowsHost(state(root)),
     taskkill = (pid) =>
       execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }),
     image = windowsImage,
-    graceMs = 15000,
   },
 ) {
   if (!host) {

@@ -49,6 +49,9 @@ export function parseProcesses(stdout) {
  */
 export async function windowsProcesses({ run = exec, nativeDir, build = windowsBinary, platform = process.platform, signal } = {}) {
   if (platform !== "win32") throw Object.assign(new Error("Reading the process list this way is for Windows."), { status: 501 });
+  // Tests only: a Reach started on a Mac as Windows (test/helpers/as-windows.mjs)
+  // reads this list instead (one helper line in a file).
+  if (process.env.REACH_TEST_WINDOWS_PROCESSES) return parseProcesses(fs.readFileSync(process.env.REACH_TEST_WINDOWS_PROCESSES, "utf8"));
   if (!nativeDir) throw new Error("Reach's folder for its helpers isn't known here.");
   fs.mkdirSync(nativeDir, { recursive: true, mode: 0o700 });
   const file = await build({ dataDir: nativeDir }, "processes", { dir: nativeDir, platform, signal });

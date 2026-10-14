@@ -191,10 +191,13 @@ const clock = (ms, now = Date.now()) => {
     : `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 };
 
-// Where it runs, in words.
+// Where it runs, in words. Windows names no terminal as ps does on a Mac:
+// there, the process.
 export function whereItRuns(host) {
   if (host.service) return "as the background service";
   if (!host.tty || host.tty === "??" || host.tty === "?") return "in the background, with no window";
+  if (host.platform === "win32")
+    return outsideTerminal(host.app) ? `inside ${host.app} (process ${host.pid}), not a window of its own` : `in a terminal window (process ${host.pid})`;
   if (outsideTerminal(host.app)) return `inside ${host.app} (${host.tty}), not a Terminal window`;
   return `in a Terminal window (${host.tty})`;
 }
@@ -203,17 +206,18 @@ export function whereItRuns(host) {
 export const stateOf = (root, exists = fs.existsSync, env = process.env) => stateDir(root, { installed: !exists(path.join(root, "src/main.tsx")), env });
 
 // What its server reports while it runs: its link, and whether it keeps the Mac awake.
+// A Windows Reach's own file only (no ps to ask there): a file another run
+// left behind names another process.
 export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
+  if (!host.root) return {};
   try {
-    return read(path.join(state(host.root), "host-status.json")) || {};
+    const status = read(path.join(state(host.root), "host-status.json")) || {};
+    return host.platform === "win32" && status.pid !== host.pid ? {} : status;
   } catch {
     return {};
   }
 }
 
-// Windows has no ps. The Reach running from this folder is the one its own
-// status file names (written as it starts, removed as it stops), while that
-// process lives. A Reach from another folder isn't seen.
 const pidAlive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -252,6 +256,9 @@ export function windowsReachAlive(record, { alive = pidAlive, image = windowsIma
   const name = image(record.pid);
   return name === null || name === "node.exe";
 }
+// The Reach this folder runs, from its own status file (written as it
+// starts, removed as it stops), while that process lives: what Windows
+// knows when its process list can't be read (FIRST_RUN_MATRIX H20).
 export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), alive = pidAlive, image = windowsImage, boot = windowsBootTime } = {}) {
   let host = null;
   try {
@@ -259,32 +266,231 @@ export function windowsHost(state, { read = (f) => fs.readFileSync(f, "utf8"), a
   } catch {}
   return windowsReachAlive(host, { alive, image, boot }) ? host : null;
 }
-export function windowsStatusText(host, { command = "reach", now } = {}) {
-  if (!host) return `Reach isn't running from this folder. Start it with ${command}.`;
-  const since = clock(host.startedAt, now);
-  const url = host.link || host.origin;
-  return [
-    `Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`,
-    ...(url ? [`Link: ${url}`] : []),
-    // Set up for browser sign-in, on pairing codes for now (scripts/launch.mjs).
-    ...(typeof host.signInOff === "string" && host.signInOff ? [`Browser sign-in is off for now: ${host.signInOff}`] : []),
-  ].join("\n");
+// That status file as a Reach for status, lock, stop and restart.
+export const recordedHost = (record, root = null) => ({
+  pid: record.pid,
+  root,
+  service: !!record.service,
+  tty: record.window === false ? "" : "console",
+  app: "",
+  descendants: [],
+  terminals: [],
+  startedAt: Number.isFinite(record.startedAt) ? record.startedAt : null,
+  platform: "win32",
+});
+// Its lines, as `status` prints any Reach's.
+export function windowsStatusText(record, { command = "reach", now, root = null } = {}) {
+  if (!record) return `Reach isn't running from this folder. Start it with ${command}.`;
+  const host = recordedHost(record, root);
+  return statusText([host], { command, now, started: new Map([[host.pid, host.startedAt]]), runtime: () => record });
 }
+
+// Windows: every Reach on the PC from its process list (server/
+// windows-processes.mjs), as ps lists them on a Mac: whichever folder, how
+// it runs, what it started. A command line, split as Windows programs split
+// theirs (the C runtime's rules: quotes group, backslashes escape only a
+// quote).
+export function windowsArgv(commandLine) {
+  const line = String(commandLine || "");
+  const args = [];
+  let i = 0;
+  // The program: up to the closing quote, or the first space; no escapes.
+  if (line[0] === '"') {
+    const end = line.indexOf('"', 1);
+    args.push(line.slice(1, end < 0 ? line.length : end));
+    i = end < 0 ? line.length : end + 1;
+  } else {
+    while (i < line.length && !/\s/.test(line[i])) i++;
+    args.push(line.slice(0, i));
+  }
+  for (;;) {
+    while (i < line.length && /\s/.test(line[i])) i++;
+    if (i >= line.length) break;
+    let arg = "";
+    let quoted = false;
+    while (i < line.length && (quoted || !/\s/.test(line[i]))) {
+      let slashes = 0;
+      while (line[i] === "\\") (slashes++, i++);
+      if (line[i] === '"') {
+        arg += "\\".repeat(slashes >> 1);
+        if (slashes % 2) arg += '"';
+        else if (quoted && line[i + 1] === '"') (arg += '"', i++);
+        else quoted = !quoted;
+        i++;
+      } else {
+        arg += "\\".repeat(slashes);
+        if (i < line.length && (quoted || !/\s/.test(line[i]))) arg += line[i++];
+      }
+    }
+    args.push(arg);
+  }
+  return args;
+}
+// How a Windows Reach is launched (node.exe running one of its entries) and
+// its folder: null when the entry's path is relative (its working directory
+// isn't read). Code given to node -e or -p is never one.
+const ENTRY = /(?:^|\\)(scripts\\bootstrap|bin\\reach)\.mjs$/i;
+export function windowsEntry(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    if (/^(-e|--eval|-p|--print)$/.test(argv[i])) return null;
+    const script = argv[i].replace(/\//g, "\\");
+    const found = ENTRY.exec(script);
+    if (!found) continue;
+    const full = path.win32.isAbsolute(script) && /^[A-Za-z]:\\/.test(script) ? path.win32.normalize(script) : "";
+    return { root: full ? path.win32.dirname(path.win32.dirname(full)) : null, entry: found[1].toLowerCase().replace("\\", "/"), rest: argv.slice(i + 1) };
+  }
+  return null;
+}
+const stem = (image) => String(image || "").replace(/\.exe$/i, "").toLowerCase();
+// What a process runs inside on Windows: the first program among its parents
+// that isn't a shell or Node, named; "" for a terminal, the desktop, Task
+// Scheduler or Reach's own background starter. A Reach inside another app
+// (an editor, an agent's app or CLI) ends when that app does, and its window
+// isn't one of its own.
+const PLUMBING = new Set(["node", "cmd", "powershell", "pwsh", "conhost", "openconsole", "bash", "sh", "zsh", "fish", "nu", "dash", "wsl", "wslhost", "wslrelay", "winpty-agent", "busybox"]);
+const HOSTS = new Set([
+  "windowsterminal", "wt", "explorer", "mintty", "git-bash", "alacritty", "wezterm", "wezterm-gui", "conemu", "conemu64", "conemuc", "conemuc64",
+  "cmder", "tabby", "hyper", "fluentterminal", "terminus", "kitty", "taskhostw", "taskeng", "svchost", "services", "wininit", "winlogon", "userinit", "sihost", "runtimebroker",
+]);
+const STARTER = /^reach-background-[0-9a-f]{12}$/;
+const NAMES = { code: "VS Code", "code - insiders": "VS Code", cursor: "Cursor", windsurf: "Windsurf", claude: "Claude", codex: "Codex", chatgpt: "ChatGPT" };
+// A process's parent, only while it started before its child (ids come back).
+const parents = (processes) => {
+  const byPid = new Map(processes.map((p) => [p.pid, p]));
+  return (p) => {
+    const q = byPid.get(p.ppid);
+    return q && q !== p && !(q.startedAt != null && p.startedAt != null && q.startedAt > p.startedAt) ? q : null;
+  };
+};
+export function windowsHostApp(processes, pid) {
+  const parentOf = parents(processes);
+  const seen = new Set();
+  for (let p = processes.find((x) => x.pid === pid); p && !seen.has(p.pid) && seen.size < 64; p = parentOf(p)) {
+    seen.add(p.pid);
+    const name = stem(p.image);
+    if (PLUMBING.has(name)) continue;
+    if (HOSTS.has(name) || STARTER.test(name)) return "";
+    return NAMES[name] || String(p.image || "").replace(/\.exe$/i, "");
+  }
+  return "";
+}
+// Reach's own terminals: shells it started as terminal.mjs starts them
+// (PowerShell with -NoLogo, a bare cmd or Unix shell), not its PowerShell
+// helpers (-File, -Command) or anything run once (/c, -c).
+const SHELL_IMAGES = new Set(["powershell", "pwsh", "cmd", "bash", "sh", "zsh", "fish", "nu"]);
+function interactiveShell(p) {
+  const name = stem(p.image);
+  if (!SHELL_IMAGES.has(name) || !p.commandLine) return false;
+  const args = windowsArgv(p.commandLine).slice(1);
+  if (name === "powershell" || name === "pwsh")
+    return args.some((a) => /^-nologo$/i.test(a)) && !args.some((a) => /^-(file|f|command|c|encodedcommand|enc|e|ec)$/i.test(a));
+  if (name === "cmd") return !args.some((a) => /^\/[ckr]/i.test(a));
+  return args.every((a) => /^-(l|i|-login|-interactive)$/.test(a));
+}
+// Every Reach in a Windows process list (never `self`), with everything it
+// started and its terminals: the hosts reachHosts finds on a Mac.
+export function windowsReachHosts(processes, { self = process.pid, root = null, locked = lockHolder, runtime = (folder, pid) => runtimeOf({ root: folder, pid, platform: "win32" }) } = {}) {
+  const parentOf = parents(processes);
+  const children = new Map();
+  for (const p of processes) {
+    const q = parentOf(p);
+    if (q) children.set(q.pid, [...(children.get(q.pid) || []), p]);
+  }
+  const below = (pid, seen = new Set([pid])) =>
+    (children.get(pid) || []).filter((c) => !seen.has(c.pid) && seen.add(c.pid)).flatMap((c) => [c, ...below(c.pid, seen)]);
+  const entryOf = (p) => (stem(p.image) === "node" && p.commandLine ? windowsEntry(windowsArgv(p.commandLine)) : null);
+  const runsReach = (p, entry) => {
+    if (!entry) return false;
+    const args = entry.rest;
+    if (args[0] === "restart") return !!entry.root && locked(entry.root) === p.pid;
+    return (!args.length || args[0].startsWith("-")) && !args.some((a) => ONE_OFF.has(a));
+  };
+  // `reach` runs Reach as its own child, to start it again after a crash
+  // (scripts/supervise.mjs): that child is the Reach.
+  const supervisor = (p, entry) => entry?.entry === "bin/reach" &&
+    (children.get(p.pid) || []).some((c) => { const e = entryOf(c); return e?.entry === "scripts/bootstrap" && runsReach(c, e); });
+  return processes
+    .map((p) => ({ p, entry: p.pid === self ? null : entryOf(p) }))
+    .filter(({ p, entry }) => runsReach(p, entry) && !supervisor(p, entry))
+    .filter(({ entry }) => !root || (entry.root && path.win32.resolve(entry.root).toLowerCase() === path.win32.resolve(root).toLowerCase()))
+    .map(({ p: host, entry }) => {
+      const descendants = below(host.pid);
+      const terminals = descendants.filter(interactiveShell).map((shell) => ({
+        pid: shell.pid,
+        tty: "",
+        shell: stem(shell.image),
+        running: (children.get(shell.pid) || []).map((c) => stem(c.image)).filter((name) => name && !["conhost", "openconsole"].includes(name)),
+      }));
+      const status = runtime(entry.root, host.pid);
+      return {
+        pid: host.pid,
+        tty: status.window === false ? "" : "console",
+        root: entry.root,
+        service: entry.rest.includes("--service"),
+        app: windowsHostApp(processes, host.pid),
+        descendants,
+        terminals,
+        startedAt: host.startedAt,
+        platform: "win32",
+      };
+    });
+}
+// When each started: Windows' list says it; a Mac asks ps.
+export const startedOf = (hosts, times = startTimes) =>
+  hosts.every((h) => h.platform === "win32") ? new Map(hosts.map((h) => [h.pid, h.startedAt])) : times(hosts.map((h) => h.pid));
+// Why Windows' process list couldn't be read, in a few words.
+const unreadable = (error) =>
+  error?.compiler === false
+    ? "Windows' C# compiler isn't on this PC"
+    : error?.refused || (/^spawn/.test(error?.syscall || "") && ["EACCES", "EPERM", "UNKNOWN"].includes(error?.code))
+      ? "Windows wouldn't build or run Reach's helper"
+      : /took too long|ETIMEDOUT/.test(`${error?.message} ${error?.code}`)
+        ? "it took too long"
+        : "Windows wouldn't say";
+// Every Reach on this Windows PC: { hosts, partial, processes }. Where the
+// process list can't be read (no C# compiler, a policy that blocks Reach's
+// helpers), the Reach this folder runs, with why (`partial`), as FIRST_RUN_
+// MATRIX H20 had it.
+export async function windowsReaches({ root, state, self = process.pid, list, host = windowsHost } = {}) {
+  let processes;
+  try {
+    processes = await list();
+  } catch (error) {
+    const record = host(state);
+    return { hosts: record && record.pid !== self ? [recordedHost(record, root)] : [], partial: unreadable(error), processes: null };
+  }
+  return { hosts: windowsReachHosts(processes, { self }), partial: "", processes };
+}
+// A Windows Reach's helper processes, and Reach's background starter.
+export const windowsStarters = (processes) => (processes || []).filter((p) => STARTER.test(stem(p.image)));
+
 // Windows has no signals to ask with (Node ends a process there outright):
 // `stop` leaves this file, and the running Reach stops as Ctrl+C stops it.
+// Also in your own app data, by process: what a Reach started with another
+// REACH_HOME, or from a folder its command line doesn't name, watches too.
 export const stopRequestFile = (state) => path.join(state, "stop-request.json");
-export function watchStopRequest(state, { pid = process.pid, stop, every = 1000, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
-  const file = stopRequestFile(state);
+export const personalStopFile = (pid, env = process.env) => {
+  const local = env.LOCALAPPDATA;
+  return typeof local === "string" && local ? path.join(local, "Reach", "stop", `${pid}.json`) : null;
+};
+const STALE_REQUEST_MS = 2 * 60 * 1000;
+export function watchStopRequest(state, { pid = process.pid, stop, every = 1000, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")), personal = process.platform === "win32" ? personalStopFile(pid) : null, now = Date.now } = {}) {
+  const files = [stopRequestFile(state), ...(personal ? [personal] : [])];
   const timer = setInterval(() => {
-    let request = null;
-    try {
-      request = read(file);
-    } catch {}
-    // Meant for another (an earlier) Reach: not this one's to act on.
-    if (request?.pid !== pid) return;
-    fs.rmSync(file, { force: true });
-    clearInterval(timer);
-    stop();
+    for (const file of files) {
+      let request = null;
+      try {
+        request = read(file);
+      } catch {}
+      // Meant for another (an earlier) Reach: not this one's to act on.
+      if (request?.pid !== pid) continue;
+      fs.rmSync(file, { force: true });
+      // Left by a stop that ended before it was done, minutes ago.
+      if (Number.isFinite(request.at) && now() - request.at > STALE_REQUEST_MS) continue;
+      clearInterval(timer);
+      stop();
+      return;
+    }
   }, every);
   timer.unref?.();
   return () => clearInterval(timer);
@@ -292,7 +498,8 @@ export function watchStopRequest(state, { pid = process.pid, stop, every = 1000,
 
 export function describe(host, { started, now, dir } = {}) {
   const since = clock(started, now);
-  return `${whereItRuns(host)}${since ? `, since ${since}` : ""}, from ${home(host.root, dir)}`;
+  // A Windows Reach started with a relative path: its folder isn't known.
+  return `${whereItRuns(host)}${since ? `, since ${since}` : ""}${host.root ? `, from ${home(host.root, dir)}` : ""}`;
 }
 
 // Starting a second Reach: where the first one runs, and what to run instead.
@@ -306,12 +513,15 @@ export function alreadyRunning(hosts, { command = "reach", started = new Map(), 
     ].join("\n");
   const [host] = hosts;
   const hidden = !host.service && whereItRuns(host).startsWith("in the background");
+  // Windows gives every program in your session the screen: what a window
+  // of its own changes there is approvals, and how long it lives.
+  const windows = host.platform === "win32";
   return [
     `already running ${lines[0]}.`,
     hidden
-      ? "With no window it can't show or control your screen, and it can't take device approvals."
+      ? windows ? "With no window it can't take device approvals." : "With no window it can't show or control your screen, and it can't take device approvals."
       : outsideTerminal(host.app)
-        ? `${host.app} has no Screen Recording or Accessibility for Reach, so it can't show or control your screen.`
+        ? windows ? `It ends when ${host.app} closes.` : `${host.app} has no Screen Recording or Accessibility for Reach, so it can't show or control your screen.`
         : host.service
         ? "It runs on its own; nothing more to start."
         : "Use that window, or:",
@@ -320,11 +530,13 @@ export function alreadyRunning(hosts, { command = "reach", started = new Map(), 
   ].join("\n");
 }
 
-// `reach status`: what runs, where, since when, and its link.
-export function statusText(hosts, { command = "reach", started = new Map(), now, dir, runtime = runtimeOf, state = stateOf } = {}) {
-  if (!hosts.length) return `Reach isn't running. Start it with ${command}.`;
+// `reach status`: what runs, where, since when, and its link. `partial`:
+// why only this folder's Reach is known (Windows, its process list unread).
+export function statusText(hosts, { command = "reach", started = new Map(), now, dir, runtime = runtimeOf, state = stateOf, partial = "" } = {}) {
+  const note = partial ? `Reach couldn't read this PC's process list (${partial}), so it only knows the Reach run from this folder.\n` : "";
+  if (!hosts.length) return `${note}Reach isn't running${partial ? " from this folder" : ""}. Start it with ${command}.`;
   const blocks = hosts.map((h) => {
-    const { link, origin, awake, routes } = runtime(h);
+    const { link, origin, awake, routes, signInOff } = runtime(h);
     const url = link || origin;
     const since = (route) => (route.since ? ` since ${clock(route.since, now)}` : "");
     const interruptions = routes?.private?.interruptions || 0;
@@ -336,15 +548,22 @@ export function statusText(hosts, { command = "reach", started = new Map(), now,
       ...(routes?.private ? [`Private route: ${routes.private.up ? `up${since(routes.private)}` : "down"}${interruptions ? ` · ${interruptions} interruption${interruptions === 1 ? "" : "s"}` : ""}`] : []),
       ...(routes?.public ? [`Public link: ${routes.public.open ? `on${since(routes.public)}, blocked until an invite` : "off"}`] : []),
       ...(awake?.mode ? [`Sleep prevention: ${awake.mode} · ${awake.active ? "active" : "not active"}${awake.error ? ` · ${awake.error}` : ""}`] : []),
+      // Set up for browser sign-in, on pairing codes for now (Windows: scripts/launch.mjs).
+      ...(typeof signInOff === "string" && signInOff ? [`Browser sign-in is off for now: ${signInOff}`] : []),
       // The service writes its output to files; a window shows it.
-      ...(h.service ? [`Logs: ${home(path.join(state(h.root), "logs"), dir)}`] : []),
+      ...(h.service && h.root ? [`Logs: ${home(path.join(state(h.root), "logs"), dir)}`] : []),
     ].join("\n");
   });
+  const windows = hosts[0].platform === "win32";
   if (hosts.length > 1)
     blocks.push(`${hosts.length} copies are running; only one should. Run ${command} stop to stop them all, or ${command} restart.`);
   else if (whereItRuns(hosts[0]).startsWith("in the background, with no"))
-    blocks.push(`It has no window: it can't show or control your screen, or take device approvals. Run ${command} restart to run it in Terminal.`);
+    blocks.push(windows
+      ? `It has no window: it can't take device approvals. Run ${command} restart to run it in a window of its own.`
+      : `It has no window: it can't show or control your screen, or take device approvals. Run ${command} restart to run it in Terminal.`);
   else if (!hosts[0].service && outsideTerminal(hosts[0].app))
-    blocks.push(`${hosts[0].app} has no Screen Recording or Accessibility for Reach: the live screen won't load and it can't be controlled. Run ${command} restart to move it to a Terminal window.`);
-  return blocks.join("\n");
+    blocks.push(windows
+      ? `It ends when ${hosts[0].app} closes. Run ${command} restart to move it to a window of its own.`
+      : `${hosts[0].app} has no Screen Recording or Accessibility for Reach: the live screen won't load and it can't be controlled. Run ${command} restart to move it to a Terminal window.`);
+  return note + blocks.join("\n");
 }
