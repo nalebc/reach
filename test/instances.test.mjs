@@ -391,6 +391,8 @@ test("Windows: the app a command runs inside, from its parents: a terminal is no
   const appOf = (...images) => windowsHostApp(chain(...images), 1000);
   assert.equal(appOf("node.exe", "powershell.exe", "cmd.exe", "WindowsTerminal.exe", "explorer.exe"), "");
   assert.equal(appOf("node.exe", "powershell.exe", "explorer.exe"), "", "a console window");
+  for (const terminal of ["warp.exe", "Far.exe", "MobaXterm.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe"])
+    assert.equal(appOf("node.exe", "pwsh.exe", terminal), "", terminal);
   assert.equal(appOf("node.exe", "powershell.exe", "bash.exe", "claude.exe", "pwsh.exe", "WindowsTerminal.exe"), "Claude", "Claude Code's shell");
   assert.equal(appOf("node.exe", "cmd.exe", "pwsh.exe", "Code.exe", "explorer.exe"), "VS Code");
   assert.equal(appOf("node.exe", "powershell.exe", "Codex.exe"), "Codex");

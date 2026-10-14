@@ -349,9 +349,11 @@ const stem = (image) => String(image || "").replace(/\.exe$/i, "").toLowerCase()
 // isn't one of its own.
 const PLUMBING = new Set(["node", "cmd", "powershell", "pwsh", "conhost", "openconsole", "bash", "sh", "zsh", "fish", "nu", "dash", "wsl", "wslhost", "wslrelay", "winpty-agent", "busybox"]);
 const HOSTS = new Set([
-  "windowsterminal", "wt", "explorer", "mintty", "git-bash", "alacritty", "wezterm", "wezterm-gui", "conemu", "conemu64", "conemuc", "conemuc64",
-  "cmder", "tabby", "hyper", "fluentterminal", "terminus", "kitty", "taskhostw", "taskeng", "svchost", "services", "wininit", "winlogon", "userinit", "sihost", "runtimebroker",
-  "smss", "csrss", "lsass", "dwm",
+  // Terminals: Reach has a tab or window of its own there.
+  "windowsterminal", "wt", "mintty", "git-bash", "alacritty", "wezterm", "wezterm-gui", "conemu", "conemu64", "conemuc", "conemuc64",
+  "cmder", "tabby", "hyper", "fluentterminal", "fluentterminal.app", "terminus", "warp", "far", "mobaxterm", "rio", "extraterm",
+  // The desktop, Task Scheduler and Windows' own sign-in.
+  "explorer", "taskhostw", "taskeng", "svchost", "services", "wininit", "winlogon", "userinit", "sihost", "runtimebroker", "smss", "csrss", "lsass", "dwm",
 ]);
 const STARTER = /^reach-background-[0-9a-f]{12}$/;
 const NAMES = { code: "VS Code", "code - insiders": "VS Code", cursor: "Cursor", windsurf: "Windsurf", claude: "Claude", codex: "Codex", chatgpt: "ChatGPT" };
