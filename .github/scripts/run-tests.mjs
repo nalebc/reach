@@ -37,6 +37,9 @@ export const suites = {
     "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Windows conveniences, workstream W: the owner's own shell in Reach's
+    // terminals, drives attached later, the launcher's name on the phone.
+    "windows-shell", "file-roots", "connect-states-ui",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

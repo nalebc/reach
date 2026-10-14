@@ -12,6 +12,7 @@ import { windowsStatusText } from "../scripts/instances.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { newIngressKey } from "../server/tailscale-auth.mjs";
+import { command } from "../scripts/home.mjs";
 
 // Windows' browser sign-in (docs/parity/D-public-door.md), as on a Mac: no
 // switch to turn it on (owner, Oct 13: "No flag should exist. We should
@@ -244,7 +245,7 @@ test("this PC's own browser on Windows' keyed route: allowed, its request marked
   const port = await reach.listenKeyed({ key, peerCheck: { check: async () => true }, selfIps: () => ["100.64.0.10"] });
   const fromPc = { "X-Forwarded-For": "100.64.0.10", "Tailscale-User-Login": OWNER.login };
   const method = await ask(port, `/r-${key}/api/auth/method`, { headers: fromPc });
-  assert.deepEqual(method.json, { method: "tailscale", eligible: true, login: OWNER.login });
+  assert.deepEqual(method.json, { method: "tailscale", eligible: true, login: OWNER.login, command });
   const asked = await ask(port, `/r-${key}/api/auth/requests`, { method: "POST", headers: fromPc, body: { name: "This PC's Edge" } });
   assert.equal(asked.status, 202, asked.text);
   const fromPhone = await ask(port, `/r-${key}/api/auth/requests`, { method: "POST", headers: { "X-Forwarded-For": "100.64.0.20", "Tailscale-User-Login": OWNER.login }, body: { name: "Phone" } });
