@@ -1487,7 +1487,9 @@ export async function createReach(overrides = {}) {
       config.tailscaleOwner,
       fromHere ? { thisComputer: true } : undefined,
     );
-    if (from)
+    // A linked computer's ticket vouches for a device, not for whoever is
+    // signed in here: from this computer itself, only the code typed here.
+    if (from && !fromHere)
       try {
         approvals.decide(created.id, "approve", from);
       } catch {}

@@ -22,8 +22,13 @@ release notes, so date the heading before tagging.
   not private, or Tailscale's own connections not recognised. In the last
   case Reach starts again on pairing codes at once, and tries the route again
   a day later or after Tailscale changes. An older Tailscale no longer stops
-  setup: the account is kept and used once Tailscale is updated. Not yet run
-  on a physical Windows PC.
+  setup: the account is kept and used once Tailscale is updated. Phones that
+  joined a PC with a pairing code ask to be approved once, as on a Mac. Not
+  yet run on a physical Windows PC.
+- 2026-10-13: A linked computer's ticket no longer approves a request made
+  from the computer itself (a browser on it): only the code typed there
+  does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
+  whoever is signed in to it.
 
 ## [0.2.0] — 2026-10-13
 

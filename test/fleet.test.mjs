@@ -253,6 +253,8 @@ test(
       const kind = kinds[name === "A" ? 0 : 1];
       const reach = await createReach({
         ...(kind === "keyed" && { platform: "win32" }),
+        // This computer's own Tailscale address, as Tailscale reports it.
+        tailscaleStatus: async () => ({ Self: { TailscaleIPs: [ip[node]] }, Peer: {} }),
         roots: [root],
         dataDir,
         port: 0,
@@ -410,6 +412,30 @@ test(
       await fs.mkdir(path.join(macs.B.dataDir, "device-requests"), { mode: 0o700 });
       const backOnB = await poll("B", await ask("B", await ticketFrom("A", backOnA.token)), 4000);
       assert.equal(backOnB.status, "approved");
+
+      // From Mac B itself (its own Tailscale address): a browser there that
+      // Mac A approved, bringing A's ticket, still waits for the code typed
+      // at B, and B's prompt says where it came from. A ticket vouches for a
+      // device, never for whoever is signed in to it (security review, Oct 13).
+      const askFrom = (mac, from, ticket) => call(mac, "/api/auth/requests", { from, body: { name: "Browser on B", ...(ticket ? { ticket } : {}) } });
+      const pollFrom = async (mac, from, r, ms) => {
+        const until = Date.now() + ms;
+        let last;
+        do {
+          last = await call(mac, `/api/auth/requests/${r.id}`, { from, body: { secret: r.secret } });
+          if (last.json?.status !== "pending") return last.json;
+          await new Promise((res) => setTimeout(res, 100));
+        } while (Date.now() < until);
+        return last.json;
+      };
+      const browserAsked = (await askFrom("A", ip.nB)).json;
+      approvalStore(macs.A.dataDir).decide(browserAsked.id, "approve");
+      const browserOnA = await pollFrom("A", ip.nB, browserAsked, 1500);
+      assert.equal(browserOnA.status, "approved");
+      const onItself = await askFrom("B", ip.nB, await ticketFrom("A", browserOnA.token, ip.nB));
+      assert.equal(onItself.status, 202, JSON.stringify(onItself.json));
+      assert.equal((await pollFrom("B", ip.nB, onItself.json, 700)).status, "pending");
+      assert.equal(approvalStore(macs.B.dataDir).list().find((r) => r.id === onItself.json.id)?.thisComputer, true);
 
       // Only linked computers may redeem; never another device or a tagged one.
       const spare = await ticketFrom("A", backOnA.token);

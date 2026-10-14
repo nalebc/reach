@@ -29,7 +29,7 @@ const until = async (check, what, ms = 15000) => {
   }
 };
 
-function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true, unrecognised = false, noted = null, healthWaitMs = 0, ready } = {}) {
+function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true, unrecognised = "", noted = null, healthWaitMs = 0, ready } = {}) {
   const seen = {};
   const started = startCleanReach(t, {
     args: { local: false, stayAwake: false },
@@ -57,7 +57,8 @@ function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true
         env: { REACH_TAILSCALE: seen.fake.cli },
         preloads: [tailnetPreload(seen.fake.state)],
         launchCode: [
-          `peerCheck: (await import(${JSON.stringify(PEER)})).fakePeerCheck(${JSON.stringify(root)}, { problem: ${JSON.stringify(problem)}, unrecognised: ${unrecognised}, log: ${JSON.stringify(seen.peerLog)} })`,
+          // Given launch's hooks, as the real check is.
+          `peerCheck: ((m) => (hooks) => m.fakePeerCheck(${JSON.stringify(root)}, { problem: ${JSON.stringify(problem)}, unrecognised: ${JSON.stringify(unrecognised)}, log: ${JSON.stringify(seen.peerLog)}, ...hooks }))(await import(${JSON.stringify(PEER)}))`,
           `privateFolders: await (async () => { const fs = (await import("node:fs")).default; return ${privateFolders}; })()`,
           "keyedEveryMs: 1000",
           ...(healthWaitMs ? [`healthWaitMs: ${healthWaitMs}`] : []),
@@ -269,40 +270,68 @@ test("Windows without account settings (paired by code before): pairing codes, i
 });
 
 const UNRECOGNISED = /Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC\./;
-test("Windows: Tailscale's own connections never recognised: the route stays closed, it's noted, and Reach asks to start again", { ...windowsOnly, timeout: 120000 }, async (t) => {
-  const { seen, started } = keyedReach(t, { unrecognised: true, healthWaitMs: 4000, ready: /starts again with pairing codes/ });
+const UNANSWERED = /Reach's check of Tailscale's connections kept failing to answer on this PC\./;
+const NOTE = ".reach/sign-in-unrecognised.json";
+const readNote = (root) => JSON.parse(fs.readFileSync(path.join(root, NOTE), "utf8"));
+test("Windows: Tailscale's own connections taken for another program's: the route stays closed, it's noted, and Reach asks to start again", { ...windowsOnly, timeout: 120000 }, async (t) => {
+  const { seen, started } = keyedReach(t, { unrecognised: "other", healthWaitMs: 4000, ready: /starts again with pairing codes/ });
   const reach = await started;
   await reach.exited;
   assert.match(reach.output(), new RegExp(`${UNRECOGNISED.source} It stays closed; Reach starts again with pairing codes\\.`));
-  const noted = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach", "sign-in-unrecognised.json"), "utf8"));
+  const noted = readNote(seen.root);
+  assert.equal(noted.kind, "other");
   assert.equal(noted.tailscale, "1.104.0-tfake");
   assert.ok(Date.now() - noted.at < 120000);
   assert.match(reach.output(), /Reach: refused a connection to its private route \(not from Tailscale's own process\)\./);
 });
 
-test("Windows, noted today with this Tailscale: pairing codes with the reason, no key, no Funnel", windowsOnly, async (t) => {
-  const { seen, started } = keyedReach(t, { noted: { tailscale: "1.104.0-tfake", at: Date.now() - 3600000 }, ready: /No public internet tunnel is enabled/ });
+// Security review, Oct 13: a check that only failed to answer (a hiccup) is
+// no reason for a day of pairing codes: Reach starts again and tries once
+// more; twice within an hour, pairing codes for that hour.
+test("Windows: the check not answering in time once: Reach starts again to try once more; a second time within the hour, pairing codes", { ...windowsOnly, timeout: 120000 }, async (t) => {
+  const { seen, started } = keyedReach(t, { unrecognised: "late", healthWaitMs: 4000, ready: /Reach starts again/ });
   const reach = await started;
-  const text = reach.output();
-  assert.match(text, new RegExp(`Reach: browser sign-in is off on this PC for now: ${UNRECOGNISED.source}`));
-  assert.match(text, /Pairing code: \d{4} \d{4}/);
-  const sessions = await seen.fake.sessions();
-  assert.equal(sessions.length, 1);
-  assert.doesNotMatch(sessions[0].args.at(-1), /\/r-/);
-  const status = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach", "host-status.json"), "utf8"));
-  assert.match(status.signInOff, UNRECOGNISED);
+  await reach.exited;
+  assert.match(reach.output(), /Reach's check of Tailscale's connections didn't answer in time; Reach starts again and tries once more\./);
+  const first = readNote(seen.root);
+  assert.deepEqual([first.kind, first.count], ["late", 1]);
+  const again = keyedReach(t, { unrecognised: "late", healthWaitMs: 4000, noted: readNote(seen.root), ready: /Reach starts again/ });
+  const second = await again.started;
+  await second.exited;
+  assert.match(second.output(), new RegExp(`${UNANSWERED.source} Reach starts again with pairing codes for an hour\\.`));
+  assert.equal(readNote(again.seen.root).count, 2);
 });
 
-for (const [name, noted] of [
-  ["a day later", { tailscale: "1.104.0-tfake", at: Date.now() - 90000000 }],
-  ["after Tailscale changed", { tailscale: "1.102.0-tfake", at: Date.now() - 60000 }],
+for (const [name, noted, reason] of [
+  ["today with this Tailscale (taken for another program's)", { kind: "other", count: 1, tailscale: "1.104.0-tfake", at: Date.now() - 3600000 }, UNRECOGNISED],
+  ["twice unanswered within the hour", { kind: "late", count: 2, tailscale: "1.104.0-tfake", at: Date.now() - 600000 }, UNANSWERED],
 ])
-  test(`Windows, noted ${name}: the keyed route is tried again, and the note goes`, windowsOnly, async (t) => {
+  test(`Windows, noted ${name}: pairing codes with the reason, no key, no Funnel`, windowsOnly, async (t) => {
+    const { seen, started } = keyedReach(t, { noted, ready: /No public internet tunnel is enabled/ });
+    const reach = await started;
+    const text = reach.output();
+    assert.match(text, new RegExp(`Reach: browser sign-in is off on this PC for now: ${reason.source}`));
+    assert.match(text, /Pairing code: \d{4} \d{4}/);
+    const sessions = await seen.fake.sessions();
+    assert.equal(sessions.length, 1);
+    assert.doesNotMatch(sessions[0].args.at(-1), /\/r-/);
+    const status = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach", "host-status.json"), "utf8"));
+    assert.match(status.signInOff, reason);
+  });
+
+for (const [name, noted] of [
+  ["a day later", { kind: "other", count: 1, tailscale: "1.104.0-tfake", at: Date.now() - 90000000 }],
+  ["after Tailscale changed", { kind: "other", count: 1, tailscale: "1.102.0-tfake", at: Date.now() - 60000 }],
+  ["with a time still to come (never held indefinitely)", { kind: "other", count: 1, tailscale: "1.104.0-tfake", at: Date.now() + 86400000 * 365 }],
+  ["once unanswered (one more try)", { kind: "late", count: 1, tailscale: "1.104.0-tfake", at: Date.now() - 60000 }],
+  ["twice unanswered, over an hour ago", { kind: "late", count: 2, tailscale: "1.104.0-tfake", at: Date.now() - 2 * 3600000 }],
+])
+  test(`Windows, noted ${name}: the keyed route is tried, and once it answers the note goes`, windowsOnly, async (t) => {
     const { seen, started } = keyedReach(t, { noted });
     await started;
     const { serve } = await keyedSessions(seen.fake);
     assert.match(serve.args.at(-1), KEYED);
-    assert.equal(fs.existsSync(path.join(seen.root, ".reach", "sign-in-unrecognised.json")), false);
+    assert.equal(fs.existsSync(path.join(seen.root, NOTE)), false);
   });
 
 test("Windows keyed route: another Tailscale route to its port closes it until it's gone; so does Tailscale losing its adapter", windowsOnly, async (t) => {

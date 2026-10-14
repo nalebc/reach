@@ -395,7 +395,11 @@ Anything else gets no byte back. Requests Tailscale marks as coming from the int
 - Reach's state folders are made owner-only (a SID ACL, then checked) and its code can't be changed by other users;
 - the peer check starts.
 
-Otherwise Reach uses pairing codes and says why: in its terminal, `status`, `approve`, `link`, and on the phone where invite links are offered. If the route refuses every connection Tailscale makes to it (Tailscale's process not recognised), it stays closed. Reach notes that and starts again on pairing codes at once, then tries the route again a day later or after Tailscale changes. Another Tailscale route leading to the port, or Tailscale losing its adapter, closes the route while it lasts. Invite keys, the start page, the agent gateway, hosted MCP, Face ID join and linked computers follow the route: on when it is, off with the same reason when it isn't.
+Otherwise Reach uses pairing codes and says why: in its terminal, `status`, `approve`, `link`, and on the phone where invite links are offered. If the route answers nothing at start because its check refused Tailscale's connections, it stays closed, and Reach starts again at once:
+- the check said another program owns them, and let none through: noted, and pairing codes for a day, or until Tailscale changes;
+- the check only failed to answer in time (a hiccup): Reach tries the route once more; twice within an hour, pairing codes for that hour.
+
+A note dated in the future is ignored, and a start the route answers clears it. Another Tailscale route leading to the port, or Tailscale losing its adapter, closes the route while it lasts. Invite keys, the start page, Face ID join and linked computers follow the route: on when it is, off with the same reason when it isn't. The agent gateway and hosted MCP don't: they exist whenever Reach has an https address, on both platforms, and each request needs an agent's own key or token (their door rules: `docs/SECURITY.md` above).
 
 **Residuals (written down, not hidden).**
 - The key is visible to this Windows user (the route's command line, `tailscale serve status`), to administrators and SYSTEM (Tailscale's saved foreground configs), and in Tailscale's logs. Holding it isn't enough on its own: the connection must also come from Tailscale's process.
