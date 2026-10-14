@@ -33,7 +33,8 @@ const runNpm = (args, cwd = root) => execFileSync(process.execPath, [npm, ...arg
 try {
 const [pack] = JSON.parse(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", output]));
 const paths = pack.files.map((file) => file.path);
-for (const required of ["dist/index.html", "dist/start.html", "dist/agent.mjs", "tailnet/dist/tailnet.json", "scripts/native/input.swift", "bin/reach.mjs", "docs/THIRD_PARTY_NOTICES.md"])
+for (const required of ["dist/index.html", "dist/start.html", "dist/agent.mjs", "tailnet/dist/tailnet.json", "scripts/native/input.swift",
+  "scripts/native/screen-sound.swift", "scripts/native/screen-sound.cs", "bin/reach.mjs", "docs/THIRD_PARTY_NOTICES.md"])
   assert.ok(paths.includes(required), `Missing from npm artifact: ${required}`);
 for (const file of paths)
   assert.ok(!/(^|\/)(?:\.reach|\.env|work|node_modules|test|ios)(?:\/|$)/.test(file), `Private or development file in artifact: ${file}`);
@@ -89,7 +90,7 @@ for (const file of paths)
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("REACH_"))),
       REACH_HOME: path.join(fixture, "state"), NODE_TEST_CONTEXT: "release-smoke",
     };
-    const run = (args) => execFileSync(process.execPath, args, { cwd: fixture, env, encoding: "utf8", timeout: 30000 });
+    const run = (args, timeout = 30000) => execFileSync(process.execPath, args, { cwd: fixture, env, encoding: "utf8", timeout });
     assert.match(run([path.join(installed, "bin/reach.mjs"), "--help"]), /Reach/);
     assert.equal(run([path.join(installed, "bin/reach.mjs"), "--version"]).trim(), pkg.version);
     if (label === "portable-smoke") {
@@ -163,13 +164,41 @@ for (const file of paths)
         } finally { clearTimeout(timer); }
         assert.equal(session.exitCode, 0);
         assert.match(session.buffer, /REACH_PACKAGE_TERMINAL_OK/);
+        // The computer's sound as shipped: its worklet a file of its own
+        // (inlined as a data: address, the page's policy refuses it) served
+        // as script; on a Mac or a PC, the helper builds from this copy and
+        // its tone comes through Reach's own reader.
+        phase('verify packaged sound');
+        const shipped = fs.readdirSync(installedDist + '/assets');
+        const worklets = shipped.filter((name) => /^r2-sound-worklet-.+\.js$/.test(name));
+        assert.equal(worklets.length, 1, 'the sound worklet ships as one file of its own');
+        const naming = shipped.filter((name) => name.endsWith('.js') && fs.readFileSync(installedDist + '/assets/' + name, 'utf8').includes(worklets[0]));
+        assert.ok(naming.length > 0, 'the screen loads the shipped worklet');
+        for (const name of naming)
+          assert.ok(!fs.readFileSync(installedDist + '/assets/' + name, 'utf8').includes('data:text/javascript'), name + ' inlines a script');
+        const worklet = await request('/assets/' + worklets[0]);
+        assert.equal(worklet.status, 200);
+        assert.match(worklet.headers.get('content-type') || '', /javascript/);
+        if (process.platform === 'darwin' || process.platform === 'win32') {
+          const native = await import(${JSON.stringify(pathToFileURL(path.join(installed, "server/desktop-native.mjs")).href)});
+          const { SoundSource } = await import(${JSON.stringify(pathToFileURL(path.join(installed, "server/screen-sound.mjs")).href)});
+          const builds = { dataDir: ${JSON.stringify(path.join(fixture, "sound-helper"))} };
+          fs.mkdirSync(builds.dataDir);
+          const helper = process.platform === 'win32' ? await native.windowsBinary(builds, 'screen-sound') : await native.desktopBinary(builds, 'screen-sound');
+          const heard = await new Promise((resolve) => {
+            const got = { info: null, packets: 0 };
+            new SoundSource(helper, ['--self-test', '0.2'], { onInfo: (info) => (got.info = info), onSamples: () => got.packets++, onEnd: () => resolve(got) });
+          });
+          assert.deepEqual(heard, { info: { rate: 48000, channels: 2 }, packets: 10 }, 'the shipped sound helper builds and plays its tone');
+        }
       } finally {
         phase('close isolated server');
         await app.close();
       }
       phase('finished');
     `;
-    run(["--input-type=module", "-e", smoke]);
+    // Building the sound helper takes a cold Intel Mac most of a minute.
+    run(["--input-type=module", "-e", smoke], 240000);
   };
   verifyInstalled(path.join(npmInstall, "node_modules", ...pkg.name.split("/")), "npm-smoke");
   verifyInstalled(portableInstalled, "portable-smoke");
@@ -180,7 +209,7 @@ for (const file of paths)
     package: pkg.name, commit: process.env.GITHUB_SHA || "local",
     portable: { filename: portableName, sha256: portableDigest },
   }, null, 2) + "\n");
-  console.log(`Clean npm and portable archive installs passed: ${pack.filename} (${paths.length} files) and ${portableName}. CLI/portable launcher, all initial UI assets, agent entry, deep links, authenticated files, native terminal startup and access boundaries verified under hidden temporary install directories. Both archive hashes are bound to the passing receipt.`);
+  console.log(`Clean npm and portable archive installs passed: ${pack.filename} (${paths.length} files) and ${portableName}. CLI/portable launcher, all initial UI assets, agent entry, deep links, authenticated files, native terminal startup, the sound worklet and helper, and access boundaries verified under hidden temporary install directories. Both archive hashes are bound to the passing receipt.`);
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

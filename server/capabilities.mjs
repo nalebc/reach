@@ -134,6 +134,9 @@ export function deviceCapabilities({
     apps: desktop && (scopes.includes("apps") || scopes.includes("apps:open")),
     screen: watches && screen === true,
     screenSupported: watches,
+    // Hearing it beside the screen (server/screen-sound.mjs): you and
+    // people with full access only.
+    sound: watches && owner && screen === true,
     // Whether invited people may watch: Windows can't yet leave password
     // managers and Reach's windows out of their picture, so it refuses them
     // (remote-screen.mjs privateViewRefused); the invite sheet doesn't offer it.

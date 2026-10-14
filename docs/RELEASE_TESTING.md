@@ -17,6 +17,8 @@ Run on a real iPhone with Safari and an Android phone with Chrome before calling
 7. Invite a guest to only the test folder. Check the guest cannot enter other roots, run commands, control the screen or manage devices. Revoke the guest while connected, then verify expiry with a separate short invitation.
 8. Check `./reach status`, then arrange a convenient interruption before using `./reach restart` (Windows: `.\reach.cmd restart`). Approve the pending restart on the phone when requested. Confirm the same address works and approved-device state persists. A terminated Reach PTY must be shown as ended, not as a silently hanging live terminal. Do not expect sessions to survive a host reboot or FileVault pre-boot.
 
+9. Sound (Screen's speaker). Play a video on the host with known speech and music. On the iPhone, tap the speaker: sound within a second, in step with the picture closely enough to follow speech; repeat with the ringer switch on silent (it should still play, as a video does) and with the volume buttons. Then on the Android phone. Lock and unlock the phone, background Reach for a minute and come back: the speaker turns off or carries on, never shows on while silent. Pause Reach on the host: sound stops and the host's recording indicator goes off. Switch the host's output between speakers and headphones (on Windows, the sound follows after a short reconnect). Throttle the link (cellular, or a weak Wi-Fi): sound gets lighter or skips and never runs late, and the picture keeps going. Confirm a guest with screen access sees no speaker. On a Windows host, repeat on a PC with speakers.
+
 Also repeat ordinary owner access with the separate Tailscale app enabled. On a Windows host, exercise its supported pairing path separately; passing the Windows CI job is not an iPhone-to-Windows device test.
 
 ## Current security boundary
@@ -24,6 +26,16 @@ Also repeat ordinary owner access with the separate Tailscale app enabled. On a 
 Read [SECURITY.md](SECURITY.md). The public Funnel surface exists only while an invitation or a browser agent's session is live, and is limited to the start page's fixed files, Face ID admission and the signed agent gateway, which carries an invited browser agent's API requests under that invitation's allowlist; owner APIs and WebSockets require authenticated private ingress. A registered owner passkey is an owner credential, not a guest invitation. Tailnet grants are additive: unrelated broad rules can widen a tagged device's network access. Setup rejects detected broad policies, but limited stored credentials cannot continuously audit later policy changes.
 
 Record device results explicitly as passed, failed or not tested. Automated tests and emulated phone-width pages cannot be substituted for this gate.
+
+## Sound in CI, and what it can't show
+
+CI tests the computer's sound end to end except for the OS capture itself. On the Mac runners, the real Swift helper is built and its tone is played live through a real Reach into headless Chrome under Reach's own page policy, steady at the expected level (`test/screen-sound-chrome-e2e.test.mjs`). On the Windows runner, the PC's own csc.exe builds the C# helper, its tone comes through, and the same browser test plays it; its loopback capture runs until Windows reports no output device (runners have no speakers). The shared server and phone parts run on every lane, and every release's npm and portable artifacts must ship both helpers, ship the worklet as its own file (never an inlined `data:` script) and build and play the helper on the release's own OS (`scripts/smoke-package.mjs`). Real capture needs Screen Recording on a Mac with sound playing, and a PC with an output device; run it on a Mac with:
+
+```sh
+REACH_TEST_SOUND_CAPTURE=1 npm run test:file -- test/screen-sound-native.test.mjs
+```
+
+Safari on an iPhone, Android browsers and hearing a real PC are step 9 of the physical phone gate above.
 
 ## Optional native voice transcription
 
