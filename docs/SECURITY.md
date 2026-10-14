@@ -380,3 +380,29 @@ The private working-copy feature (copy, review, apply and discard) has been remo
 **The fix** (`scripts/foreground-serve.mjs`, Windows only). The route is a foreground Serve session: `tailscale serve --https=<port> <target>` without `--bg`, run as a non-detached child of Reach. tailscaled deletes a foreground session when its watcher ends (`ipn/ipnlocal/local.go`) and drops inactive sessions when it reloads (`ipn/ipnlocal/serve.go`, v1.104.0); Node keeps non-detached children in a kill-on-close job object. The route therefore ends with Reach: a stop, a crash, `taskkill`, a reboot. Reach still waits for the route and its own health answer before showing the link, starts the session again if it ends while Reach runs, and ends it before closing its listener. A background route an older Reach left on the same address, recorded as its own in `serve-owner.json`, is switched off once at start and the record removed; anybody else's route on the port still refuses to start. Windows makes no Funnel route (no socket, so no public start page), and the deprecated `npm run share` refuses on Windows. macOS and Linux are unchanged: their route leads to a mode-0600 socket in a mode-0700 directory and stays a background route.
 
 Coverage: a Windows-path Reach (`test/helpers/as-windows.mjs`) against the stand-in Tailscale, which now models foreground sessions (shown while their `tailscale serve` process lives, and ending with its parent as the job object would): no `--bg` call and no background route; the route gone after `stop` and after Reach is killed outright; a lost session restored while Reach runs; a recorded older background route replaced; someone else's route left alone and refused; the Mac path still a background route. **Verified only with the stand-in Tailscale on macOS.** A physical Windows PC on a real tailnet is still pending: the job object ending `tailscale.exe`, tailscaled on Windows dropping the session at once and after a reboot, and the interactive HTTPS-enable prompt in foreground mode.
+
+## Windows browser sign-in: the keyed route — 2026-10-13
+
+**What it is** (`server/tailscale-auth.mjs` `listenKeyedIngress`, `server/tailscaled-peer.mjs`; spec: `docs/parity/D-public-door.md`). On a Mac, Tailscale reaches Reach through a mode-0600 Unix socket only tailscaled can be the peer of, so Reach trusts Tailscale's identity headers. Windows has no such socket: Tailscale Serve proxies to a loopback port any local process could also connect to and send forged headers. So on Windows the private and public routes lead to `http://127.0.0.1:<port>/r-<key>`. The key is 256 random bits, new each launch and never written down; tailscaled puts it in front of every request it proxies. A request counts as Tailscale's only if it has both:
+- the key, compared in constant time and stripped before Reach's own code sees the URL;
+- a socket owned by Tailscale's own process. A helper compiled into Reach's private folder (`scripts/native/tailscaled-peer.cs`, hash-checked before each start) finds the socket's owner in the TCP table. It must be the running Tailscale service, or its child running the same program, and its connection must be no newer than the moment Reach accepted it.
+
+Anything else gets no byte back. Requests Tailscale marks as coming from the internet (Funnel) reach only the start page, Face ID sign-in and the agent gateway, as on a Mac. A browser on the PC itself may ask to be approved; the approval prompt says it came from this PC.
+
+**On by detection, no switch (owner, Oct 13).** A PC set up with your Tailscale account (`.\reach.cmd setup`, as on a Mac) uses the keyed route when all of these hold:
+- Tailscale's daemon and command line are 1.104 or newer;
+- Tailscale runs with its network adapter (userspace networking forwards peers' connections onto loopback ports);
+- Reach's state folders are made owner-only (a SID ACL, then checked) and its code can't be changed by other users;
+- the peer check starts.
+
+Otherwise Reach uses pairing codes and says why: in its terminal, `status`, `approve`, `link`, and on the phone where invite links are offered. If the route refuses every connection Tailscale makes to it (Tailscale's process not recognised), it stays closed. Reach notes that and starts again on pairing codes at once, then tries the route again a day later or after Tailscale changes. Another Tailscale route leading to the port, or Tailscale losing its adapter, closes the route while it lasts. Invite keys, the start page, the agent gateway, hosted MCP, Face ID join and linked computers follow the route: on when it is, off with the same reason when it isn't.
+
+**Residuals (written down, not hidden).**
+- The key is visible to this Windows user (the route's command line, `tailscale serve status`), to administrators and SYSTEM (Tailscale's saved foreground configs), and in Tailscale's logs. Holding it isn't enough on its own: the connection must also come from Tailscale's process.
+- Processes running as the same Windows user are trusted, as on a Mac.
+- If Reach crashes, another user who has already bound the wildcard address on that port can receive in-flight requests in the sub-second gap before tailscaled drops the routes. A normal stop closes the routes before the listener.
+- Smart App Control or WDAC can block the compiled helper; Reach then uses pairing codes and says why.
+- **Not yet run on a physical Windows PC with a real Tailscale and a phone** (`docs/FIRST_RUN_MATRIX.md` M8). Coverage today:
+  - unit and launch tests with a Windows-path Reach against a stand-in Tailscale on macOS;
+  - Face ID join and linked computers end to end over the keyed route in-process;
+  - the real peer check against a LocalSystem service shaped like Tailscale's, with Reach as a standard user and another user trying the port, on GitHub's Windows runner (`test/windows-tailscaled-peer.test.mjs`).
