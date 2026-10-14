@@ -1,20 +1,30 @@
-import { useEffect, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Gamepad2, Hash, LoaderCircle, Lock, MessagesSquare, Send } from "lucide-react";
 import { post, type Peer } from "./api";
 import { computerWord } from "./pause";
 import { clawBase, useClawCatalog } from "./OpenClawControls";
 import { ClawWizard } from "./OpenClawWizard";
 import { ClawAddProvider } from "./OpenClawOnboard";
+import { ClawRow } from "./OpenClawRow";
 
-// Advanced setup uses OpenClaw's structured questions inside Reach.
-export function OpenSetup({ peer, children }: {
+// Advanced setup uses OpenClaw's structured questions inside Reach, on a
+// page of their own (OpenClawWizard.tsx). `row`: a row in a page's group
+// ("Other apps"), rather than a pill.
+export function OpenSetup({ peer, children, row = false, sub, icon }: {
   peer: Peer;
   section: "model" | "channels" | "skills";
   children: string;
+  row?: boolean;
+  sub?: string;
+  icon?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   return <>
-    <button type="button" className="claw-secondary" onClick={() => setOpen(true)}>{children}</button>
+    {row ? (
+      <ClawRow icon={icon || <MessagesSquare size={19} />} tint="gray" label={children} sub={sub} onClick={() => setOpen(true)} />
+    ) : (
+      <button type="button" className="claw-secondary" onClick={() => setOpen(true)}>{children}</button>
+    )}
     {open && <ClawWizard key={`${peer.id}:${peer.url}:${peer.token}`} peer={peer} onClose={() => setOpen(false)} />}
   </>;
 }
@@ -57,12 +67,10 @@ export type ScheduleDraft = { name: string; message: string; repeat?: Repeat; ti
 export function ScheduleForm({
   peer,
   onAdded,
-  onCancel,
   initial,
 }: {
   peer: Peer;
   onAdded: () => void;
-  onCancel: () => void;
   // A suggestion tapped on Scheduled: its words, still editable.
   initial?: ScheduleDraft;
 }) {
@@ -207,14 +215,9 @@ export function ScheduleForm({
           {problem}
         </p>
       )}
-      <div className="claw-settings-actions">
-        <button type="button" className="claw-secondary" onClick={onCancel}>
-          Cancel
-        </button>
-        <button className="claw-primary" disabled={!ready || busy}>
-          {busy ? <LoaderCircle size={15} className="spin" /> : null}Add schedule
-        </button>
-      </div>
+      <button className="claw-pill strong claw-wide" disabled={!ready || busy}>
+        {busy ? <LoaderCircle size={15} className="spin" /> : null}Add task
+      </button>
     </form>
   );
 }
@@ -378,16 +381,22 @@ export function WhatsAppLink({
 const TOKEN_APPS = {
   telegram: {
     name: "Telegram",
+    icon: Send,
+    tint: "blue",
     how: "In Telegram, message @BotFather, send /newbot, and copy the token it gives you.",
     fields: [["token", "Bot token", "123456789:AA…"]],
   },
   discord: {
     name: "Discord",
+    icon: Gamepad2,
+    tint: "indigo",
     how: "In the Discord Developer Portal: your app → Bot → Reset Token, and turn on Message Content Intent.",
     fields: [["token", "Bot token", "MTA…"]],
   },
   slack: {
     name: "Slack",
+    icon: Hash,
+    tint: "plum",
     how: "In your Slack app: turn on Socket Mode, then copy the Bot User OAuth Token and an app-level token with connections:write.",
     fields: [
       ["botToken", "Bot token", "xoxb-…"],
@@ -400,11 +409,9 @@ type TokenApp = keyof typeof TOKEN_APPS;
 export function AddChannelForm({
   peer,
   onAdded,
-  onCancel,
 }: {
   peer: Peer;
   onAdded: () => void;
-  onCancel: () => void;
 }) {
   const [app, setApp] = useState<TokenApp>("telegram");
   const [values, setValues] = useState<Record<string, string>>({});
@@ -415,13 +422,11 @@ export function AddChannelForm({
   const ready = spec.fields.every(([key]) => (values[key] || "").trim().length >= 8);
   if (added)
     return (
-      <div className="claw-missing" role="status">
-        <p>{added} is added. OpenClaw is connecting it now; Refresh in a moment to see it connected.</p>
-        <div className="claw-settings-actions">
-          <button type="button" className="claw-primary" onClick={onAdded}>
-            Done
-          </button>
-        </div>
+      <div className="claw-channel-done" role="status">
+        <p>{added} is added. OpenClaw is connecting it now.</p>
+        <button type="button" className="claw-pill strong claw-wide" onClick={onAdded}>
+          Done
+        </button>
       </div>
     );
   return (
@@ -447,25 +452,29 @@ export function AddChannelForm({
         }
       }}
     >
-      <div className="claw-app-choice" role="radiogroup" aria-label="Messaging app">
-        {(Object.keys(TOKEN_APPS) as TokenApp[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            role="radio"
-            aria-checked={app === key}
-            className={app === key ? "on" : ""}
-            onClick={() => {
-              setApp(key);
-              setValues({});
-              setProblem("");
-            }}
-          >
-            {TOKEN_APPS[key].name}
-          </button>
-        ))}
+      <div className="claw-app-tiles" role="radiogroup" aria-label="Messaging app">
+        {(Object.keys(TOKEN_APPS) as TokenApp[]).map((key) => {
+          const { icon: Icon, tint, name } = TOKEN_APPS[key];
+          return (
+            <button
+              key={key}
+              type="button"
+              role="radio"
+              aria-checked={app === key}
+              className={`claw-app-tile ${tint}${app === key ? " on" : ""}`}
+              onClick={() => {
+                setApp(key);
+                setValues({});
+                setProblem("");
+              }}
+            >
+              <Icon size={22} aria-hidden="true" />
+              {name}
+            </button>
+          );
+        })}
       </div>
-      <p className="claw-note">{spec.how}</p>
+      <p className="claw-channel-how">{spec.how}</p>
       {spec.fields.map(([key, label, placeholder]) => (
         <label key={key}>
           {label}
@@ -481,20 +490,18 @@ export function AddChannelForm({
           />
         </label>
       ))}
-      <p className="claw-note">The token goes to OpenClaw on your computer. Reach doesn't keep it.</p>
+      <p className="claw-channel-quiet">
+        <Lock size={13} aria-hidden="true" />
+        Only OpenClaw on your {computerWord(peer.platform)} keeps it.
+      </p>
       {problem && (
         <p className="claw-error" role="alert">
           {problem}
         </p>
       )}
-      <div className="claw-settings-actions">
-        <button type="button" className="claw-secondary" onClick={onCancel}>
-          Cancel
-        </button>
-        <button className="claw-primary" disabled={!ready || busy}>
-          {busy ? <LoaderCircle size={15} className="spin" /> : null}Add {spec.name}
-        </button>
-      </div>
+      <button className="claw-pill strong claw-wide" disabled={!ready || busy}>
+        {busy ? <LoaderCircle size={15} className="spin" /> : null}Add {spec.name}
+      </button>
     </form>
   );
 }

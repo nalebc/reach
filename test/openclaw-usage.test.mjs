@@ -385,6 +385,9 @@ test("the phone shows a chat's cost, today's spend, and confirms the cheap prese
       [`${base}/spend/routing/cheap`]: (init) => (posted.push(JSON.parse(init.body)), { saved: true }),
     },
   });
+  // Spend opens as a full-screen page (a modal dialog jsdom doesn't have).
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   try {
     const { ClawChatCost, ClawSpendPill } = await dom.load("/src/OpenClawSpend.tsx");
     const peer = { id: "p", name: "Mac", url: "https://reach.test", token: "t", platform: "darwin" };
