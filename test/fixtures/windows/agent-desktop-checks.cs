@@ -3,6 +3,7 @@
 // here calls Windows. Compiled together with the helper (csc /main:DesktopChecks)
 // by test/agent-desktop-windows-policy.test.mjs on Windows. C# 5.
 using System;
+using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.Text;
 
@@ -574,6 +575,10 @@ static class DesktopChecks {
   // How a file is handed to the program its association names: only that
   // program, only the file as its argument.
   static void Launching() {
+    // Structures as Windows lays them out (a file's times are 4-byte aligned).
+    Check(Marshal.SizeOf(typeof(Native.BY_HANDLE_FILE_INFORMATION)) == 52, "a file's information is 52 bytes");
+    Check(Marshal.SizeOf(typeof(Native.PROCESS_INFORMATION)) == (IntPtr.Size == 8 ? 24 : 16), "a process's information");
+    Check(Marshal.SizeOf(typeof(Native.STARTUPINFO)) == (IntPtr.Size == 8 ? 104 : 68), "start-up information");
     string arguments;
     string file = "C:\\Users\\me\\Documents\\notes.txt";
     Check(Desk.HandlerProgram("\"C:\\Program Files\\Editor\\editor.exe\" \"%1\"", "C:\\Program Files\\Editor\\editor.exe", file, out arguments) == "C:\\Program Files\\Editor\\editor.exe" &&

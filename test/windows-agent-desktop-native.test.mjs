@@ -22,17 +22,20 @@ const skip = run ? false : "a real Windows runner only (REACH_TEST_WINDOWS_DESKT
 const exec = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SYSTEM32 = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
+const reg = (args) => exec(path.join(SYSTEM32, "reg.exe"), args, { windowsHide: true, timeout: 20000 });
 const report = {};
 const note = (values) => {
   Object.assign(report, values);
   fs.mkdirSync("reports", { recursive: true });
   fs.writeFileSync("reports/windows-agent-desktop.json", JSON.stringify(report, null, 2));
 };
+// A wait that times out says what the newest fixture window had logged.
+let lastLog = null;
 const until = async (check, what, ms = 30000) => {
   for (const end = Date.now() + ms; ; await sleep(100)) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
+    if (Date.now() > end) throw Error(`timed out waiting: ${what}${lastLog ? `; ${lastLog()}` : ""}`);
   }
 };
 
@@ -112,8 +115,13 @@ async function window(t, name, title, color, [x, y, width, height], ...flags) {
   const shown = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), `${name} shown`));
   const kill = () => { try { process.kill(shown.pid); } catch {} try { child.kill(); } catch {} children.delete(child); };
   t.after(kill);
-  return { exe, child: { kill }, log: () => (fs.existsSync(path.join(work, `${name}.log`)) ? fs.readFileSync(path.join(work, `${name}.log`), "utf8") : ""), ...shown };
+  const log = () => (fs.existsSync(path.join(work, `${name}.log`)) ? fs.readFileSync(path.join(work, `${name}.log`), "utf8") : "");
+  lastLog = () => `${name} logged ${JSON.stringify(log().slice(-700))}`;
+  t.after(() => { lastLog = null; });
+  return { exe, child: { kill }, log, ...shown };
 }
+// A point on a fixture window's own background (its controls sit at the top).
+const background = (w) => [w.x + 30, w.y + w.height - 25];
 // Fractions of the main display, as an agent gives a point.
 const fractions = (displays) => {
   const main = displays.find((display) => display.main) || displays[0];
@@ -195,7 +203,7 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
   assert.equal((await h.send({ op: "rules", ...rulesFor("readonly") })).ok, true);
   const { displays } = await h.send({ op: "displays" });
   const view = await shot(h, displays);
-  const [vaultPixel, popupPixel, targetPixel, otherPixel] = await view.pixels([centre(vault), centre(popup), [target.x + 300, target.y + 200], centre(other)]);
+  const [vaultPixel, popupPixel, targetPixel, otherPixel] = await view.pixels([centre(vault), centre(popup), background(target), background(other)]);
   note({ view: { hidden: view.hidden, vaultPixel, popupPixel, targetPixel, otherPixel } });
   assert.ok(black(vaultPixel), `the window titled Password Manager is black: ${vaultPixel}`);
   assert.ok(black(popupPixel), `the captionless one too: ${popupPixel}`);
@@ -207,7 +215,7 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
   const apps = helper(t);
   assert.equal((await apps.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: target.exe, bundleId: "exe:target.exe", name: "target" }] }) })).ok, true);
   const picture = await shot(apps, displays);
-  const [shown, covered, otherApp, vaultApp] = await picture.pixels([[target.x + 300, target.y + 200], [tool.x + 60, tool.y + 45], centre(other), centre(vault)]);
+  const [shown, covered, otherApp, vaultApp] = await picture.pixels([background(target), [tool.x + 60, tool.y + 45], background(other), centre(vault)]);
   note({ apps: { hidden: picture.hidden, shown, covered, otherApp, vaultApp } });
   assert.ok(near(shown, "FF8C00"), `the chosen app shows: ${shown}`);
   assert.ok(black(covered), `the topmost tool over it is black: ${covered}`);
@@ -217,7 +225,7 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
   const full = helper(t);
   assert.equal((await full.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const plain = await shot(full, displays);
-  const [vaultFull] = await plain.pixels([centre(vault)]);
+  const [vaultFull] = await plain.pixels([background(vault)]);
   assert.ok(near(vaultFull, "1E50FF"), `full control sees it: ${vaultFull}`);
   assert.equal(plain.hidden, 0);
   await full.close();
@@ -225,8 +233,20 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
 });
 
 test("Reach's own console window is closed to the agent whatever its title, and requests flow after the probe", { skip, timeout: 300000 }, async (t) => {
-  // Reach's stand-in in a console window of its own titled "Windows
-  // PowerShell", at medium integrity as on a PC.
+  // Reach's stand-in in a classic console window of its own titled "Windows
+  // PowerShell", at medium integrity as on a PC. This user's default
+  // terminal (Windows Terminal on GitHub's runners) is set to the console
+  // host meanwhile, as an owner may have it.
+  const STARTUP = "HKCU\\Console\\%%Startup", CONHOST = "{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}";
+  const before = await reg(["query", STARTUP]).then((result) => result.stdout, () => "");
+  note({ defaultTerminal: before.trim() });
+  for (const value of ["DelegationConsole", "DelegationTerminal"]) await reg(["add", STARTUP, "/v", value, "/t", "REG_SZ", "/d", CONHOST, "/f"]);
+  t.after(async () => {
+    for (const value of ["DelegationConsole", "DelegationTerminal"]) {
+      const was = before.match(new RegExp(`${value}\\s+REG_SZ\\s+(\\S+)`))?.[1];
+      await reg(was ? ["add", STARTUP, "/v", value, "/t", "REG_SZ", "/d", was, "/f"] : ["delete", STARTUP, "/v", value, "/f"]).catch(() => {});
+    }
+  });
   const conhost = spawn(fixtureConsole, ["medium-shown", fixtureConsole, "sleeper", work, "reach", "Windows PowerShell"], { stdio: ["ignore", "ignore", "pipe"], detached: true, windowsHide: true });
   children.add(conhost);
   t.after(() => { try { conhost.kill(); } catch {} });
@@ -460,16 +480,30 @@ test("Settings: its private pages are closed to the agent and black in a screens
   const open = (page) => exec(path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe"), [page], { windowsHide: true }).catch(() => {});
   const h = helper(t, { medium: true });
   assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: settings, bundleId: settings, name: "Settings" }] }) })).ok, true);
+  // What Settings shows, as Full control reads it: where its page names come from.
+  const full = helper(t, { medium: true });
+  assert.equal((await full.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const seen = {};
   for (const page of ["ms-settings:privacy", "ms-settings:network", "ms-settings:display"]) {
     await open(page);
-    await sleep(4000);
-    const front = await h.send({ op: "front" });
-    seen[page] = front;
-    if (page === "ms-settings:display") assert.equal(front.blocked, "", `${page}: ${JSON.stringify(front)}`);
-    else assert.ok(front.blocked, `${page} is closed: ${JSON.stringify(front)}`);
+    await sleep(3000);
+    // A page that can't be read yet is closed; it opens once it reads as ordinary.
+    const answers = [];
+    for (let i = 0; i < 10; i++) {
+      const front = await h.send({ op: "front" });
+      answers.push(front.blocked || "open");
+      if (page === "ms-settings:display" ? front.blocked === "" : false) break;
+      await sleep(1000);
+    }
+    const read = await full.send({ op: "read" });
+    const elements = await full.send({ op: "elements" });
+    seen[page] = { answers, read: read.text?.slice(0, 800), elements: elements.items?.slice(0, 40).map((item) => `${item.role}:${item.name}`) };
   }
   note({ settings: seen });
+  assert.ok(seen["ms-settings:privacy"].answers.every((answer) => answer !== "open"), "the privacy pages stay closed");
+  assert.ok(seen["ms-settings:network"].answers.every((answer) => answer !== "open"), "the network pages stay closed");
+  assert.equal(seen["ms-settings:display"].answers.at(-1), "open", `the display page opens: ${seen["ms-settings:display"].answers.join(" | ")}`);
+  await full.close();
   await h.close();
 });
 
@@ -477,7 +511,6 @@ test("Settings: its private pages are closed to the agent and black in a screens
 // started. Every program the helper starts gets the user's own environment,
 // as Windows builds it, never the helper's.
 const LAYERS = "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers";
-const reg = (args) => exec(path.join(SYSTEM32, "reg.exe"), args, { windowsHide: true, timeout: 20000 });
 const reportOf = (exe, what, ms = 20000) => until(() => { try { return JSON.parse(fs.readFileSync(`${exe}.env.json`, "utf8")); } catch { return null; } }, what, ms);
 const neverStarted = async (exe, what) => { await sleep(1500); assert.ok(!fs.existsSync(`${exe}.env.json`), `${what}: nothing started`); };
 

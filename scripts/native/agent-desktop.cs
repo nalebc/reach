@@ -3683,8 +3683,9 @@ static partial class Desk {
       var entry = stack.Pop();
       var node = entry.Key;
       visited++;
-      string nodeRole = node.Role(entry.Value);
+      // A web page's document holds the page (its value is only its address).
       string address = PageAddress(node);
+      string nodeRole = address != null ? "AXWebArea" : node.Role(entry.Value);
       if (address != null && Policy.UrlReason(address, rules) != null) continue;
       if (nodeRole == "AXMenu" || nodeRole == "AXMenuBar") continue;
       bool secure = node.Password;
@@ -3695,8 +3696,9 @@ static partial class Desk {
           label = LabelName(node, nodeRole, secure);
           grade = Policy.NameMatch(label, name);
         }
-      } else if (nodeRole == "AXStaticText" || nodeRole == "AXHeading" || LabelRoles.Contains(nodeRole)) {
-        string raw = nodeRole == "AXStaticText" || nodeRole == "AXHeading" ? node.Name : LabelName(node, nodeRole, secure) + (secure ? "" : " " + ValueOf(node.Element));
+      } else if (nodeRole == "AXStaticText" || nodeRole == "AXHeading" || LabelRoles.Contains(nodeRole) || (nodeRole == "AXRow" && node.Name.Length > 0)) {
+        // A row of a Windows list is its own text (a Mac's row holds a text).
+        string raw = nodeRole == "AXStaticText" || nodeRole == "AXHeading" || nodeRole == "AXRow" ? node.Name : LabelName(node, nodeRole, secure) + (secure ? "" : " " + ValueOf(node.Element));
         string words = Squeezed(Policy.HideSecrets(raw, typedSecrets));
         grade = words == wantText ? 3 : words.StartsWith(wantText, StringComparison.Ordinal) ? 2 : words.Contains(wantText) ? 1 : 0;
         label = Limit(words, 160);
@@ -3794,8 +3796,8 @@ static partial class Desk {
       var entry = stack.Pop();
       var node = entry.Key;
       visited++;
-      string role = node.Role(entry.Value);
       string address = PageAddress(node);
+      string role = address != null ? "AXWebArea" : node.Role(entry.Value);
       if (address != null) {
         if (Policy.UrlReason(address, rules) != null) continue;
         if (Policy.MoneySite(address, rules)) bank = true;
@@ -3823,6 +3825,7 @@ static partial class Desk {
         }
       }
       var children = Children(node);
+      if (children.Count == 0 && role == "AXRow") add(node.Name, false);
       for (int i = children.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<Node, Node>(children[i], node));
     }
     string text = string.Join("\n", lines);
@@ -5496,7 +5499,8 @@ static class Native {
   public const int ASSOCSTR_COMMAND = 1, ASSOCSTR_EXECUTABLE = 2, ASSOCSTR_DDECOMMAND = 7, ASSOCSTR_DELEGATEEXECUTE = 18, ASSOCSTR_APPID = 21;
   [StructLayout(LayoutKind.Sequential)]
   public struct PROPERTYKEY { public Guid fmtid; public uint pid; }
-  [StructLayout(LayoutKind.Sequential)]
+  // Its times are FILETIMEs (two DWORDs, 4-byte aligned), so it's packed at 4.
+  [StructLayout(LayoutKind.Sequential, Pack = 4)]
   public struct BY_HANDLE_FILE_INFORMATION {
     public uint dwFileAttributes;
     public long ftCreationTime, ftLastAccessTime, ftLastWriteTime;

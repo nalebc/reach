@@ -7,8 +7,9 @@
 //       A window of one colour with a text box, a password box, a button, a
 //       menu and a long list. Writes <dir>\<name>.json once shown (its handle,
 //       process, frame and its controls' centres) and appends what reaches it
-//       to <dir>\<name>.log, one line each (click, double, right, key <vk>,
-//       text <value>, menu).
+//       to <dir>\<name>.log, one line each (click, double, right, up, wheel
+//       <delta>, key <vk>, text <value>, secret <length>, button, menu). Its
+//       background shows along its bottom edge.
 //   sleeper <dir> <name> <console title>
 //       Stays alive in its console (a stand-in for Reach), titled; writes
 //       <dir>\<name>.json with its process and its console window.
@@ -201,9 +202,11 @@ static class DesktopFixture {
     MouseEventHandler down = (s, e) => form.Note((e.Button == MouseButtons.Right ? "right" : e.Clicks >= 2 ? "double" : "click") + " " + e.X + "," + e.Y);
     form.MouseDown += down;
     text.MouseDown += down;
+    list.MouseDown += down;
     MouseEventHandler up = (s, e) => form.Note("up " + e.X + "," + e.Y);
     form.MouseUp += up;
     text.MouseUp += up;
+    list.MouseUp += up;
     list.MouseWheel += (s, e) => form.Note("wheel " + e.Delta);
     form.KeyPreview = true;
     form.KeyDown += (s, e) => form.Note("key " + (int)e.KeyCode);
