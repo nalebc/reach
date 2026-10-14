@@ -302,6 +302,9 @@ test("the picture is the Mac: clicks, right-clicks and double-clicks land where 
   const { c, calls } = await open(full);
   const frame = await screen(c);
   at(frame, "click", 50, 25);
+  // Marked where it was made, at once. The ring fades 3 s after the click;
+  // looked for only once the Mac's answer came, a starved machine missed it.
+  await dom.waitFor(() => c.querySelector(".ap-mark-ring"));
   await dom.waitFor(() => inputs(calls).length === 1);
   assert.deepEqual(inputs(calls)[0], {
     type: "click",
@@ -314,7 +317,6 @@ test("the picture is the Mac: clicks, right-clicks and double-clicks land where 
     /Done: clicked at 25%, 25% in Google Chrome\./.test(c.textContent),
   );
   assert.ok(c.querySelector(".ap-status.is-done"));
-  assert.ok(c.querySelector(".ap-mark-ring"), "the last click is marked");
   at(frame, "contextmenu", 160, 10);
   await dom.waitFor(() => inputs(calls).length === 2);
   assert.deepEqual(inputs(calls)[1], {
