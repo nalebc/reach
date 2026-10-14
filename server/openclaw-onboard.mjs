@@ -24,6 +24,7 @@ import { hasCommand } from "./agent-install.mjs";
 import { openClawShell, runOpenClaw, secretEnv } from "./openclaw-run.mjs";
 import { findOpenClaw, killTree, typedCli } from "./openclaw-windows.mjs";
 import { computerWord } from "./computer-word.mjs";
+import { hubGateway } from "./openclaw-hub.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -125,18 +126,20 @@ export function pipeRun(file, args, { input = "", timeout = 30000, env = process
 }
 
 // The key in OpenClaw's own store (on stdin), then read back from OpenClaw's
-// list, which shows ids and types only, never keys.
-export async function saveApiKey(provider, key, { pipe = pipeRun, run = runOpenClaw, env = process.env, platform = process.platform, runtime } = {}) {
+// list, which shows ids and types only, never keys. In OpenClaw's Windows
+// app's distro the script comes first on stdin (openclaw-hub.mjs).
+const scripted = (script) => (script === undefined ? {} : { input: script });
+export async function saveApiKey(provider, key, { pipe = pipeRun, run = runOpenClaw, env = process.env, platform = process.platform, runtime, ...where } = {}) {
   pick(provider);
   // OpenClaw's default agent (the one onboard set up), by its own list.
-  const [agentsFile, agents, agentsEnv = env] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime });
-  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env: agentsEnv })).stdout || "null"));
+  const [agentsFile, agents, agentsEnv = env, agentsScript] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime, ...where });
+  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env: agentsEnv, ...scripted(agentsScript) })).stdout || "null"));
   const agent = (Array.isArray(roster) ? roster : roster?.agents)?.find?.((a) => a?.isDefault === true)?.id;
   if (typeof agent !== "string" || !AGENT.test(agent)) throw new Error("no default agent");
-  const [file, args, pasteEnv = env] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime });
-  await pipe(file, args, { input: `${key}\n`, timeout: 60000, env: pasteEnv });
-  const [listFile, list, listEnv = env] = await openClawShell(listArgs(provider, agent), { env, platform, runtime });
-  const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env: listEnv });
+  const [file, args, pasteEnv = env, pasteScript = ""] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime, ...where });
+  await pipe(file, args, { input: `${pasteScript}${key}\n`, timeout: 60000, env: pasteEnv });
+  const [listFile, list, listEnv = env, listScript] = await openClawShell(listArgs(provider, agent), { env, platform, runtime, ...where });
+  const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env: listEnv, ...scripted(listScript) });
   const profiles = JSON.parse(String(stdout || "null"))?.profiles;
   const saved = Array.isArray(profiles) && profiles.find((p) => p?.id === `${provider}:default`);
   if (!saved || saved.provider !== provider || saved.type !== "api_key") throw new Error("not saved");
@@ -152,11 +155,12 @@ export const onboardSetup = () => (setup ? { ...setup } : null);
 export const onboardSettled = () => setupRun || Promise.resolve();
 
 // On Windows, installed is what Reach can start (openclaw-windows.mjs),
-// found where an install made since Reach started puts it.
-export async function onboardStatus({ has, file = configFile(), platform = process.platform } = {}) {
+// found where an install made since Reach started puts it; OpenClaw's own
+// Windows app keeping a Gateway in WSL is installed and set up already.
+export async function onboardStatus({ has, file = configFile(), platform = process.platform, hub = hubGateway } = {}) {
   has ??= (name) => (platform === "win32" ? findOpenClaw().then(Boolean, () => false) : hasCommand(name));
-  const [installed, configured] = await Promise.all([has("openclaw"), exists(file)]);
-  return { installed, configured, supported: true, providers: Object.keys(PROVIDERS), setup: onboardSetup() };
+  const [installed, configured, kept] = await Promise.all([has("openclaw"), exists(file), platform === "win32" ? hub() : null]);
+  return { installed: installed || !!kept, configured: configured || !!kept, supported: true, providers: Object.keys(PROVIDERS), setup: onboardSetup() };
 }
 
 // Why a setup run failed, in Reach's own words. OpenClaw's output is read
@@ -208,7 +212,7 @@ const once = async (work) => {
 
 export async function onboardOpenClaw(
   { provider, key, acceptRisk } = {},
-  { run = runOpenClaw, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, gateway = gatewayAnswers, ...windows } = {},
+  { run = runOpenClaw, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, gateway = gatewayAnswers, hub = hubGateway, ...windows } = {},
 ) {
   authorize();
   const args = onboardArgs(provider);
@@ -219,8 +223,10 @@ export async function onboardOpenClaw(
   busy = true;
   let started = false;
   try {
-    // Never over an existing setup (new Gateway token, Tailscale off).
+    // Never over an existing setup (new Gateway token, Tailscale off), nor
+    // beside the Gateway OpenClaw's own Windows app keeps: Reach uses it.
     if (await exists(file)) throw fail(409, "OpenClaw is already set up.");
+    if (platform === "win32" && (await hub())) throw fail(409, "OpenClaw is already set up in its Windows app on this PC, and Reach uses that one.");
     // Nor beside a Gateway Reach can't see.
     if (await gateway())
       throw fail(409, `Something already answers on OpenClaw's Gateway port on this ${computerWord(platform)}, and Reach can't see what set it up. Reach won't start a second Gateway beside it.`);
@@ -247,14 +253,14 @@ export async function onboardOpenClaw(
 
 export async function addOpenClawProvider(
   { provider, key, setDefault } = {},
-  { run = runOpenClaw, save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
+  { run = runOpenClaw, save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, hub = hubGateway } = {},
 ) {
   authorize();
   pick(provider);
   const value = checkKey(key);
   if (setDefault !== undefined && typeof setDefault !== "boolean") throw fail(400, "Choose whether to use it by default.");
   return once(async () => {
-    if (!(await exists(file))) throw fail(409, "Set up OpenClaw first.");
+    if (!(await exists(file)) && !(platform === "win32" && (await hub()))) throw fail(409, "Set up OpenClaw first.");
     authorize();
     try {
       await save(provider, value, { env, platform, run, runtime });
@@ -264,8 +270,8 @@ export async function addOpenClawProvider(
     if (setDefault) {
       authorize();
       try {
-        const [shell, argv, childEnv = env] = await openClawShell(defaultArgs(provider), { env, platform, runtime });
-        await run(shell, argv, { timeout: 30000, env: childEnv });
+        const [shell, argv, childEnv = env, script] = await openClawShell(defaultArgs(provider), { env, platform, runtime });
+        await run(shell, argv, { timeout: 30000, env: childEnv, ...scripted(script) });
       } catch {
         throw fail(409, "The key is saved, but the default model didn't change.");
       }

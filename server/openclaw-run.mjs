@@ -5,12 +5,15 @@
 // own Node 22 leads PATH (scripts/bootstrap.mjs). "$@": every value is an
 // argument, never shell text. A secret is never an argument: `secret` names
 // the variable OpenClaw reads, set from REACH_SECRET in the env, then unset.
-// On Windows (openclaw-windows.mjs): Node and openclaw.mjs, no shell at all.
+// On Windows (openclaw-windows.mjs): Node and openclaw.mjs, no shell at all;
+// or, where OpenClaw's own Windows app keeps the Gateway in WSL, OpenClaw
+// inside that distro (openclaw-hub.mjs).
 import path from "node:path/posix";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 import { runTree, windowsOpenClaw, withSecret } from "./openclaw-windows.mjs";
+import { hubShell, openClawTarget } from "./openclaw-hub.mjs";
 
 const quote = (value) => "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
 // "$@", export and unset need a POSIX shell (fish and nu have neither).
@@ -28,12 +31,23 @@ export function runtimePath(runtime) {
 }
 
 // [file, argv] for one run; on Windows [file, argv, env], the env the child
-// gets (its Node's folder first on PATH).
+// gets (its Node's folder first on PATH), or with OpenClaw's Windows app
+// [file, argv, env, script]: the script goes on the child's stdin, before
+// anything the command itself reads there.
 export async function openClawShell(args, {
   env = process.env, platform = process.platform, secret = "",
-  runtime, findRuntime = availableUpdateRuntime, ...windows
+  runtime, findRuntime = availableUpdateRuntime, target = openClawTarget, ...windows
 } = {}) {
   if (secret && !/^[A-Z][A-Z0-9_]{1,63}$/.test(secret)) throw new Error("bad variable");
+  if (platform === "win32") {
+    const where = await target({ env, platform, ...(windows.home ? { home: windows.home } : {}) });
+    if (where.kind === "hub") {
+      if (where.error) throw where.error;
+      // No secret goes into the app's distro through the environment.
+      if (secret) throw new Error("no secret through WSL");
+      return hubShell(args, { distro: where.distro, env });
+    }
+  }
   runtime ??= await findRuntime({ platform }).catch(() => null);
   if (platform === "win32") return windowsOpenClaw(args, { env, runtime, ...windows });
   const script = [

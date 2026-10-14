@@ -9,6 +9,7 @@ import { loginShell, runtimePath } from "./openclaw-run.mjs";
 import { availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 import { installNode } from "./openclaw-windows.mjs";
 import { nodeNote, nodeVersion, privateNode, privateNodePrefix, REACH_NODE, supportedNode } from "./openclaw-node.mjs";
+import { hubGateway } from "./openclaw-hub.mjs";
 import { computerWord } from "./computer-word.mjs";
 
 const exec = promisify(execFile);
@@ -65,11 +66,14 @@ export async function hasCommand(name, run = exec, { platform = process.platform
 // Node of OpenClaw's own first when that one is older than OpenClaw takes
 // (`lead`, shell text Reach builds, never shown or sent to the phone; the
 // phone gets `note` instead).
-export async function installPlan(agent, { has, platform = process.platform, findRuntime = availableUpdateRuntime, node } = {}) {
+export async function installPlan(agent, { has, platform = process.platform, findRuntime = availableUpdateRuntime, node, hub = hubGateway } = {}) {
   has ??= (name) => hasCommand(name, exec, { platform });
   const recipes = platform === "win32" ? windowsInstalls : AGENT_INSTALLS;
   const recipe = Object.hasOwn(recipes, agent) ? recipes[agent] : null;
   if (!recipe) throw Object.assign(new Error("Reach can't install that app."), { status: 400 });
+  // OpenClaw's own Windows app keeps a Gateway here already: no second one.
+  if (agent === "openclaw" && platform === "win32" && (await hub()))
+    throw Object.assign(new Error("OpenClaw already runs in its Windows app on this PC, and Reach uses that one."), { status: 409 });
   if (agent === "openclaw" && platform === "win32") return windowsOpenClawPlan(recipe, await (node ?? installNode)());
   if (agent === "openclaw") return posixOpenClawPlan(recipe, await (node ?? posixInstallNode)({ platform, findRuntime }), platform);
   for (const [i, command] of recipe.commands.entries()) {

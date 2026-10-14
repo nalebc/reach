@@ -13,6 +13,7 @@ import { localOpenClawConfig } from "./openclaw.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { typedCli } from "./openclaw-windows.mjs";
 import { privateNode } from "./openclaw-node.mjs";
+import { HUB_KEEPS } from "./openclaw-hub.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -276,15 +277,16 @@ export async function restartOpenClawGateway({
   platform = process.platform,
   authorize = () => {},
   runtime,
+  ...where
 } = {}) {
   authorize();
   // Refuses a remote profile: only this computer's own Gateway.
   await configuration();
   authorize();
   try {
-    const [file, argv, childEnv] = await openClawShell(["gateway", "restart"], { env, platform, runtime });
+    const [file, argv, childEnv, script] = await openClawShell(["gateway", "restart"], { env, platform, runtime, ...where });
     // Windows: as startOpenClawGateway's.
-    await run(file, argv, { timeout: platform === "win32" ? 90000 : 25000, ...(childEnv && { env: childEnv }) });
+    await run(file, argv, { timeout: platform === "win32" ? 90000 : 25000, ...(childEnv && { env: childEnv }), ...(script !== undefined && { input: script }) });
   } catch {
     throw fail(
       503,
@@ -309,7 +311,8 @@ export async function runOpenClawMaintenance(action, {
   };
   if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
   authorize();
-  await configuration();
+  // OpenClaw's own Windows app keeps its Gateway: Doctor's look only.
+  if ((await configuration()).hub && action !== "doctor") throw fail(409, HUB_KEEPS);
   authorize();
   runtime ??= await availableUpdateRuntime({ platform });
   const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -330,8 +333,8 @@ export async function runOpenClawMaintenance(action, {
   try {
     if (platform === "win32") {
       const args = [...commands[action], ...(runtime && action === "repair-service" ? ["--runtime-path", runtime] : [])];
-      const [file, argv, childEnv] = await openClawShell(args, { env, platform, runtime, ...windows });
-      output = await run(file, argv, { ...options, env: childEnv });
+      const [file, argv, childEnv, script] = await openClawShell(args, { env, platform, runtime, ...windows });
+      output = await run(file, argv, { ...options, env: childEnv, ...(script !== undefined && { input: script }) });
     } else output = await run(env.SHELL || "/bin/sh", ["-lc", command], options);
   } catch (error) {
     output = { stdout: error.stdout || "", stderr: error.stderr || "" };

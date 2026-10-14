@@ -148,7 +148,9 @@ export const withSecret = (env, name, value) =>
 export const killTree = (pid) => {
   if (pid) execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
 };
-export function runTree(file, args, { timeout = 0, ...options } = {}, { start = execFile, kill = killTree } = {}) {
+// `input`: what goes on its stdin, then stdin closes (the script of a run
+// in OpenClaw's Windows app's distro: openclaw-hub.mjs).
+export function runTree(file, args, { timeout = 0, input, ...options } = {}, { start = execFile, kill = killTree } = {}) {
   return new Promise((resolve, reject) => {
     let timer = null, killed = false;
     const child = start(file, args, { ...options, windowsHide: true }, (error, stdout, stderr) => {
@@ -158,6 +160,10 @@ export function runTree(file, args, { timeout = 0, ...options } = {}, { start = 
         code: error?.code, signal: error?.signal ?? null, killed: killed || error?.killed === true, stdout, stderr,
       }));
     });
+    if (input !== undefined) {
+      child.stdin?.on?.("error", () => {});
+      child.stdin?.end?.(input);
+    }
     if (timeout > 0)
       timer = setTimeout(() => {
         killed = true;

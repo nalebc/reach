@@ -15,6 +15,7 @@ import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { ownerOnlyFile, typedCli } from "./openclaw-windows.mjs";
+import { hubGateway, hubTelegram, openClawTarget } from "./openclaw-hub.mjs";
 import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibility.mjs";
 
 // Features in files of their own, each adding its routes.
@@ -76,9 +77,13 @@ const fallbackRetry =
 
 // The host reads its own OpenClaw config. Credentials never travel to the phone.
 // Always use loopback: a remote Gateway in this config is not a local install.
+// On Windows without one, the Gateway OpenClaw's own Windows app keeps in
+// WSL (openclaw-hub.mjs): its address and token from that app's registry.
 export async function localOpenClawConfig({
   env = process.env,
   home = os.homedir(),
+  platform = process.platform,
+  hub = hubGateway,
 } = {}) {
   const state = env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw");
   const file =
@@ -92,6 +97,11 @@ export async function localOpenClawConfig({
     // No configuration yet: installed and never set up (Chat only shows
     // OpenClaw once its command or its configuration is here), or gone.
     // The phone offers setup (OpenClawOnboard.tsx) rather than an error.
+    if (error.code === "ENOENT" && platform === "win32") {
+      const kept = await hub({ env, home });
+      if (kept?.error) throw kept.error;
+      if (kept) return { url: `ws://127.0.0.1:${kept.port}`, token: kept.token, password: undefined, hub: true };
+    }
     if (error.code === "ENOENT")
       throw Object.assign(
         fail(503, "OpenClaw isn't set up on this computer yet."),
@@ -555,7 +565,9 @@ export function createOpenClaw({
                   fail(
                     409,
                     /pairing/i.test(frame.error?.message || "")
-                      ? "OpenClaw requires device pairing. Approve the Reach device in OpenClaw, then retry."
+                      ? config.hub
+                        ? "OpenClaw's Windows app asks to approve Reach as a new device. Approve it in that app's device requests, then retry."
+                        : "OpenClaw requires device pairing. Approve the Reach device in OpenClaw, then retry."
                       : redact(frame.error?.message || "Request was rejected."),
                   ),
                   {
@@ -2209,16 +2221,18 @@ export async function startOpenClawGateway({
   platform = process.platform,
   authorize = () => {},
   runtime,
+  ...where
 } = {}) {
   authorize();
   await configuration();
   authorize();
   try {
-    const [file, argv, childEnv] = await openClawShell(["gateway", "start"], { env, platform, runtime });
+    const [file, argv, childEnv, script] = await openClawShell(["gateway", "start"], { env, platform, runtime, ...where });
     // Windows: OpenClaw's Scheduled Task checks may wait up to a minute for
     // a cold PowerShell (docs.openclaw.ai/platforms/windows), and a timeout
-    // there ends OpenClaw itself (runTree), mid-start.
-    await run(file, argv, { timeout: platform === "win32" ? 90000 : 30000, ...(childEnv && { env: childEnv }) });
+    // there ends OpenClaw itself (runTree), mid-start. In OpenClaw's Windows
+    // app's distro, WSL may have to start first.
+    await run(file, argv, { timeout: platform === "win32" ? 90000 : 30000, ...(childEnv && { env: childEnv }), ...(script !== undefined && { input: script }) });
   } catch {
     throw fail(
       503,
@@ -2250,6 +2264,7 @@ export async function addOpenClawChannel(
     chmod = fs.chmod,
     rm = fs.rm,
     ownerOnly = ownerOnlyFile,
+    target = openClawTarget,
   } = {},
 ) {
   authorize();
@@ -2262,6 +2277,12 @@ export async function addOpenClawChannel(
       throw fail(400, field === "appToken" ? "Paste the Slack app token (xapp-…)." : field === "botToken" ? "Paste the Slack bot token (xoxb-…)." : "Paste the bot token.");
   if (name !== undefined && name !== "" && (typeof name !== "string" || name.length > 80 || /[\u0000-\u001f]/.test(name)))
     throw fail(400, "Choose a shorter account name.");
+  // OpenClaw's own Windows app keeps the Gateway in its WSL distro: only
+  // what goes there without a token on any command line (openclaw-hub.mjs).
+  if (platform === "win32") {
+    const where = await target({ env, platform });
+    if (where.kind === "hub") return addHubChannel({ channel, token: values.token, name, run, env, authorize, where });
+  }
   // Telegram: the token in a file only this user can read, in OpenClaw's
   // credentials folder; OpenClaw keeps its path (tokenFile) and reads it
   // when it runs, so the file stays. Discord and Slack (2026.9.9) take
@@ -2300,6 +2321,24 @@ export async function addOpenClawChannel(
   } catch {
     // Not taken: no token left behind.
     if (tokenFile) await rm(tokenFile, { force: true }).catch(() => {});
+    throw fail(409, "OpenClaw didn't accept this channel. Check the token and try again.");
+  }
+  return { added: true };
+}
+
+// Telegram in the app's distro: its token on stdin, into a file only
+// `openclaw` reads there. Discord and Slack take theirs only on OpenClaw's
+// command line, and their plugins aren't part of OpenClaw itself: refused,
+// with OpenClaw's guided setup (Other apps) as the way.
+async function addHubChannel({ channel, token, name, run, env, authorize, where }) {
+  if (where.error) throw where.error;
+  if (channel !== "telegram")
+    throw fail(409, "Through OpenClaw's Windows app, add Discord and Slack with OpenClaw's guided setup (Other apps): OpenClaw takes their tokens only on a command line, and Reach won't put them there.");
+  authorize();
+  try {
+    const [file, argv, childEnv, input] = hubTelegram({ distro: where.distro, env, token: token.trim(), name: name ? name.trim() : "" });
+    await run(file, argv, { timeout: 90000, env: childEnv, input });
+  } catch {
     throw fail(409, "OpenClaw didn't accept this channel. Check the token and try again.");
   }
   return { added: true };

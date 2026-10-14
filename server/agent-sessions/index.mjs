@@ -17,6 +17,7 @@ import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { findWindowsCli } from "../agent-cli.mjs";
 import { findOpenClaw } from "../openclaw-windows.mjs";
+import { hubGateway } from "../openclaw-hub.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
@@ -78,9 +79,10 @@ export const KNOWN_AGENTS = [
 ];
 let detected = null;
 // OpenClaw on Windows: as Reach starts it (npm's openclaw.cmd as its
-// openclaw.mjs), also where an install made since Reach started puts it.
-export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw } = {}) {
-  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw;
+// openclaw.mjs), also where an install made since Reach started puts it, or
+// the Gateway OpenClaw's own Windows app keeps in WSL (openclaw-hub.mjs).
+export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw, hub = hubGateway } = {}) {
+  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw && hub === hubGateway;
   if (cacheable && !fresh && detected && Date.now() - detected.at < 60000) return detected.value;
   const value = Promise.all(
     known.map(async ({ agent, name, app, cli, supported = false }) => {
@@ -88,7 +90,8 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
       if (agent === "openclaw") {
         const config = env.REACH_OPENCLAW_CONFIG || env.OPENCLAW_CONFIG_PATH || path.join(env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw"), "openclaw.json");
         installed ||= exists(config);
-        if (!installed && platform === "win32") return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)), signedIn: false, supported };
+        if (!installed && platform === "win32")
+          return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)) || !!(await hub({ env, home }).catch(() => null)), signedIn: false, supported };
       }
       if (!installed && cli)
         installed = await run(platform === "win32" ? "where.exe" : env.SHELL || "/bin/sh", platform === "win32" ? [cli] : ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
