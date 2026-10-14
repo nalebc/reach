@@ -273,9 +273,9 @@ const i32 = (n) => { const b = Buffer.alloc(4); b.writeInt32BE(n, 0); return b; 
 const shellChild = (written) => {
   const child = new EventEmitter();
   child.pid = 99;
-  child.stdin = { write: (b) => { written.push(b); return true; }, end() {}, writable: true };
+  child.stdin = { write: (b) => { written.push(b); return true; }, end() { setImmediate(() => child.emit("close", 0)); }, writable: true };
   child.stdout = new EventEmitter();
-  child.kill = () => {};
+  child.kill = () => { setImmediate(() => child.emit("close", 1)); };
   return child;
 };
 const readyStub = { ready: async () => ({ ok: true, built: { file: "C:\\native\\reach-sandbox.exe", sha256: "z" } }) };
@@ -293,7 +293,13 @@ test("the Full-control shell runner frames a shell request and reports output an
   assert.ok(entries.some(([k, v]) => k === "interpreter" && v === interpreter.file));
   child.stdout.emit("data", frame("O", Buffer.from("Volume in drive C")));
   child.stdout.emit("data", frame("X", i32(0)));
-  assert.deepEqual(await promise, { output: "Volume in drive C", exitCode: 0, timedOut: false });
+  let completed = false;
+  promise.then(() => { completed = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false, "the exit frame does not release the running helper");
+  child.stdout.emit("data", frame("O", Buffer.from("\nfinal output")));
+  child.emit("close", 0);
+  assert.deepEqual(await promise, { output: "Volume in drive C\nfinal output", exitCode: 0, timedOut: false });
 });
 
 test("the shell runner times out and surfaces a refusal frame", async () => {

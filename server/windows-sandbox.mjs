@@ -471,33 +471,51 @@ export function windowsShellRunner(windowsSandbox, { start = spawnVerified, inte
     if (!ready.ok) throw fail(503, ready.reason);
     return await new Promise((resolve, reject) => {
       let output = "", size = 0, truncated = false, exitCode = null, settled = false;
-      let child;
+      let child, force, error, timedOut = false, exited = false;
       const collect = (buffer) => {
         if (size >= maxOutput) { truncated = true; return; }
         const slice = buffer.subarray(0, maxOutput - size);
         output += slice.toString("utf8"); size += slice.length;
         if (slice.length < buffer.length) truncated = true;
       };
-      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
-      const settle = (timedOut) => { if (settled) return; settled = true; cleanup(); resolve({ output: output + (truncated ? "\n[Output truncated]" : ""), exitCode, timedOut }); };
-      const die = (error) => { if (settled) return; settled = true; cleanup(); try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} reject(error); };
-      const onAbort = () => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} die(signal.reason); };
+      const cleanup = () => { clearTimeout(timer); clearTimeout(force); signal?.removeEventListener("abort", onAbort); };
+      const finish = () => {
+        if (settled) return;
+        settled = true; cleanup();
+        if (error) reject(error);
+        else if (!exited && !timedOut) reject(fail(503, "The command could not complete."));
+        else resolve({ output: output + (truncated ? "\n[Output truncated]" : ""), exitCode, timedOut });
+      };
+      // EOF lets the helper terminate its Job Object before it exits. Killing
+      // it immediately could leave a revoked command alive. Keep ownership
+      // until close, including the final output and the helper's working folder.
+      const stop = (reason) => {
+        if (settled || force) return;
+        error = reason;
+        if (!child?.pid) return finish();
+        try { child.stdin.end(); } catch {}
+        force = setTimeout(() => { try { child.kill(); } catch {} }, 2500);
+      };
+      const onAbort = () => stop(signal.reason);
       // Not unref'd: a shell run is an awaited, bounded operation (≤ timeoutMs),
       // so the timeout must be able to fire even if nothing else keeps the loop
       // alive (the fake-child unit tests have no other handle).
-      const timer = setTimeout(() => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} settle(true); }, timeoutMs);
+      const timer = setTimeout(() => { timedOut = true; stop(null); }, timeoutMs);
       try { child = start(ready.built.file, ready.built.sha256, ["run"], { cwd, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); }
-      catch { return die(fail(503, "The command could not start.")); }
+      catch { return stop(fail(503, "The command could not start.")); }
       const read = createSandboxFrameReader({
         onStdout: collect, onStderr: collect,
-        onExit: (code) => { exitCode = code; settle(false); },
-        onRefused: ({ status, message }) => die(fail([400, 403, 409, 503].includes(status) ? status : 503, message)),
-        onError: () => die(fail(503, "The command could not complete.")),
+        onExit: (code) => { exitCode = code; exited = true; },
+        onRefused: ({ status, message }) => stop(fail([400, 403, 409, 503].includes(status) ? status : 503, message)),
+        onError: () => stop(fail(503, "The command could not complete.")),
       });
       child.stdout.on("data", read);
-      child.on("error", () => die(fail(503, "The command could not start.")));
+      child.on("error", () => stop(fail(503, "The command could not start.")));
+      child.on("close", finish);
+      child.stdin.on?.("error", () => stop(fail(503, "The command could not start.")));
       signal?.addEventListener("abort", onAbort, { once: true });
-      try { child.stdin.write(encodeSandboxRequest(shellRequestEntries({ command, cwd, timeoutMs, interpreter }))); } catch { die(fail(503, "The command could not start.")); }
+      if (signal?.aborted) return onAbort();
+      try { child.stdin.write(encodeSandboxRequest(shellRequestEntries({ command, cwd, timeoutMs, interpreter }))); } catch { stop(fail(503, "The command could not start.")); }
     });
   };
 }
