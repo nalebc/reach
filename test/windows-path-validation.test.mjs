@@ -45,7 +45,7 @@ test("validateBrowserRoot refuses drive roots, Home, its ancestors and Windows' 
     env: { SystemRoot: "C:\\Windows", ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", ProgramData: "C:\\ProgramData", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" } };
   for (const bad of ["C:\\", "c:\\", "C:\\Users\\me", "C:\\Users", "C:\\Windows", "C:\\Windows\\System32",
     "C:\\Program Files", "C:\\Program Files (x86)\\x", "C:\\ProgramData\\vendor", "C:\\Program Files\\nodejs",
-    "C:\\Users\\me\\AppData\\Local\\Programs\\app", "\\\\server\\share\\"])
+    "C:\\Users\\me\\AppData\\Local\\Programs\\app", "\\\\server\\share\\", "C:\\Users\\me\\Applications"])
     assert.throws(() => validateBrowserRoot(bad, base), { status: 403 }, bad);
   // A legitimate deep folder (a Windows TEMP has an 8.3 component) is accepted;
   // the owner's pick is realpath-expanded upstream and the broker verifies 8.3.

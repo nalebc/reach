@@ -144,7 +144,9 @@ function validateBrowserRootWindows(root, { home, runtime, policy, env, homePres
   const programData = abs(env.ProgramData) || abs(env.ALLUSERSPROFILE) || 'C:\\ProgramData';
   const systemRoot = abs(env.SystemRoot) || abs(env.windir) || 'C:\\Windows';
   const protectedRoots = [systemRoot, abs(env.ProgramFiles) || 'C:\\Program Files', abs(env['ProgramFiles(x86)']) || 'C:\\Program Files (x86)',
-    abs(env.ProgramW6432), programData, runtime ? path.win32.dirname(runtime) : null, abs(env.LOCALAPPDATA) ? path.win32.join(env.LOCALAPPDATA, 'Programs') : null]
+    abs(env.ProgramW6432), programData, runtime ? path.win32.dirname(runtime) : null, abs(env.LOCALAPPDATA) ? path.win32.join(env.LOCALAPPDATA, 'Programs') : null,
+    // An Applications folder under Home is refused as on the Mac.
+    path.win32.join(home, 'Applications')]
     .filter(Boolean).map(windowsCanonicalPath);
   if (homePreset && !driveRoot && canonical === homeCanonical) return root;
   if (driveRoot || windowsWithin(homeCanonical, canonical) || protectedRoots.some((pr) => windowsWithin(canonical, pr) || windowsWithin(pr, canonical))) throw error();

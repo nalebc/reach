@@ -669,6 +669,7 @@ static class NativeProc {
   [DllImport("advapi32.dll")] static extern void MapGenericMask(ref uint access, ref GENERIC_MAPPING mapping);
   [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr str);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl, uint revision, out IntPtr sd, out int size);
   [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int CreateAppContainerProfile(string name, string displayName, string description, SID_AND_ATTRIBUTES[] capabilities, int capabilityCount, out IntPtr sid);
   [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
   [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int GetAppContainerFolderPath(string sid, out IntPtr path);
@@ -680,6 +681,14 @@ static class NativeProc {
     return root + "\\System32\\cmd.exe";
   }
   public static string SelfPath() { return System.Reflection.Assembly.GetExecutingAssembly().Location; }
+
+  // A self-relative security descriptor granting Everyone and ALL APPLICATION
+  // PACKAGES full access, for the AppContainer child's inherited pipes/NUL.
+  static IntPtr AllAppPackagesSd() {
+    IntPtr sd; int size;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("D:(A;;GA;;;WD)(A;;GA;;;AC)", 1, out sd, out size)) return IntPtr.Zero;
+    return sd;
+  }
 
   // Create the per-client AppContainer profile if it isn't there, and return its
   // SID (freed with the Container). The profile makes GetAppContainerFolderPath
@@ -802,6 +811,12 @@ static class NativeProc {
 
   public static Launched LaunchContained(string commandLine, string cwd, Container container, JobObject job, bool suspended, bool childRestricted = false) {
     var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = 1; sa.lpSecurityDescriptor = IntPtr.Zero;
+    // An AppContainer child (jobs, scripts) can't use inherited handles whose
+    // DACL doesn't admit it, and CreateProcess then fails with ACCESS_DENIED. So
+    // the std pipes and NUL carry a DACL granting Everyone and ALL APPLICATION
+    // PACKAGES; they are anonymous and inherited only through the handle list.
+    IntPtr containerSd = container != null ? AllAppPackagesSd() : IntPtr.Zero;
+    if (containerSd != IntPtr.Zero) sa.lpSecurityDescriptor = containerSd;
     IntPtr outRead, outWrite, errRead, errWrite;
     if (!CreatePipe(out outRead, out outWrite, ref sa, 0) || !CreatePipe(out errRead, out errWrite, ref sa, 0))
       throw Sandbox.Refusal(503, "Windows wouldn't open the sandbox's pipes.");
@@ -840,6 +855,7 @@ static class NativeProc {
     int error = Marshal.GetLastWin32Error();
     Marshal.FreeHGlobal(env); Marshal.FreeHGlobal(handleArray); Marshal.FreeHGlobal(jobHandlePtr);
     if (childPolicyPtr != IntPtr.Zero) Marshal.FreeHGlobal(childPolicyPtr);
+    if (containerSd != IntPtr.Zero) NativeSec.LocalFree(containerSd);
     if (!ok) {
       DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs);
       foreach (IntPtr h in new IntPtr[] { nul, outWrite, errWrite, outRead, errRead }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
@@ -1272,8 +1288,13 @@ static class Files {
 static class NtFiles {
   const uint OBJ_CASE_INSENSITIVE = 0x40, OBJ_DONT_REPARSE = 0x4000;
   const uint FILE_OPEN = 1, FILE_CREATE = 2, FILE_OPEN_IF = 3, FILE_OVERWRITE_IF = 5;
-  const uint FILE_DIRECTORY_FILE = 0x1, FILE_NON_DIRECTORY_FILE = 0x40, FILE_SYNCHRONOUS_IO_NONALERT = 0x20, FILE_OPEN_FOR_BACKUP_INTENT = 0x4000, FILE_DELETE_ON_CLOSE = 0x1000;
+  const uint FILE_DIRECTORY_FILE = 0x1, FILE_NON_DIRECTORY_FILE = 0x40, FILE_SYNCHRONOUS_IO_NONALERT = 0x20, FILE_DELETE_ON_CLOSE = 0x1000;
   const uint SYNCHRONIZE = 0x100000, DELETE = 0x10000;
+  const uint FILE_LIST_DIRECTORY = 0x1, FILE_TRAVERSE = 0x20, FILE_READ_ATTRIBUTES = 0x80;
+  // A directory handle used as the parent of a relative open needs traverse and
+  // list; the Files broker is the owner, so it never uses backup intent (a
+  // standard user lacks the privilege, which failed every open).
+  const uint DIR_ACCESS = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
   const uint FILE_GENERIC_READ = 0x120089, FILE_GENERIC_WRITE = 0x120116;
   const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000, FILE_SHARE_ALL = 0x7, OPEN_EXISTING = 3;
   const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
@@ -1293,7 +1314,10 @@ static class NtFiles {
   public static void Close(IntPtr handle) { if (handle != IntPtr.Zero && handle != Invalid) NativeSec.CloseHandle(handle); }
 
   public static IntPtr OpenByPath(string path, bool directory, bool write) {
-    IntPtr handle = CreateFileW(path, write ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+    // The root is a directory opened with traverse/list so it can be the parent
+    // of relative opens; FILE_FLAG_BACKUP_SEMANTICS only enables a dir handle.
+    uint access = directory ? DIR_ACCESS : (write ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ);
+    IntPtr handle = CreateFileW(path, access, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
     if (handle == Invalid) throw Sandbox.Refusal(403, "The shared folder isn't available.");
     return handle;
   }
@@ -1301,7 +1325,7 @@ static class NtFiles {
   // Open `name` relative to `parent`, following no reparse point. A reparse in
   // the component fails with STATUS_REPARSE_POINT_ENCOUNTERED — fail closed.
   public static IntPtr OpenChild(IntPtr parent, string name, bool directory) {
-    return OpenRelative(parent, name, (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE), FILE_OPEN, FILE_GENERIC_READ | SYNCHRONIZE, 0);
+    return OpenRelative(parent, name, (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE), FILE_OPEN, directory ? DIR_ACCESS : (FILE_GENERIC_READ | SYNCHRONIZE), 0);
   }
   public static IntPtr CreateChildFile(IntPtr parent, string name, bool overwrite) {
     return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0);
@@ -1329,12 +1353,12 @@ static class NtFiles {
         oa.ObjectName = usPtr;
         oa.Attributes = OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE;
         IntPtr handle; IO_STATUS_BLOCK iosb;
-        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, FILE_SHARE_ALL, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | extraOptions, IntPtr.Zero, 0);
+        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, FILE_SHARE_ALL, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | extraOptions, IntPtr.Zero, 0);
         if (status != 0) {
           int code = RtlNtStatusToDosError(status);
           if (code == 2 || code == 3) throw Sandbox.Refusal(404, "That file or folder is not there.");
           if (code == 5) throw Sandbox.Refusal(403, "That file or folder is not shared.");
-          throw Sandbox.Refusal(403, "That path can't be opened inside the shared folder.");
+          throw Sandbox.Refusal(403, "That path can't be opened inside the shared folder (" + code + ").");
         }
         return handle;
       } finally { Marshal.FreeHGlobal(usPtr); }
