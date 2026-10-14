@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { claudeAppRecords as appRecordsDir } from "./claude-app-paths.mjs";
 
 // News the moment an agent's app writes it, from the agents' own files:
 // - the Codex app keeps its queue and history in SQLite databases in WAL mode
@@ -27,7 +28,7 @@ export function createAgentWatch({
   codexHome = path.join(os.homedir(), ".codex"),
   claudeProjects = path.join(os.homedir(), ".claude", "projects"),
   claudeSessions = path.join(os.homedir(), ".claude", "sessions"),
-  claudeAppRecords = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  claudeAppRecords = appRecordsDir(),
   geminiHome = path.join(os.homedir(), ".gemini"),
   watch = (dir, options, listener) => {
     // Linux's recursive watcher can return silently for a missing root on

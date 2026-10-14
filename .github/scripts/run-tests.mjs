@@ -30,10 +30,27 @@ export const suites = {
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
+    // computers over the keyed route.
+    "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // The Claude desktop app on Windows, workstream N: its data in either
+    // install's folder, the PC's idle and lock readings.
+    "claude-app-paths", "claude-locate", "windows-presence",
+    // Windows conveniences, workstream W: the owner's own shell in Reach's
+    // terminals, drives attached later, the launcher's name on the phone.
+    "windows-shell", "file-roots", "connect-states-ui",
+    // Reach's icon in the notification area, workstream P (audit #16).
+    "windows-tray",
+    // Apps' icons and the agents' logos drawn by Windows (audit #28).
+    "windows-app-icons",
+    // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
+    "document-text", "file-kinds",
+    // Voice memos as words through Windows' own recognizer (audit #35).
+    "voice-messages",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

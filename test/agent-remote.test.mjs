@@ -14,11 +14,13 @@ import {
   parseAgentLink,
   keptAddresses,
   shareNode,
+  socketOf,
   tailnetApi,
   viaShared,
 } from "../scripts/agent-remote.mjs";
 import { readTailnetManifest } from "../server/public-start.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
+import { windowsAcl, othersAllowed, WRITES } from "./helpers/windows-acl.mjs";
 
 // The agent's side of an invitation: one command joins, MCP serves the tools,
 // and stdout carries nothing but results and JSON-RPC.
@@ -143,7 +145,7 @@ test(
 
 test(
   "join once, then MCP: the agent's folder and access, and nothing else on stdout",
-  { skip: process.platform === "win32", timeout: 60000 },
+  { timeout: 90000 },
   async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-remote-"));
     const files = path.join(dir, "files");
@@ -211,6 +213,13 @@ test(
     const credentialFile = path.join(conn, "credential.json");
     if (process.platform !== "win32") assert.equal(fs.statSync(env.REACH_AGENT_HOME).mode & 0o777, 0o700);
     if (process.platform !== "win32") assert.equal(fs.statSync(credentialFile).mode & 0o777, 0o600);
+    // Windows: nobody but this user (and SYSTEM and Administrators, who
+    // can read anything) may open either, as Windows itself keeps them.
+    if (process.platform === "win32")
+      for (const file of [env.REACH_AGENT_HOME, conn, credentialFile]) {
+        const acl = await windowsAcl("file", file);
+        assert.deepEqual(othersAllowed(acl), [], `${file}: ${JSON.stringify(acl)}`);
+      }
     const credential = JSON.parse(fs.readFileSync(credentialFile, "utf8"));
     assert.equal(credential.via, "direct");
     assert.equal(credential.clientId, grant.clientId);
@@ -359,8 +368,7 @@ test("a denied CLI invitation never saves an active credential or connection", {
 
 test(
   "one connection per computer, shared: a second agent session uses it, and takes over when it's gone",
-  { skip: process.platform === "win32" },
-  async () => {
+  async (t) => {
     const conn = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-share-"));
     try {
       // Held by a live process (not us): not ours to take.
@@ -389,6 +397,14 @@ test(
         fs.statSync(path.join(conn, "agent.sock")).mode & 0o777,
         0o600,
       );
+      // Windows: a named pipe, which only this user may write to (SYSTEM and
+      // Administrators can do anything anyway), as Windows itself keeps it.
+      if (process.platform === "win32") {
+        const acl = await windowsAcl("pipe", socketOf(conn).slice("\\\\.\\pipe\\".length));
+        t.diagnostic(`the pipe's ACL: ${JSON.stringify(acl)}`);
+        assert.deepEqual(othersAllowed(acl, WRITES), [], JSON.stringify(acl));
+        assert.ok(acl.rules.some((rule) => rule.sid === acl.me && rule.allow && (rule.rights & 0x3) === 0x3), JSON.stringify(acl));
+      }
       const api = viaShared(conn);
       const [a, b] = await Promise.all([
         api("/api/device"),
