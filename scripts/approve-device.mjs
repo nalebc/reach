@@ -4,7 +4,6 @@ import { loadJson } from "../server/core.mjs";
 import { computerWord } from "../server/computer-word.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
 import { stateDir, command } from "./home.mjs";
-import { accountApproval, flagMissing, FLAG_MISSING } from "./configure.mjs";
 export const safeLabel = (value) =>
   String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 export function pendingApprovals(dataDir) {
@@ -46,12 +45,10 @@ export async function approveDevice(root, deps = {}) {
   const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
   if (!host?.tailscaleApproval || !host.dataDir)
     throw Error(
-      // Windows, started for browser sign-in, then back on pairing codes.
+      // Set up for browser sign-in, on pairing codes for now (scripts/launch.mjs).
       typeof host?.signInOff === "string" && host.signInOff
         ? `Browser sign-in is off on this PC for now: ${host.signInOff} A phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`
-        : accountApproval(deps.platform, deps.env)
-        ? `Start Reach with ${command} configure completed, then request access on your phone.`
-        : `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair${flagMissing(root, deps.platform, deps.env) ? ` ${FLAG_MISSING}` : ""}`,
+        : `Start Reach with ${command} configure completed, then request access on your phone.`,
     );
   const pending = pendingApprovals(host.dataDir);
   if (!pending.length) {
