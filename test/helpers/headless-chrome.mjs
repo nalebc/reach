@@ -123,7 +123,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       const id = next++;
       const timer = setTimeout(() => {
         waiting.delete(id);
-        reject(Error(`${method}: no answer from Chrome in 20 s`));
+        reject(Error(`${method}: no answer from Chrome in 20 s${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
       }, 20000);
       waiting.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v)),

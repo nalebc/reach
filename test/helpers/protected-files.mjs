@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 
 export const nativeFiles = process.platform === "darwin";
-export const unavailableFiles = /Protected agent file access is unavailable on this computer/;
+export const unavailableFiles = process.platform === "win32"
+  ? /Reach couldn't prepare its command sandbox on this Windows PC \(its private folder isn't ready\)/
+  : /Protected agent file access is unavailable on this computer/;
 
 // Real helper integration: unsupported hosts must fail closed, not silently use
 // a pathname-based fallback. Keep auth/approval checks running on every host.

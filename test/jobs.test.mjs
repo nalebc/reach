@@ -15,12 +15,28 @@ const until = async (check, ms = 5000) => {
 const fixture = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-jobs-"));
   const jobs = new Jobs({ dataDir: dir });
-  t.after(() => {
-    jobs.dispose();
+  t.after(async () => {
+    await jobs.dispose();
     fs.rmSync(dir, { recursive: true, force: true });
   });
   return jobs;
 };
+
+test("shutdown waits for live job processes and their output handles to close", { timeout: 30000 }, async (t) => {
+  const jobs = fixture(t);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "reach-job-shutdown-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const job = jobs.start({ command: process.platform === "win32" ? "Write-Output 'ready'; Start-Sleep -Seconds 30" : "echo ready; sleep 30", cwd, timeoutMs: 60000 }, "owner");
+  await until(() => job.output.includes("ready"), 15000);
+  const child = jobs.running.get(job.id);
+  let closed = false;
+  child.once("close", () => { closed = true; });
+  await jobs.dispose();
+  assert.equal(closed, true, "shutdown returns after native close, not just after requesting termination");
+  assert.equal(jobs.children.size, 0);
+  assert.equal(jobs.running.size, 0);
+  fs.rmSync(cwd, { recursive: true });
+});
 
 test("a command that leaves something running in the background finishes when its shell does", { skip: process.platform === "win32" }, async (t) => {
   const jobs = fixture(t);
