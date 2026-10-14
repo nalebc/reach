@@ -106,10 +106,12 @@ test("Access on Home: who's here or may come in, one tap to Agents & people, one
   assert.match(card.querySelector("strong").textContent, /Helper is controlling/);
   assert.equal(card.querySelector("small").textContent, "1 waiting for you");
   // Here now first (a green dot), then who else may come in; Helper once.
+  // Those invited wear their mascot.
   assert.deepEqual(
     [...card.querySelectorAll(".home-access-faces i")].map((i) => i.className.trim()),
-    ["here", "here agent", "", "agent"],
+    ["here", "here agent", "has-mascot", "agent has-mascot"],
   );
+  assert.equal(card.querySelectorAll(".home-access-faces i svg.mascot").length, 2);
   card.querySelector(".home-access-who").click();
   card.querySelector('[aria-label="Invite an agent or someone"]').click();
   assert.deepEqual(went, ["invite", "invite:new"]);
@@ -161,8 +163,8 @@ test("Access on Home counts who Agents & people lists as in now, never an ended 
   let { view, card } = await show(2);
   assert.equal(card.querySelector("strong").textContent, "1 with access");
   assert.equal(card.querySelector("small").textContent, "1 not opened yet");
-  // The two people the list shows, and no agent.
-  assert.deepEqual([...card.querySelectorAll(".home-access-faces i")].map((i) => i.textContent), ["F", "F"]);
+  // The two people the list shows, each with a face, and no agent.
+  assert.equal(card.querySelectorAll(".home-access-faces i svg.mascot").length, 2);
   assert.equal(card.querySelector(".home-access-faces i.agent"), null);
   await view.unmount();
   // The Mac's agent list can't be read: the records alone still count

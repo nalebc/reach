@@ -38,6 +38,7 @@ import {
   type Choice,
 } from "./invite-menu";
 import type { EditableAccess } from "./AccessEditor";
+import { Mascot } from "./Mascot";
 import "./invite-sheet.css";
 
 // Inviting a person, or an agent over Command line (BrowserInvite has the
@@ -345,6 +346,8 @@ export function InviteSheet({
   }, [links]);
   const [made, setMade] = useState<{
     clientId: string;
+    // The mascot its computer drew for it (the first, for several).
+    mascot?: number;
     guest: string;
     expiresAt: number;
     summary: string;
@@ -523,6 +526,7 @@ computers.includes(p.id) && !devices[p.id]
     // One id for this invitation on every computer it covers, so changing
     // their access later changes it everywhere.
     const group = crypto.randomUUID();
+    let mascot: number | undefined;
     try {
       // Each chosen computer makes its own invitation…
       for (const p of chosen) {
@@ -537,6 +541,7 @@ computers.includes(p.id) && !devices[p.id]
           clientId: g.clientId,
           invitation: g.invitation,
         });
+        if (created.length === 1) mascot = g.mascot;
       }
       // …and the computer holding the invite-link credential makes the one
       // key, whichever computers the invitation covers.
@@ -560,6 +565,7 @@ computers.includes(p.id) && !devices[p.id]
       setLinks((old) => ({ ...old, [first]: { link, keyed: !!key, created } }));
       setMade({
         clientId: first,
+        mascot,
         guest: who,
         expiresAt: Date.now() + minutes * 60000,
         summary,
@@ -591,6 +597,7 @@ computers.includes(p.id) && !devices[p.id]
         expiresAt: number;
         joinBy: number;
         runtime?: string;
+        mascot?: number;
       }>(p, "/api/agents/invitations", {
         name: agentWho,
         ttlSeconds: agentDays * 86400,
@@ -631,6 +638,7 @@ computers.includes(p.id) && !devices[p.id]
       }));
       setMade({
         clientId: g.clientId,
+        mascot: g.mascot,
         guest: agentWho,
         expiresAt: g.expiresAt,
         joinBy: g.joinBy,
@@ -1135,8 +1143,9 @@ computers.includes(p.id) && !devices[p.id]
                 ref={linkCard}
                 aria-label="Agent invitation"
               >
-                <span className="inv-done-icon" aria-hidden="true">
-                  <Check size={26} strokeWidth={1.8} />
+                <span className="inv-done-icon mascot-done has-mascot" aria-hidden="true">
+                  <Mascot id={made.clientId} drawn={made.mascot} />
+                  <i className="mascot-check"><Check size={12} strokeWidth={3} /></i>
                 </span>
                 <h3>{made.guest} is invited</h3>
                 <p className="inv-done-for">{made.access}</p>
@@ -1196,8 +1205,9 @@ computers.includes(p.id) && !devices[p.id]
                 ref={linkCard}
                 aria-label="Invite link"
               >
-                <span className="inv-done-icon" aria-hidden="true">
-                  <Check size={26} strokeWidth={1.8} />
+                <span className="inv-done-icon mascot-done has-mascot" aria-hidden="true">
+                  <Mascot id={made.clientId} drawn={made.mascot} />
+                  <i className="mascot-check"><Check size={12} strokeWidth={3} /></i>
                 </span>
                 <h3>{made.guest} is invited</h3>
                 <p className="inv-done-for">{made.access}</p>

@@ -25,6 +25,7 @@ import {
 } from "./browser-approvals";
 import { ErrorLine, Spinner } from "./ui";
 import SubPage from "./SubPage";
+import { Mascot } from "./Mascot";
 import ConfirmSheet from "./ConfirmSheet";
 import { AppStack, appName } from "./agent-ui";
 import "./browser-agents.css";
@@ -612,7 +613,6 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
     const at = agent.expiresAt || 0;
     return at && at <= now ? `${status} · ${endedOn(at, now)}` : status;
   };
-  const initialOf = (name: string) => [...name.trim()][0]?.toUpperCase() || "?";
   // An ended agent: a row that opens its own page.
   const row = (agent: BrowserAgentSession) => (
     <button
@@ -622,8 +622,8 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
       data-agent-id={agent.id}
       onClick={() => onOpen?.(agent.id)}
     >
-      <span className="ppl-avatar ag-ended-avatar" aria-hidden="true">
-        {initialOf(agent.name)}
+      <span className="ppl-avatar ag-ended-avatar has-mascot" aria-hidden="true">
+        <Mascot id={agent.id} drawn={agent.mascot} />
       </span>
       <span className="gs-label">
         <strong>{agent.name}</strong>
@@ -737,8 +737,8 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
             focused && (
               <>
                 <div className="ppl-hero">
-                  <span className="ppl-avatar large ag-ended-avatar" aria-hidden="true">
-                    {initialOf(focused.name)}
+                  <span className="ppl-avatar large ag-ended-avatar has-mascot" aria-hidden="true">
+                    <Mascot id={focused.id} drawn={focused.mascot} />
                   </span>
                   <h1 tabIndex={-1}>{focused.name}</h1>
                   <small>{statusLine(focused)}</small>

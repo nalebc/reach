@@ -29,6 +29,10 @@ export const suites = {
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // Shared cross-agent archives and bounded context on macOS and Windows.
+    "portable-history", "transfer-context", "agent-move-sessions", "move-provider-authorization",
+    // Mascots for invited agents and people: the shared deck and faces (Oct 13).
+    "mascot-deck", "mascots-ui",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
@@ -36,6 +40,8 @@ export const suites = {
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
+    "openclaw-wizard",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

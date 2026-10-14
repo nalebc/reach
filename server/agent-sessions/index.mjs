@@ -1398,6 +1398,7 @@ export function createAgentSessions({
             name: title,
             items: complete,
             from,
+            context: { items: carried, summary: memory?.summary || "" },
             authorize,
           }));
           nativeHistory = true;
@@ -1406,7 +1407,7 @@ export function createAgentSessions({
           const notes = fork ? forkNotes(complete, from) : openClawNotes(turns, { note, from });
           ({ key: target } = await openClaw.fork({ title, notes, label: `${fork ? "Forked" : "Moved"} from ${from}` }, authorize));
         } else {
-          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, context: { items: carried, summary: memory?.summary || "" }, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
           authorize();
