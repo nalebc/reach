@@ -10,8 +10,8 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST, SELF_IP } from "./helpers/fake-tailscale.mjs";
 
 // Windows' browser sign-in, wired end to end (docs/parity/D-public-door.md
-// §7): a real Reach that takes its Windows paths (test/helpers/as-windows.mjs)
-// with REACH_WINDOWS_ACCOUNT=1, against a stand-in Tailscale whose sessions
+// §7): a real Reach set up with your account that takes its Windows paths
+// (test/helpers/as-windows.mjs), against a stand-in Tailscale whose sessions
 // run a stand-in for tailscaled's proxy, and a stand-in peer check that
 // knows which connections that proxy opened. Its folders' permissions are a
 // stand-in too; the real checks run on a real Windows runner
@@ -29,12 +29,12 @@ const until = async (check, what, ms = 15000) => {
   }
 };
 
-function keyedReach(t, { scenario = {}, problem = "", folders = "", flag = true, prefs = true, ready } = {}) {
+function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true, unrecognised = false, noted = null, healthWaitMs = 0, ready } = {}) {
   const seen = {};
   const started = startCleanReach(t, {
     args: { local: false, stayAwake: false },
     preloads: [AS_WINDOWS],
-    env: { FAKE_TTY: "1", ...(flag && { REACH_WINDOWS_ACCOUNT: "1" }) },
+    env: { FAKE_TTY: "1" },
     ready: ready || /Open on your phone: https:\/\/mac\.example\.ts\.net\n/,
     pair: false,
     prepare: async (root, home) => {
@@ -48,6 +48,8 @@ function keyedReach(t, { scenario = {}, problem = "", folders = "", flag = true,
           JSON.stringify({ version: 1, owner: { userId: "42", login: "owner@example.test" }, folders: [home], stayAwake: "always", httpsPort: 8443 }),
         );
       }
+      // An earlier start's note that Tailscale's own connections weren't recognised.
+      if (noted) fs.writeFileSync(path.join(root, ".reach", "sign-in-unrecognised.json"), JSON.stringify(noted));
       const privateFolders = folders
         ? `async () => ({ ok: false, reason: ${JSON.stringify(folders)} })`
         : `async (asked) => (fs.writeFileSync(${JSON.stringify(path.join(root, "folders.json"))}, JSON.stringify(asked)), { ok: true, sid: "S-1-5-21-1-2-3-1001", helper: () => async () => ({}) })`;
@@ -55,9 +57,10 @@ function keyedReach(t, { scenario = {}, problem = "", folders = "", flag = true,
         env: { REACH_TAILSCALE: seen.fake.cli },
         preloads: [tailnetPreload(seen.fake.state)],
         launchCode: [
-          `peerCheck: (await import(${JSON.stringify(PEER)})).fakePeerCheck(${JSON.stringify(root)}, { problem: ${JSON.stringify(problem)}, log: ${JSON.stringify(seen.peerLog)} })`,
+          `peerCheck: (await import(${JSON.stringify(PEER)})).fakePeerCheck(${JSON.stringify(root)}, { problem: ${JSON.stringify(problem)}, unrecognised: ${unrecognised}, log: ${JSON.stringify(seen.peerLog)} })`,
           `privateFolders: await (async () => { const fs = (await import("node:fs")).default; return ${privateFolders}; })()`,
           "keyedEveryMs: 1000",
+          ...(healthWaitMs ? [`healthWaitMs: ${healthWaitMs}`] : []),
         ].join(", "),
       };
     },
@@ -140,7 +143,7 @@ const stop = (root) =>
     windows: { taskkill: () => assert.fail("it stops itself") },
   });
 
-test("Windows with REACH_WINDOWS_ACCOUNT=1: a keyed private route and a foreground Funnel, browser sign-in, and a key nobody else sees", { ...windowsOnly, timeout: 180000 }, async (t) => {
+test("Windows set up with your account: a keyed private route and a foreground Funnel, browser sign-in, and a key nobody else sees", { ...windowsOnly, timeout: 180000 }, async (t) => {
   const { seen, started } = keyedReach(t, { scenario: { sessionLingerMs: 300 } });
   const reach = await started;
   const { fake, root } = seen;
@@ -236,7 +239,7 @@ for (const [name, options, why] of [
   ["an older Tailscale command line", { scenario: { cliVersion: "1.90.0" } }, /Tailscale's command line \(1\.90\.0\) is older than 1\.104/],
   ["its folders can't be made private", { folders: "Reach's folder C:\\reach can be changed by other people on this PC, so browser sign-in stays off." }, /Reach's folder C:\\reach can be changed by other people on this PC/],
 ])
-  test(`Windows with REACH_WINDOWS_ACCOUNT=1, ${name}: pairing codes, with the reason; no key, no Funnel`, windowsOnly, async (t) => {
+  test(`Windows set up with your account, ${name}: pairing codes, with the reason; no key, no Funnel`, windowsOnly, async (t) => {
     const { seen, started } = keyedReach(t, { ...options, ready: /No public internet tunnel is enabled/ });
     const reach = await started;
     const text = reach.output();
@@ -253,17 +256,54 @@ for (const [name, options, why] of [
     assert.match(status.signInOff, why);
   });
 
-test("Windows set up for browser sign-in, started without the flag: said, then today's pairing codes", windowsOnly, async (t) => {
-  const { seen, started } = keyedReach(t, { flag: false, ready: /No public internet tunnel is enabled/ });
+test("Windows without account settings (paired by code before): pairing codes, its folders untouched, nothing said of a switch", windowsOnly, async (t) => {
+  const { seen, started } = keyedReach(t, { prefs: false, ready: /No public internet tunnel is enabled/ });
   const reach = await started;
   const text = reach.output();
-  assert.match(text, /Reach: browser sign-in is off: REACH_WINDOWS_ACCOUNT=1 isn't set in this terminal\. Phones join with a pairing code and need the Tailscale app\./);
+  assert.doesNotMatch(text, /REACH_WINDOWS_ACCOUNT|browser sign-in is off/);
   assert.match(text, /Pairing code: \d{4} \d{4}/);
   const [session] = await seen.fake.sessions();
   assert.match(session.args.at(-1), /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.ok(!(await seen.fake.read()).calls.some(([command]) => command === "funnel"));
   assert.equal(fs.existsSync(path.join(seen.root, "folders.json")), false, "its folders untouched");
 });
+
+const UNRECOGNISED = /Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC\./;
+test("Windows: Tailscale's own connections never recognised: the route stays closed, it's noted, and Reach asks to start again", { ...windowsOnly, timeout: 120000 }, async (t) => {
+  const { seen, started } = keyedReach(t, { unrecognised: true, healthWaitMs: 4000, ready: /starts again with pairing codes/ });
+  const reach = await started;
+  await reach.exited;
+  assert.match(reach.output(), new RegExp(`${UNRECOGNISED.source} It stays closed; Reach starts again with pairing codes\\.`));
+  const noted = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach", "sign-in-unrecognised.json"), "utf8"));
+  assert.equal(noted.tailscale, "1.104.0-tfake");
+  assert.ok(Date.now() - noted.at < 120000);
+  assert.match(reach.output(), /Reach: refused a connection to its private route \(not from Tailscale's own process\)\./);
+});
+
+test("Windows, noted today with this Tailscale: pairing codes with the reason, no key, no Funnel", windowsOnly, async (t) => {
+  const { seen, started } = keyedReach(t, { noted: { tailscale: "1.104.0-tfake", at: Date.now() - 3600000 }, ready: /No public internet tunnel is enabled/ });
+  const reach = await started;
+  const text = reach.output();
+  assert.match(text, new RegExp(`Reach: browser sign-in is off on this PC for now: ${UNRECOGNISED.source}`));
+  assert.match(text, /Pairing code: \d{4} \d{4}/);
+  const sessions = await seen.fake.sessions();
+  assert.equal(sessions.length, 1);
+  assert.doesNotMatch(sessions[0].args.at(-1), /\/r-/);
+  const status = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach", "host-status.json"), "utf8"));
+  assert.match(status.signInOff, UNRECOGNISED);
+});
+
+for (const [name, noted] of [
+  ["a day later", { tailscale: "1.104.0-tfake", at: Date.now() - 90000000 }],
+  ["after Tailscale changed", { tailscale: "1.102.0-tfake", at: Date.now() - 60000 }],
+])
+  test(`Windows, noted ${name}: the keyed route is tried again, and the note goes`, windowsOnly, async (t) => {
+    const { seen, started } = keyedReach(t, { noted });
+    await started;
+    const { serve } = await keyedSessions(seen.fake);
+    assert.match(serve.args.at(-1), KEYED);
+    assert.equal(fs.existsSync(path.join(seen.root, ".reach", "sign-in-unrecognised.json")), false);
+  });
 
 test("Windows keyed route: another Tailscale route to its port closes it until it's gone; so does Tailscale losing its adapter", windowsOnly, async (t) => {
   const { seen, started } = keyedReach(t);

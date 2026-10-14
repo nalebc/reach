@@ -7,6 +7,7 @@ import http from "node:http";
 import { createReach } from "../server/index.mjs";
 import { createFleet } from "../server/fleet.mjs";
 import { approvalStore } from "../server/device-approval.mjs";
+import { newIngressKey } from "../server/tailscale-auth.mjs";
 
 // Several Macs, one phone: computers you link (in their own terminals) share
 // device approvals. Nothing else changes trust: a computer that isn't linked,
@@ -175,12 +176,16 @@ test("finds your other Reach computers and links only on request", async () => {
   }
 });
 
+// Two Macs (Tailscale's private socket), a Mac and a Windows PC, and two
+// Windows PCs (the keyed loopback route only Tailscale's own process may use:
+// here a stand-in check that says it is; docs/parity/D-public-door.md).
+for (const kinds of [["socket", "socket"], ["socket", "keyed"], ["keyed", "keyed"]])
 test(
-  "approve once: a phone approved on Mac A is let in by linked Mac B on A's one-use ticket, and only then",
-  { skip: process.platform === "win32", timeout: 30000 },
+  `approve once${kinds.includes("keyed") ? ` (${kinds[0] === "keyed" ? "two Windows PCs" : "a Mac and a Windows PC"})` : ""}: a phone approved on Mac A is let in by linked Mac B on A's one-use ticket, and only then`,
+  { skip: kinds.includes("socket") && process.platform === "win32", timeout: 30000 },
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-fleet-two-"));
-    const socketDir = await fs.mkdtemp("/tmp/reach-fleet-sock-");
+    const socketDir = kinds.includes("socket") ? await fs.mkdtemp("/tmp/reach-fleet-sock-") : null;
     const whois = (node, user = 42, tags) => ({
       Node: {
         StableID: node,
@@ -206,10 +211,11 @@ test(
     const macs = {};
     const call = (mac, route, { from, body, headers = {}, method } = {}) =>
       new Promise((resolve, reject) => {
+        const { prefix = "", ...where } = macs[mac].target;
         const req = http.request(
           {
-            socketPath: macs[mac].socket,
-            path: route,
+            ...where,
+            path: `${prefix}${route}`,
             method: method || (body ? "POST" : "GET"),
             headers: {
               Host: "localhost",
@@ -244,8 +250,9 @@ test(
       ["B", "nB", "nA"],
     ]) {
       const dataDir = path.join(root, name);
-      const socket = path.join(socketDir, name);
+      const kind = kinds[name === "A" ? 0 : 1];
       const reach = await createReach({
+        ...(kind === "keyed" && { platform: "win32" }),
         roots: [root],
         dataDir,
         port: 0,
@@ -283,8 +290,17 @@ test(
         },
       });
       await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
-      await reach.listenPrivate(socket);
-      macs[name] = { reach, socket, dataDir };
+      let target;
+      if (kind === "socket") {
+        const socket = path.join(socketDir, name);
+        await reach.listenPrivate(socket);
+        target = { socketPath: socket };
+      } else {
+        const key = newIngressKey();
+        const port = await reach.listenKeyed({ key, peerCheck: { check: async () => true } });
+        target = { host: "127.0.0.1", port, prefix: `/r-${key}` };
+      }
+      macs[name] = { reach, target, dataDir };
     }
     const phone = "100.64.0.10";
     const ask = async (mac, ticket) => {
@@ -435,7 +451,7 @@ test(
     } finally {
       for (const m of Object.values(macs)) await m.reach.close();
       await fs.rm(root, { recursive: true, force: true });
-      await fs.rm(socketDir, { recursive: true, force: true });
+      if (socketDir) await fs.rm(socketDir, { recursive: true, force: true });
     }
   },
 );
@@ -466,26 +482,37 @@ test("one link for the tailnet: the computer where Reach was set up first", asyn
   }
 });
 
-test("reach link on Windows: refused with why, before anything is read or linked", async () => {
+test("reach link on a PC set up for browser sign-in but on pairing codes for now: refused with why, before anything is read or linked", async () => {
   const { linkComputers } = await import("../scripts/link.mjs");
+  const { stateDir } = await import("../scripts/home.mjs");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-link-win-"));
   try {
+    const state = stateDir(root);
+    const dataDir = path.join(state, "quick");
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(state, "preferences.json"), JSON.stringify({ version: 1, owner, folders: [root] }));
+    await fs.writeFile(
+      path.join(state, "host-status.json"),
+      JSON.stringify({ origin: "https://pc.t.ts.net:8443", dataDir, tailscaleApproval: false, signInOff: "Tailscale 1.90.0 is older than 1.104; update Tailscale." }),
+    );
     const printed = [];
     await assert.rejects(
       linkComputers(root, "mac-b", {
         platform: "win32",
         print: (line) => printed.push(line),
-        fleet: { status: async () => assert.fail("no Tailscale call on Windows") },
+        fleet: { status: async () => assert.fail("no Tailscale call") },
       }),
-      { message: "Linking computers isn't available on Windows yet: it needs phones approved by your Tailscale account, and on Windows they join with a pairing code." },
+      { message: "Linking computers is off on this PC for now: Tailscale 1.90.0 is older than 1.104; update Tailscale." },
     );
     assert.deepEqual(printed, []);
+    await assert.rejects(fs.access(path.join(dataDir, "links.json")));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
 
-test("reach link: lists your Reach computers and links one from any terminal", async () => {
+for (const platform of ["darwin", "win32"])
+test(`reach link (${platform === "win32" ? "a Windows PC" : "a Mac"}): lists your Reach computers and links one from any terminal`, async () => {
   const { linkComputers } = await import("../scripts/link.mjs");
   const { stateDir, command } = await import("../scripts/home.mjs");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-link-cli-"));
@@ -503,7 +530,7 @@ test("reach link: lists your Reach computers and links one from any terminal", a
     );
     const printed = [];
     const deps = {
-      platform: "darwin",
+      platform,
       print: (line) => printed.push(line),
       fleet: {
         status: async () => status({ ID: "nB", DNSName: "mac-b.t.ts.net." }),
