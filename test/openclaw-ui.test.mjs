@@ -921,10 +921,11 @@ test("on a Windows PC the other messaging apps leave out iMessage, and say it ne
     await click("Customize");
     await dom.waitFor(() => button("Add a messaging app"));
     await click("Add a messaging app");
-    const foot = await dom.waitFor(() => dom.document.querySelector(".claw-sheet-foot"));
-    assert.equal(foot.querySelector("span").textContent, "Signal, Matrix… iMessage needs a Mac.");
+    // Its page (the setup redesign): the other apps' row says what's left.
+    const other = () => [...dom.document.querySelectorAll("button.claw-row")].find((row) => row.textContent.includes("Other apps"));
+    const row = await dom.waitFor(() => other());
+    assert.equal(row.querySelector("small").textContent, "Signal, Matrix… iMessage needs a Mac.");
     assert.ok(dom.document.querySelector('[aria-label="Telegram bot token"]'), "Telegram, Discord and Slack are added there as on a Mac");
-    await click("Close add a messaging app");
   } finally {
     peer.platform = "darwin";
   }
@@ -932,8 +933,8 @@ test("on a Windows PC the other messaging apps leave out iMessage, and say it ne
   await mount();
   await click("Customize");
   await click("Add a messaging app");
-  const foot = await dom.waitFor(() => dom.document.querySelector(".claw-sheet-foot"));
-  assert.equal(foot.querySelector("span").textContent, "Signal, iMessage, Matrix…");
+  const row = await dom.waitFor(() => [...dom.document.querySelectorAll("button.claw-row")].find((r) => r.textContent.includes("Other apps")));
+  assert.equal(row.querySelector("small").textContent, "Signal, iMessage, Matrix…");
 });
 
 test("OpenClaw keeps account limits visible in the provider dropdown and conversation rail", async () => {
