@@ -9,17 +9,20 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { windowsBinary } from "../server/desktop-native.mjs";
 import { DesktopTerminals } from "../server/desktop-terminals.mjs";
-import { windowsLaunch } from "../server/windows-terminals.mjs";
 import { terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
-import { loadPty } from "../server/pty-helper.mjs";
 
 // The PC's own terminals on a real Windows PC (GitHub's windows-2025 runner):
 // scripts/native/windows-terminals.cs built with the PC's csc.exe, driving a
 // real console window (conhost, never handed to Windows Terminal), a console
 // opened as Reach opens one, and a Windows Terminal tab when Windows Terminal
 // is installed. Each is listed, read, typed into and closed exactly as the
-// phone does it, through DesktopTerminals. What each run saw is kept in
-// reports/windows-terminals-native.json.
+// phone does it, through DesktopTerminals. Reach's own stand-ins (a process
+// opening terminals, one with ConPTY sessions) are child processes, so a
+// native session can never keep this file from ending, and so what they open
+// is seen to outlive them. What each run saw is kept in
+// reports/windows-terminals-native.json: which kind each terminal turned out
+// to be (a console opened on a PC whose default terminal is Windows Terminal
+// is handed to it).
 const windows = process.platform === "win32";
 const real = { skip: !windows && "needs a real Windows PC", timeout: 170000 };
 const run = promisify(execFile);
@@ -63,6 +66,31 @@ async function eventually(what, check, ms = 30000) {
 const sweep = (pids) => Promise.all(pids.filter(Boolean).map((pid) => run("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }).catch(() => {})));
 const terminals = async (options = {}) =>
   new DesktopTerminals({ platform: "win32", dataDir: await folder(), reach: 0, ...options });
+const module = (file) => JSON.stringify(new URL(`../server/${file}`, import.meta.url).href);
+// A script run by its own Node process, from a folder of its own.
+async function script(t, source) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach terminals child-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }).catch(() => {}));
+  const file = path.join(dir, "child.mjs");
+  await fs.writeFile(file, source);
+  return file;
+}
+// Reach opening a terminal (a shortcut), then gone: what it opened stays.
+async function openFrom(t, provider, name, cwd) {
+  const file = await script(
+    t,
+    `import { DesktopTerminals } from ${module("desktop-terminals.mjs")};
+import { windowsLaunch } from ${module("windows-terminals.mjs")};
+const [provider, name, dataDir, cwd, cmd] = process.argv.slice(2);
+// cmd as the owner's shell, so the command line is the one Reach writes.
+const d = new DesktopTerminals({ platform: "win32", dataDir, reach: 0, launch: (options) => windowsLaunch({ ...options, shell: { file: cmd, args: ["/d"], kind: "cmd", name: "Command Prompt" } }) });
+console.log(JSON.stringify(await d.create(provider, () => {}, \`title \${name} & cd & echo opened-ok\`, { cwd })));
+process.exit(0);
+`,
+  );
+  const { stdout } = await run(process.execPath, [file, provider, name, await folder(), cwd, cmd], { timeout: 120000, windowsHide: true });
+  return JSON.parse(stdout.trim().split(/\r?\n/).pop());
+}
 const find = async (d, name) => (await d.list(allow)).sessions.find((s) => s.name.includes(name));
 const lines = (text) => String(text).split("\n").map((line) => line.trim());
 
@@ -115,49 +143,72 @@ test("a console window on the PC is listed, read, typed into, brought forward an
   await assert.rejects(d.run({ provider: "console", action: "read", target }), { status: 404, message: "This terminal has closed. Refresh the list." });
 });
 
-test("Reach's own terminals are left out of the PC's list; a console window beside them isn't", real, async (t) => {
+test("Reach's own terminals are left out of the PC's list; a console Reach's process opened itself is too, others aren't", real, async (t) => {
   const record = (seen.tests.own = {});
-  const name = marker("own");
-  // A terminal as Reach starts one (server/terminal.mjs): a ConPTY session
-  // of this process, already listed as Reach's.
-  const proc = loadPty().spawn(cmd, ["/d", "/k", `title ${name}`], { name: "xterm-256color", cols: 90, rows: 28, cwd: os.tmpdir(), env: process.env, useConptyDll: true });
-  t.after(() => {
-    try {
-      proc.kill();
-    } catch {}
+  const own = marker("own");
+  const shell = marker("shell");
+  // Reach's stand-in, with no console of its own (as a service has none):
+  // one ConPTY terminal as Reach starts them (server/terminal.mjs), and a
+  // shell it starts, which Windows gives a console window of its own.
+  const file = await script(
+    t,
+    `import { spawn } from "node:child_process";
+import { loadPty } from ${module("pty-helper.mjs")};
+const [own, shell, cmd] = process.argv.slice(2);
+const pty = loadPty().spawn(cmd, ["/d", "/k", \`title \${own}\`], { name: "xterm-256color", cols: 90, rows: 28, cwd: process.cwd(), env: process.env, useConptyDll: true });
+const child = spawn(cmd, ["/d", "/c", \`title \${shell}& ping -n 300 127.0.0.1 >nul\`], { stdio: "ignore" });
+let ready = false;
+pty.onData(() => {
+  if (ready) return;
+  ready = true;
+  console.log(JSON.stringify({ pty: pty.pid, shell: child.pid }));
+});
+process.stdin.resume();
+process.stdin.on("end", () => {
+  for (const end of [() => pty.kill(), () => child.kill()]) try { end(); } catch {}
+  setTimeout(() => process.exit(0), 300);
+});
+`,
+  );
+  const reach = spawn(process.execPath, [file, own, shell, cmd], { detached: true, stdio: ["pipe", "pipe", "inherit"] });
+  const gone = new Promise((resolve) => reach.once("exit", resolve));
+  let said = "";
+  reach.stdout.on("data", (chunk) => (said += chunk));
+  t.after(async () => {
+    reach.stdin.end();
+    await Promise.race([gone, pause(10000)]);
+    await sweep([reach.pid]);
   });
-  let printed = "";
-  proc.onData((data) => (printed += data));
-  await eventually("the Reach terminal started", () => printed.length > 0);
-  // And a console window this process opened, which is the PC's.
-  const other = marker("beside");
-  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${other}`], { stdio: "ignore" });
-  t.after(() => sweep([host.pid]));
-  for (const reach of [process.pid, 0]) {
-    const d = await terminals({ reach });
-    await eventually(`${other} listed`, () => find(d, other));
-    assert.equal(await find(d, name), undefined, `Reach's own terminal isn't the PC's (Reach ${reach || "not named"})`);
-  }
+  const pids = await eventually("Reach's stand-in started", () => said.includes("\n") && JSON.parse(said.split("\n")[0]), 60000);
+  t.after(() => sweep([pids.shell]));
+  // Anyone else's view: the console window is the PC's.
+  const everyone = await terminals();
+  const window = await eventually(`${shell} listed`, () => find(everyone, shell));
+  record.provider = window.provider;
+  // Reach's own view: neither its terminal nor the shell it started.
+  const reachs = await terminals({ reach: reach.pid });
+  const listed = (await reachs.list(allow)).sessions.map((s) => s.name);
+  assert.ok(!listed.some((name) => name.includes(shell)), "a shell Reach started is Reach's own");
+  for (const view of [everyone, reachs])
+    assert.equal(await find(view, own), undefined, "Reach's own terminal is never the PC's");
   record.excluded = true;
 });
 
-test("a new terminal opens from the phone in the folder asked, running its command", real, async (t) => {
+test("a new terminal opens from the phone in the folder asked, running its command, and stays after Reach is gone", real, async (t) => {
   const record = (seen.tests.created = {});
   const name = marker("created");
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "reach new;terminal "));
   t.after(() => fs.rm(cwd, { recursive: true, force: true }).catch(() => {}));
-  // cmd as the owner's shell, so the command line is the one Reach writes.
-  const d = await terminals({ launch: (options) => windowsLaunch({ ...options, shell: { file: cmd, args: ["/d"], kind: "cmd", name: "Command Prompt" } }) });
-  const opened = await d.create("console", allow, `title ${name} & cd & echo created-ok`, { cwd });
-  record.opened = opened.provider;
+  const opened = await openFrom(t, "console", name, cwd);
   assert.equal(opened.provider, "console");
-  const tab = await eventually(`${name} listed`, () => find(d, name));
+  const d = await terminals();
+  const tab = await eventually(`${name} listed after the process that opened it ended`, () => find(d, name));
   t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
   // Handed to Windows Terminal when it's this PC's default terminal app.
   record.provider = tab.provider;
   const { text } = await eventually("its command ran in its folder", async () => {
     const read = await d.action(tab.id, "read", null, allow);
-    return lines(read.text).includes("created-ok") && read;
+    return lines(read.text).includes("opened-ok") && read;
   });
   assert.ok(lines(text).includes(cwd), `it started in ${cwd}`);
   await roundTrip(d, name, (record.roundTrip = {}));
@@ -172,13 +223,13 @@ test(
   async (t) => {
     const record = (seen.tests.windowsTerminal = { wt: terminalExe });
     const name = marker("wt");
-    const d = await terminals({ launch: (options) => windowsLaunch({ ...options, shell: { file: cmd, args: ["/d"], kind: "cmd", name: "Command Prompt" } }) });
-    const opened = await d.create("windows-terminal", allow, `title ${name} & echo wt-ok`, { cwd: os.tmpdir() });
+    const opened = await openFrom(t, "windows-terminal", name, os.tmpdir());
     assert.equal(opened.provider, "windows-terminal");
-    const tab = await eventually(`${name} listed`, () => find(d, name), 60000);
+    const d = await terminals();
+    const tab = await eventually(`${name} listed after the process that opened it ended`, () => find(d, name), 60000);
     t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
     assert.equal(tab.provider, "windows-terminal");
-    await eventually("its command ran", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes("wt-ok"));
+    await eventually("its command ran", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes("opened-ok"));
     await roundTrip(d, name, record);
   },
 );
