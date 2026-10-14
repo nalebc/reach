@@ -485,7 +485,7 @@ export function ClawCustomize({
           }}
         />
         <div className="claw-group">
-          <OpenSetup peer={peer} section="channels" row sub="Signal, iMessage, Matrix…">
+          <OpenSetup peer={peer} section="channels" row sub={peer.platform === "win32" ? "Signal, Matrix… iMessage needs a Mac." : "Signal, iMessage, Matrix…"}>
             Other apps
           </OpenSetup>
         </div>

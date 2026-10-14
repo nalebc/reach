@@ -14,24 +14,28 @@
 // transcript. Waiting chats are kept in Reach's data folder.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { claudeAppInstalled, claudeAppRecords } from "./claude-app-paths.mjs";
+import { windowsPresence } from "../windows-presence.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RECORDS = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
 
-// Seconds since the last keyboard, mouse or trackpad input on this Mac.
-export async function idleSeconds(run = exec) {
+// Seconds since the last keyboard, mouse or trackpad input on this Mac (on
+// a Windows PC, from its own reading: windows-presence.mjs).
+export async function idleSeconds(run = exec, { platform = process.platform, presence = windowsPresence } = {}) {
+  if (platform === "win32") return (await presence()).idleSeconds;
   const { stdout } = await run("/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4"], { timeout: 5000 });
   const m = stdout.match(/"HIDIdleTime" = (\d+)/);
   return m ? Number(m[1]) / 1e9 : null;
 }
 
 // Whether this Mac's screen is locked (its console session says so), null
-// when it can't tell. Locked, nothing can be typed into any app.
-export async function screenLocked(run = exec) {
+// when it can't tell. Locked, nothing can be typed into any app. A Windows
+// PC: its session's lock and its input desktop (windows-presence.mjs).
+export async function screenLocked(run = exec, { platform = process.platform, presence = windowsPresence } = {}) {
+  if (platform === "win32") return (await presence()).locked;
   const { stdout } = await run("/usr/sbin/ioreg", ["-n", "Root", "-d", "1"], { timeout: 5000 });
   const m = stdout.match(/"CGSSessionScreenIsLocked"=(Yes|No)/);
   return m ? m[1] === "Yes" : null;
@@ -70,7 +74,7 @@ export async function claudeAppRunning(run = exec) {
 // local_<id>.json, under one folder per account and organization.
 export function inClaudeApp(
   id,
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
 ) {
   const name = `local_${id}.json`;
   const dirs = (dir) => {
@@ -89,11 +93,12 @@ export function inClaudeApp(
 // folder used in the last month.
 export async function claudeAppAccess({
   app = "/Applications/Claude.app",
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
   registry = () => new Map(),
   now = Date.now,
+  installed = () => claudeAppInstalled({ app }),
 } = {}) {
-  if (!fs.existsSync(app)) return { installed: false, signedIn: false };
+  if (!installed()) return { installed: false, signedIn: false };
   let running = false;
   try {
     running = [...registry().values()].some((e) => e.where === "claude-app");
@@ -140,7 +145,7 @@ export async function claudeAppStartedAt(run = exec) {
 // The sessions the Claude app lists, the one on screen first: each record
 // notes when its session was last shown (lastFocusedAt).
 export function claudeAppShown(
-  records = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  records = claudeAppRecords(),
 ) {
   const found = [];
   const dirs = (dir) => {
@@ -290,7 +295,7 @@ export function createClaudeRefresh({
 
 // The account's folder of records the app uses now: the one holding its
 // most recently written record, and that record, to check its shape.
-export function newestRecords(records = RECORDS) {
+export function newestRecords(records = claudeAppRecords()) {
   let best = null;
   const dirs = (dir) => {
     try {
@@ -336,7 +341,7 @@ const APP_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 // Writes the app's record for a session; true when the app has a record for
 // it now (written here or already there).
-export function writeClaudeRecord(id, info, { records = RECORDS, now = Date.now } = {}) {
+export function writeClaudeRecord(id, info, { records = claudeAppRecords(), now = Date.now } = {}) {
   if (!UUID.test(id) || !info || typeof info.cwd !== "string" || !path.isAbsolute(info.cwd)) return false;
   if (inClaudeApp(id, records)) return true;
   const target = newestRecords(records);
