@@ -65,6 +65,13 @@ export const suites = {
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
+    // Claude Code's permission prompts and mode switches answered from the
+    // phone on Windows, workstream H: the named pipe, the exec-form hook, the
+    // Node mode hook and the strict pipe-owner check (the mocked parts run
+    // here; the real pipe-owner check and the end-to-end run with Claude Code
+    // itself are gated on REACH_TEST_WINDOWS_DESKTOP, so they skip in this
+    // lane and run in windows-validation).
+    "windows-claude-hooks", "windows-claude-hooks-e2e",
     // Windows conveniences, workstream W: the owner's own shell in Reach's
     // terminals, drives attached later, the launcher's name on the phone.
     "windows-shell", "file-roots", "connect-states-ui",
