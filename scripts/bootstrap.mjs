@@ -241,10 +241,8 @@ async function prepare(options, { say, step, signal }) {
     fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
       mode: 0o600,
     });
-  // The browser sign-in client, for phones without the Tailscale app. Not on
-  // Windows without REACH_WINDOWS_ACCOUNT=1: its start page needs account
-  // approval (configure.mjs accountApproval), and it cost a first run 2 minutes.
-  if (!packaged && !options.local && (await import("./configure.mjs")).accountApproval()) {
+  // The browser sign-in client, for phones without the Tailscale app.
+  if (!packaged && !options.local) {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {
@@ -493,7 +491,7 @@ async function restart(options) {
 }
 try {
   let options = parseOptions(process.argv.slice(2));
-  const { configure, readPreferences, applyPreferences, accountApproval } =
+  const { configure, readPreferences, applyPreferences } =
     await import("./configure.mjs");
   const { ensureTailscale } = await import("./tailscale-connect.mjs");
   if (options.version) {
@@ -709,9 +707,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     const detached = detachedWarning({ service: !!options.service });
     if (detached) console.warn(detached);
     if (!options.local) {
-      // Windows keeps no account settings (pairing code, configure.mjs).
-      const byAccount = accountApproval();
-      if (byAccount && packaged && !readPreferences(root))
+      if (packaged && !readPreferences(root))
         console.log(
           `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
         );
@@ -737,12 +733,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         }
         // A background service can't ask; it reports what's missing instead.
         await ensureTailscale(options.service ? { interactive: false } : {});
-        const preferences =
-          byAccount && (readPreferences(root) || (await configure(root)));
+        const preferences = readPreferences(root) || (await configure(root));
         // Installed service arguments are its saved folder/port choices.
-        if (byAccount && !options.service)
+        if (!options.service)
           options = applyPreferences(options, preferences, process.argv.slice(2));
-        if (byAccount && !options.service && process.argv.includes("--https-port")) {
+        if (!options.service && process.argv.includes("--https-port")) {
           const { rememberHttpsPort } = await import("./configure.mjs");
           if (rememberHttpsPort(root, options.httpsPort))
             console.log(`Reach: port ${options.httpsPort} saved; later starts use it too.`);
@@ -779,6 +774,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
   if (error.paused) process.exitCode = 130;
   else {
     console.error(`\nReach: ${error.message}`);
-    process.exitCode = 1;
+    // Asked to start again at once (scripts/launch.mjs): crash-guard's
+    // CRASH_EXIT, so the window that started it does (scripts/supervise.mjs).
+    process.exitCode = error.relaunch ? 70 : 1;
   }
 }
