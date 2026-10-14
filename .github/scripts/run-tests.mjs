@@ -39,6 +39,8 @@ export const suites = {
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // Apps' icons and the agents' logos drawn by Windows (audit #28).
     "windows-app-icons",
+    // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
+    "document-text", "file-kinds",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
