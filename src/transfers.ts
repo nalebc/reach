@@ -532,6 +532,12 @@ export async function downloadThroughBrowser(
   }
 }
 
+// A transfer can fail on either computer; only a missing source closes its preview.
+export const sourceFileGone = (error: unknown) => {
+  const failure = error as { status?: number; transferSide?: string };
+  return failure?.status === 404 && failure.transferSide === "source";
+};
+
 // Copy a file from one computer to another: download, then resumable upload.
 export async function sendToComputer(
   from: Peer,
@@ -540,11 +546,13 @@ export async function sendToComputer(
   to: Peer,
 ) {
   const job = track("send", entry.name, entry.size * 2, to.name);
+  let transferSide: "source" | "destination" = "source";
   try {
     const blob = await fileBlob(from, entry.path, root, {
       signal: job.signal,
       onProgress: (done) => job.progress(done),
     });
+    transferSide = "destination";
     await sendFile(
       to,
       0,
@@ -558,7 +566,9 @@ export async function sendToComputer(
     job.finish();
   } catch (e) {
     job.fail(e);
-    throw e;
+    // A destination's missing folder or upload session says nothing about
+    // whether the source file still exists. Keep status and cancellation intact.
+    throw Object.assign(e instanceof Error ? e : new Error(String(e)), { transferSide });
   }
 }
 

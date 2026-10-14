@@ -1603,6 +1603,23 @@ export function PromptCard({
 // A picture (url: its preview), or any other file (file: its name).
 type Attachment = { key: number; url: string; id?: string; error?: string; file?: string };
 let attachmentSeq = 0;
+type UnsentDraft = { id: string; text: string; attachments: Attachment[]; mentions: AgentSession[] };
+const unsentKey = (draftKey: string) => `${draftKey}:unsent`;
+const unsentChanged = "reach-chat-unsent";
+function readUnsentDrafts(draftKey: string): UnsentDraft[] {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(unsentKey(draftKey)) || "[]") as UnsentDraft[];
+    if (!Array.isArray(saved)) return [];
+    return saved.filter((draft) => draft && typeof draft.id === "string" && typeof draft.text === "string" &&
+      Array.isArray(draft.attachments) && Array.isArray(draft.mentions)).map((draft) => ({
+      ...draft,
+      // Blob previews end with the old page; uploaded attachment IDs still
+      // let the user restore and resend the original message after navigation.
+      attachments: draft.attachments.filter((a) => a && typeof a === "object").map((a) => ({ ...a, key: ++attachmentSeq, url: "" })),
+      mentions: draft.mentions.filter((m) => m && typeof m.id === "string" && typeof m.agent === "string"),
+    }));
+  } catch { return []; }
+}
 
 // A new chat's model and effort: the same pickers as in a chat (ModelSheet.tsx).
 export function ModelPicker({
@@ -1799,6 +1816,33 @@ export default function AgentSessionView({
   const mentionQuery = /(?:^|\s)@([^\s@]{0,80})$/.exec(text)?.[1] ?? null;
   // Chats mentioned in the message being written (three at most).
   const [mentions, setMentions] = useState<AgentSession[]>([]);
+  const draftNow = useRef({ text, attachments, mentions });
+  draftNow.current = { text, attachments, mentions };
+  const [unsentDrafts, setUnsentDrafts] = useState(() => readUnsentDrafts(draftKey));
+  useEffect(() => {
+    try {
+      if (unsentDrafts.length) sessionStorage.setItem(unsentKey(draftKey), JSON.stringify(unsentDrafts));
+      else sessionStorage.removeItem(unsentKey(draftKey));
+    } catch {}
+  }, [draftKey, unsentDrafts]);
+  useEffect(() => {
+    // A send from the previous view may finish after this chat reopens.
+    const changed = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === draftKey) setUnsentDrafts(readUnsentDrafts(draftKey));
+    };
+    window.addEventListener(unsentChanged, changed);
+    return () => window.removeEventListener(unsentChanged, changed);
+  }, [draftKey]);
+  const restoreUnsent = (draft: UnsentDraft) => {
+    const current = draftNow.current;
+    if (sendingNow.current || current.text || current.attachments.length || current.mentions.length) return;
+    setText(draft.text);
+    setAttachments(draft.attachments);
+    setMentions(draft.mentions);
+    setUnsentDrafts((list) => list.filter((d) => d.id !== draft.id));
+    draftSync.current?.update(draft.text);
+    field.current?.focus({ preventScroll: true });
+  };
   // The chat's new name, while it's being typed (⋯ → its pencil).
   const [renaming, setRenaming] = useState<string | null>(null);
   // Codex's plan mode, as the Codex app's Plan toggle: kept per chat on this
@@ -1854,6 +1898,8 @@ export default function AgentSessionView({
   useLayoutEffect(() => {
     readLife.active = true;
     readLife.generation++;
+    sendingNow.current = false;
+    setSending(false);
     savingModel.current = null;
     setModelSaving(false);
     savingMode.current = null;
@@ -2116,11 +2162,15 @@ export default function AgentSessionView({
   }, []);
   const shown = useRef(attachments);
   shown.current = attachments;
+  const shownUnsent = useRef(unsentDrafts);
+  shownUnsent.current = unsentDrafts;
   // Pictures sent from here stay shown in their message until the page closes.
   const sentUrls = useRef<string[]>([]);
   useEffect(
     () => () => {
       for (const a of shown.current) URL.revokeObjectURL(a.url);
+      for (const draft of shownUnsent.current)
+        for (const a of draft.attachments) if (a.url) URL.revokeObjectURL(a.url);
       for (const url of sentUrls.current) URL.revokeObjectURL(url);
     },
     [],
@@ -2450,6 +2500,8 @@ export default function AgentSessionView({
   const pendingMode = info.pendingMode && info.pendingMode !== info.mode ? info.pendingMode : null;
   const send = async () => {
     if (!canSend || sendingNow.current) return;
+    const generation = readLife.generation;
+    const currentSend = () => readLife.active && readLife.generation === generation;
     // One of Codex's own commands ("/status") runs instead of being sent.
     if (!attachments.length && slashMenu.runOnSend(text)) return;
     const skill = slashMenu.skill;
@@ -2466,10 +2518,13 @@ export default function AgentSessionView({
       at: Date.now(),
     };
     const keep = { text, attachments, mentions };
+    // Also retain previews while the send is in flight, for unmount cleanup.
+    sentUrls.current.push(...ready.map((a) => a.url).filter(Boolean));
     sendingNow.current = true;
     setSending(true);
     setProblem("");
     setPending((list) => [...list, message]);
+    draftNow.current = { text: "", attachments: [], mentions: [] };
     setText("");
     setAttachments([]);
     setMentions([]);
@@ -2488,8 +2543,8 @@ export default function AgentSessionView({
         ...(skill ? { skill: skill.name } : {}),
         ...(agent === "codex" && planMode ? { collaboration: planMode } : {}),
       });
+      if (!currentSend()) return;
       if (skill) slashMenu.clearSkill();
-      sentUrls.current.push(...ready.map((a) => a.url));
       // Where it waits: the copy shows until the outbox (or Claude Code's
       // queue) carries it, then goes with the outbox entry (see below).
       // Dropped at once, it was nowhere until the next live look.
@@ -2508,14 +2563,32 @@ export default function AgentSessionView({
       setNote("");
       void load(false);
     } catch (e) {
+      if (!currentSend()) {
+        // A late refusal still preserves the original message for this chat,
+        // without touching a reopened view or a replacement credential's draft.
+        try {
+          const saved = readUnsentDrafts(draftKey).filter((d) => d.id !== message.id);
+          sessionStorage.setItem(unsentKey(draftKey), JSON.stringify([...saved, { id: message.id, ...keep }]));
+          window.dispatchEvent(new CustomEvent(unsentChanged, { detail: draftKey }));
+        } catch {}
+        return;
+      }
       setPending((list) => list.filter((p) => p.id !== message.id));
-      setText(keep.text);
-      setAttachments(keep.attachments);
-      setMentions(keep.mentions);
+      const current = draftNow.current;
+      if (current.text || current.attachments.length || current.mentions.length) {
+        // Keep the new draft untouched and the failed message recoverable.
+        setUnsentDrafts((list) => [...list, { id: message.id, ...keep }]);
+      } else {
+        setText(keep.text);
+        setAttachments(keep.attachments);
+        setMentions(keep.mentions);
+      }
       setProblem((e as Error).message);
     } finally {
-      sendingNow.current = false;
-      setSending(false);
+      if (currentSend()) {
+        sendingNow.current = false;
+        setSending(false);
+      }
     }
   };
   const stop = async () => {
@@ -3617,6 +3690,29 @@ export default function AgentSessionView({
           />
         )}
         {/* Gemini CLI chats are read here: no box to type in (it only refused after sending). */}
+        {unsentDrafts.length > 0 && (
+          <div className="as-unsent-list" aria-label="Unsent messages">
+            {unsentDrafts.map((draft) => (
+              <div className="as-unsent" key={draft.id}>
+                <span>
+                  <strong>Message wasn’t sent</strong>
+                  <small>{draft.text || `${draft.attachments.length} attachment${draft.attachments.length === 1 ? "" : "s"}`}</small>
+                </span>
+                <button className="as-banner-btn" aria-label="Restore unsent message"
+                  disabled={sending || !!text || !!attachments.length || !!mentions.length}
+                  title={text || attachments.length || mentions.length ? "Finish or clear your current draft to restore this message" : undefined}
+                  onClick={() => restoreUnsent(draft)}>Restore</button>
+                <button className="as-icon" aria-label="Discard unsent message" onClick={() => {
+                  for (const a of draft.attachments) if (a.url) URL.revokeObjectURL(a.url);
+                  setUnsentDrafts((list) => list.filter((d) => d.id !== draft.id));
+                }}><X size={14} /></button>
+              </div>
+            ))}
+            {!!(text || attachments.length || mentions.length) && (
+              <p className="as-hint">Finish or clear your current draft to restore an unsent message.</p>
+            )}
+          </div>
+        )}
         {agent !== "gemini" && (
         <div className="as-box">
           <div className="as-field">
@@ -3632,8 +3728,10 @@ export default function AgentSessionView({
                       <span className="as-file-chip">
                         <FileText size={14} aria-hidden="true" /> {a.file}
                       </span>
-                    ) : (
+                    ) : a.url ? (
                       <img src={a.url} alt="" />
+                    ) : (
+                      <ImageIcon size={16} aria-label="Attached image" />
                     )}
                     {!a.id && !a.error && (
                       <LoaderCircle size={16} className="spin" />
