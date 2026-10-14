@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { PACKAGE, createReachUpdates, installCommand, latestRelease, reachInstall, updateNotification } from "../server/reach-updates.mjs";
+import { PACKAGE, askUpdate, createReachUpdates, installCommand, latestRelease, reachInstall, takeUpdateRequest, updateNotification, updateRequestFile } from "../server/reach-updates.mjs";
 import { sealNotification } from "../server/notification-items.mjs";
 
 // Reach's own updates: a newer @nalebc/reach, installed exactly as confirmed
@@ -192,6 +192,46 @@ test("a restart that never happens is said, not left at Restarting…", async ()
   assert.equal(restarted, 1, "asked once, not again and again");
 });
 
+// Windows can't replace a running Reach's files (audit #10, #11): the version
+// the owner confirmed goes to a window of its own, which stops Reach,
+// installs and starts it again (scripts/bootstrap.mjs update). It may install
+// that one version, once; no switch skips the phone.
+test("Windows: the confirmed update moves to Reach's own window, never npm in this Reach", async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-update-win-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const handed = [];
+  const updates = createReachUpdates({ root: "C:\\x", dataDir, install: npmInstall, fetch: feed("0.2.0"), spawn: () => assert.fail("no npm while Reach runs"),
+    handoff: (version) => handed.push(version), readVersion: () => "0.1.0", platform: "win32", restartGraceMs: 40 });
+  await updates.check();
+  assert.equal(updates.start("0.2.0").state, "restarting");
+  assert.deepEqual(handed, ["0.2.0"]);
+  assert.equal(updates.busy(), true, "agents wait for the new server");
+  // Still running a while later: its window never stopped it.
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual([updates.status().state, updates.status().error], ["failed", "The update didn't start. Run reach update on this computer."]);
+  updates.reset();
+  // A window that couldn't open is said at once.
+  const failing = createReachUpdates({ root: "C:\\x", dataDir, install: npmInstall, fetch: feed("0.2.0"), handoff: () => { throw Error("no cmd.exe"); }, readVersion: () => "0.1.0" });
+  await failing.check();
+  failing.start("0.2.0");
+  assert.deepEqual([failing.status().state, failing.status().error], ["failed", "The update didn't start (no cmd.exe)."]);
+});
+
+test("the update request: that version, read once, while fresh", (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-update-ask-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-10-13T12:00:00Z");
+  assert.equal(askUpdate(dataDir, "v0.2.0", { now }), "0.2.0");
+  assert.equal(takeUpdateRequest(dataDir, { now: now + 1000 }), "0.2.0");
+  assert.equal(fs.existsSync(updateRequestFile(dataDir)), false, "gone once read");
+  assert.equal(takeUpdateRequest(dataDir, { now: now + 2000 }), null);
+  askUpdate(dataDir, "0.2.0", { now });
+  assert.equal(takeUpdateRequest(dataDir, { now: now + 11 * 60_000 }), null, "stale after ten minutes");
+  assert.equal(fs.existsSync(updateRequestFile(dataDir)), false);
+  fs.writeFileSync(updateRequestFile(dataDir), JSON.stringify({ version: "latest", requestedAt: now, expiresAt: now + 60000 }));
+  assert.equal(takeUpdateRequest(dataDir, { now }), null, "only a version, never latest");
+  assert.throws(() => askUpdate(dataDir, "latest"), /No version/);
+});
 
 test("a portable archive with sources but no git points to the next archive without installing npm", async () => {
   const install = reachInstall("/apps/reach", layout("/apps/reach", { files: { "/apps/reach/src/main.tsx": 1 } }));
