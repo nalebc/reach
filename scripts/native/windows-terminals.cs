@@ -116,6 +116,8 @@ static class Terminals {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
   static extern bool CreateProcessW(string application, StringBuilder line, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string folder, ref STARTUPINFO start, out PROCESS_INFORMATION started);
   [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr data);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int size);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
@@ -224,6 +226,18 @@ static class Terminals {
     }
     return all;
   }
+  // A process's program file, or "" when Windows won't say.
+  static string ImageOf(uint pid) {
+    IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+    if (process == IntPtr.Zero) return "";
+    try {
+      StringBuilder name = new StringBuilder(1024);
+      uint size = (uint)name.Capacity;
+      return QueryFullProcessImageNameW(process, 0, name, ref size) ? name.ToString(0, (int)size) : "";
+    } finally {
+      CloseHandle(process);
+    }
+  }
   // When a process started (FILETIME), or 0 when Windows won't say.
   static long Started(uint pid) {
     IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
@@ -235,22 +249,15 @@ static class Terminals {
       CloseHandle(process);
     }
   }
-  // Started below `ancestor`: a parent is only one when it started first (a
-  // reused pid isn't).
-  static bool Under(uint pid, uint ancestor, Dictionary<uint, Proc> all) {
-    if (ancestor == 0) return false;
-    uint current = pid;
-    long started = Started(pid);
-    for (int step = 0; step < 64; step++) {
-      Proc p;
-      if (!all.TryGetValue(current, out p) || p.Parent == 0 || p.Parent == current) return false;
-      long parentStarted = Started(p.Parent);
-      if (parentStarted == 0 || (started != 0 && parentStarted > started)) return false;
-      if (p.Parent == ancestor) return true;
-      current = p.Parent;
-      started = parentStarted;
-    }
-    return false;
+  // A shell Reach itself started (one of Reach's own terminals, listed as
+  // Reach's already): Reach is its parent, and started before it, so a pid
+  // Windows gave Reach's after it ended isn't. A window opened from inside one
+  // (start cmd) is the PC's, as on a Mac.
+  static bool StartedBy(uint pid, uint parent, Dictionary<uint, Proc> all) {
+    Proc p;
+    if (parent == 0 || !all.TryGetValue(pid, out p) || p.Parent != parent) return false;
+    long started = Started(pid), parentStarted = Started(parent);
+    return parentStarted != 0 && (started == 0 || parentStarted <= started);
   }
   static string ClassOf(IntPtr window) {
     StringBuilder name = new StringBuilder(256);
@@ -348,8 +355,7 @@ static class Terminals {
       }
       long started = Started(root);
       if (started == 0) continue;
-      // Reach's own terminals are listed as Reach's already.
-      if (Under(root, exclude, all)) continue;
+      if (StartedBy(root, exclude, all)) continue;
       string title;
       FreeConsole();
       // Administrator consoles turn this away; they aren't listed.
@@ -479,6 +485,9 @@ static class Terminals {
   static string CloseTab() {
     List<uint> clients = Clients();
     FreeConsole();
+    // Reach's watch (this same helper) may be looking at the tab just now.
+    string helper = ImageOf(self);
+    clients.RemoveAll(delegate (uint pid) { return helper.Length > 0 && string.Equals(ImageOf(pid), helper, StringComparison.OrdinalIgnoreCase); });
     int ended = 0;
     // Newest first, the root last: Windows Terminal reads how the tab ended
     // from the root.

@@ -11,6 +11,7 @@ import { windowsBinary } from "../server/desktop-native.mjs";
 import { DesktopTerminals } from "../server/desktop-terminals.mjs";
 import { windowsLaunch } from "../server/windows-terminals.mjs";
 import { terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
+import { loadPty } from "../server/pty-helper.mjs";
 
 // The PC's own terminals on a real Windows PC (GitHub's windows-2025 runner):
 // scripts/native/windows-terminals.cs built with the PC's csc.exe, driving a
@@ -114,16 +115,30 @@ test("a console window on the PC is listed, read, typed into, brought forward an
   await assert.rejects(d.run({ provider: "console", action: "read", target }), { status: 404, message: "This terminal has closed. Refresh the list." });
 });
 
-test("Reach's own consoles are left out of the PC's list", real, async (t) => {
+test("Reach's own terminals are left out of the PC's list; a console window beside them isn't", real, async (t) => {
+  const record = (seen.tests.own = {});
   const name = marker("own");
-  // A console this test's process started: to the helper, Reach's own.
-  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
+  // A terminal as Reach starts one (server/terminal.mjs): a ConPTY session
+  // of this process, already listed as Reach's.
+  const proc = loadPty().spawn(cmd, ["/d", "/k", `title ${name}`], { name: "xterm-256color", cols: 90, rows: 28, cwd: os.tmpdir(), env: process.env, useConptyDll: true });
+  t.after(() => {
+    try {
+      proc.kill();
+    } catch {}
+  });
+  let printed = "";
+  proc.onData((data) => (printed += data));
+  await eventually("the Reach terminal started", () => printed.length > 0);
+  // And a console window this process opened, which is the PC's.
+  const other = marker("beside");
+  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${other}`], { stdio: "ignore" });
   t.after(() => sweep([host.pid]));
-  const everyone = await terminals();
-  await eventually(`${name} listed for others`, () => find(everyone, name));
-  const reach = await terminals({ reach: process.pid });
-  assert.equal(await find(reach, name), undefined, "a console under Reach's process isn't the PC's");
-  seen.tests.own = { excluded: true };
+  for (const reach of [process.pid, 0]) {
+    const d = await terminals({ reach });
+    await eventually(`${other} listed`, () => find(d, other));
+    assert.equal(await find(d, name), undefined, `Reach's own terminal isn't the PC's (Reach ${reach || "not named"})`);
+  }
+  record.excluded = true;
 });
 
 test("a new terminal opens from the phone in the folder asked, running its command", real, async (t) => {
