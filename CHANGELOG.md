@@ -8,6 +8,34 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Changed
+
+- 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
+  nothing to turn on. `REACH_WINDOWS_ACCOUNT` is gone. Setup asks for your
+  Tailscale account, as on a Mac, and a PC paired by code before asks once at
+  its next start. Invite links for people and agents, the start page, the
+  agent gateway, hosted MCP, Face ID sign-in for a new browser and linked
+  computers (a Mac and a PC, or two PCs) come with it. A PC that can't hold
+  the route yet uses a pairing code and says why in its terminal,
+  `.\reach.cmd status`, `approve`, `link` and on the phone. That covers
+  Tailscale older than 1.104 or without its network adapter, Reach's folders
+  not private, or Tailscale's own connections not recognised. In the last
+  case Reach starts again on pairing codes at once, and tries the route again
+  a day later or after Tailscale changes. An older Tailscale no longer stops
+  setup: the account is kept and used once Tailscale is updated. Phones that
+  joined a PC with a pairing code ask to be approved once, as on a Mac. Not
+  yet run on a physical Windows PC.
+- 2026-10-13: A linked computer's ticket no longer approves a request made
+  from the computer itself (a browser on it): only the code typed there
+  does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
+  whoever is signed in to it.
+
+## [0.2.0] — 2026-10-13
+
+Faster agents, an owner-first screen with gestures you can feel, modern
+sheets, one-tap updates for what Reach drives, and fixes across Face ID,
+Windows and chats.
+
 ### Added
 
 - 2026-10-13: Reach keeps what it drives in sync. When Codex's service runs

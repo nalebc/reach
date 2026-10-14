@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { windowsFixture } from "./windows-fixtures.mjs";
 
 // A stand-in for the `tailscale` command line (REACH_TAILSCALE), for running
 // a real Reach in Tailscale mode without this computer's Tailscale: no route,
@@ -30,16 +31,43 @@ import path from "node:path";
 // `x-fake-from` (default 100.64.0.20, a phone; 100.64.0.10 is this computer).
 // Its port is `proxy` in the session; each connection it opens to Reach is
 // noted in `from` ({ port, at }).
+//
+// On a real Windows runner, `cli` is tailscale.exe
+// (test/fixtures/windows/tailscale-shim.cs), which runs the script with Node
+// in a kill-on-close job of its own: ended, its session ends with it, as
+// Tailscale's does. Windows gives a finished process's id to the next one
+// at once, so there a session lives while the named pipe it holds does
+// (`pipe`), not while some process has its id.
 export const HOST = "mac.example.ts.net";
 export const PHONE_IP = "100.64.0.20";
 export const SELF_IP = "100.64.0.10";
 const SESSION = /^fake-tailscale-session-\d+\.json$/;
+const PIPES = "\\\\.\\pipe\\";
+// Whether a session's process lives.
+export const sessionAlive = (s) => {
+  if (s.pipe)
+    try {
+      return readdirSync(PIPES).includes(s.pipe);
+    } catch {
+      return false;
+    }
+  try {
+    process.kill(s.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// The same, as source for the stand-in command and the preload (each has `fs`).
+const aliveSource = `(s) => {
+  if (s.pipe) try { return fs.readdirSync(${JSON.stringify(PIPES)}).includes(s.pipe); } catch { return false; }
+  try { process.kill(s.pid, 0); return true; } catch { return false; }
+}`;
 // The live sessions (source, for the stand-in command and the preload alike).
 const liveSessions = `(dir) => fs.readdirSync(dir).filter((f) => ${SESSION}.test(f)).flatMap((f) => {
   try {
     const s = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8"));
-    process.kill(s.pid, 0);
-    return [s];
+    return (${aliveSource})(s) ? [s] : [];
   } catch { return []; }
 })`;
 const sessionsIn = (dir) =>
@@ -48,8 +76,7 @@ const sessionsIn = (dir) =>
     .flatMap((f) => {
       try {
         const s = JSON.parse(readFileSync(path.join(dir, f), "utf8"));
-        process.kill(s.pid, 0);
-        return [s];
+        return sessionAlive(s) ? [s] : [];
       } catch {
         return [];
       }
@@ -62,7 +89,13 @@ const etagTokens = async (dir, count) => {
 export async function fakeTailscale(dir, scenario = {}) {
   const state = path.join(dir, "fake-tailscale.json");
   const setup = path.join(dir, "fake-tailscale-setup.json");
-  const cli = path.join(dir, "tailscale");
+  const script = path.join(dir, "tailscale");
+  // Windows runs programs, not scripts: its stand-in tailscale.exe runs this one.
+  const cli = process.platform === "win32" ? path.join(dir, "tailscale.exe") : script;
+  if (cli !== script) {
+    await fs.copyFile(await windowsFixture("tailscale-shim"), cli);
+    await fs.writeFile(path.join(dir, "fake-tailscale-shim.txt"), `${process.execPath}\r\n${script}\r\n`);
+  }
   await fs.writeFile(setup, JSON.stringify({ BackendState: "Running", CurrentTailnet: { MagicDNSEnabled: true }, ...scenario.setup }));
   await fs.writeFile(
     state,
@@ -70,7 +103,7 @@ export async function fakeTailscale(dir, scenario = {}) {
   );
   await etagTokens(dir, scenario.etagConflicts || 0);
   await fs.writeFile(
-    cli,
+    script,
     `#!${process.execPath}
 const fs = require("fs");
 const file = ${JSON.stringify(state)};
@@ -83,11 +116,18 @@ const state = JSON.parse(fs.readFileSync(file, "utf8"));
 const setup = JSON.parse(fs.readFileSync(setupFile, "utf8"));
 const args = process.argv.slice(2);
 state.calls.push(args);
-const save = () => {
-  const temp = file + "." + process.pid;
-  fs.writeFileSync(temp, JSON.stringify(state));
-  fs.renameSync(temp, file);
+// Replaced whole; Windows may refuse a moment while another reads it.
+const replace = (to, text) => {
+  const temp = to + "." + process.pid;
+  fs.writeFileSync(temp, text);
+  for (let i = 0; ; i++)
+    try { return fs.renameSync(temp, to); } catch (e) {
+      if (i >= 50 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
 };
+const save = () => replace(file, JSON.stringify(state));
+const alive = ${aliveSource};
 const out = (v) => process.stdout.write(typeof v === "string" ? v : JSON.stringify(v));
 const [command, ...rest] = args;
 const self = { ID: "nMac", UserID: 42, DNSName: state.host + ".", HostName: "mac", KeyExpiry: "0001-01-01T00:00:00Z", TailscaleIPs: ["100.64.0.10"] };
@@ -96,12 +136,12 @@ const self = { ID: "nMac", UserID: 42, DNSName: state.host + ".", HostName: "mac
 const listed = (dir) => fs.readdirSync(dir).filter((f) => ${SESSION}.test(f)).flatMap((f) => {
   let s;
   try { s = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")); } catch { return []; }
-  try { process.kill(s.pid, 0); return [s]; } catch {}
+  if (alive(s)) return [s];
   if (!state.sessionLingerMs) return [];
   const now = Date.now();
   if (!s.deadSeenAt) {
     s.deadSeenAt = now;
-    try { fs.writeFileSync(dir + "/" + f + ".next", JSON.stringify(s)); fs.renameSync(dir + "/" + f + ".next", dir + "/" + f); } catch {}
+    try { replace(dir + "/" + f, JSON.stringify(s)); } catch {}
     return [s];
   }
   if (now - s.deadSeenAt < state.sessionLingerMs) return [s];
@@ -158,11 +198,8 @@ else if (command === "serve" && rest[0] === "status") {
       process.exit(1);
     }
     const config = { TCP: { [port]: { HTTPS: true } }, Web: { [key]: { Handlers: { "/": { Proxy: target } } } }, ...(funnel && { AllowFunnel: { [key]: true } }) };
-    const record = { id: "fake-session-" + process.pid, pid: process.pid, args, config, from: [] };
-    const write = () => {
-      fs.writeFileSync(session + ".next", JSON.stringify(record));
-      fs.renameSync(session + ".next", session);
-    };
+    const record = { id: "fake-session-" + process.pid, pid: process.pid, args, config, from: [], ...(pipe && { pipe }) };
+    const write = () => replace(session, JSON.stringify(record));
     const announce = () => {
       write();
       out((funnel ? "Available on the internet:" : "Available within your tailnet:") + "\\n\\nhttps://" + key + "\\n|-- proxy " + target + "\\n\\nPress Ctrl+C to exit.\\n");
@@ -228,6 +265,9 @@ else if (command === "serve" && rest[0] === "status") {
       announce();
     });
   };
+  // Windows: the session's own pipe, held from before it's first written.
+  const pipe = process.platform === "win32" ? "fake-tailscale-" + process.pid + "-" + require("crypto").randomBytes(6).toString("hex") : "";
+  const start = (then) => (pipe ? require("net").createServer().listen(${JSON.stringify(PIPES)} + pipe, then) : then());
   const enable = setup.funnelEnable ?? state.funnelEnable;
   if (funnel && (setup.funnelDenied ?? state.funnelDenied)) {
     process.stderr.write(ALLOW);
@@ -243,9 +283,9 @@ else if (command === "serve" && rest[0] === "status") {
         if (JSON.parse(fs.readFileSync(setupFile, "utf8")).funnelEnabled !== true) return;
       } catch { return; }
       clearInterval(wait);
-      hold();
+      start(hold);
     }, 50);
-  } else hold();
+  } else start(hold);
 } else if (command === "serve" || command === "funnel") {
   const port = Number((rest.find((a) => a.startsWith("--https=")) || "--https=443").split("=")[1]);
   const target = rest.filter((a) => !a.startsWith("--")).at(-1);

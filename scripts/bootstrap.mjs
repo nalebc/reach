@@ -2,11 +2,11 @@ import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
 import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { parseOptions } from "./launcher-options.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
+import { agentStamp, dependenciesStamp, sourceStamp } from "./setup-stamp.mjs";
 // Windows PowerShell gets its own modules, never PowerShell 7's (started from
 // a PowerShell 7 window, every helper and terminal failed to load them).
 import { cleanPowerShellEnv } from "../server/powershell.mjs";
@@ -124,21 +124,6 @@ function lock() {
   }
   locked = true;
 }
-function digest(files) {
-  const h = crypto.createHash("sha256");
-  function visit(file) {
-    if (!fs.existsSync(file)) return;
-    if (fs.statSync(file).isDirectory()) {
-      for (const name of fs.readdirSync(file).sort())
-        visit(path.join(file, name));
-    } else {
-      h.update(file);
-      h.update(fs.readFileSync(file));
-    }
-  }
-  files.forEach(visit);
-  return h.digest("hex");
-}
 function npmCli() {
   for (const dir of (process.env.PATH || "").split(path.delimiter)) {
     const candidate = path.join(
@@ -192,23 +177,12 @@ async function prepare(options, { say, step, signal }) {
   try {
     stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
   } catch {}
-  const dependencies = `${digest(["package.json", "package-lock.json"])}:${process.versions.modules}:${process.platform}:${process.arch}`;
-  const source = digest([
-    "src",
-    "public",
-    "index.html",
-    "start.html",
-    "vite.config.mjs",
-    "tsconfig.json",
-  ]);
+  const dependencies = dependenciesStamp(root);
+  const source = sourceStamp(root);
   // Reach for agents (dist/agent.mjs): every file it was built from, as
   // esbuild listed them beside it. A server file it bundles (a tool's
   // schema) rebuilds it, alone; agents then pick it up by themselves.
-  const agentSource = () => {
-    let files;
-    try { files = JSON.parse(fs.readFileSync("dist/.agent-inputs.json", "utf8")); } catch { return ""; }
-    return Array.isArray(files) && files.length && files.every((file) => typeof file === "string") ? digest(files) : "";
-  };
+  const agentSource = () => agentStamp(root);
   let built = false;
   if (
     !packaged &&
@@ -241,10 +215,8 @@ async function prepare(options, { say, step, signal }) {
     fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
       mode: 0o600,
     });
-  // The browser sign-in client, for phones without the Tailscale app. Not on
-  // Windows without REACH_WINDOWS_ACCOUNT=1: its start page needs account
-  // approval (configure.mjs accountApproval), and it cost a first run 2 minutes.
-  if (!packaged && !options.local && (await import("./configure.mjs")).accountApproval()) {
+  // The browser sign-in client, for phones without the Tailscale app.
+  if (!packaged && !options.local) {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {
@@ -493,7 +465,7 @@ async function restart(options) {
 }
 try {
   let options = parseOptions(process.argv.slice(2));
-  const { configure, readPreferences, applyPreferences, accountApproval } =
+  const { configure, readPreferences, applyPreferences } =
     await import("./configure.mjs");
   const { ensureTailscale } = await import("./tailscale-connect.mjs");
   if (options.version) {
@@ -709,9 +681,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     const detached = detachedWarning({ service: !!options.service });
     if (detached) console.warn(detached);
     if (!options.local) {
-      // Windows keeps no account settings (pairing code, configure.mjs).
-      const byAccount = accountApproval();
-      if (byAccount && packaged && !readPreferences(root))
+      if (packaged && !readPreferences(root))
         console.log(
           `Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>" to keep your paired phones.\n`,
         );
@@ -737,12 +707,11 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         }
         // A background service can't ask; it reports what's missing instead.
         await ensureTailscale(options.service ? { interactive: false } : {});
-        const preferences =
-          byAccount && (readPreferences(root) || (await configure(root)));
+        const preferences = readPreferences(root) || (await configure(root));
         // Installed service arguments are its saved folder/port choices.
-        if (byAccount && !options.service)
+        if (!options.service)
           options = applyPreferences(options, preferences, process.argv.slice(2));
-        if (byAccount && !options.service && process.argv.includes("--https-port")) {
+        if (!options.service && process.argv.includes("--https-port")) {
           const { rememberHttpsPort } = await import("./configure.mjs");
           if (rememberHttpsPort(root, options.httpsPort))
             console.log(`Reach: port ${options.httpsPort} saved; later starts use it too.`);
@@ -779,6 +748,8 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
   if (error.paused) process.exitCode = 130;
   else {
     console.error(`\nReach: ${error.message}`);
-    process.exitCode = 1;
+    // Asked to start again at once (scripts/launch.mjs): crash-guard's
+    // CRASH_EXIT, so the window that started it does (scripts/supervise.mjs).
+    process.exitCode = error.relaunch ? 70 : 1;
   }
 }

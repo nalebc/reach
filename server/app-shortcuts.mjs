@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { apps, launchApp, exec } from "./platform.mjs";
+import { apps, launchApp, exec, openLinkOnWindows } from "./platform.mjs";
 import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
 import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
 import { bundledCodexPaths } from "./capabilities.mjs";
@@ -33,15 +33,7 @@ export function shortcutUrl(value) {
 async function openUrl(url) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", [url], { timeout: 12000 });
-  else if (process.platform === "win32")
-    // Not explorer.exe: it exits with 1 even when the page opened, so every
-    // shortcut read as failed (platform.mjs launchApp). The link travels as
-    // data, never as script text.
-    await exec(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:REACH_URL"],
-      { timeout: 12000, windowsHide: true, env: { ...process.env, REACH_URL: url } },
-    );
+  else if (process.platform === "win32") await openLinkOnWindows(url, { run: exec });
   else throw fail(501, "Desktop shortcuts support Mac and Windows.");
 }
 function definition(value) {
