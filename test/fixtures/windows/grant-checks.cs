@@ -2,11 +2,26 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.AccessControl;
+using System.Runtime.InteropServices;
 
 static class GrantChecks {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool QueryInformationJobObject(IntPtr job, int infoClass,
+    out uint value, int length, IntPtr returned);
+  static uint UiLimits(IntPtr job) {
+    uint limits;
+    if (!QueryInformationJobObject(job, 4, out limits, 4, IntPtr.Zero))
+      throw new Exception("Windows wouldn't report the job's UI limits.");
+    return limits;
+  }
   static int Main(string[] args) {
     try {
-      if (args[0] == "pin") {
+      if (args[0] == "job-limits") {
+        using (var restricted = NativeProc.JobObject.CreateForJobs(8))
+        using (var shell = NativeProc.JobObject.CreateForShell())
+          Console.WriteLine("{\"restricted\":" + UiLimits(restricted.Handle) +
+            ",\"shell\":" + UiLimits(shell.Handle) + "}");
+      } else if (args[0] == "pin") {
         IntPtr root = NtFiles.OpenByPath(args[1], true, false);
         IntPtr folder = IntPtr.Zero, file = IntPtr.Zero;
         try {

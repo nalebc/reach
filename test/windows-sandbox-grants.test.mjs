@@ -20,6 +20,10 @@ test("real Windows grants and revocation never change a junction target or a har
     ...["System.dll", "System.Core.dll"].map(name => `/reference:${path.join(path.dirname(csc), name)}`),
     path.resolve("scripts/native/sandbox.cs"), path.resolve("test/fixtures/windows/grant-checks.cs")], { windowsHide: true, timeout: 60000 });
   const run = async (...args) => (await exec(fixture, args, { windowsHide: true, timeout: 15000 })).stdout.trim();
+  // Read back the kernel's applied limits, without trying to sign out or
+  // alter the runner's desktop. All eight restrictions belong to jobs;
+  // the owner's approved Full-control shell keeps unrestricted UI access.
+  assert.deepEqual(JSON.parse(await run("job-limits")), { restricted: 0xff, shell: 0 });
   const shared = path.join(dir, "shared"), outside = path.join(dir, "outside");
   fs.mkdirSync(shared); fs.mkdirSync(outside);
   const secret = path.join(outside, "secret.txt"), safe = path.join(shared, "safe.txt");

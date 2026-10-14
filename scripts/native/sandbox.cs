@@ -777,7 +777,7 @@ static class NativeProc {
   const uint TOKEN_QUERY = 0x8, TOKEN_DUPLICATE = 0x2;
   const int JobObjectBasicUIRestrictions = 4, JobObjectBasicAccountingInformation = 1, JobObjectExtendedLimitInformation = 9;
   const uint JOB_LIMIT_ACTIVE_PROCESS = 0x8, JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x400;
-  const uint UILIMIT_ALL = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40; // handles, readclipboard, writeclipboard, systemparameters, displaysettings, globalatoms, desktop, exitwindows
+  const uint UILIMIT_ALL = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80; // handles, readclipboard, writeclipboard, systemparameters, displaysettings, globalatoms, desktop, exitwindows
   const uint FILE_GENERIC_READ = 0x120089;
 
   // ---- structs ----
@@ -897,13 +897,17 @@ static class NativeProc {
     public static JobObject CreateForJobs(int activeProcesses) {
       IntPtr handle = CreateJobObjectW(IntPtr.Zero, null);
       if (handle == IntPtr.Zero) throw Sandbox.Refusal(503, "Windows wouldn't create the sandbox's job object.");
-      var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-      ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_KILL_ON_JOB_CLOSE | JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | (activeProcesses > 0 ? JOB_LIMIT_ACTIVE_PROCESS : 0);
-      ext.BasicLimitInformation.ActiveProcessLimit = (uint)(activeProcesses > 0 ? activeProcesses : 0);
-      SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
-      var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS(); ui.UIRestrictionsClass = UILIMIT_ALL;
-      SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
-      return new JobObject(handle);
+      try {
+        var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_KILL_ON_JOB_CLOSE | JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | (activeProcesses > 0 ? JOB_LIMIT_ACTIVE_PROCESS : 0);
+        ext.BasicLimitInformation.ActiveProcessLimit = (uint)(activeProcesses > 0 ? activeProcesses : 0);
+        if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+          throw Sandbox.Refusal(503, "Windows wouldn't apply the sandbox's process limits.");
+        var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS(); ui.UIRestrictionsClass = UILIMIT_ALL;
+        if (!SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS))))
+          throw Sandbox.Refusal(503, "Windows wouldn't apply the sandbox's UI restrictions.");
+        return new JobObject(handle);
+      } catch { CloseHandle(handle); throw; }
     }
     // The Full-control shell's job: die-on-exception, with no UI restrictions
     // or capabilities. Full control has the owner's OS access, as on a Mac.
@@ -913,10 +917,13 @@ static class NativeProc {
     public static JobObject CreateForShell() {
       IntPtr handle = CreateJobObjectW(IntPtr.Zero, null);
       if (handle == IntPtr.Zero) throw Sandbox.Refusal(503, "Windows wouldn't create the shell's job object.");
-      var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-      ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-      SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
-      return new JobObject(handle);
+      try {
+        var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+        if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+          throw Sandbox.Refusal(503, "Windows wouldn't apply the shell's process limits.");
+        return new JobObject(handle);
+      } catch { CloseHandle(handle); throw; }
     }
     public int ActiveProcesses() {
       var acct = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
