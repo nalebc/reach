@@ -147,8 +147,9 @@ export async function installUpdateRuntime(
     maxBuffer: 2 * 1024 * 1024,
   });
   authorize();
-  const runtime = path.join(
-    path.dirname(path.dirname(recovery.brew)),
+  // Homebrew's paths are a Mac's, whatever computer reads this.
+  const runtime = path.posix.join(
+    path.posix.dirname(path.posix.dirname(recovery.brew)),
     "opt/node@24/bin/node",
   );
   const { stdout } = await run(runtime, ["-p", "process.versions.node"], {
@@ -213,8 +214,8 @@ export async function availableUpdateRuntime({
   }
   if (platform !== "darwin") return null;
   for (const brew of BREW) {
-    const runtime = path.join(
-      path.dirname(path.dirname(brew)),
+    const runtime = path.posix.join(
+      path.posix.dirname(path.posix.dirname(brew)),
       "opt/node@24/bin/node",
     );
     try {

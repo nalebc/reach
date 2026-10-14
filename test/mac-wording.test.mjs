@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // The phone said "Mac" to Windows owners in about twenty places (Oct 12
 // parity audit, docs/parity/AUDIT.md #25): words a page shows on every
@@ -46,7 +47,7 @@ const said = (text) =>
 test("pages shown on every computer say computerWord, not Mac; Mac-only features keep it", () => {
   const over = [];
   for (const name of fs.readdirSync(src).filter((f) => /\.tsx?$/.test(f)).sort()) {
-    const count = said(fs.readFileSync(path.join(src.pathname, name), "utf8"));
+    const count = said(fs.readFileSync(path.join(fileURLToPath(src), name), "utf8"));
     if (count > (ALLOWED[name] || 0)) over.push(`${name}: ${count} (allowed ${ALLOWED[name] || 0})`);
   }
   assert.deepEqual(over, [], "Use computerWord(peer.platform) from src/pause.ts for words every computer shows");
