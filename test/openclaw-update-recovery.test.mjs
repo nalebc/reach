@@ -49,7 +49,10 @@ test("approved installation preserves other runtimes and rechecks authorization 
   });
   const calls = [];
   let allowed = true;
+  // A Mac's recovery, wherever the test runs (a Windows host takes its own
+  // way: test/windows-openclaw.test.mjs).
   const deps = {
+    platform: "darwin",
     env: { PATH: "/bin" },
     authorize: () => {
       if (!allowed) throw Error("revoked");

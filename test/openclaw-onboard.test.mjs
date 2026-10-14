@@ -213,8 +213,9 @@ test("adding a key: OpenClaw's own paste-api-key, the key on stdin, then read ba
 });
 
 test("status reports install and setup; config path as OpenClaw's", async () => {
-  assert.equal(configFile({ env: {}, home: "/h" }), "/h/.openclaw/openclaw.json");
-  assert.equal(configFile({ env: { OPENCLAW_STATE_DIR: "/s" }, home: "/h" }), "/s/openclaw.json");
+  // As this computer writes paths (backslashes on Windows).
+  assert.equal(configFile({ env: {}, home: "/h" }), path.join("/h", ".openclaw", "openclaw.json"));
+  assert.equal(configFile({ env: { OPENCLAW_STATE_DIR: "/s" }, home: "/h" }), path.join("/s", "openclaw.json"));
   assert.equal(configFile({ env: { OPENCLAW_CONFIG_PATH: "/c.json", OPENCLAW_STATE_DIR: "/s" } }), "/c.json");
   const file = await tempConfig();
   const { setup: _last, ...fresh } = await onboardStatus({ has: async (n) => n === "openclaw", file, platform: "darwin" });
