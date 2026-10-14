@@ -196,7 +196,9 @@ static class DesktopFixture {
     if (!popup) {
       var menu = new MainMenu();
       var file = menu.MenuItems.Add("&File");
-      file.MenuItems.Add(new MenuItem("&Mark", (s, e) => form.Note("menu"), Shortcut.CtrlM));
+      var mark = new MenuItem("&Mark", (s, e) => form.Note("menu"), Shortcut.CtrlM);
+      file.MenuItems.Add(mark);
+      file.Popup += (s, e) => { if (File.Exists(Path.Combine(dir, name + ".menu-change"))) mark.Text = "&Changed command"; };
       form.Menu = menu;
     }
     button.Click += (s, e) => { form.Note("button"); button.Text = button.Text == "Mark" ? "Marked" : "Mark"; };

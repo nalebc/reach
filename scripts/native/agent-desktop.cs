@@ -4212,7 +4212,13 @@ static partial class Desk {
       if (Policy.MentionsReach(title, rules)) throw new Refusal(Policy.ReachReason, "blocked");
       if (rules.ProtectedTitleWords.Exists(protectedWord => protectedWord.Length > 0 && word.Contains(protectedWord)) || word.Contains("inspect element")) throw new Refusal(Policy.ProtectedReason, "blocked");
     }
-    if (!PressClassic(new IntPtr(root), bar, steps) && !PressThroughUia(root, names)) throw new Refusal("That menu item couldn't be pressed. Use its shortcut key instead.", "retry");
+    Action beforePress = () => {
+      ReadyToAct();
+      var front = FrontApp(rules);
+      if (front.Handle != root || front.Pid != target.App.Pid || front.Id.Created != target.App.Id.Created)
+        throw new Refusal("The menu's window changed. Read the menus again.", "retry");
+    };
+    if (!PressClassic(new IntPtr(root), bar, steps, beforePress) && !PressThroughUia(root, names, beforePress)) throw new Refusal("That menu item couldn't be pressed. Use its shortcut key instead.", "retry");
     var result = Ok();
     result["app"] = target.App.Name;
     result["bundle"] = target.App.Bundle;
@@ -4225,19 +4231,30 @@ static partial class Desk {
   // item is chosen, the menu never shown (as a Mac's AXPress): the menus on
   // its path are first told to get ready, as before they open (an app may dim
   // the item then), and a dimmed item isn't pressed.
-  static bool PressClassic(IntPtr window, IntPtr bar, List<KeyValuePair<IntPtr, MenuEntry>> path) {
+  static bool PressClassic(IntPtr window, IntPtr bar, List<KeyValuePair<IntPtr, MenuEntry>> path, Action beforePress) {
     var item = path[path.Count - 1];
     if (item.Value.Id == 0 || item.Value.Id > 0xFFFF) return false;
     UIntPtr answer;
-    Native.SendMessageTimeoutW(window, Native.WM_INITMENU, bar, IntPtr.Zero, Native.SMTO_ABORTIFHUNG, 500, out answer);
-    for (int i = 0; i + 1 < path.Count; i++)
-      Native.SendMessageTimeoutW(window, Native.WM_INITMENUPOPUP, path[i].Value.Submenu, new IntPtr(path[i].Value.Position & 0xFFFF), Native.SMTO_ABORTIFHUNG, 500, out answer);
-    var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STATE };
-    if (!Native.GetMenuItemInfoW(item.Key, item.Value.Id, false, ref info)) return false;
-    if ((info.fState & Native.MFS_DISABLED) != 0) throw new Refusal("\"" + Limit(item.Value.Title, 60) + "\" is dimmed right now.", "retry");
+    beforePress();
+    if (Native.SendMessageTimeoutW(window, Native.WM_INITMENU, bar, IntPtr.Zero, Native.SMTO_ABORTIFHUNG, 500, out answer) == IntPtr.Zero)
+      throw new Refusal("The app didn't prepare its menu. Read the menus again.", "retry");
+    for (int i = 0; i + 1 < path.Count; i++) {
+      beforePress();
+      if (Native.SendMessageTimeoutW(window, Native.WM_INITMENUPOPUP, path[i].Value.Submenu, new IntPtr(path[i].Value.Position & 0xFFFF), Native.SMTO_ABORTIFHUNG, 500, out answer) == IntPtr.Zero)
+        throw new Refusal("The app didn't prepare its menu. Read the menus again.", "retry");
+    }
+    // Apps may rename, replace or disable commands while preparing a menu.
+    // Keep the whole path's identity, not just the old command's enabled bit.
+    foreach (var step in path) {
+      var live = MenuEntries(step.Key).Find(entry => entry.Position == step.Value.Position);
+      if (live == null || live.Id != step.Value.Id || live.Submenu != step.Value.Submenu || live.Title != step.Value.Title)
+        throw new Refusal("That menu item changed. Read the menus again.", "retry");
+      if (!live.Enabled) throw new Refusal("\"" + Limit(live.Title, 60) + "\" is dimmed right now.", "retry");
+    }
+    beforePress();
     return Native.PostMessageW(window, Native.WM_COMMAND, new IntPtr((int)item.Value.Id), IntPtr.Zero);
   }
-  static bool PressThroughUia(long root, List<string> names) {
+  static bool PressThroughUia(long root, List<string> names, Action beforePress) {
     try {
       Node level = MenuBarOf(root);
       if (level == null) return false;
@@ -4250,16 +4267,18 @@ static partial class Desk {
         if (i == names.Count - 1) {
           var invoke = item.Element.GetCurrentPattern(Uia.InvokePattern) as IUIAutomationInvokePattern;
           if (invoke == null) return false;
+          beforePress();
           invoke.Invoke();
           return true;
         }
         var expand = item.Element.GetCurrentPattern(Uia.ExpandCollapsePattern) as IUIAutomationExpandCollapsePattern;
         if (expand == null) return false;
+        beforePress();
         expand.Expand();
         Thread.Sleep(150);
         level = item;
       }
-    } catch (Exception) { }
+    } catch (Refusal) { throw; } catch (Exception) { }
     return false;
   }
   // A menu item's items: its own children, or the menu Windows opened for it

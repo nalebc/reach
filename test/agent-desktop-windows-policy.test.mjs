@@ -233,13 +233,13 @@ test("every program is started with the user's own environment, after its manife
   assert.match(text, /case "browser-check": throw new Refusal\("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet\.", "setup_required"\);/);
 });
 
-test("a classic menu's item is pressed by its own command, after its menus get ready and only when it isn't dimmed; nothing else sends a command", () => {
+test("a classic menu's item keeps its identity after preparation and is pressed only while enabled; nothing else sends a command", () => {
   const text = code(source).join("\n");
   assert.equal((text.match(/Native\.WM_COMMAND/g) || []).length, 1, "one place sends a command");
   const press = text.split("static bool PressClassic(")[1].split("\n  }\n")[0];
-  const order = ["Native.WM_INITMENU,", "Native.WM_INITMENUPOPUP", "MFS_DISABLED", "Native.WM_COMMAND"].map((part) => press.indexOf(part));
+  const order = ["Native.WM_INITMENU,", "Native.WM_INITMENUPOPUP", "live.Title != step.Value.Title", "if (!live.Enabled)", "Native.WM_COMMAND"].map((part) => press.indexOf(part));
   assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), `ready, checked, then pressed: ${order}`);
-  assert.match(text, /if \(!PressClassic\(new IntPtr\(root\), bar, steps\) && !PressThroughUia\(root, names\)\)/, "UI Automation when there's no command to send");
+  assert.match(text, /if \(!PressClassic\(new IntPtr\(root\), bar, steps, beforePress\) && !PressThroughUia\(root, names, beforePress\)\)/, "UI Automation when there's no command to send");
 });
 
 test("every action waits for the owner's own desktop and for no elevated window in front, the ones that send no input too", () => {

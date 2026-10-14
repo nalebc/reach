@@ -499,6 +499,14 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   note({ menuPress: pressed });
   assert.equal(pressed.ok, true, JSON.stringify(pressed));
   await until(() => /^menu$/m.test(target.log()), "the menu item ran");
+  const menuCount = () => target.log().split(/\r?\n/).filter((line) => line === "menu").length;
+  const beforeMenuChange = menuCount();
+  fs.writeFileSync(path.join(work, "controls.menu-change"), "change during menu preparation");
+  const changedMenu = await h.send({ op: "act", action: { type: "menu", path: ["File", "Mark"] } });
+  assert.equal(changedMenu.ok, false, JSON.stringify(changedMenu));
+  assert.match(changedMenu.error, /menu item changed/i);
+  await sleep(100);
+  assert.equal(menuCount(), beforeMenuChange, "a changed command is never dispatched");
   // wait-change: the window changed its own text
   const before = (await h.send({ op: "elements" })).revision;
   await clickAt(target.button[0], target.button[1]);
