@@ -132,6 +132,9 @@ const fractions = (displays) => {
   return ([x, y]) => ({ x: (x - main.x) / main.width, y: (y - main.y) / main.height });
 };
 // The test's own real click (it runs elevated: its input reaches every window).
+// A test's console window, closed so it can't cover a later test's windows.
+const closeWindow = (handle) => exec(fixtureConsole, ["close", String(handle)], { windowsHide: true })
+  .catch(() => { throw Error(`window ${handle} stayed open after its test`); });
 // Given a pid, the click refuses a point some other window covers.
 const clickAt = (x, y, pid) => exec(fixtureConsole, ["click", String(x), String(y), ...(pid ? [String(pid)] : [])], { windowsHide: true });
 // A screenshot, saved; its pixels at screen points.
@@ -244,7 +247,8 @@ test("Reach in this PC's default terminal (a pseudo console on GitHub's runners)
   const file = path.join(work, "reach-pseudo.json");
   const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in"));
   t.after(() => { try { process.kill(reach.pid); } catch {} });
-  const [, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", "Reach"], { windowsHide: true })).stdout.trim(); } catch { return null; } }, "a window titled Reach")).split(",").map(Number);
+  const [pseudo, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", "Reach"], { windowsHide: true })).stdout.trim(); } catch { return null; } }, "a window titled Reach")).split(",").map(Number);
+  t.after(() => closeWindow(pseudo));
   const h = helper(t, { reachPid: reach.pid, console: true, medium: true });
   const ready = await h.send({ op: "rules", ...rulesFor("readonly") });
   assert.equal(ready.ok, true, JSON.stringify(ready));
@@ -281,6 +285,7 @@ test("Reach's own console window is closed to the agent whatever its title, and 
   const file = path.join(work, "reach.json");
   const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in").catch((error) => { throw Error(`${error.message}: the launcher said ${launcher || "nothing"}`); }));
   t.after(() => { try { process.kill(reach.pid); } catch {} });
+  t.after(() => closeWindow(reach.console));
   const [x, y, width, height] = (await exec(fixtureConsole, ["frame", String(reach.console)], { windowsHide: true })).stdout.trim().split(",").map(Number);
   await sleep(500);
   const h = helper(t, { reachPid: reach.pid, console: true, medium: true });
