@@ -45,7 +45,7 @@ export const suites = {
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
     // Auto-continue: here when usage is back, or the first provider free (Oct 14).
-    "auto-continue",
+    "auto-continue", "across-agents-ui", "claude-usage-ui",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

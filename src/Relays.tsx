@@ -97,13 +97,12 @@ export const relaysOf = (relays: Relay[], here: ChatRef, now = Date.now()) =>
       (["waiting", "sending"].includes(r.state) || now - r.updatedAt < 60 * 60 * 1000),
   );
 
-// Auto-continue that's on and waiting for a limit: a small sign by the chat's
-// name and "On" in its menu, never a row above the box (Oct 9: "it should
-// not show a big thing like this"). Out of usage, continuing or stopped, it
-// shows as a row again: then it's doing something.
-export const armedAutoContinue = (relays: Relay[], here: ChatRef) =>
+// The header shows auto-continue while armed. The usage panel also includes
+// watches waiting for usage to return, keeping their enabled button in place.
+// Sending and stopped watches still show their progress or problem as a row.
+export const armedAutoContinue = (relays: Relay[], here: ChatRef, { includeHolding = false } = {}) =>
   relays.find(
-    (r) => r.trigger === "usage" && r.state === "waiting" && !r.holding && r.chain.some((c) => c.agent === here.agent && c.id === here.id),
+    (r) => r.trigger === "usage" && r.state === "waiting" && (includeHolding || !r.holding) && r.chain.some((c) => c.agent === here.agent && c.id === here.id),
   ) || null;
 // Turned off by you (relays.mjs cancel): nothing to tell.
 export const quietRelay = (r: Relay) =>
