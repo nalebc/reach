@@ -20,6 +20,7 @@ import { handoffPersistentRoute } from "./persistent-serve.mjs";
 // computer, so stop and restart reach it whichever folder it came from.
 import { personalStopFile, processTable, reachHosts, stateOf, stopRequestFile, windowsHost, windowsImage, windowsReaches, windowsStarters } from "./instances.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
+import { backgroundTask, windowsTask } from "./windows-task.mjs";
 export { processTable };
 // Every Reach running (never this command itself); `root` limits it to one folder's.
 export const findReach = (root, table, self = process.pid) => reachHosts(table, { self, root });
@@ -178,9 +179,9 @@ export async function stopReach(
 // start: Windows hands ids out again); then what it left running, the same
 // way. Where the process list can't be read, the Reach this folder runs, as
 // FIRST_RUN_MATRIX H20 had it, said as such.
-// The background task (`task`) starts its Reach again when that Reach ends:
-// told not to first, as launchd's bootout does on a Mac.
-const noTask = { state: () => ({ installed: false, ours: false }), hold() {}, release() {}, end() {}, run() {} };
+// The background task (`task`: scripts/windows-task.mjs) starts its Reach
+// again when that Reach ends: told not to first, as launchd's bootout does
+// on a Mac.
 const living = (pid) => {
   try {
     process.kill(pid, 0);
@@ -206,7 +207,7 @@ async function stopWindows(
     alive = living,
     end = (pid) => process.kill(pid),
     graceMs = 15000,
-    task = noTask,
+    task = backgroundTask({ env }),
     ...thisFolder
   },
 ) {
@@ -341,7 +342,12 @@ async function stopThisFolder(
 }
 
 // The background service started again (stopped earlier, still installed).
-export function startService(root, { launchctl = (args) => execFileSync("/bin/launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }), home, uid } = {}) {
+// Windows: its task, run now.
+export function startService(root, { launchctl = (args) => execFileSync("/bin/launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }), home, uid, platform = process.platform, task = platform === "win32" ? windowsTask() : null } = {}) {
+  if (platform === "win32") {
+    if (!task.state(root).ours) throw Error("Reach's background service isn't installed from this folder.");
+    return task.run();
+  }
   const service = serviceState(root, { run: launchctl, home, uid });
   if (!service.ours) throw Error("Reach's background service isn't installed from this folder.");
   if (service.loaded) launchctl(["kickstart", "-k", service.target]);

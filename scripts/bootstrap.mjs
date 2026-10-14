@@ -537,7 +537,7 @@ async function startInBackground(options) {
       if (fs.readFileSync(handover, "utf8") === String(process.pid)) fs.rmSync(handover);
     } catch {}
   });
-  if (process.platform === "darwin") {
+  if (process.platform === "darwin" || process.platform === "win32") {
     const { ensureRuntime } = await import("./runtime.mjs");
     await ensureRuntime(state);
   }
@@ -620,9 +620,9 @@ ${command} update              Update to the latest Reach (installed with npm)
 ${command} import <folder>     Bring paired phones and settings from another Reach folder
 ${command} --version           Show the installed version
 ${command} cli                 Make reach a command in every Terminal
-${command} install             Mac: install a background LaunchAgent
+${command} install             ${process.platform === "win32" ? "Start Reach at sign-in, in the background (a scheduled task)" : "Mac: install a background LaunchAgent"}
 ${command} install --stay-awake Keep system/display awake while plugged in
-${command} uninstall           Stop and remove the service and its own Serve route
+${command} uninstall           ${process.platform === "win32" ? "Stop and remove the background task" : "Stop and remove the service and its own Serve route"}
 ${command} status              Where Reach runs (whichever folder), since when, its link
 ${command} stop                Stop every Reach on this computer: in any terminal, started
                                detached, or the background service (asks first if its
@@ -641,7 +641,7 @@ ${command} --https-port 8443    Tailscale HTTPS port
 
 ${process.platform === "win32"
   ? `Stay-awake asks Windows to keep the PC awake while Reach runs; it never changes
-power settings or unlocks a locked PC.`
+power settings or unlocks a locked PC. The background task starts at sign-in.`
   : `Stay-awake uses temporary power assertions; it never changes system settings
 or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.`}
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
@@ -720,12 +720,13 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
   } else if (options.command || options.background || options.stopBackground) {
     if (options.command === "install" || options.background) {
       await lock();
-      // An installed reach has no ./reach script to fetch the pinned runtime.
-      if (packaged && process.platform === "darwin") {
+      // An installed reach has no ./reach script to fetch the pinned runtime;
+      // on Windows, .\reach.cmd runs the PC's own Node when it has one.
+      if ((packaged && process.platform === "darwin") || process.platform === "win32") {
         const { ensureRuntime } = await import("./runtime.mjs");
         await ensureRuntime(state);
       }
-      if (!options.local && process.platform !== "win32") {
+      if (!options.local) {
         await ensureTailscale();
         const preferences = readPreferences(root) || (await configure(root));
         options = applyPreferences(options, preferences, process.argv.slice(2));
@@ -760,10 +761,12 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       const saved = JSON.parse(
         fs.readFileSync(path.join(state, "service.json"), "utf8"),
       );
+      // Windows names the same file in any case.
+      const same = (a, b) => (process.platform === "win32" ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
       if (
         !saved.installed ||
-        saved.root !== root ||
-        saved.node !== process.execPath ||
+        !same(saved.root, root) ||
+        !same(saved.node, process.execPath) ||
         saved.options.port !== options.port
       )
         throw Error(
