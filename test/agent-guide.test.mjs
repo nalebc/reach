@@ -14,13 +14,18 @@ const RULES = "Ask me before paying, sending or deleting anything.\nDon't share 
 // Oct 12: the agents that act on the screen are told how to go fast, as
 // every tool that acts says it (browser-tools.mjs).
 const FAST = `${GO_FAST}\n`;
+// Oct 13: the agents that act on the screen sign in without the owner: the
+// owner's Google (Apple, Microsoft) sign-in, else their vault; never what
+// waits for the owner. Apps also stays out of password apps.
+const SIGN_IN = 'Sign in with "Sign in with Google" (or Apple, Microsoft) on my account where the site offers it, otherwise from your vault, typed with "secret":true. I won\'t be there to help: skip my browser\'s saved passwords and passkeys, and cancel anything that asks for my fingerprint or password.';
+const STAY_OUT = "Stay out of password apps, Reach and Tailscale.";
 const preset = (policy, extra = {}) => ({ kind: "agent", scopes: [], policy: { invite: true, browser: true, ...policy }, ...extra });
 
 test("each preset says what it may do, in plain words, then the rules", () => {
   assert.equal(agentGuide(preset({ preset: "full" }), { word: "Mac", folders: ["Home", "Computer"] }),
-    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${FAST}${RULES}`);
+    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${SIGN_IN}\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }, { id: "/System/Applications/Notes.app" }] }), { word: "Mac" }),
-    `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${FAST}${RULES}`);
+    `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\n${SIGN_IN}\n${STAY_OUT}\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files", write: true }), { word: "Mac", folders: ["Project"] }),
     `You can read and change files in "Project". No screen, no commands.\n${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files" }), { word: "Mac", folders: ["Project", "Notes", "Taxes", "Photos", "Music"] }),
@@ -29,13 +34,19 @@ test("each preset says what it may do, in plain words, then the rules", () => {
     `You can look: my screen and files in "Home" and "Shared". No clicks, no changes.\nHidden from you: "Messages" and "Mail".\n${RULES}`);
 });
 
-test("Always says so; a browser page signs in with Sign in; the computer's own word", () => {
+test("Always says so; a browser page's vault is Sign in; the computer's own word", () => {
   const always = agentGuide(preset({ preset: "readonly", standing: true }), { word: "Mac", folders: ["Home"] });
   assert.match(always, /^You can look: my screen and files in "Home"\. No clicks, no changes\.\nYour access lasts until I end it\.\n/);
   const apps = preset({ preset: "apps", apps: [{ id: "C:\\Program Files\\App\\app.exe", name: "App" }] });
-  assert.match(agentGuide(apps, { word: "Windows PC", page: true }), /Fill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale\./);
+  assert.match(agentGuide(apps, { word: "Windows PC", page: true }), /where the site offers it, otherwise from your vault, with Sign in\. I won't be there to help/);
+  assert.match(agentGuide(apps, { word: "Windows PC", page: true }), /\nStay out of password apps, Reach and Tailscale\.\n/);
   assert.doesNotMatch(agentGuide(apps, { word: "Windows PC", page: true }), /secret/);
   assert.match(agentGuide(preset({ preset: "full" }), { word: "Windows PC" }), /full control of my Windows PC as my user account/);
+  // Full control signs in the same way; nothing is closed to it, so no "stay out".
+  assert.match(agentGuide(preset({ preset: "full" }), { word: "Windows PC", page: true }), /"Sign in with Google"[^\n]*with Sign in\. I won't be there to help: skip my browser's saved passwords and passkeys/);
+  assert.doesNotMatch(agentGuide(preset({ preset: "full" }), { word: "Mac" }), /Stay out/);
+  // An older invitation that shared apps on the screen: the same sign-in.
+  assert.ok(agentGuide(preset({ screen: "apps" }), { word: "Mac" }).includes(`\n${SIGN_IN}\n${STAY_OUT}\n`));
   assert.match(agentGuide(preset({ preset: "full" }), {}), /full control of my computer /, "no word given: never \"Mac\"");
   // Full control has no hidden apps, whatever is stored.
   assert.doesNotMatch(agentGuide(preset({ preset: "full", hidden: [{ id: "/x.app", name: "Mail" }] }), { word: "Mac" }), /Hidden/);
@@ -73,12 +84,12 @@ test("presets: the guide follows the agent's current access, for that agent only
   const agent = await f.join({ preset: "apps", apps: [{ id: apps.chrome.id }] });
   let view = await agent.as("/api/browser");
   assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(view.body.guide, `You get only "Google Chrome", on my screen. Nothing else.\nType passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.\n${FAST}${RULES}`);
+  assert.equal(view.body.guide, `You get only "Google Chrome", on my screen. Nothing else.\n${SIGN_IN}\n${STAY_OUT}\n${FAST}${RULES}`);
   const device = await agent.as("/api/device");
   assert.equal(device.body.guide, view.body.guide);
   // Its page (a browser) signs in with Sign in.
   const page = await agent.as("/api/browser", { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" } });
-  assert.match(page.body.guide, /Fill passwords from your vault with Sign in/);
+  assert.match(page.body.guide, /otherwise from your vault, with Sign in\./);
   // The owner picks Notes instead: the next ask says so.
   const changed = await f.call(`/api/guests/${agent.created.clientId}/access`, { method: "POST", body: { apps: [{ id: apps.notes.id }] } });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));

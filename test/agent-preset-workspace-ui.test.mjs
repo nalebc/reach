@@ -302,6 +302,9 @@ test("the picture is the Mac: clicks, right-clicks and double-clicks land where 
   const { c, calls } = await open(full);
   const frame = await screen(c);
   at(frame, "click", 50, 25);
+  // Marked where it was made, at once. The ring fades 3 s after the click;
+  // looked for only once the Mac's answer came, a starved machine missed it.
+  await dom.waitFor(() => c.querySelector(".ap-mark-ring"));
   await dom.waitFor(() => inputs(calls).length === 1);
   assert.deepEqual(inputs(calls)[0], {
     type: "click",
@@ -314,7 +317,6 @@ test("the picture is the Mac: clicks, right-clicks and double-clicks land where 
     /Done: clicked at 25%, 25% in Google Chrome\./.test(c.textContent),
   );
   assert.ok(c.querySelector(".ap-status.is-done"));
-  assert.ok(c.querySelector(".ap-mark-ring"), "the last click is marked");
   at(frame, "contextmenu", 160, 10);
   await dom.waitFor(() => inputs(calls).length === 2);
   assert.deepEqual(inputs(calls)[1], {
@@ -824,6 +826,34 @@ test("typing acknowledgement preserves a newer edit even if it matches the origi
     "an input revision, not only string equality, identifies the submitted draft",
   );
   assert.equal(inputs(calls).length, 1);
+});
+
+test("Edit tapped the moment a file opens opens its editor", async () => {
+  const { c } = await open(full, undefined, "Files");
+  const read = await dom.waitFor(() =>
+    [...c.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Read file notes.md",
+    ),
+  );
+  // A quick thumb, or a phone busy as the file drew: the tap lands the
+  // moment Edit is there, before anything else on the page has run.
+  const tapped = new Promise((resolve) => {
+    const watch = new dom.window.MutationObserver(() => {
+      const edit = button(c, "Edit notes.md");
+      if (!edit) return;
+      watch.disconnect();
+      edit.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      resolve();
+    });
+    watch.observe(c, { childList: true, subtree: true });
+  });
+  await click(read);
+  await tapped;
+  await settle(50);
+  assert.ok(
+    c.querySelector('textarea[aria-label="Edit notes.md"]'),
+    "the editor is open",
+  );
 });
 
 test("commands and file changes live on the same page with their results", async () => {
