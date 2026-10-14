@@ -4,10 +4,11 @@ Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on
 
 ## Today on Windows (Oct 13)
 
-- On by detection, with no switch, not yet run on a real PC: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why.
+- On by detection, with no switch: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why. Its unit and launch tests pass on GitHub's Windows runner; the runner's peer-check spike against a real LocalSystem service is being worked on, and no physical PC has run it.
+- Built Oct 13 and passing on GitHub's Windows runner (not yet on a physical PC): the Claude desktop app's records, archive and links in either install's folder, and the PC's idle and lock readings (N, part); Reach's terminals in the owner's own shell (#34); drives attached later (#40); the launcher named as the PC runs it (#43); the notification-area icon with Pause and Resume (#16); apps' icons and agents' logos (#28); Word, RTF and OpenDocument previews (#37); voice memos as words (#35).
 - Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E; agents' and invited people's commands (no sandbox; refused since `aa09b7da` instead of running unsandboxed) until C.
 - Works: command-line agents over the tailnet for files.
-- Missing: background mode and start at sign-in, sleep prevention (K); one Reach per PC, restarts and updates in a visible window (L); the rest of P, T, G, H and N.
+- Being built (Oct 13): K and L, B, C, T, M #15 (OpenClaw), P #26 (H.264 without FFmpeg), U (proof on the runner). Still to start: E and F after B and C; G and H after B; P's guest mask and owner field probe after B; N's app-open detection after L.
 
 ## What parity means
 
@@ -74,7 +75,19 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 - #44: `reach cli` writes a `reach.cmd`.
 - #48: docs.
 
-Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12. Neither has been compiled or run on Windows yet.
+Built on Oct 13, each with unit tests and its real-Windows test passing on GitHub's windows-2025 runner (not a physical PC):
+
+| Item | What | Runner |
+| --- | --- | --- |
+| D (no switch) | Browser sign-in, invites, Face ID join, linked computers on by detection; security review fixes | [38509795461](https://github.com/nalebc/reach/actions/runs/38509795461) |
+| #9 (part) | The Claude app's records in %APPDATA%\Claude or its package's copy; idle and lock readings (scripts/native/presence.cs); claude:// links through Windows' own handler | [38508473706](https://github.com/nalebc/reach/actions/runs/38508473706) |
+| #34, #40, #43 | The owner's shell (Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell); drives attached later; the launcher's name on the phone | [38508476228](https://github.com/nalebc/reach/actions/runs/38508476228) |
+| #16 | Reach's icon in the notification area (scripts/native/tray.cs) | [38508861579](https://github.com/nalebc/reach/actions/runs/38508861579) |
+| #28 | Apps' icons and agents' logos (scripts/native/app-icons.cs) | [38509987557](https://github.com/nalebc/reach/actions/runs/38509987557) |
+| #37 | Word, RTF and OpenDocument text read in JS off a Mac; .doc stays a download | [38510232232](https://github.com/nalebc/reach/actions/runs/38510232232) |
+| #35 | Voice memos through System.Speech (scripts/native/transcribe.cs) | [38511383861](https://github.com/nalebc/reach/actions/runs/38511383861) |
+
+Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12.
 
 - **D:** on by detection since Oct 13, with no switch, Face ID join and linked computers included (owner: "No flag should exist"). A security review of the switch-free door runs with that change.
 - **M:**
