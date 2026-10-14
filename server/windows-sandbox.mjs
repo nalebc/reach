@@ -294,3 +294,60 @@ export function jobRequestEntries(descriptor, { command, cwd, timeoutMs, interpr
   for (const { address, port } of loopback) entries.push(["loopback", address + ":" + port]);
   return entries;
 }
+
+// ---------------------------------------------------------------------------
+// §3.2 Full-control shell. Parity with the Mac's unsandboxed /bin/zsh: a Job
+// Object only, on the owner's own token, no AppContainer and no caps, killed
+// only on abort or timeout (so `start`-ed background apps survive a normal
+// completion, as the Mac's process-group kill leaves them). The env is the
+// owner's (built helper-side with CreateEnvironmentBlock + REACH_AGENT=1), so
+// the Mac env createAgentShell passes is ignored (finding 17).
+export function shellRequestEntries({ command, cwd, timeoutMs, interpreter = "cmd.exe" }) {
+  return [
+    ["mode", "shell"],
+    ["interpreter", interpreter],
+    ["command", command],
+    ["cwd", cwd || ""],
+    ["timeoutMs", String(timeoutMs || 60000)],
+  ];
+}
+
+// The production `run` for createAgentShell on Windows (wired at index.mjs's
+// agentShell creation, not the test override). It proves the helper runs (§2.2),
+// then streams one shell command through it, honouring the caller's timeout and
+// its revocation signal (stdin-EOF aborts; the Job Object reaps the tree).
+export function windowsShellRunner(windowsSandbox, { start = spawnVerified, interpreter = "cmd.exe" } = {}) {
+  return async ({ command, cwd, timeoutMs = 60000, maxOutput = 256 * 1024, signal }) => {
+    if (signal?.aborted) throw signal.reason;
+    const ready = await windowsSandbox.ready();
+    if (!ready.ok) throw fail(503, ready.reason);
+    return await new Promise((resolve, reject) => {
+      let output = "", size = 0, truncated = false, exitCode = null, settled = false;
+      let child;
+      const collect = (buffer) => {
+        if (size >= maxOutput) { truncated = true; return; }
+        const slice = buffer.subarray(0, maxOutput - size);
+        output += slice.toString("utf8"); size += slice.length;
+        if (slice.length < buffer.length) truncated = true;
+      };
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+      const settle = (timedOut) => { if (settled) return; settled = true; cleanup(); resolve({ output: output + (truncated ? "\n[Output truncated]" : ""), exitCode, timedOut }); };
+      const die = (error) => { if (settled) return; settled = true; cleanup(); try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} reject(error); };
+      const onAbort = () => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} die(signal.reason); };
+      const timer = setTimeout(() => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} settle(true); }, timeoutMs);
+      timer.unref?.();
+      try { child = start(ready.built.file, ready.built.sha256, ["run"], { cwd, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); }
+      catch { return die(fail(503, "The command could not start.")); }
+      const read = createSandboxFrameReader({
+        onStdout: collect, onStderr: collect,
+        onExit: (code) => { exitCode = code; settle(false); },
+        onRefused: ({ status, message }) => die(fail([400, 403, 409, 503].includes(status) ? status : 503, message)),
+        onError: () => die(fail(503, "The command could not complete.")),
+      });
+      child.stdout.on("data", read);
+      child.on("error", () => die(fail(503, "The command could not start.")));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try { child.stdin.write(encodeSandboxRequest(shellRequestEntries({ command, cwd, timeoutMs, interpreter }))); } catch { die(fail(503, "The command could not start.")); }
+    });
+  };
+}

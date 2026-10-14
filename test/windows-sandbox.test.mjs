@@ -240,3 +240,59 @@ test("a Windows job runs through the helper: the framed request carries the gran
   // Without a helper, a Windows sandboxed job refuses rather than running.
   assert.throws(() => jobs.start({ command: "echo hi", cwd: "C:\\x", timeoutMs: 1000 }, "agent", { sandbox }), { status: 503 });
 });
+
+import { windowsShellRunner } from "../server/windows-sandbox.mjs";
+
+const i32 = (n) => { const b = Buffer.alloc(4); b.writeInt32BE(n, 0); return b; };
+const shellChild = (written) => {
+  const child = new EventEmitter();
+  child.pid = 99;
+  child.stdin = { write: (b) => { written.push(b); return true; }, end() {}, writable: true };
+  child.stdout = new EventEmitter();
+  child.kill = () => {};
+  return child;
+};
+const readyStub = { ready: async () => ({ ok: true, built: { file: "C:\\native\\reach-sandbox.exe", sha256: "z" } }) };
+
+test("the Full-control shell runner frames a shell request and reports output and exit", async () => {
+  const written = [];
+  let child;
+  const run = windowsShellRunner(readyStub, { start: () => (child = shellChild(written)) });
+  const promise = run({ command: "dir", cwd: "C:\\Users\\me", timeoutMs: 5000, maxOutput: 1024, signal: new AbortController().signal });
+  await until(() => !!child);
+  const { entries } = decodeRequest(Buffer.concat(written));
+  assert.ok(entries.some(([k, v]) => k === "mode" && v === "shell"));
+  assert.ok(entries.some(([k, v]) => k === "command" && v === "dir"));
+  assert.ok(entries.some(([k, v]) => k === "interpreter" && v === "cmd.exe"));
+  child.stdout.emit("data", frame("O", Buffer.from("Volume in drive C")));
+  child.stdout.emit("data", frame("X", i32(0)));
+  assert.deepEqual(await promise, { output: "Volume in drive C", exitCode: 0, timedOut: false });
+});
+
+test("the shell runner times out and surfaces a refusal frame", async () => {
+  // A command that never exits times out (the Job Object reaps the tree).
+  const timedOut = await windowsShellRunner(readyStub, { start: () => shellChild([]) })({ command: "pause", cwd: "C:\\x", timeoutMs: 40, maxOutput: 1024, signal: new AbortController().signal });
+  assert.equal(timedOut.timedOut, true);
+  // A refusal frame from the helper rejects with its status.
+  let child;
+  const promise = windowsShellRunner(readyStub, { start: () => (child = shellChild([])) })({ command: "x", cwd: "C:\\x", timeoutMs: 5000, maxOutput: 1024, signal: new AbortController().signal });
+  await until(() => !!child);
+  child.stdout.emit("data", frame("F", Buffer.concat([(() => { const b = Buffer.alloc(4); b.writeUInt32BE(403, 0); return b; })(), Buffer.from("Command access changed.")])));
+  await assert.rejects(promise, (e) => e.status === 403);
+});
+
+test("the shell runner aborts on its revocation signal", async () => {
+  const controller = new AbortController();
+  let child;
+  const promise = windowsShellRunner(readyStub, { start: () => (child = shellChild([])) })({ command: "sleep", cwd: "C:\\x", timeoutMs: 5000, maxOutput: 1024, signal: controller.signal });
+  await until(() => !!child);
+  const reason = Object.assign(new Error("Command access changed."), { status: 403 });
+  controller.abort(reason);
+  await assert.rejects(promise, (e) => e === reason);
+});
+
+test("reach_shell's description stays the Mac's wording on macOS and names the Job Object on Windows", () => {
+  const source = fs.readFileSync(fileURLToPath(new URL("../server/browser-tools.mjs", import.meta.url)), "utf8");
+  assert.match(source, /macOS permissions still apply\./, "the Mac wording is unchanged");
+  assert.match(source, /Runs inside a Job Object as the owner's Windows account\./, "Windows names the Job Object");
+});

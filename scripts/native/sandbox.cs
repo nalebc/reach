@@ -144,6 +144,8 @@ static class Sandbox {
     switch (mode) {
       case "jobs":
         return Jobs.Run(request, Emit);
+      case "shell":
+        return Shell.Run(request, Emit);
       default:
         throw new Refused(400, "This sandbox mode is not available on this computer.");
     }
@@ -734,6 +736,20 @@ static class NativeProc {
       SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
       return new JobObject(handle);
     }
+    // The Full-control shell's job (§3.2, §6): die-on-exception and the UI
+    // restrictions, but no caps and NOT kill-on-close, so a normal completion
+    // leaves `start`-ed background apps running (the Mac's process-group kill
+    // leaves them too); the helper terminates the job only on abort or timeout.
+    public static JobObject CreateForShell() {
+      IntPtr handle = CreateJobObjectW(IntPtr.Zero, null);
+      if (handle == IntPtr.Zero) throw Sandbox.Refusal(503, "Windows wouldn't create the shell's job object.");
+      var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+      SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
+      var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS(); ui.UIRestrictionsClass = UILIMIT_ALL;
+      SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
+      return new JobObject(handle);
+    }
     public int ActiveProcesses() {
       var acct = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
       if (!QueryInformationJobObject(Handle, JobObjectBasicAccountingInformation, ref acct, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero)) return 0;
@@ -746,15 +762,16 @@ static class NativeProc {
   // A launched, Job-assigned, AppContainer process, with the parent ends of its
   // output pipes. Its only inherited handles are the three std pipes (HANDLE_LIST).
   public class Launched : IDisposable {
-    public IntPtr Process, Thread; public int ProcessId;
+    public IntPtr Process, Thread; public int ProcessId; public bool TimedOut;
     public Stream StdoutRead, StderrRead;
     IntPtr stdinNul, stdoutWrite, stderrWrite, stdoutReadH, stderrReadH, attributeList;
     public void Resume() { ResumeThread(Thread); }
     public void Kill() { try { TerminateProcess(Process, 1); } catch (Exception) { } }
     public int WaitForExit(int ms) {
-      WaitForSingleObject(Process, ms < 0 ? 0xFFFFFFFF : (uint)ms);
+      uint waited = WaitForSingleObject(Process, ms < 0 ? 0xFFFFFFFF : (uint)ms);
+      if (waited == 0x102) { TimedOut = true; Kill(); WaitForSingleObject(Process, 2000); } // WAIT_TIMEOUT
       uint code; if (!GetExitCodeProcess(Process, out code)) return -1;
-      if (code == 259) { Kill(); return -1; } // STILL_ACTIVE at the deadline
+      if (code == 259) return -1; // STILL_ACTIVE
       return unchecked((int)code);
     }
     internal void Adopt(PROCESS_INFORMATION pi, IntPtr nul, IntPtr outW, IntPtr errW, IntPtr outR, IntPtr errR, IntPtr attrs) {
@@ -781,16 +798,19 @@ static class NativeProc {
     SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
     IntPtr nul = CreateFileW("NUL", GENERIC_READ, FILE_SHARE_ALL, ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
 
-    // The attribute list: the child is in the job and the AppContainer at
-    // creation (no unassigned window), and inherits only these three handles.
+    // The attribute list: the child is in the job at creation (no unassigned
+    // window), inherits only these three handles, and — for jobs and scripts —
+    // is placed in the AppContainer. The Full-control shell has no container, so
+    // it runs on the owner's token with no SECURITY_CAPABILITIES attribute.
+    int attrCount = (container != null ? 1 : 0) + 2;
     IntPtr size = IntPtr.Zero;
-    InitializeProcThreadAttributeList(IntPtr.Zero, 3, 0, ref size);
+    InitializeProcThreadAttributeList(IntPtr.Zero, attrCount, 0, ref size);
     IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
-    if (!InitializeProcThreadAttributeList(attrs, 3, 0, ref size)) throw Sandbox.Refusal(503, "Windows wouldn't prepare the sandbox launch.");
+    if (!InitializeProcThreadAttributeList(attrs, attrCount, 0, ref size)) throw Sandbox.Refusal(503, "Windows wouldn't prepare the sandbox launch.");
     IntPtr handleArray = Marshal.AllocHGlobal(IntPtr.Size * 3);
     Marshal.WriteIntPtr(handleArray, 0, nul); Marshal.WriteIntPtr(handleArray, IntPtr.Size, outWrite); Marshal.WriteIntPtr(handleArray, IntPtr.Size * 2, errWrite);
     IntPtr jobHandlePtr = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobHandlePtr, job.Handle);
-    UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
+    if (container != null) UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
     UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobHandlePtr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero);
     UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handleArray, (IntPtr)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero);
 
@@ -799,7 +819,7 @@ static class NativeProc {
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = nul; startup.StartupInfo.hStdOutput = outWrite; startup.StartupInfo.hStdError = errWrite;
     startup.lpAttributeList = attrs;
-    IntPtr env = BuildEnvironment(container.TempFolder);
+    IntPtr env = BuildEnvironment(container != null ? container.TempFolder : null);
     uint flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | (suspended ? CREATE_SUSPENDED : 0);
     PROCESS_INFORMATION pi;
     bool ok = CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags, env, cwd, ref startup, out pi);
@@ -873,16 +893,63 @@ static class NativeProc {
   }
 
   static IntPtr BuildEnvironment(string tempFolder) {
+    // The owner's own environment (the helper runs as the owner), minus Reach's
+    // own REACH_* variables, plus REACH_AGENT=1 — the shell's CreateEnvironmentBlock
+    // equivalent (§3.2). For an AppContainer job, TEMP/TMP point at the
+    // container's own folder, which is all it can write (finding 10); the shell
+    // keeps the owner's TEMP.
     var sb = new StringBuilder();
+    bool overrideTemp = !string.IsNullOrEmpty(tempFolder);
     foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
       string key = (string)entry.Key;
       if (key.StartsWith("REACH_", StringComparison.OrdinalIgnoreCase)) continue;
-      if (string.Equals(key, "TEMP", StringComparison.OrdinalIgnoreCase) || string.Equals(key, "TMP", StringComparison.OrdinalIgnoreCase)) continue;
+      if (overrideTemp && (string.Equals(key, "TEMP", StringComparison.OrdinalIgnoreCase) || string.Equals(key, "TMP", StringComparison.OrdinalIgnoreCase))) continue;
       sb.Append(key).Append('=').Append((string)entry.Value).Append('\0');
     }
-    if (!string.IsNullOrEmpty(tempFolder)) { sb.Append("TEMP=").Append(tempFolder).Append('\0'); sb.Append("TMP=").Append(tempFolder).Append('\0'); }
+    if (overrideTemp) { sb.Append("TEMP=").Append(tempFolder).Append('\0'); sb.Append("TMP=").Append(tempFolder).Append('\0'); }
     sb.Append("REACH_AGENT=1\0\0");
     byte[] bytes = Encoding.Unicode.GetBytes(sb.ToString());
     IntPtr ptr = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, ptr, bytes.Length); return ptr;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §3.2 Full-control shell. The Mac runs /bin/zsh unsandboxed as the owner;
+// Windows matches that with a Job Object on the owner's token — no AppContainer,
+// no caps — running cmd.exe /d /s /c. Output is relayed as frames; the main
+// process's exit is reported and then the helper leaves the job (so background
+// apps survive), terminating it only on abort (Node's stdin EOF) or timeout.
+static class Shell {
+  public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
+    string command = request.Get("command", "");
+    string cwd = request.Get("cwd", "");
+    if (string.IsNullOrEmpty(cwd)) cwd = null;
+    int timeoutMs = request.Int("timeoutMs", 60000);
+    using (NativeProc.JobObject job = NativeProc.JobObject.CreateForShell()) {
+      string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+      NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, null, job, false);
+      try {
+        emit(Sandbox.TypeStarted, BeBytes(launched.ProcessId));
+        var pump = new List<Thread>();
+        pump.Add(NativeProc.Pump(launched.StdoutRead, Sandbox.TypeStdout, emit));
+        pump.Add(NativeProc.Pump(launched.StderrRead, Sandbox.TypeStderr, emit));
+        // The lifeline: Node's EOF on our stdin is an abort — reap the tree.
+        Thread lifeline = new Thread(delegate () {
+          try { Stream stdin = Console.OpenStandardInput(); byte[] one = new byte[1]; while (stdin.Read(one, 0, 1) > 0) { } } catch (Exception) { }
+          try { job.Terminate(); } catch (Exception) { }
+        });
+        lifeline.IsBackground = true; lifeline.Start();
+        int code = launched.WaitForExit(timeoutMs);
+        emit(Sandbox.TypeExit, BeBytes(code));
+        // On a timeout the whole tree is reaped; on a normal completion the job
+        // is left open so backgrounded apps keep running (parity with the Mac).
+        if (launched.TimedOut) job.Terminate();
+        foreach (Thread t in pump) { try { t.Join(1000); } catch (Exception) { } }
+        return 0;
+      } finally { launched.Dispose(); }
+    }
+  }
+  static byte[] BeBytes(int value) {
+    return new byte[] { (byte)((value >> 24) & 0xff), (byte)((value >> 16) & 0xff), (byte)((value >> 8) & 0xff), (byte)(value & 0xff) };
   }
 }

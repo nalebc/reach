@@ -124,7 +124,7 @@ import { startInTerminal } from "../scripts/stop.mjs";
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
-import { createWindowsSandbox, windowsJobSandbox } from "./windows-sandbox.mjs";
+import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -1146,9 +1146,12 @@ export async function createReach(overrides = {}) {
     ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
     : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
-  // the other agent commands.
+  // the other agent commands. On Windows its production runner is injected here
+  // (not through the test override): a Job Object on the owner's token, no
+  // AppContainer, which ignores the Mac env createAgentShell passes (§3.2).
   const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
-    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun }
+      : process.platform === "win32" ? { run: windowsShellRunner(windowsSandbox) } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
