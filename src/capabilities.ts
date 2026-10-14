@@ -36,9 +36,10 @@ export function workspaceCapabilities(
       (allowed("apps") || allowed("apps:open")),
     shortcuts:
       admin && desktop && !!device?.capabilities.apps && allowed("apps"),
+    // The computer's own terminal windows (a Mac's or a Windows PC's).
     desktopTerminals:
       admin &&
-      device?.platform === "darwin" &&
+      (device?.platform === "darwin" || device?.platform === "win32") &&
       !!device?.capabilities.terminal &&
       allowed("terminal"),
     screen: screenSupported && !!device?.capabilities.screen,

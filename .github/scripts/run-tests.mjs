@@ -56,6 +56,12 @@ export const suites = {
     // Telegram's token file closed to others, a timeout ending the whole
     // tree, and the install terminal's verdict.
     "windows-openclaw",
+    // The PC's own terminals, workstream T: Windows Terminal's tabs and
+    // console windows listed, read, typed into, closed and opened from the
+    // phone, the real helper driven on this runner; the shared list and its
+    // checks with them.
+    "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
+    "desktop-terminals", "terminal-titles", "terminal-list-ui",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

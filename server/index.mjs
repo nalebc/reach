@@ -110,7 +110,7 @@ import { createNotifications, readAttention } from "./notifications.mjs";
 import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
-import { DesktopInput, desktopBinary, desktopDisplays } from "./desktop-native.mjs";
+import { DesktopInput, desktopBinary, desktopDisplays, windowsBinary } from "./desktop-native.mjs";
 import { prepareOwners } from "./windows-owners.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
@@ -517,6 +517,10 @@ export async function createReach(overrides = {}) {
   const warming = new AbortController();
   if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => void desktopBinary(config, "browser-files", { signal: warming.signal }).catch(() => {}));
+  // A Windows PC's terminals helper too, so the phone's first look at the
+  // PC's own terminals doesn't wait for csc (windows-terminals.mjs).
+  if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void windowsBinary(config, "windows-terminals", { signal: warming.signal }).catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
@@ -524,6 +528,9 @@ export async function createReach(overrides = {}) {
     // Terminal shortcuts open a Mac terminal window and run one command.
     macTerminal: (command, authorize) =>
       desktopTerminals.create("terminal", authorize, command),
+    // On a Windows PC: Windows Terminal, else a console window, in the folder.
+    windowsTerminal: ({ cwd, command }, authorize) =>
+      desktopTerminals.create("windows-terminal", authorize, command, { cwd }),
     resolveFolder: (root, folder) => {
       const dir = resolve(root, folder);
       if (!fs.statSync(dir).isDirectory()) throw fail(400, "Choose a folder.");
@@ -534,13 +541,15 @@ export async function createReach(overrides = {}) {
   // System-dialog input needs an owner device or explicit Full-person
   // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
-  const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
-  // The Mac's Terminal windows, told by events while a phone is connected;
-  // changes reach phones at once through their live connection.
+  const desktopTerminals = new DesktopTerminals({ dataDir: config.dataDir, ...overrides.desktopTerminals });
+  // The computer's own terminal windows (a Mac's Terminal and iTerm2, a
+  // Windows PC's Windows Terminal and consoles), told by events while a
+  // phone is connected; changes reach phones at once through their live
+  // connection.
   const presenceNudges = new Set();
   const macTerminalWatch = new MacTerminalWatch({
     terminals: desktopTerminals,
-    start: overrides.terminalWatch || terminalWatchHelper(config),
+    start: overrides.terminalWatch || terminalWatchHelper(config, { platform: desktopTerminals.platform }),
     onChange: () => {
       for (const nudge of presenceNudges) nudge();
     },
@@ -3235,7 +3244,7 @@ export async function createReach(overrides = {}) {
     )
       throw fail(
         403,
-        "Only a paired person can access existing Mac terminals.",
+        `Only a paired person can access existing ${computerWord(desktopTerminals.platform)} terminals.`,
       );
   };
   app.get("/api/terminals/desktop", async (req, res) =>
@@ -3251,13 +3260,13 @@ export async function createReach(overrides = {}) {
       req.body?.provider,
       authorizeDesktopTerminal(req),
     );
-    record("terminal", "Opened a Mac terminal");
+    record("terminal", `Opened a ${computerWord(desktopTerminals.platform)} terminal`);
     res.json(result);
   });
   // Every Mac tab's last line, answered when one changes (Home).
   app.get("/api/terminals/desktop/activity", async (req, res) => {
     if (!macTerminalWatch.ready)
-      throw fail(409, "Mac terminals aren't being watched right now.");
+      throw fail(409, `${computerWord(desktopTerminals.platform)} terminals aren't being watched right now.`);
     const after = Number(req.query.after);
     const left = new AbortController();
     res.once("close", () => left.abort());
@@ -3309,8 +3318,8 @@ export async function createReach(overrides = {}) {
       record(
         "terminal",
         req.params.action === "close"
-          ? "Closed a Mac terminal"
-          : "Sent text to a Mac terminal",
+          ? `Closed a ${computerWord(desktopTerminals.platform)} terminal`
+          : `Sent text to a ${computerWord(desktopTerminals.platform)} terminal`,
       );
     res.json(result);
   });
@@ -5081,9 +5090,10 @@ export async function createReach(overrides = {}) {
         },
         changes: (client) => {
           const scopes = client.scopes || [];
-          // People who may see the Mac's own terminals keep them watched.
+          // People who may see the computer's own terminals keep them
+          // watched (a Mac's or a Windows PC's).
           const macTerminals =
-            desktopTerminals.platform === "darwin" &&
+            ["darwin", "win32"].includes(desktopTerminals.platform) &&
             scopes.includes("admin") &&
             scopes.includes("terminal");
           if (macTerminals && !ws.reachMacTerminals) {
