@@ -305,9 +305,8 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
   const desktopReason = options?.desktopReason || (macHost
     ? "Screen presets need this Mac's Screen Recording and Accessibility for Reach."
     : `Screen access for agents isn't ready on this ${word} yet.`);
-  const filesReason = options?.filesUnsupportedReason || (macHost
-    ? "Browser-agent file access requires macOS. Your own Files and terminals remain available."
-    : `Agent file access isn't ready on this ${word} yet. Your own Files and terminals remain available.`);
+  const filesReason = options?.filesUnsupportedReason ||
+    `Agent file access isn't ready on this ${word} yet. Your own Files and terminals remain available.`;
   const missing = !name.trim()
     ? "Name the agent."
     : !preset
