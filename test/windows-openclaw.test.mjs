@@ -366,7 +366,7 @@ test("Node recovery on Windows: OpenClaw's own Node from the installer in its pa
   };
   const runtime = await installUpdateRuntime(recipe, deps);
   assert.equal(runtime, path.join(privateNodeDir({ env: deps.env }), "node.exe"));
-  assert.deepEqual(calls[0].slice(0, 2), ["powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\npm\\node_modules\\openclaw\\scripts\\install.ps1", "-NodeOnly", "-NodePrefix", privateNodeDir({ env: deps.env })]]);
+  assert.deepEqual(calls[0].slice(0, 2), ["powershell.exe", ["-NonInteractive", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\npm\\node_modules\\openclaw\\scripts\\install.ps1", "-NodeOnly", "-NodePrefix", privateNodeDir({ env: deps.env })]]);
   assert.deepEqual(calls[1].slice(0, 2), [runtime, ["-p", "process.versions.node"]]);
   // Revoked mid-way: nothing more runs.
   calls.length = 0;
