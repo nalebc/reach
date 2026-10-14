@@ -52,6 +52,12 @@ export const suites = {
     "setup", "instances", "stop",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Windows' live screen as H.264 with nothing installed (audit #26): the
+    // choice and its reasons, the phone's Video row, and the real helper
+    // (Desktop Duplication into Media Foundation) streaming this runner's
+    // screen, decoded by Chrome's WebCodecs, when REACH_TEST_WINDOWS_DESKTOP is set.
+    "windows-video", "screen-video-kind-ui", "remote-screen-client", "remote-screen-hub",
+    "windows-screen-video-native",
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
