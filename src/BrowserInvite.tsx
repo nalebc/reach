@@ -75,7 +75,9 @@ type PresetApp = {
 type Options = {
   terminals: { id: string; name: string }[];
   desktopAvailable?: boolean;
+  desktopReason?: string;
   protectedFilesSupported?: boolean;
+  filesUnsupportedReason?: string;
   maxFunnelSeconds?: number;
   standingAllowed?: boolean;
   // Always over Tools: this Mac makes invite keys (the agent's own device).
@@ -300,6 +302,12 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
   // What the invite message calls this computer: never "Mac" off a Mac.
   const word = computerWord(device.platform || peer.platform);
   const filesSupported = options?.protectedFilesSupported ?? macHost;
+  const desktopReason = options?.desktopReason || (macHost
+    ? "Screen presets need this Mac's Screen Recording and Accessibility for Reach."
+    : `Screen access for agents isn't ready on this ${word} yet.`);
+  const filesReason = options?.filesUnsupportedReason || (macHost
+    ? "Browser-agent file access requires macOS. Your own Files and terminals remain available."
+    : `Agent file access isn't ready on this ${word} yet. Your own Files and terminals remain available.`);
   const missing = !name.trim()
     ? "Name the agent."
     : !preset
@@ -307,13 +315,11 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
       : preset === "apps" && !apps.length
         ? "Pick at least one app."
         : preset === "files" && !filesSupported
-          ? "Browser-agent file access requires macOS."
+          ? filesReason
           : preset === "files" && !folders.length
             ? "Pick at least one folder."
             : screenPreset && options && !desktopReady
-              ? macHost
-                ? "This Mac can't share its screen with agents yet. Turn on Screen Recording and Accessibility for Reach."
-                : "Browser-agent screen access requires macOS."
+              ? desktopReason
               : "";
   const chosenApps = catalog.filter((app) => apps.includes(app.id));
   const hiddenApps = catalog.filter((app) => hidden.includes(app.id));
@@ -803,14 +809,13 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         <p className="ag-note">
           <ShieldCheck size={14} />
           {preset === "full"
-            ? "Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within macOS permissions. Approve only an agent you trust."
+            ? `Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within ${macHost ? "macOS" : "your account's"} permissions. Approve only an agent you trust.`
             : "You approve it before it can join. Pause it or end its access any time."}
         </p>
         {options && !macHost && !filesSupported && !desktopReady && (
           <>
             <p className="ag-quiet ag-center">
-              Browser invitations currently require macOS. Your own Files and
-              terminals remain available.
+              {desktopReason} {filesReason}
             </p>
             {onCommandLine && (
               <button
@@ -825,14 +830,12 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         )}
         {options && !filesSupported && (macHost || desktopReady) && (
           <p className="ag-quiet ag-center">
-            Browser-agent file access requires macOS. Your own Files and
-            terminals remain available.
+            {filesReason}
           </p>
         )}
-        {options && !desktopReady && macHost && (
+        {options && !desktopReady && (macHost || filesSupported) && (
           <p className="ag-quiet ag-center">
-            <Monitor size={12} /> Screen presets need this Mac's Screen
-            Recording and Accessibility for Reach.
+            <Monitor size={12} /> {desktopReason}
           </p>
         )}
       </div>

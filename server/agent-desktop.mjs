@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
-import { desktopBinary } from "./desktop-native.mjs";
+import { assertUnchanged, desktopBinary } from "./desktop-native.mjs";
+import { COLD_START_MS } from "./powershell.mjs";
+import { blockedByPolicy, POLICY_REFUSAL, QUARANTINE_REFUSAL, SMART_APP_CONTROL_REFUSAL, smartAppControlState, windowsHelperEnv } from "./windows-helper-launch.mjs";
 import { fail } from "./core.mjs";
 import { hiddenControls, nativeRules, PROGRAM_REASON, protectedPathReason, typedTextRefusal, windowsProgramFile } from "./agent-guard.mjs";
 import { actionWords } from "./agent-actions.mjs";
@@ -245,24 +248,31 @@ const HELPER_FAILURES = {
   unexpected_reply: "returned an unexpected reply", stopped: "stopped",
 };
 const HELPER_OPERATIONS = new Set(desktopHelperOperations);
-const helperFailure = (reason, request, dispatched = false) => {
+// The computer the helper runs on, by name: a Windows PC, else the Mac.
+const machine = (platform) => (platform === "win32" ? "Windows PC" : "Mac");
+const helperFailure = (reason, request, dispatched = false, platform = process.platform) => {
   const helperReason = Object.hasOwn(HELPER_FAILURES, reason) ? reason : "stopped";
   const helperOperation = HELPER_OPERATIONS.has(request?.op) ? request.op : "unknown";
   const helperDispatch = dispatched ? "completion_unknown" : "not_dispatched";
   const guidance = dispatched
     ? "Completion is unknown. Check the screen before trying again."
     : "This request was not sent. Check the screen before trying again.";
-  return Object.assign(fail(503, `The Mac's agent helper ${HELPER_FAILURES[helperReason]} during ${helperOperation}. ${guidance}`),
+  return Object.assign(fail(503, `The ${machine(platform)}'s agent helper ${HELPER_FAILURES[helperReason]} during ${helperOperation}. ${guidance}`),
     { kind: "unavailable", helperReason, helperOperation, helperDispatch });
 };
 
 // One helper process: JSON lines in, JSON lines out, one request at a time.
+// coldStartMs: how long its first answer may take (a Windows helper's runtime
+// starting cold), then timeoutMs for each.
 export class AgentDesktopHelper {
-  constructor(child, { timeoutMs = 15000 } = {}) {
+  constructor(child, { timeoutMs = 15000, coldStartMs = 0, platform = process.platform } = {}) {
     this.child = child;
     this.queue = [];
     this.current = null;
     this.stopped = false;
+    this.platform = platform;
+    this.coldStartMs = coldStartMs;
+    this.answered = false;
     // send() rejects as soon as stopping starts, before the native process
     // exits. Input ownership must last until it cannot post any more events.
     this.terminated = new Promise(resolve => {
@@ -273,7 +283,8 @@ export class AgentDesktopHelper {
     let buffer = "";
     child.stderr?.on("data", () => {});
     child.stdin.on("error", () => this.stop("stdin_error"));
-    child.on("error", () => this.stop("process_error"));
+    // The first error is kept (a Windows helper the antivirus removed is ENOENT).
+    child.on("error", (error) => { this.spawnError ??= error; this.stop("process_error"); });
     child.on("exit", () => this.stop("process_exit"));
     child.stdout.on("data", (chunk) => {
       buffer += chunk.toString();
@@ -288,6 +299,7 @@ export class AgentDesktopHelper {
         try { value = JSON.parse(line); } catch { return this.stop("invalid_reply"); }
         if (!plain(value) || (value.ok !== true && !(typeof value.error === "string" && Object.hasOwn(KINDS, value.kind))))
           return this.stop("invalid_reply");
+        this.answered = true;
         this.current = null;
         clearTimeout(pending.timer);
         pending.resolve(value);
@@ -296,7 +308,7 @@ export class AgentDesktopHelper {
     });
   }
   send(request, beforeSend) {
-    if (this.stopped) return Promise.reject(helperFailure(this.stopReason, request));
+    if (this.stopped) return Promise.reject(helperFailure(this.stopReason, request, false, this.platform));
     return new Promise((resolve, reject) => { this.queue.push({ request, beforeSend, resolve, reject }); this.next(); });
   }
   next() {
@@ -307,7 +319,7 @@ export class AgentDesktopHelper {
       // synchronously at its actual dispatch, not only when it was enqueued.
       try { item.beforeSend?.(); }
       catch (error) { item.reject(error); continue; }
-      item.timer = setTimeout(() => { this.stop("timeout"); }, this.timeoutMs);
+      item.timer = setTimeout(() => { this.stop("timeout"); }, !this.answered && this.coldStartMs ? this.coldStartMs : this.timeoutMs);
       this.current = item;
       let line;
       try { line = JSON.stringify(item.request) + "\n"; }
@@ -326,23 +338,28 @@ export class AgentDesktopHelper {
     this.stopReason = reason;
     const waiting = [this.current, ...this.queue].filter(Boolean);
     this.current = null; this.queue = [];
-    for (const item of waiting) { clearTimeout(item.timer); item.reject(helperFailure(reason, item.request, item.dispatched)); }
+    for (const item of waiting) { clearTimeout(item.timer); item.reject(helperFailure(reason, item.request, item.dispatched, this.platform)); }
     try { this.child.stdin.end(); } catch { /* already closed */ }
     const child = this.child;
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+    // On Windows a kill ends the process outright (TerminateProcess), with no
+    // chance to let go of a held button: its own end of input gets longer.
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       const force = setTimeout(() => child.kill("SIGKILL"), 1000);
       force.unref();
       child.once("exit", () => clearTimeout(force));
-    }, 300);
+    }, this.platform === "win32" ? 1500 : 300);
     timer.unref();
     child.once("exit", () => clearTimeout(timer));
   }
 }
 
 export function createAgentDesktop(config, {
-  available = () => process.platform === "darwin" && !!config.screen,
+  // Whether agents may use this computer's screen now (Reach's screen setting,
+  // pause and connection: server/index.mjs). On a Windows PC also its helper
+  // (below): without it, never.
+  available = () => ["darwin", "win32"].includes(platform) && !!config.screen,
   hosts = () => [],
   titles = () => ["reach"],
   protectedPaths = () => [],
@@ -375,10 +392,31 @@ export function createAgentDesktop(config, {
   // Whose names for apps and files the agent gives (app-identity.mjs): a
   // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
   platform = process.platform,
+  // Windows' helper (docs/parity/B-desktop-helper.md §3, §12): built only in
+  // Reach's folder confirmed private this start (scripts/launch.mjs), as
+  // { file, sha256 }, and started only while the file still has that hash
+  // (desktop-native.mjs assertUnchanged): it acts as the owner, so a copy
+  // another user of the PC swapped in never runs. Without it (a folder that
+  // isn't private), agents get no screen, with `helpersOff` saying why.
+  windowsHelper = null,
+  helpersOff = "",
+  verify = assertUnchanged,
+  spawnProcess = spawn,
+  launch = { smartAppControl: () => smartAppControlState(), blockedByPolicy: (file) => blockedByPolicy(file) },
+  env = process.env,
+  processId = process.pid,
+  consoleAttached = () => process.stdout.isTTY === true,
+  // A Windows file's one true name (junctions and aliases followed), checked
+  // as well as the name the agent gave.
+  realpath = (file) => realpathSync.native(file),
 } = {}) {
   if (pauses ? !["has", "set", "list", "add", "prune"].every((name) => typeof pauses[name] === "function") : !pausesFile)
     throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
   const windows = platform === "win32";
+  const word = machine(platform);
+  // A Windows PC's screen needs its helper, from Reach's private folder.
+  const helperReady = () => !windows || !!windowsHelper || !!spawnHelper;
+  const ready = () => available() && helperReady();
   // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
   // path or a Store app's id.
   const appTarget = (value) => windows
@@ -397,8 +435,73 @@ export function createAgentDesktop(config, {
   const pausedAgents = pauses || createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
   let utility = null, utilityIdle = null, catalogCache = null, closed = false;
   const fingerprint = (client) => JSON.stringify([client.id, client.expiresAt, client.policy]);
+  // A Windows PC's helper: built here with the PC's own C# compiler, started
+  // detached (Node's job can't end it before it lets go of a held button),
+  // told Reach's process (it lets go and exits when Reach does) and whether
+  // Reach has a console window, with only Windows' own environment. A PC
+  // whose security won't run it is told why, from Windows' own logs.
+  let rebuilt = false;
+  const startWindows = async (rules) => {
+    // The owner's app picker starts a utility helper without a client policy.
+    // Windows still needs a valid initial rules handshake; view rules let it
+    // enumerate apps without enabling input or dereferencing a missing mode.
+    rules ||= nativeRules({ preset: "readonly" }, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
+    if (!windowsHelper) throw Object.assign(fail(503, helpersOff || "Reach couldn't prepare its agent helper on this Windows PC."), { permanent: true });
+    if ((await launch.smartAppControl()) === 1) throw Object.assign(fail(503, SMART_APP_CONTROL_REFUSAL), { permanent: true });
+    for (;;) {
+      const { file, sha256 } = await windowsHelper();
+      // Removed after its build (an antivirus), or changed: never started.
+      // Built again once per run when it's gone; a changed one waits for the
+      // next start, which builds it again (windowsHelper's own note).
+      try { verify(file, sha256); }
+      catch {
+        if (!existsSync(file)) {
+          if (!rebuilt) { rebuilt = true; continue; }
+          throw Object.assign(fail(503, QUARANTINE_REFUSAL), { permanent: true });
+        }
+        throw fail(503, "Reach's agent helper changed on this Windows PC after it was built, so it wasn't started. Try again.");
+      }
+      const child = spawnProcess(file, ["--reach-pid", String(processId), "--reach-console", consoleAttached() ? "1" : "0"],
+        { stdio: ["pipe", "pipe", "pipe"], detached: true, windowsHide: true, env: windowsHelperEnv(env) });
+      const helper = new AgentDesktopHelper(child, { platform, coldStartMs: COLD_START_MS });
+      if (!rules) return helper;
+      let ready;
+      try {
+        ready = await helper.send({ op: "rules", ...rules });
+      } catch (error) {
+        // It never answered: removed between its check and its start (built
+        // again, once per run), blocked by Windows' application control, or
+        // it stopped.
+        if (helper.spawnError?.code === "ENOENT" && !existsSync(file)) {
+          if (!rebuilt) { rebuilt = true; continue; }
+          throw Object.assign(fail(503, QUARANTINE_REFUSAL), { permanent: true });
+        }
+        if (error?.helperReason === "process_exit" || error?.helperReason === "process_error") {
+          if (await launch.blockedByPolicy(file).catch(() => false)) throw Object.assign(fail(503, POLICY_REFUSAL), { permanent: true });
+          throw fail(503, "The Windows PC's agent helper stopped before it was ready.");
+        }
+        if (error?.helperReason === "timeout") throw fail(503, "The Windows PC's agent helper didn't start in time.");
+        throw error;
+      }
+      if (ready.error) { helper.stop(); throw refusal(ready); }
+      // Reach itself running as administrator: Windows would let the agent's
+      // input reach every window, so it gets none (Rule S).
+      if (ready.elevated === true && rules.mode !== "view") {
+        helper.stop();
+        throw Object.assign(fail(503, "Reach is running as administrator (or User Account Control is off). Agents act only from a standard Reach session."), { kind: "blocked" });
+      }
+      if (ready.desktop !== "Default") {
+        helper.stop();
+        throw Object.assign(fail(409, "An administrator prompt, the lock screen or the sign-in screen is up on the PC. The agent waits; the owner answers it at the PC."), { kind: "paused" });
+      }
+      if (ready.accessibility === false && rules.mode !== "view") { helper.stop(); throw fail(503, "Windows UI Automation isn't available to Reach on this PC."); }
+      if (ready.screen === false) { helper.stop(); throw fail(503, "Windows won't let Reach see the screen right now. Keep the PC signed in and unlocked."); }
+      return helper;
+    }
+  };
   const start = async (rules) => {
     if (spawnHelper) return spawnHelper(rules);
+    if (windows) return startWindows(rules);
     const binary = await desktopBinary(config, "agent-desktop");
     const helper = new AgentDesktopHelper(spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", HOME: home } }));
     if (rules) {
@@ -416,16 +519,23 @@ export function createAgentDesktop(config, {
     const latest = verifyClient(client?.id) || current;
     if (!latest || latest.id !== client?.id || latest.kind !== "agent" || latest.policy?.browser !== true || latest.policy.preset === undefined ||
         !Number.isFinite(latest.expiresAt) || latest.expiresAt <= now() || !presetScopes(latest.policy).includes(scope) || !latest.scopes?.includes(scope))
-      throw fail(403, "This agent's access to the Mac has changed or ended.");
-    if (paused()) throw fail(409, "Reach is paused. The Mac waits until it resumes.");
+      throw fail(403, `This agent's access to the ${word} has changed or ended.`);
+    if (paused()) throw fail(409, `Reach is paused. The ${word} waits until it resumes.`);
     // Checked on every call and again after each native answer (checkState):
     // a picture taken as the owner started is dropped, not handed over.
     const hold = ownerUsing();
     if (hold) throw ownerHoldRefusal(hold, platform);
     return latest;
   };
+  // Why agents can't use this computer's screen right now; "" when they can.
+  const unavailable = () => {
+    if (!helperReady()) return Object.assign(fail(503, helpersOff || "Reach couldn't prepare its agent helper on this Windows PC."), { permanent: true });
+    if (!available()) return fail(503, windows ? "Screen access for agents is off on this Windows PC: screen viewing is off in Reach, or Reach is paused." : "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+    return null;
+  };
   const session = async (client) => {
-    if (!available()) throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+    const off = unavailable();
+    if (off) throw off;
     const fp = fingerprint(client);
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
@@ -446,7 +556,7 @@ export function createAgentDesktop(config, {
     try {
       const current = live(client, authorize, scope);
       if (fingerprint(current) !== state.fingerprint)
-        throw fail(403, "This agent's access changed. Refresh before using the Mac again.");
+        throw fail(403, `This agent's access changed. Refresh before using the ${word} again.`);
       return current;
     } catch (error) {
       // The owner's hold is a wait, not a changed grant: the helper stays.
@@ -463,8 +573,8 @@ export function createAgentDesktop(config, {
     // (the name it gives). The agent waits until they let go.
     const person = phoneControls();
     if (person) throw Object.assign(fail(409, typeof person === "string"
-      ? `${person} is controlling the Mac. The agent waits until they let go.`
-      : "You're controlling the Mac from your phone. The agent waits."), { kind: "paused" });
+      ? `${person} is controlling the ${word}. The agent waits until they let go.`
+      : `You're controlling the ${word} from your phone. The agent waits.`), { kind: "paused" });
     if (automationControls()) throw Object.assign(fail(409, "A chat is updating its desktop app. Wait for that operation to finish, then check the screen."), { kind: "busy", holder: "Desktop automation", retryInMs: 1000 });
   };
   // One agent at a time on the Mac. Holding it is short: each action extends it.
@@ -475,7 +585,7 @@ export function createAgentDesktop(config, {
     const running = pendingInputs.values().next().value;
     if (running || (lease.holder && lease.holder !== client.id && lease.until > now())) {
       const name = running ? String(running.client.name || "Another agent").slice(0, 80) : lease.name;
-      throw Object.assign(fail(409, `${name} is using the Mac right now. Try again in a moment.`), { kind: "busy", holder: name, retryInMs: Math.max(100, lease.until - now()) });
+      throw Object.assign(fail(409, `${name} is using the ${word} right now. Try again in a moment.`), { kind: "busy", holder: name, retryInMs: Math.max(100, lease.until - now()) });
     }
     lease.holder = client.id; lease.name = String(client.name || "Another agent").slice(0, 80); lease.until = now() + leaseMs;
   };
@@ -516,13 +626,13 @@ export function createAgentDesktop(config, {
   // idle lease, until the old helper has actually exited.
   const automationBusy = () => {
     const holder = currentHolder();
-    return holder ? `${holder.name} is using the Mac` : false;
+    return holder ? `${holder.name} is using the ${word}` : false;
   };
   // A click aimed from a picture taken before a chat drove the Mac could land
   // on the wrong window: the agent looks again first.
   const checkFresh = (client) => {
     if ((looks.get(client.id) ?? 0) < screenChangedAt())
-      throw Object.assign(fail(409, "A chat just updated the Claude app on this Mac, so the screen may have changed. Look at the screen again, then act."), { kind: "busy", holder: "Desktop automation", retryInMs: 0, stale: true });
+      throw Object.assign(fail(409, `A chat just updated the Claude app on this ${word}, so the screen may have changed. Look at the screen again, then act.`), { kind: "busy", holder: "Desktop automation", retryInMs: 0, stale: true });
   };
   const note = (client, kind, result) => {
     const previous = activity.get(client.id);
@@ -532,7 +642,10 @@ export function createAgentDesktop(config, {
     onActivity(client.id, entry);
   };
   return {
-    available,
+    available: ready,
+    // Why agents can't use the screen now, said to the owner when inviting;
+    // "" when they can.
+    reason: () => unavailable()?.message || "",
     automationBusy,
     // Owner control interrupts queued/current agent input, but receives an
     // actual process-exit barrier rather than the promptly rejected request.
@@ -551,7 +664,7 @@ export function createAgentDesktop(config, {
     /** Every app on this Mac, for the owner's picker: {id, name, bundleId, running}. */
     async catalog(authorize = () => {}) {
       authorize();
-      if (!available()) throw fail(503, "The app list needs this Mac's screen helpers.");
+      if (!ready()) throw fail(503, windows && !helperReady() ? unavailable().message : `The app list needs this ${word}'s screen helpers.`);
       if (catalogCache && catalogCache.until > now()) return structuredClone(catalogCache.apps);
       if (!utility || utility.stopped) utility = await start(null);
       clearTimeout(utilityIdle);
@@ -720,12 +833,17 @@ export function createAgentDesktop(config, {
     /** A file opened in the app that owns it, or shown in the Finder (reach_open_file): never a program, never a protected path. */
     async openFile(client, filePath, { reveal = false } = {}, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, "Give the file's full path on this Mac.");
+      if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, `Give the file's full path on this ${word}.`);
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
       // On Windows a program or script is refused here first, before the
-      // helper's own check (as the Mac's helper refuses them itself).
-      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform }) ||
-        (windows && windowsProgramFile(filePath) ? PROGRAM_REASON : null);
+      // helper's own check (as the Mac's helper refuses them itself), by the
+      // name given and by the file's real one (a junction, an alias).
+      let real = filePath;
+      if (windows && latest.policy.preset !== "full") try { real = realpath(filePath); } catch { real = filePath; }
+      const guard = { protectedPaths: protectedPaths(), home, platform };
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, guard) ||
+        (real !== filePath ? protectedPathReason(real, guard) : null) ||
+        (windows && (windowsProgramFile(filePath) || windowsProgramFile(real)) ? PROGRAM_REASON : null);
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });
@@ -819,7 +937,7 @@ export function createAgentDesktop(config, {
     /** Open or bring forward one app, within the preset. */
     async open(client, appPath, authorize) {
       const latest = live(client, authorize, "browser:open");
-      if (!appTarget(appPath)) throw fail(400, "Choose an app by its path on this Mac.");
+      if (!appTarget(appPath)) throw fail(400, `Choose an app by its path on this ${word}.`);
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
       take(latest);
@@ -839,7 +957,7 @@ export function createAgentDesktop(config, {
       if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
         throw fail(400, "Give a web address that starts with https://.");
       if (browserPath !== undefined && (windows ? !appTarget(browserPath) : typeof browserPath !== "string" || !browserPath.startsWith("/") || !browserPath.endsWith(".app") || browserPath.length > 4096))
-        throw fail(400, "Choose the browser by its path on this Mac.");
+        throw fail(400, `Choose the browser by its path on this ${word}.`);
       const reason = latest.policy.preset === "full" ? null : typedTextRefusal(url, { hosts: hosts(), protectedPaths: protectedPaths(), home, platform });
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);

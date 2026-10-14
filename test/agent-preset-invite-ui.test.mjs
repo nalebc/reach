@@ -57,13 +57,13 @@ const choose = (c, title) => click(preset(c, title));
 const place = (c, label) => [...c.querySelectorAll('[aria-label="How the agent connects"] [role="radio"]')].find((b) => b.textContent.trim() === label);
 const create = (c) => click(button(c, "Create invite"));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false, runtime = "ab".repeat(32) } = {}) {
+function mock({ desktopAvailable = true, protectedFilesSupported = true, desktopReason, filesUnsupportedReason, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false, runtime = "ab".repeat(32) } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, protectedFilesSupported, desktopReason, filesUnsupportedReason, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [], ...(runtime ? { runtime } : {}) });
     if (route === "/api/files") return reply({ items: [] });
@@ -89,7 +89,7 @@ const message = (c) => c.querySelector('textarea[aria-label="AI browser invitati
 const PAGE = "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.";
 const pageMessage = `${PAGE}\n\nhttps://mac.tail.ts.net/agent-browser#invite=${secret}`;
 
-test("Full control: chosen with a check, made with Create invite, nothing else to fill", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async () => {
+test("Full control: chosen with a check, made with Create invite, nothing else to fill", async () => {
   const calls = mock();
   const { c, made } = await open();
   const name = c.querySelector('[aria-label="AI browser name"]').value;
@@ -309,11 +309,28 @@ test("a Windows PC is called a Windows PC in the message", async () => {
   const c = view.container;
   await dom.waitFor(() => preset(c, "Full control"));
   await settle(40);
+  assert.ok(presets(c).every(p => !p.disabled), "all four presets are offered when the PC supports them");
   await choose(c, "Full control");
+  assert.doesNotMatch(c.textContent, /within macOS permissions/);
   await create(c);
   await dom.waitFor(() => made);
   assert.match(message(c), /^Connect to my Windows PC with Reach: open this link and follow its steps/);
   assert.doesNotMatch(message(c), /\bMac\b/);
+});
+
+test("a Windows PC that cannot prepare its helpers names the reasons on the invitation form", async () => {
+  mock({ desktopAvailable: false, protectedFilesSupported: false,
+    desktopReason: "Reach could not prepare screen access on this PC.",
+    filesUnsupportedReason: "This PC could not prepare protected file access." });
+  const view = await render(React.createElement(BrowserInvite, {
+    peer: { ...peer, platform: "win32" }, device: { ...device, platform: "win32" },
+    keyPeer: null, onSetup: () => {}, onCreated: () => {},
+  }));
+  const c = view.container;
+  await dom.waitFor(() => presets(c).length === 4 && presets(c).every(p => p.disabled));
+  assert.match(c.textContent, /could not prepare screen access/);
+  assert.match(c.textContent, /could not prepare protected file access/);
+  assert.doesNotMatch(c.textContent, /requires macOS|require macOS/);
 });
 
 test("the three messages: a line each, the link after a blank line, short", async () => {
