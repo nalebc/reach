@@ -700,12 +700,13 @@ static class NativeProc {
   // Create the per-client AppContainer profile if it isn't there, and return its
   // SID (freed with the Container). The profile makes GetAppContainerFolderPath
   // resolvable so TEMP/TMP can point at the container's own folder (finding 10).
+  public static int LastCreateHr = -999, LastDeriveHr = -999;
   public static IntPtr EnsureAppContainer(string name) {
     IntPtr sid;
-    int created = CreateAppContainerProfile(name, name, "Reach sandboxed job", null, 0, out sid);
-    if (created == 0) return sid;
-    int derived = DeriveAppContainerSidFromAppContainerName(name, out sid);
-    if (derived != 0) throw Sandbox.Refusal(503, "Windows wouldn't create a sandbox container for this command.");
+    LastCreateHr = CreateAppContainerProfile(name, name, "Reach sandboxed job", null, 0, out sid);
+    if (LastCreateHr == 0) return sid;
+    LastDeriveHr = DeriveAppContainerSidFromAppContainerName(name, out sid);
+    if (LastDeriveHr != 0) throw Sandbox.Refusal(503, "Windows wouldn't create a sandbox container for this command.");
     return sid;
   }
 
@@ -884,7 +885,7 @@ static class NativeProc {
     // list, not suspended, no cwd. If this works but the real launch doesn't, the
     // problem is the job/handle-list/suspend; if this fails too, it's the
     // capabilities or the AppContainer SID.
-    return "plain=" + PlainLaunch() + " apponly=" + CapsLaunch(container.AppContainerSid, IntPtr.Zero, 0) + " full=" + CapsLaunch(container.AppContainerSid, ReadCaps(container), ReadCapCount(container));
+    return "create=" + LastCreateHr.ToString("x") + " plain=" + PlainLaunch() + " apponly=" + CapsLaunch(container.AppContainerSid, IntPtr.Zero, 0) + " full=" + CapsLaunch(container.AppContainerSid, ReadCaps(container), ReadCapCount(container));
   }
   static IntPtr ReadCaps(Container c) { return Marshal.ReadIntPtr(c.CapabilitiesPtr, IntPtr.Size); } // SECURITY_CAPABILITIES.Capabilities
   static int ReadCapCount(Container c) { return Marshal.ReadInt32(c.CapabilitiesPtr, IntPtr.Size * 2); }
