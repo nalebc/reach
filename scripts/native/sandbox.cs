@@ -547,14 +547,7 @@ static class Jobs {
         }
 
         string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
-        NativeProc.Launched launched;
-        try { launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true); }
-        catch (Exception first) {
-          // Diagnostic: did it fail because of the working folder? Retry once in
-          // the container's own folder (always reachable). "ok" here means the
-          // AppContainer launch is fine and the cwd/grant is the problem.
-          throw Sandbox.Refusal(503, first.Message + " [nocwd=" + NativeProc.ProbeContainerLaunch(container) + "]");
-        }
+        NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true);
         try {
           // §4.5 preflight: the real launch token, AccessChecked against every
           // deny path under the ACL lock, immediately after creation and before
@@ -700,13 +693,10 @@ static class NativeProc {
   // Create the per-client AppContainer profile if it isn't there, and return its
   // SID (freed with the Container). The profile makes GetAppContainerFolderPath
   // resolvable so TEMP/TMP can point at the container's own folder (finding 10).
-  public static int LastCreateHr = -999, LastDeriveHr = -999;
   public static IntPtr EnsureAppContainer(string name) {
     IntPtr sid;
-    LastCreateHr = CreateAppContainerProfile(name, name, "Reach sandboxed job", null, 0, out sid);
-    if (LastCreateHr == 0) return sid;
-    LastDeriveHr = DeriveAppContainerSidFromAppContainerName(name, out sid);
-    if (LastDeriveHr != 0) throw Sandbox.Refusal(503, "Windows wouldn't create a sandbox container for this command.");
+    if (CreateAppContainerProfile(name, name, "Reach sandboxed job", null, 0, out sid) == 0) return sid;
+    if (DeriveAppContainerSidFromAppContainerName(name, out sid) != 0) throw Sandbox.Refusal(503, "Windows wouldn't create a sandbox container for this command.");
     return sid;
   }
 
@@ -715,12 +705,10 @@ static class NativeProc {
   // folder. Frees everything on dispose.
   public class Container : IDisposable {
     public IntPtr CapabilitiesPtr;
-    public IntPtr AppContainerSid;
     public string TempFolder;
     IntPtr sid; readonly List<IntPtr> allocations = new List<IntPtr>();
     public Container(IntPtr appContainerSid, List<SecurityIdentifier> capabilities) {
       sid = appContainerSid;
-      AppContainerSid = appContainerSid;
       TempFolder = FolderFor(appContainerSid);
       IntPtr array = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)) * Math.Max(1, capabilities.Count));
       allocations.Add(array);
@@ -863,57 +851,17 @@ static class NativeProc {
     PROCESS_INFORMATION pi;
     bool ok = CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags, env, cwd, ref startup, out pi);
     int error = Marshal.GetLastWin32Error();
-    string ac = container != null ? "; ac=" + (containerSd != IntPtr.Zero ? "1" : "0") : "";
     Marshal.FreeHGlobal(env); Marshal.FreeHGlobal(handleArray); Marshal.FreeHGlobal(jobHandlePtr);
     if (childPolicyPtr != IntPtr.Zero) Marshal.FreeHGlobal(childPolicyPtr);
     if (containerSd != IntPtr.Zero) NativeSec.LocalFree(containerSd);
     if (!ok) {
       DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs);
       foreach (IntPtr h in new IntPtr[] { nul, outWrite, errWrite, outRead, errRead }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
-      throw Sandbox.Refusal(503, "Windows wouldn't start the sandboxed command (" + error + ac + ").");
+      throw Sandbox.Refusal(503, "Windows wouldn't start the sandboxed command (" + error + ").");
     }
     var launched = new Launched();
     launched.Adopt(pi, nul, outWrite, errWrite, outRead, errRead, attrs);
     return launched;
-  }
-
-  // Diagnostic: can a process start in this container at all, with no working
-  // folder set? "ok", or the refusal message. Isolates a cwd/grant problem from
-  // a broken AppContainer launch.
-  public static string ProbeContainerLaunch(Container container) {
-    // A bare AppContainer launch: only SECURITY_CAPABILITIES, no job, no handle
-    // list, not suspended, no cwd. If this works but the real launch doesn't, the
-    // problem is the job/handle-list/suspend; if this fails too, it's the
-    // capabilities or the AppContainer SID.
-    return "create=" + LastCreateHr.ToString("x") + " plain=" + PlainLaunch() + " apponly=" + CapsLaunch(container.AppContainerSid, IntPtr.Zero, 0) + " full=" + CapsLaunch(container.AppContainerSid, ReadCaps(container), ReadCapCount(container));
-  }
-  static IntPtr ReadCaps(Container c) { return Marshal.ReadIntPtr(c.CapabilitiesPtr, IntPtr.Size); } // SECURITY_CAPABILITIES.Capabilities
-  static int ReadCapCount(Container c) { return Marshal.ReadInt32(c.CapabilitiesPtr, IntPtr.Size * 2); }
-  static string PlainLaunch() {
-    var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
-    PROCESS_INFORMATION pi;
-    bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi);
-    int err = Marshal.GetLastWin32Error();
-    if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ok"; }
-    return err.ToString();
-  }
-  static string CapsLaunch(IntPtr appContainerSid, IntPtr caps, int count) {
-    IntPtr sc = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)));
-    IntPtr size = IntPtr.Zero;
-    InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-    IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
-    try {
-      var caps0 = new SECURITY_CAPABILITIES(); caps0.AppContainerSid = appContainerSid; caps0.Capabilities = caps; caps0.CapabilityCount = count; caps0.Reserved = 0;
-      Marshal.StructureToPtr(caps0, sc, false);
-      if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) return "init" + Marshal.GetLastWin32Error();
-      UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, sc, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
-      var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX)); si.lpAttributeList = attrs;
-      PROCESS_INFORMATION pi;
-      bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi);
-      int err = Marshal.GetLastWin32Error();
-      if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ok"; }
-      return err.ToString();
-    } finally { DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs); Marshal.FreeHGlobal(sc); }
   }
 
   public static string RunContainedCaptured(string commandLine, string cwd, Container container, JobObject job, int timeoutMs) {
