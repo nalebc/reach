@@ -418,6 +418,14 @@ computers.includes(p.id) && !devices[p.id]
   const watchable = (d?: Device | null) => !!d && workspaceCapabilities(d).screen && d.capabilities.guestScreen !== false;
   const screenOk = watchable(device) || chosen.some((p) => watchable(devices[p.id]));
   const roles = ROLES.filter((r) => screenOk || !r.screen);
+  // Said, never just left out (owner, Oct 13: say why): where the computer
+  // refuses invited people its screen, the sheet says so (found by the user
+  // journeys on GitHub's Windows runner, Oct 14).
+  const refusing = [device, ...chosen.map((p) => devices[p.id])].find((d) => d?.capabilities?.guestScreen === false);
+  const noScreenRoles =
+    !screenOk && refusing
+      ? `Watching or controlling the screen isn't offered on this ${computerWord(refusing.platform)} yet: Reach can't hide password managers and its own windows from invited people there.`
+      : "";
   const current = roles.find((r) => r.value === role) || roles[0];
   // What the chosen access grants.
   const grant =
@@ -991,6 +999,7 @@ computers.includes(p.id) && !devices[p.id]
                       value={current.value}
                       onChange={setRole}
                     />
+                    {noScreenRoles && <p className="ivt-quiet ivt-no-screen">{noScreenRoles}</p>}
                     {current.value === "custom" && (
                       <div className="ivt-panel" aria-label="Custom access">
                         {screenOk && (

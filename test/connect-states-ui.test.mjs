@@ -75,7 +75,41 @@ test("ready: who it's signed in as, and the code to type on the computer", async
   await connect(c);
   assert.match(c.textContent, /Type this code in Reach on your computer/);
   assert.match(c.textContent, /1A2B3C4D/);
-  assert.match(c.textContent, /\.\/reach approve/);
+  // Said as that computer runs Reach (a checkout: ./reach; npm: reach).
+  assert.match(c.textContent, /Run reach approve there/);
+  await view.unmount();
+});
+
+test("a Windows PC's checkout: the approve hint says .\\reach.cmd, as its terminal does", async () => {
+  computer({ method: { method: "tailscale", eligible: true, login: "me@x.test", command: ".\\reach.cmd" } });
+  const { view, c } = await render();
+  await settle(450);
+  await connect(c);
+  assert.match(c.textContent, /Run \.\\reach\.cmd approve there/);
+  await view.unmount();
+});
+
+// Oct 14, the user journeys on GitHub's Windows runner: a PC that lets
+// phones in with a pairing code told them to press Enter "in local mode",
+// which it isn't, and named reach where its terminal says .\reach.cmd.
+test("a Windows PC that takes pairing codes: its pairing form is told how that PC runs Reach", async () => {
+  computer({ method: { method: "pairing", eligible: false, command: ".\\reach.cmd" } });
+  dom.window.sessionStorage.clear();
+  dom.window.localStorage.clear();
+  const given = [];
+  const view = await dom.render(
+    React.createElement(ConnectForm, {
+      initialUrl: "https://reach.t.ts.net:8443",
+      name: "Pixel",
+      onPaired() {},
+      legacy: (url, command) => {
+        given.push([url, command]);
+        return React.createElement("p", null, `pair at ${url} with ${command}`);
+      },
+    }),
+  );
+  await dom.waitFor(() => given.length > 0, 3000);
+  assert.deepEqual(given.at(-1), ["https://reach.t.ts.net:8443", ".\\reach.cmd"]);
   await view.unmount();
 });
 

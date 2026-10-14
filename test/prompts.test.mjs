@@ -84,6 +84,24 @@ test("plain terminals and first-run without dependencies use numbered menus and 
   }
 });
 
+// A Windows console ends each line with CR LF: the numbered menus a first
+// run shows while npm installs (audit #31) read them as one line.
+test("numbered menus read a Windows console's CR LF lines", async () => {
+  const s = streams();
+  const ui = terminalPrompts({ ...s, env: { TERM: "xterm" }, load: async () => { throw Object.assign(Error("not installed"), { code: "ERR_MODULE_NOT_FOUND" }); } });
+  const answer = ui.select({ message: "Choose folder", choices });
+  await rendered(s);
+  s.input.write("9\r\n");
+  await tick();
+  assert.match(s.text(), /listed numbers/);
+  s.input.write("2\r\n");
+  assert.equal(await answer, "custom");
+  const asked = ui.ask("Folder path (or q to cancel):");
+  await tick();
+  s.input.write("C:\\Users\\Me\r\n");
+  assert.equal(await asked, "C:\\Users\\Me");
+});
+
 test("piped input never auto-selects a recommended permission", async () => {
   const s = streams();
   s.input.isTTY = false;
