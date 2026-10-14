@@ -216,6 +216,12 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /test\/windows-native-build\.test\.mjs/);
   for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
+  // real-Windows step as a standard user (docs/parity/C-sandbox.md §9.3).
+  for (const name of ["windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e"])
+    assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  assert.match(ci, /test\/windows-sandbox-e2e\.test\.mjs/);
+  assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
 });
 
 test("Windows CI covers shared phone gesture accuracy, accelerated scrolling and native input sequences", () => {
