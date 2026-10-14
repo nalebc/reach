@@ -264,7 +264,7 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   await run(peerProbe, [probeOut("runner")]);
   await run(system("cmd.exe"), ["/c", helperLine("runner").replace(/^cmd\.exe \/c /, "")], { windowsVerbatimArguments: true });
   const runnerProbed = readText(probeOut("runner"));
-  t.diagnostic(`peer-probe as the runner (the helper says: ${helperSaid("runner")}):\n${runnerProbed}`);
+  t.diagnostic(`peer-probe as the runner (the helper says: ${helperSaid("runner")}):\n${brief(runnerProbed)}`);
   const runnerSession = Number(/^token session (\d+)$/m.exec(runnerProbed)?.[1] ?? NaN);
   const limitedRan = await run(runAs, ["filtered", CI_ROOT, "wait", `${quote(peerProbe)} ${quote(probeOut("limited"))}`]);
   await run(runAs, ["filtered", CI_ROOT, "wait", helperLine("limited")]);
@@ -333,8 +333,23 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     assert.ok((interactive & 0x4) && !(interactive & 0x10), `INTERACTIVE in reachci's token: ${interactive.toString(16)}`);
     assert.deepEqual(own.ready, { ok: true }, `refused for reachci: ${refusals(readText(probeOut("reachci-session-0"))).join("; ") || "nothing the probe saw"}`);
   });
-  await t.test("1a. this PC's own user without elevation, in its own session (UAC's limited token, as a Terminal gets it): ready", () => {
-    assert.deepEqual(limited.ready, { ok: true }, `refused: ${refusals(readText(probeOut("limited"))).join("; ") || "nothing the probe saw"}`);
+  await t.test("1a. this PC's own user without elevation, in its own session (UAC's limited token, imitated): every call answers it, or Windows' refusal is the reason", () => {
+    const text = readText(probeOut("limited"));
+    // The service manager, the service, the TCP table and the kernel's
+    // program path of session 0's processes all answer a non-admin token of
+    // the session's own user (a foreign user's program there is refused: 1c).
+    for (const line of [/^OpenSCManagerW CONNECT ok$/m, /^OpenServiceW QUERY_CONFIG\|QUERY_STATUS ok$/m, /^  QueryServiceStatusEx ok type 0x10 state 4 /m,
+      /^  QueryServiceConfigW ok /m, /^GetExtendedTcpTable class 8 sizing \d+ size \d+ result 0 /m, /^NtQuerySystemInformation 5 status 0x00000000 /m,
+      /^NtQuerySystemInformation 88 service ok \\Device\\/m])
+      assert.match(text, line);
+    // The imitation (CreateRestrictedToken) shares the elevated logon's drive
+    // map, which a real limited logon has its own of: only then does Reach
+    // fall back, and it says Windows refused (run 6: QueryDosDeviceW C: error 5).
+    if (/^QueryDosDeviceW C: ok /m.test(text)) assert.deepEqual(limited.ready, { ok: true });
+    else {
+      assert.match(text, /^QueryDosDeviceW C: error 5$/m);
+      assert.match(limited.ready.reason, /^Windows didn't let Reach read Tailscale's service settings\./);
+    }
   });
   await t.test("1c. a standard user's program the secondary logon service puts in another user's session: ready, or refused in words", () => {
     t.diagnostic(`secondary logon: ${JSON.stringify(secondary.ready)} (${refusals(probed).join("; ") || "no refusals"})`);

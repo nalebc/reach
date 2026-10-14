@@ -83,7 +83,7 @@ Status: implementation spec for workstream D in `docs/WINDOWS_AGENT_PARITY.md`, 
 
 - **Rows 1-15** were checked for revision 1 and are not all re-read here.
 - **Rows 16-20** and the parts of rows 11 and 18 marked new were read for this revision.
-- **Rows 21-23** are marked "per review, unverified" and are decided by CI or acceptance.
+- **Rows 21-22** were verified on the windows-2025 runner (§8, Oct 13). **Row 23** is still per review. **Row 24** is new, found there.
 
 | # | Claim | Finding | Source |
 |---|---|---|---|
@@ -107,9 +107,10 @@ Status: implementation spec for workstream D in `docs/WINDOWS_AGENT_PARITY.md`, 
 | 18 | **Funnel enablement (new)** | `funnel` checks enablement before any session. The interactive flow prints its text and URL on **stdout**. Then it calls `os.Exit(0)` when `!ShouldWait`, or **blocks** on WatchIPNBus until enabled. If the flow itself errors, the old `CheckFunnelAccess` error is returned (stderr, exit 1). `prefs` for §4.1: `tailscale debug prefs` prints `GetPrefs` as JSON, including `AdvertiseRoutes`. | `cli/serve_v2.go:410-415`; `cli/funnel.go:139-162`; `cli/serve_legacy.go:815-857`; `ipn/serve.go:647-664`; `cli/debug.go:633-645` |
 | 19 | **Serve-config ETag (new)** | Each CLI reads the config, then sets it with If-Match. On conflict it prints "Another client is changing the serve config; please try again." to stderr and fails. | `cli/serve_v2.go:537-541`; `ipnlocal/serve.go:78-81`, `:371`; `localapi/serve.go:67-68` |
 | 20 | **Proxy idle connections (new)** | Serve's backend transport keeps idle connections for 90 s | `ipnlocal/serve.go:1031-1040` |
-| 21 | Co-bind by another account | Microsoft, "Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE" (Enhanced Socket Security). The first socket is default, bound to a specific address (Reach on 127.0.0.1:Q). A second socket from another account gets:<br>- default bind on the wildcard → success;<br>- default bind on the same address → WSAEADDRINUSE;<br>- SO_REUSEADDR on the same address → WSAEACCES.<br>A wildcard socket gets traffic for every address except one bound specifically. | Per review, unverified; CI case 9 records actual results |
-| 22 | Service DACL | `sc create` gives a default DACL that grants query to INTERACTIVE and SERVICE, not Authenticated Users. A process without INTERACTIVE (an OpenSSH session, a scheduled task) may be refused `SERVICE_QUERY_STATUS`. | Per review, unverified; acceptance step 1 records the real service's DACL |
+| 21 | Co-bind by another account | Microsoft, "Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE" (Enhanced Socket Security). The first socket is default, bound to a specific address (Reach on 127.0.0.1:Q). A second socket from another account gets:<br>- default bind on the wildcard → success;<br>- default bind on the same address → WSAEADDRINUSE;<br>- SO_REUSEADDR on the same address → WSAEACCES.<br>A wildcard socket gets traffic for every address except one bound specifically.<br>**Verified:** another account's `127.0.0.1:Q` gets 10048 plain and 10013 with SO_REUSEADDR; `0.0.0.0:Q` and `[::]:Q` bind plain (SO_REUSEADDR on `0.0.0.0:Q`: 10013) and get no connection while Reach listens. | CI case 9, windows-2025 |
+| 22 | Service DACL | `sc create` gives a default DACL that grants query to INTERACTIVE and SERVICE, not Authenticated Users. A process without INTERACTIVE (an OpenSSH session, a scheduled task) may be refused `SERVICE_QUERY_STATUS`.<br>**Verified:** a batch token connects to the service manager, then `OpenService` is refused (5), so the helper says `access`.<br>**Tailscale 1.104.1's MSI** sets the service's DACL itself (`MsiLockPermissionsEx`): the same, plus Users may start it, `D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;BU)`, pinned in `test/fixtures/windows/tailscale-service.sddl`. | CI cases 1b and 13, windows-2025 |
 | 23 | Session deletion lags the CLI's exit | The session is deleted when the watcher's context ends (row 9), asynchronously. Until then the route still points at Q. | Per review; §4.10 waits for it |
+| 24 | **Another account's program in a user's session (new)** | The service manager refuses `SC_MANAGER_CONNECT` (5) to a non-admin program of another account running in the runner's console session, whatever its token: one placed there by the secondary logon service (`CreateProcessWithLogonW`, `runas`) or by SYSTEM's `CreateProcessAsUser`. Its DACL grants CC to Authenticated and Interactive Users. The same interactive token connects in session 0. The session's own user without elevation connects in its own session. Every other call the helper makes, including class 88 on session 0's processes, answers both. | CI cases 1, 1a, 1c, windows-2025 |
 
 ## 2. Threat model (keyed mode, flag on)
 
@@ -1038,13 +1039,14 @@ The test runs only when `process.platform === "win32" && process.env.REACH_TEST_
   - Both are standard users with random 24-character passwords, created with `net user … /add`.
   - Cleanup goes in `t.after`.
 - **Starting as a standard user with an interactive token (`run-as.cs`):**
-  - It calls `CreateProcessWithLogonW(LOGON_WITH_PROFILE)` with `lpDesktop = "winsta0\\default"`.
-  - First it grants the user's SID access to WinSta0 and Default with `SetSecurityInfo`. Those ACEs are removed in cleanup.
-  - `CreateProcessAsUser` is not used: it needs SeAssignPrimaryTokenPrivilege, which an elevated administrator doesn't hold by default (Microsoft's documentation; the spike confirms it).
+  - `run` calls `CreateProcessWithLogonW(LOGON_WITH_PROFILE)` with `lpDesktop = "winsta0\\default"`, after granting the user's SID access to WinSta0 and Default with `SetSecurityInfo` (removed in cleanup). That puts the program in the runner's own session, where the service manager refuses another account's program (§1 row 24). The test uses it for everything except Reach's start check.
+  - `system-run`, run from a SYSTEM scheduled task, takes LogonUser's interactive token for the user, puts it in session 0 and starts the program with `CreateProcessAsUser`. SYSTEM holds SeAssignPrimaryTokenPrivilege; an elevated administrator doesn't. Reach (peer-host) runs this way for case 1 and the cases after it.
+  - `filtered` runs the runner's own token as UAC hands it to a Terminal that wasn't elevated: Administrators deny-only, privileges dropped, Medium integrity, a default DACL for the account. It runs in the runner's own session, for case 1a.
   - If logon fails with `ERROR_LOGON_TYPE_NOT_GRANTED`, the fixture grants `SeInteractiveLogonRight` with `LsaAddAccountRights` and removes it in cleanup.
-  - The child writes `whoami /groups /fo csv`, and the test asserts that S-1-5-4 (INTERACTIVE) is present.
+  - The child writes `whoami /groups /fo csv`, and the test asserts that S-1-5-4 (INTERACTIVE) is present and enabled.
   - If no interactive token can be had, the test **fails** with that named reason; it doesn't skip.
-- **Batch-token variant:** `schtasks /create /ru reachci /rp …` runs the same peer-host with a batch token, for case 1b.
+- **Batch-token variant:** `schtasks /create /ru reachci /rp …` runs the same peer-host with a batch token, for case 1b. reachci gets `SeBatchLogonRight` first, since Windows Server doesn't give it to Users.
+- **`test/fixtures/windows/peer-probe.cs`** makes the helper's calls one at a time in each of these contexts and names any refusal. A copy of the helper also runs directly in each, and the test logs its first line.
 - **Reach stand-in:** `test/fixtures/windows/peer-host.mjs`.
   - It runs `ensurePrivateFolders` and `listenKeyedIngress` with `createTailscaledPeerCheck` and a recording `app`.
   - It writes `{ port, key, ready }` and an events log (including `acceptedAt` and `createdMs` per socket) to a results directory whose `icacls` grants only SYSTEM, Administrators and `reachci`.
@@ -1055,8 +1057,10 @@ The test runs only when `process.platform === "win32" && process.env.REACH_TEST_
 
 **Cases (all must hold):**
 
-1. `ready` = `{ ok:true }` as the interactive standard user. This proves the SCM query, the TCP table (class 8) and `NtQuerySystemInformation` work without elevation.
-   - 1b. **As the batch-token user, record the result:** `ready` ok, or `access` with the non-interactive message. A wrong or empty message fails the case.
+1. `ready` = `{ ok:true }` for reachci with an interactive token in session 0 (`system-run`). This proves the SCM query, the TCP table (class 8) and `NtQuerySystemInformation` work without elevation. Cases 2-13 run against this Reach.
+   - 1a. **The runner without elevation, in its own session (`filtered`):** the service manager, the service, the TCP table and class 88 on session 0's processes all answer. The imitation shares the elevated logon's drive map, which a real limited logon has its own of, so `QueryDosDevice` is refused there and Reach says `access`. `ready` is required whenever `QueryDosDevice` answers.
+   - 1b. **As the batch-token user, record the result:** `ready` ok, or `access` with the non-interactive message. A wrong or empty message fails the case. On windows-2025: `access`.
+   - 1c. **reachci placed in the runner's session by the secondary logon service, record the result:** `ready` ok, or `access`. On windows-2025: `access` (§1 row 24).
 2. `sc start Tailscale subproc <url>`:
    - both probes reach `app` as `/probe1` and `/probe2` (key stripped), on one socket, with one helper query;
    - the oracle (`parseNetstat`, `parseScQueryex`, the parent from `pwsh Get-CimInstance Win32_Process`) shows the socket owner is the child and its parent is the service PID;
@@ -1084,6 +1088,10 @@ The test runs only when `process.platform === "win32" && process.env.REACH_TEST_
     - With the planted file removed and a code root inside `reachci`'s profile → ok.
     - Afterwards `reachci2` can't read `open\.reach\quick\tailscale-oauth.json` (access denied).
 12. **New, helper swap.** Overwrite the cached `tailscaled-peer` exe after the build (as admin) → the next spawn is refused ("changed on disk"), and peer-host falls back.
+13. **New, Tailscale's own MSI.** Download the current MSI from pkgs.tailscale.com, check its signature is Tailscale Inc.'s, and log its `ServiceInstall`, `ServiceControl` and `MsiLockPermissionsEx` rows. Then install it.
+    - Its service is its own process (0x10), LocalSystem, at a quoted path to `tailscaled.exe`.
+    - Its daemon is a `tailscaled.exe` child in session 0, created after the service, from the same file.
+    - A fresh Reach is `ready` against it.
 
 **`ci.yml`:** after the spike, add to the Windows lane after line 171:
 
@@ -1204,7 +1212,7 @@ Face ID join and linking computers get their own flag and acceptance later.
 5. **Address-pair reuse** inside the 20 ms clock slack, before Node sees the reset, is not covered. It requires the key and tailscaled picking the freed port within that window.
 6. **A future Tailscale process topology:** the backend in the service process is accepted (`P == S`); anything else is refused, with the cause named.
 7. **Smart App Control or WDAC** may block the compiled helpers → pairing mode, with the reason shown.
-8. **Reach started outside a signed-in Windows session** (SSH, scheduled task) may lack the right to query the service → pairing mode, with that reason.
+8. **Reach started outside a signed-in Windows session** (SSH, scheduled task), or as another account inside someone's session (Run as different user), lacks the right to query the service → pairing mode, with that reason. Both are verified on windows-2025 (§1 rows 22 and 24).
 9. **Sandboxed agent commands (workstream C)** must get neither loopback access nor the right to query Reach's children. The protected state DACL grants nothing to AppContainer SIDs; keep it that way.
 10. **WhoIs** goes through a CLI spawn, as on macOS; step 7 measures it.
 11. **Flag-off Windows** (pairing mode) keeps its state folder unprotected, as today. That is a follow-up outside D.
