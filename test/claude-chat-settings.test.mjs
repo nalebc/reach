@@ -318,3 +318,32 @@ test("a model pick the Mac can't take now says it wasn't changed, never that it 
   release();
   await held;
 });
+
+// A Windows PC has no helper for the Claude app's own window yet: with the
+// app open there, nothing goes to the Mac's helper (claude-compose.mjs).
+test("on a Windows PC with the Claude app open, its window isn't worked: the model goes with the next message, Stop goes to Claude Code, a draft stays on the phone", async (t) => {
+  const native = { agent: "claude", id: ID, inApp: true, appTitle: "Chat", model: "claude-opus-5-5", effort: "medium" };
+  const stopped = [];
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  let sessions;
+  try {
+    sessions = sessionsWith({
+      claude: { read: async () => ({ session: { ...native }, items: [] }) },
+      claudeHost: { models: async () => [{ value: "sonnet", resolvedModel: "claude-sonnet-5-5" }], stop: async (id) => (stopped.push(id), { stopped: true }) },
+      claudeOpen: async () => true,
+      claudeCompose: {
+        model: async () => assert.fail("picked in the app's menu"),
+        draft: async () => assert.fail("typed into the app's box"),
+        stop: async () => assert.fail("pressed the app's Stop"),
+      },
+    });
+  } finally {
+    Object.defineProperty(process, "platform", real);
+  }
+  t.after(() => sessions.close());
+  assert.deepEqual(await sessions.model("claude", ID, { model: "sonnet" }), { model: "sonnet", effort: undefined, applied: false });
+  assert.deepEqual(await sessions.draft("claude", ID, { text: "half a thought" }), { synced: false, supported: false });
+  assert.deepEqual(await sessions.stop("claude", ID), { stopped: true });
+  assert.deepEqual(stopped, [ID]);
+});

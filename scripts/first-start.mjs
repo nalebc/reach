@@ -4,6 +4,12 @@
 // `./reach` and its first question. Nothing the install says reaches the
 // terminal while setup's menus are on screen; it is said once setup is done.
 
+// Whether a start installs while its setup asks: a checkout's first run in
+// a terminal, on a Mac, Linux or a Windows PC alike (audit #31: Windows was
+// left out when it had no guided setup). An installed package ships ready;
+// the background service and a local-only start have no setup to run.
+export const installsWhileSetup = ({ packaged, local, service, tty }) => !packaged && !local && !service && !!tty;
+
 export const seconds = (ms) => {
   const s = Math.max(1, Math.round(ms / 1000));
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;

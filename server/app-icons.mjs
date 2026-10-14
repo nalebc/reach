@@ -1,5 +1,7 @@
+import { spawn as spawnChild } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { exec } from "./platform.mjs";
+import { windowsBinary } from "./desktop-native.mjs";
 
 export const valid = (data) =>
   data.startsWith("iVBORw0KGgo") && /^[A-Za-z0-9+/=]+$/.test(data)
@@ -26,8 +28,42 @@ export async function readMacIcons(targets, run = exec) {
   const lines = String(stdout).split("\n");
   return targets.map((_, i) => valid((lines[i] || "").trim()));
 }
+// Windows: the image the shell draws for each app (Start's app id) or
+// program (its full path), from scripts/native/app-icons.cs, built into
+// Reach's data folder as every Windows helper is (desktop-native.mjs).
+let iconFolder = null;
+export const useAppIconFolder = (dir) => {
+  iconFolder = dir || null;
+};
+export async function readWindowsIcons(targets, { size = 64, dataDir = iconFolder, build = windowsBinary, spawn = spawnChild } = {}) {
+  if (!targets.length) return [];
+  if (!dataDir) return targets.map(() => null);
+  const file = await build({ dataDir }, "app-icons");
+  return new Promise((resolve) => {
+    const child = spawn(file, [String(size)], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    const timer = setTimeout(() => child.kill(), 5000 + targets.length * 500);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      if (out.length > targets.length * 400000) child.kill();
+    });
+    child.on("error", () => {});
+    child.on("close", () => {
+      clearTimeout(timer);
+      const lines = out.split(/\r?\n/);
+      resolve(targets.map((_, i) => valid((lines[i] || "").trim())));
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(`${targets.map((target) => String(target).replace(/[\r\n\0]/g, " ")).join("\n")}\n`);
+  });
+}
 export const readAppIcons = async (appIds) =>
-  process.platform === "darwin" ? readMacIcons(appIds) : appIds.map(() => null);
+  process.platform === "darwin"
+    ? readMacIcons(appIds)
+    : process.platform === "win32"
+      ? readWindowsIcons(appIds).catch(() => appIds.map(() => null))
+      : appIds.map(() => null);
 export const readAppIcon = async (appId) => (await readAppIcons([appId]))[0];
 
 // One native lookup at a time, deduplicated across clients. Ids requested while
