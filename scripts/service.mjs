@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { getConfig } from "../server/core.mjs";
+import { command } from "./home.mjs";
+import { removeLegacyStartup } from "./windows-task.mjs";
 const cwd = process.cwd(),
   config = getConfig(),
   remove = process.argv[2] === "uninstall";
@@ -55,28 +57,18 @@ if (process.platform === "darwin") {
     "Reach now starts when you sign in. Run npm run pair to connect a browser.",
   );
 } else if (process.platform === "win32") {
-  const file = path.join(
-    process.env.APPDATA,
-    "Microsoft/Windows/Start Menu/Programs/Startup/Reach.cmd",
-  );
+  // Background mode on Windows is reach install (scripts/background-service.mjs):
+  // a task that runs the real launcher at sign-in. The Startup entry this
+  // script used to write ran server/index.mjs alone (no launcher, no lock,
+  // no phone link) and would start a second Reach at every sign-in: only
+  // removed here.
+  const removed = removeLegacyStartup();
   if (remove) {
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-    console.log("Reach startup entry removed.");
+    console.log(removed ? "Reach's old startup entry removed." : "There's no old startup entry to remove.");
     process.exit();
   }
-  const safe = (s) => {
-    if (/[\r\n%]/.test(s))
-      throw Error(
-        "This path cannot be used in a Windows startup script. Start Reach manually.",
-      );
-    return s;
-  };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(
-    file,
-    `@echo off\r\ncd /d "${safe(cwd)}"\r\nset "REACH_DATA=${safe(config.dataDir)}"\r\nset "REACH_ROOTS=${safe(config.roots.join(path.delimiter))}"\r\nset "REACH_SCREEN=${config.screen ? "1" : "0"}"\r\nstart "Reach Companion" /min "${safe(process.execPath)}" "${safe(path.join(cwd, "server/index.mjs"))}"\r\n`,
-  );
-  console.log("Reach will start at sign-in. Run npm start now.");
+  console.error(`On Windows, background mode is ${command} install (or ${command} setup background).${removed ? " The old startup entry was removed." : ""}`);
+  process.exitCode = 1;
 } else {
   throw Error(
     "Login service installation supports macOS and Windows. Run npm start under your service manager on Linux.",
