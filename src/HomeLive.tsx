@@ -815,14 +815,18 @@ export default function HomeLive({
               <button
                 key={story.key}
                 className="story"
-                aria-label={`${story.name}${story.mac ? ", on your Mac" : ""}${story.state === "attention" ? ", needs you" : story.state === "active" ? ", working" : story.state === "done" ? ", done" : story.state === "failed" ? ", stopped with an error" : ""}`}
+                aria-label={`${story.name}${story.mac ? `, on your ${computerWord(device.platform)}` : ""}${story.state === "attention" ? ", needs you" : story.state === "active" ? ", working" : story.state === "done" ? ", done" : story.state === "failed" ? ", stopped with an error" : ""}`}
                 onClick={story.open}
               >
                 <span className={`story-ring ${story.state}`}>
                   <span>
                     <Glyph kind={story.kind} logos={logos} />
                   </span>
-                  {story.mac && <i className="story-badge">Mac</i>}
+                  {story.mac && (
+                    <i className="story-badge">
+                      {device.platform === "win32" ? "PC" : "Mac"}
+                    </i>
+                  )}
                   {story.state === "done" && (
                     <i className="story-mark">
                       <Check size={11} strokeWidth={3} />

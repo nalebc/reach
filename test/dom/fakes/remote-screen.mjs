@@ -35,5 +35,9 @@ export function useRemoteScreen(
     height: computer.size.height,
     fallback: false,
     fallbackReason: "",
+    // What the computer said it sends, and why not better (a PC without
+    // an H.264 encoder).
+    video: computer.video ?? "H.264",
+    videoWhy: computer.videoWhy ?? "",
   };
 }

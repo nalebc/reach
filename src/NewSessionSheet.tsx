@@ -176,6 +176,11 @@ export default function NewSessionSheet({
   const go = (next: Place | null, way: "forward" | "back") => {
     setDirection(way);
     setBrowse(next);
+    // A folder that can't be listed: its path, typed, relative to its
+    // shared folder. Set with the page, so the field starts there when it
+    // shows. Set once it showed (an effect), it replaced what a quick thumb
+    // had already typed (Oct 14).
+    setTyped(next ? parts(next.path).join("/") : "");
   };
   const leave = () => setBrowse(undefined);
   const parent = browse ? { root: browse.root, path: parts(browse.path).slice(0, -1).join("/") } : null;
@@ -191,10 +196,6 @@ export default function NewSessionSheet({
       : browse && roots.length > 1
         ? "Shared folders"
         : title;
-  // A folder that can't be listed: its path, typed, relative to its shared folder.
-  useEffect(() => {
-    if (listing.error && browse) setTyped(parts(browse.path).join("/"));
-  }, [listing.error, browse?.root, browse?.path]);
   const chosen: Place | null = browse
     ? listing.error
       ? { root: browse.root, path: parts(typed).join("/") }

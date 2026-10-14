@@ -215,6 +215,16 @@ const windowsName = (token) => token.split(/[\\/]/).at(-1).toLowerCase().replace
 const WINDOWS_SKIP = new Set(["cmd", "start", "start-process", "call"]);
 const WINDOWS_ADMIN_COMMANDS = new Set(["runas", "reg", "bcdedit", "netsh", "sc", "icacls", "takeown", "set-mppreference", "add-mppreference", "wmic"]);
 const WINDOWS_DISK_COMMANDS = new Set(["vssadmin", "cipher", "format", "diskpart"]);
+// Shutting down, restarting or signing out: the twins of the Mac's shutdown,
+// reboot and halt (DISK_COMMANDS) and of killing loginwindow (the kill rule).
+const WINDOWS_SESSION_COMMANDS = new Set(["restart-computer", "stop-computer", "logoff"]);
+// Stopping a process: the Windows twins of the Mac's kill/killall/pkill (the
+// shared kill rule already catches `kill`). Checked, like the Mac's, only when
+// the command names Reach, Node or Tailscale — killing by pid is allowed on
+// both. `net stop`/`net start` of a service and `net user`/`net localgroup`
+// are the twins of launchctl and dscl (the Mac's PASSWORD_COMMANDS).
+const WINDOWS_KILL_COMMANDS = new Set(["taskkill", "stop-process", "tskill", "spps", "invoke-cimmethod"]);
+const WINDOWS_NET_SUBCOMMANDS = new Set(["stop", "start", "pause", "continue", "user", "localgroup", "group", "accounts", "session"]);
 // Windows' security tools, opened from a command line.
 const WINDOWS_PROTECTED_PROGRAMS = new Set(["taskmgr", "regedit", "regedt32", "mmc", "gpedit", "credentialuibroker", "consent", "credwiz", "rekeywiz",
   "netplwiz", "useraccountcontrolsettings", "msconfig", "systempropertiesremote", "systemreset", "rstrui", "resmon", "perfmon", "procexp", "procexp64",
@@ -330,13 +340,20 @@ export function commandRefusal(command, { protectedPaths = [], home = "", hosts 
     if (DISK_COMMANDS.test(name)) return "That could erase or shut down this Mac.";
     if (windows) {
       if (WINDOWS_ADMIN_COMMANDS.has(name)) return "That changes who can control this PC, or reads its secrets.";
+      // `net stop`/`net start` a service, `net user`/`net localgroup` an
+      // account: the twins of launchctl and dscl (`net use`, `net view` are fine).
+      if (name === "net" && plainArgs.length && WINDOWS_NET_SUBCOMMANDS.has(plainArgs[0].toLowerCase())) return "That changes who can control this PC, or stops its services.";
       if (name === "schtasks") return "Scheduled jobs would outlive this session.";
       if (WINDOWS_DISK_COMMANDS.has(name)) return "That could erase or shut down this PC.";
+      if (WINDOWS_SESSION_COMMANDS.has(name)) return "That would shut down, restart or sign out of this PC.";
       if (WINDOWS_PRIVATE_DATA.test(piece.replace(/\\/g, "/"))) return "That path holds your passwords, keys or Reach's own files.";
       if (WINDOWS_PROTECTED_PROGRAMS.has(name) || (name === "control" && values.some((arg) => /credentialmanager/i.test(arg))) ||
           [first?.text || "", ...values].some((arg) => WINDOWS_SETTINGS_PAGES.some((pattern) => pattern.test(arg.trim()))))
         return "That opens a part of Windows that holds passwords or controls this PC.";
-      if (["taskkill", "stop-process"].includes(name) && /reach|node|tailscale/i.test(lowered)) return "That would stop Reach or Windows' own processes.";
+      // Stopping Reach, Node or Tailscale (by name): the twin of the Mac's kill
+      // rule. Invoke-CimMethod only when it also terminates (CIM is general).
+      if (WINDOWS_KILL_COMMANDS.has(name) && /reach|node|tailscale/i.test(lowered) &&
+          (name !== "invoke-cimmethod" || /terminate/i.test(lowered))) return "That would stop Reach or Windows' own processes.";
       // Read in the whole command too: a quoted path such as "C:\Program
       // Files (x86)\…" is split at its bracket above.
       if (WINDOWS_DELETE.has(name) && (values.some((arg) => !/^[-/]/.test(arg) && WINDOWS_SYSTEM_PATH.test(arg)) || WINDOWS_SYSTEM_PLACE.test(command)))
