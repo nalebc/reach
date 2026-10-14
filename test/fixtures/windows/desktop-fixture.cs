@@ -460,9 +460,15 @@ static class DesktopFixture {
         CloseHandle(process);
       }
       shell.Add("\"" + name.Replace("\\", "").Replace("\"", "") + "\"");
-      keybd_event(0x1B, 0, 0, UIntPtr.Zero);
-      keybd_event(0x1B, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
-      Thread.Sleep(400);
+      if (i < 2) {
+        keybd_event(0x1B, 0, 0, UIntPtr.Zero);
+        keybd_event(0x1B, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
+      } else if (string.Equals(name, "WWAHost.exe", StringComparison.OrdinalIgnoreCase)) {
+        // A runner image's web-app panel (WWAHost) ignores Escape. It is no
+        // owner's window on a disposable runner; end that one process.
+        try { System.Diagnostics.Process.GetProcessById((int)pid).Kill(); } catch (Exception) { }
+      } else break;
+      Thread.Sleep(600);
     }
     IntPtr after = GetAncestor(GetForegroundWindow(), 2);
     var afterKind = new StringBuilder(256);
