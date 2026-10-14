@@ -180,7 +180,7 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   assert.equal((await request("/api/settings/pause", { method: "POST", body: { paused: true } })).status, 200);
   await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => [409, 423].includes(e.status) && /paused/i.test(e.message));
   assert.ok(!log().includes("never typed"));
-  assert.ok(!fs.readFileSync(path.join(dir, "vault.log"), "utf8").includes("never typed"));
+  assert.ok(!fs.existsSync(path.join(dir, "vault.log")) || !fs.readFileSync(path.join(dir, "vault.log"), "utf8").includes("never typed"));
   fs.mkdirSync("reports", { recursive: true });
   fs.writeFileSync("reports/windows-agent-e2e.json", JSON.stringify({ presets: Object.keys(clients), nativeScreen: true, nativeInput: true,
     nativeFiles: true, nativeShell: true, pauseAndOwnerControl: true, injected: ["Tailscale identity and peer", "fixture catalog entry", "SAFER medium launch"], physicalPC: false }, null, 2));

@@ -1303,7 +1303,7 @@ static class Files {
       } else {
         if (parts.Length == 0) throw Sandbox.Refusal(400, "Choose a file inside the shared folder.");
         IntPtr parent = Traverse(rootHandle, root, Ancestors(parts), true);
-        try { json = Mutate(op, parent, root, parts[parts.Length - 1], to, request.Get("data", null), privateNames, privatePaths, full); }
+        try { json = Mutate(op, parent, rootHandle, root, parts[parts.Length - 1], to, request.Get("data", null), privateNames, privatePaths, full, maxBytes); }
         finally { NtFiles.Close(parent); }
       }
       emit(Sandbox.TypeResult, Encoding.UTF8.GetBytes(json));
@@ -1311,7 +1311,21 @@ static class Files {
     } finally { NtFiles.Close(rootHandle); }
   }
 
-  static string[] SplitRel(string rel) { return rel.Length == 0 ? new string[0] : rel.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries); }
+  static string[] SplitRel(string rel) {
+    if (rel.Length > 4096 || Path.IsPathRooted(rel) || rel.IndexOf(':') >= 0) throw Sandbox.Refusal(400, "Use a relative path inside the shared folder.");
+    foreach (char c in rel) if (c < 32 || c == 127) throw Sandbox.Refusal(400, "That path is not supported.");
+    var parts = new List<string>();
+    foreach (string part in rel.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)) {
+      if (part == ".") continue;
+      if (part == ".." || part.EndsWith(".", StringComparison.Ordinal) || part.EndsWith(" ", StringComparison.Ordinal)) throw Sandbox.Refusal(400, "That path is not supported.");
+      string name = part.Split('.')[0].ToUpperInvariant();
+      if (name == "CON" || name == "PRN" || name == "AUX" || name == "NUL" ||
+          (name.Length == 4 && (name.StartsWith("COM", StringComparison.Ordinal) || name.StartsWith("LPT", StringComparison.Ordinal)) && name[3] >= '1' && name[3] <= '9'))
+        throw Sandbox.Refusal(400, "That path is not supported.");
+      parts.Add(part);
+    }
+    return parts.ToArray();
+  }
   static string[] Ancestors(string[] parts) { var a = new string[parts.Length - 1]; Array.Copy(parts, a, parts.Length - 1); return a; }
 
   // Walk the components relative to the root handle, each opened no-reparse so a
@@ -1339,8 +1353,9 @@ static class Files {
   }
 
   static void VerifyPrivate(IntPtr handle, string root, HashSet<string> privateNames, List<string> privatePaths, bool full) {
-    if (full) return;
     string finalPath = NtFiles.FinalPath(handle);
+    NtFiles.VerifyUnder(handle, root, finalPath);
+    if (full) return;
     foreach (string part in finalPath.Split('\\')) if (privateNames.Contains(part)) throw Sandbox.Refusal(403, "That name is not shared.");
     string lower = finalPath.ToLowerInvariant();
     foreach (string p in privatePaths) { string q = p.ToLowerInvariant().TrimEnd('\\'); if (lower == q || lower.StartsWith(q + "\\", StringComparison.Ordinal)) throw Sandbox.Refusal(403, "That folder is not shared."); }
@@ -1355,6 +1370,8 @@ static class Files {
     // Best-effort match: the Node side stringifies BigInt dev/ino; an empty
     // value skips the check (the real-Windows test pins the exact equality).
     if (!string.IsNullOrEmpty(dev) && dev != info.VolumeSerialNumber.ToString()) throw Sandbox.Refusal(403, "The shared folder changed.");
+    ulong index = ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow;
+    if (!string.IsNullOrEmpty(ino) && ino != index.ToString()) throw Sandbox.Refusal(403, "The shared folder changed.");
   }
 
   static string List(IntPtr handle, int maxEntries) {
@@ -1396,21 +1413,63 @@ static class Files {
     return "{\"data\":" + JsonString(Convert.ToBase64String(buffer)) + ",\"stat\":" + StatJson(handle) + "}";
   }
 
-  static string Mutate(string op, IntPtr parent, string root, string leaf, string to, string data, HashSet<string> privateNames, List<string> privatePaths, bool full) {
+  static long RegularSize(IntPtr file) {
+    NativeSec.BY_HANDLE_FILE_INFORMATION info;
+    if (!NativeSec.GetFileInformationByHandle(file, out info) || (info.FileAttributes & (uint)FileAttributes.Directory) != 0 || info.NumberOfLinks != 1)
+      throw Sandbox.Refusal(403, "Choose a regular file with only one name.");
+    return ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
+  }
+
+  static string Mutate(string op, IntPtr parent, IntPtr rootHandle, string root, string leaf, string to, string data, HashSet<string> privateNames, List<string> privatePaths, bool full, long maxBytes) {
     if (!full && privateNames.Contains(leaf)) throw Sandbox.Refusal(403, "That name is not shared.");
     switch (op) {
       case "mkdir": NtFiles.CreateChildDir(parent, leaf); break;
-      case "touch": NtFiles.Close(NtFiles.CreateChildFile(parent, leaf, false)); break;
-      case "rm": NtFiles.DeleteChild(parent, leaf); break;
+      case "touch": {
+        IntPtr file = NtFiles.CreateChildFile(parent, leaf, false);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); } finally { NtFiles.Close(file); }
+        break;
+      }
+      case "rm": {
+        IntPtr file = NtFiles.OpenDeleteChild(parent, leaf);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); NtFiles.DeleteOpened(file); } finally { NtFiles.Close(file); }
+        break;
+      }
       case "write": {
         byte[] bytes = Convert.FromBase64String(data ?? "");
-        IntPtr file = NtFiles.CreateChildFile(parent, leaf, true);
-        try { VerifyPrivate(file, root, privateNames, privatePaths, full); NtFiles.WriteAll(file, bytes); } finally { NtFiles.Close(file); }
+        if (bytes.Length > maxBytes) throw Sandbox.Refusal(413, "That file is larger than the allowed size.");
+        // OPEN_IF does not truncate an existing file. Verify the held object's
+        // path and link count first, then resize and write through that handle.
+        IntPtr file = NtFiles.CreateChildFile(parent, leaf, false);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); NtFiles.Truncate(file); NtFiles.WriteAll(file, bytes); } finally { NtFiles.Close(file); }
         break;
       }
       case "cp": {
         if (to == null) throw Sandbox.Refusal(400, "Choose where to copy the file.");
-        throw Sandbox.Refusal(501, "Copy isn't available in the Windows broker yet.");
+        string[] target = SplitRel(to);
+        if (target.Length == 0) throw Sandbox.Refusal(400, "Choose a destination file inside the shared folder.");
+        if (!full) foreach (string part in target) if (privateNames.Contains(part)) throw Sandbox.Refusal(403, "That name is not shared.");
+        IntPtr source = NtFiles.OpenChild(parent, leaf, false);
+        try {
+          VerifyPrivate(source, root, privateNames, privatePaths, full);
+          long size = RegularSize(source);
+          if (size > maxBytes || size > int.MaxValue) throw Sandbox.Refusal(413, "That file is larger than the allowed size.");
+          byte[] bytes = NtFiles.ReadAll(source, (int)size);
+          if (bytes.Length != size) throw Sandbox.Refusal(409, "The source file changed while it was copied. Read it again.");
+          IntPtr destinationParent = Traverse(rootHandle, root, Ancestors(target), true);
+          try {
+            VerifyPrivate(destinationParent, root, privateNames, privatePaths, full);
+            IntPtr destination = NtFiles.CreateNewChildFile(destinationParent, target[target.Length - 1]);
+            bool complete = false;
+            try {
+              VerifyPrivate(destination, root, privateNames, privatePaths, full); RegularSize(destination);
+              NtFiles.WriteAll(destination, bytes); complete = true;
+            } finally {
+              if (!complete) try { NtFiles.DeleteOpened(destination); } catch { }
+              NtFiles.Close(destination);
+            }
+          } finally { NtFiles.Close(destinationParent); }
+        } finally { NtFiles.Close(source); }
+        break;
       }
       default: throw Sandbox.Refusal(400, "Unknown file operation.");
     }
@@ -1461,6 +1520,7 @@ static class NtFiles {
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr file, byte[] buffer, int count, out int read, IntPtr overlapped);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr file, byte[] buffer, int count, out int written, IntPtr overlapped);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileInformationByHandle(IntPtr file, int type, IntPtr data, uint length);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern int GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, int length, int flags);
 
   public static void Close(IntPtr handle) { if (handle != IntPtr.Zero && handle != Invalid) NativeSec.CloseHandle(handle); }
@@ -1494,6 +1554,22 @@ static class NtFiles {
   public static IntPtr CreateChildFile(IntPtr parent, string name, bool overwrite) {
     return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0);
   }
+  public static IntPtr CreateNewChildFile(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE, 0);
+  }
+  public static IntPtr OpenDeleteChild(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0);
+  }
+  public static void Truncate(IntPtr file) {
+    IntPtr data = Marshal.AllocHGlobal(8);
+    try { Marshal.WriteInt64(data, 0); if (!SetFileInformationByHandle(file, 6, data, 8)) throw Sandbox.Refusal(403, "That file could not be resized."); }
+    finally { Marshal.FreeHGlobal(data); }
+  }
+  public static void DeleteOpened(IntPtr file) {
+    IntPtr data = Marshal.AllocHGlobal(1);
+    try { Marshal.WriteByte(data, 1); if (!SetFileInformationByHandle(file, 4, data, 1)) throw Sandbox.Refusal(403, "That file could not be removed."); }
+    finally { Marshal.FreeHGlobal(data); }
+  }
   public static void CreateChildDir(IntPtr parent, string name) {
     Close(OpenRelative(parent, name, FILE_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_WRITE | SYNCHRONIZE, 0));
   }
@@ -1521,6 +1597,7 @@ static class NtFiles {
         if (status != 0) {
           int code = RtlNtStatusToDosError(status);
           if (code == 2 || code == 3) throw Sandbox.Refusal(404, "That file or folder is not there.");
+          if (code == 80 || code == 183) throw Sandbox.Refusal(409, "A file or folder with that name already exists.");
           if (code == 5) throw Sandbox.Refusal(403, "That file or folder is not shared.");
           throw Sandbox.Refusal(403, "That path can't be opened inside the shared folder (" + code + ").");
         }
