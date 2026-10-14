@@ -985,6 +985,15 @@ test("on Windows a registry record holds its chat only while its pid is the proc
   assert.deepEqual([...fallback.keys()], ["b"]);
   assert.equal(windowsStart(ft(T)), T);
   for (const bad of [undefined, "", "soon", "-5", "1", "1e20"]) assert.equal(windowsStart(bad), null, String(bad));
+  // Past 3e17 Claude Code itself reads another encoding, never another
+  // process: unknown, so the record stands.
+  const other = String(BigInt(T) * 1000000n);
+  assert.equal(windowsStart(other), null);
+  const kept = await liveClaudeSessions([], {
+    run, platform: "win32", processList: async () => rows,
+    registry: () => new Map([["e", { where: "terminal", pid: 12, tty: null, exact: true, busy: true, procStartFt: other }]]),
+  });
+  assert.deepEqual([...kept.keys()], ["e"]);
 });
 
 // Right after a turn, Reach's own process is still exiting: a message then

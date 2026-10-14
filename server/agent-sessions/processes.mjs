@@ -191,11 +191,15 @@ export function readSessionRegistry({
 
 // A Windows start as Claude Code notes it, in ms since 1970 as the PC's
 // process list gives it (windows-processes.mjs); null when it isn't one.
+// Claude Code reads a value past 3e17 as another encoding and never as a
+// different process (2.1.299): Reach doesn't either, or a live chat would
+// read as let go and be written into.
 const FILETIME_1970 = 116444736000000000n;
+const OTHER_ENCODING = 300000000000000000n;
 export function windowsStart(procStartFt) {
   if (typeof procStartFt !== "string" || !/^\d{1,20}$/.test(procStartFt)) return null;
   const ticks = BigInt(procStartFt);
-  return ticks > FILETIME_1970 ? Number((ticks - FILETIME_1970) / 10000n) : null;
+  return ticks > FILETIME_1970 && ticks <= OTHER_ENCODING ? Number((ticks - FILETIME_1970) / 10000n) : null;
 }
 
 export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid, platform = process.platform, ours = () => false, processList = () => windowsProcesses() } = {}) {
