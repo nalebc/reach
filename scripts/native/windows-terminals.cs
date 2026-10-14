@@ -38,7 +38,7 @@ static class Terminals {
   const uint GA_ROOT = 2, GA_ROOTOWNER = 3, WM_CLOSE = 0x10;
   const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
   const int SW_RESTORE = 9, ERROR_ACCESS_DENIED = 5;
-  const ushort KEY_EVENT = 1, VK_RETURN = 0x0D, VK_PACKET = 0xE7;
+  const ushort KEY_EVENT = 1, VK_TAB = 0x09, VK_RETURN = 0x0D, VK_PACKET = 0xE7;
   const uint SHIFT_PRESSED = 0x10, CREATE_NEW_CONSOLE = 0x10;
   // The same limits Reach checks first (desktop-terminals.mjs).
   const int MAX_TEXT = 16000, MAX_READ = 128000, MAX_ROWS = 3000;
@@ -433,12 +433,24 @@ static class Terminals {
     key.KeyDown = 0;
     keys.Add(key);
   }
+  // The same text a Mac takes: no control codes but Tab and line ends, which
+  // are their keys here as there (a line end is Enter).
   static string Send(string text) {
     if (text == null || text.Length > MAX_TEXT) return Fail(400, "Send up to 16,000 characters of text, without control codes.");
     foreach (char c in text)
-      if (c < 0x20 || c == 0x7f) return Fail(400, "Send up to 16,000 characters of text, without control codes.");
+      if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f) return Fail(400, "Send up to 16,000 characters of text, without control codes.");
     List<INPUT_RECORD> keys = new List<INPUT_RECORD>();
-    foreach (char c in text) {
+    for (int i = 0; i < text.Length; i++) {
+      char c = text[i];
+      if (c == '\r' || c == '\n') {
+        if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+        Key(keys, '\r', VK_RETURN, 0);
+        continue;
+      }
+      if (c == '\t') {
+        Key(keys, '\t', VK_TAB, 0);
+        continue;
+      }
       short scan = VkKeyScanW(c);
       // A character this keyboard has: its key, with Shift when it needs it
       // (never Ctrl or Alt, which programs read as shortcuts). Anything else
