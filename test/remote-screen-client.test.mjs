@@ -530,6 +530,32 @@ test("a locked Windows PC is said as one", async () => {
   }
 });
 
+// A Windows PC without an H.264 encoder sends still images (audit #26):
+// the phone hears which video the computer sends and why not a better one,
+// in the computer's own words, as plain text.
+test("the computer's word for its video, and why it isn't better, reach the Screen page as plain text", async () => {
+  const { view, state } = await watch("win32");
+  const socket = FakeSocket.all[0];
+  try {
+    const why = "This N edition of Windows has no H.264 video encoder: it comes with the Media Feature Pack (Settings, Apps, Optional features). Until then, the screen comes as still images.";
+    socket.says({ type: "ready", format: "jpeg", fps: 20, display: "DISPLAY1", video: "Still images", videoWhy: why });
+    await dom.waitFor(() => state().video === "Still images");
+    assert.equal(state().videoWhy, why);
+    assert.equal(state().format, "jpeg");
+    // A newer stream says it's H.264 from Windows itself; no why.
+    socket.says({ type: "ready", format: "h264", fps: 60, display: "DISPLAY1", video: "H.264, hardware" });
+    await dom.waitFor(() => state().video === "H.264, hardware");
+    assert.equal(state().videoWhy, "");
+    // Never markup or control characters, never a page of text.
+    socket.says({ type: "ready", format: "h264", fps: 60, display: "DISPLAY1", video: { html: "<b>" }, videoWhy: `\u001b[2J${"x".repeat(1000)}` });
+    await dom.waitFor(() => state().video === "");
+    assert.equal(state().videoWhy.length, 400);
+    assert.doesNotMatch(state().videoWhy, /\u001b/);
+  } finally {
+    await view.unmount();
+  }
+});
+
 // Each interface edit (agents edit it all day) reloaded an open phone, mid-
 // stream, back to the loading scene.
 test("a live screen holds off the new-interface reload until it closes", async () => {

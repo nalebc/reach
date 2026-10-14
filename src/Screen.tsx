@@ -93,6 +93,8 @@ export type ScreenAsk = {
   open: boolean;
   setting?: { name: string; url: string };
 };
+// Why a computer's video isn't its best, already said on this page.
+const toldVideo = new Set<string>();
 export default function Screen({
   peer,
   device,
@@ -231,6 +233,14 @@ export default function Screen({
   useEffect(() => {
     if (sound.error) toast(sound.error);
   }, [sound.error]);
+  // A computer that can't send its best video says why, once a page: a PC
+  // without an H.264 encoder sends still images (never silently).
+  useEffect(() => {
+    const told = `${peer.url} ${stream.videoWhy}`;
+    if (!stream.videoWhy || toldVideo.has(told)) return;
+    toldVideo.add(told);
+    toast(stream.videoWhy);
+  }, [peer.url, stream.videoWhy]);
   const input = useDesktopInput(
     peer,
     control && live && visible,
@@ -248,6 +258,10 @@ export default function Screen({
   // The Mac sends a frame only when something on screen moves: 0 a second
   // means a still screen, so it reads "Still", with the most it would send.
   const frameRate = `${stream.fps ? `${stream.fps} fps` : "Still"}${stream.cap ? ` · up to ${stream.cap}` : ""}`;
+  // What the computer sends: its word for it, or the stream's own format
+  // from a Reach that doesn't say.
+  const videoKind =
+    stream.video || (stream.format === "h264" ? "H.264" : stream.format === "jpeg" ? "Still images" : "");
   const send = async (action: DesktopAction) => {
     if (!usable && action.type !== "release")
       throw Object.assign(Error("Wait for a fresh screen and enable control."), { notSent: true });
@@ -1307,6 +1321,12 @@ export default function Screen({
               {panel === "connection" && (
                 <>
                   <div className="gs-group">
+                    {!!videoKind && (
+                      <div className="gs-row">
+                        <span className="gs-label">Video</span>
+                        <span className="gs-value">{videoKind}</span>
+                      </div>
+                    )}
                     <div className="gs-row">
                       <span className="gs-label">Frames</span>
                       <span className="gs-value">{frameRate}</span>
@@ -1328,6 +1348,7 @@ export default function Screen({
                       </div>
                     )}
                   </div>
+                  {stream.videoWhy && <p className="gs-foot">{stream.videoWhy}</p>}
                   {stream.fallbackReason && <p className="gs-foot">{stream.fallbackReason}</p>}
                   <div className="gs-group gs-end">
                     <button

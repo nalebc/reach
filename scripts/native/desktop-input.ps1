@@ -73,14 +73,19 @@ public class ReachDesktopInput {
 # A look at the field under a finger never focuses it or reads its text.
 # A slow UI Automation provider cannot delay the click behind the probe:
 # allow one background look, bounded to 250 ms, without piling up workers.
-Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Point].Assembly.Location) -TypeDefinition @'
+Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Point].Assembly.Location,[System.Diagnostics.Stopwatch].Assembly.Location) -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Automation;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Diagnostics;
+using System.Text;
 public class ReachDesktopFieldProbe {
  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+ [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  static readonly object gate=new object(); static Thread worker; static volatile bool warm;
  // UI Automation's first call in a process starts its client (seconds on a
  // cold PC): started with the helper, so a finger's first look isn't the
@@ -94,6 +99,55 @@ public class ReachDesktopFieldProbe {
   worker.IsBackground=true;worker.SetApartmentState(ApartmentState.MTA);worker.Start();
   return worker.Join(warm?250:1000)?result:0;
  }}
+ public static string Fields(int x,int y,int width,int height){lock(gate){
+  if(worker!=null && worker.IsAlive)return "[]";
+  string result="[]";
+  worker=new Thread(()=>{try{SetThreadDpiAwarenessContext(new IntPtr(-4));result=ReadFields(x,y,width,height);warm=true;}catch{}});
+  worker.IsBackground=true;worker.SetApartmentState(ApartmentState.MTA);worker.Start();
+  return worker.Join(warm?500:1500)?result:"[]";
+ }}
+ static string Number(double value){return value.ToString("0.####",CultureInfo.InvariantCulture);}
+ static string ReadFields(int x,int y,int width,int height){
+  if(width<=0 || height<=0)return "[]";
+  AutomationElement root=AutomationElement.FromHandle(GetForegroundWindow());
+  if(root==null)return "[]";
+  Rect visible=Rect.Intersect(root.Current.BoundingRectangle,new Rect(x,y,width,height));
+  if(visible.IsEmpty)return "[]";
+  var queue=new Queue<AutomationElement>();queue.Enqueue(root);
+  var result=new StringBuilder("[");int seen=0,found=0;
+  var time=Stopwatch.StartNew();
+  while(queue.Count>0 && seen++<2048 && found<64 && time.ElapsedMilliseconds<350){
+   AutomationElement element=queue.Dequeue();
+   try{
+    var info=element.Current;Rect rect=info.BoundingRectangle;object pattern;
+    if(info.IsOffscreen)continue;
+    bool value=element.TryGetCurrentPattern(ValuePattern.Pattern,out pattern);
+    bool writable=value && !((ValuePattern)pattern).Current.IsReadOnly;
+    bool editable=info.IsEnabled && info.IsKeyboardFocusable && (!value || writable)
+     && (info.ControlType==ControlType.Edit || info.ControlType==ControlType.ComboBox || writable);
+    Rect shown=Rect.Intersect(rect,visible);
+    if(editable && !shown.IsEmpty && shown.Width>=8 && shown.Height>=8){
+     // A covered field must not open the keyboard. Confirm the same live
+     // control at its centre, as the Mac's scanner does, without reading text.
+     AutomationElement hit=AutomationElement.FromPoint(new Point(shown.X+shown.Width/2,shown.Y+shown.Height/2));
+     bool same=false;
+     for(int depth=0;hit!=null && depth<5;depth++){
+      if(element.Equals(hit)){same=true;break;}
+      hit=TreeWalker.RawViewWalker.GetParent(hit);
+     }
+     if(same){
+      shown.Inflate(-Math.Min(3,shown.Width/4),-Math.Min(3,shown.Height/4));
+      if(found++>0)result.Append(',');
+      result.Append("{\"x\":").Append(Number((shown.X-x)/width)).Append(",\"y\":").Append(Number((shown.Y-y)/height))
+       .Append(",\"w\":").Append(Number(shown.Width/width)).Append(",\"h\":").Append(Number(shown.Height/height))
+       .Append(",\"secure\":").Append(info.IsPassword?"true":"false").Append('}');
+     }
+    }
+    for(AutomationElement child=TreeWalker.RawViewWalker.GetFirstChild(element);child!=null && queue.Count<2048;child=TreeWalker.RawViewWalker.GetNextSibling(child))queue.Enqueue(child);
+   }catch{}
+  }
+  return result.Append(']').ToString();
+ }
  static int Read(double x,double y){
   AutomationElement element=AutomationElement.FromPoint(new Point(x,y));
   for(int depth=0;element!=null && depth<4;depth++){
@@ -174,6 +228,14 @@ try {
     'click' {$b=$screen.Bounds;$x=[int]($b.X+$p.x*($b.Width-1));$y=[int]($b.Y+$p.y*($b.Height-1));$result.clickState=[ReachDesktopInput]::Click($x,$y,($p.button -eq 'right'),[int]$p.count,[long]$p.clickId,[int]$p.clickState);$result.retargeted=([ReachDesktopInput]::ClickX -ne $x -or [ReachDesktopInput]::ClickY -ne $y);$result.point=@{x=([ReachDesktopInput]::ClickX-$b.X)/[Math]::Max(1,$b.Width-1);y=([ReachDesktopInput]::ClickY-$b.Y)/[Math]::Max(1,$b.Height-1)}}
     'focus' {$result.target=Get-ReachTextTarget $p $screen}
     'probe' {$b=$screen.Bounds;$field=[ReachDesktopFieldProbe]::At([int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)));$result.field=($field -band 1) -ne 0;$result.secure=($field -band 2) -ne 0}
+    'fields' {
+     $b=$screen.Bounds
+     $found=ConvertFrom-Json -InputObject ([ReachDesktopFieldProbe]::Fields($b.X,$b.Y,$b.Width,$b.Height))
+     # Windows PowerShell can retain ConvertFrom-Json's array as one pipeline
+     # object with value/Count properties. Enumerate it explicitly so the phone
+     # receives rectangles, including the empty and single-field cases.
+     $result.fields=@(foreach($field in $found){@{x=[double]$field.x;y=[double]$field.y;w=[double]$field.w;h=[double]$field.h;secure=[bool]$field.secure}})
+    }
     'context' {
      # The app in front, for context shortcuts. Never reads window content.
      $owner=[uint32]0;[void][ReachDesktopInput]::GetWindowThreadProcessId([ReachDesktopInput]::GetForegroundWindow(),[ref]$owner)
@@ -205,7 +267,7 @@ try {
     }
     default {throw 'Unsupported input'}
    }
-   [Console]::WriteLine(($result | ConvertTo-Json -Compress))
+   [Console]::WriteLine(($result | ConvertTo-Json -Compress -Depth 6))
   } catch {[ReachDesktopInput]::Release();[Console]::WriteLine((@{error='Desktop action failed. Check the selected display and keep Windows unlocked.'}|ConvertTo-Json -Compress))}
  }
 } finally {[ReachDesktopInput]::Release()}
