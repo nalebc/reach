@@ -134,8 +134,9 @@ export const suites = {
     "node-runtime-files", "security-resilience-cursor-native",
     "remote-desktop", "remote-screen-hub", "tool-page-runtime",
     "ios-background-transfer-native",
-    // The Mac's sound helper, built and self-tested (Oct 13).
-    "screen-sound-native",
+    // Clocked audio must run without competing browser suites: its strict
+    // speaker/underrun assertions also run in Windows' serial desktop step.
+    "screen-sound-native", "screen-sound-chrome-e2e",
   ],
 };
 
@@ -177,7 +178,7 @@ export async function run(suite) {
         await exec("/usr/bin/xcrun", ["swiftc", "-parse-as-library", "-O", `scripts/native/${name}.swift`, "-o", output], { timeout: 180000, maxBuffer: 4 << 20 });
         nativeEnv[variable] = output;
       }
-      Object.assign(nativeEnv, { REACH_TEST_APP_NATIVE: "1", REACH_TEST_FILE_BOUNDARY: "1", REACH_TEST_SCRIPT_SANDBOX: "1" });
+      Object.assign(nativeEnv, { REACH_TEST_APP_NATIVE: "1", REACH_TEST_FILE_BOUNDARY: "1", REACH_TEST_SCRIPT_SANDBOX: "1", REACH_TEST_SOUND_CHROME: "1" });
     }
     // One folder of native helper builds for the whole suite (named by source
     // hash, built whole or not at all), not one per test's data folder. A run

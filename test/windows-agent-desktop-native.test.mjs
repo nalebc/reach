@@ -465,11 +465,20 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   const ready = await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: target.exe, bundleId: "", name: "controls" }] }) });
   assert.equal(ready.accessibility, true, "UI Automation answered its known questions");
   await clickAt(target.x + 80, target.y + 12);
-  const elements = await h.send({ op: "elements" });
+  // Shown is the WinForms window's event, before its accessibility provider
+  // and the helper's stable-window snapshots necessarily expose its controls.
+  // Require every expected control; an empty initial tree is not acceptance.
+  const wantedControls = ["Button:Mark", "TextField:Notes", "SecureTextField:Password"];
+  const elements = await until(async () => {
+    const result = await h.send({ op: "elements" });
+    assert.equal(result.ok, true, JSON.stringify(result).slice(0, 300));
+    const available = result.items.map((item) => `${item.role}:${item.name}`);
+    return wantedControls.every((wanted) => available.includes(wanted)) && result;
+  }, "the fixture's UI Automation controls", 15000);
   note({ elements: elements.items?.map((item) => `${item.role} ${item.name}`) });
   assert.equal(elements.ok, true, JSON.stringify(elements).slice(0, 300));
   const roles = elements.items.map((item) => `${item.role}:${item.name}`);
-  for (const wanted of ["Button:Mark", "TextField:Notes", "SecureTextField:Password"]) assert.ok(roles.includes(wanted), `${wanted} in ${roles.join(", ")}`);
+  for (const wanted of wantedControls) assert.ok(roles.includes(wanted), `${wanted} in ${roles.join(", ")}`);
   assert.ok(!elements.items.some((item) => item.secure && item.value), "never a password field's value");
   // press by name: the button marks itself
   assert.equal((await h.send({ op: "act", action: { type: "press", name: "Mark" } })).ok, true);
@@ -503,10 +512,12 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   const beforeMenuChange = menuCount();
   fs.writeFileSync(path.join(work, "controls.menu-change"), "change during menu preparation");
   const changedMenu = await h.send({ op: "act", action: { type: "menu", path: ["File", "Mark"] } });
-  assert.equal(changedMenu.ok, false, JSON.stringify(changedMenu));
+  assert.equal(changedMenu.kind, "retry", JSON.stringify(changedMenu));
+  assert.equal(changedMenu.pressed, undefined, "no command was acknowledged");
   assert.match(changedMenu.error, /menu item changed/i);
   await sleep(100);
   assert.equal(menuCount(), beforeMenuChange, "a changed command is never dispatched");
+  note({ changedMenu: { kind: changedMenu.kind, dispatched: menuCount() - beforeMenuChange } });
   // wait-change: the window changed its own text
   const before = (await h.send({ op: "elements" })).revision;
   await clickAt(target.button[0], target.button[1]);
