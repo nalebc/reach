@@ -293,6 +293,17 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     if (from === tab.sessionId && asked.has(requestId)) asked.get(requestId).status = response.status;
   });
   page.requests = () => [...asked.values()];
+  // What the phone downloads lands in a folder of this test's own:
+  // [{ name, state, file }], `state` "completed" once all of it is there.
+  const downloads = fs.mkdtempSync(path.join(computer.reach.temp, "downloads-"));
+  await browser.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, eventsEnabled: true });
+  const got = [];
+  browser.on("Browser.downloadWillBegin", ({ guid, suggestedFilename }) => got.push({ guid, name: suggestedFilename, file: path.join(downloads, suggestedFilename) }));
+  browser.on("Browser.downloadProgress", ({ guid, state }) => {
+    const one = got.find((d) => d.guid === guid);
+    if (one) one.state = state;
+  });
+  page.downloads = () => got;
   await page.open("/");
   await signIn(page, computer);
   return page;
