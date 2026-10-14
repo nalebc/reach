@@ -232,6 +232,26 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
   for (const w of [target, vault, popup, other, tool]) w.child.kill();
 });
 
+test("Reach in this PC's default terminal (a pseudo console on GitHub's runners): the window titled Reach is closed, by the Mac's title rule", { skip, timeout: 300000 }, async (t) => {
+  const child = spawn(fixtureConsole, ["medium-shown", fixtureConsole, "sleeper", work, "reach-pseudo", "Reach"], { stdio: "ignore", detached: true, windowsHide: true });
+  children.add(child);
+  t.after(() => { try { child.kill(); } catch {} });
+  const file = path.join(work, "reach-pseudo.json");
+  const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in"));
+  t.after(() => { try { process.kill(reach.pid); } catch {} });
+  const [, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", "Reach"], { windowsHide: true })).stdout.trim(); } catch { return null; } }, "a window titled Reach")).split(",").map(Number);
+  const h = helper(t, { reachPid: reach.pid, console: true, medium: true });
+  const ready = await h.send({ op: "rules", ...rulesFor("readonly") });
+  assert.equal(ready.ok, true, JSON.stringify(ready));
+  const { displays } = await h.send({ op: "displays" });
+  const view = await shot(h, displays);
+  const [inside] = await view.pixels([[x + Math.round(width / 2), y + Math.round(height / 2)]]);
+  note({ pseudo: { reachConsole: ready.reachConsole, frame: [x, y, width, height], inside } });
+  assert.ok(black(inside), `the window titled Reach is black: ${inside}`);
+  assert.equal((await h.send({ op: "front" })).ok, true, "requests flow after the probe");
+  await h.close();
+});
+
 test("Reach's own console window is closed to the agent whatever its title, and requests flow after the probe", { skip, timeout: 300000 }, async (t) => {
   // Reach's stand-in in a classic console window of its own titled "Windows
   // PowerShell", at medium integrity as on a PC. This user's default

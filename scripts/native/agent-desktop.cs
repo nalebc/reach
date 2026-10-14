@@ -1512,15 +1512,15 @@ static partial class Desk {
       case "find": RuleS(); return FindOnScreen(current, Json.Str(request, "text"), Json.Str(request, "name"), Json.Str(request, "role"));
       case "read": return ReadPage(current);
       case "windows": return WindowList(current);
-      case "focus": RuleS(); return FocusWindow(Json.Str(request, "id") ?? "", Json.Str(request, "title") ?? "", Json.Str(request, "tab") ?? "", Json.Str(request, "tabRef") ?? "", current);
+      case "focus": RuleS(); ReadyToAct(); return FocusWindow(Json.Str(request, "id") ?? "", Json.Str(request, "title") ?? "", Json.Str(request, "tab") ?? "", Json.Str(request, "tabRef") ?? "", current);
       case "menus": return MenuBar(current, Json.Str(request, "menu") ?? "");
       case "wait-change": {
         double? revision = Json.Double(request, "revision");
         return WaitChange(revision.HasValue ? (long)revision.Value : Interlocked.Read(ref screenRevision), Json.Int(request, "ms") ?? 400);
       }
-      case "open": RuleS(); return Open(Json.Str(request, "app") ?? "", current);
-      case "open-url": RuleS(); return OpenUrl(Json.Str(request, "url"), Json.Str(request, "app") ?? "", current);
-      case "open-file": RuleS(); return OpenFile(Json.Str(request, "path") ?? "", Json.True(request, "reveal"), current);
+      case "open": RuleS(); OnOwnersDesktop(); return Open(Json.Str(request, "app") ?? "", current);
+      case "open-url": RuleS(); OnOwnersDesktop(); return OpenUrl(Json.Str(request, "url"), Json.Str(request, "app") ?? "", current);
+      case "open-file": RuleS(); OnOwnersDesktop(); return OpenFile(Json.Str(request, "path") ?? "", Json.True(request, "reveal"), current);
       // Saved browser tools reach the browser through Apple Events on a Mac;
       // on Windows they come with Reach's browser extension (workstream G).
       case "browser-check": throw new Refusal("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet.", "setup_required");
@@ -2682,6 +2682,20 @@ static partial class Desk {
   // stopping, nothing more is sent.
   static readonly int[] Watched = { Native.VK_CONTROL, Native.VK_MENU, Native.VK_SHIFT, Native.VK_LWIN, Native.VK_RWIN, Native.VK_LBUTTON, Native.VK_RBUTTON, Native.VK_MBUTTON };
   static Native.POINT lastPoint;
+  // Nothing acts while Windows shows a secure screen (an administrator
+  // prompt, the lock screen) or while an elevated window is in front: what
+  // every input batch is checked for, for every action, the ones that send
+  // no input too (a press or a fill through UI Automation, a menu's own
+  // command, bringing a window forward).
+  // Opening apps, websites and files waits for the owner's own desktop too.
+  static void OnOwnersDesktop() {
+    if (View.InputDesktop() != "Default") throw new Refusal(SecureDesktopReason, "paused");
+  }
+  internal static void ReadyToAct() {
+    if (View.InputDesktop() != "Default") throw new Refusal(SecureDesktopReason, "paused");
+    int front = View.ForegroundIntegrity();
+    if (front == -1 || front > ownIntegrity) throw new Refusal(ElevatedFrontReason, "paused");
+  }
   internal static void Post(Native.INPUT[] batch, int pauseMs) {
     if (View.InputDesktop() != "Default") throw new Refusal(SecureDesktopReason, "paused");
     int front = View.ForegroundIntegrity();
@@ -2731,6 +2745,7 @@ static partial class Desk {
   }
   internal static Dictionary<string, object> Perform(Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
     if (rules.Mode == "view") throw new Refusal("This agent can only look. It has no mouse or keyboard here.", "blocked");
+    ReadyToAct();
     string type = Json.Str(action, "type") ?? "";
     Func<string, string, Native.POINT> point = (xKey, yKey) => {
       double? nx = Json.Double(action, xKey), ny = Json.Double(action, yKey);

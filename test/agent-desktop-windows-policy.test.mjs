@@ -241,3 +241,14 @@ test("a classic menu's item is pressed by its own command, after its menus get r
   assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), `ready, checked, then pressed: ${order}`);
   assert.match(text, /if \(!PressClassic\(new IntPtr\(root\), bar, steps\) && !PressThroughUia\(root, names\)\)/, "UI Automation when there's no command to send");
 });
+
+test("every action waits for the owner's own desktop and for no elevated window in front, the ones that send no input too", () => {
+  const text = code(source).join("\n");
+  const perform = text.split("internal static Dictionary<string, object> Perform(")[1].split("\n  }\n")[0];
+  assert.ok(perform.indexOf("ReadyToAct();") > 0 && perform.indexOf("ReadyToAct();") < perform.indexOf("switch (type)"), "before any action");
+  const ready = text.split("internal static void ReadyToAct() {")[1].split("\n  }\n")[0];
+  assert.match(ready, /InputDesktop\(\) != "Default"\) throw new Refusal\(SecureDesktopReason, "paused"\)/);
+  assert.match(ready, /front == -1 \|\| front > ownIntegrity\) throw new Refusal\(ElevatedFrontReason, "paused"\)/);
+  assert.match(text, /case "focus": RuleS\(\); ReadyToAct\(\);/);
+  for (const op of ["open", "open-url", "open-file"]) assert.match(text, new RegExp(`case "${op}": RuleS\\(\\); OnOwnersDesktop\\(\\);`));
+});

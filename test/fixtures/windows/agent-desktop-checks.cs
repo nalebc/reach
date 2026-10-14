@@ -400,6 +400,15 @@ static class DesktopChecks {
     Fresh();
     view.Desktop = "Winlogon";
     Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "full"), "paused: An administrator prompt") && input.Sent.Count == 0, "a secure desktop");
+    // Actions that send no input wait too: a press, a fill, a menu's command.
+    foreach (string action in new[] { "{\"type\":\"press\",\"name\":\"OK\"}", "{\"type\":\"fill\",\"fields\":[{\"label\":\"Name\",\"text\":\"x\"}]}", "{\"type\":\"menu\",\"path\":[\"File\",\"Exit\"]}" }) {
+      Fresh();
+      view.Desktop = "Winlogon";
+      Check(Starts(Run(action, "apps"), "paused: An administrator prompt"), "a secure desktop: " + action);
+      Fresh();
+      view.FrontIntegrity = 0x3000;
+      Check(Starts(Run(action, "apps"), "paused: A window running as administrator is in front"), "Rule F: " + action);
+    }
     // Scrolls as on a Mac: positive dy down, positive dx right.
     Fresh();
     Check(Run("{\"type\":\"scroll\",\"x\":0.5,\"y\":0.5,\"dy\":120,\"dx\":-30}", "apps") == "ok", "a scroll");
