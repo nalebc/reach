@@ -281,6 +281,18 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     page.dialogs.push(params.message);
     void tab.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
   });
+  // What the page asked the computer, for a failed step's message.
+  await tab.send("Network.enable");
+  const asked = new Map();
+  browser.on("Network.requestWillBeSent", ({ requestId, request }, from) => {
+    if (from !== tab.sessionId || !/\/(api|ws)\//.test(request.url)) return;
+    asked.set(requestId, { at: Date.now(), method: request.method, path: new URL(request.url).pathname });
+    if (asked.size > 60) asked.delete(asked.keys().next().value);
+  });
+  browser.on("Network.responseReceived", ({ requestId, response }, from) => {
+    if (from === tab.sessionId && asked.has(requestId)) asked.get(requestId).status = response.status;
+  });
+  page.requests = () => [...asked.values()];
   await page.open("/");
   await signIn(page, computer);
   return page;
@@ -342,8 +354,9 @@ function phonePage(t, tab, { name, origin }) {
         const file = await shot(`failed-${description}`);
         const shown = await text().catch(() => "");
         const found = await why().catch(() => "");
+        const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
         assert.fail(
-          `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nScreenshot: ${file}`,
+          `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nScreenshot: ${file}`,
         );
       }
       await sleep(100);
