@@ -2239,6 +2239,9 @@ export default function AgentSessionView({
     }
     return places;
   }, [blocks, info.movedTo]);
+  // A move at the end of this conversation already continued this work.
+  // Earlier moves and forks leave the current conversation free to continue.
+  const continuedTo = movePlaces.get(blocks.length - 1)?.filter((m) => !m.fork).at(-1);
   // Each message marked with its id (no box of its own), so a reload can
   // come back to the one being read (`place` below).
   const placeMoves = (nodes: ReactNode[]) => {
@@ -2313,22 +2316,21 @@ export default function AgentSessionView({
         ? `Codex is signed out on your ${word}.`
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
-  // Claude out of usage: the limit it hit, in Claude Code's own words, on
-  // Claude's card above the composer, unless the chat already ends on it.
+  // Keep the provider's limit message and recovery actions in one card.
   const claudeLimit =
     agent === "claude" && claudeHealth?.signedIn && claudeHealth.usable === false
       ? claudeHealth.limit ||
         `You've hit your usage limit${claudeHealth.resetsAt ? ` · resets ${resetTime(claudeHealth.resetsAt, false)}` : ""}`
       : "";
   const lastItem = items?.at(-1);
-  const limitShown = lastItem?.kind === "error" && lastItem.text === claudeLimit;
+  const lastUsageLink = lastItem?.kind === "error" ? usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) : null;
+  const liveUsageLink = !working && live.error ? usageLink(agent, { text: live.error }) : null;
   // The chat itself stopped on a used-up limit: lately (the Mac's health is
   // read once a minute), or while its agent is still out.
   const stoppedOnLimit =
     !working &&
-    lastItem?.kind === "error" &&
-    !!usageLink(agent, { text: lastItem.text, detail: lastItem.detail }) &&
-    (health.find((h) => h.agent === agent)?.usable === false || Date.now() - (lastItem.at || 0) < 10 * 60 * 1000);
+    !!lastUsageLink &&
+    (health.find((h) => h.agent === agent)?.usable === false || Date.now() - (lastItem?.at || 0) < 10 * 60 * 1000);
   // Close to its limit (90% and up) and not out yet: said above the message
   // box before it runs out; a tap shows its limits. Out, the strip below
   // says so instead.
@@ -2337,7 +2339,7 @@ export default function AgentSessionView({
   const [usageOpen, setUsageOpen] = useState(false);
   // Agents with usage that can take the chat on from here (MoveChat.tsx).
   const continueIn =
-    outOfUsage || claudeLimit || stoppedOnLimit
+    outOfUsage || claudeLimit || stoppedOnLimit || liveUsageLink
       ? moveTargets(agent, health)
           .filter((to) => to !== "openclaw" && !moveBlocked(to, health, word))
           .map((to) => ({ agent: to, name: agentLabel(to) }))
@@ -2688,10 +2690,13 @@ export default function AgentSessionView({
     for (const r of relays) byId.set(r.id, r);
     return [...byId.values()];
   }, [relays, ownRelays]);
-  // Auto-continue on for this chat: a small sign by its name, "On" in its
-  // menu (Relays.tsx). One turned off here is off at once, before the list says.
+  // Auto-continue stays on while waiting for usage. Its button owns that state
+  // above the composer; one turned off here is off before the list catches up.
   const [offRelays, setOffRelays] = useState<string[]>([]);
-  const autoOn = armedAutoContinue(shownRelays.filter((r) => !offRelays.includes(r.id)), initial);
+  const autoOn = armedAutoContinue(shownRelays.filter((r) => !offRelays.includes(r.id)), initial, { includeHolding: true });
+  const showUsageLimit = !!(outOfUsage || claudeLimit || stoppedOnLimit || liveUsageLink || autoOn?.holding);
+  const mergedLimitItem = showUsageLimit && lastUsageLink && (!liveUsageLink || live.error === lastItem?.text) ? lastItem : null;
+  const usageDescription = (liveUsageLink ? live.error : lastUsageLink ? lastItem?.text : claudeLimit) || undefined;
   // "When this finishes…" as a chip above the box while Codex or Claude
   // works (unless a relay already waits on this chat): its one place then.
   const whenChip =
@@ -2862,7 +2867,7 @@ export default function AgentSessionView({
                 [projectName(info.cwd), whereLabel(info)].filter(Boolean),
               ),
             ].join(" · ")}
-            {autoOn && (
+            {autoOn && !autoOn.holding && (
               <span className="as-auto-on" role="img" aria-label="Auto-continue on" title="Auto-continue on">
                 <RefreshCw size={11} aria-hidden />
               </span>
@@ -3227,7 +3232,7 @@ export default function AgentSessionView({
               <div key={b.item.id || `c${i}`} className="as-divider">
                 Context compacted
               </div>
-            ) : b.item.kind === "error" ? (
+            ) : b.item.kind === "error" ? b.item === mergedLimitItem ? null : (
               <ErrorNote
                 key={b.item.id}
                 agent={agent}
@@ -3303,6 +3308,7 @@ export default function AgentSessionView({
         {/* Until the transcript has the turn's error, the live state shows it. */}
         {live.error &&
           !working &&
+          !(showUsageLimit && liveUsageLink) &&
           !items?.some((i) => i.kind === "error" && i.text === live.error) && (
             <ErrorNote agent={agent} text={live.error} />
           )}
@@ -3436,9 +3442,9 @@ export default function AgentSessionView({
       )}
       <footer className="as-composer">
 
-        {/* Out of usage: one slim line, with the way to more, and the way on
-            in another agent that has usage. */}
-        {(outOfUsage || claudeLimit || stoppedOnLimit) && (
+        {/* The current native limit and Reach's recovery controls share one
+            card. Earlier errors stay at their original place in the history. */}
+        {showUsageLimit && (
           <UsageStrip
             agent={agent}
             text={
@@ -3450,26 +3456,34 @@ export default function AgentSessionView({
                     : claudeLimit
                   : `${agentLabel(agent)} is out of usage`
             }
+            description={agent === "codex" && usageDescription ? codexLimitLine(usageDescription) || usageDescription : usageDescription}
             upgrade={
-              outOfUsage
+              liveUsageLink || lastUsageLink || (outOfUsage
                 ? usageLink("codex", { detail: "usageLimitExceeded" })
-                : limitShown || stoppedOnLimit
-                  ? null
-                  : usageLink("claude", { text: claudeLimit, detail: "rate_limit" })
+                : claudeLimit
+                  ? usageLink("claude", { text: claudeLimit, detail: "rate_limit" })
+                  : null)
             }
             resets={outOfUsage ? codexHealth?.resetCredits || 0 : 0}
+            resetsAt={health.find((h) => h.agent === agent)?.resetsAt ?? undefined}
             onReset={useReset}
             from={agentLabel(agent)}
             continueIn={continueIn}
             onContinue={continueElsewhere}
-            onAutoContinue={(info.agent === "claude" || info.agent === "codex") && !info.movedFrom ? () => setRelaySheet({ mode: "auto-continue" }) : undefined}
+            onAutoContinue={(info.agent === "claude" || info.agent === "codex") && (!info.movedFrom || autoOn) ? () => setRelaySheet({ mode: "auto-continue" }) : undefined}
+            autoContinueOn={!!autoOn}
+            continuation={continuedTo ? {
+              agent: continuedTo.agent,
+              name: agentLabel(continuedTo.agent),
+              open: () => onSelect(movedChat(info, continuedTo)),
+            } : undefined}
             logos={logos}
             peer={peer}
             session={info.id}
             notifyAsked={!!health.find((h) => h.agent === agent)?.notifyWhenBack}
           />
         )}
-        {nearShown && !(outOfUsage || claudeLimit || stoppedOnLimit) && (
+        {nearShown && !showUsageLimit && (
           <button className={`usage-near ${nearLimit!.level}`} onClick={() => setUsageOpen(true)}>
             {agentLabel(agent)} {nearLimit!.percent}% used
             {nearLimit!.resetsAt ? ` · resets ${shortReset(nearLimit!.resetsAt)}` : ""}
@@ -3639,7 +3653,7 @@ export default function AgentSessionView({
         {/* Relays this chat is part of: what's set up, and where it stands. */}
         <RelayStrip
           peer={peer}
-          relays={shownRelays}
+          relays={shownRelays.filter((r) => r.id !== autoOn?.id && !offRelays.includes(r.id))}
           here={initial}
           logos={logos}
           onOpen={(c) => onSelect(chatOf(c))}
