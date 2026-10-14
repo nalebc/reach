@@ -211,7 +211,7 @@ export function trustedRequest(req) {
   return trusted.has(req);
 }
 
-// Windows (REACH_WINDOWS_ACCOUNT=1; docs/parity/D-public-door.md): no Unix
+// Windows (docs/parity/D-public-door.md): no Unix
 // socket there, so Tailscale Serve proxies to a loopback port any local user
 // can reach too. Its target carries a key as its path (/r-<key>), which
 // tailscaled puts in front of every request it sends: a request counts as
