@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { findOpenClaw, nodeVersion, privateNodeDir, supportedNode } from "./openclaw-windows.mjs";
+import { powershellFile } from "./powershell.mjs";
 
 const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -183,7 +184,9 @@ async function installWindowsRuntime(recovery, { run, env, authorize, installer 
     throw fail(409, "This dependency upgrade is not available. Check the update details.");
   authorize();
   const prefix = privateNodeDir({ env });
-  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file, "-NodeOnly", "-NodePrefix", prefix], {
+  // With the bypass every Reach script gets (powershell.mjs): Windows'
+  // default policy refuses a bare -File.
+  await run("powershell.exe", ["-NonInteractive", ...powershellFile(file, ["-NodeOnly", "-NodePrefix", prefix])], {
     env,
     timeout: 20 * 60 * 1000,
     maxBuffer: 2 * 1024 * 1024,
