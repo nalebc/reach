@@ -77,15 +77,15 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   assert.ok(Number.isFinite(host.startedAt), "it says when it started");
   const other = process.platform === "win32" ? windowsReach(t) : null;
   if (other) await other.ready();
-  const otherHost = other && JSON.parse(fs.readFileSync(other.statusFile, "utf8"));
   // `.\reach.cmd status`, through the real launcher: the Mac's lines.
   const said = await status(reach.env);
   assert.equal(UNREAD.test(said), process.platform !== "win32", said);
   // A real Windows runner runs two test files at once: another test's Reach
   // may be listed too; this one's lines are among them.
-  if (process.platform === "win32")
+  if (process.platform === "win32") {
     assert.ok(said.includes(`Link: ${host.origin}`) && /Reach: running in the background, with no window, since /.test(said), said);
-  else assert.match(
+    assert.ok(said.includes(`from ${other.dir}`), "both fixtures are in the PC's inventory");
+  } else assert.match(
     said.replace(UNREAD, ""),
     // Its sleep prevention too: here its helper can't be built.
     new RegExp(`^Reach: running in the background, with no window, since [^\\n]+\\nLink: http://127\\.0\\.0\\.1:\\d+\\nSleep prevention: always · not active · Could not enable sleep prevention\\. Reach will retry in 10 minutes\\.\\nIt has no window: it can't take device approvals\\. Run \\.\\\\reach\\.cmd restart to run it in a window of its own\\.$`),
@@ -120,12 +120,16 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   assert.equal(fs.existsSync(path.join(reach.state, "stop-request.json")), false);
   // And now it isn't running, as status says.
   const endedStatus = await status(reach.env);
-  if (process.platform === "win32" && !endedStatus.includes("Reach isn't running")) {
+  if (process.platform === "win32") {
     // Status is PC-wide. Concurrent lifecycle tests may still have their
     // own instances; this command must stop only its fixture, as above.
     assert.ok(!endedStatus.includes(`Link: ${host.origin}`), "the stopped fixture no longer has a link");
     assert.ok(!endedStatus.includes(reach.dir), "the stopped fixture is absent from the PC's list");
-    if (otherHost) assert.ok(endedStatus.includes(`Link: ${otherHost.origin}`), "the other fixture remains visible and was not stopped");
+    // The inventory has the other process's folder, but cannot discover its
+    // custom REACH_HOME from a command line. Its live state is checked here.
+    assert.ok(endedStatus.includes(`from ${other.dir}`), "the other fixture remains in the PC's inventory");
+    assert.equal(other.child.exitCode, null, "the other fixture is still running");
+    assert.equal(fs.existsSync(other.statusFile), true, "the other fixture keeps its live status");
   } else assert.match(endedStatus, /(^|\n)Reach isn't running( from this folder)?\. Start it with \.\\reach\.cmd\.$/);
 });
 
