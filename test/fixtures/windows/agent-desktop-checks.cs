@@ -29,6 +29,7 @@ static class DesktopChecks {
     Held();
     Keys();
     Typing();
+    Automation();
     if (failures == 0) Console.WriteLine("OK");
     return failures == 0 ? 0 : 1;
   }
@@ -526,5 +527,44 @@ static class DesktopChecks {
     input.Down.Add(Native.VK_MENU);
     Check(Starts(Run("{\"type\":\"type\",\"text\":\"long text\",\"paste\":true}", "apps"), "retry:") && clip.Text == "owner's text", "refused paste: the owner's text back anyway");
     Check(Starts(Run("{\"type\":\"type\",\"text\":\"pw\",\"secret\":true,\"paste\":true}", "full"), "invalid: Vault values are typed, never pasted"), "no vault value pasted");
+  }
+
+  // UI Automation's elements, read as a Mac's accessibility reads them.
+  static void Automation() {
+    Func<int, Node> node = type => new Node { ControlType = type };
+    var cases = new List<KeyValuePair<Node, string>> {
+      new KeyValuePair<Node, string>(node(Uia.Button), "AXButton"), new KeyValuePair<Node, string>(node(Uia.SplitButton), "AXMenuButton"),
+      new KeyValuePair<Node, string>(node(Uia.Hyperlink), "AXLink"), new KeyValuePair<Node, string>(new Node { ControlType = Uia.CheckBox, LocalizedType = "toggle switch" }, "AXSwitch"),
+      new KeyValuePair<Node, string>(node(Uia.CheckBox), "AXCheckBox"), new KeyValuePair<Node, string>(node(Uia.RadioButton), "AXRadioButton"),
+      new KeyValuePair<Node, string>(new Node { ControlType = Uia.ComboBox, ValuePattern = true }, "AXComboBox"), new KeyValuePair<Node, string>(node(Uia.ComboBox), "AXPopUpButton"),
+      new KeyValuePair<Node, string>(new Node { ControlType = Uia.Edit, Password = true }, "AXSecureTextField"),
+      new KeyValuePair<Node, string>(new Node { ControlType = Uia.Edit, LocalizedType = "search box" }, "AXSearchField"),
+      new KeyValuePair<Node, string>(new Node { ControlType = Uia.Edit, Aria = "searchbox" }, "AXSearchField"), new KeyValuePair<Node, string>(node(Uia.Edit), "AXTextField"),
+      new KeyValuePair<Node, string>(new Node { ControlType = Uia.Document, Web = true }, "AXWebArea"), new KeyValuePair<Node, string>(new Node { ControlType = Uia.Document, ValuePattern = true }, "AXTextArea"),
+      new KeyValuePair<Node, string>(node(Uia.Document), "AXGroup"), new KeyValuePair<Node, string>(node(Uia.ToolBar), "AXToolbar"), new KeyValuePair<Node, string>(node(Uia.Window), "AXWindow"),
+      new KeyValuePair<Node, string>(node(Uia.MenuBar), "AXMenuBar"), new KeyValuePair<Node, string>(node(Uia.MenuItem), "AXMenuItem"), new KeyValuePair<Node, string>(node(Uia.Menu), "AXMenu"),
+      new KeyValuePair<Node, string>(node(Uia.Tab), "AXTabGroup"), new KeyValuePair<Node, string>(node(Uia.TabItem), "AXTab"), new KeyValuePair<Node, string>(node(Uia.Slider), "AXSlider"),
+      new KeyValuePair<Node, string>(node(Uia.Spinner), "AXIncrementor"), new KeyValuePair<Node, string>(new Node { ControlType = Uia.Text, Heading = 1 }, "AXHeading"),
+      new KeyValuePair<Node, string>(node(Uia.Text), "AXStaticText"), new KeyValuePair<Node, string>(node(Uia.Image), "AXImage"), new KeyValuePair<Node, string>(node(Uia.List), "AXList"),
+      new KeyValuePair<Node, string>(node(Uia.ListItem), "AXRow"), new KeyValuePair<Node, string>(node(Uia.TreeItem), "AXRow"), new KeyValuePair<Node, string>(node(Uia.DataItem), "AXRow"),
+      new KeyValuePair<Node, string>(node(Uia.Table), "AXTable"), new KeyValuePair<Node, string>(node(Uia.DataGrid), "AXTable"), new KeyValuePair<Node, string>(node(Uia.Pane), "AXGroup"),
+    };
+    foreach (var pair in cases) Check(pair.Key.Role(null) == pair.Value, "role " + pair.Key.ControlType + " " + pair.Value);
+    Check(node(Uia.MenuItem).Role(node(Uia.MenuBar)) == "AXMenuBarItem", "a menu bar's item");
+    Check(new Node { DefaultAction = "Press" }.Pressable && new Node { Invoke = true }.Pressable && !new Node().Pressable, "pressable");
+    Check(Desk.SameTitle("Save As" + (char)0x2026, "save as") && Desk.SameTitle("&File", "File") && Desk.SameTitle("Export...", "export") && !Desk.SameTitle("Save", "Save As"), "menu titles");
+    // A control by its name: the best grade; fields only for a form; the
+    // nearest of equals; a role narrows it.
+    var screen = new Desk.Screen { Pid = 100, Display = new Box(0, 0, 1000, 800) };
+    Func<string, string, int, int, Desk.Control> control = (name, role, x, y) => new Desk.Control { Name = name, Role = role, Node = new Node(), Frame = new Box(x, y, x + 40, y + 20) };
+    screen.Controls.Add(control("Sign in", "AXButton", 10, 10));
+    screen.Controls.Add(control("Email", "AXTextField", 10, 50));
+    screen.Controls.Add(control("Password", "AXSecureTextField", 10, 90));
+    screen.Controls.Add(control("Sign in with Google", "AXButton", 10, 130));
+    Check(Desk.FindControl(screen, "sign in", null, false, null).Name == "Sign in", "the same name first");
+    Check(Desk.FindControl(screen, "Password", null, true, null).Role == "AXSecureTextField", "a form's fields");
+    Check(Desk.FindControl(screen, "Google", "Button", false, null).Name == "Sign in with Google", "containing it, with its role");
+    try { Desk.FindControl(screen, "Email", "Button", false, null); Check(false, "a role that doesn't match"); }
+    catch (Refusal refusal) { Check(refusal.Kind == "retry" && refusal.Message.StartsWith("No control named \"Email\"", StringComparison.Ordinal), "a role that doesn't match"); }
   }
 }

@@ -27,6 +27,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -1499,6 +1500,16 @@ static partial class Desk {
       case "displays": return Displays();
       case "shot": return Shot(current, Math.Max(320, Math.Min(3840, Json.Int(request, "maxWidth") ?? 2560)));
       case "front": return Front(current, Json.True(request, "detail"));
+      case "elements": return SnapshotPayload(ReadScreen(current, true, Json.Str(request, "within")));
+      case "find": RuleS(); return FindOnScreen(current, Json.Str(request, "text"), Json.Str(request, "name"), Json.Str(request, "role"));
+      case "read": return ReadPage(current);
+      case "windows": return WindowList(current);
+      case "focus": RuleS(); return FocusWindow(Json.Str(request, "id") ?? "", Json.Str(request, "title") ?? "", Json.Str(request, "tab") ?? "", Json.Str(request, "tabRef") ?? "", current);
+      case "menus": return MenuBar(current, Json.Str(request, "menu") ?? "");
+      case "wait-change": {
+        double? revision = Json.Double(request, "revision");
+        return WaitChange(revision.HasValue ? (long)revision.Value : Interlocked.Read(ref screenRevision), Json.Int(request, "ms") ?? 400);
+      }
       case "act": {
         RuleS();
         var act = Json.Map(request, "action");
@@ -1541,6 +1552,9 @@ static partial class Desk {
       startupProblem = "This version of Windows changed how window titles are read. Reach can't check windows here yet.";
     else if (Marshal.SizeOf(typeof(Native.INPUT)) != (IntPtr.Size == 8 ? 40 : 28))
       startupProblem = "Reach's agent helper doesn't match this version of Windows.";
+    // UI Automation, checked against known answers; without it the agent
+    // only looks (the server refuses the rest, with the reason).
+    uiaReady = startupProblem == null && Uia.Start();
   }
 
   // The manifest makes it per-monitor aware (v2): window frames, UI
@@ -1656,6 +1670,7 @@ static partial class Desk {
     // letting go first: Node can't stop a detached helper itself.
     Background("watchdog", () => { Native.WaitForSingleObject(reachProcess, Native.INFINITE); End(); }, ApartmentState.MTA);
     Background("window-events", WindowEvents, ApartmentState.STA);
+    Background("uia-events", UiaEvents, ApartmentState.MTA);
   }
 
   static Thread Background(string name, ThreadStart work, ApartmentState apartment) {
@@ -1809,7 +1824,7 @@ static partial class Desk {
   }
   // Where an element or snapshot reference was seen (set by the reads).
   static object RememberedDisplay(Dictionary<string, object> action) {
-    return null;
+    return action == null ? null : RememberedDisplayOf(action);
   }
 
   // --- Who a window belongs to (§7.1) ---------------------------------------
@@ -2202,7 +2217,7 @@ static partial class Desk {
       place.StartsWith("::{21EC2020-3AEA-1069-A2DD-08002B30309D}", StringComparison.OrdinalIgnoreCase);
   }
   // The page Settings shows (UI Automation): null until it can be read.
-  static string SettingsPage(IntPtr window) { return null; }
+  static string SettingsPage(IntPtr window) { return SettingsPageNow(window); }
   // Where a File Explorer window is (the shell): null until it can be read.
   static string ExplorerPlace(IntPtr window) { return null; }
 
@@ -2229,6 +2244,7 @@ static partial class Desk {
           foreach (var box in black.Boxes) graphics.FillRectangle(Brushes.Black, box.Left - screen.Left, box.Top - screen.Top, box.Width, box.Height);
         }
         DrawCursor(graphics, screen);
+        Redact(graphics, screen, rules);
       }
       int width, height;
       string jpeg = Jpeg(frame.Picture, maxWidth, out width, out height);
@@ -2358,6 +2374,13 @@ static partial class Desk {
     result["blocked"] = blocked ?? "";
     result["path"] = id.Path;
     result["layout"] = Limit(layout, 2000);
+    // Asked for: a browser's page and tabs, so the agent needn't describe the screen to know where it is.
+    if (detail && blocked == null && rules.Mode != "view" && uiaReady && IsBrowser(id)) {
+      string page = WindowPage(w, rules);
+      if (page.Length > 0) result["url"] = page;
+      var tabs = TabList(w, rules, 30);
+      if (tabs.Count > 0) result["tabs"] = tabs;
+    }
     return result;
   }
   public static string Limit(string text, int length) {
@@ -2879,11 +2902,6 @@ static partial class Desk {
     return reached;
   }
 
-  // Controls found through UI Automation (element, press, fill, menu).
-  static Dictionary<string, object> Controls(string type, Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
-    if (type == "element") throw new Refusal("That label is from an older look. Look at the labels again.", "retry");
-    throw new Refusal("Windows UI Automation isn't available to Reach on this PC.", "unavailable");
-  }
 
   // What the agent typed from its vault (type or fill with secret): never
   // shown back to it, as text or in a screenshot. In this process only.
@@ -2929,10 +2947,10 @@ static partial class Desk {
     return found || TabsNameReach(pid, rules);
   }
   // A terminal's tab naming Reach (UI Automation): none until it can be read.
-  static bool TabsNameReach(int pid, Rules rules) { return false; }
+  static bool TabsNameReach(int pid, Rules rules) { return TabsNameReachNow(pid, rules); }
   // UI Automation's element at a point, and the focused one: none until it can be read.
-  internal static Seen UiaElementAt(int x, int y) { return null; }
-  internal static Seen UiaFocused() { return null; }
+  internal static Seen UiaElementAt(int x, int y) { return UiaElementAtNow(x, y); }
+  internal static Seen UiaFocused() { return UiaFocusedNow(); }
 
   // Let go of whatever this helper holds, where it held it, and send nothing
   // more (the end of input, Reach's own end, a wedged thread).
@@ -2946,6 +2964,1273 @@ static partial class Desk {
       foreach (ushort vk in heldKeys) Input.Send(new[] { KeyEvent(vk, 0, Native.KEYEVENTF_KEYUP | (Extended(vk) ? Native.KEYEVENTF_EXTENDEDKEY : 0u)) });
       heldButtons.Clear();
       heldKeys.Clear();
+    }
+  }
+
+  // --- UI Automation (§8) -------------------------------------------------------
+  // All UI Automation calls run on this (the main, MTA) thread, which owns no
+  // window, except event handlers' registration (uia-events).
+  static void RequireUia() { if (!uiaReady) throw new Refusal("Windows UI Automation isn't available to Reach on this PC.", "unavailable"); }
+  static readonly HashSet<string> LabelRoles = new HashSet<string>(StringComparer.Ordinal) { "AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+    "AXMenuButton", "AXComboBox", "AXTextField", "AXTextArea", "AXSecureTextField", "AXSearchField", "AXMenuItem", "AXMenuBarItem", "AXTab", "AXDisclosureTriangle",
+    "AXIncrementor", "AXSlider", "AXSwitch", "AXToggle", "AXDockItem" };
+  static readonly HashSet<string> FieldRoles = new HashSet<string>(StringComparer.Ordinal) { "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXSecureTextField" };
+  static readonly Regex Scheme = new Regex("^[a-z][a-z0-9+.-]*:", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+  static Node Cached(IUIAutomationElement element) {
+    if (element == null) return null;
+    try { return Node.Of(element.BuildUpdatedCache(Uia.Structure)); } catch (Exception) { return null; }
+  }
+  static List<Node> Children(Node node) {
+    var children = new List<Node>();
+    try {
+      var found = node.Element.FindAllBuildCache(Uia.ScopeChildren, Uia.ControlView, Uia.Structure);
+      int count = found == null ? 0 : found.get_Length();
+      for (int i = 0; i < count && i < 2000; i++) children.Add(Node.Of(found.GetElement(i)));
+    } catch (Exception) { }
+    return children;
+  }
+  static Node Parent(Node node) {
+    try { var up = Uia.Walker.GetParentElementBuildCache(node.Element, Uia.Structure); return up == null ? null : Node.Of(up); } catch (Exception) { return null; }
+  }
+  // A value, only ever asked for an element that isn't a password field.
+  internal static string ValueOf(IUIAutomationElement element) {
+    try {
+      var bearer = element.FindFirstBuildCache(Uia.ScopeElement, Uia.ValueBearing, Uia.Values);
+      if (bearer == null) return "";
+      object password = bearer.GetCachedPropertyValue(Uia.IsPassword);
+      if (password is bool && (bool)password) return "";
+      return bearer.GetCachedPropertyValue(Uia.ValueValue) as string ?? "";
+    } catch (Exception) {
+      return "";
+    }
+  }
+  // A web page's address (its document's value), or null for a document that isn't one.
+  static string PageAddress(Node node) {
+    if (node.ControlType != Uia.Document) return null;
+    string value = ValueOf(node.Element);
+    bool address;
+    try { address = Scheme.IsMatch(value); } catch (RegexMatchTimeoutException) { address = false; }
+    if (address) return value;
+    return node.Framework == "Chrome" || node.Framework == "Gecko" ? value : null;
+  }
+  static string Collapse(string text) {
+    var words = (text ?? "").Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+    return string.Join(" ", words);
+  }
+  // What a person would hear for a control (labelName, §8.3).
+  static string LabelName(Node node, string role, bool secure) {
+    var tries = new List<Func<string>> { () => node.Name, () => node.Description };
+    if (FieldRoles.Contains(role) || secure) tries.Add(() => node.Help);
+    else if (role == "AXButton" || role == "AXPopUpButton" || role == "AXMenuButton" || role == "AXTab" || role == "AXRadioButton" || role == "AXCheckBox") tries.Add(() => ValueOf(node.Element));
+    tries.Add(() => node.Help);
+    foreach (var get in tries) {
+      string name = Collapse(get());
+      if (name.Length > 0) return Policy.HideSecrets(Limit(name, 120), typedSecrets);
+    }
+    return "";
+  }
+  static string Spoken(Node node, string role) {
+    if (role == "AXStaticText" || role == "AXHeading") { string text = Collapse(node.Name); if (text.Length > 0) return Limit(text, 120); }
+    return LabelName(node, role, node.Password);
+  }
+
+  // Seen for an element (seen(), §8.3): its app (an embedded web view or a
+  // packaged app's frame by the window it's in), its window's title, the
+  // pages it's inside, what a press there presses, and Windows' fields.
+  static Seen UiaSeen(Node node, Rules rules) {
+    var s = new Seen { Pid = node.Pid, Secure = node.Password, AutomationId = node.AutomationId, Frame = node.Rect, Class = node.Class };
+    s.Editable = node.ControlType == Uia.Edit || (node.ControlType == Uia.Document && node.ValuePattern) || (node.ControlType == Uia.ComboBox && node.ValuePattern);
+    var chain = new List<KeyValuePair<string, Node>>();
+    Node current = node;
+    long root = 0, nearest = node.Window;
+    bool chrome = false, band = false, folder = false;
+    string ownRole = null;
+    for (int step = 0; step < 60 && current != null; step++) {
+      Node up = Parent(current);
+      string role = current.Role(up);
+      if (ownRole == null) ownRole = role;
+      string address = PageAddress(current);
+      if (address != null) {
+        current.Web = true;
+        role = "AXWebArea";
+        if (s.Url.Length == 0) s.Url = address;
+        s.Frames.Add(address);
+        s.Web = true;
+      }
+      if (!s.Web && (current.ControlType == Uia.TitleBar || current.ControlType == Uia.ToolBar || current.ControlType == Uia.Tab || current.ControlType == Uia.MenuBar)) chrome = true;
+      if (current.Class == "Address Band Root") band = true;
+      if (current.Class == "SHELLDLL_DefView") folder = true;
+      if (nearest == 0) nearest = current.Window;
+      if (current.Window != 0 && Native.GetAncestor(new IntPtr(current.Window), Native.GA_ROOT).ToInt64() == current.Window) { root = current.Window; break; }
+      if (!s.Web && chain.Count < 6) chain.Add(new KeyValuePair<string, Node>(role, current));
+      current = up;
+    }
+    if (root == 0 && nearest != 0) root = Native.GetAncestor(new IntPtr(nearest), Native.GA_ROOT).ToInt64();
+    s.Role = ownRole ?? "";
+    // What a press here presses: the nearest control up from the element, else
+    // the nearest thing the page made clickable, else the element and what
+    // holds it. Outside a page, only its own name, judged as a button.
+    int at = chain.FindIndex(pair => Policy.MoneyActionRoles.Contains(pair.Key) || Policy.MoneyFieldRoles.Contains(pair.Key));
+    if (at >= 0) { for (int i = 0; i <= at; i++) s.Labels.Add(Spoken(chain[i].Value, chain[i].Key)); s.Control = chain[at].Key; }
+    else {
+      at = chain.FindIndex(pair => pair.Key != "AXStaticText" && pair.Value.Pressable);
+      if (at >= 0) { for (int i = 0; i <= at; i++) s.Labels.Add(Spoken(chain[i].Value, chain[i].Key)); s.Control = "AXPressable"; }
+      else foreach (var pair in chain) s.Labels.Add(Spoken(pair.Value, pair.Key));
+    }
+    if (!s.Web) { if (s.Labels.Count > 1) s.Labels.RemoveRange(1, s.Labels.Count - 1); s.Control = "AXButton"; }
+    // The window it's in, as the rules judge windows.
+    Win window = root != 0 ? ReadDecided(new IntPtr(root), rules) : null;
+    var own = Identify(node.Pid);
+    s.Id = own;
+    if (window != null) {
+      s.Root = window.Handle;
+      s.Title = window.Title;
+      s.TitleRead = window.TitleRead;
+      s.Shell = window.Shell;
+      s.Explorer = window.Explorer;
+      s.Reach = window.Reach;
+      s.Terminal = window.Terminal;
+      // An embedded web view, or a Store app's frame, speaks for the window it's in.
+      if (window.Pid != node.Pid && window.Id != null && window.Id.Known && EmbeddingHost(own) && AppVerdict(own, rules) == null) { s.Id = window.Id; s.Pid = window.Pid; }
+      if (window.Class == "#32770" && Policy.Lower(window.Title) == "run" && FileOf(window.Id != null ? window.Id.Image : "").ToLowerInvariant() == "explorer.exe") band = true;
+    }
+    s.Bundle = s.Id.Bundle;
+    s.Name = s.Id.Name;
+    s.Path = s.Id.Path;
+    s.Terminal = s.Terminal || (s.Id.Known && Policy.TerminalLikeApp(s.Bundle, s.Name, s.Path, rules));
+    s.Chrome = chrome && !s.Web;
+    s.CommandField = band && s.Editable;
+    s.FolderEdit = folder && s.Editable;
+    // A browser's address bar holds the page the next key would reach.
+    if (s.Url.Length == 0 && (s.Role == "AXTextField" || s.Role == "AXComboBox")) {
+      string value = ValueOf(node.Element);
+      if (value.Contains("://") || value.Contains(":")) s.Url = value;
+    }
+    return s;
+  }
+  // msedgewebview2.exe under the Evergreen runtime, ApplicationFrameHost.exe
+  // in System32: hosts whose content belongs to the window they're in.
+  static bool EmbeddingHost(Ident id) {
+    if (id == null || !id.Known) return false;
+    string file = FileOf(id.Image).ToLowerInvariant();
+    if (file == "applicationframehost.exe") return Within(id.Image, Path.Combine(WindowsFolder(), "System32"));
+    if (file == "msedgewebview2.exe") {
+      string x86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+      return Within(id.Image, Path.Combine(x86, "Microsoft\\EdgeWebView\\Application")) || Within(id.Image, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft\\EdgeWebView\\Application"));
+    }
+    return false;
+  }
+  internal static Seen UiaElementAtNow(int x, int y) {
+    if (!uiaReady) return null;
+    try {
+      var element = Uia.Automation.ElementFromPointBuildCache(new Native.POINT { X = x, Y = y }, Uia.Structure);
+      var node = element == null ? null : Node.Of(element);
+      if (node == null) return null;
+      var seen = UiaSeen(node, current);
+      // Chromium builds its page tree only once asked: once more, a moment later.
+      if (IsBrowser(seen.Id) && !seen.Web && !seen.Chrome && current.MoneySites.Count > 0) {
+        Thread.Sleep(300);
+        element = Uia.Automation.ElementFromPointBuildCache(new Native.POINT { X = x, Y = y }, Uia.Structure);
+        if (element != null) seen = UiaSeen(Node.Of(element), current);
+      }
+      return seen;
+    } catch (Exception) {
+      return null;
+    }
+  }
+  internal static Seen UiaFocusedNow() {
+    if (!uiaReady) return null;
+    try {
+      var element = Uia.Automation.GetFocusedElementBuildCache(Uia.Structure);
+      return element == null ? null : UiaSeen(Node.Of(element), current);
+    } catch (Exception) {
+      return null;
+    }
+  }
+
+  // The page Settings shows: the navigation item chosen, and the page's own
+  // headings and breadcrumb; null when there are none (the page then closes).
+  static string SettingsPageNow(IntPtr window) {
+    if (!uiaReady) return null;
+    try {
+      var root = Uia.Automation.ElementFromHandleBuildCache(window, Uia.Structure);
+      if (root == null) return null;
+      var parts = new List<string>();
+      var stack = new Stack<Node>();
+      stack.Push(Node.Of(root));
+      int visited = 0;
+      var deadline = DateTime.UtcNow.AddMilliseconds(500);
+      while (stack.Count > 0 && visited < 1500 && DateTime.UtcNow < deadline) {
+        var node = stack.Pop();
+        visited++;
+        bool chosen = node.Selected && (node.ControlType == Uia.ListItem || node.ControlType == Uia.TreeItem || node.ControlType == Uia.TabItem);
+        bool heading = node.ControlType == Uia.Text && node.Heading > 0;
+        bool crumb = node.AutomationId.IndexOf("Breadcrumb", StringComparison.OrdinalIgnoreCase) >= 0 || node.AutomationId.IndexOf("PageHeader", StringComparison.OrdinalIgnoreCase) >= 0 ||
+          node.AutomationId.IndexOf("PageTitle", StringComparison.OrdinalIgnoreCase) >= 0;
+        if ((chosen || heading || crumb) && Collapse(node.Name).Length > 0 && !parts.Contains(Collapse(node.Name))) parts.Add(Collapse(node.Name));
+        var children = Children(node);
+        for (int i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+      }
+      if (DateTime.UtcNow >= deadline && parts.Count == 0) return null;
+      return parts.Count == 0 ? null : string.Join(" > ", parts);
+    } catch (Exception) {
+      return null;
+    }
+  }
+  // A terminal's tab naming Reach (Windows Terminal), in a quarter second;
+  // a read that runs out counts as naming it.
+  static bool TabsNameReachNow(int pid, Rules rules) {
+    if (!uiaReady || rules.Mode == "full") return false;
+    var deadline = DateTime.UtcNow.AddMilliseconds(250);
+    bool found = false;
+    Native.EnumWindowsProc each = (window, data) => {
+      uint owner;
+      Native.GetWindowThreadProcessId(window, out owner);
+      if (owner != pid || !Native.IsWindowVisible(window)) return true;
+      foreach (string tab in TabNames(window, deadline)) if (Policy.TitleReason(tab, "", rules) == Policy.ReachReason) { found = true; return false; }
+      if (DateTime.UtcNow >= deadline) { found = true; return false; }
+      return true;
+    };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    return found;
+  }
+  static List<string> TabNames(IntPtr window, DateTime deadline) {
+    var names = new List<string>();
+    try {
+      var root = Uia.Automation.ElementFromHandleBuildCache(window, Uia.Structure);
+      if (root == null) return names;
+      var stack = new Stack<Node>();
+      stack.Push(Node.Of(root));
+      int visited = 0;
+      while (stack.Count > 0 && visited < 1500 && DateTime.UtcNow < deadline) {
+        var node = stack.Pop();
+        visited++;
+        if (node.ControlType == Uia.TabItem) { names.Add(node.Name); continue; }
+        if (node.ControlType == Uia.Document) continue;
+        var children = Children(node);
+        for (int i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+      }
+    } catch (Exception) { }
+    return names;
+  }
+
+  // --- Reading the front window (readScreen, §8.4) -------------------------------
+  internal sealed class Control { public IUIAutomationElement Element; public Node Node; public string Role, Name, Context = ""; public bool Secure; public Box Frame; }
+  internal sealed class Screen {
+    public int Pid; public long Root; public string App = "", Bundle = "", Title = "";
+    public List<Control> Controls = new List<Control>();
+    public Dictionary<int, string> Values = new Dictionary<int, string>();
+    public List<KeyValuePair<string, KeyValuePair<Box, string>>> Texts = new List<KeyValuePair<string, KeyValuePair<Box, string>>>();
+    public List<Box> Headings = new List<Box>();
+    public bool Truncated; public Box Display; public string Within; public bool? Loading;
+  }
+  static Box DisplayBox() { var monitor = Display(); return new Box(monitor.Rect.Left, monitor.Rect.Top, monitor.Rect.Right, monitor.Rect.Bottom); }
+  // A container's own words, for the region its controls are in.
+  static string ContextLabel(Node node, string role, List<Node> children) {
+    if (role != "AXGroup" && role != "AXRow" && role != "AXToolbar" && role != "AXTable" && role != "AXList" && role != "AXTabGroup") return "";
+    string label = Collapse(node.Name.Length > 0 ? node.Name : node.Description);
+    if (label.Length == 0 && role == "AXRow" && children != null) {
+      var parts = new List<string>();
+      foreach (var child in children) if (child.ControlType == Uia.Text && parts.Count < 4) parts.Add(Collapse(child.Name));
+      label = string.Join(" ", parts);
+    }
+    return label;
+  }
+  static string Squeezed(string text) { return Collapse(Policy.Lower(text)); }
+  static readonly Regex Stop = new Regex("^stop\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+  static bool LoadingControl(string name) { try { return Stop.IsMatch(name); } catch (RegexMatchTimeoutException) { return false; } }
+
+  internal static Screen ReadScreen(Rules rules, bool wantText, string within) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    RequireUia();
+    Win front = View.Foreground(rules);
+    if (front == null || front.Pid <= 0) throw new Refusal("Nothing is in front.", "retry");
+    string reason = AppVerdict(front.Id, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    CheckSeen(SeenOf(front), rules);
+    var screen = new Screen { Pid = front.Pid, Root = front.Handle, App = front.Id.Name, Bundle = front.Id.Bundle, Title = Limit(front.Title, 200), Display = DisplayBox() };
+    string wantedWithin = Squeezed(within ?? "");
+    if (wantedWithin.Length > 0) screen.Within = within;
+    Func<string, bool> includes = context => wantedWithin.Length == 0 || Squeezed(context).Contains(wantedWithin) || Squeezed(Policy.MaskAccountNumbers(context, rules)).Contains(wantedWithin);
+    var rootElement = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(front.Handle), Uia.Structure);
+    if (rootElement == null) throw new Refusal("Nothing is in front.", "retry");
+    var stack = new Stack<KeyValuePair<Node, KeyValuePair<Node, string>>>();
+    stack.Push(new KeyValuePair<Node, KeyValuePair<Node, string>>(Node.Of(rootElement), new KeyValuePair<Node, string>(null, "")));
+    var found = new List<Control>();
+    var values = new Dictionary<int, string>();
+    int visited = 0, textChars = 0;
+    bool bank = false, loading = false;
+    var deadline = DateTime.UtcNow.AddMilliseconds(800);
+    while (stack.Count > 0 && visited < 6000 && found.Count < 400 && DateTime.UtcNow < deadline) {
+      var entry = stack.Pop();
+      var node = entry.Key;
+      string context = entry.Value.Value;
+      visited++;
+      string role = node.Role(entry.Value.Key);
+      string address = PageAddress(node);
+      if (address != null) {
+        role = "AXWebArea";
+        if (Policy.UrlReason(address, rules) != null) continue;
+        if (Policy.MoneySite(address, rules)) bank = true;
+      }
+      if (role == "AXMenu") continue; // closed menus' items are not on screen
+      bool included = includes(context);
+      if (!included && (role == "AXStaticText" || role == "AXHeading" || (LabelRoles.Contains(role) && role != "AXButton" && role != "AXMenuBarItem"))) continue;
+      bool secure = node.Password;
+      if (!included && (LabelRoles.Contains(role) || secure) && role != "AXMenuBarItem") {
+        if (role == "AXButton" && node.HasRect && node.Enabled && !node.Offscreen && LoadingControl(LabelName(node, role, secure))) loading = true;
+        continue;
+      }
+      if (role == "AXStaticText" || role == "AXHeading") {
+        if (wantText && screen.Texts.Count < 500 && textChars < 20000 && node.HasRect && !node.Offscreen) {
+          string words = Collapse(node.Name);
+          var visible = node.Rect.Intersect(screen.Display);
+          if (words.Length > 0 && !visible.Empty && visible.Height >= 2) {
+            string line = Policy.HideSecrets(Limit(words, 300), typedSecrets);
+            screen.Texts.Add(new KeyValuePair<string, KeyValuePair<Box, string>>(line, new KeyValuePair<Box, string>(visible, context)));
+            if (role == "AXHeading") screen.Headings.Add(visible);
+            textChars += line.Length;
+          }
+        }
+        continue;
+      }
+      if ((LabelRoles.Contains(role) || secure) && included) {
+        if (node.HasRect && node.Rect.Width >= 4 && node.Rect.Height >= 4) {
+          var visible = node.Rect.Intersect(screen.Display);
+          if (!visible.Empty && visible.Width >= 2 && visible.Height >= 2 && node.Enabled && !node.Offscreen) {
+            // What a field holds is on screen already; a password field's never,
+            // nor what the agent typed from its vault.
+            if (!secure && FieldRoles.Contains(role)) {
+              string value = Collapse(ValueOf(node.Element));
+              if (value.Length > 0) values[found.Count] = Policy.HideSecrets(Limit(value, 120), typedSecrets);
+            }
+            string name = LabelName(node, role, secure);
+            if (role == "AXButton" && LoadingControl(name)) loading = true;
+            found.Add(new Control { Element = node.Element, Node = node, Role = secure ? "AXSecureTextField" : role, Name = name, Secure = secure, Frame = visible, Context = context });
+          }
+        }
+        // A control's own parts (a link's text, a button's image) are the control.
+        if (role != "AXMenuBarItem") continue;
+      }
+      var children = Children(node);
+      string label = ContextLabel(node, role, children);
+      string inner = label.Length > 0 ? Limit(context.Length == 0 ? label : context + " > " + label, 400) : context;
+      inner = Policy.HideSecrets(inner, typedSecrets);
+      for (int i = children.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<Node, KeyValuePair<Node, string>>(children[i], new KeyValuePair<Node, string>(node, inner)));
+    }
+    // A bank's page: account and card numbers down to their last four digits.
+    if (bank) {
+      foreach (var control in found) { control.Name = Policy.MaskAccountNumbers(control.Name, rules); control.Context = Policy.MaskAccountNumbers(control.Context, rules); }
+      foreach (int key in new List<int>(values.Keys)) values[key] = Policy.MaskAccountNumbers(values[key], rules);
+      for (int i = 0; i < screen.Texts.Count; i++) {
+        var text = screen.Texts[i];
+        screen.Texts[i] = new KeyValuePair<string, KeyValuePair<Box, string>>(Policy.MaskAccountNumbers(text.Key, rules),
+          new KeyValuePair<Box, string>(text.Value.Key, Policy.MaskAccountNumbers(text.Value.Value, rules)));
+      }
+    }
+    // Reading order: rows from the top, left to right inside a row.
+    Comparison<Box> order = (a, b) => {
+      long ay = (long)Math.Round((a.Top + a.Bottom) / 24.0), by = (long)Math.Round((b.Top + b.Bottom) / 24.0);
+      return ay != by ? ay.CompareTo(by) : a.Left.CompareTo(b.Left);
+    };
+    var indexed = new List<KeyValuePair<int, Control>>();
+    for (int i = 0; i < found.Count; i++) indexed.Add(new KeyValuePair<int, Control>(i, found[i]));
+    indexed = indexed.OrderBy(pair => pair.Value.Frame, Comparer<Box>.Create(order)).ThenBy(pair => pair.Key).ToList();
+    for (int position = 0; position < indexed.Count && position < 250; position++) {
+      screen.Controls.Add(indexed[position].Value);
+      string value;
+      if (values.TryGetValue(indexed[position].Key, out value)) screen.Values[position] = value;
+    }
+    screen.Texts = screen.Texts.OrderBy(pair => pair.Value.Key, Comparer<Box>.Create(order)).ToList();
+    screen.Truncated = found.Count > screen.Controls.Count || visited >= 6000 || screen.Texts.Count >= 500 || textChars >= 20000 || DateTime.UtcNow >= deadline;
+    screen.Loading = loading;
+    return screen;
+  }
+
+  // --- References: snapshots' numbers and refs (rememberElement, §8.4) ----------
+  sealed class Reference { public IUIAutomationElement Element; public long Root; public int Pid; public long Created; public string Role = "", Name = "", Context = "", Runtime = ""; public uint Display; public DateTime At; }
+  static readonly Dictionary<string, Reference> references = new Dictionary<string, Reference>(StringComparer.Ordinal);
+  static DateTime referencesPruned = DateTime.MinValue;
+  sealed class Snapshot { public string Id; public int Pid; public long Root; public List<Control> Controls; public uint Display; }
+  static readonly List<Snapshot> snapshots = new List<Snapshot>();
+  static uint DisplayIdNow() { return Display().Id; }
+  static string Remember(IUIAutomationElement element, string prefix, long root, int pid, string role, string name, string context, string runtime) {
+    var now = DateTime.UtcNow;
+    if ((now - referencesPruned).TotalSeconds >= 1) {
+      foreach (var key in new List<string>(references.Keys)) if ((now - references[key].At).TotalSeconds >= 300) references.Remove(key);
+      referencesPruned = now;
+    }
+    uint display = DisplayIdNow();
+    foreach (var pair in references) {
+      var known = pair.Value;
+      if ((now - known.At).TotalSeconds < 300 && pair.Key.StartsWith(prefix + "-", StringComparison.Ordinal) && known.Pid == pid && known.Root == root && known.Runtime == runtime &&
+          runtime.Length > 0 && known.Role == role && known.Name == name && known.Context == context && known.Display == display) { known.At = now; return pair.Key; }
+    }
+    if (references.Count >= 2048) {
+      string oldest = null;
+      foreach (var pair in references) if (oldest == null || pair.Value.At < references[oldest].At) oldest = pair.Key;
+      references.Remove(oldest);
+    }
+    string id = prefix + "-" + Guid.NewGuid().ToString().ToLowerInvariant();
+    references[id] = new Reference { Element = element, Root = root, Pid = pid, Created = ProcessCreated(pid), Role = role, Name = name, Context = context, Runtime = runtime, Display = display, At = now };
+    return id;
+  }
+  // A control's region, as its snapshot recorded it; null when it's no longer in that window.
+  static string ContextOf(IUIAutomationElement element, long root) {
+    var parts = new List<string>();
+    Node node = Cached(element);
+    for (int step = 0; step < 40 && node != null; step++) {
+      Node up = Parent(node);
+      if (up == null) return null;
+      if (up.Window != 0 && Native.GetAncestor(new IntPtr(up.Window), Native.GA_ROOT).ToInt64() == up.Window)
+        return up.Window == root ? Policy.HideSecrets(Limit(string.Join(" > ", Enumerable.Reverse(parts)), 400), typedSecrets) : null;
+      string label = ContextLabel(up, up.Role(null), up.ControlType == Uia.DataItem || up.ControlType == Uia.ListItem ? Children(up) : null);
+      if (label.Length > 0) parts.Add(label);
+      node = up;
+    }
+    return null;
+  }
+  internal static KeyValuePair<Control, Screen> ReferencedControl(string id, Rules rules) {
+    Reference entry;
+    Win front = View.Foreground(rules);
+    if (!id.StartsWith("e-", StringComparison.Ordinal) || !references.TryGetValue(id, out entry) || (DateTime.UtcNow - entry.At).TotalSeconds >= 300 || front == null || front.Pid != entry.Pid)
+      throw new Refusal("That control reference is stale. Observe again.", "retry");
+    Node node = Cached(entry.Element);
+    string context = node == null ? null : ContextOf(entry.Element, entry.Root);
+    if (node == null || front.Handle != entry.Root || node.Role(null) != entry.Role && !(entry.Role == "AXSecureTextField" && node.Password) || context == null ||
+        Policy.MaskAccountNumbers(LabelName(node, entry.Role, node.Password), rules) != Policy.MaskAccountNumbers(entry.Name, rules) ||
+        Policy.MaskAccountNumbers(context, rules) != Policy.MaskAccountNumbers(entry.Context, rules) || !node.Enabled || !node.HasRect)
+      throw new Refusal("That control changed. Observe again.", "retry");
+    CheckSeen(UiaSeen(node, rules), rules);
+    var control = new Control { Element = entry.Element, Node = node, Role = entry.Role, Name = entry.Name, Secure = node.Password, Frame = node.Rect, Context = context };
+    var screen = new Screen { Pid = entry.Pid, Root = entry.Root, App = front.Id.Name, Bundle = front.Id.Bundle, Title = Limit(front.Title, 200), Display = DisplayBox() };
+    screen.Controls.Add(control);
+    return new KeyValuePair<Control, Screen>(control, screen);
+  }
+  static Dictionary<string, object> Place(Box rect, Box display) {
+    var place = new Dictionary<string, object>();
+    place["x"] = (double)(rect.Left - display.Left) / display.Width;
+    place["y"] = (double)(rect.Top - display.Top) / display.Height;
+    place["w"] = (double)rect.Width / display.Width;
+    place["h"] = (double)rect.Height / display.Height;
+    return place;
+  }
+  internal static Dictionary<string, object> SnapshotPayload(Screen screen) {
+    string id = Guid.NewGuid().ToString("N").Substring(0, 8);
+    uint display = DisplayIdNow();
+    snapshots.Add(new Snapshot { Id = id, Pid = screen.Pid, Root = screen.Root, Controls = screen.Controls, Display = display });
+    if (snapshots.Count > 16) snapshots.RemoveRange(0, snapshots.Count - 16);
+    var items = new List<object>();
+    for (int i = 0; i < screen.Controls.Count; i++) {
+      var control = screen.Controls[i];
+      var entry = Place(control.Frame, screen.Display);
+      entry["ref"] = Remember(control.Element, "e", screen.Root, screen.Pid, control.Role, control.Name, control.Context, control.Node.Runtime);
+      entry["context"] = control.Context;
+      entry["n"] = i + 1;
+      entry["role"] = control.Role.Substring(2);
+      entry["name"] = control.Name;
+      entry["secure"] = control.Secure;
+      string value;
+      if (screen.Values.TryGetValue(i, out value)) entry["value"] = value;
+      items.Add(entry);
+    }
+    var lines = new List<object>();
+    foreach (var text in screen.Texts) {
+      var entry = Place(text.Value.Key, screen.Display);
+      entry["text"] = text.Key;
+      entry["context"] = text.Value.Value;
+      int midX = (text.Value.Key.Left + text.Value.Key.Right) / 2, midY = (text.Value.Key.Top + text.Value.Key.Bottom) / 2;
+      if (screen.Headings.Exists(heading => heading.Contains(midX, midY))) entry["heading"] = true;
+      lines.Add(entry);
+    }
+    var result = Ok();
+    result["snapshot"] = id;
+    var windowElement = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(screen.Root), Uia.Structure);
+    result["windowRef"] = windowElement != null ? Remember(windowElement, "w", screen.Root, screen.Pid, "AXWindow", "", "", Node.Of(windowElement).Runtime) : "";
+    result["revision"] = (long)Interlocked.Read(ref screenRevision);
+    result["displayId"] = display;
+    result["app"] = screen.App;
+    result["title"] = screen.Title;
+    result["items"] = items;
+    result["texts"] = lines;
+    result["truncated"] = screen.Truncated;
+    if (screen.Within != null) result["within"] = screen.Within;
+    if (screen.Loading.HasValue) result["loading"] = screen.Loading.Value;
+    return result;
+  }
+  // The display an element or snapshot reference was seen on (chooseDisplay).
+  static object RememberedDisplayOf(Dictionary<string, object> action) {
+    string reference = Json.Str(action, "ref"), snapshot = Json.Str(action, "snapshot");
+    Reference entry;
+    if (reference != null && references.TryGetValue(reference, out entry)) return (double)entry.Display;
+    if (snapshot != null) foreach (var known in snapshots) if (known.Id == snapshot) return (double)known.Display;
+    return null;
+  }
+
+  // The control the agent named, in a fresh read (findControl).
+  internal static Control FindControl(Screen screen, string name, string role, bool fields, Native.POINT? near) {
+    var graded = new List<KeyValuePair<int, double>>();
+    foreach (var control in screen.Controls) {
+      bool roleOk = role == null || Policy.Lower(control.Role) == "ax" + Policy.Lower(role) || Policy.Lower(control.Role) == Policy.Lower(role);
+      bool kindOk = !fields || FieldRoles.Contains(control.Role) || control.Secure;
+      double distance = near.HasValue ? Math.Sqrt(Math.Pow((control.Frame.Left + control.Frame.Right) / 2.0 - near.Value.X, 2) + Math.Pow((control.Frame.Top + control.Frame.Bottom) / 2.0 - near.Value.Y, 2)) : double.PositiveInfinity;
+      graded.Add(new KeyValuePair<int, double>(roleOk && kindOk ? Policy.NameMatch(control.Name, name) : 0, distance));
+    }
+    int candidates;
+    int index = Policy.PickControl(graded, out candidates);
+    if (index >= 0) return screen.Controls[index];
+    string what = fields ? "field" : "control", shown = Limit(name, 60);
+    if (candidates > 1) {
+      var list = new List<object>();
+      for (int i = 0; i < screen.Controls.Count && list.Count < 8; i++) {
+        if (graded[i].Key <= 0) continue;
+        var control = screen.Controls[i];
+        var entry = new Dictionary<string, object>();
+        entry["ref"] = Remember(control.Element, "e", screen.Root, screen.Pid, control.Role, control.Name, control.Context, control.Node.Runtime);
+        entry["name"] = control.Name;
+        entry["role"] = control.Role.Substring(2);
+        entry["context"] = control.Context;
+        list.Add(entry);
+      }
+      throw new Refusal(candidates + " " + what + "s match \"" + shown + "\". Choose one of the returned refs.", "invalid", list);
+    }
+    throw new Refusal("No " + what + " named \"" + shown + "\" is on screen. Describe the screen.", "retry");
+  }
+  // A click at a control's live centre, judged like any click; refused when
+  // another app's window, or a dialog or menu of this app, now covers it.
+  static Dictionary<string, object> ClickControl(Control control, Screen screen, Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
+    var visible = control.Frame.Intersect(display);
+    if (visible.Empty) throw new Refusal("That control is out of view. Scroll to it first.", "retry");
+    int x = (visible.Left + visible.Right) / 2, y = (visible.Top + visible.Bottom) / 2;
+    Win at = WindowAt(View.Windows(rules), x, y, rules.Mode == "full");
+    if (at != null && at.Pid > 0 && at.Pid != screen.Pid && at.Id != null && Policy.PointerIdentityKnown(at.Id.Bundle, at.Id.Name, at.Id.Path, at.Pid) && !at.Shell)
+      throw new Refusal("Another app's window now covers that control. Describe the screen again.", "retry");
+    try {
+      var hit = Uia.Automation.ElementFromPoint(new Native.POINT { X = x, Y = y });
+      Func<IUIAutomationElement, int> pid = element => (int)Uia.Number(element.GetCurrentPropertyValue(Uia.ProcessId));
+      if (hit != null && pid(hit) == screen.Pid && Policy.CoveredControl<IUIAutomationElement>(hit, control.Element,
+          element => { try { return Uia.Walker.GetParentElement(element); } catch (Exception) { return null; } },
+          (a, b) => Uia.Automation.CompareElements(a, b) != 0, (a, b) => pid(a) == pid(b),
+          element => {
+            long type = Uia.Number(element.GetCurrentPropertyValue(Uia.ControlType));
+            object dialog = element.GetCurrentPropertyValue(Uia.IsDialog), modal = element.GetCurrentPropertyValue(Uia.WindowIsModal);
+            return type == Uia.Menu || (dialog is bool && (bool)dialog) || (type == Uia.Window && modal is bool && (bool)modal);
+          }))
+        throw new Refusal("A dialog or menu now covers that control. Describe the screen again and answer it first.", "retry");
+    } catch (COMException) { }
+    var click = new Dictionary<string, object>();
+    click["type"] = "click";
+    click["x"] = (double)(x - display.Left) / display.Width;
+    click["y"] = (double)(y - display.Top) / display.Height;
+    foreach (string key in new[] { "button", "count", "holdMs" }) if (action.ContainsKey(key)) click[key] = action[key];
+    var result = Perform(click, display, rules, expected);
+    result["pressed"] = control.Name;
+    return result;
+  }
+
+  // Controls found through UI Automation: a number from a snapshot or a ref
+  // (element), a name (press), a form (fill), a menu path (menu).
+  static Dictionary<string, object> Controls(string type, Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
+    RequireUia();
+    switch (type) {
+      case "element": {
+        string reference = Json.Str(action, "ref");
+        if (reference != null) {
+          var found = ReferencedControl(reference, rules);
+          return ClickControl(found.Key, found.Value, action, display, rules, expected);
+        }
+        // A numbered label, as the control is now: a fresh read finds the same
+        // role and name nearest to where it was; unnamed or renamed, where it is now.
+        string id = Json.Str(action, "snapshot");
+        int? n = Json.Int(action, "n");
+        Snapshot snapshot = null;
+        for (int i = snapshots.Count - 1; i >= 0 && snapshot == null; i--) if (snapshots[i].Id == id) snapshot = snapshots[i];
+        if (snapshot == null || !n.HasValue || n < 1 || n > snapshot.Controls.Count) throw new Refusal("That label is from an older look. Look at the labels again.", "retry");
+        var remembered = snapshot.Controls[n.Value - 1];
+        Win front = View.Foreground(rules);
+        if (front == null || front.Pid != snapshot.Pid) throw new Refusal("Another app is in front now. Describe the screen again.", "retry");
+        var screen = ReadScreen(rules, false, null);
+        Control control = null;
+        if (remembered.Name.Length > 0) {
+          try {
+            control = FindControl(screen, remembered.Name, remembered.Role.Substring(2), false,
+              new Native.POINT { X = (remembered.Frame.Left + remembered.Frame.Right) / 2, Y = (remembered.Frame.Top + remembered.Frame.Bottom) / 2 });
+          } catch (Refusal) { control = null; }
+        }
+        if (control == null) {
+          var now = Cached(remembered.Element);
+          if (now == null || !now.HasRect) throw new Refusal("That control is gone. Describe the screen again.", "retry");
+          control = new Control { Element = remembered.Element, Node = now, Role = remembered.Role, Name = remembered.Name, Secure = remembered.Secure, Frame = now.Rect, Context = remembered.Context };
+        }
+        return ClickControl(control, screen, action, display, rules, expected);
+      }
+      case "press": {
+        string wanted = Json.Str(action, "name");
+        if (string.IsNullOrEmpty(wanted) || wanted.Length > 120) throw new Refusal("Name the control to press.", "invalid");
+        var screen = ReadScreen(rules, false, null);
+        var candidates = screen;
+        string within = Json.Str(action, "within");
+        if (within != null) {
+          candidates = new Screen { Pid = screen.Pid, Root = screen.Root, App = screen.App, Bundle = screen.Bundle, Title = screen.Title, Truncated = screen.Truncated, Display = screen.Display };
+          candidates.Controls = screen.Controls.FindAll(control => Squeezed(control.Context).Contains(Squeezed(within)));
+        }
+        return ClickControl(FindControl(candidates, wanted, Json.Str(action, "role"), false, null), screen, action, display, rules, expected);
+      }
+      case "fill": {
+        var fields = Json.Get(action, "fields") as List<object>;
+        if (fields == null || fields.Count == 0 || fields.Count > 12) throw new Refusal("Give the fields to fill.", "invalid");
+        var screen = ReadScreen(rules, false, null);
+        var filled = new List<object>();
+        for (int index = 0; index < fields.Count; index++) {
+          var field = fields[index] as Dictionary<string, object>;
+          string label = Json.Str(field, "label"), text = Json.Str(field, "text");
+          if (string.IsNullOrEmpty(label) || label.Length > 120 || string.IsNullOrEmpty(text)) throw new Refusal("Each field needs a label and text.", "invalid");
+          bool secret = Json.True(field, "secret");
+          // Typing can change the form (a new field appears, one goes): read again.
+          if (index > 0) screen = ReadScreen(rules, false, null);
+          var control = FindControl(screen, label, null, true, null);
+          if (rules.Mode != "full" && control.Secure && !secret) throw new Refusal(Policy.SecureReason, "blocked");
+          ClickControl(control, screen, new Dictionary<string, object>(), display, rules, expected);
+          Input.Pause(150);
+          if (Json.True(action, "replace") && (rules.Mode == "full" || !control.Secure))
+            Perform((Dictionary<string, object>)Json.Parse("{\"type\":\"key\",\"key\":\"a\",\"modifiers\":[\"ctrl\"]}"), display, rules, expected);
+          var typing = new Dictionary<string, object>();
+          typing["type"] = "type";
+          typing["text"] = text;
+          if (secret || control.Secure) typing["secret"] = true;
+          if (action.ContainsKey("terminalLikeChecked")) typing["terminalLikeChecked"] = action["terminalLikeChecked"];
+          if (Json.True(action, "paste") && !secret && !control.Secure) typing["paste"] = true;
+          Perform(typing, display, rules, expected);
+          filled.Add(control.Name);
+        }
+        if (Json.True(action, "submit")) Perform((Dictionary<string, object>)Json.Parse("{\"type\":\"key\",\"key\":\"enter\"}"), display, rules, expected);
+        var reached = Ok();
+        reached["app"] = screen.App;
+        reached["bundle"] = screen.Bundle;
+        reached["filled"] = filled;
+        return reached;
+      }
+      case "menu":
+        return PressMenu(Json.Get(action, "path") as List<object>, rules);
+    }
+    throw new Refusal("Unknown action.", "invalid");
+  }
+
+  // The front window, checked like a look (frontApp).
+  static Win FrontApp(Rules rules) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    RequireUia();
+    Win front = View.Foreground(rules);
+    if (front == null || front.Pid <= 0) throw new Refusal("Nothing is in front.", "retry");
+    string reason = AppVerdict(front.Id, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    CheckSeen(SeenOf(front), rules);
+    return front;
+  }
+
+  // find (findOnScreen): a control by name (and role), or text, anywhere in
+  // the front window, scrolled into view through UI Automation, then read again.
+  static Dictionary<string, object> FindOnScreen(Rules rules, string text, string name, string role) {
+    var front = FrontApp(rules);
+    string wantText = Squeezed(text ?? ""), wantName = Squeezed(name ?? "");
+    if (wantText.Length == 0 && wantName.Length == 0) throw new Refusal("Say what to find: text, or a control's name.", "invalid");
+    var rootElement = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(front.Handle), Uia.Structure);
+    if (rootElement == null) throw new Refusal("No window is in front.", "retry");
+    Node best = null;
+    int bestGrade = 0, candidates = 0;
+    string bestRole = "", bestLabel = "";
+    var stack = new Stack<KeyValuePair<Node, Node>>();
+    stack.Push(new KeyValuePair<Node, Node>(Node.Of(rootElement), null));
+    int visited = 0;
+    var deadline = DateTime.UtcNow.AddMilliseconds(1500);
+    while (stack.Count > 0 && visited < 15000 && DateTime.UtcNow < deadline) {
+      var entry = stack.Pop();
+      var node = entry.Key;
+      visited++;
+      string nodeRole = node.Role(entry.Value);
+      string address = PageAddress(node);
+      if (address != null && Policy.UrlReason(address, rules) != null) continue;
+      if (nodeRole == "AXMenu" || nodeRole == "AXMenuBar") continue;
+      bool secure = node.Password;
+      int grade = 0;
+      string label = "";
+      if (wantName.Length > 0) {
+        if ((LabelRoles.Contains(nodeRole) || secure) && (string.IsNullOrEmpty(role) || Policy.Lower(nodeRole) == "ax" + Policy.Lower(role) || Policy.Lower(nodeRole) == Policy.Lower(role))) {
+          label = LabelName(node, nodeRole, secure);
+          grade = Policy.NameMatch(label, name);
+        }
+      } else if (nodeRole == "AXStaticText" || nodeRole == "AXHeading" || LabelRoles.Contains(nodeRole)) {
+        string raw = nodeRole == "AXStaticText" || nodeRole == "AXHeading" ? node.Name : LabelName(node, nodeRole, secure) + (secure ? "" : " " + ValueOf(node.Element));
+        string words = Squeezed(Policy.HideSecrets(raw, typedSecrets));
+        grade = words == wantText ? 3 : words.StartsWith(wantText, StringComparison.Ordinal) ? 2 : words.Contains(wantText) ? 1 : 0;
+        label = Limit(words, 160);
+      }
+      if (grade > 0) {
+        if (best == null || grade > bestGrade) { best = node; bestGrade = grade; bestRole = nodeRole; bestLabel = label; candidates = 1; }
+        else if (grade == bestGrade) candidates++;
+        if (grade == 3) break;
+      }
+      if (LabelRoles.Contains(nodeRole) && nodeRole != "AXMenuBarItem") continue;
+      var children = Children(node);
+      for (int i = children.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<Node, Node>(children[i], node));
+    }
+    bool unfinished = visited >= 15000 || DateTime.UtcNow >= deadline;
+    if (best == null) {
+      var none = Ok();
+      none["found"] = false;
+      none["app"] = front.Id.Name;
+      none["title"] = Limit(front.Title, 200);
+      none["truncated"] = unfinished;
+      return none;
+    }
+    var display = DisplayBox();
+    var shown = front.Frame.Intersect(display);
+    Func<Node, bool> inView = node => node != null && node.HasRect && !node.Offscreen && node.Rect.Intersect(shown).Width >= 2 && node.Rect.Intersect(shown).Height >= 2;
+    bool scrolled = false, visible = inView(best);
+    if (!visible && best.ScrollItem) {
+      try {
+        var pattern = best.Element.GetCurrentPattern(Uia.ScrollItemPattern) as IUIAutomationScrollItemPattern;
+        if (pattern != null) { pattern.ScrollIntoView(); scrolled = true; Thread.Sleep(250); }
+      } catch (Exception) { }
+      best = Cached(best.Element) ?? best;
+      visible = inView(best);
+    }
+    var screen = ReadScreen(rules, true, null);
+    var payload = SnapshotPayload(screen);
+    payload["found"] = true;
+    payload["role"] = bestRole.Length > 2 ? bestRole.Substring(2) : bestRole;
+    payload[wantName.Length == 0 ? "text" : "name"] = bestLabel;
+    payload["matches"] = candidates;
+    payload["inView"] = visible;
+    payload["scrolled"] = scrolled;
+    payload["truncated"] = screen.Truncated || unfinished;
+    for (int i = 0; i < screen.Controls.Count; i++) {
+      if (best.Runtime.Length > 0 && screen.Controls[i].Node.Runtime == best.Runtime) { payload["n"] = i + 1; break; }
+    }
+    if (!visible && best.HasRect) {
+      int midX = (best.Rect.Left + best.Rect.Right) / 2, midY = (best.Rect.Top + best.Rect.Bottom) / 2;
+      payload["direction"] = midY > shown.Bottom ? "below" : midY < shown.Top ? "above" : midX > shown.Right ? "right" : "left";
+      payload["distance"] = (int)Math.Max(Math.Abs(midY - (shown.Top + shown.Bottom) / 2.0) - shown.Height / 2.0, Math.Abs(midX - (shown.Left + shown.Right) / 2.0) - shown.Width / 2.0);
+    }
+    return payload;
+  }
+
+  // read (readPage): the front window's whole text, what is scrolled away
+  // included; in a browser, its pages. A password field is never read.
+  static Dictionary<string, object> ReadPage(Rules rules) {
+    var front = FrontApp(rules);
+    var rootElement = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(front.Handle), Uia.Structure);
+    if (rootElement == null) throw new Refusal("No window is in front.", "retry");
+    var lines = new List<string>();
+    int chars = 0;
+    string lastLine = "", url = "";
+    bool bank = false;
+    Action<string, bool> add = (raw, heading) => {
+      var parts = new List<string>();
+      foreach (string part in (raw ?? "").Split('\n')) { string trimmed = part.Trim(); if (trimmed.Length > 0) parts.Add(trimmed); }
+      string joined = string.Join("\n", parts);
+      if (joined.Length == 0) return;
+      string line = (heading ? "# " : "") + Policy.HideSecrets(Limit(joined, 20000), typedSecrets);
+      if (line == lastLine) return;
+      lines.Add(line);
+      lastLine = line;
+      chars += line.Length;
+    };
+    var roots = new List<Node> { Node.Of(rootElement) };
+    if (IsBrowser(front.Id)) {
+      var pages = new List<Node>();
+      var look = new Stack<Node>();
+      look.Push(roots[0]);
+      int seen = 0;
+      while (look.Count > 0 && seen < 3000 && pages.Count < 4) {
+        var node = look.Pop();
+        seen++;
+        if (PageAddress(node) != null) { pages.Add(node); continue; }
+        foreach (var child in Children(node)) look.Push(child);
+      }
+      if (pages.Count > 0) roots = pages;
+    }
+    var stack = new Stack<KeyValuePair<Node, Node>>();
+    for (int i = roots.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<Node, Node>(roots[i], null));
+    int visited = 0;
+    var deadline = DateTime.UtcNow.AddMilliseconds(2000);
+    while (stack.Count > 0 && visited < 20000 && chars < 60000 && DateTime.UtcNow < deadline) {
+      var entry = stack.Pop();
+      var node = entry.Key;
+      visited++;
+      string role = node.Role(entry.Value);
+      string address = PageAddress(node);
+      if (address != null) {
+        if (Policy.UrlReason(address, rules) != null) continue;
+        if (Policy.MoneySite(address, rules)) bank = true;
+        if (url.Length == 0) url = address;
+      }
+      if (role == "AXMenu" || role == "AXMenuBar") continue;
+      if (node.Password) { add("[password field]", false); continue; }
+      switch (role) {
+        case "AXStaticText": add(node.Name, false); continue;
+        case "AXHeading": add(node.Name, true); continue;
+        case "AXTextArea": case "AXTextField": case "AXComboBox": case "AXSearchField": {
+          string value = ValueOf(node.Element), label = LabelName(node, role, false);
+          add(label.Length == 0 ? value : value.Length == 0 ? "[" + label + "]" : label + ": " + value, false);
+          continue;
+        }
+        case "AXButton": case "AXLink": case "AXCheckBox": case "AXRadioButton": case "AXPopUpButton": case "AXMenuButton": case "AXTab": case "AXMenuItem": case "AXMenuBarItem": {
+          string label = LabelName(node, role, false);
+          if (label.Length > 0) add("[" + label + "]", false);
+          continue;
+        }
+        case "AXImage": {
+          string described = Collapse(node.Name.Length > 0 ? node.Name : node.Description);
+          if (described.Length > 0) add("(image: " + described + ")", false);
+          continue;
+        }
+      }
+      var children = Children(node);
+      for (int i = children.Count - 1; i >= 0; i--) stack.Push(new KeyValuePair<Node, Node>(children[i], node));
+    }
+    string text = string.Join("\n", lines);
+    if (bank) text = Policy.MaskAccountNumbers(text, rules);
+    var result = Ok();
+    result["app"] = front.Id.Name;
+    result["bundle"] = front.Id.Bundle;
+    result["title"] = Limit(front.Title, 200);
+    result["url"] = Limit(url, 2048);
+    result["text"] = Limit(text, 60000);
+    result["truncated"] = visited >= 20000 || chars >= 60000 || DateTime.UtcNow >= deadline;
+    return result;
+  }
+
+  // A browser window's page and tabs (windowPage, windowTabs).
+  static string WindowPage(Win window, Rules rules) {
+    try {
+      var root = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(window.Handle), Uia.Structure);
+      var look = new Stack<Node>();
+      look.Push(Node.Of(root));
+      int seen = 0;
+      var deadline = DateTime.UtcNow.AddMilliseconds(300);
+      while (look.Count > 0 && seen < 3000 && DateTime.UtcNow < deadline) {
+        var node = look.Pop();
+        seen++;
+        string address = PageAddress(node);
+        if (address != null) return address.Length > 0 && Policy.UrlReason(address, rules) == null ? Limit(address, 2048) : "";
+        foreach (var child in Children(node)) look.Push(child);
+      }
+    } catch (Exception) { }
+    return "";
+  }
+  static List<KeyValuePair<Node, bool>> WindowTabs(Win window) {
+    var tabs = new List<KeyValuePair<Node, bool>>();
+    try {
+      var root = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(window.Handle), Uia.Structure);
+      var stack = new Stack<Node>();
+      stack.Push(Node.Of(root));
+      int visited = 0;
+      var deadline = DateTime.UtcNow.AddMilliseconds(250);
+      while (stack.Count > 0 && visited < 1500 && tabs.Count < 40 && DateTime.UtcNow < deadline) {
+        var node = stack.Pop();
+        visited++;
+        if (node.ControlType == Uia.Document || node.ControlType == Uia.Menu || node.ControlType == Uia.MenuBar) continue;
+        if (node.ControlType == Uia.TabItem) { if (Collapse(node.Name).Length > 0) tabs.Add(new KeyValuePair<Node, bool>(node, node.Selected)); continue; }
+        var children = Children(node);
+        for (int i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+      }
+    } catch (Exception) { }
+    return tabs;
+  }
+  static List<object> TabList(Win window, Rules rules, int limit) {
+    var list = new List<object>();
+    foreach (var tab in WindowTabs(window)) {
+      if (list.Count >= limit) break;
+      var entry = new Dictionary<string, object>();
+      string title = Collapse(tab.Key.Name);
+      entry["ref"] = Remember(tab.Key.Element, "t", window.Handle, window.Pid, "AXTab", title, "", tab.Key.Runtime);
+      entry["title"] = Policy.HideSecrets(Limit(title, 120), typedSecrets);
+      entry["selected"] = tab.Value;
+      list.Add(entry);
+    }
+    return list;
+  }
+
+  // windows (windowList): every window the agent may know of, Alt+Tab's way,
+  // the closed ones left out entirely; a browser's with its page and tabs.
+  static Dictionary<string, object> WindowList(Rules rules) {
+    RequireUia();
+    var handles = new List<IntPtr>();
+    Native.EnumWindowsProc each = (window, data) => { handles.Add(window); return handles.Count < 4096; };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    IntPtr frontRoot = Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT);
+    var windows = new List<object>();
+    var perApp = new Dictionary<int, int>();
+    var deadline = DateTime.UtcNow.AddMilliseconds(1500);
+    foreach (IntPtr handle in handles) {
+      if (windows.Count >= 120 || DateTime.UtcNow > deadline) break;
+      bool visible = Native.IsWindowVisible(handle), minimized = Native.IsIconic(handle);
+      if (!visible && !minimized) continue;
+      int cloaked;
+      if (Native.DwmGetWindowAttribute(handle, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) continue;
+      uint style = ExStyleOf(handle);
+      if ((style & Native.WS_EX_TOOLWINDOW) != 0 && (style & Native.WS_EX_APPWINDOW) == 0) continue;
+      IntPtr owner = Native.GetWindow(handle, Native.GW_OWNER);
+      if (owner != IntPtr.Zero && Native.IsWindowVisible(owner)) continue;
+      var w = ReadDecided(handle, rules);
+      if (w.Shell || Verdict(w, rules, false) != null) continue;
+      int count;
+      perApp.TryGetValue(w.Pid, out count);
+      if (count >= 24) continue;
+      perApp[w.Pid] = count + 1;
+      var entry = new Dictionary<string, object>();
+      Node windowNode = Cached(Uia.Automation.ElementFromHandle(handle));
+      entry["id"] = windowNode != null ? Remember(windowNode.Element, "w", w.Handle, w.Pid, "AXWindow", "", "", windowNode.Runtime) : "";
+      if ((string)entry["id"] == "") continue;
+      entry["app"] = w.Id.Name;
+      entry["bundle"] = w.Id.Bundle;
+      entry["title"] = Policy.HideSecrets(Limit(w.Title, 200), typedSecrets);
+      entry["minimized"] = minimized;
+      entry["front"] = handle == frontRoot;
+      if ((windowNode != null && windowNode.Dialog) || (ClassOf(handle) == "#32770" && owner != IntPtr.Zero)) entry["dialog"] = true;
+      if (IsBrowser(w.Id)) {
+        string page = WindowPage(w, rules);
+        if (page.Length > 0) entry["url"] = page;
+        var tabs = TabList(w, rules, 30);
+        if (tabs.Count > 0) entry["tabs"] = tabs;
+      }
+      windows.Add(entry);
+    }
+    var result = Ok();
+    result["windows"] = windows;
+    return result;
+  }
+
+  // focus (focusWindow): one window by its ref, its title checked again;
+  // restored, raised without taking the foreground, then asked forward once.
+  // Windows may refuse that (its foreground lock): front false, as on a Mac.
+  static Dictionary<string, object> FocusWindow(string id, string wanted, string tab, string tabRef, Rules rules) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    RequireUia();
+    Reference reference;
+    if (!id.StartsWith("w-", StringComparison.Ordinal) || !references.TryGetValue(id, out reference) || (DateTime.UtcNow - reference.At).TotalSeconds >= 300)
+      throw new Refusal("That window is gone. List windows again.", "retry");
+    IntPtr handle = new IntPtr(reference.Root);
+    uint pid;
+    Native.GetWindowThreadProcessId(handle, out pid);
+    if (!Native.IsWindow(handle) || pid != reference.Pid || ProcessCreated(reference.Pid) != reference.Created || Native.GetAncestor(handle, Native.GA_ROOT) != handle)
+      throw new Refusal("That window is gone. List windows again.", "retry");
+    var w = ReadDecided(handle, rules);
+    string reason = AppVerdict(w.Id, rules) ?? Verdict(w, rules, false);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    if (w.Shell) throw new Refusal(Policy.NotAllowedReason, "blocked");
+    if (!string.IsNullOrEmpty(wanted) && !Policy.Lower(w.Title).StartsWith(Policy.Lower(wanted), StringComparison.Ordinal) && !SameTitle(w.Title, wanted))
+      throw new Refusal("That window has changed. List the windows again.", "retry");
+    RuleT(w.Id);
+    if (Native.IsIconic(handle)) Native.ShowWindowAsync(handle, Native.SW_RESTORE);
+    Native.SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, Native.SWP_NOACTIVATE | Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_ASYNCWINDOWPOS);
+    Native.SetForegroundWindow(handle);
+    bool front = WaitFront(handle);
+    var result = Ok();
+    result["app"] = w.Id.Name;
+    result["bundle"] = w.Id.Bundle;
+    result["front"] = front;
+    if (!string.IsNullOrEmpty(tab) || !string.IsNullOrEmpty(tabRef)) {
+      if (!IsBrowser(w.Id)) throw new Refusal("Only a browser window has tabs.", "invalid");
+      var tabs = WindowTabs(w);
+      Reference chosen = null;
+      if (!string.IsNullOrEmpty(tabRef)) references.TryGetValue(tabRef, out chosen);
+      var graded = new List<KeyValuePair<int, double>>();
+      foreach (var candidate in tabs) {
+        bool exact = chosen != null && (DateTime.UtcNow - chosen.At).TotalSeconds < 300 && chosen.Pid == w.Pid && chosen.Root == w.Handle && chosen.Runtime == candidate.Key.Runtime &&
+          chosen.Name == Collapse(candidate.Key.Name);
+        graded.Add(new KeyValuePair<int, double>(string.IsNullOrEmpty(tabRef) ? Policy.NameMatch(candidate.Key.Name, tab) : exact ? 3 : 0, double.PositiveInfinity));
+      }
+      int candidates;
+      int at = Policy.PickControl(graded, out candidates);
+      if (at < 0) {
+        if (candidates > 1) throw new Refusal(candidates + " tabs match \"" + Limit(tab ?? "", 60) + "\". Give more of the title.", "invalid");
+        throw new Refusal("No tab named \"" + Limit(tab ?? "", 60) + "\" in that window. List the windows again.", "retry");
+      }
+      if (Policy.TitleReason(tabs[at].Key.Name, w.Id.Bundle, rules) != null) throw new Refusal(Policy.ProtectedReason, "blocked");
+      if (!Choose(tabs[at].Key)) throw new Refusal("That tab couldn't be chosen. Click it instead.", "retry");
+      Thread.Sleep(150);
+      result["tab"] = Policy.HideSecrets(Limit(Collapse(tabs[at].Key.Name), 120), typedSecrets);
+    }
+    bool readable;
+    result["title"] = Policy.HideSecrets(Limit(TitleOf(handle, out readable), 200), typedSecrets);
+    return result;
+  }
+  // A tab chosen through UI Automation, never the pointer.
+  static bool Choose(Node tab) {
+    try {
+      var select = tab.Element.GetCurrentPattern(Uia.SelectionItemPattern) as IUIAutomationSelectionItemPattern;
+      if (select != null) { select.Select(); return true; }
+    } catch (Exception) { }
+    try {
+      var invoke = tab.Element.GetCurrentPattern(Uia.InvokePattern) as IUIAutomationInvokePattern;
+      if (invoke != null) { invoke.Invoke(); return true; }
+    } catch (Exception) { }
+    try {
+      var legacy = tab.Element.GetCurrentPattern(Uia.LegacyIAccessiblePattern) as IUIAutomationLegacyIAccessiblePattern;
+      if (legacy != null) { legacy.DoDefaultAction(); return true; }
+    } catch (Exception) { }
+    return false;
+  }
+  static bool WaitFront(IntPtr window) {
+    var deadline = DateTime.UtcNow.AddMilliseconds(1500);
+    while (true) {
+      if (Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT) == window) return true;
+      if (DateTime.UtcNow >= deadline) return false;
+      Thread.Sleep(50);
+    }
+  }
+  // Menu and tab titles match without a trailing ellipsis or a mnemonic, whatever the case.
+  internal static bool SameTitle(string a, string b) {
+    Func<string, string> trim = text => Policy.Lower(text).Replace("&", "").Replace(((char)0x2026).ToString(), "").Replace("...", "").Trim();
+    return trim(a) == trim(b);
+  }
+
+  // --- Menus (§8.4): read from the window's own menu bar, invisibly ------------
+  sealed class MenuEntry { public string Title = "", Key = ""; public bool Enabled = true, Checked; public IntPtr Submenu; }
+  static List<MenuEntry> MenuEntries(IntPtr menu) {
+    var entries = new List<MenuEntry>();
+    int count = Native.GetMenuItemCount(menu);
+    for (int i = 0; i < count && i < 200; i++) {
+      var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STRING | Native.MIIM_STATE | Native.MIIM_SUBMENU | Native.MIIM_FTYPE };
+      if (!Native.GetMenuItemInfoW(menu, (uint)i, true, ref info) || (info.fType & Native.MFT_SEPARATOR) != 0) continue;
+      string text = "";
+      if (info.cch > 0 && info.cch < 4096) {
+        IntPtr buffer = Marshal.AllocHGlobal((int)(info.cch + 1) * 2);
+        try {
+          info.dwTypeData = buffer;
+          info.cch += 1;
+          info.fMask = Native.MIIM_STRING;
+          if (Native.GetMenuItemInfoW(menu, (uint)i, true, ref info)) text = Marshal.PtrToStringUni(buffer) ?? "";
+        } finally {
+          Marshal.FreeHGlobal(buffer);
+        }
+      }
+      // &File: the mnemonic's marker goes ("&&" is a real "&"); after a tab, the shortcut.
+      text = text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
+      int tab = text.IndexOf('\t');
+      var entry = new MenuEntry { Title = (tab >= 0 ? text.Substring(0, tab) : text).Trim(), Key = tab >= 0 ? Limit(text.Substring(tab + 1).Trim(), 12) : "",
+        Enabled = (info.fState & Native.MFS_DISABLED) == 0, Checked = (info.fState & Native.MFS_CHECKED) != 0, Submenu = info.hSubMenu };
+      if (entry.Title.Length > 0) entries.Add(entry);
+    }
+    return entries;
+  }
+  static List<object> MenuItems(IntPtr menu, int depth, ref int count, DateTime deadline) {
+    var items = new List<object>();
+    foreach (var entry in MenuEntries(menu)) {
+      if (count >= 400 || DateTime.UtcNow > deadline) break;
+      count++;
+      var item = new Dictionary<string, object>();
+      item["title"] = Policy.HideSecrets(Limit(entry.Title, 80), typedSecrets);
+      if (!entry.Enabled) item["enabled"] = false;
+      if (entry.Key.Length > 0) item["key"] = entry.Key;
+      if (entry.Checked) item["checked"] = true;
+      if (entry.Submenu != IntPtr.Zero) {
+        if (depth > 0) item["items"] = MenuItems(entry.Submenu, depth - 1, ref count, deadline);
+        else item["submenu"] = true;
+      }
+      items.Add(item);
+    }
+    return items;
+  }
+  // A window's UI Automation menu bar (WinForms' and WPF's own), or null.
+  static Node MenuBarOf(long root) {
+    try {
+      var top = Uia.Automation.ElementFromHandleBuildCache(new IntPtr(root), Uia.Structure);
+      var stack = new Stack<Node>();
+      stack.Push(Node.Of(top));
+      int visited = 0;
+      while (stack.Count > 0 && visited < 400) {
+        var node = stack.Pop();
+        visited++;
+        if (node.ControlType == Uia.MenuBar) return node;
+        if (node.ControlType == Uia.Document) continue;
+        foreach (var child in Children(node)) stack.Push(child);
+      }
+    } catch (Exception) { }
+    return null;
+  }
+  // menus (menuBar): every menu's items with their shortcuts; one menu named, with its submenus.
+  static Dictionary<string, object> MenuBar(Rules rules, string wanted) {
+    var front = FrontApp(rules);
+    var menus = new List<object>();
+    int count = 0;
+    var deadline = DateTime.UtcNow.AddMilliseconds(1500);
+    IntPtr bar = Native.GetMenu(new IntPtr(front.Handle));
+    if (bar != IntPtr.Zero && Native.GetMenuItemCount(bar) > 0) {
+      foreach (var top in MenuEntries(bar)) {
+        if (menus.Count >= 30) break;
+        if (!string.IsNullOrEmpty(wanted) && !SameTitle(top.Title, wanted)) continue;
+        var menu = new Dictionary<string, object>();
+        menu["title"] = Limit(top.Title, 80);
+        menu["items"] = top.Submenu != IntPtr.Zero ? MenuItems(top.Submenu, string.IsNullOrEmpty(wanted) ? 0 : 2, ref count, deadline) : new List<object>();
+        menus.Add(menu);
+      }
+    } else {
+      // No classic menu: its UI Automation menu bar's own items, not opened.
+      var uiaBar = MenuBarOf(front.Handle);
+      if (uiaBar == null) throw new Refusal("This app has no menu bar to read.", "retry");
+      foreach (var item in Children(uiaBar)) {
+        string title = Collapse(item.Name);
+        if (title.Length == 0 || menus.Count >= 30 || (!string.IsNullOrEmpty(wanted) && !SameTitle(title, wanted))) continue;
+        var menu = new Dictionary<string, object>();
+        menu["title"] = Limit(title, 80);
+        menu["items"] = new List<object>();
+        menu["submenu"] = true;
+        menus.Add(menu);
+      }
+    }
+    if (!string.IsNullOrEmpty(wanted) && menus.Count == 0) throw new Refusal("No menu named \"" + Limit(wanted, 60) + "\". Read the menus without a name first.", "invalid");
+    var result = Ok();
+    result["app"] = front.Id.Name;
+    result["bundle"] = front.Id.Bundle;
+    result["title"] = Limit(front.Title, 200);
+    result["menus"] = menus;
+    result["truncated"] = count >= 400 || DateTime.UtcNow > deadline;
+    return result;
+  }
+  // A menu item by its path, matched on the menu's own titles and checked
+  // (dimmed, a submenu, what would close Reach, Reach's or a protected name),
+  // then pressed through UI Automation along the window's menu bar: no pointer.
+  static Dictionary<string, object> PressMenu(List<object> path, Rules rules) {
+    var names = new List<string>();
+    if (path != null) foreach (object item in path) { var name = item as string; if (name != null) names.Add(name); }
+    if (names.Count == 0 || names.Count > 6 || names.Count != path.Count || names.Exists(name => name.Length == 0 || name.Length > 80)) throw new Refusal("Give the menu path, menu title first.", "invalid");
+    var target = Focus(rules, true);
+    long root = target.App.Root;
+    IntPtr level = Native.GetMenu(new IntPtr(root));
+    if (level == IntPtr.Zero) throw new Refusal("This app has no menu bar.", "retry");
+    MenuEntry chosen = null;
+    for (int i = 0; i < names.Count; i++) {
+      var entries = level == IntPtr.Zero ? new List<MenuEntry>() : MenuEntries(level);
+      var graded = entries.ConvertAll(entry => new KeyValuePair<int, double>(SameTitle(entry.Title, names[i]) ? 3 : Policy.NameMatch(entry.Title, names[i]) == 2 ? 2 : 0, double.PositiveInfinity));
+      int candidates;
+      int at = Policy.PickControl(graded, out candidates);
+      if (at < 0) {
+        if (candidates > 1) throw new Refusal(candidates + " menu items match \"" + Limit(names[i], 60) + "\". Give the full title.", "invalid");
+        throw new Refusal("No menu item \"" + Limit(names[i], 60) + "\" in " + (i == 0 ? "the menu bar" : names[i - 1]) + ". Read the menus with reach_menus.", "retry");
+      }
+      chosen = entries[at];
+      level = chosen.Submenu;
+    }
+    string title = chosen.Title, word = Policy.Lower(title);
+    if (!chosen.Enabled) throw new Refusal("\"" + Limit(title, 60) + "\" is dimmed right now.", "retry");
+    if (chosen.Submenu != IntPtr.Zero) throw new Refusal("\"" + Limit(title, 60) + "\" opens a submenu. Add the item inside it to the path.", "invalid");
+    if (rules.Mode != "full") {
+      // Quitting or closing where Reach lives would close Reach (as Ctrl+Q and Ctrl+W).
+      if ((word.StartsWith("quit", StringComparison.Ordinal) || word.StartsWith("close", StringComparison.Ordinal) || word.StartsWith("exit", StringComparison.Ordinal)) &&
+          (target.App.Reach || View.HostsReach(target.App.Pid, rules))) throw new Refusal(Policy.ReachReason, "blocked");
+      if (Policy.MentionsReach(title, rules)) throw new Refusal(Policy.ReachReason, "blocked");
+      if (rules.ProtectedTitleWords.Exists(protectedWord => protectedWord.Length > 0 && word.Contains(protectedWord)) || word.Contains("inspect element")) throw new Refusal(Policy.ProtectedReason, "blocked");
+    }
+    if (!PressThroughUia(root, names)) throw new Refusal("That menu item couldn't be pressed. Use its shortcut key instead.", "retry");
+    var result = Ok();
+    result["app"] = target.App.Name;
+    result["bundle"] = target.App.Bundle;
+    var pressed = new List<string>();
+    foreach (string name in names) pressed.Add(Limit(name, 80));
+    result["pressed"] = string.Join(" " + (char)0x203A + " ", pressed);
+    return result;
+  }
+  static bool PressThroughUia(long root, List<string> names) {
+    try {
+      Node level = MenuBarOf(root);
+      if (level == null) return false;
+      uint pid;
+      Native.GetWindowThreadProcessId(new IntPtr(root), out pid);
+      for (int i = 0; i < names.Count; i++) {
+        Node item = null;
+        foreach (var child in MenuChildren(level, (int)pid)) if (SameTitle(child.Name, names[i]) || Policy.NameMatch(child.Name, names[i]) == 2) { item = child; break; }
+        if (item == null) return false;
+        if (i == names.Count - 1) {
+          var invoke = item.Element.GetCurrentPattern(Uia.InvokePattern) as IUIAutomationInvokePattern;
+          if (invoke == null) return false;
+          invoke.Invoke();
+          return true;
+        }
+        var expand = item.Element.GetCurrentPattern(Uia.ExpandCollapsePattern) as IUIAutomationExpandCollapsePattern;
+        if (expand == null) return false;
+        expand.Expand();
+        Thread.Sleep(150);
+        level = item;
+      }
+    } catch (Exception) { }
+    return false;
+  }
+  // A menu item's items: its own children, or the menu Windows opened for it
+  // (a classic menu's popup is a window of its own).
+  static List<Node> MenuChildren(Node level, int pid) {
+    var items = Children(level).FindAll(child => child.ControlType == Uia.MenuItem);
+    if (items.Count > 0) return items;
+    foreach (var child in Children(level)) if (child.ControlType == Uia.Menu) return Children(child).FindAll(item => item.ControlType == Uia.MenuItem);
+    try {
+      var desktop = Node.Of(Uia.Automation.GetRootElement().BuildUpdatedCache(Uia.Structure));
+      foreach (var top in Children(desktop))
+        if (top.ControlType == Uia.Menu && top.Pid == pid) return Children(top).FindAll(item => item.ControlType == Uia.MenuItem);
+    } catch (Exception) { }
+    return items;
+  }
+
+  // --- wait-change (§8.5): UI Automation events count changes ----------------------
+  static long screenRevision;
+  internal static void Changed() { Interlocked.Increment(ref screenRevision); }
+  static long watchedRoot;
+  static readonly BlockingCollection<Action> uiaWork = new BlockingCollection<Action>();
+  // Handlers are added and removed on one thread only (uia-events, MTA).
+  static void UiaEvents() { foreach (var work in uiaWork.GetConsumingEnumerable()) { try { work(); } catch (Exception) { } } }
+  static void WatchScreen() {
+    long root = Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT).ToInt64();
+    if (root == watchedRoot || !uiaReady) return;
+    watchedRoot = root;
+    Changed();
+    var done = new ManualResetEvent(false);
+    uiaWork.Add(() => {
+      try {
+        Uia.Automation.RemoveAllEventHandlers();
+        var changes = new Changes();
+        Uia.Automation.AddFocusChangedEventHandler(null, changes);
+        if (root != 0) {
+          var element = Uia.Automation.ElementFromHandle(new IntPtr(root));
+          Uia.Automation.AddStructureChangedEventHandler(element, Uia.ScopeSubtree, null, changes);
+          Uia.Automation.AddPropertyChangedEventHandlerNativeArray(element, Uia.ScopeSubtree, null, changes, new[] { Uia.Name, Uia.ValueValue, Uia.BoundingRectangle }, 3);
+        }
+      } finally {
+        done.Set();
+      }
+    });
+    done.WaitOne(2000);
+  }
+  static Dictionary<string, object> WaitChange(long revision, int ms) {
+    WatchScreen();
+    var end = DateTime.UtcNow.AddMilliseconds(Math.Max(1, Math.Min(ms, 400)));
+    while (Interlocked.Read(ref screenRevision) == revision) {
+      double left = (end - DateTime.UtcNow).TotalMilliseconds;
+      if (left <= 0) break;
+      Thread.Sleep((int)Math.Min(50, Math.Ceiling(left)));
+    }
+    long now = Interlocked.Read(ref screenRevision);
+    var result = Ok();
+    result["revision"] = now;
+    result["changed"] = now != revision;
+    return result;
+  }
+
+  // A field showing what the agent typed from its vault is blacked out of the
+  // screenshot, as its value is left out of the screen as text (redacted()).
+  // Best effort: a window that can't be read is shown as it is.
+  static void Redact(Graphics graphics, Box screen, Rules rules) {
+    if (typedSecrets.Count == 0 || !uiaReady || rules.Mode == "view") return;
+    Screen read;
+    try { read = ReadScreen(rules, false, null); } catch (Exception) { return; }
+    for (int i = 0; i < read.Controls.Count; i++) {
+      var control = read.Controls[i];
+      string value;
+      if (!FieldRoles.Contains(control.Role) || control.Secure || !read.Values.TryGetValue(i, out value) || !value.Contains(Policy.Dots)) continue;
+      graphics.FillRectangle(Brushes.Black, control.Frame.Left - screen.Left - 2, control.Frame.Top - screen.Top - 2, control.Frame.Width + 4, control.Frame.Height + 4);
     }
   }
 
@@ -3102,6 +4387,364 @@ sealed class WindowsClip : IClip {
   }
   public uint Sequence() { return Native.GetClipboardSequenceNumber(); }
 }
+
+// BEGIN NATIVE UIA
+// The UI Automation client: Windows' own COM interfaces, declared as the
+// Windows SDK's UIAutomationClient.idl lists them, member by member in order
+// (a later member the helper never calls is left out; an earlier one is
+// declared by its name). Start-up checks known answers before any is trusted.
+static class Uia {
+  public const int ScopeElement = 1, ScopeChildren = 2, ScopeSubtree = 7;
+  public const int RuntimeId = 30000, BoundingRectangle = 30001, ProcessId = 30002, ControlType = 30003, LocalizedControlType = 30004, Name = 30005,
+    IsEnabled = 30010, AutomationId = 30011, ClassName = 30012, HelpText = 30013, IsPassword = 30019, NativeWindowHandle = 30020, IsOffscreen = 30022,
+    FrameworkId = 30024, IsExpandCollapsePatternAvailable = 30028, IsInvokePatternAvailable = 30031, IsScrollItemPatternAvailable = 30035,
+    IsSelectionItemPatternAvailable = 30036, IsTogglePatternAvailable = 30041, IsValuePatternAvailable = 30043, ValueValue = 30045, ValueIsReadOnly = 30046,
+    WindowIsModal = 30077, SelectionItemIsSelected = 30079, IsLegacyIAccessiblePatternAvailable = 30090, LegacyIAccessibleDefaultAction = 30100, AriaRole = 30101,
+    FullDescription = 30159, HeadingLevel = 30173, IsDialog = 30174;
+  public const int Button = 50000, CheckBox = 50002, ComboBox = 50003, Edit = 50004, Hyperlink = 50005, Image = 50006, ListItem = 50007, List = 50008,
+    Menu = 50009, MenuBar = 50010, MenuItem = 50011, RadioButton = 50013, Slider = 50015, Spinner = 50016, Tab = 50018, TabItem = 50019, Text = 50020,
+    ToolBar = 50021, TreeItem = 50024, Group = 50026, DataGrid = 50028, DataItem = 50029, Document = 50030, SplitButton = 50031, Window = 50032, Pane = 50033,
+    Table = 50036, TitleBar = 50037;
+  public const int InvokePattern = 10000, ExpandCollapsePattern = 10005, WindowPattern = 10009, SelectionItemPattern = 10010, TogglePattern = 10015,
+    ScrollItemPattern = 10017, LegacyIAccessiblePattern = 10018;
+  public const int FocusChangedEvent = 20005, StructureChangedEvent = 20002;
+  static readonly Guid CUIAutomation8 = new Guid("e22ad333-b25f-460c-83d0-0581107395c9"), CUIAutomation = new Guid("ff48dba4-60ef-4201-aa87-54103eef594e");
+  public static IUIAutomation Automation;
+  public static IUIAutomationTreeWalker Walker;
+  public static IUIAutomationCondition ControlView, ValueBearing;
+  // Pass 1: an element's structure, never a value. Pass 2: a value, only
+  // through ValueBearing (not a password, has a value), so a password field's
+  // is never asked for.
+  public static IUIAutomationCacheRequest Structure, Values;
+  static readonly int[] StructureProperties = { RuntimeId, BoundingRectangle, ProcessId, ControlType, LocalizedControlType, Name, IsEnabled, AutomationId,
+    ClassName, HelpText, IsPassword, NativeWindowHandle, IsOffscreen, FrameworkId, IsExpandCollapsePatternAvailable, IsInvokePatternAvailable,
+    IsScrollItemPatternAvailable, IsSelectionItemPatternAvailable, IsTogglePatternAvailable, IsValuePatternAvailable, SelectionItemIsSelected,
+    IsLegacyIAccessiblePatternAvailable, LegacyIAccessibleDefaultAction, AriaRole, FullDescription, HeadingLevel, IsDialog };
+
+  public static bool Start() {
+    try {
+      object instance;
+      try { instance = Activator.CreateInstance(Type.GetTypeFromCLSID(CUIAutomation8)); }
+      catch (Exception) { instance = Activator.CreateInstance(Type.GetTypeFromCLSID(CUIAutomation)); }
+      Automation = (IUIAutomation)instance;
+      var timed = instance as IUIAutomation2;
+      if (timed != null) { timed.put_ConnectionTimeout(1000); timed.put_TransactionTimeout(500); }
+      // Known answers: the root is a pane whose window is the desktop's, and
+      // the same as itself. Interfaces declared wrong would say otherwise.
+      var root = Automation.GetRootElement();
+      if (Number(root.GetCurrentPropertyValue(ControlType)) != Pane) return false;
+      if (Number(root.GetCurrentPropertyValue(NativeWindowHandle)) != Native.GetDesktopWindow().ToInt64()) return false;
+      if (Automation.CompareElements(root, root) == 0) return false;
+      Walker = Automation.get_ControlViewWalker();
+      ControlView = Automation.get_ControlViewCondition();
+      ValueBearing = Automation.CreateAndCondition(Automation.CreatePropertyCondition(IsPassword, false), Automation.CreatePropertyCondition(IsValuePatternAvailable, true));
+      Structure = Automation.CreateCacheRequest();
+      foreach (int property in StructureProperties) {
+        try { Structure.AddProperty(property); } catch (Exception) { } // newer than this Windows
+      }
+      Values = Automation.CreateCacheRequest();
+      Values.AddProperty(ValueValue);
+      Values.AddProperty(IsPassword);
+      return true;
+    } catch (Exception) {
+      return false;
+    }
+  }
+  public static long Number(object value) {
+    if (value is int) return (int)value;
+    if (value is long) return (long)value;
+    if (value is uint) return (uint)value;
+    if (value is short) return (short)value;
+    if (value is double) return (long)(double)value;
+    return long.MinValue;
+  }
+}
+
+// One element as one read gave it (pass 1), never its value.
+sealed class Node {
+  public IUIAutomationElement Element;
+  public int ControlType, Pid, Heading;
+  public string Name = "", LocalizedType = "", AutomationId = "", Class = "", Help = "", Description = "", Framework = "", Aria = "", DefaultAction = "", Runtime = "";
+  public Box Rect;
+  public bool HasRect, Enabled = true, Offscreen, Password, Dialog, Invoke, Toggle, Select, Expand, ValuePattern, Legacy, Selected, ScrollItem;
+  public long Window;
+  public static Node Of(IUIAutomationElement element) {
+    var node = new Node { Element = element };
+    Func<int, object> get = id => { try { return element.GetCachedPropertyValue(id); } catch (Exception) { return null; } };
+    Func<int, string> text = id => get(id) as string ?? "";
+    Func<int, bool> flag = id => { object value = get(id); return value is bool && (bool)value; };
+    node.ControlType = (int)Math.Max(int.MinValue, Uia.Number(get(Uia.ControlType)));
+    node.Pid = (int)Math.Max(0, Uia.Number(get(Uia.ProcessId)));
+    node.Name = text(Uia.Name);
+    node.LocalizedType = text(Uia.LocalizedControlType);
+    node.AutomationId = text(Uia.AutomationId);
+    node.Class = text(Uia.ClassName);
+    node.Help = text(Uia.HelpText);
+    node.Description = text(Uia.FullDescription);
+    node.Framework = text(Uia.FrameworkId);
+    node.Aria = text(Uia.AriaRole);
+    node.DefaultAction = text(Uia.LegacyIAccessibleDefaultAction);
+    object enabled = get(Uia.IsEnabled);
+    node.Enabled = !(enabled is bool) || (bool)enabled;
+    node.Offscreen = flag(Uia.IsOffscreen);
+    node.Password = flag(Uia.IsPassword);
+    node.Dialog = flag(Uia.IsDialog);
+    node.Invoke = flag(Uia.IsInvokePatternAvailable);
+    node.Toggle = flag(Uia.IsTogglePatternAvailable);
+    node.Select = flag(Uia.IsSelectionItemPatternAvailable);
+    node.Expand = flag(Uia.IsExpandCollapsePatternAvailable);
+    node.ValuePattern = flag(Uia.IsValuePatternAvailable);
+    node.Legacy = flag(Uia.IsLegacyIAccessiblePatternAvailable);
+    node.ScrollItem = flag(Uia.IsScrollItemPatternAvailable);
+    node.Selected = flag(Uia.SelectionItemIsSelected);
+    long heading = Uia.Number(get(Uia.HeadingLevel));
+    node.Heading = heading > 80050 && heading < 80060 ? (int)(heading - 80050) : 0; // HeadingLevel1 is 80051
+    long window = Uia.Number(get(Uia.NativeWindowHandle));
+    node.Window = window == long.MinValue ? 0 : window;
+    var rect = get(Uia.BoundingRectangle) as double[];
+    if (rect != null && rect.Length == 4 && rect[2] > 0 && rect[3] > 0) {
+      node.Rect = new Box((int)Math.Floor(rect[0]), (int)Math.Floor(rect[1]), (int)Math.Ceiling(rect[0] + rect[2]), (int)Math.Ceiling(rect[1] + rect[3]));
+      node.HasRect = true;
+    }
+    var runtime = get(Uia.RuntimeId) as int[];
+    node.Runtime = runtime != null ? string.Join(".", System.Array.ConvertAll(runtime, part => part.ToString(CultureInfo.InvariantCulture))) : "";
+    return node;
+  }
+  // The role a Mac's accessibility would give it (§8.2): agents see the same words on both.
+  public string Role(Node parent) {
+    switch (ControlType) {
+      case Uia.Button: return "AXButton";
+      case Uia.SplitButton: return "AXMenuButton";
+      case Uia.Hyperlink: return "AXLink";
+      case Uia.CheckBox: return LocalizedType.IndexOf("toggle", StringComparison.OrdinalIgnoreCase) >= 0 ? "AXSwitch" : "AXCheckBox";
+      case Uia.RadioButton: return "AXRadioButton";
+      case Uia.ComboBox: return ValuePattern ? "AXComboBox" : "AXPopUpButton";
+      case Uia.Edit:
+        if (Password) return "AXSecureTextField";
+        if (LocalizedType.IndexOf("search", StringComparison.OrdinalIgnoreCase) >= 0 || Aria == "searchbox") return "AXSearchField";
+        return "AXTextField";
+      case Uia.Document: return Web ? "AXWebArea" : ValuePattern ? "AXTextArea" : "AXGroup";
+      case Uia.ToolBar: return "AXToolbar";
+      case Uia.Window: return "AXWindow";
+      case Uia.MenuBar: return "AXMenuBar";
+      case Uia.MenuItem: return parent != null && parent.ControlType == Uia.MenuBar ? "AXMenuBarItem" : "AXMenuItem";
+      case Uia.Menu: return "AXMenu";
+      case Uia.Tab: return "AXTabGroup";
+      case Uia.TabItem: return "AXTab";
+      case Uia.Slider: return "AXSlider";
+      case Uia.Spinner: return "AXIncrementor";
+      case Uia.Text: return Heading > 0 || LocalizedType.IndexOf("heading", StringComparison.OrdinalIgnoreCase) >= 0 ? "AXHeading" : "AXStaticText";
+      case Uia.Image: return "AXImage";
+      case Uia.List: return "AXList";
+      case Uia.ListItem: case Uia.TreeItem: case Uia.DataItem: return "AXRow";
+      case Uia.Table: case Uia.DataGrid: return "AXTable";
+      default: return "AXGroup";
+    }
+  }
+  // A web page's document: Chromium and Firefox name their frameworks; any
+  // document whose value is an address is one too (set by the reader).
+  public bool Web;
+  public bool Pressable { get { return Invoke || Toggle || Select || Expand || DefaultAction.Length > 0; } }
+}
+[ComImport, Guid("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomation {
+  int CompareElements(IUIAutomationElement el1, IUIAutomationElement el2);
+  [PreserveSig] int CompareRuntimeIds();
+  IUIAutomationElement GetRootElement();
+  IUIAutomationElement ElementFromHandle(IntPtr hwnd);
+  IUIAutomationElement ElementFromPoint(Native.POINT pt);
+  IUIAutomationElement GetFocusedElement();
+  [PreserveSig] int GetRootElementBuildCache();
+  IUIAutomationElement ElementFromHandleBuildCache(IntPtr hwnd, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElement ElementFromPointBuildCache(Native.POINT pt, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElement GetFocusedElementBuildCache(IUIAutomationCacheRequest cacheRequest);
+  [PreserveSig] int CreateTreeWalker();
+  IUIAutomationTreeWalker get_ControlViewWalker();
+  [PreserveSig] int get_ContentViewWalker();
+  [PreserveSig] int get_RawViewWalker();
+  [PreserveSig] int get_RawViewCondition();
+  IUIAutomationCondition get_ControlViewCondition();
+  [PreserveSig] int get_ContentViewCondition();
+  IUIAutomationCacheRequest CreateCacheRequest();
+  IUIAutomationCondition CreateTrueCondition();
+  [PreserveSig] int CreateFalseCondition();
+  IUIAutomationCondition CreatePropertyCondition(int propertyId, [MarshalAs(UnmanagedType.Struct)] object value);
+  [PreserveSig] int CreatePropertyConditionEx();
+  IUIAutomationCondition CreateAndCondition(IUIAutomationCondition condition1, IUIAutomationCondition condition2);
+  [PreserveSig] int CreateAndConditionFromArray();
+  [PreserveSig] int CreateAndConditionFromNativeArray();
+  [PreserveSig] int CreateOrCondition();
+  [PreserveSig] int CreateOrConditionFromArray();
+  [PreserveSig] int CreateOrConditionFromNativeArray();
+  [PreserveSig] int CreateNotCondition();
+  [PreserveSig] int AddAutomationEventHandler();
+  [PreserveSig] int RemoveAutomationEventHandler();
+  void AddPropertyChangedEventHandlerNativeArray(IUIAutomationElement element, int scope, IUIAutomationCacheRequest cacheRequest, IUIAutomationPropertyChangedEventHandler handler, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 5)] int[] propertyArray, int propertyCount);
+  [PreserveSig] int AddPropertyChangedEventHandler();
+  [PreserveSig] int RemovePropertyChangedEventHandler();
+  void AddStructureChangedEventHandler(IUIAutomationElement element, int scope, IUIAutomationCacheRequest cacheRequest, IUIAutomationStructureChangedEventHandler handler);
+  [PreserveSig] int RemoveStructureChangedEventHandler();
+  void AddFocusChangedEventHandler(IUIAutomationCacheRequest cacheRequest, IUIAutomationFocusChangedEventHandler handler);
+  [PreserveSig] int RemoveFocusChangedEventHandler();
+  void RemoveAllEventHandlers();
+}
+[ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationElement {
+  [PreserveSig] int SetFocus();
+  [return: MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_I4)] int[] GetRuntimeId();
+  [PreserveSig] int FindFirst();
+  [PreserveSig] int FindAll();
+  IUIAutomationElement FindFirstBuildCache(int scope, IUIAutomationCondition condition, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElementArray FindAllBuildCache(int scope, IUIAutomationCondition condition, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElement BuildUpdatedCache(IUIAutomationCacheRequest cacheRequest);
+  [return: MarshalAs(UnmanagedType.Struct)] object GetCurrentPropertyValue(int propertyId);
+  [PreserveSig] int GetCurrentPropertyValueEx();
+  [return: MarshalAs(UnmanagedType.Struct)] object GetCachedPropertyValue(int propertyId);
+  [PreserveSig] int GetCachedPropertyValueEx();
+  [PreserveSig] int GetCurrentPatternAs();
+  [PreserveSig] int GetCachedPatternAs();
+  [return: MarshalAs(UnmanagedType.IUnknown)] object GetCurrentPattern(int patternId);
+}
+[ComImport, Guid("14314595-b4bc-4055-95f2-58f2e42c9855"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationElementArray {
+  int get_Length();
+  IUIAutomationElement GetElement(int index);
+}
+[ComImport, Guid("b32a92b5-bc25-4078-9c08-d7ee95c48e03"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationCacheRequest {
+  void AddProperty(int propertyId);
+  [PreserveSig] int AddPattern();
+  [PreserveSig] int Clone();
+  [PreserveSig] int get_TreeScope();
+  void put_TreeScope(int scope);
+  [PreserveSig] int get_TreeFilter();
+  void put_TreeFilter(IUIAutomationCondition filter);
+  [PreserveSig] int get_AutomationElementMode();
+  void put_AutomationElementMode(int mode);
+}
+[ComImport, Guid("352ffba8-0973-437c-a61f-f64cafd81df9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationCondition {
+}
+[ComImport, Guid("4042c624-389c-4afc-a630-9df854a541fc"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationTreeWalker {
+  IUIAutomationElement GetParentElement(IUIAutomationElement element);
+  [PreserveSig] int GetFirstChildElement();
+  [PreserveSig] int GetLastChildElement();
+  [PreserveSig] int GetNextSiblingElement();
+  [PreserveSig] int GetPreviousSiblingElement();
+  [PreserveSig] int NormalizeElement();
+  IUIAutomationElement GetParentElementBuildCache(IUIAutomationElement element, IUIAutomationCacheRequest cacheRequest);
+}
+[ComImport, Guid("fb377fbe-8ea6-46d5-9c73-6499642d3059"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationInvokePattern {
+  void Invoke();
+}
+[ComImport, Guid("94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationTogglePattern {
+  void Toggle();
+}
+[ComImport, Guid("a8efa66a-0fda-421a-9194-38021f3578ea"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationSelectionItemPattern {
+  void Select();
+}
+[ComImport, Guid("619be086-1f4e-4ee4-bafa-210128738730"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationExpandCollapsePattern {
+  void Expand();
+}
+[ComImport, Guid("b488300f-d015-4f19-9c29-bb595e3645ef"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationScrollItemPattern {
+  void ScrollIntoView();
+}
+[ComImport, Guid("828055ad-355b-4435-86d5-3b51c14a9b1b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationLegacyIAccessiblePattern {
+  [PreserveSig] int Select();
+  void DoDefaultAction();
+}
+[ComImport, Guid("34723aff-0c9d-49d0-9896-7ab52df8cd8a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomation2 {
+  int CompareElements(IUIAutomationElement el1, IUIAutomationElement el2);
+  [PreserveSig] int CompareRuntimeIds();
+  IUIAutomationElement GetRootElement();
+  IUIAutomationElement ElementFromHandle(IntPtr hwnd);
+  IUIAutomationElement ElementFromPoint(Native.POINT pt);
+  IUIAutomationElement GetFocusedElement();
+  [PreserveSig] int GetRootElementBuildCache();
+  IUIAutomationElement ElementFromHandleBuildCache(IntPtr hwnd, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElement ElementFromPointBuildCache(Native.POINT pt, IUIAutomationCacheRequest cacheRequest);
+  IUIAutomationElement GetFocusedElementBuildCache(IUIAutomationCacheRequest cacheRequest);
+  [PreserveSig] int CreateTreeWalker();
+  IUIAutomationTreeWalker get_ControlViewWalker();
+  [PreserveSig] int get_ContentViewWalker();
+  [PreserveSig] int get_RawViewWalker();
+  [PreserveSig] int get_RawViewCondition();
+  IUIAutomationCondition get_ControlViewCondition();
+  [PreserveSig] int get_ContentViewCondition();
+  IUIAutomationCacheRequest CreateCacheRequest();
+  IUIAutomationCondition CreateTrueCondition();
+  [PreserveSig] int CreateFalseCondition();
+  IUIAutomationCondition CreatePropertyCondition(int propertyId, [MarshalAs(UnmanagedType.Struct)] object value);
+  [PreserveSig] int CreatePropertyConditionEx();
+  IUIAutomationCondition CreateAndCondition(IUIAutomationCondition condition1, IUIAutomationCondition condition2);
+  [PreserveSig] int CreateAndConditionFromArray();
+  [PreserveSig] int CreateAndConditionFromNativeArray();
+  [PreserveSig] int CreateOrCondition();
+  [PreserveSig] int CreateOrConditionFromArray();
+  [PreserveSig] int CreateOrConditionFromNativeArray();
+  [PreserveSig] int CreateNotCondition();
+  [PreserveSig] int AddAutomationEventHandler();
+  [PreserveSig] int RemoveAutomationEventHandler();
+  void AddPropertyChangedEventHandlerNativeArray(IUIAutomationElement element, int scope, IUIAutomationCacheRequest cacheRequest, IUIAutomationPropertyChangedEventHandler handler, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 5)] int[] propertyArray, int propertyCount);
+  [PreserveSig] int AddPropertyChangedEventHandler();
+  [PreserveSig] int RemovePropertyChangedEventHandler();
+  void AddStructureChangedEventHandler(IUIAutomationElement element, int scope, IUIAutomationCacheRequest cacheRequest, IUIAutomationStructureChangedEventHandler handler);
+  [PreserveSig] int RemoveStructureChangedEventHandler();
+  void AddFocusChangedEventHandler(IUIAutomationCacheRequest cacheRequest, IUIAutomationFocusChangedEventHandler handler);
+  [PreserveSig] int RemoveFocusChangedEventHandler();
+  void RemoveAllEventHandlers();
+  [PreserveSig] int IntNativeArrayToSafeArray();
+  [PreserveSig] int IntSafeArrayToNativeArray();
+  [PreserveSig] int RectToVariant();
+  [PreserveSig] int VariantToRect();
+  [PreserveSig] int SafeArrayToRectNativeArray();
+  [PreserveSig] int CreateProxyFactoryEntry();
+  [PreserveSig] int get_ProxyFactoryMapping();
+  [PreserveSig] int GetPropertyProgrammaticName();
+  [PreserveSig] int GetPatternProgrammaticName();
+  [PreserveSig] int PollForPotentialSupportedPatterns();
+  [PreserveSig] int PollForPotentialSupportedProperties();
+  [PreserveSig] int CheckNotSupported();
+  [PreserveSig] int get_ReservedNotSupportedValue();
+  [PreserveSig] int get_ReservedMixedAttributeValue();
+  [PreserveSig] int ElementFromIAccessible();
+  [PreserveSig] int ElementFromIAccessibleBuildCache();
+  [PreserveSig] int get_AutoSetFocus();
+  [PreserveSig] int put_AutoSetFocus();
+  [PreserveSig] int get_ConnectionTimeout();
+  void put_ConnectionTimeout(uint timeout);
+  [PreserveSig] int get_TransactionTimeout();
+  void put_TransactionTimeout(uint timeout);
+}
+[ComImport, Guid("c270f6b5-5c69-4290-9745-7a7f97169468"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationFocusChangedEventHandler {
+  void HandleFocusChangedEvent(IUIAutomationElement sender);
+}
+[ComImport, Guid("e81d1b4e-11c5-42f8-9754-e7036c79f054"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationStructureChangedEventHandler {
+  void HandleStructureChangedEvent(IUIAutomationElement sender, int changeType, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_I4)] int[] runtimeId);
+}
+[ComImport, Guid("40cd37d4-c756-4b0c-8c6f-bddfeeb13b50"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IUIAutomationPropertyChangedEventHandler {
+  void HandlePropertyChangedEvent(IUIAutomationElement sender, int propertyId, [MarshalAs(UnmanagedType.Struct)] object newValue);
+}
+
+// UI Automation's events: each one only moves the change counter; a changed
+// value is never read.
+sealed class Changes : IUIAutomationFocusChangedEventHandler, IUIAutomationStructureChangedEventHandler, IUIAutomationPropertyChangedEventHandler {
+  public void HandleFocusChangedEvent(IUIAutomationElement sender) { Desk.Changed(); }
+  public void HandleStructureChangedEvent(IUIAutomationElement sender, int changeType, int[] runtimeId) { Desk.Changed(); }
+  public void HandlePropertyChangedEvent(IUIAutomationElement sender, int propertyId, object newValue) { Desk.Changed(); }
+}
+// END NATIVE UIA
 
 // BEGIN NATIVE WIN32
 // Windows' own functions, declared as Microsoft documents them.
@@ -3297,5 +4940,22 @@ static class Native {
   [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
   [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
   [DllImport("kernel32.dll")] public static extern IntPtr GlobalFree(IntPtr memory);
+  public const uint MIIM_STATE = 0x1, MIIM_SUBMENU = 0x4, MIIM_STRING = 0x40, MIIM_FTYPE = 0x100, MFT_SEPARATOR = 0x800, MFS_DISABLED = 0x3, MFS_CHECKED = 0x8;
+  public const int SW_RESTORE = 9;
+  public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MENUITEMINFO {
+    public int cbSize;
+    public uint fMask, fType, fState, wID;
+    public IntPtr hSubMenu, hbmpChecked, hbmpUnchecked, dwItemData, dwTypeData;
+    public uint cch;
+    public IntPtr hbmpItem;
+  }
+  [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr window);
+  [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMenuItemInfoW(IntPtr menu, uint item, bool byPosition, ref MENUITEMINFO info);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
 }
 // END NATIVE WIN32

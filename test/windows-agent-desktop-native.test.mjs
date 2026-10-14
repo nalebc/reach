@@ -383,3 +383,77 @@ test("a held button is let go when the helper's input ends, and when Reach's pro
   await until(() => (target.log().match(/^up /gm) || []).length > before, "let go when Reach was killed", 1500);
   assert.equal((await exec(fixtureConsole, ["buttons"], { windowsHide: true })).stdout.trim(), "left up");
 });
+
+
+test("UI Automation: the window's controls by role, a press and a fill by name, find, read, windows, menus, wait-change and focus", { skip, timeout: 300000 }, async (t) => {
+  const target = await window(t, "controls", "Reach controls target", "FF8C00", [40, 40, 600, 420], "medium");
+  const vault = await window(t, "vault3", "Password Manager", "1E50FF", [660, 40, 300, 220], "medium");
+  const h = helper(t, { medium: true });
+  const ready = await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: target.exe, bundleId: "", name: "controls" }] }) });
+  assert.equal(ready.accessibility, true, "UI Automation answered its known questions");
+  await clickAt(target.x + 80, target.y + 12);
+  const elements = await h.send({ op: "elements" });
+  note({ elements: elements.items?.map((item) => `${item.role} ${item.name}`) });
+  assert.equal(elements.ok, true, JSON.stringify(elements).slice(0, 300));
+  const roles = elements.items.map((item) => `${item.role}:${item.name}`);
+  for (const wanted of ["Button:Mark", "TextField:Notes", "SecureTextField:Password"]) assert.ok(roles.includes(wanted), `${wanted} in ${roles.join(", ")}`);
+  assert.ok(!elements.items.some((item) => item.secure && item.value), "never a password field's value");
+  // press by name: the button marks itself
+  assert.equal((await h.send({ op: "act", action: { type: "press", name: "Mark" } })).ok, true);
+  await until(() => /^button$/m.test(target.log()), "pressed by name");
+  // fill: the notes and, from the vault, the password
+  assert.equal((await h.send({ op: "act", action: { type: "fill", fields: [{ label: "Notes", text: "filled" }, { label: "Password", text: "hunter2-secret", secret: true }] } })).ok, true);
+  await until(() => target.log().includes("text filled") && /^secret 14$/m.test(target.log()), "both fields filled");
+  // the vault value is nowhere the agent reads
+  const again = await h.send({ op: "elements" });
+  const read = await h.send({ op: "read" });
+  assert.equal(read.ok, true);
+  assert.ok(read.text.includes("[password field]"), "a password field reads as one");
+  for (const answer of [again, read]) assert.ok(!JSON.stringify(answer).includes("hunter2-secret"), "the secret never comes back");
+  // find scrolls a long list into view
+  const found = await h.send({ op: "find", text: "Row 180" });
+  note({ find: { found: found.found, inView: found.inView, scrolled: found.scrolled } });
+  assert.equal(found.found, true, JSON.stringify(found).slice(0, 300));
+  // windows: the chosen app's window; the protected one isn't named at all
+  const windows = await h.send({ op: "windows" });
+  assert.ok(windows.windows.some((item) => item.title === "Reach controls target"));
+  assert.ok(!JSON.stringify(windows).includes("Password Manager"), "protected windows aren't listed");
+  // menus: the classic menu with its shortcut; a menu press runs the item
+  const menus = await h.send({ op: "menus", menu: "File" });
+  note({ menus: menus.menus });
+  assert.deepEqual(menus.menus?.[0]?.items?.map((item) => [item.title, item.key]), [["Mark", "Ctrl+M"]]);
+  const pressed = await h.send({ op: "act", action: { type: "menu", path: ["File", "Mark"] } });
+  note({ menuPress: pressed });
+  assert.equal(pressed.ok, true, JSON.stringify(pressed));
+  await until(() => /^menu$/m.test(target.log()), "the menu item ran");
+  // wait-change: the window changed its own text
+  const before = (await h.send({ op: "elements" })).revision;
+  await clickAt(target.button[0], target.button[1]);
+  const change = await h.send({ op: "wait-change", revision: before, ms: 400 });
+  assert.equal(change.changed, true, JSON.stringify(change));
+  // focus: the window by its ref; whether Windows let it come forward is recorded
+  await clickAt(vault.x + 80, vault.y + 12);
+  const ref = windows.windows.find((item) => item.title === "Reach controls target").id;
+  const focused = await h.send({ op: "focus", id: ref, title: "Reach controls target" });
+  note({ focus: focused });
+  assert.equal(focused.ok, true, JSON.stringify(focused));
+  await h.close();
+});
+
+test("Settings: its private pages are closed to the agent and black in a screenshot; an ordinary page stays usable", { skip, timeout: 300000 }, async (t) => {
+  const settings = "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel";
+  const open = (page) => exec(path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe"), [page], { windowsHide: true }).catch(() => {});
+  const h = helper(t, { medium: true });
+  assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: settings, bundleId: settings, name: "Settings" }] }) })).ok, true);
+  const seen = {};
+  for (const page of ["ms-settings:privacy", "ms-settings:network", "ms-settings:display"]) {
+    await open(page);
+    await sleep(4000);
+    const front = await h.send({ op: "front" });
+    seen[page] = front;
+    if (page === "ms-settings:display") assert.equal(front.blocked, "", `${page}: ${JSON.stringify(front)}`);
+    else assert.ok(front.blocked, `${page} is closed: ${JSON.stringify(front)}`);
+  }
+  note({ settings: seen });
+  await h.close();
+});

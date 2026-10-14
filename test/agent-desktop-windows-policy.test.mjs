@@ -151,3 +151,58 @@ test("input goes out in one place, after its checks, and never through the APIs 
   assert.match(text, /"ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"/);
   assert.match(text.split("static void Paste(string text) {")[1].split("\n  }\n")[0], /try \{[\s\S]*Post\([\s\S]*\} finally \{[\s\S]*if \(Clip\.Sequence\(\) == written\) Clip\.Write\(previous\);/);
 });
+
+test("a password field's value is never asked for: values come only through the not-a-password condition", () => {
+  const text = code(source).join("\n");
+  // The structure read (pass 1) never caches a value; only ValueOf reads one,
+  // through a request that is never built without the condition.
+  const structure = text.split("static readonly int[] StructureProperties = {")[1].split("};")[0];
+  assert.doesNotMatch(structure, /ValueValue/);
+  const allowed = [/ValueValue = 30045,/, /^\s*Values\.AddProperty\(ValueValue\);$/, /return bearer\.GetCachedPropertyValue\(Uia\.ValueValue\) as string/,
+    /AddPropertyChangedEventHandlerNativeArray\(element, Uia\.ScopeSubtree, null, changes, new\[\] \{ Uia\.Name, Uia\.ValueValue, Uia\.BoundingRectangle \}, 3\)/];
+  const uses = text.split("\n").filter((line) => /\bValueValue\b/.test(line));
+  for (const line of uses) assert.ok(allowed.some((pattern) => pattern.test(line)), line.trim());
+  assert.equal(uses.length, 4);
+  assert.match(text, /ValueBearing = Automation\.CreateAndCondition\(Automation\.CreatePropertyCondition\(IsPassword, false\), Automation\.CreatePropertyCondition\(IsValuePatternAvailable, true\)\);/);
+  const valueOf = text.split("internal static string ValueOf(IUIAutomationElement element) {")[1].split("\n  }\n")[0];
+  assert.match(valueOf, /FindFirstBuildCache\(Uia\.ScopeElement, Uia\.ValueBearing, Uia\.Values\)[\s\S]*IsPassword[\s\S]*return ""/);
+  for (const banned of [/get_CurrentValue\(/, /CurrentValue\b/, /TextPattern/, /\.SetFocus\(/]) assert.ok(!banned.test(text), String(banned));
+  // The change handler counts; it never reads what changed.
+  assert.match(text, /public void HandlePropertyChangedEvent\(IUIAutomationElement sender, int propertyId, object newValue\) \{ Desk\.Changed\(\); \}/);
+  // Start-up trusts the interfaces only after known answers.
+  const start = text.split("public static bool Start() {")[1].split("\n  }\n")[0];
+  assert.match(start, /put_ConnectionTimeout\(1000\); timed\.put_TransactionTimeout\(500\)/);
+  assert.match(start, /ControlType\)\) != Pane\) return false;[\s\S]*NativeWindowHandle\)\) != Native\.GetDesktopWindow\(\)\.ToInt64\(\)\) return false;[\s\S]*CompareElements\(root, root\) == 0\) return false;/);
+  // Texts, values and contexts are shown without the agent's vault values.
+  const read = text.split("internal static Screen ReadScreen(")[1].split("\n  }\n")[0];
+  assert.ok((read.match(/Policy\.HideSecrets\(/g) || []).length >= 3);
+});
+
+// The interfaces as declared here, slot by slot, against the Windows SDK's own
+// UIAutomationClient.idl (a mistake compiles clean and calls the wrong slot).
+test("the UI Automation interfaces match the Windows SDK's IDL, member by member", { skip: process.platform !== "win32" }, async (t) => {
+  const kits = path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Windows Kits", "10", "Include");
+  const versions = fs.existsSync(kits) ? fs.readdirSync(kits).filter((name) => fs.existsSync(path.join(kits, name, "um", "UIAutomationClient.idl"))).sort() : [];
+  if (!versions.length) return t.skip("no Windows SDK on this runner");
+  const idl = fs.readFileSync(path.join(kits, versions.at(-1), "um", "UIAutomationClient.idl"), "utf8").replace(/\/\/.*$/gm, "");
+  const sdk = new Map();
+  for (const match of idl.matchAll(/uuid\(([0-9a-fA-F-]{36})\)[^\]]*\]\s*interface\s+(\w+)\s*:\s*(\w+)\s*\{([\s\S]*?)\n\s*\}/g)) {
+    const [, uuid, name, base, body] = match;
+    const members = [...body.matchAll(/(\[[^\]]*\])?\s*HRESULT\s+(\w+)\s*\(/g)].map(([, attributes = "", member]) =>
+      (/propget/.test(attributes) ? "get_" : /propput/.test(attributes) ? "put_" : "") + member);
+    sdk.set(name, { uuid: uuid.toLowerCase(), base, members });
+  }
+  const declared = source.split("// BEGIN NATIVE UIA")[1].split("// END NATIVE UIA")[0];
+  let checked = 0;
+  for (const match of declared.matchAll(/Guid\("([0-9a-f-]{36})"\), InterfaceType\(ComInterfaceType\.InterfaceIsIUnknown\)\]\ninterface (\w+) \{([\s\S]*?)\n\}/g)) {
+    const [, uuid, name, body] = match;
+    const ours = body.split("\n").map((line) => /(\w+)\([^()]*(?:\([^()]*\)[^()]*)*\);$/.exec(line.trim())?.[1]).filter(Boolean);
+    const theirs = sdk.get(name);
+    assert.ok(theirs, `${name} is in the SDK`);
+    assert.equal(uuid, theirs.uuid, `${name}'s IID`);
+    const all = theirs.base !== "IUnknown" ? [...(sdk.get(theirs.base)?.members || []), ...theirs.members] : theirs.members;
+    assert.deepEqual(ours, all.slice(0, ours.length), `${name}'s members, in order`);
+    checked++;
+  }
+  assert.ok(checked >= 15, `${checked} interfaces checked`);
+});

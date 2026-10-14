@@ -149,7 +149,7 @@ static class DesktopFixture {
       file.MenuItems.Add(new MenuItem("&Mark", (s, e) => form.Note("menu"), Shortcut.CtrlM));
       form.Menu = menu;
     }
-    button.Click += (s, e) => form.Note("button");
+    button.Click += (s, e) => { form.Note("button"); button.Text = button.Text == "Mark" ? "Marked" : "Mark"; };
     text.TextChanged += (s, e) => form.Note("text " + text.Text);
     secret.TextChanged += (s, e) => form.Note("secret " + secret.TextLength);
     MouseEventHandler down = (s, e) => form.Note((e.Button == MouseButtons.Right ? "right" : e.Clicks >= 2 ? "double" : "click") + " " + e.X + "," + e.Y);
