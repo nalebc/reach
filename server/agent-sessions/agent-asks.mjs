@@ -57,16 +57,29 @@ const realInside = (cwd, file, real = fs.realpathSync) => {
   if (path.isAbsolute(rel) || rel.split(path.sep).some((part) => part === ".." || part.startsWith("."))) return false;
   return true;
 };
-// Anything in another field that could name a place: not read whole.
+// Anything in another field that could name a place: not read whole. A
+// Windows path counts too (C:\…, C:/…, \\server, a leading \ or a bare drive
+// letter), so a mode never switches alone on a read with one hidden in
+// another field on either platform.
 const pathLike = (value) =>
-  typeof value === "string" ? /^[/~]|(^|[/\\])\.\.([/\\]|$)/.test(value) : value !== null && typeof value === "object";
+  typeof value === "string"
+    ? /^[/~]|^[A-Za-z]:|^\\|(^|[/\\])\.\.([/\\]|$)/.test(value)
+    : value !== null && typeof value === "object";
 // The person's own ask rules (permissions.ask in any Claude settings file
 // for this folder) make Claude Code ask inside the folder too, and its hook
 // doesn't say which ask was Reach's: with any (or a file Reach can't read),
-// nothing switches alone.
-export function hasAskRules(cwd, { read = fs.readFileSync, home = os.homedir() } = {}) {
+// nothing switches alone. Windows keeps the organisation's managed file in
+// Program Files (code.claude.com/docs/managed-settings); its registry policy
+// (HKLM/HKCU Software\Policies\ClaudeCode) isn't read here, so a managed ask
+// rule set only in the registry wouldn't hold back an auto-switch on a read
+// Reach already reads as safe (noted in the security review).
+export function hasAskRules(cwd, { read = fs.readFileSync, home = os.homedir(), platform = process.platform } = {}) {
+  const managed =
+    platform === "win32"
+      ? [path.win32.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode", "managed-settings.json")]
+      : ["/Library/Application Support/ClaudeCode/managed-settings.json"];
   const files = [
-    "/Library/Application Support/ClaudeCode/managed-settings.json",
+    ...managed,
     path.join(home, ".claude", "settings.json"),
     ...(typeof cwd === "string" && path.isAbsolute(cwd) ? [path.join(cwd, ".claude", "settings.json"), path.join(cwd, ".claude", "settings.local.json")] : []),
   ];
@@ -122,6 +135,38 @@ export function agentAskSocket(dataDir) {
   return path.join(os.tmpdir(), `reach-agent-${tag}.sock`);
 }
 
+// Windows has no socket files, only named pipes in one namespace every
+// account sees (as Codex's and the team bridge's do: trusted-socket.mjs,
+// team-bridge.mjs). So the phone answers Claude Code's prompts over a named
+// pipe of a name no other account could guess, made new each launch. Reach
+// can't take a name another program holds (Node makes the first instance or
+// none), so a squatter can't own the name and hand Claude Code a forged
+// "allow"; the hook (scripts/agent-hook.mjs) also checks the pipe's server is
+// this account's own process before it trusts any answer. The chosen name is
+// kept in an owner-only file the hook reads, never in Claude Code's settings,
+// so a name freed by a restart leaves nothing stale behind.
+const PIPE_NAME = /^reach-agent-hook-[0-9a-f]{32}$/;
+const AGENT_PIPE_FILE = "agent-hook-pipe";
+export const newAgentAskPipe = () => `\\\\.\\pipe\\reach-agent-hook-${crypto.randomBytes(16).toString("hex")}`;
+// The pipe name this launch chose, as the hook reads it: owner-only, validated.
+export function readAgentAskPipe(dataDir) {
+  let name = "";
+  try {
+    name = fs.readFileSync(path.join(dataDir, AGENT_PIPE_FILE), "utf8").trim();
+  } catch {
+    return null;
+  }
+  return PIPE_NAME.test(name) ? `\\\\.\\pipe\\${name}` : null;
+}
+function writeAgentAskPipe(dataDir, pipe) {
+  const name = pipe.slice("\\\\.\\pipe\\".length);
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const file = path.join(dataDir, AGENT_PIPE_FILE);
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, name, { mode: 0o600 });
+  fs.renameSync(temp, file);
+}
+
 export function createAgentAsks({
   socketPath,
   // How often a held ask checks whether Claude Code still waits on it.
@@ -142,9 +187,15 @@ export function createAgentAsks({
   // it steps aside (stillAsked).
   asking = async () => null,
   // Where a mode picked on the phone waits, one file per session (named by
-  // it, holding the mode): Reach's PreToolUse hook (scripts/agent-mode-hook.sh)
-  // looks there before each tool call. None: kept in memory only.
+  // it, holding the mode): Reach's PreToolUse hook (scripts/agent-mode-hook.sh
+  // on a Mac, scripts/agent-mode-hook.mjs on Windows) looks there before each
+  // tool call. None: kept in memory only.
   modesDir = null,
+  // Reach's own folder, owner-only: on Windows the chosen pipe name is kept
+  // here for the hook to read (the socket path carries it on a Mac).
+  dataDir = null,
+  // How a fresh Windows pipe name is made (tests force a clash with it).
+  newPipe = newAgentAskPipe,
   // "Mac", "Windows PC" or "computer" in what the phone is told (computer-word.mjs).
   platform = process.platform,
 }) {
@@ -318,21 +369,58 @@ export function createAgentAsks({
   }
 
   const server = net.createServer(serve);
+  const windows = platform === "win32";
   let listening = false;
+  // The pipe name Reach ended up on (Windows): the one it took first, and the
+  // one the hook reads. On a Mac it's the socket path, as before.
+  let endpoint = socketPath;
+  const listenOnce = (target) =>
+    new Promise((resolve, reject) => {
+      const onError = (error) => (server.off("listening", onListening), reject(error));
+      const onListening = () => (server.off("error", onError), resolve());
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(target);
+    });
   return {
-    socketPath,
+    get socketPath() {
+      return endpoint;
+    },
     async listen() {
-      if (process.platform === "win32") throw bad("Agent permission hooks require Unix socket permissions.", 501);
-      fs.rmSync(socketPath, { force: true });
-      await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(socketPath, () => {
-          server.off("error", reject);
-          resolve();
-        });
-      });
-      fs.chmodSync(socketPath, 0o600);
-      listening = true;
+      if (!windows) {
+        fs.rmSync(socketPath, { force: true });
+        await listenOnce(socketPath);
+        fs.chmodSync(socketPath, 0o600);
+        endpoint = socketPath;
+        listening = true;
+        return;
+      }
+      // Windows: take a pipe name no one else holds. Another local account
+      // squatting the name can't win — Node makes the first instance or
+      // none, so a clash means Reach picks a new name and says so once, and
+      // Claude Code's hook is never handed a forged answer on it.
+      if (!dataDir) throw bad("Reach's data folder isn't known, so the phone can't answer Claude Code here.", 500);
+      let warned = false;
+      for (let tries = 0; tries < 8; tries++) {
+        const pipe = newPipe();
+        try {
+          await listenOnce(pipe);
+        } catch (error) {
+          if (["EADDRINUSE", "EACCES"].includes(error?.code)) {
+            if (!warned) {
+              warned = true;
+              console.warn(`Reach: a permission-hook pipe name was already taken (${error.code}); using another. If Claude Code's prompts don't reach your phone, restart Reach.`);
+            }
+            continue;
+          }
+          throw error;
+        }
+        endpoint = pipe;
+        writeAgentAskPipe(dataDir, pipe);
+        listening = true;
+        return;
+      }
+      throw bad("Reach couldn't open a private pipe for Claude Code's prompts.", 500);
     },
     // What the phone shows: the same prompt cards as Reach's own sessions.
     prompts: (agent, sessionId) => of(agent, sessionId).map(({ prompt: { input, suggestions, ...shown } }) => shown),
@@ -382,7 +470,11 @@ export function createAgentAsks({
       for (const ask of [...asks.values()]) ask.finish(null, "restart");
       if (listening) {
         server.close();
-        fs.rmSync(socketPath, { force: true });
+        // A Mac socket is a file to remove; a Windows pipe vanishes with the
+        // server. Its name file is left for the hook to notice it's stale (it
+        // checks the pipe's server before trusting an answer either way).
+        if (!windows) fs.rmSync(socketPath, { force: true });
+        else if (dataDir) fs.rmSync(path.join(dataDir, AGENT_PIPE_FILE), { force: true });
         listening = false;
       }
     },

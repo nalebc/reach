@@ -78,6 +78,12 @@ export function browserAccessRoutes(
     resolveAsync,
     browserFiles,
     protectedFilesSupported = process.platform === "darwin",
+    // Why Files isn't offered on this computer when it isn't (the Windows
+    // sandbox's Files broker couldn't be prepared, or a platform with no
+    // broker at all): named on the phone in place of the old macOS-only wording.
+    filesUnsupportedReason = () => process.platform === "win32"
+      ? "Agent file access isn't ready on this Windows PC yet. Your own files and terminals remain available."
+      : "Browser-agent file access requires macOS. Your own files and terminals remain available.",
     screenAvailable,
     record,
     approvals,
@@ -185,8 +191,12 @@ export function browserAccessRoutes(
       return [];
     });
     owner(req);
+    // Why screen presets or Files aren't offered when they aren't, so the
+    // phone says why for this computer (never "requires macOS" off a Mac).
+    const desktopReason = !desktop?.available?.() ? (desktop?.reason?.() || "") : "";
     res.json({terminals,screenAvailable:screenAvailable(),appAccessAvailable:appAccessAvailable && !appAccessError,controlAvailable:false,apps,...(appAccessError ? {appAccessError}: {}),
-      desktopAvailable: !!desktop?.available?.(), protectedFilesSupported, presetApps, ...(presetAppsError ? { presetAppsError } : {}),
+      desktopAvailable: !!desktop?.available?.(), ...(desktopReason ? { desktopReason } : {}),
+      protectedFilesSupported, ...(protectedFilesSupported ? {} : { filesUnsupportedReason: filesUnsupportedReason() }), presetApps, ...(presetAppsError ? { presetAppsError } : {}),
       // The longest a preset invitation may last over the public link; the
       // form offers a day only when the server allows it.
       maxFunnelSeconds: 86400,
@@ -233,7 +243,7 @@ export function browserAccessRoutes(
     if (input.standing && input.transport !== "funnel" && toolsStandingAllowed() !== true)
       throw fail(409, "Always over Tools needs invite links set up on this computer, so the agent joins with its own key.");
     if (input.preset === "files" && !protectedFilesSupported)
-      throw fail(503, "Browser-agent file access requires macOS. Your own files and terminals remain available.");
+      throw fail(503, filesUnsupportedReason());
     const filePolicy = { browser: true, preset: input.preset };
     if (input.preset === "full") { input.folders = []; input.hidden = []; }
     const shareable = (folder) => {
@@ -250,7 +260,7 @@ export function browserAccessRoutes(
       validateBrowserRoot(chosen, { policy: filePolicy });
     }
     if (["full", "apps", "readonly"].includes(input.preset) && !desktop?.available?.())
-      throw fail(503, "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+      throw fail(503, desktop?.reason?.() || "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
     if (input.terminalIds.length) {
       const available = await terminalOptions(() => owner(req), input.terminalIds);
       if (input.terminalIds.some((id) => !available.some((t) => t.id === id)))

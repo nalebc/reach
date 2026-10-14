@@ -106,6 +106,7 @@ import {
   stopSession,
   tooOldLine,
   uploadImage,
+  previewUrl,
   uploadFile,
   usageLink,
   useSessionLive,
@@ -3735,7 +3736,7 @@ export default function AgentSessionView({
                         <FileText size={14} aria-hidden="true" /> {a.file}
                       </span>
                     ) : a.url ? (
-                      <img src={a.url} alt="" />
+                      <img src={previewUrl(a.url)} alt="" />
                     ) : (
                       <ImageIcon size={16} aria-label="Attached image" />
                     )}
@@ -3894,9 +3895,9 @@ export default function AgentSessionView({
                 <X size={16} />
               </button>
             )}
-            {/* Only a Mac makes words of a memo (server/agent-sessions/voice.mjs);
+            {/* A Mac or a Windows PC makes words of a memo (server/agent-sessions/voice.mjs);
                 elsewhere it would only attach a recording agents can't read. */}
-            {((peer.platform === "darwin" && canRecord()) || memo.state !== "idle") && (
+            {((["darwin", "win32"].includes(peer.platform) && canRecord()) || memo.state !== "idle") && (
               <button
                 className={`as-icon as-mic ${memo.state}`}
                 aria-label={memo.state === "recording" ? "Stop recording" : memo.state === "working" ? "Transcribing" : "Record a voice memo"}
