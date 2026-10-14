@@ -55,8 +55,13 @@ function appOf() {
 }
 
 // Length-prefixed frames over a pipe; the helper never opens a network port.
+// A line the helper starts with "note: " says what changed on the way (its
+// encoder or capture gave out and another took over: Windows'
+// scripts/native/screen-video.cs) and goes to Reach's log; any other is why
+// it stopped. onExit(code, error), when set, hears a helper that ended by
+// itself.
 export class NativeScreenSource {
-  constructor(executable, args = []) {
+  constructor(executable, args = [], { note = (text) => console.warn(`Reach: live screen: ${text}`) } = {}) {
     this.child = spawn(executable, args, {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
@@ -64,9 +69,23 @@ export class NativeScreenSource {
     this.buffer = Buffer.alloc(0);
     this.pending = null;
     this.failure = null;
-    let diagnostic = "";
+    this.onExit = null;
+    let diagnostic = "",
+      line = "";
     this.child.stderr.on("data", (b) => {
-      diagnostic = (diagnostic + b.toString()).slice(-4096);
+      line += b.toString();
+      let at;
+      while ((at = line.indexOf("\n")) >= 0) {
+        const text = line.slice(0, at + 1);
+        line = line.slice(at + 1);
+        if (text.startsWith("note: "))
+          note(text.slice(6).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300));
+        else diagnostic = (diagnostic + text).slice(-4096);
+      }
+      if (line.length > 4096) {
+        diagnostic = (diagnostic + line).slice(-4096);
+        line = "";
+      }
     });
     this.child.stdin.on("error", () =>
       this.stop(Error("Screen capture disconnected. Reconnect to try again.")),
@@ -74,8 +93,14 @@ export class NativeScreenSource {
     this.child.on("error", () =>
       this.stop(Error("Could not start live screen capture.")),
     );
-    this.child.on("exit", () => {
-      const said = diagnostic.trim();
+    this.child.on("exit", (code) => {
+      // A .NET helper that crashed prints its stack: its message only.
+      const said = (diagnostic + line)
+        .split(/\r?\n/)
+        .filter((l) => !/^\s+at \S+\(/.test(l))
+        .join("\n")
+        .replace(/^Unhandled Exception: (?:\S+?Exception: )?/m, "")
+        .trim();
       // No permission (macOS) or scripts refused by policy (Windows):
       // retrying can't help, so the phone stops and says why instead of
       // "Connecting…" forever.
@@ -88,6 +113,8 @@ export class NativeScreenSource {
             : said) || "Screen capture stopped. Reconnect to try again.",
       );
       if (blocked || PERMISSION.test(said)) error.permanent = true;
+      // Ended by itself, not stopped by Reach.
+      if (!this.failure) this.onExit?.(code, error);
       this.stop(error);
     });
     this.child.stdout.on("data", (chunk) => {

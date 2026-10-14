@@ -207,6 +207,29 @@ test("a folder that can't be listed: its path is typed instead (New Codex chat)"
   await view.unmount();
 });
 
+test("a path typed the moment its field appears is kept", async () => {
+  serve({ fail: ["1:"] });
+  const { view, dialog } = await sheet({ kind: "chat", initialRoot: 1 });
+  const d = dialog();
+  // A quick thumb, or a phone busy as the page drew: the typing lands the
+  // moment the field is there, before anything else on the page has run.
+  const typed = new Promise((resolve) => {
+    const watch = new dom.window.MutationObserver(() => {
+      const field = d.querySelector('input[aria-label="Folder path"]');
+      if (!field) return;
+      watch.disconnect();
+      resolve(typeInto(field, "src/app"));
+    });
+    watch.observe(d, { childList: true, subtree: true });
+  });
+  await click(folder(d));
+  await typed;
+  await settle(50);
+  assert.equal(d.querySelector('input[aria-label="Folder path"]').value, "src/app");
+  assert.ok(button(d, "Use “app”"), "the button names the folder typed");
+  await view.unmount();
+});
+
 test("closing: the close button, Escape and a tap outside; the sheet, not its close button, holds focus as it opens", async () => {
   serve();
   const { view, calls, dialog } = await sheet();

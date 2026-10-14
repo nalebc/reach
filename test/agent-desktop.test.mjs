@@ -292,6 +292,8 @@ test("the screen as text lists a form's fields, for one fill", () => {
     { n: 3, role: "Button", name: "Sign in", x: 0.1, y: 0.3, w: 0.1, h: 0.02 }] });
   assert.match(text, /\[2\] SecureTextField "Password" \(password field: sign in from your vault\)/);
   assert.match(text, /Fields: "Email", "Password" \(password\)\. Fill them in one call: reach_fill/);
+  // Oct 13: signed in without the owner: Google (Apple, Microsoft), else the vault.
+  assert.match(text, /To sign in, "Sign in with Google" \(Apple, Microsoft\) where the page offers it, else a value from your vault with "secret":true\. Skip the browser's saved passwords and passkeys: they wait for the owner\./);
   assert.doesNotMatch(describeScreen({ app: "Calculator", items: [{ n: 1, role: "Button", name: "7", x: 0, y: 0, w: 0.1, h: 0.1 }], texts: [] }), /Fields:/);
 });
 
