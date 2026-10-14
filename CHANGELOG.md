@@ -36,6 +36,12 @@ release notes, so date the heading before tagging.
   OpenClaw only, never on a command line. Telegram's token file is closed to
   everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
   phone says so on a PC. Not yet run on a physical Windows PC.
+- 2026-10-14: Beside OpenClaw's own Windows app, Reach uses the Gateway the
+  app keeps in WSL instead of setting OpenClaw up a second time: chats,
+  keys, Telegram, Doctor and starting the Gateway, with OpenClaw's commands
+  run inside the app's WSL distro and every secret on stdin. Discord and
+  Slack go through OpenClaw's guided setup there, and repairs and updates
+  stay with the app. Not yet run against the app on a physical PC.
 
 - 2026-10-13: Hear the computer on your phone. A speaker in Screen's bar
   plays what the Mac or Windows PC plays, never its microphone, for you and
@@ -82,6 +88,14 @@ release notes, so date the heading before tagging.
 
 ### Changed
 
+- 2026-10-14: A Mac installs OpenClaw with OpenClaw's own installer
+  (install.sh), as a Windows PC uses install.ps1, so npm 12's script policy
+  and Node are handled by OpenClaw. On a Mac or PC whose Node is older than
+  24.16, the install sheet says so and Reach first adds a Node for OpenClaw
+  only with OpenClaw's own installer, in the same words on both; the
+  computer's own Node is never replaced. Updates that need a newer Node are
+  recovered the same way on both. Setup no longer starts a second Gateway
+  beside one already answering on OpenClaw's port, on a Mac too.
 - 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
   nothing to turn on. `REACH_WINDOWS_ACCOUNT` is gone. Setup asks for your
   Tailscale account, as on a Mac, and a PC paired by code before asks once at

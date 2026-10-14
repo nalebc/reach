@@ -12,6 +12,8 @@ import path from "node:path";
 import { localOpenClawConfig } from "./openclaw.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { typedCli } from "./openclaw-windows.mjs";
+import { privateNode } from "./openclaw-node.mjs";
+import { HUB_KEEPS } from "./openclaw-hub.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -275,19 +277,22 @@ export async function restartOpenClawGateway({
   platform = process.platform,
   authorize = () => {},
   runtime,
+  ...where
 } = {}) {
   authorize();
   // Refuses a remote profile: only this computer's own Gateway.
-  await configuration();
+  const { hub } = (await configuration()) || {};
   authorize();
   try {
-    const [file, argv, childEnv] = await openClawShell(["gateway", "restart"], { env, platform, runtime });
+    const [file, argv, childEnv, script] = await openClawShell(["gateway", "restart"], { env, platform, runtime, ...where });
     // Windows: as startOpenClawGateway's.
-    await run(file, argv, { timeout: platform === "win32" ? 90000 : 25000, ...(childEnv && { env: childEnv }) });
+    await run(file, argv, { timeout: platform === "win32" ? 90000 : 25000, ...(childEnv && { env: childEnv }), ...(script !== undefined && { input: script }) });
   } catch {
     throw fail(
       503,
-      `OpenClaw’s Gateway didn’t restart. On this computer, run: ${typedCli(platform)} gateway restart`,
+      hub
+        ? "OpenClaw’s Gateway didn’t restart in its Windows app’s WSL distro. Restart it from OpenClaw’s Windows app."
+        : `OpenClaw’s Gateway didn’t restart. On this computer, run: ${typedCli(platform)} gateway restart`,
     );
   }
 }
@@ -308,7 +313,8 @@ export async function runOpenClawMaintenance(action, {
   };
   if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
   authorize();
-  await configuration();
+  // OpenClaw's own Windows app keeps its Gateway: Doctor's look only.
+  if ((await configuration())?.hub && action !== "doctor") throw fail(409, HUB_KEEPS);
   authorize();
   runtime ??= await availableUpdateRuntime({ platform });
   const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -316,7 +322,10 @@ export async function runOpenClawMaintenance(action, {
   if (platform !== "win32") {
     // exec: a timeout kills openclaw itself, not just the login shell.
     command = `exec ${command}`;
-    if (runtime) {
+    // OpenClaw's own Node isn't led on PATH: its launcher takes it by
+    // itself, and npm there would name another global folder than the one
+    // OpenClaw is in; the Gateway it installs records the Node it runs on.
+    if (runtime && runtime !== privateNode({ platform, env })) {
       if (action === "repair-service") command += ` --runtime-path ${quote(runtime)}`;
       command = `export PATH=${quote(path.dirname(runtime))}:"$PATH"; ${command}`;
     }
@@ -326,8 +335,8 @@ export async function runOpenClawMaintenance(action, {
   try {
     if (platform === "win32") {
       const args = [...commands[action], ...(runtime && action === "repair-service" ? ["--runtime-path", runtime] : [])];
-      const [file, argv, childEnv] = await openClawShell(args, { env, platform, runtime, ...windows });
-      output = await run(file, argv, { ...options, env: childEnv });
+      const [file, argv, childEnv, script] = await openClawShell(args, { env, platform, runtime, ...windows });
+      output = await run(file, argv, { ...options, env: childEnv, ...(script !== undefined && { input: script }) });
     } else output = await run(env.SHELL || "/bin/sh", ["-lc", command], options);
   } catch (error) {
     output = { stdout: error.stdout || "", stderr: error.stderr || "" };
