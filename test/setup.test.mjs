@@ -11,7 +11,7 @@ import {
   httpsPage,
   SETUP_SECTIONS,
 } from "../scripts/setup.mjs";
-import { accountApproval, configure, readPreferences } from "../scripts/configure.mjs";
+import { readPreferences } from "../scripts/configure.mjs";
 import { command } from "../scripts/home.mjs";
 import { approveDevice } from "../scripts/approve-device.mjs";
 
@@ -418,10 +418,9 @@ test("background first run: start page not reachable → private link; deny keep
   assert.match(none.join("\n"), /still starting\. When it's ready: \.\/reach status/);
 });
 
-// First-run matrix H14, T22: Windows gets the guided setup too. Phones join
-// there with a pairing code (no Unix socket for Tailscale-account approval),
-// so its steps are Tailscale itself and the HTTPS link, and nothing asks for
-// account settings, invite links or a background service.
+// First-run matrix H14, T22: Windows gets the guided setup, as a Mac does:
+// Tailscale with your account (browser sign-in, docs/parity/D-public-door.md),
+// then the HTTPS link, then the phone. No Unix socket is asked for there.
 const windows = (s, extra = {}) =>
   deps(s, {
     platform: "win32",
@@ -430,38 +429,31 @@ const windows = (s, extra = {}) =>
       Self: { UserID: 7 },
       User: { 7: { LoginName: "me@x.test" } },
     }),
-    configure: async () => {
-      throw Error("configure must not run on Windows");
-    },
     socketPath: () => {
       throw Error("no Unix socket on Windows");
     },
     ...extra,
   });
 
-test("Windows: a fresh run is Tailscale, then the HTTPS link; no account settings, invites or background", async (t) => {
+test("Windows: a fresh run is a Mac's: Tailscale with your account, then the HTTPS link, then the phone; invites later", async (t) => {
   const root = tmp(t);
   const s = scene();
   const printed = [];
   const d = windows(s, { print: (m) => printed.push(m) });
-  let ran = 0;
-  d.ensureTailscale = ((inner) => async (...a) => (ran++, inner(...a)))(d.ensureTailscale);
   const result = await runSetup(root, { deps: d });
-  assert.equal(ran, 1, "the Tailscale walk-through ran");
+  assert.equal(d.ran.configure, 1, "your account, as on a Mac");
   assert.deepEqual(s.asked, [], "nothing to choose when Tailscale and HTTPS are ready");
   assert.equal(d.ran.invites, 0);
   assert.equal(result.launch, "foreground");
   const board = printed.join("\n");
   assert.match(board, /1\. Tailscale on this computer {2}—  me@x\.test/);
   assert.match(board, /2\. Your private link/);
-  assert.doesNotMatch(board, /Invite people|background|Later, when/);
-  // The phone's part, before any QR (Oct 11: a Windows user scanned without
-  // the Tailscale app and got "can't connect").
-  assert.match(board, /▸ 3\. Your phone\n {5}Install the Tailscale app on your phone, sign in as me@x\.test and turn it on\. On Windows, phones can't sign in from the browser yet\./);
+  assert.match(board, /▸ 3\. Your phone\n {5}Reach starts now: scan its QR code with your phone's camera, then tap Connect\./);
+  assert.doesNotMatch(board, /can't sign in from the browser|Install the Tailscale app/);
+  assert.match(board, /Later, when you want them:\n {4}\S+ setup invites +invite people and agents with a link/);
   const progress = readProgress(root);
   assert.deepEqual(progress.steps, { account: "done", link: "done" });
   assert.equal(progress.done, true);
-  assert.equal(readPreferences(root), null, "no account settings saved");
   assert.equal(needsOnboarding(root), false, "a finished Windows setup isn't offered again");
 });
 
@@ -509,20 +501,40 @@ test("Windows: HTTPS certificates off: the DNS page opens, the wait says how to 
   assert.equal(readProgress(root).done, true);
 });
 
-test("Windows: invite links aren't a section; account settings say why", async (t) => {
+// Start at sign-in on Windows too (audit #4), the same question, saying
+// what's true there: no permissions to grant, so the background task keeps
+// the live screen and control while you're signed in.
+test("Windows: setup background asks the Mac's question and offers the background task, in Windows' words", async (t) => {
   const root = tmp(t);
-  await assert.rejects(runSetup(root, { only: "invites", deps: windows(scene()) }), /Unknown setup section "invites"\. Try: account, link\./);
-  const result = await runSetup(root, { only: "account", deps: windows(scene()) });
-  assert.deepEqual(result.ran, ["account"]);
-  assert.equal(accountApproval("win32"), false);
-  for (const platform of ["darwin", "linux"]) assert.equal(accountApproval(platform), true);
-  await assert.rejects(
-    configure(root, { platform: "win32", select: async () => "use", print() {} }),
-    (error) => /^On Windows, Reach has no account settings to configure: start it with /.test(error.message) && /pairing code/.test(error.message) && !/Mac and Linux/.test(error.message),
-  );
-  // `approve` is for account approval: on Windows it points to the code.
-  await assert.rejects(approveDevice(root, { platform: "win32", print() {} }), {
-    message: `On Windows, a phone joins with the pairing code Reach shows in its terminal. For a fresh one: ${command} pair`,
-  });
-  await assert.rejects(approveDevice(root, { platform: "darwin", print() {} }), /configure completed/);
+  const offered = [];
+  const s = scene({ "Keep Reach running after you close this terminal?": "background" });
+  const select = s.select;
+  s.select = async (question) => (offered.push(question), select(question));
+  const printed = [];
+  await runSetup(root, { deps: windows(scene(), { print: (m) => printed.push(m) }) });
+  assert.match(printed.join("\n"), /setup background +keep Reach running after this window closes/, "offered for later, as on a Mac");
+  const result = await runSetup(root, { only: "background", deps: windows(s) });
+  assert.equal(result.launch, "background");
+  const [question] = offered;
+  assert.equal(question.message, "Keep Reach running after you close this terminal?");
+  assert.deepEqual(question.choices.map((c) => [c.value, c.label]), [
+    ["foreground", "No, only while this terminal is open"],
+    ["background", "Yes, start it at sign-in and keep it running"],
+  ]);
+  assert.match(question.choices[1].description, /^Installs a background task \(you can remove it\)\. It has no window: the live screen and control work while you're signed in, and new phones are approved with \S+ approve\.$/);
+  assert.doesNotMatch(JSON.stringify(question), /Terminal window|macOS|Screen Recording/);
+  assert.equal(readProgress(root).steps.background, "background");
+});
+
+test("Windows: invite links and your account are sections, as on a Mac; approve asks for a running Reach set up with your account", async (t) => {
+  const root = tmp(t);
+  const d = windows(scene());
+  assert.deepEqual((await runSetup(root, { only: "invites", deps: d })).ran, ["invites"]);
+  assert.equal(d.ran.invites, 1);
+  assert.deepEqual((await runSetup(root, { only: "account", deps: d })).ran, ["account"]);
+  assert.equal(d.ran.configure, 1);
+  for (const platform of ["win32", "darwin"])
+    await assert.rejects(approveDevice(root, { platform, print() {} }), {
+      message: `Start Reach with ${command} configure completed, then request access on your phone.`,
+    });
 });
