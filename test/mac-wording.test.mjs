@@ -25,6 +25,7 @@ const ALLOWED = {
   "MacPrompts.tsx": 6, // macOS permission prompts
   "MoveChat.tsx": 2, // default word
   "NeedsYou.tsx": 11, // macOS permission prompts
+  "OpenClawPages.tsx": 1, // "iMessage needs a Mac", said on a PC (true everywhere)
   "Screen.tsx": 5, // macOS permission prompts
   "ServiceAgentTools.tsx": 1, // saved browser tools (workstream G)
   "ToolBrowserSetup.tsx": 4, // saved browser tools (workstream G)
