@@ -8,6 +8,19 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-13: OpenClaw on a Windows PC, natively, as on a Mac: installed,
+  set up with a model provider's key, given more keys and Telegram, Discord,
+  Slack or WhatsApp from the phone, with its health, Doctor, updates and
+  Node recovery. Install runs OpenClaw's own PowerShell installer in a Reach
+  terminal. OpenClaw needs Node 24.16 or newer: on a PC with an older Node,
+  the install sheet says so and Reach first adds a Node for OpenClaw only,
+  with OpenClaw's own installer, keeping the PC's Node as it is. Keys go to
+  OpenClaw only, never on a command line. Telegram's token file is closed to
+  everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
+  phone says so on a PC. Not yet run on a physical Windows PC.
+
 ### Changed
 
 - 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with
