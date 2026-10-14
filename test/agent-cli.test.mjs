@@ -7,6 +7,7 @@ import http from "node:http";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { readAgentPolicy, intersectRoots } from "../server/agent-policy.mjs";
@@ -309,6 +310,28 @@ test("policy expiry, disabled profiles, root narrowing, legacy-token blocking an
   }
 });
 
+// reach-agent.cmd, as cmd (and so PowerShell) runs it on a real Windows PC:
+// the same CLI, its arguments as typed, spaces and all.
+test("Windows: reach-agent.cmd runs the agent CLI with its arguments as typed", { skip: process.platform !== "win32" && "Windows' own cmd" }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach agent cmd-"));
+  try {
+    const project = path.join(dir, "my project");
+    await fs.mkdir(project);
+    const policy = path.join(dir, "agent policy.json");
+    const launcher = fileURLToPath(new URL("../reach-agent.cmd", import.meta.url));
+    const { stdout } = await exec(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${launcher}" policy init --folder "${project}" --out "${policy}" --access read-only"`], {
+      windowsVerbatimArguments: true,
+      timeout: 30000,
+    });
+    assert.deepEqual(JSON.parse(stdout), { policy, profile: "workspace", access: "read-only", ttlSeconds: 3600 });
+    const parsed = readAgentPolicy(policy);
+    assert.deepEqual(parsed.profiles.workspace.scopes, ["device", "files:read"]);
+    assert.deepEqual(parsed.profiles.workspace.roots, [await fs.realpath(project)]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI rejects unsafe origins and readable secret files; redirects never receive credentials", async () => {
   for (const url of [
     "http://example.com",
@@ -465,9 +488,15 @@ test(
   },
 );
 
+// A test certificate's maker: the system's openssl, or on Windows the one
+// Git for Windows carries (the proxy itself is the same on every platform).
+const openssl =
+  process.platform === "win32"
+    ? ["usr\\bin", "mingw64\\bin"].map((dir) => path.win32.join(process.env.ProgramFiles || "C:\\Program Files", "Git", dir, "openssl.exe")).find((file) => existsSync(file))
+    : "/usr/bin/openssl";
 test(
   "HTTPS over the userspace proxy validates certificates and keeps tokens out of CONNECT",
-  { skip: process.platform === "win32" },
+  { skip: !openssl && "no openssl here to make a test certificate (Git for Windows carries one)" },
   async () => {
     const https = await import("node:https");
     const net = await import("node:net");
@@ -479,7 +508,7 @@ test(
       conf,
       "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=mac.fixture.ts.net\n[ext]\nsubjectAltName=DNS:mac.fixture.ts.net\nbasicConstraints=CA:TRUE\n",
     );
-    await exec("/usr/bin/openssl", [
+    await exec(openssl, [
       "req",
       "-x509",
       "-newkey",

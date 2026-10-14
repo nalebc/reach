@@ -28,5 +28,7 @@ export const computer = {
     this.connected = null;
     this.refused = 0;
     this.endInput = null;
+    this.video = undefined;
+    this.videoWhy = undefined;
   },
 };
