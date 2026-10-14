@@ -147,6 +147,14 @@ export function agentHome() {
   const dir = path.resolve(
     process.env.REACH_AGENT_HOME || path.join(os.homedir(), ".reach-agent"),
   );
+  if (process.platform === "win32") {
+    const home = path.win32.resolve(os.homedir()).toLowerCase();
+    const chosen = path.win32.resolve(dir).toLowerCase();
+    const relative = path.win32.relative(chosen, home);
+    if (chosen === path.win32.parse(chosen).root.toLowerCase() || !relative ||
+        (!path.win32.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\")))
+      throw Error("Choose a separate folder for Reach's agent credentials, not your home or a whole drive.");
+  }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);
   if (
