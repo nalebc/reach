@@ -3,8 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { id, fail, loadJson, atomicJson } from "./core.mjs";
 import { shellSandboxProfile } from "./agent-shell.mjs";
+import { spawnVerified } from "./desktop-native.mjs";
+import { encodeSandboxRequest, createSandboxFrameReader, jobRequestEntries } from "./windows-sandbox.mjs";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+export function terminateWindowsJob(child, terminate = (pid) => execFile("taskkill", ["/PID", String(pid), "/T", "/F"], () => {})) {
+  // Windows reuses process IDs immediately. Once the main process exited,
+  // its old PID cannot identify any remaining output holder safely.
+  if (child.exitCode != null || child.signalCode != null) {
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy?.();
+    return;
+  }
+  if (child.pid) terminate(child.pid);
+}
 export class Jobs {
   constructor(config) {
     this.file = path.join(config.dataDir, "jobs.json");
@@ -13,6 +24,9 @@ export class Jobs {
       status: j.status === "running" ? "interrupted" : j.status,
     }));
     this.running = new Map();
+    // A completed main command can leave the sandbox helper or inherited
+    // output pipes alive. Keep native retirement separate from job status.
+    this.children = new Map();
   }
   list() {
     return this.jobs.slice().reverse();
@@ -25,13 +39,20 @@ export class Jobs {
   save() {
     atomicJson(this.file, this.jobs);
   }
-  // `sandbox`: what the macOS sandbox denies (server/browser-private-paths.mjs
+  // `sandbox`: on a Mac, what the sandbox denies (server/browser-private-paths.mjs
   // agentShellSandbox), for anyone but your own devices: an agent's job can't
   // read Reach's credentials or reach its private socket (connections audit,
-  // Oct 10). Without sandbox-exec, such a job doesn't run.
-  start({ command, cwd, timeoutMs = 60000 }, clientId, { sandbox = null, sandboxExec = SANDBOX_EXEC } = {}) {
-    if (sandbox && !fs.existsSync(sandboxExec))
+  // Oct 10). Without sandbox-exec, such a job doesn't run. On Windows it's the
+  // AppContainer descriptor from server/windows-sandbox.mjs (`mode: "jobs"`),
+  // run through the hash-verified helper (`helper`); `spawnHelper` is a test seam.
+  start({ command, cwd, timeoutMs = 60000 }, clientId, { sandbox = null, sandboxExec = SANDBOX_EXEC, helper = null, spawnHelper = null } = {}) {
+    // A Windows AppContainer job: the descriptor carries `mode`, so the Mac's
+    // sandbox-exec presence check never applies to it.
+    const framed = process.platform === "win32" && !!sandbox && sandbox.mode === "jobs";
+    if (sandbox && !framed && !fs.existsSync(sandboxExec))
       throw fail(503, "This Mac can't sandbox agent commands, so none run.");
+    if (framed && !helper)
+      throw fail(503, "Reach's command sandbox isn't ready on this PC, so the command didn't run.");
     if (
       typeof command !== "string" ||
       !command.trim() ||
@@ -59,8 +80,16 @@ export class Jobs {
     const env = { ...process.env };
     for (const key of Object.keys(env))
       if (key.startsWith("REACH_")) delete env[key];
-    const child =
-      process.platform === "win32"
+    const child = framed
+      ? // An agent's or invited person's job: the AppContainer + Job Object
+        // helper (scripts/native/sandbox.cs) runs cmd.exe /d /s /c inside its
+        // grant. The request is framed on stdin, which then stays open as the
+        // end-of-input lifeline; its answers come back as frames (below).
+        (spawnHelper || ((file, sha256, options) => spawnVerified(file, sha256, ["run"], options)))(
+          helper.file, helper.sha256,
+          { cwd, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
+        )
+      : process.platform === "win32"
         ? spawn(
             "powershell.exe",
             // Windows PowerShell writes to a pipe in the PC's old OEM code
@@ -82,6 +111,9 @@ export class Jobs {
               env,
               detached: true,
             });
+    let retired;
+    this.children.set(child, new Promise((resolve) => { retired = resolve; }));
+    child.once("close", () => { this.children.delete(child); retired(); });
     // At the deadline: a job still running times out. One already finished
     // (its shell exited) only has whatever it left in the background ended.
     const timer = setTimeout(() => {
@@ -113,30 +145,49 @@ export class Jobs {
       if (ended) return;
       job.output = (job.output + data.toString()).slice(-262144);
     };
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
-    child.on("error", (e) => {
-      append(e.message);
-      job.status = "failed";
-    });
-    // The shell exited, but something it started in the background (`cmd &`)
-    // still holds its output: the job is done all the same, after a moment
-    // for the last output to arrive.
-    child.on("exit", (code) => {
-      const grace = setTimeout(() => end(code), 1000);
-      grace.unref();
-    });
-    // Everything holding its output ended: nothing is left to end later.
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      end(code);
-    });
+    if (framed) {
+      // The helper reports the main process's exit in an 'X' frame; its own
+      // process stays alive to reap survivors until the deadline, so the 1 s
+      // grace runs off that frame (as the Mac's does off the shell's exit),
+      // keeping the jobs.test.mjs:25 background contract (finding 13). A child's
+      // bytes can only arrive as 'O'/'E' data frames, never a forged 'X'/'F'.
+      let framedExit = null;
+      const read = createSandboxFrameReader({
+        onStdout: append, onStderr: append,
+        onExit: (code) => { framedExit = code; const grace = setTimeout(() => end(code), 1000); grace.unref(); },
+        onRefused: ({ message }) => { append(message); if (job.status === "running") job.status = "failed"; },
+        onError: () => { if (job.status === "running") job.status = "failed"; },
+      });
+      child.stdout.on("data", read);
+      child.on("error", (e) => { append(e.message); job.status = "failed"; });
+      child.on("close", () => { clearTimeout(timer); end(framedExit); });
+      try { child.stdin.write(encodeSandboxRequest(jobRequestEntries(sandbox, { command, cwd, timeoutMs }))); } catch {}
+    } else {
+      child.stdout.on("data", append);
+      child.stderr.on("data", append);
+      child.on("error", (e) => {
+        append(e.message);
+        job.status = "failed";
+      });
+      // The shell exited, but something it started in the background (`cmd &`)
+      // still holds its output: the job is done all the same, after a moment
+      // for the last output to arrive.
+      child.on("exit", (code) => {
+        const grace = setTimeout(() => end(code), 1000);
+        grace.unref();
+      });
+      // Everything holding its output ended: nothing is left to end later.
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        end(code);
+      });
+    }
     return job;
   }
   kill(child) {
     if (!child.pid) return;
     if (process.platform === "win32")
-      execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
+      terminateWindowsJob(child);
     else {
       try {
         process.kill(-child.pid, "SIGTERM");
@@ -159,7 +210,17 @@ export class Jobs {
     }
     return j;
   }
-  dispose() {
+  async dispose() {
+    const active = new Set(this.running.values());
+    const retiring = [...this.children.values()];
     for (const j of this.jobs) if (this.running.has(j.id)) this.cancel(j.id);
+    for (const child of this.children.keys()) if (!active.has(child)) this.kill(child);
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(retiring),
+        new Promise((resolve) => { timer = setTimeout(resolve, 10000); timer.unref(); }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 }

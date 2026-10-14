@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { serveMcp, toolsFor } from "../scripts/mcp-server.mjs";
 import { isBundle, runtimeUpdater, updatesOff } from "../scripts/agent-remote.mjs";
 import { buildAgent, inputsFile } from "../scripts/build-agent.mjs";
@@ -156,7 +157,7 @@ test("the bundle takes the computer's newer runtime: checked, loaded from its ow
   const inputs = JSON.parse(fs.readFileSync(inputsFile(file), "utf8"));
   assert.ok(inputs.includes("server/browser-tools.mjs"), "a tool's schema rebuilds the bundle");
   assert.ok(inputs.includes("scripts/mcp-server.mjs"));
-  const bundle = await import(file);
+  const bundle = await import(pathToFileURL(file).href);
   assert.equal(bundle.isBundle(), true, "the bundle knows it is one");
   assert.equal(isBundle(), false, "a source checkout never replaces itself");
   assert.equal(runtimeUpdater({ home, api: async () => ({}), file }), null, "from source: no updater");

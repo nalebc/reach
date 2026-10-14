@@ -43,10 +43,12 @@ test("status and a second start say Reach runs inside ChatGPT without permission
   assert.doesNotMatch(statusText([ok], { runtime: () => ({}) }), /Screen Recording/);
 });
 
+// startInWindow is startInTerminal on a Mac (agent-restart tests), and
+// Reach's own console window on Windows.
 test("restart and start open Terminal when run inside another app, even with a terminal", () => {
   const source = fs.readFileSync(new URL("../scripts/bootstrap.mjs", import.meta.url), "utf8");
-  assert.match(source, /process\.platform === "darwin" && \(!process\.stdin\.isTTY \|\| foreignApp\(\)\)\) \{\s*startInTerminal/);
-  assert.match(source, /\} else if \(!options\.service && foreignApp\(\)\) \{[\s\S]*?startInTerminal\(root/);
+  assert.match(source, /\["darwin", "win32"\]\.includes\(process\.platform\) && \(!process\.stdin\.isTTY \|\| \(await foreignApp\(\)\)\)\) \{\s*startInWindow\(root/);
+  assert.match(source, /\} else if \(!options\.service && \(await foreignApp\(\)\)\) \{[\s\S]*?startInWindow\(root/);
 });
 
 test("no Screen Recording ends the stream with the reason, and the phone stops retrying", async () => {

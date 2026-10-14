@@ -9,6 +9,7 @@ import { stateDir, packaged } from "../scripts/home.mjs";
 import { importState } from "../scripts/import-state.mjs";
 import {
   NODE_BUILDS,
+  WINDOWS_BUILDS,
   NODE_VERSION,
   ensureRuntime,
 } from "../scripts/runtime.mjs";
@@ -103,6 +104,9 @@ test("the Windows launcher pins the same Node.js release, for x64 and ARM64", ()
   assert.equal(script.match(/^\$version = '([^']+)'$/m)[1], NODE_VERSION);
   const builds = Object.fromEntries([...script.matchAll(/'(AMD64|ARM64)' = @\('(win-[\w]+)', '([0-9a-f]{64})'\)/g)].map((m) => [m[1], m[2]]));
   assert.deepEqual(builds, { AMD64: "win-x64", ARM64: "win-arm64" });
+  // Background mode's own copy (scripts/runtime.mjs) is that very build.
+  const shas = Object.fromEntries([...script.matchAll(/'(?:AMD64|ARM64)' = @\('(win-[\w]+)', '([0-9a-f]{64})'\)/g)].map((m) => [m[1], m[2]]));
+  assert.deepEqual(shas, WINDOWS_BUILDS);
   // Quiet (Windows PowerShell's progress bar slows the download), retried,
   // and said plainly when there's no internet.
   assert.match(script, /\$ProgressPreference = 'SilentlyContinue'/);
@@ -133,10 +137,14 @@ test("the installed reach pins the same Node.js build as the ./reach script", as
       /checksum mismatch/,
     );
     assert.deepEqual(fs.readdirSync(path.join(state, "runtime")), []);
+    // Windows: its zip, the same rule; an architecture Node doesn't build for Windows is refused.
+    let asked = "";
     await assert.rejects(
-      ensureRuntime(state, { platform: "win32", arch: "x64", log: () => {} }),
-      /Mac and Linux/,
+      ensureRuntime(state, { platform: "win32", arch: "x64", log: () => {}, download: async (url) => ((asked = url), new Response("not node")) }),
+      /checksum mismatch/,
     );
+    assert.equal(asked, `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip`);
+    await assert.rejects(ensureRuntime(state, { platform: "win32", arch: "ia32", log: () => {} }), /Mac, Linux or a Windows PC/);
   } finally {
     fs.rmSync(state, { recursive: true, force: true });
   }

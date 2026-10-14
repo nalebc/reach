@@ -4796,9 +4796,10 @@ test("a voice memo becomes words in the box; one the Mac can't hear is attached,
   assert.deepEqual(dom.errors, []);
 });
 
-// Only a Mac makes words of a memo; on a Windows PC the mic only attached a
-// recording coding agents can't read (parity audit #35): it isn't offered.
-test("a Windows PC's chat offers no voice memo", async (t) => {
+// A Mac and a Windows PC make words of a memo (parity audit #35: Windows'
+// own speech recognizer); elsewhere the mic would only attach a recording
+// coding agents can't read, so it isn't offered.
+test("a Windows PC's chat offers the voice memo, as a Mac's", async (t) => {
   globalThis.MediaRecorder = class { static isTypeSupported = () => true; };
   Object.defineProperty(dom.window.navigator, "mediaDevices", { value: { getUserMedia: async () => ({ getTracks: () => [] }) }, configurable: true });
   t.after(() => {
@@ -4807,7 +4808,7 @@ test("a Windows PC's chat offers no voice memo", async (t) => {
   });
   await open(codexSession(), signedIn, { ...peer, platform: "win32" });
   await dom.waitFor(() => $("textarea"));
-  assert.equal(button("Record a voice memo"), undefined);
+  assert.ok(button("Record a voice memo"));
 });
 
 test("without a microphone the memo says so and nothing breaks", async (t) => {
