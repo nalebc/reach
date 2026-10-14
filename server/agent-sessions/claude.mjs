@@ -13,6 +13,7 @@ import { createClaudeAccountUsage } from "./account-usage.mjs";
 import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { recycle as recycleFile } from "../recycle-bin.mjs";
+import { claudeAppRecords } from "./claude-app-paths.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +40,7 @@ const signIn = (stdout) => {
 // while app records remain; those have no history to show and are skipped.
 export function createClaudeSessions({
   projects = path.join(os.homedir(), ".claude", "projects"),
-  appRecords = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  appRecords = claudeAppRecords(),
   cli = "claude",
   run = exec,
   env = process.env,
@@ -375,7 +376,7 @@ export function createClaudeSessions({
     // A new chat that continues one moved here from another agent: a
     // transcript of its own (never over an existing one), in its folder's
     // real path (the nearest that still exists), as Claude Code writes them.
-    async write({ cwd, title, turns, note, model, gitBranch = "", items, from, authorize = () => {} }) {
+    async write({ cwd, title, turns, note, model, gitBranch = "", items, from, context, authorize = () => {} }) {
       authorize();
       let dir = path.resolve(String(cwd || os.homedir()));
       for (;;) {
@@ -401,7 +402,7 @@ export function createClaudeSessions({
       for (let tries = 0; ; tries++) {
         authorize();
         const id = randomUUID();
-        const lines = items ? claudeArchive({ id, cwd: dir, title, items, from, model, gitBranch, version: ver }) : claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
+        const lines = items ? claudeArchive({ id, cwd: dir, title, items, from, model, gitBranch, context, archivePath: path.join(folder, `${id}.jsonl`), version: ver }) : claudeLines({ id, cwd: dir, title, turns, note, model, gitBranch, version: ver });
         try {
           await fs.writeFile(path.join(folder, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n", { flag: "wx", mode: 0o600 });
           authorize();

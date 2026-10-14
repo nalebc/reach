@@ -61,9 +61,12 @@ import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 import { ForegroundServe, createLock } from "./foreground-serve.mjs";
 import { ForegroundFunnel } from "./foreground-funnel.mjs";
 
-// Windows' keyed route refused every connection Tailscale made to it.
+// Windows' keyed route: its check took Tailscale's own connections for
+// another program's, or didn't answer in time again and again.
 const UNRECOGNISED =
   "Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC.";
+const UNANSWERED = "Reach's check of Tailscale's connections kept failing to answer on this PC.";
+const HOUR = 3600000;
 
 export async function launch(options, root) {
   // Reach's window carries its name on Windows too: the window agents'
@@ -103,17 +106,26 @@ export async function launch(options, root) {
   // Windows has no Unix socket: a keyed loopback route only Tailscale's own
   // process may use (docs/parity/D-public-door.md).
   const keyedDoor = !!preferences && process.platform === "win32";
-  // That route found Tailscale's own connections unrecognised: pairing codes
-  // until Tailscale changes or a day has passed, then it's tried again.
+  // What an earlier start noted about that route (below): Tailscale's own
+  // connections taken for another program's (pairing codes for a day, or
+  // until Tailscale changes), or its check not answering in time twice
+  // within an hour (pairing codes for an hour). Then it's tried again.
   const unrecognisedFile = path.join(privateDir, "sign-in-unrecognised.json");
+  const noted = () => (keyedDoor ? loadJson(unrecognisedFile, null) : null);
   const unrecognised = (state) => {
-    const seen = keyedDoor ? loadJson(unrecognisedFile, null) : null;
+    const seen = noted();
     if (!seen) return "";
+    const age = Date.now() - Number(seen.at);
     const version = String(state?.status?.Version || "");
-    if (seen.tailscale === version && Date.now() - seen.at < 86400000) return UNRECOGNISED;
+    if (seen.tailscale === version && age >= 0) {
+      if (seen.kind === "other" && age < 24 * HOUR) return UNRECOGNISED;
+      if (seen.kind === "late" && age < HOUR) return seen.count >= 2 ? UNANSWERED : "";
+    }
     fs.rmSync(unrecognisedFile, { force: true });
     return "";
   };
+  // The check's answers for this start: yes, or "another program's".
+  const peerAnswers = { yes: 0, other: 0 };
   const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
   let peerCheck = null,
     ingressKey = "",
@@ -136,24 +148,30 @@ export async function launch(options, root) {
       });
       if (folders.ok) {
         keyedState = await readKeyedState().catch(() => ({ status }));
+        const hooks = {
+          // Its helper stopped, timed out or wouldn't start again: said
+          // once per reason, so a refusal that follows has its cause.
+          onProblem: (reason) => {
+            const said = {
+              stopped: "Reach's Tailscale check stopped; it starts again in a moment.",
+              timeout: "Reach's Tailscale check didn't answer in time; it starts again in a moment.",
+              garbled: "Reach's Tailscale check gave an answer Reach couldn't read; it starts again in a moment.",
+            }[reason] || String(reason);
+            console.warn(`Reach: ${said}`);
+            try {
+              log?.write(`Reach: ${said}`);
+            } catch {}
+          },
+          onAnswer: (answer) => {
+            if (answer?.ok) peerAnswers.yes++;
+            else if (answer?.value === "o") peerAnswers.other++;
+          },
+        };
+        // A test's stand-in check is given the same hooks.
         peerCheck =
-          options.peerCheck ||
-          createTailscaledPeerCheck({
-            helper: folders.helper("tailscaled-peer"),
-            // Its helper stopped, timed out or wouldn't start again: said
-            // once per reason, so a refusal that follows has its cause.
-            onProblem: (reason) => {
-              const said = {
-                stopped: "Reach's Tailscale check stopped; it starts again in a moment.",
-                timeout: "Reach's Tailscale check didn't answer in time; it starts again in a moment.",
-                garbled: "Reach's Tailscale check gave an answer Reach couldn't read; it starts again in a moment.",
-              }[reason] || String(reason);
-              console.warn(`Reach: ${said}`);
-              try {
-                log?.write(`Reach: ${said}`);
-              } catch {}
-            },
-          });
+          typeof options.peerCheck === "function"
+            ? options.peerCheck(hooks)
+            : options.peerCheck || createTailscaledPeerCheck({ helper: folders.helper("tailscaled-peer"), ...hooks });
       }
       const problem =
         folders.reason ||
@@ -272,7 +290,8 @@ export async function launch(options, root) {
     const deadline = setTimeout(() => {
       console.error("Reach: shutdown took too long; exiting now.");
       forgetStatus();
-      process.exit(1);
+      // Asked to start again (the keyed route, above): still so.
+      process.exit(process.exitCode || 1);
     }, 5000);
     deadline.unref();
     stopPromise = (async () => {
@@ -609,13 +628,27 @@ export async function launch(options, root) {
         await delay(1000);
       }
       if (stopped) return;
-      // Windows' keyed route answered nothing it was asked: Tailscale's
-      // connections weren't recognised as its own, so it stays closed, and
-      // Reach starts again at once with pairing codes (noted for a day).
+      // Windows' keyed route answered nothing it was asked, its check
+      // refusing Tailscale's connections. Taken for another program's with
+      // none let through: noted for a day, and Reach starts again at once
+      // with pairing codes. Not answered in time (a hiccup): Reach starts
+      // again and tries the route once more; twice within an hour, noted,
+      // and pairing codes for that hour. The crash code: started again by
+      // the window it runs in (supervise.mjs) or its service.
       if (!healthy && ingressKey && refusals.peer > 0) {
-        atomicJson(unrecognisedFile, { tailscale: String(keyedState?.status?.Version || ""), at: Date.now() });
-        throw Object.assign(Error(`${UNRECOGNISED} It stays closed; Reach starts again with pairing codes.`), { relaunch: true });
+        const tailscale = String(keyedState?.status?.Version || "");
+        const other = peerAnswers.other > 0 && peerAnswers.yes === 0;
+        const prior = noted();
+        const count = !other && prior?.kind === "late" && prior.tailscale === tailscale && Date.now() - prior.at >= 0 && Date.now() - prior.at < HOUR ? (prior.count || 1) + 1 : 1;
+        atomicJson(unrecognisedFile, { kind: other ? "other" : "late", count, tailscale, at: Date.now() });
+        process.exitCode = 70;
+        throw Object.assign(
+          Error(other ? `${UNRECOGNISED} It stays closed; Reach starts again with pairing codes.` : count >= 2 ? `${UNANSWERED} Reach starts again with pairing codes for an hour.` : "Reach's check of Tailscale's connections didn't answer in time; Reach starts again and tries once more."),
+          { relaunch: true },
+        );
       }
+      // It answered: an earlier start's note is done with.
+      if (healthy && ingressKey) fs.rmSync(unrecognisedFile, { force: true });
       if (!healthy)
         throw Error(
           "The private phone link could not connect. Check Tailscale and HTTPS setup, then rerun Reach. No public tunnel was opened.",

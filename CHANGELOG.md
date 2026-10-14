@@ -10,6 +10,55 @@ release notes, so date the heading before tagging.
 
 ### Added
 
+- 2026-10-13: On a Windows PC, as on a Mac (passing on GitHub's Windows
+  runner, not yet on a physical PC):
+  - Reach's icon in the notification area: on or paused, messages from the
+    phone waiting for their Claude app chat, and Pause or Resume.
+  - Apps show their own icons and the agents their logos, drawn by Windows.
+  - Word, RTF and OpenDocument files preview as text (Word 97-2003's .doc
+    stays a download).
+  - Voice memos become words on the PC, through Windows' own speech
+    recognizer; the recording stays attached when it can't.
+  - Reach's terminals open your own shell: Windows Terminal's default
+    profile, else PowerShell 7, else Windows PowerShell.
+  - Drives attached after Reach started appear in Files.
+  - The Claude desktop app's chats, archive and links, whether it came from
+    its installer or as a package (Microsoft Store, WinGet).
+  - The phone names the launcher as the computer runs it (`reach`, `./reach`
+    or `.\reach.cmd`).
+- 2026-10-13: OpenClaw on a Windows PC, natively, as on a Mac: installed,
+  set up with a model provider's key, given more keys and Telegram, Discord,
+  Slack or WhatsApp from the phone, with its health, Doctor, updates and
+  Node recovery. Install runs OpenClaw's own PowerShell installer in a Reach
+  terminal. OpenClaw needs Node 24.16 or newer: on a PC with an older Node,
+  the install sheet says so and Reach first adds a Node for OpenClaw only,
+  with OpenClaw's own installer, keeping the PC's Node as it is. Keys go to
+  OpenClaw only, never on a command line. Telegram's token file is closed to
+  everyone but you, SYSTEM and Administrators. iMessage needs a Mac, and the
+  phone says so on a PC. Not yet run on a physical Windows PC.
+
+- 2026-10-13: Hear the computer on your phone. A speaker in Screen's bar
+  plays what the Mac or Windows PC plays, never its microphone, for you and
+  people with full access (invited people with less access and agents never
+  hear it). It has its own connection, so it never waits behind the picture.
+  A Mac uses the Screen Recording permission the picture already has
+  (ScreenCaptureKit, macOS 13 or newer); Windows needs none (a loopback of its
+  default output). About 0.4 Mbps (IMA ADPCM, 48 kHz stereo), lighter on a
+  slow link (24 kHz, then mono), and skipped rather than late. The phone
+  plays it about a tenth of a second behind, asking iOS to treat it as media
+  playback (Safari 17's audio session) so it should play with the ringer
+  switch on silent; not yet tried on an iPhone. Off each time Screen opens; stopped by
+  leaving Screen, Pause, or turning screen viewing off; not offered in a
+  browser on the computer itself, where it would echo. Checked with a real
+  capture on a Mac (macOS 26.6) and end to end in headless Chrome under
+  Reach's own page policy; Safari on an iPhone and a real Windows PC are
+  still to try.
+- 2026-10-14: On a Windows PC, Reach tells when the Claude app is open, from
+  the PC's process list (the app's own program, never Claude Code's
+  claude.exe): a chat the open app lists isn't deleted under it, and chats
+  started from the phone join its list once nobody is at the PC. Unlike a
+  Mac, the app's window isn't reloaded after Reach replies yet: it shows
+  them once the app is opened again. Not yet run on a physical PC.
 - 2026-10-13: Windows keeps Reach running and reachable as a Mac does.
   `.\reach.cmd setup background` (or `install`) adds a task of yours that
   starts Reach when you sign in, in your session, with no window: the live
@@ -41,8 +90,13 @@ release notes, so date the heading before tagging.
   not private, or Tailscale's own connections not recognised. In the last
   case Reach starts again on pairing codes at once, and tries the route again
   a day later or after Tailscale changes. An older Tailscale no longer stops
-  setup: the account is kept and used once Tailscale is updated. Not yet run
-  on a physical Windows PC.
+  setup: the account is kept and used once Tailscale is updated. Phones that
+  joined a PC with a pairing code ask to be approved once, as on a Mac. Not
+  yet run on a physical Windows PC.
+- 2026-10-13: A linked computer's ticket no longer approves a request made
+  from the computer itself (a browser on it): only the code typed there
+  does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
+  whoever is signed in to it.
 
 ## [0.2.0] — 2026-10-13
 

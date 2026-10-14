@@ -1165,11 +1165,9 @@ export function createCodexLive({
       begin(threadId, r.turn);
       return { threadId, turnId: r.turn?.id || null };
     },
-    // A thread that continues a chat moved from the other agent (move.mjs):
-    // its history goes in as what the model has seen, a batch per call; no
-    // turn runs until a message is sent. Let go of at once, so the Codex app
-    // can open it; one left empty by a failure is archived.
-    async forkHistory({ cwd, name, items, from, model: picked, authorize = () => {} }) {
+    // Import a complete visible archive with bounded model context when needed.
+    // No turn runs until a message is sent. Release it for the Codex app.
+    async forkHistory({ cwd, name, items, from, context, model: picked, authorize = () => {} }) {
       authorize();
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-history-"));
@@ -1177,7 +1175,7 @@ export function createCodexLive({
       let dispatched = false;
       try {
         authorize();
-        const archive = codexArchive({ cwd, items, from, name });
+        const archive = codexArchive({ cwd, items, from, name, context, archivePath: file });
         await fs.writeFile(file, archive.lines.map(l => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
         authorize();
         const model = await withModel(picked);

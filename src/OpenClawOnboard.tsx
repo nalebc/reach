@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { LoaderCircle } from "lucide-react";
+import { Check, LoaderCircle, ShieldAlert } from "lucide-react";
 import { request, post, type Peer } from "./api";
 import { installAgent, type InstallPlan } from "./agent-sessions";
 import { computerWord } from "./pause";
+import { BrandCourier } from "./ReachIdentity";
 import "./openclaw-onboard.css";
 
 // Installing and setting up OpenClaw from the phone (server/openclaw-onboard.mjs).
 // Keys go to OpenClaw on the computer; Reach keeps none, here or there.
+// Laid out as the ChatGPT app starts things (Oct 13): the mascot, a title,
+// one line, choices as rows with a check, one white pill.
 const base = "/api/sessions/openclaw";
 type Setup = { state: "running" | "done" | "partial" | "failed"; provider: string; error?: string };
 type Status = { installed: boolean; configured: boolean; supported: boolean; providers: string[]; setup?: Setup | null };
@@ -88,7 +91,7 @@ function KeyForm({
         }
       }}
     >
-      <div className="claw-onboard-pills" role="radiogroup" aria-label="Provider">
+      <div className="claw-onboard-providers" role="radiogroup" aria-label="Provider">
         {providers.map((p) => (
           <button
             key={p}
@@ -103,6 +106,7 @@ function KeyForm({
             }}
           >
             {NAMES[p] || p}
+            <Check size={19} strokeWidth={2.4} aria-hidden="true" />
           </button>
         ))}
       </div>
@@ -124,15 +128,15 @@ function KeyForm({
         </p>
       )}
       <div className="claw-onboard-actions">
+        <button type="submit" className="claw-onboard-cta" disabled={!ready || busy}>
+          {busy && <LoaderCircle size={16} className="spin" />}
+          {busy ? busyLabel || `${action}…` : action}
+        </button>
         {onCancel && (
-          <button type="button" className="claw-secondary" onClick={onCancel} disabled={busy}>
+          <button type="button" className="claw-onboard-quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
         )}
-        <button type="submit" className="claw-primary" disabled={!ready || busy}>
-          {busy && <LoaderCircle size={14} className="spin" />}
-          {busy ? busyLabel || `${action}…` : action}
-        </button>
       </div>
     </form>
   );
@@ -184,30 +188,15 @@ function InstallRow({ peer, recheck }: { peer: Peer; recheck: () => void }) {
     }
   };
   return (
-    <div className="claw-onboard">
-      <div className="claw-onboard-row">
-        <strong>Install OpenClaw</strong>
-        {step === "" || step === "failed" ? (
-          <button type="button" className="claw-primary" onClick={() => void ask()}>
-            {step === "failed" ? "Try again" : "Install"}
-          </button>
-        ) : step === "running" ? (
-          <LoaderCircle size={16} className="spin" aria-label="Installing" />
-        ) : null}
-      </div>
-      {step === "confirm" && plan && (
-        <>
-          <pre className="claw-onboard-command">{plan.command}</pre>
-          <div className="claw-onboard-actions">
-            <button type="button" className="claw-secondary" onClick={() => setStep("")}>
-              Cancel
-            </button>
-            <button type="button" className="claw-primary" onClick={() => void run()}>
-              Run on {computerWord(peer.platform)}
-            </button>
-          </div>
-        </>
-      )}
+    <section className="claw-onboard" aria-label="Install OpenClaw">
+      <OnboardHero title="Install OpenClaw" busy={step === "running"}>
+        {step === "running"
+          ? `Installing on your ${computerWord(peer.platform)}…`
+          : `Your own AI assistant, on your ${computerWord(peer.platform)} and your messaging apps.`}
+      </OnboardHero>
+      {step === "confirm" && plan && <pre className="claw-onboard-command">{plan.command}</pre>}
+      {/* What the install adds first (a Node for OpenClaw only: agent-install.mjs). */}
+      {step === "confirm" && plan?.note && <p className="claw-onboard-note">{plan.note}</p>}
       {(step === "running" || step === "failed") && line && <code className="claw-onboard-line">{line}</code>}
       {step === "failed" && <p className="claw-error">The install stopped.</p>}
       {problem && (
@@ -215,6 +204,38 @@ function InstallRow({ peer, recheck }: { peer: Peer; recheck: () => void }) {
           {problem}
         </p>
       )}
+      {step === "confirm" && plan ? (
+        <div className="claw-onboard-actions">
+          <button type="button" className="claw-onboard-cta" onClick={() => void run()}>
+            Run on {computerWord(peer.platform)}
+          </button>
+          <button type="button" className="claw-onboard-quiet" onClick={() => setStep("")}>
+            Cancel
+          </button>
+        </div>
+      ) : step === "" || step === "failed" ? (
+        <div className="claw-onboard-actions">
+          <button type="button" className="claw-onboard-cta" onClick={() => void ask()}>
+            {step === "failed" ? "Try again" : "Install"}
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+// The mascot over a title and one line (a spinner while something runs).
+function OnboardHero({ title, busy = false, children }: { title: string; busy?: boolean; children?: ReactNode }) {
+  return (
+    <div className="claw-onboard-hero">
+      <span className="claw-onboard-mascot" aria-hidden="true">
+        <BrandCourier active={busy} />
+      </span>
+      <h2>
+        {title}
+        {busy && <LoaderCircle size={16} className="spin" aria-label="Working" />}
+      </h2>
+      {children && <p>{children}</p>}
     </div>
   );
 }
@@ -238,17 +259,20 @@ export function ClawOnboard({ peer, onDone }: { peer: Peer; onDone: () => void }
   if (status.configured) return null;
   if (!status.installed) return <InstallRow peer={peer} recheck={() => setCheck((n) => n + 1)} />;
   return (
-    <div className="claw-onboard">
-      <div className="claw-onboard-row">
-        <strong>Set up OpenClaw</strong>
-      </div>
+    <section className="claw-onboard" aria-label="Set up OpenClaw">
+      <OnboardHero title="Set up OpenClaw">Choose who runs its model and paste your key.</OnboardHero>
       <KeyForm
         providers={status.providers}
         // Onboarding passes OpenClaw's --accept-risk: the owner's tap here.
         action="Accept risk & set up"
         busyLabel="Setting up…"
         label="Set up OpenClaw"
-        extra={<p className="claw-onboard-note">OpenClaw can run commands on this {computerWord(peer.platform)}</p>}
+        extra={
+          <p className="claw-onboard-note">
+            <ShieldAlert size={15} aria-hidden="true" />
+            OpenClaw can run commands on this {computerWord(peer.platform)}
+          </p>
+        }
         send={async (provider, key) => {
           await post(peer, `${base}/onboard`, { provider, key, acceptRisk: true });
           // A failed setup keeps the form and its reason on screen.
@@ -256,7 +280,7 @@ export function ClawOnboard({ peer, onDone }: { peer: Peer; onDone: () => void }
           onDone();
         }}
       />
-    </div>
+    </section>
   );
 }
 
@@ -272,17 +296,14 @@ function SetupRunning({ peer, onDone }: { peer: Peer; onDone: () => void }) {
     };
   }, [peer]);
   return (
-    <div className="claw-onboard" role="status">
-      <div className="claw-onboard-row">
-        <strong>Setting up OpenClaw</strong>
-        {!problem && <LoaderCircle size={14} className="spin" />}
-      </div>
+    <section className="claw-onboard" role="status" aria-label="Setting up OpenClaw">
+      <OnboardHero title="Setting up OpenClaw" busy={!problem} />
       {problem && (
         <p className="claw-error" role="alert">
           {problem}
         </p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -302,17 +323,20 @@ export function ClawAddProvider({
   const [added, setAdded] = useState("");
   if (added)
     return (
-      <div className="claw-onboard" role="status">
-        <div className="claw-onboard-row">
-          <strong>{added} added</strong>
-          <button type="button" className="claw-primary" onClick={() => onDone?.()}>
+      <div className="claw-onboard claw-onboard-key" role="status">
+        <p className="claw-onboard-added">
+          <Check size={18} strokeWidth={2.4} aria-hidden="true" />
+          {added} added
+        </p>
+        <div className="claw-onboard-actions">
+          <button type="button" className="claw-onboard-cta" onClick={() => onDone?.()}>
             Done
           </button>
         </div>
       </div>
     );
   return (
-    <div className="claw-onboard">
+    <div className="claw-onboard claw-onboard-key">
       <KeyForm
         providers={KEYED}
         initial={provider}

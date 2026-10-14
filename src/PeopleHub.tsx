@@ -24,7 +24,8 @@ import { FolderBrowser, type PickedFolder } from "./FolderBrowser";
 import ScreenPopup from "./ScreenPopup";
 import SubPage from "./SubPage";
 import BrowserAgents, { type BrowserAgentSession } from "./BrowserAgents";
-import { listedAccess } from "./access-list";
+import { accessOf, listedAccess } from "./access-list";
+import { Mascot } from "./Mascot";
 import AgentShortcuts from "./AgentShortcuts";
 import { ServiceAccessPanel } from "./service-access";
 import ToolBrowserSetup from "./ToolBrowserSetup";
@@ -206,13 +207,13 @@ const isPhone = (name: string) => /iphone|android|phone|pixel|galaxy/i.test(name
 
 function Avatar({ client, large = false, active = false }: { client: Client; large?: boolean; active?: boolean }) {
   const size = large ? 26 : 18;
+  // Agents and people you invited wear their mascot; your devices, theirs.
+  const invited = client.kind === "agent" || client.kind === "guest";
   return (
-    <span className={`ppl-avatar ${client.kind || "device"}${large ? " large" : ""}${active ? " is-active" : ""}`} aria-hidden="true">
+    <span className={`ppl-avatar ${client.kind || "device"}${invited ? " has-mascot" : ""}${large ? " large" : ""}${active ? " is-active" : ""}`} aria-hidden="true">
       {active && <i className="ppl-live" />}
-      {client.kind === "agent" ? (
-        <Sparkles size={size} />
-      ) : client.kind === "guest" ? (
-        initial(client.name)
+      {invited ? (
+        <Mascot id={client.id} drawn={client.mascot} />
       ) : isPhone(client.name) ? (
         <Smartphone size={size} />
       ) : (
@@ -836,10 +837,11 @@ export default function PeopleHub({
           {here.map((d) => {
             const agent = !!d.access?.some((a) => a.kind === "agent");
             const guest = !!d.access?.some((a) => a.kind === "invited");
+            const who = accessOf(d.access, clients, d.name);
             return (
               <div key={d.id} className={`gs-row ppl-here${d.activity === "controlling" ? " controlling" : ""}`}>
-                <span className={`ppl-avatar ${agent ? "agent" : guest ? "guest" : "device"}`} aria-hidden="true">
-                  {agent ? <Sparkles size={18} /> : guest ? initial(d.name) : d.kind === "phone" ? <Smartphone size={18} /> : <Laptop size={18} />}
+                <span className={`ppl-avatar ${agent ? "agent" : guest ? "guest" : "device"}${who ? " has-mascot" : ""}`} aria-hidden="true">
+                  {who ? <Mascot id={who.id} drawn={who.mascot} /> : agent ? <Sparkles size={18} /> : guest ? initial(d.name) : d.kind === "phone" ? <Smartphone size={18} /> : <Laptop size={18} />}
                   <i className="ppl-live" />
                 </span>
                 <span className="gs-label">

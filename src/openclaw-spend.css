@@ -183,6 +183,8 @@
   font-weight: 550;
 }
 
-.claw-spend-sheet {
-  overscroll-behavior: contain;
+.claw-spend-page .claw-gateway-body {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
 }

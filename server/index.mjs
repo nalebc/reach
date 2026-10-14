@@ -35,7 +35,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs, refreshDriveRoots } from "./file-roots.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
@@ -44,7 +44,7 @@ import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
-import { createAppIconCache } from "./app-icons.mjs";
+import { createAppIconCache, useAppIconFolder } from "./app-icons.mjs";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
@@ -89,12 +89,14 @@ import { installLock, installPlan, installTerminalCommand } from "./agent-instal
 import { createAgentUpdates } from "./agent-updates.mjs";
 import { agentSource, codexServiceSource, createKeepInSync, openClawSource } from "./keep-in-sync.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
+import { createWindowsTray } from "./windows-tray.mjs";
 import {
   MacTerminalWatch,
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
 import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { SoundHub, soundPreparer } from "./screen-sound.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
   AppThreads,
@@ -109,7 +111,7 @@ import { createNotifications, readAttention } from "./notifications.mjs";
 import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
-import { DesktopInput, desktopBinary, desktopDisplays } from "./desktop-native.mjs";
+import { DesktopInput, desktopBinary, desktopDisplays, windowsBinary } from "./desktop-native.mjs";
 import { prepareOwners } from "./windows-owners.mjs";
 import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
@@ -188,6 +190,8 @@ export async function createReach(overrides = {}) {
     config.agentPolicyFile,
   ];
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  // Windows builds its app-icon helper here (app-icons.mjs).
+  useAppIconFolder(config.dataDir);
   // Settings changed from a paired phone persist; REACH_SCREEN only sets the default.
   const settingsFile = path.join(config.dataDir, "settings.json");
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
@@ -221,6 +225,12 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  // Agents and people invited before mascots draw theirs now, once.
+  try {
+    auth.dressMascots();
+  } catch {
+    /* an unreadable access store stays locked (503) as before */
+  }
   const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
   // Any process on this Mac can claim one of your devices' Tailscale
   // identities on Reach's private socket, so an identity alone never approves
@@ -514,6 +524,10 @@ export async function createReach(overrides = {}) {
   const warming = new AbortController();
   if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => void desktopBinary(config, "browser-files", { signal: warming.signal }).catch(() => {}));
+  // A Windows PC's terminals helper too, so the phone's first look at the
+  // PC's own terminals doesn't wait for csc (windows-terminals.mjs).
+  if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void windowsBinary(config, "windows-terminals", { signal: warming.signal }).catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
@@ -521,6 +535,9 @@ export async function createReach(overrides = {}) {
     // Terminal shortcuts open a Mac terminal window and run one command.
     macTerminal: (command, authorize) =>
       desktopTerminals.create("terminal", authorize, command),
+    // On a Windows PC: Windows Terminal, else a console window, in the folder.
+    windowsTerminal: ({ cwd, command }, authorize) =>
+      desktopTerminals.create("windows-terminal", authorize, command, { cwd }),
     resolveFolder: (root, folder) => {
       const dir = resolve(root, folder);
       if (!fs.statSync(dir).isDirectory()) throw fail(400, "Choose a folder.");
@@ -531,13 +548,15 @@ export async function createReach(overrides = {}) {
   // System-dialog input needs an owner device or explicit Full-person
   // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
-  const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
-  // The Mac's Terminal windows, told by events while a phone is connected;
-  // changes reach phones at once through their live connection.
+  const desktopTerminals = new DesktopTerminals({ dataDir: config.dataDir, ...overrides.desktopTerminals });
+  // The computer's own terminal windows (a Mac's Terminal and iTerm2, a
+  // Windows PC's Windows Terminal and consoles), told by events while a
+  // phone is connected; changes reach phones at once through their live
+  // connection.
   const presenceNudges = new Set();
   const macTerminalWatch = new MacTerminalWatch({
     terminals: desktopTerminals,
-    start: overrides.terminalWatch || terminalWatchHelper(config),
+    start: overrides.terminalWatch || terminalWatchHelper(config, { platform: desktopTerminals.platform }),
     onChange: () => {
       for (const nudge of presenceNudges) nudge();
     },
@@ -549,6 +568,12 @@ export async function createReach(overrides = {}) {
   const remoteScreens = new RemoteScreenHub(
     config,
     overrides.remoteScreenFactory,
+  );
+  // The computer's sound, for the phones listening beside its live screen
+  // (server/screen-sound.mjs): one capture for all of them.
+  const screenSound = new SoundHub(
+    overrides.soundFactory ||
+      soundPreparer(config, { platform: overrides.platform || process.platform, desktopBinary, windowsBinary }),
   );
   // Apps on your phone: each runs on its own hidden display on the Mac.
   const appThreads = new AppThreads({
@@ -577,7 +602,10 @@ export async function createReach(overrides = {}) {
     },
   });
   // Messages from the phone waiting for their Claude app chat: listed in
-  // Reach's menu bar item, where a click opens the chat.
+  // Reach's menu bar item, where a click opens the chat (on Windows, its
+  // icon in the notification area: windowsTray below).
+  let windowsTray = null;
+  let waitingChats = [];
   if (agentSessions.onOutbox && agentSessions.waitingOnMac) {
     let listed = "[]";
     const showWaiting = () => {
@@ -585,7 +613,9 @@ export async function createReach(overrides = {}) {
       const next = JSON.stringify(chats);
       if (next === listed) return;
       listed = next;
+      waitingChats = chats;
       appThreads.waiting(chats);
+      windowsTray?.update({ waiting: chats });
     };
     agentSessions.onOutbox(showWaiting);
     showWaiting();
@@ -879,6 +909,7 @@ export async function createReach(overrides = {}) {
       if (!value) auth.restartQuietClock();
       settings.paused = value;
       atomicJson(settingsFile, settings);
+      windowsTray?.update({ paused: value });
       if (value) {
         desktopAutomation.interrupt();
         browserApprovals.cancelPending();
@@ -893,6 +924,7 @@ export async function createReach(overrides = {}) {
         browserScreenSnapshots.stop(PAUSED);
         remoteScreens.stop(PAUSED, true);
         appScreens.stop(PAUSED, true);
+        screenSound.stop(PAUSED, true);
         // Nothing on a paused Mac captures its screen (Oct 12: the Mac's
         // screen-sharing mark stayed on, so Netflix wouldn't play): the
         // dialog watcher stops, and a screen helper an earlier Reach left
@@ -920,6 +952,17 @@ export async function createReach(overrides = {}) {
     void setPaused(value).catch((e) =>
       console.warn(`Reach: ${e.message}`),
     );
+  // Reach's icon in the Windows notification area, with Pause and Resume, as
+  // a Mac has its menu bar item (windows-tray.mjs). Tests never start the
+  // real helper.
+  if (overrides.windowsTray || (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT))
+    server.once("listening", () => {
+      windowsTray = (overrides.windowsTray || createWindowsTray)({
+        dataDir: config.dataDir,
+        onMenu: (value) => appThreads.onMenu(value),
+      });
+      windowsTray.update({ paused, waiting: waitingChats });
+    });
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
   appThreads.onFrontmost = (bundle) => {
@@ -1382,6 +1425,9 @@ export async function createReach(overrides = {}) {
       ...(faceJoin?.available() && faceJoin.ownDevice(req.reachIdentity)
         ? { faceJoin: true }
         : {}),
+      // How this computer's Reach is run, for the phone's hints: reach,
+      // ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
+      command,
     }),
   );
   app.use("/api", (req, res, next) => {
@@ -1487,7 +1533,9 @@ export async function createReach(overrides = {}) {
       config.tailscaleOwner,
       fromHere ? { thisComputer: true } : undefined,
     );
-    if (from)
+    // A linked computer's ticket vouches for a device, not for whoever is
+    // signed in here: from this computer itself, only the code typed here.
+    if (from && !fromHere)
       try {
         approvals.decide(created.id, "approve", from);
       } catch {}
@@ -2047,8 +2095,8 @@ export async function createReach(overrides = {}) {
       platform: process.platform,
       release: os.release(),
       arch: os.arch(),
-      roots: (req.client.agentRoots || config.roots).map((p, index) => ({
-        id: index,
+      roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
+        id,
         name: fileRootName(p),
         path: p,
       })),
@@ -2178,6 +2226,7 @@ export async function createReach(overrides = {}) {
       browserScreenSnapshots.stop();
       remoteScreens.stop();
       appScreens.stop();
+      screenSound.stop("Screen viewing is off.");
       appThreads.closeAll()?.catch?.(() => {});
       closeInput();
     }
@@ -3210,7 +3259,7 @@ export async function createReach(overrides = {}) {
     )
       throw fail(
         403,
-        "Only a paired person can access existing Mac terminals.",
+        `Only a paired person can access existing ${computerWord(desktopTerminals.platform)} terminals.`,
       );
   };
   app.get("/api/terminals/desktop", async (req, res) =>
@@ -3226,13 +3275,13 @@ export async function createReach(overrides = {}) {
       req.body?.provider,
       authorizeDesktopTerminal(req),
     );
-    record("terminal", "Opened a Mac terminal");
+    record("terminal", `Opened a ${computerWord(desktopTerminals.platform)} terminal`);
     res.json(result);
   });
   // Every Mac tab's last line, answered when one changes (Home).
   app.get("/api/terminals/desktop/activity", async (req, res) => {
     if (!macTerminalWatch.ready)
-      throw fail(409, "Mac terminals aren't being watched right now.");
+      throw fail(409, `${computerWord(desktopTerminals.platform)} terminals aren't being watched right now.`);
     const after = Number(req.query.after);
     const left = new AbortController();
     res.once("close", () => left.abort());
@@ -3284,8 +3333,8 @@ export async function createReach(overrides = {}) {
       record(
         "terminal",
         req.params.action === "close"
-          ? "Closed a Mac terminal"
-          : "Sent text to a Mac terminal",
+          ? `Closed a ${computerWord(desktopTerminals.platform)} terminal`
+          : `Sent text to a ${computerWord(desktopTerminals.platform)} terminal`,
       );
     res.json(result);
   });
@@ -3404,6 +3453,8 @@ export async function createReach(overrides = {}) {
         clientId: current.id,
         // A failed download fails the install too (curl … | bash).
         command: installTerminalCommand({ ...plan, lead }),
+        // Windows: PowerShell's own text, whatever the owner's shell.
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -3435,6 +3486,7 @@ export async function createReach(overrides = {}) {
         name: `Update ${plan.name}`,
         clientId: current.id,
         command: installTerminalCommand(plan),
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -4984,6 +5036,7 @@ export async function createReach(overrides = {}) {
     "/ws/terminal",
     "/ws/screen",
     "/ws/screen-input",
+    "/ws/screen-sound",
     "/ws/presence",
   ];
   // Live connections the host guard turned away, last logged when (per
@@ -5062,9 +5115,10 @@ export async function createReach(overrides = {}) {
         },
         changes: (client) => {
           const scopes = client.scopes || [];
-          // People who may see the Mac's own terminals keep them watched.
+          // People who may see the computer's own terminals keep them
+          // watched (a Mac's or a Windows PC's).
           const macTerminals =
-            desktopTerminals.platform === "darwin" &&
+            ["darwin", "win32"].includes(desktopTerminals.platform) &&
             scopes.includes("admin") &&
             scopes.includes("terminal");
           if (macTerminals && !ws.reachMacTerminals) {
@@ -5408,6 +5462,94 @@ export async function createReach(overrides = {}) {
           !screenControl.reconnecting(ws.clientId)
         )
           screenControl.revoke(ws.clientId);
+      });
+      ws.on("error", () => {});
+      return;
+    }
+    if (req.url === "/ws/screen-sound") {
+      // The computer's sound beside its live screen: for you and people with
+      // full access (never anyone else, agents included), while its screen may
+      // be watched and Reach isn't paused, and never in a browser on the
+      // computer itself, which would play it into what it captures.
+      let credential;
+      const reject = (message, status = 403) => {
+        screenSound.remove(ws);
+        if (ws.readyState === WebSocket.OPEN) {
+          const retryable = ![400, 401, 403, 404].includes(status);
+          ws.send(JSON.stringify({ type: "error", error: message, status, retryable }));
+          ws.close(status === 401 ? 4001 : retryable ? 1012 : 4003, "Sound ended");
+        }
+      };
+      const refusal = (client) => {
+        if (!["darwin", "win32"].includes(overrides.platform || process.platform))
+          return "Sound comes from a Mac or a Windows PC.";
+        if (!client.scopes.includes("screen") || !actsAsOwner(client))
+          return "Only the owner and people with full access hear this computer.";
+        if (!config.screen) return "Turn on screen viewing first.";
+        return "";
+      };
+      const authorized = () => {
+        const client = credential && verify(req, credential);
+        if (!client) {
+          const interruption = transientDenial(req, credential);
+          reject(interruption || "Sound access expired or was revoked.", interruption ? 503 : 401);
+          return false;
+        }
+        const refused = refusal(client);
+        if (refused) {
+          reject(refused);
+          return false;
+        }
+        if (paused) {
+          reject(PAUSED, 423);
+          return false;
+        }
+        return true;
+      };
+      const deadline = setTimeout(() => ws.terminate(), 5000);
+      const expiryCheck = setInterval(() => {
+        if (credential) authorized();
+      }, 1000);
+      expiryCheck.unref();
+      let starting = false;
+      ws.on("message", async (buffer, binary) => {
+        try {
+          if (binary) throw fail(400, "Send a sound protocol message.");
+          const message = JSON.parse(buffer.toString());
+          if (!credential) {
+            if (starting) return;
+            if (message.type !== "auth" || typeof message.token !== "string")
+              throw fail(401, "Authenticate first.");
+            const client = verify(req, message.token);
+            if (!client) throw fail(401, "Pair this device again.");
+            const refused = refusal(client);
+            if (refused) throw fail(403, refused);
+            notPaused();
+            if (!Array.isArray(message.codecs) || !message.codecs.includes("adpcm"))
+              throw fail(400, "This browser can't play the computer's sound.");
+            starting = true;
+            // The visitor's word for where it is: it can only refuse.
+            if (sameComputer(req, await ownTailscaleIps()))
+              throw fail(403, "Sound plays on your phone or another device, not on this computer itself.");
+            if (ws.readyState !== WebSocket.OPEN) return;
+            credential = message.token;
+            ws.clientId = client.id;
+            expires(client);
+            clearTimeout(deadline);
+            if (authorized()) screenSound.add(ws, authorized);
+          } else {
+            if (!authorized()) return;
+            if (message.type !== "ack") throw fail(400, "Unsupported sound message.");
+            screenSound.ack(ws, message.seq);
+          }
+        } catch (e) {
+          reject(e.message, e.status || 400);
+        }
+      });
+      ws.on("close", () => {
+        clearTimeout(deadline);
+        clearInterval(expiryCheck);
+        screenSound.remove(ws);
       });
       ws.on("error", () => {});
       return;
@@ -5797,6 +5939,7 @@ export async function createReach(overrides = {}) {
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
+      windowsTray?.stop();
       reachUpdates.close?.();
       notifications.close();
       openClawWatch.close();
@@ -5819,6 +5962,7 @@ export async function createReach(overrides = {}) {
       browserScreenSnapshots.stop("Reach is shutting down.");
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);
+      screenSound.stop("Reach is shutting down.", true);
       // Requests still running (a phone's download, a long poll) get a
       // moment to finish, then their connections are cut: quitting never
       // waits on a phone.

@@ -255,6 +255,9 @@ before(async () => {
       "/api/sessions/logos": () => ({ version: "test", logos: {} }),
     },
   });
+  // jsdom has no modal dialogs: full-screen pages (guided setup) open as in a browser.
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   Component = (await dom.load("/src/EverythingChat.tsx")).default;
 });
 after(() => dom?.close());
@@ -273,6 +276,10 @@ const click = async (name) => {
   b.click();
   await settle();
 };
+// A task's, an app's or New task's page, pushed in place of the list: never
+// a sheet (Oct 13).
+const page = (name) => dom.document.querySelector(`section[aria-label="${name}"]`);
+const noSheet = () => assert.equal(dom.document.querySelector('[role="dialog"]'), null, "opens as a page, not a sheet");
 async function mount(waitFor = "Weekend plans", accountHealth = []) {
   sent = [];
   reads = [];
@@ -635,11 +642,12 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await mount();
   await click("Scheduled");
   await dom.waitFor(() => button("Morning briefing"));
-  // A task opens in a sheet: its facts, then its actions.
+  // A task opens as a page: its facts, then its actions.
   await click("Morning briefing");
   await dom.waitFor(() => button("Pause Morning briefing"));
+  noSheet();
   assert.match(
-    dom.document.querySelector('[role="dialog"]').textContent,
+    page("Morning briefing").textContent,
     /Repeats.*Daily at.*Next run.*Last run.*Sends to.*WhatsApp/,
   );
   await click("Pause Morning briefing");
@@ -648,7 +656,7 @@ test("schedules show delivery and run timing, pause and resume; channels show co
   await click("Resume Morning briefing");
   await dom.waitFor(() => button("Pause Morning briefing"));
   assert.deepEqual(scheduleChanges.at(-1), { id: "daily", enabled: true });
-  await click("Close morning briefing");
+  await click("Back to Scheduled");
   await click("Back to OpenClaw");
   await click("Customize");
   await dom.waitFor(() =>
@@ -659,14 +667,50 @@ test("schedules show delivery and run timing, pause and resume; channels show co
     /WhatsApp.*Personal account.*Connected.*Discord.*Work server.*Disconnected/,
   );
   await click("Discord");
-  assert.match(dom.document.querySelector('[role="dialog"]').textContent, /Reconnect in OpenClaw/);
-  await click("Close discord");
+  noSheet();
+  assert.match(page("Discord").textContent, /Reconnect in OpenClaw/);
+  await click("Back to Customize");
   assert.equal(sent.length, 0);
   assert.equal(reads.length, 0);
   await click("Back to OpenClaw");
   await click("Choose an app, OpenClaw selected");
   dom.document.querySelector("[role=menuitemradio][aria-label=Codex]").click();
   await dom.waitFor(() => dom.document.body.textContent.includes("Only Codex"));
+});
+
+test("the phone's back steps out one level at a time: a task to Scheduled, Scheduled to the chats, a chat to the list", async () => {
+  await mount();
+  const back = async () => {
+    dom.window.history.back();
+    await settle(30);
+  };
+  await click("Scheduled");
+  await dom.waitFor(() => button("Morning briefing"));
+  await click("Morning briefing");
+  await dom.waitFor(() => page("Morning briefing"));
+  // Android's back, or the iPhone's edge swipe: the task closes, Scheduled stays.
+  await back();
+  await dom.waitFor(() => !page("Morning briefing") && button("New task"));
+  await back();
+  await dom.waitFor(() => button("Customize") && dom.document.body.textContent.includes("Weekend plans"));
+  // The chevron closes a page too, and takes its entry with it: a later back
+  // doesn't land on a closed page.
+  await click("Customize");
+  await dom.waitFor(() => button("Add a messaging app"));
+  await click("Add a messaging app");
+  await dom.waitFor(() => page("Add a messaging app"));
+  await click("Back to Customize");
+  await dom.waitFor(() => !page("Add a messaging app"));
+  await settle(30);
+  assert.ok(button("Add a messaging app"), "still on Customize");
+  await back();
+  await dom.waitFor(() => button("Scheduled") && dom.document.body.textContent.includes("Weekend plans"));
+  // An OpenClaw chat closes with back, as the native apps' do.
+  await click("Login page");
+  await dom.waitFor(() => dom.document.querySelector('[aria-label="OpenClaw conversation"]'));
+  await back();
+  await dom.waitFor(() => !dom.document.querySelector('[aria-label="OpenClaw conversation"]'));
+  assert.ok(dom.document.body.textContent.includes("Weekend plans"));
 });
 
 test("OpenClaw's own heartbeat: a skip is a plain note, and it turns off instead of pausing or deleting", async () => {
@@ -676,7 +720,7 @@ test("OpenClaw's own heartbeat: a skip is a plain note, and it turns off instead
   await dom.waitFor(() => button("heartbeat-main"));
   await click("heartbeat-main");
   await dom.waitFor(() => button("Run heartbeat-main now"));
-  const sheet = dom.document.querySelector('[role="dialog"]');
+  const sheet = page("heartbeat-main");
   assert.match(sheet.textContent, /Last run.*· Skipped/);
   assert.match(sheet.textContent, /task list is empty/);
   assert.doesNotMatch(sheet.textContent, /OpenClaw manages this one/);
@@ -698,7 +742,7 @@ test("a heartbeat this OpenClaw can't switch says where to change it", async () 
     await dom.waitFor(() => button("heartbeat-main"));
     await click("heartbeat-main");
     await dom.waitFor(() => button("Run heartbeat-main now"));
-    assert.match(dom.document.querySelector('[role="dialog"]').textContent, /OpenClaw manages this one/);
+    assert.match(page("heartbeat-main").textContent, /OpenClaw manages this one/);
     assert.ok(!button("Turn off heartbeat-main"));
   } finally {
     canSwitchHeartbeat = true;
@@ -714,15 +758,17 @@ test("missing things are asked for: a schedule is added, run and deleted; advanc
   assert.ok(button("Inbox check") && button("Weekly plan"));
   assert.equal(dom.document.querySelectorAll(".claw-task.suggested").length, 2);
   await click("New task");
+  noSheet();
+  assert.ok(page("New task"));
   await typeInto(dom.document.querySelector('[aria-label="Schedule name"]'), "Evening recap");
   await typeInto(dom.document.querySelector('[aria-label="What OpenClaw does each time"]'), "Recap my day");
-  await click("Add schedule");
+  await click("Add task");
   await dom.waitFor(() => setupCalls.some(([k]) => k === "new"));
   const made = setupCalls.find(([k]) => k === "new")[1];
   assert.equal(made.expr, "0 9 * * *");
   assert.equal(made.name, "Evening recap");
   assert.equal(made.announce, false);
-  await dom.waitFor(() => !dom.document.querySelector('[role="dialog"]'));
+  await dom.waitFor(() => !page("New task"));
   await click("Morning briefing");
   await dom.waitFor(() => button("Run Morning briefing now"));
   await click("Run Morning briefing now");
@@ -734,18 +780,23 @@ test("missing things are asked for: a schedule is added, run and deleted; advanc
   const opened = [];
   dom.window.addEventListener("reach:open-terminal", (e) => opened.push(e.detail));
   whatsappStatus = "unconfigured";
-  await dom.waitFor(() => !dom.document.querySelector('[role="dialog"]'));
+  await dom.waitFor(() => !page("Morning briefing"));
   await click("Back to OpenClaw");
   await click("Customize");
   await dom.waitFor(() => button("Connect WhatsApp"));
   await click("Add a messaging app");
+  noSheet();
   await click("Other apps");
-  await dom.waitFor(() => button("Start guided setup"));
+  // Guided setup is a page of its own: full screen, not a sheet.
+  await dom.waitFor(() => button("Start setup"));
+  assert.ok(dom.document.querySelector("dialog.claw-setup[open]"));
+  assert.equal(dom.document.querySelector(".reach-chat-sheet"), null);
   assert.deepEqual(opened, []);
   assert.equal(setupCalls.some(([k]) => k === "setup"), false);
-  await click("Close guided openclaw setup");
-  await click("Close add a messaging app");
+  await click("Close openclaw setup");
+  await click("Back to Customize");
   await click("Connect WhatsApp");
+  assert.ok(page("WhatsApp"));
   await dom.waitFor(() => dom.document.querySelector('img[alt="WhatsApp link QR code"]') || dom.document.body.textContent.includes("is linked"));
   assert.deepEqual(setupCalls.find(([k]) => k === "link")[1], {});
   await dom.waitFor(() => dom.document.body.textContent.includes("WhatsApp is linked"));
@@ -846,6 +897,7 @@ test("a messaging app is added in Reach by its bot token, not in a terminal", as
   await dom.waitFor(() => button("Add a messaging app"));
   await click("Add a messaging app");
   await dom.waitFor(() => dom.document.querySelector('[aria-label="Telegram bot token"]'));
+  noSheet();
   assert.equal(button("Add Telegram").disabled, true);
   dom.document.querySelector('[role=radio][aria-checked=false]').click();
   await dom.waitFor(() => dom.document.querySelector('[aria-label="Discord bot token"]'));
@@ -859,6 +911,31 @@ test("a messaging app is added in Reach by its bot token, not in a terminal", as
   assert.ok(!dom.document.body.textContent.includes("MTA-secret-token"));
 });
 
+// OpenClaw runs natively on a Windows PC (docs.openclaw.ai/platforms/
+// windows); only iMessage needs a Mac (its plugin runs imsg on a signed-in
+// Mac), and that's said where the other apps are offered, never hidden.
+test("on a Windows PC the other messaging apps leave out iMessage, and say it needs a Mac", async () => {
+  peer.platform = "win32";
+  try {
+    await mount();
+    await click("Customize");
+    await dom.waitFor(() => button("Add a messaging app"));
+    await click("Add a messaging app");
+    // Its page (the setup redesign): the other apps' row says what's left.
+    const other = () => [...dom.document.querySelectorAll("button.claw-row")].find((row) => row.textContent.includes("Other apps"));
+    const row = await dom.waitFor(() => other());
+    assert.equal(row.querySelector("small").textContent, "Signal, Matrix… iMessage needs a Mac.");
+    assert.ok(dom.document.querySelector('[aria-label="Telegram bot token"]'), "Telegram, Discord and Slack are added there as on a Mac");
+  } finally {
+    peer.platform = "darwin";
+  }
+  await view?.unmount();
+  await mount();
+  await click("Customize");
+  await click("Add a messaging app");
+  const row = await dom.waitFor(() => [...dom.document.querySelectorAll("button.claw-row")].find((r) => r.textContent.includes("Other apps")));
+  assert.equal(row.querySelector("small").textContent, "Signal, iMessage, Matrix…");
+});
 
 test("OpenClaw keeps account limits visible in the provider dropdown and conversation rail", async () => {
   await mount("Weekend plans", [

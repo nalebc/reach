@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setupInvites, KEYS_PAGE } from "../scripts/invites.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
+import { command } from "../scripts/home.mjs";
 
 // `reach setup invites`: paste one token, see exactly what Reach adds, and
 // it's done. The by-hand path stays for anyone who prefers it.
@@ -105,7 +106,8 @@ test("cancel at the confirmation: policy untouched, nothing saved, and setup goe
     }),
     { ready: false },
   );
-  assert.match(out.join("\n"), /Nothing changed\. Set up invite links any time with \.\/reach setup invites/);
+  // `command`: ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
+  assert.ok(out.join("\n").includes(`Nothing changed. Set up invite links any time with ${command} setup invites`), out.join("\n"));
   assert.equal(api.policy, before);
   assert.equal(api.clients.length, 0);
   assert.ok(!fs.existsSync(path.join(root, ".reach", "quick", "tailscale-oauth.json")));
