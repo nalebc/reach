@@ -7,8 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import readline from "node:readline";
-import { spawn } from "node:child_process";
-import { codexArchive } from "../server/agent-sessions/portable-history.mjs";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { codexArchive, claudeArchive } from "../server/agent-sessions/portable-history.mjs";
 
 test("native Codex loads bounded context and preserves the full imported transcript", {
   skip: !process.env.REACH_TEST_CODEX_BINARY,
@@ -81,4 +82,47 @@ test("native Codex loads bounded context and preserves the full imported transcr
   assert.match(modelContext, /Latest task/);
   assert.match(modelContext, /Original task/);
   assert.ok(!modelContext.includes("x".repeat(1000)), "pre-compaction history is excluded from inference");
+});
+
+test("native Claude loads the same bounded continuation without losing its complete archive", {
+  skip: !process.env.REACH_TEST_CLAUDE_BINARY,
+  timeout: 30_000,
+}, async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-transfer-claude-"));
+  const home = path.join(dir, "claude-home");
+  const id = "11111111-2222-4333-8444-555555555555";
+  const project = path.join(home, "projects", dir.replace(/[^a-zA-Z0-9]/g, "-"));
+  await fs.mkdir(project, { recursive: true });
+  let request;
+  const endpoint = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (req.url?.includes("/messages")) request = JSON.parse(Buffer.concat(chunks).toString());
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ type: "error", error: { message: "Fixture stops before inference", type: "invalid_request_error" } }));
+  });
+  t.after(async () => {
+    endpoint.closeAllConnections();
+    if (endpoint.listening) await new Promise(resolve => endpoint.close(resolve));
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  await new Promise((resolve, reject) => { endpoint.once("error", reject); endpoint.listen(0, "127.0.0.1", resolve); });
+  const file = path.join(project, `${id}.jsonl`);
+  const huge = "Old answer " + "x".repeat(600_000);
+  const rows = claudeArchive({ id, cwd: dir, title: "Transfer fixture", items: [{ role: "user", kind: "text", text: "Original task" }, { role: "assistant", kind: "text", text: huge }, { role: "user", kind: "text", text: "Latest task" }], from: "Codex", context: { items: [{ role: "user", kind: "text", text: "Latest task" }], summary: "The original work is done. Next step: Windows." }, version: "2.1.299", archivePath: file });
+  await fs.writeFile(file, rows.map(JSON.stringify).join("\n") + "\n");
+  await promisify(execFile)(process.env.REACH_TEST_CLAUDE_BINARY, ["--bare", "--resume", id, "--print", "Continue", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--output-format", "json"], {
+    cwd: dir,
+    env: { ...process.env, CLAUDE_CONFIG_DIR: home, ANTHROPIC_API_KEY: "reach-transfer-fixture", ANTHROPIC_BASE_URL: `http://127.0.0.1:${endpoint.address().port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+    timeout: 20_000,
+    maxBuffer: 1 << 20,
+  }).catch(error => { if (error.killed) throw error; }); // The mock deliberately rejects inference.
+  assert.ok(request, "the resumed CLI reaches only the local mock endpoint");
+  const modelContext = JSON.stringify(request.messages);
+  assert.ok(modelContext.length < 100_000, `bounded request: ${modelContext.length}`);
+  assert.match(modelContext, /The original work is done\. Next step: Windows\./);
+  assert.match(modelContext, /Original task/);
+  assert.match(modelContext, /Latest task/);
+  assert.ok(!modelContext.includes("x".repeat(1000)), "pre-compaction history is excluded from inference");
+  assert.ok((await fs.readFile(file, "utf8")).includes(huge), "the full old answer stays in the saved archive");
 });
