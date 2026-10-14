@@ -167,6 +167,12 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     assert.equal(answer.type, "ack", JSON.stringify(answer));
     return answer;
   };
+  // A real phone keeps its control lease alive while it waits for a scan or
+  // watches the screen. Preserve that same lease during read-only assertions.
+  const heartbeat = setInterval(() => {
+    if (input.ws.readyState === WebSocket.OPEN) void send({ type: "heartbeat" }).catch(() => {});
+  }, 500);
+  t.after(() => clearInterval(heartbeat));
   const at = {
     x: (boxX - primary.x) / Math.max(1, primary.width - 1),
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
