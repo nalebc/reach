@@ -24,11 +24,14 @@ import {
   Unplug,
   Activity,
   Bot,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { pasteFromPhone } from "./phone-paste";
 import { Device, Peer, post, request } from "./api";
 import { Empty, ErrorLine, PageTitle } from "./ui";
 import { useRemoteScreen } from "./useRemoteScreen";
+import { soundSupported, useScreenSound } from "./useScreenSound";
 import { useDesktopInput, type DesktopAction } from "./useDesktopInput";
 import QuickLauncher from "./QuickLauncher";
 import ScreenPopup from "./ScreenPopup";
@@ -221,6 +224,13 @@ export default function Screen({
     // phone can't decode it.
     false,
   );
+  // The computer's sound beside its picture: you and people with full
+  // access, never in a browser on the computer itself (it would echo).
+  const hears = !!device.capabilities.sound && !device.sameComputer && soundSupported();
+  const sound = useScreenSound(peer, hears && live && visible && !paused && !here);
+  useEffect(() => {
+    if (sound.error) toast(sound.error);
+  }, [sound.error]);
   const input = useDesktopInput(
     peer,
     control && live && visible,
@@ -1045,6 +1055,18 @@ export default function Screen({
                     </button>
                   ))}
                 </span>
+              )}
+              {hears && !typing && !paused && (
+                <button
+                  aria-label="Sound"
+                  title={`${sound.on ? "Stop hearing" : "Hear"} the ${computerWord(device.platform)}`}
+                  aria-pressed={sound.on}
+                  aria-busy={sound.state === "starting" || undefined}
+                  className={sound.state === "starting" ? "screen-bar-pending" : undefined}
+                  onClick={() => (sound.on ? sound.stop() : sound.start())}
+                >
+                  {sound.on ? <Volume2 size={18} /> : <VolumeX size={18} />}
+                </button>
               )}
               {!turnToLeave && (
                 <button

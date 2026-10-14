@@ -169,8 +169,9 @@ export class NativeScreenSource {
   }
 }
 // Screen helpers an earlier Reach left running (it was killed, or crashed
-// mid-stream): this data folder's own helper binaries whose parent isn't this
-// Reach. Ended on start and on Pause, so a paused Mac captures nothing.
+// mid-stream): this data folder's own picture and sound helpers whose parent
+// isn't this Reach. Ended on start and on Pause, so a paused Mac captures
+// nothing.
 export function sweepScreenHelpers({
   dataDir,
   self = process.pid,
@@ -179,7 +180,7 @@ export function sweepScreenHelpers({
   platform = process.platform,
 } = {}) {
   if (platform !== "darwin" || !dataDir) return [];
-  const prefix = path.join(dataDir, "reach-screen-stream-");
+  const prefixes = ["reach-screen-stream-", "reach-screen-sound-"].map((name) => path.join(dataDir, name));
   let rows;
   try {
     rows = table();
@@ -189,7 +190,7 @@ export function sweepScreenHelpers({
   const ended = [];
   for (const row of rows) {
     if (row.pid === self || row.ppid === self) continue;
-    if (!row.command.startsWith(prefix)) continue;
+    if (!prefixes.some((prefix) => row.command.startsWith(prefix))) continue;
     try {
       kill(row.pid, "SIGTERM");
       ended.push(row.pid);
