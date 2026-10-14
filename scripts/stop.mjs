@@ -7,6 +7,7 @@ import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
 import { command } from "./home.mjs";
 import { loginScript } from "./login-start.mjs";
 import { windowsPath } from "../server/app-identity.mjs";
+import { fileExists, windowsTerminalExe } from "../server/windows-shell.mjs";
 import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // `reach stop` / `reach restart`: every Reach running on this computer (one
@@ -432,7 +433,7 @@ export function startInConsole(root, {
   args = "",
   env = process.env,
   node = process.execPath,
-  exists = fs.existsSync,
+  exists = fileExists,
   run = (file, argv, options) => execFileSync(file, argv, options),
 } = {}) {
   const system = windowsFolder(env);
@@ -443,11 +444,13 @@ export function startInConsole(root, {
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, script, { mode: 0o700 });
   const cmd = path.win32.join(system, "System32", "cmd.exe");
-  const local = env.LOCALAPPDATA ?? env.localappdata;
-  const terminal = windowsPath(local) ? path.win32.join(local, "Microsoft", "WindowsApps", "wt.exe") : "";
+  // Found as the PC's own terminals are (windows-shell.mjs): its alias, else
+  // PATH; one whose path cmd would read as a variable or a quote isn't used.
+  const found = windowsTerminalExe({ env, exists });
+  const terminal = /[%"]/.test(found) ? "" : found;
   const tab = `"${cmd}" /d /v:off /c start-in-console.cmd`;
   // Windows Terminal reads ; as "and then"; \; is a plain one.
-  const line = terminal && exists(terminal)
+  const line = terminal
     ? `start "Reach" /D "${state}" "${terminal}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state.replace(/;/g, "\\;")}" ${tab}`
     : `start "Reach" /D "${state}" ${tab}`;
   run(cmd, ["/d", "/v:off", "/s", "/c", `"${line}"`], { windowsVerbatimArguments: true, stdio: "ignore", timeout: 15000 });
