@@ -18,8 +18,9 @@ release notes, so date the heading before tagging.
   (ScreenCaptureKit, macOS 13 or newer); Windows needs none (a loopback of its
   default output). About 0.4 Mbps (IMA ADPCM, 48 kHz stereo), lighter on a
   slow link (24 kHz, then mono), and skipped rather than late. The phone
-  plays it about a tenth of a second behind, with an iPhone's ringer switch
-  on silent on iOS 17 and later. Off each time Screen opens; stopped by
+  plays it about a tenth of a second behind, asking iOS to treat it as media
+  playback (Safari 17's audio session) so it should play with the ringer
+  switch on silent; not yet tried on an iPhone. Off each time Screen opens; stopped by
   leaving Screen, Pause, or turning screen viewing off; not offered in a
   browser on the computer itself, where it would echo. Checked with a real
   capture on a Mac (macOS 26.6) and end to end in headless Chrome under

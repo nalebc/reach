@@ -46,9 +46,11 @@ export function useScreenSound(peer: Peer, active: boolean) {
   const context = useRef<AudioContext | null>(null);
   const retry = useRef(new ReconnectTimer(Math.random, 15000, 500));
   const [attempt, setAttempt] = useState(0);
-  // Refusals in a row before any sound played: the second says why and
-  // turns the speaker off (no sound output, a helper that can't start)
-  // instead of trying forever. A link that drops after it played retries.
+  // Connections in a row that ended before any sound played. A refusal
+  // twice (no sound output, a helper that can't start), or a connection
+  // turned away without a word three times (the host guard does that at the
+  // door), says so and turns the speaker off instead of trying forever. A
+  // link that drops after it played just reconnects.
   const refusals = useRef(0);
   // Called inside the tap itself: browsers start sound only during one.
   const start = useCallback(() => {
@@ -60,8 +62,9 @@ export function useScreenSound(peer: Peer, active: boolean) {
       audio = new Context({ latencyHint: "interactive" });
       context.current = audio;
     }
-    // Played with the ringer switch on silent, as a video is (iOS 17 and
-    // later; earlier ones follow the switch).
+    // Media playback, as a video is, so the ringer switch on silent
+    // shouldn't mute it (Safari 17's audio session; older ones follow the
+    // switch). Not yet tried on an iPhone.
     try {
       const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
       if (session) session.type = "playback";
@@ -173,9 +176,10 @@ export function useScreenSound(peer: Peer, active: boolean) {
         };
         ws.onclose = () => {
           if (stopped) return;
-          if (failure && (!screenCanRetry(failure) || ++refusals.current >= 2))
-            end(failure.error || "Sound stopped.");
-          else again();
+          if (failure && !screenCanRetry(failure)) return end(failure.error || "Sound stopped.");
+          if (!ready && ++refusals.current >= (failure ? 2 : 3))
+            return end(failure?.error || "The computer's sound didn't connect. Tap the speaker to try again.");
+          again();
         };
       })
       .catch(() => end("This browser couldn't start the computer's sound."));

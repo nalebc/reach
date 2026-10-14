@@ -207,6 +207,17 @@ test("a refusal says why once and turns the speaker off; a blip after it played 
   await dom.waitFor(() => toasts.length === 2);
   assert.equal(toasts[1], "This PC has no sound output for Reach to hear.");
   assert.equal(speaker.getAttribute("aria-pressed"), "false");
+  // Turned away at the door without a word (the host guard does that), three
+  // times before any sound: said, and the speaker goes off.
+  speaker.click();
+  for (let i = 0; i < 3; i++) {
+    const next = await dom.waitFor(soundSocket);
+    next.close();
+    await dom.waitFor(() => next.readyState === 3 && soundSocket() !== next);
+  }
+  await dom.waitFor(() => toasts.length === 3);
+  assert.equal(toasts[2], "The computer's sound didn't connect. Tap the speaker to try again.");
+  assert.equal(speaker.getAttribute("aria-pressed"), "false");
 });
 
 test("no speaker where the computer offers no sound, or on the computer itself", async () => {

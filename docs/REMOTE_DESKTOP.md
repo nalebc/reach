@@ -35,10 +35,10 @@ Switching displays, pausing, hiding the app, or leaving the page releases contro
 
 Tap the speaker in Screen's bar to hear the computer on your phone while you watch; tap it again to stop. Sound starts off each time you open Screen, and stops when you leave Screen, switch computers, put Reach in the background or lock the phone, pause Reach, or turn screen viewing off.
 
-- **What you hear:** what the computer plays, never its microphone. A Mac captures it with ScreenCaptureKit, under the Screen Recording permission the picture already uses (macOS 13 or newer). A Windows PC captures its default output (a WASAPI loopback); switch speakers or headphones and the sound follows after a short reconnect. Protected content (some streaming apps) may be silent, as it is black in the picture.
+- **What you hear:** what the computer plays, never its microphone. A Mac captures it with ScreenCaptureKit, under the Screen Recording permission the picture already uses (macOS 13 or newer). A Windows PC captures its default output (a WASAPI loopback); switching speakers or headphones should make the sound follow after a short reconnect (written, not yet run on a real PC). Protected content (some streaming apps) may be silent, as it is black in the picture.
 - **Who:** you and people with full access. Invited people with less access and agents never hear it. It isn't offered in a browser on the computer itself (it would play into what it captures), and it travels only over the private link, never the public one.
 - **Quality:** IMA ADPCM, about 0.4 Mbps at 48 kHz stereo: good for videos, calls and alerts, not hi-fi. A link that backs up gets 24 kHz stereo, then 24 kHz mono, and skips rather than falls behind; it has its own connection, so it never holds up the picture. The phone keeps about a tenth of a second queued, a little more after a late packet, a little less after calm. A silent computer sends one small packet a second.
-- **iPhone:** it plays with the ringer switch on silent on iOS 17 and later; earlier versions follow the switch. The phone's volume buttons set the level.
+- **iPhone:** Reach asks iOS to treat the sound as media playback (the audio session Safari 17 added), so it should play with the ringer switch on silent, as a video does; without that (older iOS) it follows the switch. Not yet tried on an iPhone. The phone's volume buttons set the level.
 
 The phone and the computer keep slightly different time, so over a long listen the queue can run dry or grow: a brief skip every quarter of an hour or more at worst.
 
