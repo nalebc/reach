@@ -58,7 +58,10 @@ export class DesktopTerminals {
   }
   targets = new Map();
   // false, "user" (a person's action) or "background" (Reach keeping its
-  // list and text current, server/mac-terminal-watch.mjs).
+  // list and text current, server/mac-terminal-watch.mjs). Looking (the
+  // list, a tab's text) is background too: a line typed while the phone is
+  // still reading the tab waits for the read, then goes (Oct 14, the user
+  // journeys: it was refused, and the person's Enter lost).
   busy = false;
   current = Promise.resolve();
   async exclusive(authorize, fn, background = false) {
@@ -86,7 +89,7 @@ export class DesktopTerminals {
       this.busy = false;
     }
   }
-  async list(authorize, { background = false } = {}) {
+  async list(authorize, { background = true } = {}) {
     if (this.platform === "win32")
       return this.exclusive(authorize, () => this.listWindows(authorize), background);
     return this.exclusive(authorize, async () => {
@@ -208,7 +211,7 @@ export class DesktopTerminals {
         if (action === "close") this.targets.delete(id);
         authorize();
         return result;
-      }, background);
+      }, background || action === "read");
     } catch (error) {
       // A refused queued action never entered the native runner. Only an
       // explicit ownership-aware caller uses this no-action retry contract.
