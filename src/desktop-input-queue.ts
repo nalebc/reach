@@ -5,6 +5,8 @@ export type TextTarget = {
   secure?: boolean;
   // The keyboard opened during the tap; no input may leave until focus is confirmed.
   pending?: boolean;
+  // Reset phone-only draft context after a remote caret/selection change.
+  editRevision?: number;
 };
 export type InputResult = {
   ok?: boolean;
@@ -14,6 +16,8 @@ export type InputResult = {
   skipped?: boolean;
   target?: TextTarget;
   point?: { x: number; y: number };
+  clickState?: number;
+  retargeted?: boolean;
 };
 type Pending = {
   action: DesktopAction;
@@ -44,6 +48,14 @@ export class DesktopInputQueue {
   enqueue(action: DesktopAction): Promise<InputResult> {
     return new Promise((resolve, reject) => {
       if (this.stopped) return reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
+      // A touch stopping a fling discards unsent scrolling even on a slow
+      // link. Keep clicks, keys and pointer releases in their original order.
+      if (action.type === "scroll" && action.phase === "cancelled" && action.dx === 0 && action.dy === 0)
+        for (let i = this.queued.length - 1; i >= 0; i--)
+          if (this.queued[i].action.type === "scroll") {
+            this.queued[i].resolve({ ok: true, skipped: true });
+            this.queued.splice(i, 1);
+          }
       // A move or scroll merges into the last one of its kind still waiting,
       // past other moves and scrolls (never past a click or key): moves and
       // scrolls arriving in turns can't pile up on a slow link.

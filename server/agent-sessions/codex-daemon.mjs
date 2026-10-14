@@ -32,6 +32,18 @@ export function olderVersion(a, b) {
   return false;
 }
 
+// `codex app-server daemon version` → the running service's version and the
+// CLI's (verified Oct 13: {"managedCodexVersion":"0.158.0-alpha.2.1",
+// "cliVersion":"0.162.0-alpha.17.2","appServerVersion":"0.158.0-alpha.2.1",…}).
+// Either unreadable: null (never guessed).
+export function parseDaemonVersion(text) {
+  let value;
+  try { value = JSON.parse(String(text || "").trim().split("\n").pop()); } catch { return { service: null, cli: null }; }
+  const ok = (v) => (typeof v === "string" && /^\d+\.\d+\.\d+[\w.+-]*$/.test(v) ? v : null);
+  if (!object(value)) return { service: null, cli: null };
+  return { service: ok(value.appServerVersion) || ok(value.managedCodexVersion), cli: ok(value.cliVersion) };
+}
+
 // The model and effort new chats use, as config.toml sets them at its top
 // level (a [profile] table's own `model` is not the default), or in the
 // profile its top level picks (`profile = "x"`), which Codex reads first.
@@ -345,8 +357,86 @@ export function createCodexDaemon({
     }
     return cliCatalog.list;
   });
-  return {
+  // The service's version against the CLI's: the hello's (what Reach is
+  // connected to) first, else `daemon version` before any hello.
+  async function serviceStatus() {
+    const report = await compatibility().catch(() => null);
+    let service = serviceVersion, cli = report?.version || null;
+    if (!service) {
+      const codex = await locate();
+      if (codex) {
+        const c = spawnable(codex);
+        const read = await run(c.file, [...c.args, "app-server", "daemon", "version"], { timeout: 20000, maxBuffer: 65536 }).catch(() => null);
+        const parsed = parseDaemonVersion(read?.stdout);
+        service = parsed.service;
+        cli ||= parsed.cli;
+      }
+    }
+    return { service, cli, behind: olderVersion(service, cli) };
+  }
+  // Drop this connection; the next call opens a new one (a new hello).
+  function reconnect() {
+    const was = socket;
+    socket = null;
+    ready = null;
+    serviceVersion = null;
+    fail("Codex session service disconnected.");
+    try { was?.terminate(); } catch {}
+    if (was)
+      for (const listener of closeListeners) {
+        try { listener(); } catch { noteIssue("notifications", compatibilityError("codex", "notifications")); }
+      }
+  }
+  // `codex app-server daemon update` with the Codex Reach runs (a fixed
+  // command, nothing from the phone), then a new connection to whatever
+  // service runs now: its hello says the version. Done only when that is no
+  // longer older than the CLI (an exit code alone isn't proof). Nothing is
+  // held or queued meanwhile: a send while it runs fails as any send to a
+  // service that went away does.
+  let updating = null;
+  function updateService() {
+    if (updating) return updating;
+    updating = (async () => {
+      if (closed) throw closedError();
+      const codex = await locate();
+      if (!codex) throw Object.assign(new Error(`Codex is not installed on this ${computerWord(platform)}.`), { status: 503 });
+      const cli = spawnable(codex);
+      const daemon = [...cli.args, "app-server", "daemon"];
+      // --from-cli: the service becomes the very Codex Reach found (the one
+      // the owner runs), pinned, so the two match; --yes: nobody is at a
+      // terminal to answer Codex's question.
+      try {
+        await run(cli.file, [...daemon, "update", "--from-cli", "--yes"], { timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 });
+      } catch (e) {
+        const said = String(e?.stderr || e?.stdout || "").trim().split("\n").filter(Boolean).pop() || (e?.killed ? "it took too long" : "");
+        throw Object.assign(new Error(`Codex's service didn't update${said ? `: ${said.slice(0, 200)}` : "."}`), { status: 502 });
+      } finally {
+        reconnect();
+        cliCatalog = null;
+      }
+      // The new connection's hello, as the next call would make it.
+      await api.rpc("model/list", {}).catch(() => {});
+      let now = await serviceStatus();
+      // A service that kept running on the old package: started again once,
+      // onto the new one (the owner already chose to interrupt it).
+      if (now.service && now.behind) {
+        await run(cli.file, [...daemon, "restart"], { timeout: 2 * 60 * 1000, maxBuffer: 1024 * 1024 }).catch(() => {});
+        reconnect();
+        await api.rpc("model/list", {}).catch(() => {});
+        now = await serviceStatus();
+      }
+      if (!now.service || now.behind)
+        throw Object.assign(new Error(now.service ? `Codex's service is still ${now.service}.` : "Codex's service didn't come back."), { status: 502 });
+      return now;
+    })().finally(() => { updating = null; });
+    return updating;
+  }
+  const api = {
     compatibility,
+    serviceStatus,
+    updateService,
+    updatingService: () => !!updating,
+    reconnect,
     ...(cliModels ? { cliModels } : {}),
     ...(defaults ? { defaults: () => defaults() } : {}),
     async rpc(method, params = {}) {
@@ -407,4 +497,5 @@ export function createCodexDaemon({
       ready = null;
     },
   };
+  return api;
 }

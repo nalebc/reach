@@ -7,7 +7,7 @@ const source = await fs.readFile(
   "utf8",
 );
 const outputText = transpile(source);
-const { screenPoint } = await import(
+const { screenPoint, screenImageRect, screenTouchTolerance } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 
@@ -57,14 +57,66 @@ test("zoom and scroll keep remote coordinates at the same location", () => {
   });
 });
 
+test("mapping and finger tolerance share CSS pixels across Retina, zoom, letterboxing and browser scaling", () => {
+  for (const box of [
+    { left: 20, top: 80, width: 800, height: 450 },
+    { left: -300, top: -140, width: 1800, height: 1012.5 },
+    { left: 7, top: 15, width: 480, height: 270 },
+    { left: 0, top: 60, width: 390, height: 700 },
+    { left: 0, top: 50, width: 1200, height: 400 },
+  ]) {
+    for (const density of [1, 2, 3]) {
+      const width = 1600 * density, height = 900 * density;
+      const image = screenImageRect(box, width, height), tolerance = screenTouchTolerance(box, width, height);
+      assert.ok(Math.abs(tolerance.x * image.width - 10) < 1e-8);
+      assert.ok(Math.abs(tolerance.y * image.height - 10) < 1e-8);
+      for (const point of [{ x: 0, y: 0 }, { x: 0.003, y: 0.997 }, { x: 0.75, y: 0.25 }, { x: 1, y: 1 }]) {
+        const actual = screenPoint(image.left + image.width * point.x, image.top + image.height * point.y, box, width, height);
+        assert.ok(Math.abs(actual.x - point.x) < 1e-8);
+        assert.ok(Math.abs(actual.y - point.y) < 1e-8);
+      }
+    }
+  }
+  const tiny = { left: 0, top: 0, width: 50, height: 25 };
+  assert.deepEqual(screenTouchTolerance(tiny, 2000, 1000), { x: 0.1, y: 0.1 }, "bounded for small thumbnails");
+  for (const box of [{ ...tiny, width: 0 }, { ...tiny, top: NaN }]) {
+    assert.equal(screenImageRect(box, 2000, 1000), null);
+    assert.equal(screenTouchTolerance(box, 2000, 1000), undefined);
+  }
+  assert.equal(screenTouchTolerance(tiny, 0, 0), undefined);
+});
+
+test("a held drag clamps to the picture's edges, respecting letterboxing", () => {
+  const box = { left: 20, top: 30, width: 1000, height: 1000 };
+  assert.equal(screenPoint(520, 80, box, 2000, 1000), null, "a letterbox tap is still ignored");
+  assert.deepEqual(screenPoint(520, 80, box, 2000, 1000, true), { x: 0.5, y: 0 });
+  assert.deepEqual(screenPoint(-100, 2000, box, 2000, 1000, true), { x: 0, y: 1 });
+  assert.equal(screenPoint(520, 80, box, 0, 0, true), null);
+});
+
 const geometrySource = await fs.readFile(
   new URL("../src/desktop-geometry.ts", import.meta.url),
   "utf8",
 );
 const geometry = transpile(geometrySource);
-const { typingView } = await import(
+const { typingView, dragView } = await import(
   `data:text/javascript;base64,${Buffer.from(geometry).toString("base64")}`
 );
+
+test("edge dragging reveals each side of a zoomed display and stays still in the middle or at Fit", () => {
+  const initial = { scale: 2, x: 0, y: 0 };
+  assert.deepEqual(dragView(initial, { x: 500, y: 250 }, 0.032, 1000, 500, 1000, 500), initial);
+  const fit = { scale: 1, x: 0, y: 0 };
+  assert.deepEqual(dragView(fit, { x: 0, y: 0 }, 0.032, 1000, 500, 1000, 500), fit);
+  for (const [finger, x, y] of [
+    [{ x: 0, y: 0 }, 548, 298],
+    [{ x: 1000, y: 500 }, -548, -298],
+  ]) {
+    let v = initial;
+    for (let i = 0; i < 100; i++) v = dragView(v, finger, 0.032, 1000, 500, 1000, 500);
+    assert.deepEqual(v, { scale: 2, x, y });
+  }
+});
 test("typing keeps the tapped field visible across keyboard resize, orientation and display aspect ratios", () => {
   for (const [screenW, screenH] of [
     [1440, 900],

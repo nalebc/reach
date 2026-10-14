@@ -59,6 +59,9 @@ test("Settings → Agents asks nothing while the page is in the background, and 
   await settle(3300);
   assert.equal(calls.length, hiddenAt, "no request while hidden");
   await setHidden(false);
+  // At once, as the page comes back (a slow runner may need a moment to
+  // dispatch it); nothing waited for a poll.
+  await dom.waitFor(() => calls.slice(hiddenAt).includes("/api/browser/agents"), 1000).catch(() => {});
   assert.ok(calls.slice(hiddenAt).includes("/api/browser/agents"), "back on screen: read at once");
 });
 

@@ -1,9 +1,8 @@
 import { useLayoutEffect, useState, type RefObject } from "react";
 import { chromeLayout, safeInsets, type ChromeLayout } from "./screen-chrome";
 
-// The fullscreen Screen's controls in the room the picture leaves (see
-// src/screen-chrome.ts), measured again when the phone turns, the window
-// resizes, or the computer's screen changes shape.
+// Measure the fullscreen viewport when it turns or resizes. Landscape
+// overlays its controls; portrait reserves their rows (screen-chrome.ts).
 export function useScreenChrome(
   viewer: RefObject<HTMLElement | null>,
   active: boolean,
@@ -22,7 +21,15 @@ export function useScreenChrome(
       const height = box?.clientHeight || view?.height || window.innerHeight;
       const next = chromeLayout(width, height, aspect, safeInsets());
       setLayout((was) =>
-        was && was.placement === next.placement && was.rail === next.rail ? was : next,
+        was &&
+        was.placement === next.placement &&
+        (["x", "y", "w", "h"] as const).every(
+          (key) =>
+            was.stage[key] === next.stage[key] &&
+            was.picture[key] === next.picture[key],
+        )
+          ? was
+          : next,
       );
     };
     // The first one at once, so fullscreen opens already laid out.

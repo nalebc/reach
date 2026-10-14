@@ -47,6 +47,26 @@ test("deltas include changed and removed controls, and reset across grants and d
   assert.equal(otherDisplay.reset, true);
 });
 
+test("native region reads cannot claim removals across scopes or seed a whole-window baseline", () => {
+  const observe = createObservations();
+  const scoped = (snapshot, within, items = []) => ({ ...screen(snapshot, items), scope: { within } });
+  observe(client, screen("full", [button("e-1", "Open", "A"), button("e-2", "Delete", "B")]));
+  const partial = observe(client, scoped("a", "A", [button("e-1", "Open", "A")]), { within: "A", sinceSnapshot: "full" });
+  assert.equal(partial.reset, true);
+  assert.equal(partial.removed, undefined);
+  const removed = observe(client, scoped("empty-a", "A"), { within: "A", sinceSnapshot: "a" });
+  assert.equal(removed.delta, true);
+  assert.deepEqual(removed.removed.map(item => item.ref), ["e-1"]);
+  const other = observe(client, scoped("b", "B"), { within: "B", sinceSnapshot: "a" });
+  assert.equal(other.reset, true);
+  assert.equal(other.removed, undefined);
+  observe(client, scoped("partial", "A"), {}, { changes: true });
+  assert.notEqual(observe(client, screen("whole-again", []), {}, { changes: true }).diff, true);
+  const incomplete = observe(client, { ...scoped("incomplete", "A"), truncated: true }, { within: "A", sinceSnapshot: "a" });
+  assert.equal(incomplete.reset, true);
+  assert.equal(incomplete.removed, undefined, "an incomplete walk cannot establish removals");
+});
+
 test("ready screens return immediately; waits reauthorize and wake on changes", async () => {
   let reads = 0, wakes = 0, authorizations = 0, clock = 0;
   const read = async () => { reads++; return screen(String(reads), [button("e-1", reads === 1 ? "Loading" : "Ready")]); };

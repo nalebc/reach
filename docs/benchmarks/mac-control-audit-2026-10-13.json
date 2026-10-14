@@ -317,5 +317,17 @@
       "server/browser-tools.mjs": "f26622952f2a94df739dde8cdc92e47b43181059f9a415279aab8b3d8274644a",
       "server/desktop-observation.mjs": "4e1f7a009ccf801794c1574735c15d2b7800527d23b22e401aa4c08228dd031e"
     }
+  },
+  "scopedReaderFollowup": {
+    "evidence": "mac-screen-scope-2026-10-13.json",
+    "catalog": {
+      "fullTools": 50,
+      "compactTools": 12,
+      "fullBytes": 72025,
+      "compactBytes": 24995
+    },
+    "restartedReach": false,
+    "liveNavigationRun": false,
+    "sourceSha256": "04a1c1450d81944fd954d091e8459b359fa39909d2a6ee92b24f089bd8c3dae1"
   }
 }

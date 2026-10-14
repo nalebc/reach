@@ -38,9 +38,20 @@ const note = (values) => {
 const TARGET = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type @'
+Add-Type -ReferencedAssemblies @([System.Windows.Forms.Control].Assembly.Location,[System.ComponentModel.Component].Assembly.Location,[System.Drawing.Point].Assembly.Location) -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
-public class ReachTargetDpi { [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr v); }
+public class ReachTargetDpi {
+ [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr v);
+ [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
+}
+public class ReachTargetBox : System.Windows.Forms.TextBox {
+ public string Receipt;int clicks;
+ protected override void WndProc(ref System.Windows.Forms.Message message){
+  if(Receipt!=null && (message.Msg==0x201 || message.Msg==0x203))System.IO.File.WriteAllText(Receipt+".presses",(++clicks).ToString());
+  if(Receipt!=null && message.Msg==0x203)System.IO.File.WriteAllText(Receipt+".double","double");
+  base.WndProc(ref message);
+ }
+}
 '@
 [ReachTargetDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 $out = $env:REACH_TARGET_OUT
@@ -49,7 +60,8 @@ $f.Text = 'Reach input target'; $f.TopMost = $true; $f.StartPosition = 'Manual'
 $f.Left = 160; $f.Top = 160; $f.Width = 700; $f.Height = 320; $f.BackColor = 'DarkOrange'
 $b = New-Object System.Windows.Forms.Button
 $b.Text = 'Focus starts here'; $b.Left = 20; $b.Top = 200; $b.Width = 300; $b.Height = 50
-$t = New-Object System.Windows.Forms.TextBox
+$t = New-Object ReachTargetBox
+$t.Receipt = $out
 $t.Left = 20; $t.Top = 30; $t.Width = 640; $t.Font = New-Object System.Drawing.Font('Segoe UI', 20)
 $f.Controls.Add($b); $f.Controls.Add($t)
 $t.Add_MouseDown({ [IO.File]::WriteAllText("$out.click", 'clicked') })
@@ -58,6 +70,7 @@ $f.Add_Shown({
   $f.ActiveControl = $b
   $p = $t.PointToScreen((New-Object System.Drawing.Point([int]($t.Width / 2), [int]($t.Height / 2))))
   [IO.File]::WriteAllText("$out.ready", "$($p.X),$($p.Y)")
+  [IO.File]::WriteAllText("$out.double-ms", [string][ReachTargetDpi]::GetDoubleClickTime())
 })
 [System.Windows.Forms.Application]::Run($f)
 `;
@@ -138,6 +151,7 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
   const input = await socket("/ws/screen-input", { display: primary.id });
   await until(() => input.messages.some((m) => m.type === "ready" || m.type === "error"), "control", 60000);
   assert.ok(input.messages.some((m) => m.type === "ready"), JSON.stringify(input.messages));
+  assert.equal(input.messages.find(m=>m.type === "ready").doubleClick,true);
   let id = 0;
   const send = async (action) => {
     const n = ++id;
@@ -145,17 +159,47 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     await until(() => input.messages.some((m) => (m.type === "ack" || m.type === "error") && m.id === n), `input ${action.type}`, 30000);
     const answer = input.messages.find((m) => m.id === n);
     assert.equal(answer.type, "ack", JSON.stringify(answer));
+    return answer;
   };
   const at = {
     x: (boxX - primary.x) / Math.max(1, primary.width - 1),
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
   };
   note({ click: at });
+  const probed = await send({ type: "probe", ...at });
+  assert.equal(probed.field, true, "the Windows field is detected before a click");
+  assert.equal(probed.secure, false);
+  assert.equal(fs.existsSync(`${out}.click`), false, "a probe never clicks the field");
+  assert.equal(fs.existsSync(`${out}.text`), false, "a probe never types");
+  assert.equal((await send({ type: "focus", ...at })).target.editable, false,
+    "probing must not move focus from the initial button");
   await send({ type: "click", ...at, button: "left", count: 1 });
   await until(() => fs.existsSync(`${out}.click`), "the click to reach the box", 15000);
-  await send({ type: "text", text: "hello reach" });
+  const focused = await send({ type: "focus", ...at });
+  assert.equal(focused.target.editable, true);
+  assert.ok(focused.target.focus);
+  await send({ type: "type-edit", delete: 0, text: "hello reach", focus: focused.target.focus });
   await until(() => fs.existsSync(`${out}.text`) && fs.readFileSync(`${out}.text`, "utf8") === "hello reach", "the typing to reach the box", 15000);
   note({ typed: fs.readFileSync(`${out}.text`, "utf8") });
+  assert.equal((await send({ type: "focus", x: 0, y: 0 })).target.editable, false,
+    "a field retaining Windows focus must not qualify for a tap outside its bounds");
+  assert.equal((await send({ type: "probe", x: 0, y: 0 })).field, false);
+  note({ probedBeforeClick: true, guardedTyping: true, outsideFieldRejected: true });
+  // Like a phone's rapid pair delivered over a delayed connection: one click
+  // immediately, then its second press, without replaying the first click.
+  const presses=Number(fs.readFileSync(`${out}.presses`,"utf8"));
+  await new Promise(resolve=>setTimeout(resolve,Number(fs.readFileSync(`${out}.double-ms`,"utf8"))+30));
+  const firstClick=await send({type:"click",...at,button:"left",count:1,clickId:17,clickState:1});
+  await until(()=>Number(fs.readFileSync(`${out}.presses`,"utf8"))===presses+1,"the first single click",15000);
+  assert.equal(fs.existsSync(`${out}.double`),false,"the first tap does not double-click");
+  await new Promise(resolve=>setTimeout(resolve,700));
+  const secondClick=await send({type:"click",x:at.x+1/Math.max(1,primary.width-1),y:at.y,button:"left",count:1,clickId:17,clickState:2});
+  assert.equal(secondClick.clickState,2);
+  assert.ok(Math.abs((secondClick.point.x-firstClick.point.x)*(primary.width-1)-1)<1e-6,
+    "the second native click retains its own pixel");
+  await until(()=>fs.existsSync(`${out}.double`),"the native Windows double-click",15000);
+  await until(()=>Number(fs.readFileSync(`${out}.presses`,"utf8"))===presses+2,"exactly two native clicks",15000);
+  note({rapidDoubleClick:true,doubleClickPhysicalPresses:2});
 
   // Pause gives the PC back: the stream and control end, and no screen or
   // input helper is left running.

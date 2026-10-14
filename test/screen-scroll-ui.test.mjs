@@ -131,7 +131,10 @@ test("only watching, two fingers move the picture and send nothing", async () =>
 test("one finger keeps its old meaning: direct scrolls, trackpad moves the cursor", async () => {
   const direct = await surface("direct");
   finger(direct.stage, "pointerdown", 1, 500, 400);
-  for (let y = 390; y >= 200; y -= 10) finger(direct.stage, "pointermove", 1, 500, y);
+  for (let y = 390; y >= 200; y -= 10) {
+    finger(direct.stage, "pointermove", 1, 500, y);
+    await settle(16);
+  }
   finger(direct.stage, "pointerup", 1, 500, 200);
   await settle(20);
   assert.ok(direct.sent.filter((a) => a.type === "scroll").length > 5);

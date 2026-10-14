@@ -50,6 +50,34 @@ export function pinchView(
   );
 }
 
+// While an item is held, reveal the hidden desktop under a finger at the
+// viewport edge. This moves only the view; the remote mouse stays held.
+export function dragView(
+  initial: View,
+  finger: { x: number; y: number },
+  seconds: number,
+  baseW: number,
+  baseH: number,
+  width: number,
+  height: number,
+): View {
+  if (initial.scale <= 1.01) return initial;
+  const velocity = (position: number, extent: number) => {
+    const edge = Math.min(40, extent / 4);
+    if (edge <= 0) return 0;
+    return position < edge
+      ? 360 * Math.min(1, (edge - position) / edge)
+      : position > extent - edge
+        ? -360 * Math.min(1, (position - extent + edge) / edge)
+        : 0;
+  };
+  const dt = Math.max(0, Math.min(0.032, seconds));
+  return boundView(initial.scale,
+    initial.x + velocity(finger.x, width) * dt,
+    initial.y + velocity(finger.y, height) * dt,
+    baseW, baseH, width, height, 48);
+}
+
 // Keep the tapped field above the keyboard at the user's chosen zoom.
 // The anchor is normalized to the captured display, so Retina/resizing is safe.
 // A phone on its side leaves a short, wide strip above the keyboard: the

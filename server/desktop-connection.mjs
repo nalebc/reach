@@ -177,6 +177,8 @@ export function desktopConnection(
         cursor: initial.cursor,
         window: 8,
         typing: true,
+        // One physical click per rapid tap, with an explicit second click.
+        doubleClick: true,
         // Asks "is there a text field here?" on touch-down (probe).
         probe: true,
         // Pushes where the text fields are, ahead of the tap.

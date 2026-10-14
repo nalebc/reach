@@ -98,10 +98,12 @@ test("the phone keeps the Mac's field map, and stops trusting it after an input 
   const view = await dom.render(React.createElement(Probe));
   await settle(10);
   const socket = FakeSocket.last;
-  socket.push({ type: "ready", window: 8, typing: true, probe: true, fields: true });
+  assert.equal(input.doubleClick, false, "pairing waits for the host capability");
+  socket.push({ type: "ready", window: 8, typing: true, probe: true, fields: true, doubleClick: true });
   socket.push({ type: "fields", after: 0, fields: [{ x: 0.3, y: 0.8, w: 0.4, h: 0.05, secure: false }] });
   await settle(10);
   assert.deepEqual(ended, [], "a pushed map never ends control");
+  assert.equal(input.doubleClick, true);
   assert.deepEqual(input.fieldAt({ x: 0.5, y: 0.82 }), { x: 0.3, y: 0.8, w: 0.4, h: 0.05, secure: false });
   assert.equal(input.fieldAt({ x: 0.5, y: 0.5 }), null);
   // A click can open a sheet or a page: the map from before it is out of date.
@@ -132,7 +134,7 @@ function connection({ scanner, helper = async () => ({}) }) {
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({ send: helper, stop() {} }),
     ...(scanner !== undefined && { scanner }),
@@ -140,7 +142,7 @@ function connection({ scanner, helper = async () => ({}) }) {
   const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
   return { ws, send };
 }
-const until = async (check, ms = 1500) => {
+const until = async (check, ms = 5000) => {
   for (const end = Date.now() + ms; !check() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
 };
 

@@ -423,6 +423,9 @@ function otherPush(item) {
     return { title: "Restart requested", body: `${who} wants to restart the server. Active terminals and live screens will disconnect.` };
   if (item.source === "update")
     return { title: pushLine(item.title, 100), body: `${pushLine(item.detail, 60)}. Reach restarts on it; active terminals and live screens will disconnect.` };
+  // What Reach drives, too old or behind (keep-in-sync.mjs): its own line.
+  if (item.source === "sync")
+    return { title: pushLine(item.title, 100), body: pushLine(item.detail, 200) };
   if (item.source === "browser")
     return { title: `${who} · Approval needed`, body: pushLine(item.title, 200) };
   return {
@@ -446,16 +449,16 @@ export function notificationPush(item) {
     : item.kind === "connection" ? "Review access"
     : item.kind === "question" ? "Reply"
     : item.source === "restart" ? "Review restart"
-    : item.source === "update" ? "Review update" : "Review request";
+    : ["update", "sync"].includes(item.source) ? "Review update" : "Review request";
   return {
-    ...(["mac", "browser", "admission", "access", "restart", "update"].includes(item.source)
+    ...(["mac", "browser", "admission", "access", "restart", "update", "sync"].includes(item.source)
       ? otherPush(item) : chatPush(item)),
     icon: sourceIcon(item.source),
     url: targetUrl(item.target),
     actions: [
       { action: "open", title: open },
       ...(item.actions?.some((action) => action.id === "deny")
-        ? [{ action: "deny", title: ["restart", "update"].includes(item.source) ? "Not now" : "Deny" }] : []),
+        ? [{ action: "deny", title: ["restart", "update", "sync"].includes(item.source) ? "Not now" : "Deny" }] : []),
     ],
     notification: { id: item.id, revision: item.revision },
   };

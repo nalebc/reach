@@ -1943,6 +1943,12 @@ export function createAgentSessions({
       const known = listKept?.value?.sessions || [];
       return ids.map((id) => ({ id, title: known.find((s) => s.agent === "claude" && s.id === id)?.title || "A Claude chat" }));
     },
+    // The Codex chats Reach drives that are mid-turn now (an update to
+    // Codex's service may stop them).
+    codexWorking: () => codexLive.working?.() || [],
+    // Codex's service against its CLI, and updating it (keep-in-sync.mjs).
+    codexService: () => daemon.serviceStatus?.() ?? null,
+    updateCodexService: () => daemon.updateService(),
     // Connects to Codex and indexes Claude transcripts before the phone asks.
     warm() {
       // Chats the last Reach left mid-turn (a restart, a crash) go on: told

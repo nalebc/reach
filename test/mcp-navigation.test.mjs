@@ -173,6 +173,26 @@ test("a changed grant prevents reuse of the screen returned by a batch wait", as
   assert.doesNotMatch(result.body.screen.text, /old grant/);
 });
 
+test("condition waits read beyond the region chosen for the returned observation", async t => {
+  const reads = [];
+  const f = await presetFixture(t, { desktopExtras: {
+    elements: async (client, authorize, options = {}) => {
+      authorize(); reads.push(options);
+      return { snapshot: String(reads.length), app: "Fixture", title: "Invoices", items: [], truncated: false,
+        texts: [{ text: "Ready", context: "Status", x: 0, y: 0, w: 1, h: 1 }, { text: "Total 25", context: "Details", x: 0, y: 1, w: 1, h: 1 }].filter(item => !options.within || item.context === options.within) };
+    },
+  } });
+  const full = await f.join({ preset: "full" });
+  const result = await full.as("/api/browser/desktop/wait", { method: "POST", body: { text: "Ready", within: "Status", timeoutMs: 500, observe: { within: "Details", displayId: 2 } } });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.found, true);
+  assert.deepEqual(reads, [{ displayId: 2 }]);
+  assert.match(result.body.screen.text, /Total 25/);
+  assert.doesNotMatch(result.body.screen.text, /Ready/);
+  await full.as("/api/browser/desktop/describe?within=Details&displayId=2");
+  assert.deepEqual(reads.at(-1), { within: "Details", displayId: 2 });
+});
+
 test("reference actions and display selection survive normalization; compact catalogs shrink schemas", () => {
   const action = { type: "element", ref: "e-1234abcd", displayId: 2 };
   assert.deepEqual(normalizeAction(action), action);

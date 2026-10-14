@@ -842,6 +842,9 @@ export function createCodexLive({
   return api = {
     close: () => { closed = true; connectionGeneration++; clearInterval(restSweep); owner.close(); },
     drives: (threadId) => subscribed.has(threadId),
+    // The chats Reach drives that are mid-turn now (updating Codex's service
+    // may stop them: keep-in-sync.mjs says so first).
+    working: () => [...subscribed].filter((id) => ["running", "waiting"].includes(threads.get(id)?.status)),
     currentMode: (threadId) => threads.get(threadId)?.mode || null,
     onChange(listener) {
       changeListeners.add(listener);

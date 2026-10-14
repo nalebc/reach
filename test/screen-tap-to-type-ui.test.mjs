@@ -82,9 +82,7 @@ async function controlled() {
     }),
   );
   button("Control").click();
-  await dom.waitFor(
-    () => computer.surface?.canControl,
-  );
+  await dom.waitFor(() => computer.surface?.canControl);
   return view;
 }
 const sink = () => dom.document.querySelector(".remote-keyboard-sink");
@@ -148,30 +146,45 @@ test("if the Mac says it wasn't a field after all, the keyboard closes", async (
 
 test("late Chrome focus keeps the tap's keyboard and flushes buffered text only after confirmation", async () => {
   let attempts = 0;
-  computer.replies.focus = () => (++attempts < 4
-    ? { target: { editable: false } }
-    : { target: { editable: true, focus: "late-chrome-field", secure: false } });
+  computer.replies.focus = () =>
+    ++attempts < 4
+      ? { target: { editable: false } }
+      : {
+          target: { editable: true, focus: "late-chrome-field", secure: false },
+        };
   const view = await controlled();
   const point = { x: 0.3, y: 0.6 };
   computer.surface.onField(point, false);
   const field = sink();
   computer.surface.onTextTarget(point);
   await typeInto(field, "hello");
-  assert.deepEqual(computer.actions.filter(a => a.type === "type-edit"), []);
-  await dom.waitFor(() => computer.actions.some(a => a.type === "type-edit"));
+  assert.deepEqual(
+    computer.actions.filter((a) => a.type === "type-edit"),
+    [],
+  );
+  await dom.waitFor(() => computer.actions.some((a) => a.type === "type-edit"));
   assert.equal(attempts, 4);
   assert.equal(sink(), field);
-  assert.deepEqual(computer.actions.filter(a => a.type === "type-edit"), [
-    { type: "type-edit", delete: 0, text: "hello", focus: "late-chrome-field" },
-  ]);
+  assert.deepEqual(
+    computer.actions.filter((a) => a.type === "type-edit"),
+    [
+      {
+        type: "type-edit",
+        delete: 0,
+        text: "hello",
+        focus: "late-chrome-field",
+      },
+    ],
+  );
   await view.unmount();
 });
 
 test("focus detection retries even when the first probe didn't open the keyboard", async () => {
   let attempts = 0;
-  computer.replies.focus = () => (++attempts < 3
-    ? { target: { editable: false } }
-    : { target: { editable: true, focus: "late-field", secure: false } });
+  computer.replies.focus = () =>
+    ++attempts < 3
+      ? { target: { editable: false } }
+      : { target: { editable: true, focus: "late-field", secure: false } };
   const view = await controlled();
   computer.surface.onTextTarget({ x: 0.3, y: 0.6 });
   await dom.waitFor(() => sink());
@@ -181,7 +194,10 @@ test("focus detection retries even when the first probe didn't open the keyboard
 
 test("a later interaction cancels a pending field check without typing elsewhere", async () => {
   let attempts = 0;
-  computer.replies.focus = () => { attempts++; return { target: { editable: false } }; };
+  computer.replies.focus = () => {
+    attempts++;
+    return { target: { editable: false } };
+  };
   const view = await controlled();
   const point = { x: 0.3, y: 0.6 };
   computer.surface.onField(point, false);
@@ -204,7 +220,10 @@ test("an older Reach that can't answer is never asked", async () => {
 
 test("typing waits for confirmed focus and manual Type stays available", async () => {
   let confirm;
-  computer.replies.focus = () => new Promise((resolve) => { confirm = resolve; });
+  computer.replies.focus = () =>
+    new Promise((resolve) => {
+      confirm = resolve;
+    });
   const view = await controlled();
   assert.ok(button("Open phone keyboard"));
   const point = { x: 0.3, y: 0.6 };
@@ -212,13 +231,19 @@ test("typing waits for confirmed focus and manual Type stays available", async (
   const field = sink();
   computer.surface.onTextTarget(point);
   await typeInto(field, "hello");
-  assert.deepEqual(computer.actions.filter((a) => a.type === "type-edit" || a.type === "text"), []);
+  assert.deepEqual(
+    computer.actions.filter((a) => a.type === "type-edit" || a.type === "text"),
+    [],
+  );
   await dom.waitFor(() => confirm);
-  confirm({ target: { editable: true, focus: "confirmed-field", secure: false } });
+  confirm({
+    target: { editable: true, focus: "confirmed-field", secure: false },
+  });
   await dom.waitFor(() => computer.actions.some((a) => a.type === "type-edit"));
-  assert.deepEqual(computer.actions.filter((a) => a.type === "type-edit"), [
-    { type: "type-edit", delete: 0, text: "hello", focus: "confirmed-field" },
-  ]);
+  assert.deepEqual(
+    computer.actions.filter((a) => a.type === "type-edit"),
+    [{ type: "type-edit", delete: 0, text: "hello", focus: "confirmed-field" }],
+  );
   assert.equal(sink(), field);
   assert.equal(dom.document.querySelector(".tap-to-type"), null);
   await view.unmount();
@@ -232,6 +257,75 @@ test("a rejected field discards buffered typing without sending it elsewhere", a
   computer.surface.onTextTarget(point);
   await typeInto(sink(), "never send this");
   await dom.waitFor(() => !sink());
-  assert.deepEqual(computer.actions.filter((a) => ["type-edit", "text", "key"].includes(a.type)), []);
+  assert.deepEqual(
+    computer.actions.filter((a) =>
+      ["type-edit", "text", "key"].includes(a.type),
+    ),
+    [],
+  );
+  await view.unmount();
+});
+
+test("only the latest focus check can change the keyboard, even within one typing session", async () => {
+  let previous;
+  computer.replies.focus = ({ x }) =>
+    x === 0.3
+      ? new Promise((resolve) => {
+          previous = resolve;
+        })
+      : { target: { editable: true, focus: "latest-field", secure: false } };
+  const view = await controlled();
+  computer.surface.onTextTarget({ x: 0.3, y: 0.6 });
+  await dom.waitFor(() => previous);
+  computer.surface.onTextTarget({ x: 0.7, y: 0.6 });
+  await dom.waitFor(() => sink());
+  const field = sink();
+  previous({ target: { editable: false } });
+  await settle(100);
+  assert.equal(sink() === field, true);
+  await typeInto(field, "latest");
+  assert.deepEqual(
+    computer.actions.filter((a) => a.type === "type-edit"),
+    [{ type: "type-edit", delete: 0, text: "latest", focus: "latest-field" }],
+  );
+  await view.unmount();
+});
+
+test("a newer negative focus check rejects an older positive reply immediately", async () => {
+  let previous,
+    attempts = 0;
+  computer.replies.focus = ({ x }) =>
+    x === 0.3
+      ? new Promise((resolve) => {
+          previous = resolve;
+        })
+      : (attempts++, { target: { editable: false } });
+  const view = await controlled();
+  computer.surface.onTextTarget({ x: 0.3, y: 0.6 });
+  await dom.waitFor(() => previous);
+  computer.surface.onTextTarget({ x: 0.7, y: 0.6 });
+  await dom.waitFor(() => attempts);
+  previous({ target: { editable: true, focus: "obsolete-field" } });
+  await settle(80);
+  assert.equal(sink(), null);
+  await view.unmount();
+});
+
+test("an editable result without a focus token never enables unguarded typing", async () => {
+  let attempts = 0;
+  computer.replies.focus = () => (attempts++, { target: { editable: true } });
+  const view = await controlled();
+  const point = { x: 0.3, y: 0.6 };
+  computer.surface.onField(point, false);
+  computer.surface.onTextTarget({ ...point });
+  await typeInto(sink(), "discard this");
+  await dom.waitFor(() => !sink());
+  assert.equal(attempts, 4);
+  assert.deepEqual(
+    computer.actions.filter((a) =>
+      ["type-edit", "text", "key"].includes(a.type),
+    ),
+    [],
+  );
   await view.unmount();
 });

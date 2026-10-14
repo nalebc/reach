@@ -3,6 +3,7 @@ import "./storage-fallback";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
+import KeepInSync from "./KeepInSync";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
@@ -108,6 +109,7 @@ import "./settings-list.css";
 import { NotificationBell, NotificationCenter } from "./Notifications";
 import { wantPrompt } from "./notification-focus";
 import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
+import { currentView, leavingForReload, pushPage, replacePage, seedBase, stackDepth } from "./nav-history";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
@@ -516,7 +518,57 @@ function ReachWorkspace() {
   }, [peer?.id, peer?.url, peer?.token]);
   // Agents & people, opened with its invitation ("invite:new", from Home).
   const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser" | "choose"; at: number } | null>(null);
-  const navigate = (to: string, { opening = false } = {}) => {
+  // The back stack (src/nav-history.ts). Home is this document's first
+  // entry; a tab sits one above it (switching tabs replaces it, so back from
+  // any tab is Home, then out of Reach); a page opened from More, Settings or
+  // a card pushes one more; a chat or a sub-page pushes its own on top.
+  // `pageAt` is the entry of the page shown.
+  const pageAt = useRef(0);
+  const pageNow = useRef(page);
+  pageNow.current = page;
+  const afterStep = useRef<(() => void) | null>(null);
+  // Leaving a page first steps back to entry `i`, past the chat or sub-page
+  // open above it, then goes on. Otherwise that view, closing as it unmounts,
+  // popped its entry after the new page's and brought the old page back.
+  const leaveTo = (i: number, then: () => void) => {
+    // Already on the way (a double tap): the entry isn't reached yet, and a
+    // second step from it would run past Home, out of this page.
+    if (afterStep.current) return;
+    const n = stackDepth() - i;
+    if (n <= 0) return then();
+    afterStep.current = then;
+    window.history.go(-n);
+    // A browser that never says it got there still goes on.
+    setTimeout(() => {
+      if (afterStep.current !== then) return;
+      afterStep.current = null;
+      then();
+    }, 800);
+  };
+  useEffect(() => {
+    const onPop = () => {
+      const then = afterStep.current;
+      if (then) {
+        afterStep.current = null;
+        then();
+        return;
+      }
+      if (leavingForReload()) return;
+      // Back (or forward): the page that entry belongs to, as it was.
+      const view = currentView();
+      const next = view?.page || "overview";
+      if (next === pageNow.current) return;
+      pageAt.current = view?.i ?? 0;
+      setPage(next);
+      setMobileMenu(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const navigate = (
+    to: string,
+    { opening = false, then }: { opening?: boolean; then?: () => void } = {},
+  ) => {
     const id = to.startsWith("invite") ? "invite" : to;
     if (id === "invite")
       setInviteStart(to === "invite:new" ? { kind: "choose", at: Date.now() } : null);
@@ -525,25 +577,54 @@ function ReachWorkspace() {
     // Keep the chosen provider and shared feed; discard only local navigation.
     // Not when going there to open a chat (a notification's): that would
     // drop the chat it was just given.
-    if (id === "sessions" && page === "sessions" && !opening) {
-      setChatTarget(null);
-      setLinkTarget(null);
-      setChatHomeRevision((n) => n + 1);
-    }
-    if (id === "terminal")
-      setTerminalSource(features.desktopTerminals ? "mac" : "reach");
-    setPage(id);
-    setMobileMenu(false);
+    const chatRoot = id === "sessions" && page === "sessions" && !opening;
+    const show = () => {
+      if (chatRoot) {
+        setChatTarget(null);
+        setLinkTarget(null);
+        setChatHomeRevision((n) => n + 1);
+      }
+      if (id === "terminal")
+        setTerminalSource(features.desktopTerminals ? "mac" : "reach");
+      setPage(id);
+      setMobileMenu(false);
+      then?.();
+    };
+    // Already there (a notification's chat on Chat): the chat pushes its own.
+    if (id === page && !chatRoot) return show();
+    if (id === "overview" || mobileOrder.includes(id)) return toTab(id, show);
+    const at = pageAt.current;
+    leaveTo(at, () => {
+      pushPage(id, at);
+      pageAt.current = at + 1;
+      show();
+    });
   };
+  // Home is the first entry; any other tab the one above it.
+  const toTab = (id: string, then: () => void) => {
+    const at = pageAt.current;
+    if (id === "overview")
+      return leaveTo(0, () => {
+        replacePage("overview", 0);
+        pageAt.current = 0;
+        then();
+      });
+    leaveTo(Math.min(at, 1), () => {
+      if (at === 0) pushPage(id, 0);
+      else replacePage(id, 1);
+      pageAt.current = 1;
+      then();
+    });
+  };
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   // A page that started a Reach terminal (OpenClaw's setup) opens it here.
   useEffect(() => {
     const open = (e: Event) => {
       const id = (e as CustomEvent<string>).detail;
       if (typeof id !== "string" || !id || !pageAccessible("terminal", featuresRef.current)) return;
       setTerminalId(id);
-      setPage("terminal");
-      setTerminalSource("reach");
-      setMobileMenu(false);
+      navigateRef.current("terminal", { then: () => setTerminalSource("reach") });
     };
     window.addEventListener("reach:open-terminal", open);
     return () => window.removeEventListener("reach:open-terminal", open);
@@ -553,7 +634,10 @@ function ReachWorkspace() {
   // With Reach already open, the service worker passes the link instead.
   const [linkTarget, setLinkTarget] = useState<OpenTarget | null>(() => {
     const target = openTarget(location.href);
-    if (target) history.replaceState(history.state, "", withoutTarget(location.href));
+    // This document's first entry is Home, under whatever opens next (the
+    // link's chat, or where a reload was): back from it lands here, never
+    // on an entry of the page before the reload (src/nav-history.ts).
+    seedBase(target ? withoutTarget(location.href) : undefined);
     // Without one, a reload comes back to where you were.
     return target || lastPlace(active);
   });
@@ -609,7 +693,7 @@ function ReachWorkspace() {
     });
     toast(`${p.name} is within reach`);
   });
-  const choose = (id: string) => {
+  const choose = (id: string, then?: () => void) => {
     if (id === peer?.id) return;
     if (peer)
       workspaces.current[peer.id] = {
@@ -619,6 +703,14 @@ function ReachWorkspace() {
         terminalSource,
         chatId,
       };
+    // The other computer's page, as a tab: the chat or sub-page open on this
+    // one closes first (see leaveTo).
+    toTab(workspaces.current[id]?.page || "overview", () => {
+      switchTo(id);
+      then?.();
+    });
+  };
+  const switchTo = (id: string) => {
     // Invalidate old host responses before rendering the new input target.
     connectionGeneration.current++;
     const saved = workspaces.current[id];
@@ -866,12 +958,10 @@ function ReachWorkspace() {
                     }}
                     openTerminal={(id) => {
                       setTerminalId(id);
-                      navigate("terminal");
-                      setTerminalSource("reach");
+                      navigate("terminal", { then: () => setTerminalSource("reach") });
                     }}
                     openMacTab={(id) => {
-                      navigate("terminal");
-                      setTerminalSource(`mac:${id}`);
+                      navigate("terminal", { then: () => setTerminalSource(`mac:${id}`) });
                     }}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
@@ -961,8 +1051,8 @@ function ReachWorkspace() {
                     computers={peers}
                     connections={connections}
                     onOpenOn={(computer, chat) => {
-                      choose(computer.id);
-                      setLinkTarget({ page: "sessions", agent: chat.agent, id: chat.id, computer: computer.id });
+                      choose(computer.id, () =>
+                        setLinkTarget({ page: "sessions", agent: chat.agent, id: chat.id, computer: computer.id }));
                     }}
                     // A shell block's play button: a Reach terminal in the
                     // chat's folder runs it, and opens so you see it run.
@@ -1603,6 +1693,9 @@ export function SettingsPage({
         </button>
         <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
       </div>
+
+      {/* What Reach drives here, behind or too old: Update (KeepInSync.tsx). */}
+      <KeepInSync peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
 
       {/* Who can use this computer: one place (PeopleHub.tsx), the owner's. */}
       {(!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")) && (

@@ -10,6 +10,14 @@ release notes, so date the heading before tagging.
 
 ### Added
 
+- 2026-10-13: Reach keeps what it drives in sync. When Codex's service runs
+  behind the Codex CLI (0.158 against 0.162, so GPT-6.1 Sol stayed greyed
+  out), Needs you, Settings → Updates and Codex's model list say "Update
+  Codex's service to use … and newer models" with Update. One tap runs
+  `codex app-server daemon update` with the Codex Reach uses, after saying
+  which working Codex chats it may stop, then reconnects and reads the
+  models again. Claude Code, Codex and OpenClaw updates show in the same
+  list, once per version pair. Nothing updates without the owner's tap.
 - 2026-10-13: Fork a chat from any message into another app ("Fork chat…" in
   a chat's menu, or from an earlier message). Claude forks natively, keeping
   compaction, thinking and complete tool records; Codex forks through the
@@ -85,6 +93,7 @@ release notes, so date the heading before tagging.
 
 ### Fixed
 
+- 2026-10-13: Swiping back in a chat on the phone could show a blank page and reload Reach instead of going back to the chat list. The entry behind the chat belonged to the page from before a reload, such as an interface rebuild or the phone reloading Reach. Back is now one step of Reach's own stack, in the same page, in every browser. A chat goes back to its list, a page opened from More, Settings or a card goes back to where it was opened, and any tab goes back to Home. Switching tabs adds no step. A chat opened from a notification or link, or reopened after a reload, has its list under it. A rebuild reload first steps back to Home's entry, so no entry of the old page is left behind. A sideways swipe inside the page no longer turns into the browser's back or forward.
 - 2026-10-13: Adding Face ID in Settings never worked. The page asked for a new challenge while Face ID was still up, so every answer was refused "for an earlier attempt". After ten tries the button stopped responding, with no message. Turning off "Face ID confirms approvals" failed the same way, and showed "Access expired or was revoked." Now every tap either opens Face ID or says why it can't. Each passkey you add shows a green check with "Added today". The setting uses your device's own name for it: Face ID, Touch ID, fingerprint or face unlock on Android, or Windows Hello. Reach's terminal shows "Reach: Face ID not added: <reason>" for each refused add.
 - 2026-10-13: Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
   They now take the room the picture leaves (a rail at the side on a phone

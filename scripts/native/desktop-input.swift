@@ -35,14 +35,91 @@ func touchChoice(_ at: CGPoint, _ radius: CGSize, _ candidates: [TouchCandidate]
 }
 // END TOUCH GEOMETRY
 
+// BEGIN DESKTOP MOUSE
+// A complete Quartz mouse sequence, including movement before a press and
+// relative deltas during a drag. System surfaces such as Mission Control
+// must receive the same fields as an ordinary mouse, not just a location.
+final class DesktopMouse {
+  let source: CGEventSource?
+  let emit: (CGEvent) -> Void
+  var point: CGPoint
+  private(set) var held: CGMouseButton?
+  private var number: Int64 = 0
+  private var clickState = 1
+  private var previousClick: (id: Int, point: CGPoint, at: Date)?
+  init(source: CGEventSource?, point: CGPoint, emit: @escaping (CGEvent) -> Void = {
+    $0.post(tap: .cghidEventTap)
+  }) {
+    self.source = source; self.point = point; self.emit = emit
+  }
+  private func event(_ kind: CGEventType, _ button: CGMouseButton, from: CGPoint) {
+    guard let e = CGEvent(mouseEventSource: source, mouseType: kind,
+      mouseCursorPosition: point, mouseButton: button) else { return }
+    let moving = kind == .mouseMoved || kind == .leftMouseDragged || kind == .rightMouseDragged
+    e.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+    e.setIntegerValueField(.mouseEventNumber, value: number)
+    e.setIntegerValueField(.mouseEventClickState, value: kind == .mouseMoved ? 0 : Int64(clickState))
+    e.setIntegerValueField(.mouseEventDeltaX, value: moving ? Int64((point.x - from.x).rounded()) : 0)
+    e.setIntegerValueField(.mouseEventDeltaY, value: moving ? Int64((point.y - from.y).rounded()) : 0)
+    e.setDoubleValueField(.mouseEventPressure,
+      value: kind == .leftMouseUp || kind == .rightMouseUp || kind == .mouseMoved ? 0 : 1)
+    emit(e)
+  }
+  func move(to next: CGPoint) {
+    let previous = point
+    point = next
+    event(held == .left ? .leftMouseDragged : held == .right ? .rightMouseDragged : .mouseMoved,
+      held ?? .left, from: previous)
+  }
+  func down(at next: CGPoint, button: CGMouseButton, count: Int = 1) {
+    release()
+    // Mission Control's hover/hit state follows pointer movement. A touch
+    // never generated a mouseMoved before this down, unlike a real mouse.
+    move(to: next)
+    number += 1
+    clickState = count
+    held = button
+    event(button == .right ? .rightMouseDown : .leftMouseDown, button, from: point)
+  }
+  func up(at next: CGPoint) {
+    if held != nil, next != point { move(to: next) }
+    release()
+  }
+  func release() {
+    forgetClick()
+    guard let button = held else { return }
+    event(button == .right ? .rightMouseUp : .leftMouseUp, button, from: point)
+    held = nil
+  }
+  func forgetClick() { previousClick = nil }
+  // A rapid pair is two physical clicks total. Click state 2 never changes
+  // the second tap's location: its live hit target still decides what receives it.
+  func click(at next: CGPoint, button: CGMouseButton, count: Int = 1,
+    id: Int? = nil, state: Int = 1) -> (CGPoint, Int)
+  {
+    let previous = previousClick
+    let continuing = count == 1 && button == .left && state == 2 && id != nil
+      && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
+      && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
+    let landed = next
+    for index in 1...count {
+      down(at: landed, button: button, count: continuing ? 2 : index)
+      up(at: landed)
+    }
+    if count == 1 && button == .left && state == 1, let id {
+      previousClick = (id, landed, Date())
+    }
+    return (landed, continuing ? 2 : count)
+  }
+}
+// END DESKTOP MOUSE
+
 final class Input: @unchecked Sendable {
   let lock = NSLock()
   let source = CGEventSource(stateID: .hidSystemState)
-  var held: CGMouseButton? = nil
-  var buttons = Set<UInt32>()
+  lazy var mouse = DesktopMouse(source: source, point: CGEvent(source: nil)?.location ?? .zero)
   var currentFlags: CGEventFlags = []
   var last = Date()
-  var point = CGPoint.zero
   let display: CGDirectDisplayID
   init(_ display: CGDirectDisplayID) { self.display = display }
   var typingElement: AXUIElement?
@@ -83,7 +160,7 @@ final class Input: @unchecked Sendable {
     return role == "AXUnknown" && settable.boolValue ? element : nil
   }
   func textTarget(_ p: [String: Any]) -> [String: Any] {
-    guard let focus = focused(), let element = editableElement(focus) else {
+    guard let element = focusedEditableElement() else {
       typingElement = nil
       typingToken = ""
       return ["editable": false]
@@ -119,6 +196,20 @@ final class Input: @unchecked Sendable {
     }
     // Never read the value, label, selected text or surrounding document.
     return ["editable": true, "focus": typingToken, "secure": subrole == "AXSecureTextField"]
+  }
+  // A text editor can focus its text/placeholder child. Resolve the same
+  // editable ancestor for focus confirmation and every guarded edit as probe.
+  func focusedEditableElement() -> AXUIElement? {
+    guard var element = focused() else { return nil }
+    for _ in 0..<4 {
+      if let field = editableElement(element) {
+        return attribute(field, kAXEnabledAttribute) as? Bool == false ? nil : field
+      }
+      guard let parent = attribute(element, kAXParentAttribute),
+        CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+      element = parent as! AXUIElement
+    }
+    return nil
   }
   // Apps whose web content (Chrome, Electron apps such as Claude) was asked
   // to describe itself: they only list their text fields once asked.
@@ -478,7 +569,7 @@ final class Input: @unchecked Sendable {
   }
   func checkTyping(_ token: String) throws {
     guard !token.isEmpty, token == typingToken, let expected = typingElement,
-      let focus = focused(), let current = editableElement(focus),
+      let current = focusedEditableElement(),
       CFEqual(expected, current) || sameField(current)
     else {
       typingElement = nil
@@ -555,23 +646,8 @@ final class Input: @unchecked Sendable {
     (59, .maskControl), (58, .maskAlternate), (56, .maskShift), (55, .maskCommand),
     (63, .maskSecondaryFn),
   ]
-  func mouseKind(_ button: CGMouseButton, _ down: Bool) -> CGEventType {
-    button == .left
-      ? (down ? .leftMouseDown : .leftMouseUp)
-      : button == .right
-        ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .otherMouseDown : .otherMouseUp)
-  }
   func release() {
-    if let held { buttons.insert(held.rawValue) }
-    for b in buttons {
-      if let button = CGMouseButton(rawValue: b) {
-        CGEvent(
-          mouseEventSource: source, mouseType: mouseKind(button, false), mouseCursorPosition: point,
-          mouseButton: button)?.post(tap: .cghidEventTap)
-      }
-    }
-    buttons.removeAll()
-    held = nil
+    mouse.release()
     currentFlags = []
   }
   // MARK: Context shortcuts: the frontmost app and its own menu commands.
@@ -680,9 +756,11 @@ final class Input: @unchecked Sendable {
     if type == "fields" { return fields(p) }
     if type == "context" { return context(since: p["since"] as? String) }
     if type == "menu", let path = p["path"] as? [String] {
+      mouse.forgetClick()
       try pressMenu(path)
       return [:]
     }
+    if !["click", "move", "heartbeat"].contains(type) { mouse.forgetClick() }
     if let token = p["focus"] as? String { try checkTyping(token) }
     if type == "type-edit", let text = p["text"] as? String, let count = p["delete"] as? Int {
       guard count >= 0, count <= 256, text.utf8.count <= 8000, p["focus"] is String else {
@@ -743,39 +821,33 @@ final class Input: @unchecked Sendable {
       let y = p["y"] as? Double
     {
       let bounds = CGDisplayBounds(display)
-      point = CGPoint(
+      var point = CGPoint(
         x: bounds.minX + x * max(0, bounds.width - 1),
         y: bounds.minY + y * max(0, bounds.height - 1))
+      let requested = point
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
       if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
         point = touchPoint(point, tolerance)
       }
-      func post(_ kind: CGEventType, _ b: CGMouseButton, _ count: Int = 1) {
-        let e = CGEvent(
-          mouseEventSource: source, mouseType: kind, mouseCursorPosition: point, mouseButton: b)
-        e?.setIntegerValueField(.mouseEventClickState, value: Int64(count))
-        e?.post(tap: .cghidEventTap)
-      }
+      // A local mouse may have moved between gestures. Held drags keep
+      // their own last point so every delta continues the same press.
+      if mouse.held == nil { mouse.point = CGEvent(source: nil)?.location ?? mouse.point }
       if type == "move" {
-        post(
-          held == .left ? .leftMouseDragged : held == .right ? .rightMouseDragged : .mouseMoved,
-          held ?? .left)
+        mouse.move(to: point)
       }
       if type == "down" {
         release()
-        held = button
-        post(button == .left ? .leftMouseDown : .rightMouseDown, button)
+        mouse.down(at: point, button: button)
       }
-      if type == "up" { release() }
+      if type == "up" { mouse.up(at: point); currentFlags = [] }
       if type == "click" {
-        release()
-        for c in 1...(p["count"] as? Int ?? 1) {
-          post(button == .left ? .leftMouseDown : .rightMouseDown, button, c)
-          post(button == .left ? .leftMouseUp : .rightMouseUp, button, c)
-        }
-        return ["point": [
-          "x": min(1, max(0, (point.x - bounds.minX) / max(1, bounds.width - 1))),
-          "y": min(1, max(0, (point.y - bounds.minY) / max(1, bounds.height - 1)))]]
+        let (landed, state) = mouse.click(at: point, button: button,
+          count: p["count"] as? Int ?? 1, id: p["clickId"] as? Int,
+          state: p["clickState"] as? Int ?? 1)
+        currentFlags = []
+        return ["clickState": state, "retargeted": landed != requested, "point": [
+          "x": min(1, max(0, (landed.x - bounds.minX) / max(1, bounds.width - 1))),
+          "y": min(1, max(0, (landed.y - bounds.minY) / max(1, bounds.height - 1)))]]
       }
     } else if type == "scroll" {
       let dx = p["dx"] as? Double ?? 0

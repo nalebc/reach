@@ -9,7 +9,9 @@ import { createAgentWatch } from "../server/agent-sessions/agent-watch.mjs";
 // News the moment an agent's app writes it: the Codex app's databases (its
 // queue, its history) and Claude Code's transcripts, each burst told once.
 const ID = "11111111-2222-4333-8444-555555555555";
-const until = async (check, ms = 3000) => {
+// A file watch can take seconds to report on a loaded runner; success
+// still returns the moment it's seen.
+const until = async (check, ms = 15000) => {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 20))) if (check()) return true;
   return false;
 };

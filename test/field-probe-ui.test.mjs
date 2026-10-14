@@ -250,7 +250,7 @@ test("the probe is checked like any desktop action, and the computer says it can
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({ send: async () => ({ cursor: null }), stop() {} }),
   });
@@ -284,7 +284,10 @@ test("a one-finger scroll puts the pointer there once, then sends only scroll st
   video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500, x: 0, y: 0 });
   const stage = view.container.querySelector(".remote-stage");
   finger("pointerdown", stage, 500, 400);
-  for (let y = 390; y >= 100; y -= 10) finger("pointermove", stage, 500, y);
+  for (let y = 390; y >= 100; y -= 10) {
+    finger("pointermove", stage, 500, y);
+    await settle(16);
+  }
   finger("pointerup", stage, 500, 100);
   await settle(20);
   const kinds = sent.map((a) => a.type).filter((t) => t === "move" || t === "scroll");
@@ -304,7 +307,7 @@ test("on the Mac, a move or scroll that waited too long is let go; control stays
   let release;
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({
       // The first action holds the helper 1.2 s; the next ones wait behind it.
@@ -335,7 +338,7 @@ test("on the Mac, an action the helper turns down fails alone; control stays on"
   });
   desktopConnection(ws, {
     config: { screen: true },
-    auth: { verify: () => ({ id: "phone", scopes: ["admin", "screen"] }) },
+    auth: { verify: () => ({ id: "phone", kind: "device", scopes: ["admin", "screen"] }) },
     control: { check() {}, acquire() {}, revoke() {} },
     create: async () => ({
       send: async (a) => {

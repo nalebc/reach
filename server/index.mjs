@@ -87,6 +87,7 @@ import { createAgentShell } from "./agent-shell.mjs";
 import { Terminals } from "./terminal.mjs";
 import { installLock, installPlan, installTerminalCommand } from "./agent-install.mjs";
 import { createAgentUpdates } from "./agent-updates.mjs";
+import { agentSource, codexServiceSource, createKeepInSync, openClawSource } from "./keep-in-sync.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
 import {
   MacTerminalWatch,
@@ -3422,16 +3423,15 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/agent-updates", maintenanceLimit, async (req, res) =>
     res.json({ agents: (await agentUpdates.list({ fresh: req.query.fresh === "1" })).map(({ file, ...rest }) => rest) }),
   );
-  app.post("/api/sessions/agent-update/:agent", maintenanceLimit, async (req, res) => {
-    const agent = String(req.params.agent);
-    const confirm = req.body?.confirm === true;
-    if (confirm && !installs.take(agent))
+  // The update confirmed: its fixed command in a Reach terminal (one per app
+  // at a time), from this route or from Needs you (keep-in-sync.mjs).
+  const startAgentUpdate = async (agent, authorize) => {
+    if (!installs.take(agent))
       throw fail(409, "That app is already installing or updating. Wait for it to finish.");
     let started = false;
     try {
       const plan = await agentUpdates.plan(agent);
-      const current = req.reauthorize();
-      if (!confirm) return res.json(plan);
+      const current = authorize();
       notPaused();
       const terminal = terminals.create({
         cwd: os.homedir(),
@@ -3442,9 +3442,70 @@ export async function createReach(overrides = {}) {
       installs.started(agent, terminal.id);
       started = true;
       record("terminal", `Updating ${plan.name} to ${plan.to}`);
-      res.json({ ...plan, terminal });
+      return { ...plan, terminal };
     } finally {
-      if (confirm && !started) installs.release(agent);
+      if (!started) installs.release(agent);
+    }
+  };
+  app.post("/api/sessions/agent-update/:agent", maintenanceLimit, async (req, res) => {
+    const agent = String(req.params.agent);
+    if (req.body?.confirm === true) return res.json(await startAgentUpdate(agent, () => req.reauthorize()));
+    const plan = await agentUpdates.plan(agent);
+    req.reauthorize();
+    res.json(plan);
+  });
+  // Keeping what Reach drives in sync (keep-in-sync.mjs): Claude Code and
+  // Codex (their own updates, above), Codex's service (`codex app-server
+  // daemon update`, run here), OpenClaw (its own update, on its page).
+  // Checked soon after Reach starts and hourly; updated only on the
+  // owner's tap, from Needs you or Settings, on their own devices.
+  const keepInSync = overrides.keepInSync || createKeepInSync({
+    dataDir: config.dataDir,
+    record: (title) => record("update", title),
+    onChange: () => notifications.wake?.(),
+    terminalEnded: (id) => {
+      try { const t = terminals.get(id); return !t || t.status === "exited"; } catch { return true; }
+    },
+    sources: [
+      codexServiceSource({
+        status: () => agentSessions.codexService?.(),
+        models: () => agentSessions.models("codex"),
+        update: () => agentSessions.updateCodexService(),
+        working: () => agentSessions.codexWorking?.() || [],
+      }),
+      agentSource("claude", { updates: agentUpdates, update: (ctx) => startAgentUpdate("claude", ctx.authorize) }),
+      agentSource("codex", { updates: agentUpdates, update: (ctx) => startAgentUpdate("codex", ctx.authorize) }),
+      openClawSource({ tooOld: () => openClaw.tooOld?.() }),
+    ],
+  });
+  if (!process.env.NODE_TEST_CONTEXT) keepInSync.watch();
+  // Only the computer's owner, on their own admin device (never a guest or
+  // an agent, whatever reaches the route).
+  const syncOwner = (req) => {
+    const client = req.reauthorize();
+    if (client.kind !== "device" || !client.scopes?.includes("admin"))
+      throw fail(403, "Only the computer's owner updates what Reach uses.");
+    return client;
+  };
+  app.get("/api/sessions/keep-in-sync", maintenanceLimit, async (req, res) => {
+    syncOwner(req);
+    res.set("Cache-Control", "no-store").json({ items: req.query.fresh === "1" ? await keepInSync.refresh({ fresh: true }) : await keepInSync.look() });
+  });
+  app.post("/api/sessions/keep-in-sync/:id", maintenanceLimit, async (req, res) => {
+    syncOwner(req);
+    const id = String(req.params.id);
+    const pair = typeof req.body?.pair === "string" ? req.body.pair : null;
+    if (req.body?.action === "dismiss") {
+      keepInSync.dismiss(id, pair);
+      return res.json({ items: keepInSync.list() });
+    }
+    if (req.body?.action !== "update") throw fail(400, "Choose update or dismiss.");
+    notPaused();
+    try {
+      const run = await keepInSync.start(id, { anyway: req.body?.anyway === true, pair }, { authorize: () => syncOwner(req) });
+      res.json({ run, items: keepInSync.list() });
+    } catch (error) {
+      throw Object.assign(fail(error.status || 500, error.message), error.working ? { working: error.working } : {});
     }
   });
   app.get("/api/sessions", async (req, res) =>
@@ -4530,6 +4591,7 @@ export async function createReach(overrides = {}) {
     accessRequests: pendingRequests,
     restartRequests: () => restarts.list(),
     updateOffers: () => [reachUpdates.offer()].filter(Boolean),
+    syncOffers: () => keepInSync.offers(),
     terminalCount: () => terminals.list().length,
   });
   const answerNotification = createNotificationActions({
@@ -4544,6 +4606,13 @@ export async function createReach(overrides = {}) {
         notPaused();
         try { return reachUpdates.start(binding.version); }
         catch (error) { throw fail(error.status || 500, error.message); }
+      }
+      // A piece Reach drives, behind or too old (keep-in-sync.mjs).
+      if (binding.type === "sync") {
+        if (action === "deny") return keepInSync.dismiss(binding.id, binding.pair);
+        notPaused();
+        try { return await keepInSync.start(binding.id, { anyway: action === "update-anyway", pair: binding.pair }, { authorize }); }
+        catch (error) { throw Object.assign(fail(error.status || 500, error.message), error.working ? { working: error.working } : {}); }
       }
       if (action !== "deny") throw fail(400, "Open this request to review it.");
       if (binding.type === "browser") return browserApprovals.decide(owner, binding.id, "deny", authorize);
@@ -4896,6 +4965,8 @@ export async function createReach(overrides = {}) {
         ...(error.passkey === true ? { passkey: true } : {}),
         // A person waiting for the owner's Allow: their page waits too.
         ...(error.waiting === true ? { waiting: true } : {}),
+        // An update that would stop working chats: how many (keep-in-sync.mjs).
+        ...(Number.isInteger(error.working) && error.working > 0 ? { working: error.working } : {}),
         // An agent held off while you use the Mac: who, and when to look again.
         ...(error.kind === "paused" && Number.isFinite(error.retryInMs)
           ? { kind: "paused", holder: String(error.holder || ""), retryInMs: error.retryInMs }

@@ -14,6 +14,7 @@ import { useDesktopInput, type DesktopAction } from "./useDesktopInput";
 import type { TextTarget } from "./desktop-input-queue";
 import RemoteTyping from "./RemoteTyping";
 import TapToType from "./TapToType";
+import { focusKeyboard, prepareKeyboard } from "./keyboard-focus";
 import AppSurface from "./AppSurface";
 import AppLogo from "./AppLogo";
 import { PausedCover } from "./PauseControl";
@@ -370,14 +371,14 @@ export default function AppThread({
   // Must run inside the tap: iOS only opens the keyboard then.
   const openKeyboard = () => {
     if (typingTarget && typingEditor.current) {
-      typingEditor.current.focus({ preventScroll: true });
+      focusKeyboard(typingEditor.current);
       return;
     }
     flushSync(() => {
       clearTyping();
       setTypingTarget({ editable: true });
     });
-    typingEditor.current?.focus({ preventScroll: true });
+    focusKeyboard(typingEditor.current);
   };
   const quit = async (confirm = false) => {
     try {
@@ -517,7 +518,8 @@ export default function AppThread({
         {typing && typingTarget && (
           <TapToType
             key={`tap:${typingEpoch.current}`}
-            editorRef={typingEditor}
+            onOpen={openKeyboard}
+            onPrepare={() => prepareKeyboard(typingEditor.current)}
           />
         )}
         {running && !typing && (
@@ -586,7 +588,10 @@ export default function AppThread({
                   className="app-thread-icon"
                   aria-label="Open phone keyboard"
                   disabled={!usable}
-                  onPointerDown={(e) => e.preventDefault()}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    prepareKeyboard(typingEditor.current);
+                  }}
                   onClick={openKeyboard}
                 >
                   <Keyboard size={20} />

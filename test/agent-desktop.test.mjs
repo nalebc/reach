@@ -326,6 +326,28 @@ test("numbered elements need control, come back clean, and a label click goes to
     await rejects(() => w.desktop.act(full, bad, authorize(full)), 400);
 });
 
+test("region observations reach the native helper with bounded scope and loading metadata", async t => {
+  const w = world({ onSpawn(helper) {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => {
+      const result = await send(request, beforeSend);
+      return request.op === "elements" && request.within ? { ...result, within: request.within, loading: true } : result;
+    };
+  } });
+  t.after(() => w.desktop.close());
+  const client = w.make("reader", "full");
+  const result = await w.desktop.elements(client, authorize(client), { within: "Invoice A", query: "Balance", displayId: 2 });
+  assert.deepEqual(w.helpers[0].requests.at(-1), { op: "elements", displayId: 2, within: "Invoice A" });
+  assert.deepEqual(result.scope, { within: "Invoice A" });
+  assert.equal(result.loading, true);
+  const full = await w.desktop.elements(client, authorize(client));
+  assert.equal(full.scope, undefined, "older helpers and whole reads retain their existing shape");
+  assert.equal(full.loading, undefined);
+  const count = w.helpers[0].requests.length;
+  for (const within of ["", " ", "x".repeat(201), 42, "hidden\u0000scope"]) await rejects(() => w.desktop.elements(client, authorize(client), { within }), 400);
+  assert.equal(w.helpers[0].requests.length, count);
+});
+
 test("websites open in the owner's browser; Reach's own pages and non-web addresses never reach the Mac", async () => {
   const w = world();
   const full = w.make("muse", "apps");

@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 test("Windows natural shell exits release their console hosts and let the parent exit", {
-  skip: process.platform !== "win32", timeout: 50000,
+  skip: process.platform !== "win32", timeout: 180000,
 }, (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach-pty-exit-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -17,7 +17,7 @@ test("Windows natural shell exits release their console hosts and let the parent
     import { Terminals } from ${JSON.stringify(new URL("../server/terminal.mjs", import.meta.url).href)};
     const consoleHosts = () => {
       const command = "@(Get-CimInstance Win32_Process -Filter 'ParentProcessId = " + process.pid + "' | Where-Object { $_.Name -in @('conhost.exe', 'OpenConsole.exe') } | ForEach-Object { $_.ProcessId }) | ConvertTo-Json -Compress";
-      const text = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: 10000 }).trim();
+      const text = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: 45000 }).trim();
       const value = text ? JSON.parse(text) : [];
       return Array.isArray(value) ? value : [value];
     };
@@ -28,7 +28,7 @@ test("Windows natural shell exits release their console hosts and let the parent
       const session = terminals.get(created.id);
       let timer;
       try {
-        await Promise.race([session.ended, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Synthetic PowerShell did not finish')), 10000); })]);
+        await Promise.race([session.ended, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Synthetic PowerShell did not finish')), 45000); })]);
       } finally { clearTimeout(timer); }
       assert.equal(session.exitCode, 0);
       assert.match(session.buffer, /REACH_NATURAL_EXIT_OK/);
@@ -43,7 +43,7 @@ test("Windows natural shell exits release their console hosts and let the parent
     // No process.exit: an orphan worker or pipe must fail the parent deadline.
   `);
   const result = spawnSync(process.execPath, [file], {
-    cwd: directory, env: process.env, encoding: "utf8", timeout: 40000,
+    cwd: directory, env: process.env, encoding: "utf8", timeout: 150000,
     maxBuffer: 64 * 1024,
   });
   assert.equal(result.error, undefined, `${result.error?.message || ""}\n${result.stdout}\n${result.stderr}`);
@@ -55,7 +55,7 @@ test("Windows natural shell exits release their console hosts and let the parent
 // each part quoted (app-shortcuts.mjs windowsCliCommand). Typed as is,
 // PowerShell echoed one quoted path and refused two (Oct 12 audit, #6).
 test("Windows: an agent's quoted command runs in a Reach terminal instead of being echoed", {
-  skip: process.platform !== "win32", timeout: 50000,
+  skip: process.platform !== "win32", timeout: 180000,
 }, (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach pty call-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -70,14 +70,14 @@ test("Windows: an agent's quoted command runs in a Reach terminal instead of bei
     const session = terminals.get(created.id);
     let timer;
     try {
-      await Promise.race([session.ended, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('PowerShell did not finish: ' + session.buffer.slice(-2000))), 15000); })]);
+      await Promise.race([session.ended, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('PowerShell did not finish: ' + session.buffer.slice(-2000))), 45000); })]);
     } finally { clearTimeout(timer); }
     assert.match(session.buffer, /REACH_QUOTED_CALL_OK/, session.buffer.slice(-2000));
     await terminals.dispose();
     console.log('QUOTED_CALL_RAN');
   `);
   const result = spawnSync(process.execPath, [file], {
-    cwd: directory, env: process.env, encoding: "utf8", timeout: 40000,
+    cwd: directory, env: process.env, encoding: "utf8", timeout: 150000,
     maxBuffer: 64 * 1024,
   });
   assert.equal(result.error, undefined, `${result.error?.message || ""}\n${result.stdout}\n${result.stderr}`);

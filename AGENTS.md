@@ -1,5 +1,9 @@
 # Working on Reach (coding agents)
 
+## Platform support
+
+Build changes for every platform Reach supports. Screen control must cover macOS and Windows hosts and touch clients on iPhone, iPad, and Android. Prefer shared gesture and coordinate logic. When native behavior differs, cover both paths and put the relevant shared and Windows-specific regression tests in Windows CI. Clearly distinguish mocked checks from validation run on the actual operating system.
+
 ## Running Reach
 
 One Reach runs per computer. Use the CLI for every start, stop and restart:

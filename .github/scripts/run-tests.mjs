@@ -17,6 +17,16 @@ export const suites = {
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
+    // Shared phone gestures must also run against Windows' input contract.
+    "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+    "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
+    "windows-desktop-input-native",
+    "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
+    "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
+    "remote-typing", "remote-keyboard",
+    "tap-clicks", "screen-double-click-ui",
+    // Keeping what Reach drives in sync: Codex's service update (Oct 13).
+    "keep-in-sync",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).

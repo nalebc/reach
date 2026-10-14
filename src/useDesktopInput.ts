@@ -22,6 +22,7 @@ export function useDesktopInput(
   const [typing, setTyping] = useState(false);
   // The computer can say whether a text field is under the finger.
   const [probe, setProbe] = useState(false);
+  const [doubleClick, setDoubleClick] = useState(false);
   const [initialCursor, setInitialCursor] = useState<{
     x: number;
     y: number;
@@ -64,6 +65,7 @@ export function useDesktopInput(
     setReady(false);
     setTyping(false);
     setProbe(false);
+    setDoubleClick(false);
     setInitialCursor(null);
     fieldMap.current = null;
     lastChange.current = 0;
@@ -200,6 +202,7 @@ export function useDesktopInput(
             setInitialCursor(m.cursor);
           setTyping(m.typing === true);
           setProbe(m.probe === true);
+          setDoubleClick(m.doubleClick === true);
           setReady(true);
           return;
         }
@@ -269,6 +272,7 @@ export function useDesktopInput(
     reconnecting,
     typing,
     probe,
+    doubleClick,
     // A text field under this point, known before the tap: only from a map
     // made after the last input that could have moved things.
     fieldAt: (point: { x: number; y: number }) => {

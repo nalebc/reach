@@ -10,7 +10,7 @@ $entry = Join-Path $root 'bin\reach.mjs'
 $node = Get-Command node -ErrorAction SilentlyContinue
 $npm = Get-Command npm -ErrorAction SilentlyContinue
 if ($node -and $npm) {
-    & $node.Source -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)'
+    & $node.Source -e 'const [a,b]=process.versions.node.split(/[.]/).map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)'
     if ($LASTEXITCODE -eq 0) {
         & $node.Source $entry @args
         exit $LASTEXITCODE

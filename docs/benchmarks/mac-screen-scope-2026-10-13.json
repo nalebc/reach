@@ -1,0 +1,108 @@
+{
+  "schema": "reach.scoped-reader-benchmark.v1",
+  "date": "2026-10-13",
+  "controls": 161,
+  "injectedDelayMs": 0,
+  "pairedOutputsEqual": true,
+  "samplesPerMode": 40,
+  "scenarios": [
+    {
+      "baselineFullReadThenFilter": {
+        "attributeReads": 2836,
+        "medianMs": 1.38625,
+        "p95Ms": 1.496458
+      },
+      "controlRole": "AXTextField",
+      "lazyLabelsFullReadThenFilter": {
+        "attributeReads": 2333,
+        "medianMs": 1.247083,
+        "p95Ms": 1.336792
+      },
+      "name": "fields",
+      "nativeWithinRead": {
+        "attributeReads": 509,
+        "medianMs": 0.303709,
+        "p95Ms": 0.332792
+      },
+      "within": "Region 19"
+    },
+    {
+      "baselineFullReadThenFilter": {
+        "attributeReads": 2676,
+        "medianMs": 1.340542,
+        "p95Ms": 1.44775
+      },
+      "controlRole": "AXButton",
+      "lazyLabelsFullReadThenFilter": {
+        "attributeReads": 2173,
+        "medianMs": 1.168875,
+        "p95Ms": 1.274166
+      },
+      "name": "buttons",
+      "nativeWithinRead": {
+        "attributeReads": 957,
+        "medianMs": 0.610041,
+        "p95Ms": 0.65675
+      },
+      "within": "Region 19"
+    },
+    {
+      "baselineFullReadThenFilter": {
+        "attributeReads": 2836,
+        "medianMs": 2.463583,
+        "p95Ms": 2.870125
+      },
+      "controlRole": "AXTextField",
+      "lazyLabelsFullReadThenFilter": {
+        "attributeReads": 2333,
+        "medianMs": 2.329583,
+        "p95Ms": 2.798375
+      },
+      "name": "broad",
+      "nativeWithinRead": {
+        "attributeReads": 2333,
+        "medianMs": 2.405667,
+        "p95Ms": 2.835083
+      },
+      "within": "Region"
+    },
+    {
+      "baselineFullReadThenFilter": {
+        "attributeReads": 2836,
+        "medianMs": 1.127,
+        "p95Ms": 1.158958
+      },
+      "controlRole": "AXTextField",
+      "lazyLabelsFullReadThenFilter": {
+        "attributeReads": 2333,
+        "medianMs": 1.030917,
+        "p95Ms": 1.074292
+      },
+      "name": "missing",
+      "nativeWithinRead": {
+        "attributeReads": 413,
+        "medianMs": 0.135959,
+        "p95Ms": 0.146625
+      },
+      "within": "Absent"
+    }
+  ],
+  "texts": 160,
+  "sourceSha256": "04a1c1450d81944fd954d091e8459b359fa39909d2a6ee92b24f089bd8c3dae1",
+  "baselineSha256": "5f59c2c6bfc37d76ac46d5fe51f79063524af25c6860435af4c0ecaf0dd2f6b6",
+  "limitations": [
+    "Fake AX/AppKit; no real application, interprocess AX latency, model inference, transport or live input.",
+    "Optimized production reader plus equivalent normalized JSON output. Rotating paired order, five warmups, no injected delays.",
+    "Timing is diagnostic, not a pass threshold. Assertions require equivalent content, bounded reads and fewer attribute requests."
+  ],
+  "validation": {
+    "javascriptChecks": 93,
+    "nativePolicyChecks": 7,
+    "nativeReferenceAndFocusChecks": 2,
+    "finalBenchmarkAndGuidanceChecks": 15,
+    "failedAfterReruns": 0,
+    "productionHelperOptimizedCompile": "passed; temporary binary never executed",
+    "restartedReach": false
+  },
+  "method": "REACH_TEST_APP_NATIVE=1 REACH_SCREEN_BENCHMARK_OUTPUT=/tmp/reach-screen-benchmark.json npm run test:file -- --test-concurrency=1 test/agent-screen-scope-native.test.mjs"
+}

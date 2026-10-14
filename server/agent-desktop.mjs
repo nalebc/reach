@@ -117,6 +117,8 @@ export function shapeElements(result) {
   const fields = items.filter((item) => FIELD_ROLES.has(item.role))
     .map(({ n, name, role, value, secure }) => ({ n, label: name, role, ...(value !== undefined ? { value } : {}), ...(secure ? { secure: true } : {}) }));
   return { ...(nativeRef(result.windowRef) ? { windowRef: result.windowRef } : {}), ...(Number.isSafeInteger(result.revision) ? { revision: result.revision } : {}), ...(Number.isInteger(result.displayId) ? { displayId: result.displayId } : {}), snapshot: String(result.snapshot || "").slice(0, 40), app: String(result.app || "").slice(0, 100),
+    ...(typeof result.within === "string" && result.within ? { scope: { within: result.within.slice(0, 200) } } : {}),
+    ...(typeof result.loading === "boolean" ? { loading: result.loading } : {}),
     title: String(result.title || "").slice(0, 200), items, texts, fields, truncated: result.truncated === true || budget < 0 };
 }
 
@@ -740,12 +742,13 @@ export function createAgentDesktop(config, {
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
     },
     /** What can be clicked in the front window, numbered, from the accessibility tree. */
-    async elements(client, authorize, { displayId } = {}) {
+    async elements(client, authorize, { displayId, within } = {}) {
+      if (within !== undefined && (typeof within !== "string" || !within.trim() || within.length > 200 || hiddenControls.test(within))) throw fail(400, "Name a containing region, up to 200 characters.");
       const latest = live(client, authorize, "browser:control");
       const askedAt = now();
       const state = await session(latest);
       checkState(client, authorize, "browser:control", state);
-      const result = answer(await state.helper.send({ op: "elements", ...(displayId ? { displayId } : {}) }));
+      const result = answer(await state.helper.send({ op: "elements", ...(displayId ? { displayId } : {}), ...(within ? { within } : {}) }));
       checkState(client, authorize, "browser:control", state);
       // The numbered labels read the live screen: that is a look.
       observe(latest, askedAt);

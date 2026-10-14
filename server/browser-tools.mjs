@@ -28,7 +28,7 @@ export const deterministicToolName = item => `reach_tool_${item.id}`;
 // agent's guide (agent-guide.mjs), so on every connection (Oct 12: "make
 // navigation super fast and smooth"): one turn per step, not act, look, act.
 export const ACT_AND_SEE = "Acting answers with the screen as text, only what changed since your last look (full: true for all of it); use that result for your next decision. When no screen state is needed, describe: false returns only the action receipt and skips the read and settling wait.";
-export const GO_FAST = "Act and you get the screen back as text; use that result for your next decision. Batch up to 10 actions in one reach_act and observe once at the end. Use describe: false when you need only the action receipt; observe: {query, maxChars} for relevant text. Prefer stable element refs. Use reach_wait_for instead of looking again and again.";
+export const GO_FAST = "Act and you get the screen back as text; use that result for your next decision. Batch up to 10 actions in one reach_act and observe once at the end. Use describe: false when you need only the action receipt; observe: {within, query, maxChars} for a known region or relevant text. Prefer stable element refs. Use reach_wait_for instead of looking again and again.";
 const requestId = { ...string(36), pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "A fresh UUID for a new operation. Reuse it after a lost response; effects will never be repeated." };
 const toolDefinitionSchema = object({ protocol: kinds("reach.tool.v1"), id: { ...string(48), pattern: "^[a-z][a-z0-9_]*$" }, title: string(80), description: string(500), origins: { type: "array", minItems: 1, maxItems: 4, items: string(2000) }, inputs: { type: "object", maxProperties: 12, additionalProperties: true }, steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", maxProperties: 8, additionalProperties: true } } }, ["protocol", "id", "title", "description", "origins", "inputs", "steps"]);
 const location = { root, path: relativePath };
@@ -219,7 +219,7 @@ function presetTools(access) {
       Object.assign(tool.inputSchema.properties, afterFields, { describe: describeField });
       tool.description += ` ${ACT_AND_SEE} waitFor: {text or name, timeoutMs} waits for something to appear first; observe: {query, within, maxChars, displayId} narrows the text. A completed action is reported even if reading the screen fails.`;
     }
-    if (["reach_describe_screen", "reach_elements"].includes(tool.name)) tool.description += " query/within narrow output; sinceSnapshot returns changes; maxChars bounds text.";
+    if (["reach_describe_screen", "reach_elements"].includes(tool.name)) tool.description += " within skips unrelated native values and geometry on macOS. query/maxChars narrow output; sinceSnapshot returns changes.";
     if (tool.name === "reach_act") tool.description += " In actions, use {type:'wait_for',text or name,timeoutMs} for readiness between steps. Use displayId for coordinates on another display.";
     if (tool.name === "reach_press") tool.inputSchema.properties.within = string(200);
     if (["reach_press", "reach_fill"].includes(tool.name)) tool.inputSchema.properties.displayId = displayId;

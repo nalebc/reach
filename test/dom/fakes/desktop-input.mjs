@@ -38,6 +38,7 @@ export function useDesktopInput(peer, enabled, display, ended) {
   return {
     ready: computer.lease === undefined ? enabled : enabled && connected,
     typing: true,
+    doubleClick: computer.doubleClickSupported === true,
     initialCursor: undefined,
     latency: 1,
     send: async (action) => {

@@ -32,7 +32,9 @@ test("apps installed without the keyboard plugin keep the web keyboard", async (
   const js = await read("../src/remote-keyboard.ts");
   assert.match(js, /isNativePlatform\(\) && Capacitor\.isPluginAvailable\("RemoteKeyboard"\)/);
   const screen = await read("../src/Screen.tsx");
-  assert.match(screen, /nativeKeyboard \? \(\s*!typingTarget.pending &&\s*\(?\s*<NativeRemoteTyping/);
+  assert.match(screen, /nativeKeyboard \? \(\s*<NativeRemoteTyping/);
+  const native = await read("../src/NativeRemoteTyping.tsx");
+  assert.match(native, /if \(current.target.pending\)/);
   assert.match(screen, /!nativeKeyboard &&\s*mobile/);
   assert.doesNotMatch(screen, /\bisNative\b/);
 });

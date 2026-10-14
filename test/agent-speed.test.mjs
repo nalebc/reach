@@ -102,6 +102,16 @@ test("settling refreshes a loading screen when the app omits change notification
   assert.equal(reads, 2);
 });
 
+test("scoped observations retain loading status from controls outside their region", async () => {
+  let clock = 0, reads = 0;
+  const result = await settleScreen({ now: () => clock, capMs: SETTLE.openMs, authorize() {},
+    changed: async (_, ms) => { clock += ms; return { revision: 1, changed: false }; },
+    read: async () => { reads++; return { ...screenOf("Region"), scope: { within: "Invoice" }, loading: reads === 1 }; } });
+  assert.equal(reads, 2, "the missing toolbar in a scoped result does not mean loading finished");
+  assert.equal(result.screen.loading, false);
+  assert.equal(result.settledMs, 900);
+});
+
 test("changes at the settle deadline cannot return a previously read screen", async () => {
   let clock = 0, rounds = 0, reads = 0;
   const result = await settleScreen({

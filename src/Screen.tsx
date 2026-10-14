@@ -46,6 +46,7 @@ import { useAppContext } from "./useAppContext";
 import { allCommands, contextPicks, type ContextAction } from "./app-context";
 import { AppCommandList } from "./AppCommands";
 import TapToType from "./TapToType";
+import { focusKeyboard, prepareKeyboard } from "./keyboard-focus";
 import { nativeKeyboard } from "./remote-keyboard";
 import { PausedCover } from "./PauseControl";
 import { agentsWaitIn, computerWord, controlIn, isPausedMessage, pausedIn, usingIn } from "./pause";
@@ -153,12 +154,19 @@ export default function Screen({
   const typingRef = useRef(typingTarget);
   typingRef.current = typingTarget;
   const typingEpoch = useRef(0);
+  const typingCheck = useRef(0);
   const typingEditor = useRef<HTMLInputElement | HTMLTextAreaElement | null>(
     null,
   );
   const clearTyping = () => {
     typingEpoch.current++;
     setTypingTarget(null);
+  };
+  const startInteraction = () => {
+    // A new gesture makes an earlier click's focus reply obsolete, even
+    // before finger-up. Keep a confirmed keyboard available for scrolling.
+    typingCheck.current++;
+    if (typingRef.current?.pending) clearTyping();
   };
   const viewer = useRef<HTMLElement>(null),
     intent = useRef(false),
@@ -260,43 +268,36 @@ export default function Screen({
   const detectTyping = async (point: { x: number; y: number }) => {
     if (!input.typing) return;
     const epoch = typingEpoch.current;
+    const check = ++typingCheck.current;
+    const currentCheck = () =>
+      epoch === typingEpoch.current &&
+      check === typingCheck.current &&
+      mounted.current;
     // Let the desktop process its click before querying focus. No polling on moves.
     await new Promise((resolve) => setTimeout(resolve, 35));
-    if (epoch !== typingEpoch.current || !mounted.current) return;
+    if (!currentCheck()) return;
     try {
       let result = await send({ type: "focus", ...point });
       // Electron/web editors can publish their focused accessibility field
       // just after the click. Retry briefly, without ever sending unguarded text.
       for (const delay of [80, 160, 320]) {
-        if (result.target?.editable) break;
+        if (!currentCheck()) return;
+        if (result.target?.editable && result.target.focus) break;
         await new Promise((resolve) => setTimeout(resolve, delay));
-        if (epoch !== typingEpoch.current || !mounted.current) return;
+        if (!currentCheck()) return;
         result = await send({ type: "focus", ...point });
       }
+      if (!currentCheck()) return;
       const current = typingRef.current;
-      if (
-        epoch === typingEpoch.current &&
-        mounted.current &&
-        current?.opened &&
-        current.point === point
-      ) {
-        // Opened on the tap: keep that keyboard, now guarded to this field.
-        if (result.target?.editable && result.target.focus)
-          setTypingTarget({ ...current, ...result.target, pending: false });
-        else clearTyping();
-        return;
-      }
-      if (
-        epoch === typingEpoch.current &&
-        mounted.current &&
-        result.target?.editable &&
-        result.target.focus
-      ) {
-        setTypingTarget({ ...result.target, point });
+      if (result.target?.editable && result.target.focus) {
+        // The host returns a new point object and may correct a finger miss.
+        // This interaction's epoch, rather than point identity, ties its
+        // keyboard to the click. Preserve its editor and buffered typing.
+        setTypingTarget({ ...current, ...result.target, point, pending: false });
         setFeedback("");
-      }
+      } else clearTyping();
     } catch {
-      if (epoch === typingEpoch.current && typingRef.current?.pending)
+      if (currentCheck() && typingRef.current?.pending)
         clearTyping();
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
@@ -356,7 +357,7 @@ export default function Screen({
   useEffect(() => {
     void loadDisplays();
   }, [loadDisplays]);
-  // Feedback ("Drag released") fades after a few seconds.
+  // Feedback fades after a few seconds.
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(""), 4000);
@@ -367,15 +368,13 @@ export default function Screen({
   const typing = !!typingTarget && typingAllowed && !panel;
   const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
-  // Fullscreen: Reach's controls in the room the picture leaves, never over
-  // the Mac's menu bar or Dock (src/screen-chrome.ts). While typing, the
-  // keyboard's own layout stands.
+  // Landscape fills the viewport with floating controls. Portrait keeps
+  // the controls outside the picture; typing uses the keyboard's layout.
   if (stream.width > 0 && stream.height > 0)
     aspect.current = stream.width / stream.height;
   const chrome = useScreenChrome(viewer, fullscreen && !typing, aspect.current);
-  // A phone turned sideways opened fullscreen by itself and closes it when
-  // turned back: the rail needn't hold that button.
-  const turnToLeave = chrome?.placement === "side" && landscape;
+  // Turning a phone back closes its automatic fullscreen.
+  const turnToLeave = chrome?.placement === "overlay" && landscape;
   // Fullscreen hides the bars until the screen is touched; they stay while
   // something needs attention.
   const chromeShown = useImmersiveChrome(
@@ -533,7 +532,7 @@ export default function Screen({
   // Must run inside the tap's event handler: iOS only opens the keyboard then.
   const openKeyboard = () => {
     if (typingTarget && typingEditor.current) {
-      typingEditor.current.focus({ preventScroll: true });
+      focusKeyboard(typingEditor.current);
       return;
     }
     flushSync(() => {
@@ -541,7 +540,7 @@ export default function Screen({
       setPanel(null);
       setTypingTarget({ editable: true });
     });
-    typingEditor.current?.focus({ preventScroll: true });
+    focusKeyboard(typingEditor.current);
   };
   // Done with the Mac: your control ends and agents have it back now, not 2
   // minutes from now.
@@ -774,7 +773,6 @@ export default function Screen({
           style={
             {
               "--screen-aspect": aspect.current,
-              ...(chrome && { "--screen-rail": `${chrome.rail}px` }),
             } as React.CSSProperties
           }
           data-chrome={chrome?.placement}
@@ -785,8 +783,7 @@ export default function Screen({
               <span
                 className={`screen-status-dot ${live && stream.ready && !stream.connecting ? (stream.slow ? "slow" : "active") : ""}`}
               />
-              {/* In the side rail only news is said (not the computer's
-                  name): the dot says the rest. */}
+              {/* In landscape only news needs words; the dot says the rest. */}
               <span
                 className="screen-state-text"
                 {...(statusText !== device.name && { "data-news": "" })}
@@ -858,6 +855,7 @@ export default function Screen({
           )}
           <DesktopSurface
             touchScroll
+            doubleClick={input.doubleClick}
             touchAssist={device.platform === "darwin" && touchAssist}
             focusRect={askRect}
             canvas={stream.canvas}
@@ -878,12 +876,28 @@ export default function Screen({
             send={send}
             onDragEnd={() => setDrag(false)}
             onFeedback={setFeedback}
-            onInteraction={clearTyping}
+            onInteractionStart={startInteraction}
+            onInteraction={(repeat) => {
+              typingCheck.current++;
+              // Keep a confirmed editor for a repeat; every edit still
+              // carries its native focus guard.
+              const current = typingRef.current;
+              if (repeat && current?.focus && !current.pending) {
+                flushSync(() => setTypingTarget({
+                  ...current,
+                  editRevision: (current.editRevision ?? 0) + 1,
+                }));
+                return true;
+              }
+              clearTyping();
+              return false;
+            }}
             onTextTarget={(point) => void detectTyping(point)}
             {...(input.probe && {
               probe: (point: { x: number; y: number }) =>
                 send({ type: "probe", ...point }),
               onField: typeInField,
+              onKeyboardActivate: () => typingEditor.current?.focus({ preventScroll: true }),
               knownField: input.fieldAt,
               onStaleFields: input.forgetFields,
             })}
@@ -905,15 +919,13 @@ export default function Screen({
           {typing &&
             typingTarget &&
             (nativeKeyboard ? (
-              !typingTarget.pending && (
-                <NativeRemoteTyping
-                  key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
-                  target={typingTarget}
-                  send={send}
-                  onClose={clearTyping}
-                  onError={setError}
-                />
-              )
+              <NativeRemoteTyping
+                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                target={typingTarget}
+                send={send}
+                onClose={clearTyping}
+                onError={setError}
+              />
             ) : (
               <RemoteTyping
                 key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
@@ -936,12 +948,17 @@ export default function Screen({
               // between keystrokes (each next letter then deleted the last).
               <TapToType
                 key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
-                editorRef={typingEditor}
+                onOpen={openKeyboard}
+                onPrepare={() => prepareKeyboard(typingEditor.current)}
               />
             )}
           {/* Every control in one small bar floating at the bottom center:
               Control, keyboard, paste, fullscreen, and one menu (keys, apps, options). */}
-          <div className="simple-screen-dock screen-bar-dock">
+          <div
+            className="simple-screen-dock screen-bar-dock"
+            inert={chrome?.placement === "overlay" && !chromeShown}
+            aria-hidden={chrome?.placement === "overlay" && !chromeShown ? true : undefined}
+          >
             {caption && (
               <span className="simple-screen-caption" role="status">
                 {caption}
