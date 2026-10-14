@@ -547,7 +547,14 @@ static class Jobs {
         }
 
         string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
-        NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true);
+        NativeProc.Launched launched;
+        try { launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true); }
+        catch (Exception first) {
+          // Diagnostic: did it fail because of the working folder? Retry once in
+          // the container's own folder (always reachable). "ok" here means the
+          // AppContainer launch is fine and the cwd/grant is the problem.
+          throw Sandbox.Refusal(503, first.Message + " [nocwd=" + NativeProc.ProbeContainerLaunch(container) + "]");
+        }
         try {
           // §4.5 preflight: the real launch token, AccessChecked against every
           // deny path under the ACL lock, immediately after creation and before
@@ -865,6 +872,18 @@ static class NativeProc {
     var launched = new Launched();
     launched.Adopt(pi, nul, outWrite, errWrite, outRead, errRead, attrs);
     return launched;
+  }
+
+  // Diagnostic: can a process start in this container at all, with no working
+  // folder set? "ok", or the refusal message. Isolates a cwd/grant problem from
+  // a broken AppContainer launch.
+  public static string ProbeContainerLaunch(Container container) {
+    try {
+      using (JobObject job = JobObject.CreateForJobs(8)) {
+        Launched launched = LaunchContained("\"" + ComSpec() + "\" /d /s /c exit", null, container, job, false);
+        try { launched.WaitForExit(3000); return "ok"; } finally { launched.Dispose(); }
+      }
+    } catch (Exception error) { return error.Message; }
   }
 
   public static string RunContainedCaptured(string commandLine, string cwd, Container container, JobObject job, int timeoutMs) {
