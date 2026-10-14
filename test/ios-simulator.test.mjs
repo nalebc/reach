@@ -279,7 +279,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const types = JSON.parse((await sim("list devicetypes", ["list", "devicetypes", "-j"])).stdout).devicetypes;
   const supported = new Set(runtime.supportedDeviceTypes?.map(item => item.identifier));
   const phones = types.filter(item => item.name.startsWith("iPhone") && (!supported.size || supported.has(item.identifier)));
-  const type = phones.find(item => item.name === "iPhone 17") || phones[0];
+  // The compact device keeps this cold-boot smoke within hosted runners'
+  // memory budget; the same real pairing and native bridge assertions run.
+  const type = phones.find(item => item.name === "iPhone SE (3rd generation)") || phones.find(item => item.name === "iPhone 16") || phones[0];
   assert.ok(type, "the selected runtime supports an installed iPhone device type");
   device = (await sim("create", ["create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier])).stdout.trim();
   reached(`simulator created (iOS ${runtime.version}, ${type.name})`);
@@ -308,6 +310,13 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   config.server = { url: origin, cleartext: true };
   await fs.writeFile(configFile, JSON.stringify(config));
   const plist = path.join(app, "Info.plist");
+  const launchScheme = `reach-smoke-${nonce}`;
+  // Only the disposable copied app registers this run's unique URL. It gives
+  // simctl a second supported launch path if its direct launcher stalls.
+  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes array", plist]);
+  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes:0 dict", plist]);
+  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes:0:CFBundleURLSchemes array", plist]);
+  await exec("/usr/libexec/PlistBuddy", ["-c", `Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string ${launchScheme}`, plist]);
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity dict", plist]);
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true", plist]);
   const bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
@@ -323,7 +332,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], {
+  await sim("launch", attempt => attempt === 2
+    ? ["openurl", device, `${launchScheme}://launch`]
+    : ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], {
     limit: 75000, attempts: 3, progress: appPage,
     beforeRetry: async attempt => {
       // A first boot can answer launchctl while its application launcher is
