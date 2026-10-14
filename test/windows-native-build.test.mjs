@@ -73,6 +73,27 @@ test("a helper is built with the PC's own csc.exe into the data folder, named by
   assert.equal(csc.calls.length, 1);
 });
 
+// The voice memo helper alone gets Windows' speech assembly, looked for
+// beside WPF's, then in the assembly cache (the runner had it in neither
+// the framework's own folder, Oct 13); no other helper is rebuilt for it.
+test("a helper's own extra reference: System.Speech beside WPF's assemblies, else in the assembly cache", async (t) => {
+  const dataDir = await folder(t);
+  const gac = String.raw`C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Speech\v4.0_4.0.0.0__31bf3856ad364e35\System.Speech.dll`;
+  for (const [present, expected] of [
+    [path.win32.join(fx64, "WPF", "System.Speech.dll"), path.win32.join(fx64, "WPF", "System.Speech.dll")],
+    [gac, gac],
+  ]) {
+    const csc = compiler();
+    await windowsBinary({ dataDir }, "transcribe", { ...win, run: csc.run, exists: (file) => only(fx64)(file) || file === present, fresh: true });
+    const references = csc.calls[0].args.filter((arg) => arg.startsWith("/reference:")).map((arg) => arg.slice(11));
+    assert.equal(references.at(-1), expected);
+    assert.equal(references.length, 8);
+  }
+  const other = compiler();
+  await windowsBinary({ dataDir }, "hello", { ...win, run: other.run, exists: only(fx64), fresh: true });
+  assert.ok(!other.calls[0].args.some((arg) => arg.includes("System.Speech")), "only the helper that needs it");
+});
+
 test("two asks at once build once; a newer build removes the older ones of the same helper only", async (t) => {
   const dataDir = await folder(t);
   for (const name of ["reach-hello-aaaaaaaaaaaa.exe", "reach-hello-bbbbbbbbbbbb.exe", "reach-other-cccccccccccc.exe", "reach-hello-dddddddddddd", "notes.txt"])

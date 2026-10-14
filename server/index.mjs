@@ -35,7 +35,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs, refreshDriveRoots } from "./file-roots.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
@@ -44,7 +44,7 @@ import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
-import { createAppIconCache } from "./app-icons.mjs";
+import { createAppIconCache, useAppIconFolder } from "./app-icons.mjs";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
@@ -89,6 +89,7 @@ import { installLock, installPlan, installTerminalCommand } from "./agent-instal
 import { createAgentUpdates } from "./agent-updates.mjs";
 import { agentSource, codexServiceSource, createKeepInSync, openClawSource } from "./keep-in-sync.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
+import { createWindowsTray } from "./windows-tray.mjs";
 import {
   MacTerminalWatch,
   terminalWatchHelper,
@@ -188,6 +189,8 @@ export async function createReach(overrides = {}) {
     config.agentPolicyFile,
   ];
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  // Windows builds its app-icon helper here (app-icons.mjs).
+  useAppIconFolder(config.dataDir);
   // Settings changed from a paired phone persist; REACH_SCREEN only sets the default.
   const settingsFile = path.join(config.dataDir, "settings.json");
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
@@ -289,9 +292,8 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
-  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
+    config.tailscaleOwner && config.publicOrigin
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -312,13 +314,12 @@ export async function createReach(overrides = {}) {
   originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
-  // Invite keys need phones approved by your Tailscale account: not on a
-  // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
-  // before this computer is set up. Said the same way wherever it's asked.
-  const noInviteKeys =
-    hostPlatform === "win32" && !config.tailscaleOwner
-      ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
-      : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
+  // Invite keys need phones approved by your Tailscale account: not before
+  // this computer is set up, nor while a PC set up for it is on pairing codes
+  // (scripts/launch.mjs signInOff). Said the same way wherever it's asked.
+  const noInviteKeys = config.signInOff
+    ? `Invite links are off on this ${computerWord(hostPlatform)} for now: ${config.signInOff}`
+    : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
     ? createGuestKeys({
         dataDir: config.dataDir,
@@ -328,10 +329,9 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
-  // on Windows yet, even with browser sign-in: its own acceptance first.
+  // login (server/face-join.mjs): a passkey here and invite keys set up.
   const faceJoin =
-    passkeys && guestKeys && hostPlatform !== "win32"
+    passkeys && guestKeys
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -580,7 +580,10 @@ export async function createReach(overrides = {}) {
     },
   });
   // Messages from the phone waiting for their Claude app chat: listed in
-  // Reach's menu bar item, where a click opens the chat.
+  // Reach's menu bar item, where a click opens the chat (on Windows, its
+  // icon in the notification area: windowsTray below).
+  let windowsTray = null;
+  let waitingChats = [];
   if (agentSessions.onOutbox && agentSessions.waitingOnMac) {
     let listed = "[]";
     const showWaiting = () => {
@@ -588,7 +591,9 @@ export async function createReach(overrides = {}) {
       const next = JSON.stringify(chats);
       if (next === listed) return;
       listed = next;
+      waitingChats = chats;
       appThreads.waiting(chats);
+      windowsTray?.update({ waiting: chats });
     };
     agentSessions.onOutbox(showWaiting);
     showWaiting();
@@ -882,6 +887,7 @@ export async function createReach(overrides = {}) {
       if (!value) auth.restartQuietClock();
       settings.paused = value;
       atomicJson(settingsFile, settings);
+      windowsTray?.update({ paused: value });
       if (value) {
         desktopAutomation.interrupt();
         browserApprovals.cancelPending();
@@ -923,6 +929,17 @@ export async function createReach(overrides = {}) {
     void setPaused(value).catch((e) =>
       console.warn(`Reach: ${e.message}`),
     );
+  // Reach's icon in the Windows notification area, with Pause and Resume, as
+  // a Mac has its menu bar item (windows-tray.mjs). Tests never start the
+  // real helper.
+  if (overrides.windowsTray || (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT))
+    server.once("listening", () => {
+      windowsTray = (overrides.windowsTray || createWindowsTray)({
+        dataDir: config.dataDir,
+        onMenu: (value) => appThreads.onMenu(value),
+      });
+      windowsTray.update({ paused, waiting: waitingChats });
+    });
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
   appThreads.onFrontmost = (bundle) => {
@@ -1385,6 +1402,9 @@ export async function createReach(overrides = {}) {
       ...(faceJoin?.available() && faceJoin.ownDevice(req.reachIdentity)
         ? { faceJoin: true }
         : {}),
+      // How this computer's Reach is run, for the phone's hints: reach,
+      // ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
+      command,
     }),
   );
   app.use("/api", (req, res, next) => {
@@ -1490,7 +1510,9 @@ export async function createReach(overrides = {}) {
       config.tailscaleOwner,
       fromHere ? { thisComputer: true } : undefined,
     );
-    if (from)
+    // A linked computer's ticket vouches for a device, not for whoever is
+    // signed in here: from this computer itself, only the code typed here.
+    if (from && !fromHere)
       try {
         approvals.decide(created.id, "approve", from);
       } catch {}
@@ -2050,8 +2072,8 @@ export async function createReach(overrides = {}) {
       platform: process.platform,
       release: os.release(),
       arch: os.arch(),
-      roots: (req.client.agentRoots || config.roots).map((p, index) => ({
-        id: index,
+      roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
+        id,
         name: fileRootName(p),
         path: p,
       })),
@@ -2777,8 +2799,8 @@ export async function createReach(overrides = {}) {
     // Screen text an agent didn't read again (savings.mjs, "screen-diff").
     savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
-      // A Windows Reach has no public link without browser sign-in.
-      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
+      // No public link without phones approved by your Tailscale account.
+      if (!prepareFunnel && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -3407,6 +3429,8 @@ export async function createReach(overrides = {}) {
         clientId: current.id,
         // A failed download fails the install too (curl … | bash).
         command: installTerminalCommand({ ...plan, lead }),
+        // Windows: PowerShell's own text, whatever the owner's shell.
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -3438,6 +3462,7 @@ export async function createReach(overrides = {}) {
         name: `Update ${plan.name}`,
         clientId: current.id,
         command: installTerminalCommand(plan),
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -5760,9 +5785,8 @@ export async function createReach(overrides = {}) {
         publicApp: publicDoor(publicApp),
       });
     },
-    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
-    // keyed loopback route only Tailscale's own process may use
-    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    // Windows: the same, on a keyed loopback route only Tailscale's own
+    // process may use (server/tailscale-auth.mjs listenKeyedIngress). Its port.
     async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
@@ -5792,6 +5816,7 @@ export async function createReach(overrides = {}) {
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
+      windowsTray?.stop();
       reachUpdates.close?.();
       notifications.close();
       openClawWatch.close();

@@ -133,14 +133,13 @@ test("setup runs openclaw through the login shell, the key in its environment on
   assert.ok(auth >= 2, "live authorization before validating and before running");
 });
 
-test("setup never runs without accepting the risk, over an existing config or on Windows", async () => {
+test("setup never runs without accepting the risk or over an existing config", async () => {
   const run = async () => assert.fail("must not run");
   // OpenClaw's --accept-risk only with the owner's own yes.
   for (const acceptRisk of [undefined, false, "true", 1])
     await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk }, { run, env, platform: "darwin", file: await tempConfig() }), (e) => e.status === 400 && /risk/.test(e.message));
   const existing = await tempConfig({ make: true });
   await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file: existing }), (e) => e.status === 409 && /already set up/.test(e.message));
-  await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "win32", file: await tempConfig() }), (e) => e.status === 409);
   // A revoked device stops it before anything runs.
   await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file: await tempConfig(), authorize: () => { throw Object.assign(new Error("Revoked"), { status: 401 }); } }), (e) => e.status === 401);
 });
@@ -222,9 +221,10 @@ test("status reports install and setup; config path as OpenClaw's", async () => 
   assert.deepEqual(fresh, {
     installed: true, configured: false, supported: true, providers: ["openrouter", "anthropic", "openai", "google"],
   });
+  // Windows too, natively, as on a Mac (docs/WINDOWS_AGENT_PARITY.md).
   const s = await onboardStatus({ has: async () => true, file: await tempConfig({ make: true }), platform: "win32" });
   assert.equal(s.configured, true);
-  assert.equal(s.supported, false);
+  assert.equal(s.supported, true);
   assert.deepEqual(s.providers, Object.keys(PROVIDERS));
 });
 
@@ -233,7 +233,8 @@ test("OpenClaw's own installer, via the agent-install route", async () => {
   assert.deepEqual(await installPlan("openclaw", options(["npm"])), { agent: "openclaw", name: "OpenClaw", command: "npm install -g openclaw@latest" });
   const script = await installPlan("openclaw", options([]));
   assert.match(script.command, /^curl -fsSL --proto '=https' --tlsv1\.2 https:\/\/openclaw\.ai\/install\.sh \| bash -s -- --no-prompt --no-onboard$/);
-  await assert.rejects(installPlan("openclaw", { platform: "win32", has: async () => true }), (e) => e.status === 400);
+  // Windows: its PowerShell installer (windows-openclaw.test.mjs).
+  assert.match((await installPlan("openclaw", { platform: "win32", has: async () => true, node: async () => ({ version: "24.16.0", supported: true }) })).command, /install\.ps1\)\)\) -NoOnboard$/);
 });
 
 // "Check the key" was every failure's answer. Each cause now has Reach's
@@ -375,6 +376,53 @@ test("ClawOnboard: install row, then provider pills and a write-only key", async
     assert.deepEqual(sent.at(-1), ["add", { provider: "anthropic", key: KEY, setDefault: true }]);
     assert.doesNotMatch(doc.body.textContent, /SECRETKEY/);
     await add.unmount();
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await dom.close();
+  }
+});
+
+// The same on a Windows PC (owner, Oct 13: natively, as on a Mac): its own
+// installer, what Reach adds first said before Run, then the key form.
+test("ClawOnboard on a Windows PC: OpenClaw's installer, the Node it adds said first, then the key form; no Mac", async () => {
+  const sent = [];
+  let status = { installed: false, configured: false, supported: true, providers: ["openrouter", "anthropic", "openai", "google"] };
+  const plan = {
+    agent: "openclaw",
+    name: "OpenClaw",
+    command: "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard",
+    note: "OpenClaw needs Node 24.16 or newer, and this PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this PC's Node as it is.",
+  };
+  const dom = await startDom({
+    routes: {
+      [base + "/onboard/status"]: () => status,
+      "/api/sessions/agent-install/openclaw": (init) => {
+        const body = JSON.parse(init.body);
+        sent.push(["install", body]);
+        return { ...plan, ...(body.confirm ? { terminal: { id: "t1", status: "running" } } : {}) };
+      },
+      "/api/terminals": () => [{ id: "t1", status: "exited", exitCode: 0 }],
+    },
+  });
+  try {
+    const { ClawOnboard } = await dom.load("/src/OpenClawOnboard.tsx");
+    const peer = { id: "pc", url: "https://reach.test", token: "t", platform: "win32" };
+    const view = await dom.render(dom.React.createElement(ClawOnboard, { peer, onDone: () => {} }));
+    const doc = dom.document;
+    const btn = (label) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+    await dom.waitFor(() => btn("Install"));
+    btn("Install").click();
+    await dom.waitFor(() => doc.querySelector(".claw-onboard-command"));
+    assert.equal(doc.querySelector(".claw-onboard-command").textContent, plan.command);
+    assert.equal(doc.querySelector(".claw-onboard-note").textContent, plan.note);
+    status = { ...status, installed: true };
+    btn("Run on Windows PC").click();
+    await dom.waitFor(() => sent.length === 2);
+    assert.deepEqual(sent[1], ["install", { confirm: true }]);
+    await dom.waitFor(() => btn("Accept risk & set up"), 5000);
+    assert.match(doc.querySelector(".claw-onboard-note").textContent, /OpenClaw can run commands on this Windows PC/);
+    assert.doesNotMatch(doc.body.textContent, /\bMac\b|macOS/);
+    await view.unmount();
     assert.deepEqual(dom.errors, []);
   } finally {
     await dom.close();

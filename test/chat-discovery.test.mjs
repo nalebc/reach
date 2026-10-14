@@ -30,11 +30,24 @@ test('OpenClaw config discovers its Gateway without probing private sessions', a
 test('Windows discovery uses its executable locator and never launches a Unix shell', async () => {
   const calls = [];
   const list = await detectAgents({
-    known: [{ agent: 'openclaw', name: 'OpenClaw', cli: 'openclaw', supported: true }],
+    known: [{ agent: 'gemini', name: 'Gemini CLI', cli: 'gemini' }],
     platform: 'win32', env: {}, home: 'C:/Users/test', exists: () => false,
-    run: async (bin, args) => { calls.push([bin, args]); return { stdout: 'C:\\bin\\openclaw.cmd' }; },
+    run: async (bin, args) => { calls.push([bin, args]); return { stdout: 'C:\\bin\\gemini.cmd' }; },
   });
-  assert.deepEqual(calls, [['where.exe', ['openclaw']]]); assert.equal(list[0].installed, true);
+  assert.deepEqual(calls, [['where.exe', ['gemini']]]); assert.equal(list[0].installed, true);
+});
+
+// OpenClaw on Windows is found as Reach starts it (npm's openclaw.cmd as its
+// openclaw.mjs), where an install made since Reach started puts it too.
+test('Windows discovers OpenClaw as Reach runs it, never by where.exe or a Unix shell', async () => {
+  const known = [{ agent: 'openclaw', name: 'OpenClaw', cli: 'openclaw', supported: true }];
+  const run = async () => assert.fail('no where.exe, no shell');
+  const asked = [];
+  const found = await detectAgents({ known, platform: 'win32', env: { APPDATA: 'C:\\Users\\test\\AppData\\Roaming' }, home: 'C:/Users/test', exists: () => false, run,
+    openClaw: async (options) => (asked.push(options), 'C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\openclaw\\openclaw.mjs') });
+  assert.equal(found[0].installed, true); assert.equal(asked[0].home, 'C:/Users/test');
+  const missing = await detectAgents({ known, platform: 'win32', env: {}, home: 'C:/Users/test', exists: () => false, run, openClaw: async () => null });
+  assert.equal(missing[0].installed, false);
 });
 
 test('a missing Codex binary prompts installation; a failed connection prompts retry', async () => {
