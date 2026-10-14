@@ -38,11 +38,14 @@ async function presets(container) {
 
 for (const platform of ["linux", "win32"]) {
   test(`${platform} explains browser preset limits before inviting, without Mac permission instructions`, async () => {
-    const { container, calls } = await render(platform, { protectedFilesSupported: false, desktopAvailable: false });
+    const { container, calls } = await render(platform, { protectedFilesSupported: false, desktopAvailable: false,
+      desktopReason: "The screen helper cannot run here.", filesUnsupportedReason: "The protected file helper cannot run here. Your own Files and terminals remain available." });
     const choices = Object.values(await presets(container));
     assert.equal(choices.length, 4);
     assert.ok(choices.every((choice) => choice.disabled));
-    assert.match(container.textContent, /Browser invitations currently require macOS/);
+    assert.match(container.textContent, /The screen helper cannot run here/);
+    assert.match(container.textContent, /The protected file helper cannot run here/);
+    assert.doesNotMatch(container.textContent, /Browser invitations currently require macOS/);
     assert.match(container.textContent, /Your own Files and terminals remain available/);
     assert.doesNotMatch(container.textContent, /Connects/);
     assert.doesNotMatch(container.textContent, /Turn on Screen Recording|Screen presets need this Mac/);
@@ -68,12 +71,11 @@ test("the server's explicit unsupported file capability overrides a cached Mac d
   const choices = await presets(container);
   assert.equal(choices.Files.disabled, true);
   assert.equal(choices.Apps.disabled, false);
-  assert.match(container.textContent, /Browser-agent file access requires macOS/);
+  assert.match(container.textContent, /Agent file access isn't ready on this Mac yet/);
 });
 
-// Off a Mac the presets aren't offered, so Command line (folders, over
-// Tailscale) is how an agent is invited there: one button, never on a Mac.
-test("off a Mac, one button opens the folder-access invite instead", async () => {
+// When neither helper works, Command line remains a folder-access alternative.
+test("without preset helpers, one button opens the folder-access invite instead", async () => {
   let opened = 0;
   const { container } = await render("linux", { protectedFilesSupported: false, desktopAvailable: false }, { onCommandLine: () => opened++ });
   const button = [...container.querySelectorAll("button")].find((b) => b.textContent.trim() === "Invite with folder access");
