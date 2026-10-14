@@ -28,6 +28,8 @@ test("only you and people with full access hear the computer, from another devic
     roots: [dir],
     dataDir: path.join(dir, "private"),
     screen: true,
+    // Sound comes from a Mac or a PC: a Linux runner serves as a PC.
+    platform: ["darwin", "win32"].includes(process.platform) ? process.platform : "win32",
     soundFactory: async () => (handlers) => {
       const source = { handlers, info: { rate: 48000, channels: 2 }, stopped: null, stop: (e) => (source.stopped = e) };
       sources.push(source);
@@ -120,4 +122,31 @@ test("only you and people with full access hear the computer, from another devic
   } finally {
     for (const ws of sockets) ws.terminate();
   }
+});
+
+test("a Linux computer has no sound to give: the owner hears why, and nothing is captured", { timeout: 20000 }, async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-sound-linux-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  let prepared = 0;
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, "private"),
+    screen: true,
+    platform: "linux",
+    soundFactory: async () => {
+      prepared++;
+      return () => ({ stop() {} });
+    },
+  });
+  t.after(() => reach.close());
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const ws = new WebSocket(`ws://127.0.0.1:${reach.server.address().port}/ws/screen-sound`, { headers: { "x-forwarded-for": "100.101.102.103" } });
+  const messages = [];
+  ws.on("error", () => {});
+  ws.on("message", (b, binary) => messages.push(binary ? b : JSON.parse(b)));
+  await once(ws, "open");
+  ws.send(JSON.stringify({ type: "auth", token: reach.auth.issue("owner", ALL_SCOPES).token, codecs: ["adpcm"] }));
+  await until(() => ws.readyState === 3);
+  assert.deepEqual(messages, [{ type: "error", error: "Sound comes from a Mac or a Windows PC.", status: 403, retryable: false }]);
+  assert.equal(prepared, 0);
 });
