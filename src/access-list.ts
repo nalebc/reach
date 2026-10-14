@@ -5,7 +5,7 @@
 // What /api/clients says about each one, and what /api/browser/agents says
 // about each browser agent (it alone knows one that idle-ended or was
 // stopped while its end date is still ahead).
-export type AccessClient = { id: string; kind?: string; status?: string; expiresAt?: number };
+export type AccessClient = { id: string; kind?: string; status?: string; expiresAt?: number; mascot?: number };
 export type AccessSession = { id: string; status?: string; expiresAt?: number };
 
 // A browser agent still going: not past its end, and not stopped, denied or
@@ -39,4 +39,21 @@ export function listedAccess<C extends AccessClient>(clients: C[], sessions: Acc
 export const hasAccessNow = (c: AccessClient, sessions: AccessSession[]) => {
   const status = statusIn(c, sessions);
   return !status || status === "accepted";
+};
+
+// Whose access a device here now uses, for its face. Presence names the
+// device, not the access, so it's matched by the access's kind and end (and
+// its name, if two share them). Unsure: no one, so never a wrong face.
+export const accessOf = <C extends AccessClient & { name?: string }>(
+  grants: { kind: string; expiresAt: number }[] | undefined,
+  clients: C[],
+  name?: string,
+) => {
+  for (const g of grants || []) {
+    const kind = g.kind === "agent" ? "agent" : g.kind === "invited" ? "guest" : "";
+    let found = clients.filter((x) => kind && x.kind === kind && x.expiresAt === g.expiresAt);
+    if (found.length > 1) found = found.filter((x) => x.name === name);
+    if (found.length === 1) return found[0];
+  }
+  return undefined;
 };

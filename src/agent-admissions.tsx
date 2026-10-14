@@ -30,6 +30,7 @@ export type AgentAdmission = {
   requestId: string;
   clientId: string;
   name: string;
+  mascot?: number;
   scopes: string[];
   roots: string[];
   browser: boolean;
@@ -328,7 +329,7 @@ export function AgentAdmissionReview({
     >
       <div className="admission-scroll">
         <section className="admission-identity">
-          <AgentAvatar name={readable(admission.name)} size={56} />
+          <AgentAvatar name={readable(admission.name)} id={admission.clientId} drawn={admission.mascot} size={56} />
           <h3>
             Let <bdi>{readable(admission.name)}</bdi> connect?
           </h3>

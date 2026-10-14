@@ -221,6 +221,12 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  // Agents and people invited before mascots draw theirs now, once.
+  try {
+    auth.dressMascots();
+  } catch {
+    /* an unreadable access store stays locked (503) as before */
+  }
   const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
   // Any process on this Mac can claim one of your devices' Tailscale
   // identities on Reach's private socket, so an identity alone never approves
