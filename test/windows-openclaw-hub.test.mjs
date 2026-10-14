@@ -150,6 +150,10 @@ test("the app's Gateway starts, restarts and gets Doctor's look from Reach; repa
   for (const action of ["repair", "update", "finish-update", "verify-update", "repair-service"])
     await assert.rejects(runOpenClawMaintenance(action, options), (e) => e.status === 409 && e.message === HUB_KEEPS, action);
   assert.equal(ran.length, 3, "nothing more run");
+  // Didn't start: what to do is the app's, not a command at this PC.
+  const broken = { ...options, run: async () => { throw new Error("exit 1"); } };
+  await assert.rejects(startOpenClawGateway(broken), (e) => e.status === 503 && /Start it from OpenClaw’s Windows app\.$/.test(e.message));
+  await assert.rejects(restartOpenClawGateway(broken), (e) => e.status === 503 && /Restart it from OpenClaw’s Windows app\.$/.test(e.message));
 });
 
 test("set up already in the app: no second install, no second setup; the phone hears it's installed and set up", async (t) => {

@@ -281,7 +281,7 @@ export async function restartOpenClawGateway({
 } = {}) {
   authorize();
   // Refuses a remote profile: only this computer's own Gateway.
-  await configuration();
+  const { hub } = (await configuration()) || {};
   authorize();
   try {
     const [file, argv, childEnv, script] = await openClawShell(["gateway", "restart"], { env, platform, runtime, ...where });
@@ -290,7 +290,9 @@ export async function restartOpenClawGateway({
   } catch {
     throw fail(
       503,
-      `OpenClaw’s Gateway didn’t restart. On this computer, run: ${typedCli(platform)} gateway restart`,
+      hub
+        ? "OpenClaw’s Gateway didn’t restart in its Windows app’s WSL distro. Restart it from OpenClaw’s Windows app."
+        : `OpenClaw’s Gateway didn’t restart. On this computer, run: ${typedCli(platform)} gateway restart`,
     );
   }
 }
@@ -312,7 +314,7 @@ export async function runOpenClawMaintenance(action, {
   if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
   authorize();
   // OpenClaw's own Windows app keeps its Gateway: Doctor's look only.
-  if ((await configuration()).hub && action !== "doctor") throw fail(409, HUB_KEEPS);
+  if ((await configuration())?.hub && action !== "doctor") throw fail(409, HUB_KEEPS);
   authorize();
   runtime ??= await availableUpdateRuntime({ platform });
   const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";

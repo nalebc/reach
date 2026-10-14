@@ -2224,7 +2224,7 @@ export async function startOpenClawGateway({
   ...where
 } = {}) {
   authorize();
-  await configuration();
+  const { hub } = (await configuration()) || {};
   authorize();
   try {
     const [file, argv, childEnv, script] = await openClawShell(["gateway", "start"], { env, platform, runtime, ...where });
@@ -2236,7 +2236,9 @@ export async function startOpenClawGateway({
   } catch {
     throw fail(
       503,
-      `OpenClaw’s Gateway didn’t start. On this computer, run: ${typedCli(platform)} gateway start`,
+      hub
+        ? "OpenClaw’s Gateway didn’t start in its Windows app’s WSL distro. Start it from OpenClaw’s Windows app."
+        : `OpenClaw’s Gateway didn’t start. On this computer, run: ${typedCli(platform)} gateway start`,
     );
   }
 }
