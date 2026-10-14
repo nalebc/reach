@@ -9,8 +9,22 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { readWindowsIcons } from "../app-icons.mjs";
+import { apps as startApps } from "../platform.mjs";
 
 const exec = promisify(execFile);
+// Windows: the same marks from the apps installed on this PC, found by name
+// in Start's own list and drawn by Windows (app-icons.mjs). Marks a Windows
+// app doesn't carry (Claude's spark, Codex's light variant) stay unshown.
+export const WINDOWS_LOGO_SOURCES = {
+  claude: ["Claude"],
+  codex: ["Codex"],
+  terminal: ["Terminal", "Windows Terminal"],
+  // A Windows PC's own prompts wear Settings' icon, as a Mac's wear System Settings'.
+  macos: ["Settings"],
+  antigravity: ["Antigravity"],
+  cursor: ["Cursor"],
+};
 export const LOGO_SOURCES = {
   codex: { file: "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png", size: 128, app: "com.openai.codex" },
   "codex-light": { file: "/Applications/ChatGPT.app/Contents/Resources/icon-codex-light.png", size: 128, app: "com.openai.codex" },
@@ -54,7 +68,8 @@ export function resolveIcon(source, { look = (cmd, args) => execFileSync(cmd, ar
   return source.file;
 }
 
-export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platform = process.platform, resolve = resolveIcon }) {
+export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platform = process.platform, resolve = resolveIcon, windows = WINDOWS_LOGO_SOURCES, listApps = startApps, readIcons = (ids) => readWindowsIcons(ids, { size: 128, dataDir }) }) {
+  if (platform === "win32") return windowsLogos({ windows, listApps, readIcons });
   const dir = path.join(dataDir, "agent-logos");
   let cached = null;
   // Each source's file as last found, looked up again every ten minutes.
@@ -103,6 +118,34 @@ export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platf
     }
     const value = { version: crypto.createHash("sha1").update(key).digest("base64url").slice(0, 12), logos: out };
     cached = { key, value };
+    return value;
+  };
+}
+
+// Each mark's app as Start lists it, looked up again every ten minutes; the
+// version changes when an app comes or goes.
+function windowsLogos({ windows, listApps, readIcons, now = Date.now }) {
+  let cached = null;
+  return async function logos() {
+    if (cached && now() - cached.at < 10 * 60 * 1000) return cached.value;
+    let list = [];
+    try {
+      list = await listApps();
+    } catch {
+      /* no list: no logos; the phone shows the names */
+    }
+    const byName = new Map(list.map((app) => [String(app.name).toLowerCase(), app.id]));
+    const found = Object.entries(windows)
+      .map(([name, names]) => [name, names.map((n) => byName.get(n.toLowerCase())).find(Boolean)])
+      .filter(([, id]) => id);
+    let icons = [];
+    try {
+      icons = await readIcons(found.map(([, id]) => id));
+    } catch {}
+    const logos = Object.fromEntries(found.map(([name], i) => [name, icons[i]]).filter(([, icon]) => icon));
+    const key = found.map(([name, id]) => `${name}=${id}`).join("|");
+    const value = { version: crypto.createHash("sha1").update(key).digest("base64url").slice(0, 12), logos };
+    cached = { at: now(), value };
     return value;
   };
 }
