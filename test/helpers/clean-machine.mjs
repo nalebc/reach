@@ -119,6 +119,14 @@ export async function startCleanReach(
   const keep = new Set(["REACH_CODEX", ...Object.keys(extra), ...Object.keys(prepared.env || {})]);
   for (const key of Object.keys(env)) if (key.startsWith("REACH_") && !keep.has(key)) delete env[key];
   delete env.NODE_TEST_CONTEXT;
+  // A real Windows PC: its own folders on the PATH (named in any case
+  // there), and the temporary home as the profile.
+  if (process.platform === "win32") {
+    const windows = env.SystemRoot || "C:\\Windows";
+    for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
+    env.Path = ["System32", "", "System32\\Wbem", "System32\\WindowsPowerShell\\v1.0"].map((dir) => path.win32.join(windows, dir)).join(";");
+    env.USERPROFILE = home;
+  }
   const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
   const child = spawn(
     process.execPath,
