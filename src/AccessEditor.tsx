@@ -38,6 +38,8 @@ export function accessSummary(client: EditableAccess) {
 export type EditableAccess = {
   id: string;
   name: string;
+  // Its mascot, as the computer drew it (server/mascots.mjs).
+  mascot?: number;
   kind?: string;
   scopes?: string[];
   expiresAt?: number;
@@ -165,7 +167,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
     <SubPage title="Edit access" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
       <section className="access-editor ag-manage" aria-label="Edit agent access">
         <div className="ag-manage-who">
-          <AgentAvatar name={client.name} size={48} />
+          <AgentAvatar name={client.name} id={client.id} drawn={client.mascot} size={48} />
           <div><strong>{client.name}</strong><small>{client.policy ? presetSummary(client.policy) : ""}</small></div>
         </div>
         <p className="ag-label">What it may do</p>
@@ -281,7 +283,7 @@ function AppSessionAccess({ peer, client, onClose, onSaved }: AccessEditorProps)
     <SubPage title="Manage app requests" backLabel={`Back to ${client.name}`} onBack={() => !busy && onClose()}>
       <section className="access-editor ag-manage">
         <div className="ag-manage-who">
-          <AgentAvatar name={client.name} size={48} />
+          <AgentAvatar name={client.name} id={client.id} drawn={client.mascot} size={48} />
           <div><strong>{client.name}</strong><small>{accessSummary(client)}</small></div>
         </div>
         <div>
@@ -464,7 +466,7 @@ function GeneralAccessEditor({
           }}
         >
           <div className="ag-manage-who">
-            <AgentAvatar name={client.name} size={48} />
+            <AgentAvatar name={client.name} id={client.id} drawn={client.mascot} size={48} />
             <div>
               <strong>{client.name}</strong>
               <small>{device.name}</small>

@@ -22,6 +22,7 @@ export function browserAgentRoutes(app, { auth, approvals, appAccess, coordinato
       const current = work.find(item => item.state === 'running') || work[0];
       return {
         id: client.id, name: client.name, kind: 'agent',
+        ...(Number.isInteger(client.mascot) ? { mascot: client.mascot } : {}),
         createdAt: client.createdAt, expiresAt: client.expiresAt,
         status: client.status === 'revoked' ? 'revoked' : client.expiresAt <= at || (client.status === 'accepted' && browserIdleEnded(client, at)) ? 'expired' : client.status,
         ...(client.policy?.standing ? { standing: true } : {}),
