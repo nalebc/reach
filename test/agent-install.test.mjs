@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { hasCommand, installLock, installPlan, installTerminalCommand } from "../server/agent-install.mjs";
+import { hasCommand, installLock, installPlan, installTerminalCommand, posixInstallNode } from "../server/agent-install.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 
@@ -211,18 +212,95 @@ test("an install that can't start answers with why, and Reach keeps running", as
 
 // OpenClaw 2026.9 refuses Node older than 24.16: its npm install runs with
 // Homebrew's node@24 first on PATH, and the phone never sees that shell text.
-test("OpenClaw installs under Homebrew's node@24 when the Mac has it", async () => {
+// A Mac installs OpenClaw with its own installer, as Windows does (owner,
+// Oct 13): install.sh asks npm's version (npm 12 blocks OpenClaw's own
+// scripts unless told) and checks Node. A Mac whose Node OpenClaw can't use
+// gets OpenClaw's own Node first (install-cli.sh --node-only), said on the
+// phone in the same words as on a PC; the Mac's own Node is kept.
+const INSTALL_SH = "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard";
+const macNode = (over = {}) => async () => ({ version: "22.12.0", supported: false, runtime: null, prefix: "/Users/ann/.openclaw/tools/cli-node", bin: "/Users/ann/.openclaw/tools/cli-node/tools/node/bin", privateReady: false, ...over });
+test("OpenClaw on a Mac: its own installer; Homebrew's node@24 leads when there; OpenClaw's own Node added when the Mac's is too old", async () => {
+  const ready = await installPlan("openclaw", { platform: "darwin", node: macNode({ version: "24.21.0", supported: true }) });
+  assert.deepEqual(ready, { agent: "openclaw", name: "OpenClaw", command: INSTALL_SH });
+  assert.equal(installTerminalCommand(ready, "darwin"), `set -o pipefail; ${INSTALL_SH}; exit`);
   const runtime = "/opt/homebrew/opt/node@24/bin/node";
-  const plan = await installPlan("openclaw", { platform: "darwin", has: async (tool) => tool === "npm", findRuntime: async () => runtime });
-  assert.equal(plan.command, "npm install -g openclaw@latest");
-  assert.equal(installTerminalCommand(plan, "darwin"),
-    "set -o pipefail; export PATH='/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin':\"$PATH\"; npm install -g openclaw@latest; exit");
-  // Without node@24, or for another app, nothing is added.
-  const plain = await installPlan("openclaw", { platform: "darwin", has: async (tool) => tool === "npm", findRuntime: async () => null });
-  assert.equal(plain.lead, undefined);
-  assert.equal(installTerminalCommand(plain, "darwin"), "set -o pipefail; npm install -g openclaw@latest; exit");
+  const brew = await installPlan("openclaw", { platform: "darwin", node: macNode({ runtime }) });
+  assert.equal(installTerminalCommand(brew, "darwin"),
+    `set -o pipefail; export PATH='/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin':"$PATH"; ${INSTALL_SH}; exit`);
+  assert.equal(brew.note, undefined, "nothing is added");
+  const old = await installPlan("openclaw", { platform: "darwin", node: macNode() });
+  assert.equal(old.command, INSTALL_SH, "the phone shows the maker's command");
+  assert.equal(old.note, "OpenClaw needs Node 24.16 or newer, and this Mac has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this Mac's Node as it is.");
+  assert.match(old.lead, /install-cli\.sh \| bash -s -- --node-only --prefix '\/Users\/ann\/\.openclaw\/tools\/cli-node' \|\| exit 1; export PATH='\/Users\/ann\/\.openclaw\/tools\/cli-node\/tools\/node\/bin':"\$PATH"$/);
+  // Its own Node there already: led on PATH, nothing added, nothing to say.
+  const kept = await installPlan("openclaw", { platform: "darwin", node: macNode({ privateReady: true }) });
+  assert.equal(kept.note, undefined);
+  assert.doesNotMatch(kept.lead, /node-only/);
+  // Reach's own private Node isn't the Mac's: the note names no version.
+  assert.match((await installPlan("openclaw", { platform: "darwin", node: macNode({ version: null }) })).note, /^OpenClaw needs Node 24\.16 or newer\. Reach adds/);
   const codex = await installPlan("codex", { platform: "darwin", has: async () => true, findRuntime: async () => runtime });
   assert.equal(codex.lead, undefined);
+});
+
+test("the Mac's Node as a Reach terminal finds it: its own, not Reach's private one; OpenClaw's own Node when it's there", async () => {
+  const probe = (stdout) => async (file, args) => {
+    assert.deepEqual(args.slice(0, 1), ["-lc"]);
+    return { stdout };
+  };
+  const base = { platform: "darwin", env: { SHELL: "/bin/zsh", HOME: "/Users/ann" }, findRuntime: async () => null };
+  const own = await posixInstallNode({ ...base, run: probe("/opt/homebrew/bin/node\n22.12.0\n"), version: async () => null });
+  assert.deepEqual([own.version, own.supported, own.privateReady], ["22.12.0", false, false]);
+  const reach = await posixInstallNode({ ...base, run: probe("/Users/ann/reach/.reach/runtime/node-v22.23.3-darwin-arm64/bin/node\n22.23.3\n"), version: async () => "24.21.0" });
+  assert.deepEqual([reach.version, reach.supported, reach.privateReady], [null, false, true]);
+  const none = await posixInstallNode({ ...base, run: async () => { throw Object.assign(new Error("no node"), { code: 1 }); }, version: async () => null });
+  assert.deepEqual([none.version, none.supported], [null, false]);
+  assert.equal(none.bin, path.join(none.prefix, "tools", "node", "bin"));
+});
+
+// The lead is typed into the owner's own shell: zsh on a Mac, often bash.
+// Run as typed, with stand-ins for npm, brew and curl: npm's global folder
+// is the Mac's own npm's; Reach's private npm falls back to Homebrew's; with
+// neither, or when OpenClaw's Node-only installer fails, the terminal ends
+// before install.sh runs (whose own way would `brew install node` and
+// `brew link --overwrite`, replacing the Mac's Node).
+const shells = ["/bin/zsh", "/bin/bash"].filter((shell) => fsSync.existsSync(shell));
+test("the Mac's install lead, run by zsh and bash as typed", { skip: process.platform === "win32" && "a Mac's shells" }, async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-openclaw-lead-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, "bin");
+  await fs.mkdir(bin);
+  const log = path.join(dir, "log.txt");
+  const stub = async (name, text) => fs.writeFile(path.join(bin, name), `#!/bin/sh\n${text}\n`, { mode: 0o755 });
+  await stub("npm", '[ "$1 $2" = "prefix -g" ] && [ -n "$STUB_NPM" ] && { echo "$STUB_NPM"; exit 0; }; exit 1');
+  await stub("brew", '[ "$1" = "--prefix" ] && [ -n "$STUB_BREW" ] && { echo "$STUB_BREW"; exit 0; }; exit 1');
+  // curl prints what bash then runs: the Node-only step, or install.sh.
+  await stub("curl", `case "$*" in *install-cli.sh*) printf '%s\\n' 'echo "node-only $*" >> "$STUB_LOG"; exit \${STUB_NODE_EXIT:-0}' ;; *install.sh*) printf '%s\\n' 'echo "install.sh $* prefix=$NPM_CONFIG_PREFIX path=$PATH" >> "$STUB_LOG"' ;; esac`);
+  const plan = await installPlan("openclaw", { platform: "darwin", node: macNode({ prefix: path.join(dir, "cli-node"), bin: path.join(dir, "cli-node", "tools", "node", "bin") }) });
+  const typed = installTerminalCommand(plan, "darwin");
+  const runIn = (shell, extra) => {
+    fsSync.rmSync(log, { force: true });
+    const result = spawnSync(shell, ["-c", typed], { encoding: "utf8", timeout: 30000, env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, STUB_LOG: log, ...extra } });
+    const lines = fsSync.existsSync(log) ? fsSync.readFileSync(log, "utf8").trim().split("\n") : [];
+    return { status: result.status, stderr: result.stderr, lines };
+  };
+  assert.ok(shells.length, "a POSIX shell to run it");
+  for (const shell of shells) {
+    const own = runIn(shell, { STUB_NPM: "/opt/homebrew", STUB_BREW: "/opt/homebrew" });
+    assert.equal(own.status, 0, `${shell}: ${own.stderr}`);
+    assert.match(own.lines[0], new RegExp(`^node-only --node-only --prefix ${path.join(dir, "cli-node").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`), shell);
+    assert.match(own.lines[1], /^install\.sh --no-prompt --no-onboard prefix=\/opt\/homebrew path=/, shell);
+    assert.ok(own.lines[1].includes(`path=${path.join(dir, "cli-node", "tools", "node", "bin")}:`), `${shell}: OpenClaw's own Node first on PATH`);
+    const reachNpm = runIn(shell, { STUB_NPM: "/Users/ann/reach/.reach/runtime/node-v22.23.3-darwin-arm64", STUB_BREW: "/usr/local" });
+    assert.equal(reachNpm.status, 0, shell);
+    assert.match(reachNpm.lines[1], /prefix=\/usr\/local /, `${shell}: Reach's npm isn't the Mac's`);
+    const neither = runIn(shell, { STUB_NPM: "/Users/ann/reach/.reach/runtime/node-v22.23.3-darwin-arm64" });
+    assert.equal(neither.status, 1, shell);
+    assert.deepEqual(neither.lines, [], `${shell}: nothing installed`);
+    assert.match(neither.stderr, /This Mac has no npm of its own to install OpenClaw with/);
+    const failed = runIn(shell, { STUB_NPM: "/opt/homebrew", STUB_NODE_EXIT: "3" });
+    assert.notEqual(failed.status, 0, shell);
+    assert.equal(failed.lines.length, 1, `${shell}: install.sh never runs after a failed Node-only step`);
+  }
 });
 
 test("one install per app at a time: planning or a running terminal holds it", () => {
@@ -247,7 +325,9 @@ test("two phones confirming the same install at once: only one terminal", async 
   const reach = await createReach({
     roots: [root], dataDir: path.join(root, ".reach"), screen: false,
     agentSessions: { list: async () => ({ sessions: [], errors: {} }), health: async () => [] },
-    agentInstallPlan: async (agent) => { await gate; return { agent, name: "OpenClaw", command: "synthetic-installer-never-run", lead: "export PATH='/x':\"$PATH\"" }; },
+    // Its lead as each computer's installs write one: shell text on a Mac,
+    // PowerShell on Windows (OpenClaw's own Node first: agent-install.mjs).
+    agentInstallPlan: async (agent) => { await gate; return { agent, name: "OpenClaw", command: "synthetic-installer-never-run", lead: process.platform === "win32" ? "& 'C:\\x\\node-only.ps1'" : "export PATH='/x':\"$PATH\"" }; },
     terminals: {
       create: (options) => (created.push(options), { id: `t${created.length}`, status: "running" }),
       list: () => [], get: (id) => ({ id, status: "running" }), dispose: () => {},
@@ -270,7 +350,7 @@ test("two phones confirming the same install at once: only one terminal", async 
     assert.equal(created.length, 1);
     assert.match(created[0].command, process.platform === "win32"
       // The program's own exit code (only Claude Code's irm | iex installer says 0).
-      ? /^\$ErrorActionPreference = 'Stop'; try \{ synthetic-installer-never-run; exit \$LASTEXITCODE/
+      ? /^\$ErrorActionPreference = 'Stop'; try \{ & 'C:\\x\\node-only\.ps1'; synthetic-installer-never-run; exit \$LASTEXITCODE/
       : /^set -o pipefail; export PATH='\/x'/);
     // Its terminal still runs: a third confirm waits too; showing the plan doesn't.
     assert.equal((await install({ confirm: true })).status, 409);

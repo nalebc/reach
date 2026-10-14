@@ -79,9 +79,13 @@ test("the viewer only fetches what it can show or copy", () => {
   // Word, RTF and OpenDocument text comes from the computer.
   for (const name of ["Contract.docx", "old.doc", "letter.rtf", "draft.odt"])
     assert.equal(mode(name), "document", name);
-  // Only a Mac extracts it (textutil): a Windows PC offers the download.
-  assert.equal(previewMode({ name: "Contract.docx", type: "file" }, "darwin"), "document");
-  assert.equal(previewMode({ name: "Contract.docx", type: "file" }, "win32"), null);
+  // A Mac extracts all four (textutil); a Windows PC reads all but Word
+  // 97–2003's .doc, which it offers to download (parity audit #37).
+  for (const name of ["Contract.docx", "old.doc", "letter.rtf", "draft.odt"])
+    assert.equal(previewMode({ name, type: "file" }, "darwin"), "document", name);
+  for (const name of ["Contract.docx", "letter.rtf", "draft.odt"])
+    assert.equal(previewMode({ name, type: "file" }, "win32"), "document", name);
+  assert.equal(previewMode({ name: "old.doc", type: "file" }, "win32"), null);
   assert.equal(previewMode({ name: "notes.md", type: "file" }, "win32"), "text");
   assert.equal(mode("Quarterly.PDF"), "pdf");
   assert.equal(isMarkdown("README.MD"), true);
