@@ -169,8 +169,14 @@ async function freshPC(t) {
 
 test("Windows console, first run: every Tailscale state, its menus by arrow keys, the right pages, then the QR and pairing code; Ctrl+C stops it for good", onWindows, async (t) => {
   const pc = await freshPC(t);
-  // HTTPS certificates off, until the page that turns them on has opened.
-  await pc.fake.setStatus({ CertDomains: [] });
+  // HTTPS certificates off, until the page that turns them on has opened;
+  // this computer as Tailscale names its nodes (the stand-in's own "nMac" is
+  // too short to be one, and gets the DNS page instead).
+  const node = "nX6k7CNTRL";
+  await pc.fake.setStatus({
+    CertDomains: [],
+    Self: { ID: node, UserID: 42, DNSName: `${HOST}.`, HostName: "mac", KeyExpiry: "0001-01-01T00:00:00Z", TailscaleIPs: ["100.64.0.10"] },
+  });
   const reach = windowsConsole(t, pc.env);
   await reach.waitFor("Welcome to Reach. 3 steps", "the first run's welcome");
   // 1. Not installed: its menu, the recommended choice first.
@@ -214,8 +220,8 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   await reach.waitFor("Which Tailscale account should Reach use?", "the account menu");
   reach.write(ENTER);
   // 5. HTTPS off: Tailscale's own page for this computer, then on.
-  await pc.until(() => pc.opened().includes("explorer.exe\thttps://login.tailscale.com/f/serve?node=nMac"), "the HTTPS page");
-  await reach.waitFor("Turn on HTTPS for your tailnet: press Enable on this page (opening it): https://login.tailscale.com/f/serve?node=nMac", "the HTTPS step");
+  await pc.until(() => pc.opened().includes(`explorer.exe\thttps://login.tailscale.com/f/serve?node=${node}`), "the HTTPS page");
+  await reach.waitFor(`Turn on HTTPS for your tailnet: press Enable on this page (opening it): https://login.tailscale.com/f/serve?node=${node}`, "the HTTPS step");
   await reach.waitFor("Waiting… (Ctrl+C to stop; .\\reach.cmd picks up here)", "the HTTPS wait, naming .\\reach.cmd");
   await pc.fake.setStatus({ CertDomains: [HOST] });
   await reach.waitFor(`✔ 2. Your private link — ${HOST}`, "the link step done");
@@ -234,7 +240,7 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   assert.deepEqual(pc.opened().filter((line) => line.startsWith("explorer.exe")).map((line) => line.split("\t")[1]), [
     "https://tailscale.com/download/windows",
     "https://login.tailscale.com/a/fixture-login",
-    "https://login.tailscale.com/f/serve?node=nMac",
+    `https://login.tailscale.com/f/serve?node=${node}`,
   ], "each page once, nothing else");
   const route = (await pc.fake.sessions()).find((s) => s.config.TCP?.[8443]);
   assert.ok(route, "its private route, held");
