@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { tooOld as tooOldFor } from "./agent-sessions/compatibility.mjs";
+import { openClawTarget } from "./openclaw-hub.mjs";
 
 const CHECK_EVERY_MS = 60 * 60 * 1000;
 
@@ -79,8 +80,10 @@ export function codexServiceSource({ status, models, update, working }) {
 }
 
 // OpenClaw too old for Reach (openclaw.mjs tooOld): updated by its own
-// `openclaw update`, from OpenClaw's page in Reach (its maintenance job).
-export function openClawSource({ tooOld }) {
+// `openclaw update`, from OpenClaw's page in Reach (its maintenance job);
+// the Gateway OpenClaw's own Windows app keeps, from that app (Reach leaves
+// its repairs and updates to it: openclaw-hub.mjs).
+export function openClawSource({ tooOld, kept = async () => (await openClawTarget()).kind === "hub" }) {
   return {
     id: "openclaw",
     name: "OpenClaw",
@@ -88,7 +91,8 @@ export function openClawSource({ tooOld }) {
     async check() {
       const old = tooOld?.();
       if (!old?.to) return null;
-      return { state: "too-old", from: old.version || null, to: old.to, canUpdate: false, how: "Update it from OpenClaw in Reach", target: { page: "sessions", agent: "openclaw" } };
+      const how = (await kept().catch(() => false)) ? "Update it from OpenClaw's Windows app" : "Update it from OpenClaw in Reach";
+      return { state: "too-old", from: old.version || null, to: old.to, canUpdate: false, how, target: { page: "sessions", agent: "openclaw" } };
     },
   };
 }

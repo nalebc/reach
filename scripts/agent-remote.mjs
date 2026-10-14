@@ -106,7 +106,19 @@ const keptRuntime = () => {
     return "";
   }
 };
-export function restoreCommand(start, thumbprint = "", runtime = "") {
+// Windows has no curl, mv or ~ to count on, and a line can't be piped into a
+// series of PowerShell commands: there (PowerShell 5.1 and later, as the
+// join's steps, server/agent-steps.mjs), the line goes in place of this.
+export const YOUR_LINE = "<YOUR LINE>";
+export function restoreCommand(start, thumbprint = "", runtime = "", platform = process.platform) {
+  if (platform === "win32") {
+    const header = thumbprint ? ` -Headers @{ 'Reach-Key' = '${thumbprint}' }` : "";
+    const head = `$L = '${YOUR_LINE}'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; `;
+    const restore = `$L | node "$d\\agent.mjs" restore`;
+    if (!/^[0-9a-f]{64}$/.test(runtime))
+      return `${head}Invoke-WebRequest -UseBasicParsing${header} -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs"; ${restore}`;
+    return `${head}Invoke-WebRequest -UseBasicParsing${header} -Uri ${start}/agent-runtimes/${runtime}.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${runtime}') { throw 'This is not the runtime your line was kept with.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; ${restore}`;
+  }
   const key = thumbprint ? ` -H 'Reach-Key: ${thumbprint}'` : "";
   if (!/^[0-9a-f]{64}$/.test(runtime))
     return `curl -fsSL --create-dirs${key} -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs restore`;
@@ -604,11 +616,13 @@ export function lock(conn) {
 }
 // Processes share one connection through a local socket: a file next to the
 // credential on macOS and Linux, a named pipe on Windows (it has no socket
-// files; the pipe's default access lets only this user write to it).
+// files). The pipe's default access, read on a real PC: only its owner,
+// SYSTEM and Administrators may write to it, so only they can ask anything;
+// anyone may open it to read, which gets no answer.
 export const socketOf = (conn, platform = process.platform) =>
   platform === "win32"
     ? `\\\\.\\pipe\\reach-agent-${crypto.createHash("sha256").update(path.resolve(conn)).digest("hex").slice(0, 24)}`
-    : path.join(conn, "agent.sock");
+    : path.posix.join(conn, "agent.sock");
 const pipes = process.platform === "win32";
 // Whether a process already shares this connection.
 const listening = (file) => pipes
@@ -1198,7 +1212,9 @@ export async function main(argv = process.argv.slice(2)) {
     const thumbprint = credential.via === "funnel" ? agentKey(conn).thumbprint : "";
     process.stderr.write([
       `This line is your whole access to ${credential.computer}: keep it in your vault, nowhere else.`,
-      "On another machine, get Reach for agents, then paste the line on standard input:",
+      process.platform === "win32"
+        ? `On another machine, get Reach for agents and restore it, in PowerShell with your line in place of ${YOUR_LINE}:`
+        : "On another machine, get Reach for agents, then paste the line on standard input:",
       `  ${restoreCommand(credential.start, thumbprint, keptRuntime())}`,
       "",
     ].join("\n"));
@@ -1241,8 +1257,13 @@ export async function main(argv = process.argv.slice(2)) {
 // What an older runtime loads from this one when the computer serves it.
 export { callTool, toContent, toolsFor };
 
-const entry = process.argv[1] && fs.realpathSync.native(process.argv[1]);
-if (entry === fileURLToPath(import.meta.url))
+// Run, not imported: the same file however its path was written. Windows'
+// own spelling of it (fs.realpathSync.native: its 8.3 short names written
+// long, its case as on disk) on both sides; Node names this module as it was
+// given, so a run through C:\Users\RUNNER~1\… did nothing at all.
+const realFile = (file) => { try { return fs.realpathSync.native(file); } catch { return ""; } };
+const entry = process.argv[1] && realFile(process.argv[1]);
+if (entry && entry === realFile(fileURLToPath(import.meta.url)))
   // Exit once everything written has gone out: the tailnet client would
   // otherwise keep the process running, and a pipe may still be draining.
   main()

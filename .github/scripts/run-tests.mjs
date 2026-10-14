@@ -29,6 +29,12 @@ export const suites = {
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // The user journeys, workstream J: the built phone interface in headless
+    // Chrome against a real first install of Reach, page by page, ending in
+    // the same visible result as on a Mac. What needs the PC's desktop (its
+    // screen, input, windows) runs with REACH_TEST_WINDOWS_DESKTOP only.
+    "journeys/home", "journeys/terminals", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
+    "journeys/access", "journeys/pause",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
@@ -36,10 +42,49 @@ export const suites = {
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
+    // computers over the keyed route.
+    "face-join", "fleet",
+    // Workstreams K and L: the PC's process list (one Reach per computer),
+    // status, stop, restart and Reach's own window, sleep prevention and the
+    // background task, on a real PC.
+    "windows-processes", "windows-lifecycle", "windows-stay-awake", "windows-background",
+    // The first run's install alongside its setup, numbered menus included,
+    // on Windows' own Node (audit #31; the real console is workstream U's).
+    "first-start", "prompts",
+    // Setup, status and stop on Windows' own Node: first run there Oct 14.
+    "setup", "instances", "stop",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // The Claude desktop app on Windows, workstream N: its data in either
+    // install's folder, the PC's idle and lock readings.
+    "claude-app-paths", "claude-locate", "windows-presence",
+    // Windows conveniences, workstream W: the owner's own shell in Reach's
+    // terminals, drives attached later, the launcher's name on the phone.
+    "windows-shell", "file-roots", "connect-states-ui",
+    // Reach's icon in the notification area, workstream P (audit #16).
+    "windows-tray",
+    // Apps' icons and the agents' logos drawn by Windows (audit #28).
+    "windows-app-icons",
+    // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
+    "document-text", "file-kinds",
+    // Voice memos as words through Windows' own recognizer (audit #35).
+    "voice-messages",
+    // OpenClaw natively (audit #15, Oct 13): npm's OpenClaw started through
+    // Node with whole arguments, a key only in its variable or on stdin,
+    // Telegram's token file closed to others, a timeout ending the whole
+    // tree, and the install terminal's verdict. Beside OpenClaw's own
+    // Windows app, its Gateway in WSL (the WSL scripts run by bash only on
+    // Mac and Linux: WSL can't run on the runner).
+    "windows-openclaw", "windows-openclaw-hub",
+    // The PC's own terminals, workstream T: Windows Terminal's tabs and
+    // console windows listed, read, typed into, closed and opened from the
+    // phone, the real helper driven on this runner; the shared list and its
+    // checks with them.
+    "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
+    "desktop-terminals", "terminal-titles", "terminal-list-ui",
     // Hearing the computer beside its screen (Oct 13): the shared part.
     "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
