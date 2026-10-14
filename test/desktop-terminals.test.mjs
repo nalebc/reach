@@ -130,24 +130,53 @@ const helper = await fs.readFile(
   new URL("../scripts/native/mac-terminals.js", import.meta.url),
   "utf8",
 );
-function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
+// Terminal as its scripting has it: windows of tabs. `ttys`: the tabs of one
+// window; `alone`: one more window with just this tab. A hangup on a tab's
+// terminal ends what runs there unless `stubborn` keeps it running. Only a
+// window can be closed: a tab "doesn't understand" close (Oct 14, the user
+// journeys: the old stand-in took a tab, the real Terminal never did).
+function nativeFixture(payload, { running = true, epoch = "start", ttys = ["tty1", "tty2"], alone, stubborn = false } = {}) {
   const calls = [];
-  const panes = ["tty1", "tty2"].map((tty) => ({
+  const ended = new Set(["tty2"]);
+  const pane = (tty) => ({
     tty: () => tty,
     customTitle: () => "",
     contents: () => `output:${tty}`,
     history: () => `earlier:${tty}\noutput:${tty}`,
     // tty2's command has finished: Terminal keeps the tab, nothing runs in it.
-    processes: () => (tty === "tty2" ? [] : ["login", "-zsh"]),
-  }));
+    processes: () => (ended.has(tty) ? [] : ["login", "-zsh"]),
+    close: () => {
+      throw Error("Message not understood.");
+    },
+  });
+  const panes = ttys.map(pane);
   const win = { id: () => 42, name: () => "Window", tabs: () => panes };
+  const single = alone && { id: () => 43, name: () => "Alone", tabs: () => [pane(alone)] };
   const app = {
-    windows: () => [win],
+    windows: () => (single ? [win, single] : [win]),
     doScript: (...args) => calls.push(["send", ...args]),
-    close: (pane) => calls.push(["close", pane]),
+    close: (what) => {
+      if (what !== win && what !== single) throw Error("Message not understood.");
+      calls.push(["close", what]);
+    },
     activate: () => calls.push(["focus"]),
   };
+  // The hangup, as `do shell script` runs it: what runs on the named
+  // terminal ends (unless `stubborn`).
+  const Application = () => {
+    calls.push(["application"]);
+    return app;
+  };
+  Application.currentApplication = () => ({
+    doShellScript: (command) => {
+      calls.push(["shell", command]);
+      const tty = /-t (ttys\d+) /.exec(command)?.[1];
+      if (tty && !stubborn) ended.add(`/dev/${tty}`);
+      return "";
+    },
+  });
   const context = vm.createContext({
+    delay: () => {},
     ObjC: { import() {}, unwrap: (v) => v },
     $: {
       NSFileHandle: {
@@ -167,10 +196,7 @@ function nativeFixture(payload, { running = true, epoch = "start" } = {}) {
         }),
       },
     },
-    Application: () => {
-      calls.push(["application"]);
-      return app;
-    },
+    Application,
   });
   vm.runInContext(helper, context);
   return {
@@ -220,18 +246,43 @@ test("native helper targets the exact tab, never launches apps during discovery,
   });
   assert.equal(sent.calls[1][2].in, sent.panes[1]);
   assert.equal(sent.calls[1][1], 'hello "quoted"');
-  const closed = nativeFixture({
-    provider: "terminal",
-    action: "close",
-    target,
-  });
-  assert.equal(closed.calls[1][1], closed.panes[1]);
   const stale = nativeFixture(
     { provider: "terminal", action: "close", target },
     { epoch: "new-launch" },
   );
   assert.equal(stale.result.status, 404);
   assert.equal(stale.calls.length, 1);
+});
+test("closing a Mac Terminal tab from the phone ends what runs in it, then closes its window, never leaving Terminal's question on the Mac", () => {
+  const listed = (options) => nativeFixture({ provider: "terminal", action: "list" }, options).result.sessions;
+  const close = (target, options) => nativeFixture({ provider: "terminal", action: "close", target }, options);
+  // A tab alone in its window, as a new Terminal window is: hung up, then
+  // the window closes (Terminal closes windows, not tabs).
+  const options = { ttys: ["/dev/ttys004", "/dev/ttys006"], alone: "/dev/ttys005" };
+  const alone = listed(options).find((s) => s.tty === "/dev/ttys005");
+  const closed = close(alone.target, options);
+  assert.deepEqual(closed.result, { ok: true });
+  const [, hangup] = closed.calls.find(([kind]) => kind === "shell");
+  assert.match(hangup, /^\/bin\/ps -t ttys005 -o pid= -o uid= \| /, "only that tab's terminal");
+  assert.match(hangup, /\$2 == me/, "only the owner's programs on it");
+  assert.match(hangup, /\/bin\/kill -HUP/, "a hangup, as Terminal's Terminate gives");
+  const windowClosed = closed.calls.find(([kind]) => kind === "close");
+  assert.equal(windowClosed[1].name(), "Alone", "its own window, nothing else");
+  // One tab among others: hung up; its window, with the other tab, stays.
+  const shared = close(listed(options).find((s) => s.tty === "/dev/ttys004").target, options);
+  assert.deepEqual(shared.result, { ok: true });
+  assert.ok(shared.calls.some(([kind]) => kind === "shell"));
+  assert.equal(shared.calls.some(([kind]) => kind === "close"), false);
+  // Something that keeps running: left as it is, and said, so Terminal
+  // never asks about it on the Mac.
+  const kept = close(alone.target, { ...options, stubborn: true });
+  assert.equal(kept.result.status, 409);
+  assert.match(kept.result.error, /still running\. Close it on the Mac/);
+  assert.equal(kept.calls.some(([kind]) => kind === "close"), false);
+  // A tab whose terminal isn't one of Terminal's: nothing is run at all.
+  const odd = close(listed().find((s) => s.tty === "tty1").target);
+  assert.equal(odd.result.status, 502);
+  assert.equal(odd.calls.some(([kind]) => kind === "shell" || kind === "close"), false);
 });
 test("desktop HTTP API excludes agents and unauthenticated clients and preserves the Reach PTY API", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-desktop-test-"));
