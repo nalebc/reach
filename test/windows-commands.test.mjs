@@ -75,6 +75,9 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   const host = JSON.parse(fs.readFileSync(reach.statusFile, "utf8"));
   assert.equal(host.pid, reach.child.pid);
   assert.ok(Number.isFinite(host.startedAt), "it says when it started");
+  const other = process.platform === "win32" ? windowsReach(t) : null;
+  if (other) await other.ready();
+  const otherHost = other && JSON.parse(fs.readFileSync(other.statusFile, "utf8"));
   // `.\reach.cmd status`, through the real launcher: the Mac's lines.
   const said = await status(reach.env);
   assert.equal(UNREAD.test(said), process.platform !== "win32", said);
@@ -116,7 +119,14 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   assert.equal(fs.existsSync(reach.statusFile), false, "its status goes with it");
   assert.equal(fs.existsSync(path.join(reach.state, "stop-request.json")), false);
   // And now it isn't running, as status says.
-  assert.match(await status(reach.env), /(^|\n)Reach isn't running( from this folder)?\. Start it with \.\\reach\.cmd\.$/);
+  const endedStatus = await status(reach.env);
+  if (process.platform === "win32" && !endedStatus.includes("Reach isn't running")) {
+    // Status is PC-wide. Concurrent lifecycle tests may still have their
+    // own instances; this command must stop only its fixture, as above.
+    assert.ok(!endedStatus.includes(`Link: ${host.origin}`), "the stopped fixture no longer has a link");
+    assert.ok(!endedStatus.includes(reach.dir), "the stopped fixture is absent from the PC's list");
+    if (otherHost) assert.ok(endedStatus.includes(`Link: ${otherHost.origin}`), "the other fixture remains visible and was not stopped");
+  } else assert.match(endedStatus, /(^|\n)Reach isn't running( from this folder)?\. Start it with \.\\reach\.cmd\.$/);
 });
 
 // First-run matrix T23, in Tailscale mode: a Windows Reach, through a
