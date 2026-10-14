@@ -174,12 +174,13 @@ export const isArchive = (name: string) =>
 // Markdown can be shown formatted as well as as source.
 export const isMarkdown = (name: string) =>
   ["md", "markdown"].includes(extension(name));
-// Formats the computer can turn into plain text (macOS textutil).
+// Formats the computer can turn into plain text (server/document-text.mjs):
+// a Mac all four (textutil); elsewhere all but Word 97–2003's .doc, which
+// needs Word itself.
 const documents = new Set(["doc", "docx", "rtf", "odt"]);
 
 // How the viewer opens a file: show the image or PDF, read it as text, extract
-// a document's text, or offer a download. Only a Mac extracts a document's
-// text (server/document-text.mjs): elsewhere it's a download.
+// a document's text, or offer a download.
 export function previewMode(
   entry: {
     name: string;
@@ -191,7 +192,7 @@ export function previewMode(
   const ext = extension(entry.name);
   if (imageTypes[ext]) return "image";
   if (ext === "pdf") return "pdf";
-  if (documents.has(ext)) return !platform || platform === "darwin" ? "document" : null;
+  if (documents.has(ext)) return !platform || platform === "darwin" || ext !== "doc" ? "document" : null;
   const kind = fileKind(entry);
   return kind === "text" ||
     kind === "code" ||

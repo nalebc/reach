@@ -63,13 +63,17 @@ $b.Text = 'Focus starts here'; $b.Left = 20; $b.Top = 200; $b.Width = 300; $b.He
 $t = New-Object ReachTargetBox
 $t.Receipt = $out
 $t.Left = 20; $t.Top = 30; $t.Width = 640; $t.Font = New-Object System.Drawing.Font('Segoe UI', 20)
-$f.Controls.Add($b); $f.Controls.Add($t)
+$s = New-Object System.Windows.Forms.TextBox
+$s.UseSystemPasswordChar = $true; $s.Left = 20; $s.Top = 100; $s.Width = 640
+$f.Controls.Add($b); $f.Controls.Add($t); $f.Controls.Add($s)
 $t.Add_MouseDown({ [IO.File]::WriteAllText("$out.click", 'clicked') })
 $t.Add_TextChanged({ [IO.File]::WriteAllText("$out.text", $t.Text) })
 $f.Add_Shown({
   $f.ActiveControl = $b
   $p = $t.PointToScreen((New-Object System.Drawing.Point([int]($t.Width / 2), [int]($t.Height / 2))))
   [IO.File]::WriteAllText("$out.ready", "$($p.X),$($p.Y)")
+  $secret = $s.PointToScreen((New-Object System.Drawing.Point([int]($s.Width / 2), [int]($s.Height / 2))))
+  [IO.File]::WriteAllText("$out.password", "$($secret.X),$($secret.Y)")
   [IO.File]::WriteAllText("$out.double-ms", [string][ReachTargetDpi]::GetDoubleClickTime())
 })
 [System.Windows.Forms.Application]::Run($f)
@@ -152,6 +156,7 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
   await until(() => input.messages.some((m) => m.type === "ready" || m.type === "error"), "control", 60000);
   assert.ok(input.messages.some((m) => m.type === "ready"), JSON.stringify(input.messages));
   assert.equal(input.messages.find(m=>m.type === "ready").doubleClick,true);
+  assert.equal(input.messages.find(m=>m.type === "ready").fields,true,"Windows advertises the real UI Automation scanner");
   let id = 0;
   const send = async (action) => {
     const n = ++id;
@@ -166,10 +171,23 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
   };
   note({ click: at });
-  const probed = await send({ type: "probe", ...at });
+  // UI Automation starts asynchronously and each probe is deliberately
+  // bounded so it cannot hold up an owner's click. Wait for this fixture's
+  // provider to answer; every attempt remains a read, with no click or typing.
+  let probed;
+  await until(async () => {
+    probed = await send({ type: "probe", ...at });
+    return probed.field === true;
+  }, "the text field's UI Automation provider", 15000);
   note({ probe: probed });
   assert.equal(probed.field, true, `the Windows field is detected before a click: ${JSON.stringify(probed)}`);
   assert.equal(probed.secure, false);
+  const [secretX, secretY] = fs.readFileSync(`${out}.password`, "utf8").split(",").map(Number);
+  const secretAt = { x: (secretX-primary.x)/primary.width, y: (secretY-primary.y)/primary.height };
+  const contains = (field, point) => point.x>=field.x && point.x<=field.x+field.w && point.y>=field.y && point.y<=field.y+field.h;
+  await until(() => input.messages.some(message => message.type === "fields" &&
+    message.fields.some(field => contains(field, at) && field.secure === false) &&
+    message.fields.some(field => contains(field, secretAt) && field.secure === true)), "the text and password fields in the Windows field map", 15000);
   assert.equal(fs.existsSync(`${out}.click`), false, "a probe never clicks the field");
   assert.equal(fs.existsSync(`${out}.text`), false, "a probe never types");
   assert.equal((await send({ type: "focus", ...at })).target.editable, false,
