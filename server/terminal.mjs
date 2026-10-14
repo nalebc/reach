@@ -2,7 +2,7 @@ import { loadPty, releaseExitedPty } from "./pty-helper.mjs";
 import os from "node:os";
 import { id, fail } from "./core.mjs";
 import { powershellCall } from "./powershell.mjs";
-import { commandFor, windowsPowerShell, windowsShell } from "./windows-shell.mjs";
+import { windowsTerminal } from "./windows-shell.mjs";
 const pty = loadPty();
 // The last lines a shell printed, as plain text, for the Home cards. Full-screen
 // programs (Codex, vim) redraw with cursor moves, so they get no preview.
@@ -28,7 +28,7 @@ export function terminalPreview(buffer, lines = 2) {
 }
 export class Terminals {
   sessions = new Map();
-  create({ cwd, name, clientId, cols = 90, rows = 28, command = "", input = "" }) {
+  create({ cwd, name, clientId, cols = 90, rows = 28, command = "", input = "", powershell = false }) {
     if (
       [...this.sessions.values()].filter((s) => s.status === "running")
         .length >= 12
@@ -57,12 +57,11 @@ export class Terminals {
     // Windows: the owner's own shell, as $SHELL is on a Mac (windows-shell.mjs).
     // An agent's command needs one that runs a program by its path:
     // PowerShell or cmd; with another (bash, WSL), PowerShell opens for it.
-    let windows = process.platform === "win32" ? windowsShell() : null;
-    let typed = command && windows ? commandFor(windows.kind, command, powershellCall) : command;
-    if (windows && command && typed == null) {
-      windows = windowsPowerShell();
-      typed = powershellCall(command);
-    }
+    // An install or update is PowerShell's own text (agent-install.mjs):
+    // always PowerShell, whatever the owner's shell.
+    const chosen = process.platform === "win32" ? windowsTerminal({ command, powershell, call: powershellCall }) : null;
+    const windows = chosen?.shell;
+    const typed = chosen ? chosen.typed : command;
     const shell = windows
       ? windows.file
       : process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");

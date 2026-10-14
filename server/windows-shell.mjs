@@ -124,3 +124,14 @@ export function commandFor(kind, command, powershellCall) {
   if (kind === "cmd") return command;
   return null;
 }
+// What a Reach terminal on Windows starts and types: the owner's shell, an
+// agent's command written for it (PowerShell for a shell that can't run one
+// by its path), and PowerShell for an install or update, whose command is
+// PowerShell's own text (agent-install.mjs). { shell, typed }.
+export function windowsTerminal({ command = "", powershell = false, call, own = () => windowsShell(), fallback = () => windowsPowerShell() } = {}) {
+  if (powershell) return { shell: fallback(), typed: command };
+  const shell = own();
+  if (!command) return { shell, typed: "" };
+  const typed = commandFor(shell.kind, command, call);
+  return typed == null ? { shell: fallback(), typed: call(command) } : { shell, typed };
+}
