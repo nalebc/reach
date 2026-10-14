@@ -72,10 +72,21 @@ export function windowsLaunch({ cwd, command, shell = windowsShell(), powershell
 // The helper's environment: Reach's, without its own settings, which the
 // terminals it opens would inherit (as Reach's terminals drop them).
 const ownEnv = (env) => Object.fromEntries(Object.entries(env).filter(([key]) => !/^REACH_/i.test(key)));
-export function windowsTerminalRunner({ dataDir, build = windowsBinary, run = execFile, env = process.env } = {}) {
+export function windowsTerminalRunner({ dataDir, build = windowsBinary, run = execFile, env = process.env, now = Date.now } = {}) {
+  // A helper the PC wouldn't build (no csc.exe, a policy, an antivirus) is
+  // said again for a minute, not built again for every look the phone takes.
+  let refused = null;
   return async (payload) => {
     if (!dataDir) throw fail(503, "Reach's data folder isn't known here.");
-    const file = await build({ dataDir }, "windows-terminals");
+    if (refused && now() < refused.until) throw refused.error;
+    let file;
+    try {
+      file = await build({ dataDir }, "windows-terminals");
+      refused = null;
+    } catch (error) {
+      refused = { error, until: now() + 60000 };
+      throw error;
+    }
     return new Promise((resolve, reject) => {
       const child = run(
         file,

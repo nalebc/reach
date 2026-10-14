@@ -285,6 +285,23 @@ test("the helper runs with its request on stdin, hidden, without Reach's own set
     { status: 502, message: "Windows didn't answer about its terminals. Try again in a moment." },
   );
   await assert.rejects(windowsTerminalRunner({ build, run: fake("{}") })({ action: "list" }), { status: 503 });
+  // A PC that won't build it hears why at once, for a minute, without another build.
+  let builds = 0,
+    clock = 0;
+  const refusing = windowsTerminalRunner({
+    dataDir: "C:\\data",
+    now: () => clock,
+    build: async () => {
+      builds++;
+      throw Object.assign(Error("Windows refused to run its C# compiler (csc.exe) on this PC."), { status: 503 });
+    },
+    run: fake('{"sessions":[]}'),
+  });
+  for (let i = 0; i < 3; i++) await assert.rejects(refusing({ action: "list" }), { status: 503, message: /refused/ });
+  assert.equal(builds, 1);
+  clock = 60001;
+  await assert.rejects(refusing({ action: "list" }), { status: 503 });
+  assert.equal(builds, 2);
 });
 
 test("the PC's watch is its terminals helper run as a watch, hidden, and its output finds the tab it names", async () => {
