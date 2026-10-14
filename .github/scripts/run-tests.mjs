@@ -43,6 +43,8 @@ export const suites = {
     // Windows conveniences, workstream W: the owner's own shell in Reach's
     // terminals, drives attached later, the launcher's name on the phone.
     "windows-shell", "file-roots", "connect-states-ui",
+    // Reach's icon in the notification area, workstream P (audit #16).
+    "windows-tray",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
