@@ -88,6 +88,7 @@ static class DesktopFixture {
   [DllImport("advapi32.dll", SetLastError = true)]
   static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr delete, uint restrictCount, IntPtr restrict, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int kind, IntPtr info, int size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetKernelObjectSecurity(IntPtr handle, uint information, IntPtr descriptor);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info, int size, out int needed);
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, int index);
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
@@ -291,6 +292,10 @@ static class DesktopFixture {
     bool present, defaulted;
     if (user == null || !ConvertStringSecurityDescriptorToSecurityDescriptorW("D:(A;;GA;;;" + user + ")(A;;GA;;;SY)", 1, out descriptor, out length) ||
         !GetSecurityDescriptorDacl(descriptor, out present, out dacl, out defaulted)) return IntPtr.Zero;
+    // TokenDefaultDacl governs objects created later, not the token itself.
+    // Other fixture processes at this user's medium integrity must also be
+    // able to query its token, as they can query an ordinary user's token.
+    if (!SetKernelObjectSecurity(token, 4, descriptor)) return IntPtr.Zero;
     IntPtr holder = Marshal.AllocHGlobal(IntPtr.Size);
     Marshal.WriteIntPtr(holder, dacl);
     return SetTokenInformation(token, 6, holder, IntPtr.Size) ? token : IntPtr.Zero;
@@ -344,8 +349,12 @@ static class DesktopFixture {
       int imageError = imageRead ? 0 : Marshal.GetLastWin32Error();
       var package = new StringBuilder(1024); uint length = (uint)package.Capacity;
       int packageStatus = GetPackageFullName(process, ref length, package);
+      IntPtr token;
+      bool tokenRead = OpenProcessToken(process, 0x8, out token);
+      int tokenError = tokenRead ? 0 : Marshal.GetLastWin32Error();
+      if (tokenRead) CloseHandle(token);
       Console.WriteLine("{\"openError\":0,\"timeError\":" + timeError + ",\"imageError\":" + imageError +
-        ",\"packageStatus\":" + packageStatus + ",\"pointerBytes\":" + IntPtr.Size + "}");
+        ",\"packageStatus\":" + packageStatus + ",\"tokenError\":" + tokenError + ",\"pointerBytes\":" + IntPtr.Size + "}");
       return 0;
     } finally { CloseHandle(process); }
   }
