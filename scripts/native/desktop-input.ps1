@@ -260,7 +260,7 @@ try {
     }
     default {throw 'Unsupported input'}
    }
-   [Console]::WriteLine(($result | ConvertTo-Json -Compress))
+   [Console]::WriteLine(($result | ConvertTo-Json -Compress -Depth 6))
   } catch {[ReachDesktopInput]::Release();[Console]::WriteLine((@{error='Desktop action failed. Check the selected display and keep Windows unlocked.'}|ConvertTo-Json -Compress))}
  }
 } finally {[ReachDesktopInput]::Release()}

@@ -175,8 +175,8 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
   // this fixture visible; Windows can leave another app in front. Bring the
   // fixture forward by its caption, keeping the button's initial focus and
   // leaving its text/password boxes untouched.
-  const [left, top, width] = fs.readFileSync(`${out}.frame`, "utf8").split(",").map(Number);
-  await send({ type: "click", x: (left+width/2-primary.x)/primary.width, y: (top+12-primary.y)/primary.height, button: "left", count: 1 });
+  const [captionLeft, captionTop, captionWidth] = fs.readFileSync(`${out}.frame`, "utf8").split(",").map(Number);
+  await send({ type: "click", x: (captionLeft+captionWidth/2-primary.x)/primary.width, y: (captionTop+12-primary.y)/primary.height, button: "left", count: 1 });
   note({ click: at });
   // UI Automation starts asynchronously and each probe is deliberately
   // bounded so it cannot hold up an owner's click. Wait for this fixture's
