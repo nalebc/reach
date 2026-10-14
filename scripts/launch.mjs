@@ -34,6 +34,8 @@ import {
   recordedRouteOwned,
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
+import { windowsBinary } from "../server/desktop-native.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 import { createReach } from "../server/index.mjs";
 import { sweepScreenHelpers } from "../server/screen-stream.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
@@ -885,15 +887,18 @@ export async function launch(options, root) {
         }
       });
     }
-    if (process.platform === "darwin") {
+    // The same three modes on a Mac (caffeinate) and a Windows PC (its own
+    // helper, built on first use: scripts/native/stay-awake.cs).
+    if (process.platform === "darwin" || process.platform === "win32") {
       const mode = stayAwakeMode(options.stayAwake);
       console.log(
         mode === "off"
-          ? "Reach: sleep prevention is off. Screen sharing can stop when this Mac sleeps. Use --stay-awake-always to enable it."
+          ? `Reach: sleep prevention is off. Screen sharing can stop when this ${computerWord()} sleeps. Use --stay-awake-always to enable it.`
           : `Reach: keeping system and display awake ${mode === "ac" ? "while plugged in" : "while Reach runs, including on battery"}. Manual locking, lid closure and managed lock policies still apply.`,
       );
       power = keepAwake({
         mode,
+        helper: () => windowsBinary(reach.config, "stay-awake"),
         changed: (awake) => {
           const current = loadJson(statusFile, null);
           if (current?.instance === reach.instance)

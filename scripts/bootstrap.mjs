@@ -639,8 +639,11 @@ ${command} --local              Local access only
 ${command} --port 4318          Local port (service saves a fixed port)
 ${command} --https-port 8443    Tailscale HTTPS port
 
-Stay-awake uses temporary power assertions; it never changes system settings
-or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
+${process.platform === "win32"
+  ? `Stay-awake asks Windows to keep the PC awake while Reach runs; it never changes
+power settings or unlocks a locked PC.`
+  : `Stay-awake uses temporary power assertions; it never changes system settings
+or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.`}
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
   } else if (options.command === "status") {

@@ -37,7 +37,7 @@ export const suites = {
     "face-join", "fleet",
     // Workstreams K and L: the PC's process list (one Reach per computer),
     // and status, stop, restart and Reach's own window on a real PC.
-    "windows-processes", "windows-lifecycle",
+    "windows-processes", "windows-lifecycle", "windows-stay-awake",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],

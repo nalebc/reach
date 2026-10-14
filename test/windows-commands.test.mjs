@@ -79,7 +79,9 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   assert.equal(UNREAD.test(said), process.platform !== "win32", said);
   assert.match(
     said.replace(UNREAD, ""),
-    new RegExp(`^Reach: running in the background, with no window, since [^\\n]+\\nLink: http://127\\.0\\.0\\.1:\\d+\\nIt has no window: it can't take device approvals\\. Run \\.\\\\reach\\.cmd restart to run it in a window of its own\\.$`),
+    // Its sleep prevention too: here its helper can't be built; on a real PC
+    // it's being built, or held.
+    new RegExp(`^Reach: running in the background, with no window, since [^\\n]+\\nLink: http://127\\.0\\.0\\.1:\\d+\\n${process.platform === "win32" ? "(Sleep prevention: always · [^\\n]+\\n)?" : "Sleep prevention: always · not active · Could not enable sleep prevention\\. Reach will retry in 10 minutes\\.\\n"}It has no window: it can't take device approvals\\. Run \\.\\\\reach\\.cmd restart to run it in a window of its own\\.$`),
   );
   const killed = [];
   const { windowsReaches } = await import("../scripts/instances.mjs");
