@@ -120,7 +120,7 @@ test("reach install on Windows: the task, written in UTF-16, run now and at ever
   const args = windowsArgv(`starter ${xml.match(/<Arguments>([^<]*)<\/Arguments>/)[1].replace(/&amp;/g, "&").replace(/&quot;/g, '"')}`).slice(1);
   assert.deepEqual(args, [
     "--log", path.join(p.state, "logs"),
-    "--hold", holdFile(p.env),
+    "--hold", holdFile(p.env, `Reach-${SID}`),
     "--env", `REACH_DATA=${path.join(p.state, "quick")}`,
     "--env", `REACH_HOME=${p.env.REACH_HOME}`,
     "--",
@@ -344,14 +344,35 @@ if (!fs.existsSync(path.join(state, "window-asked"))) {
 watchStopRequest(state, { every: 100, stop: () => process.exit(0) });
 setInterval(() => {}, 1000);
 `);
-  // What that window runs: a heartbeat for half a minute.
+  // What that window runs: a heartbeat until this test says stop (or five
+  // minutes pass), then "done": a window that ended by itself is never taken
+  // for one that was ended.
   fs.writeFileSync(path.join(windowRoot, "bin", "reach.mjs"), `import fs from "node:fs";
-let beats = 0;
-setInterval(() => { fs.appendFileSync(process.env.REACH_HOME + "\\\\beats.txt", Date.now() + "\\n"); if (++beats >= 60) process.exit(0); }, 500);
+const here = process.env.REACH_HOME;
+fs.writeFileSync(here + "\\\\window.pid", String(process.pid));
+const until = Date.now() + 5 * 60 * 1000;
+setInterval(() => {
+  if (fs.existsSync(here + "\\\\stop") || Date.now() > until) {
+    fs.writeFileSync(here + "\\\\done", "1");
+    process.exit(0);
+  }
+  fs.appendFileSync(here + "\\\\beats.txt", Date.now() + "\\n");
+}, 500);
 `);
   const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\s+/).filter(Boolean) : []);
   const starts = () => lines(path.join(state, "starts.txt"));
   const beats = () => lines(path.join(windowState, "beats.txt")).length;
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // The process list's helper, built before anything is timed (the PC's
+  // compiler takes seconds, more under an antivirus).
+  await windowsProcesses({ nativeDir: path.join(state, "native") });
   const until = async (check, ms, what) => {
     for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 250))) if (Date.now() > end) assert.fail(`Never: ${what}.`);
   };
@@ -362,10 +383,12 @@ setInterval(() => { fs.appendFileSync(process.env.REACH_HOME + "\\\\beats.txt", 
   };
   const stopping = { platform: "win32", yes: true, state: () => state, windows: { task, reaches, env } };
   t.after(async () => {
+    fs.writeFileSync(path.join(windowState, "stop"), "1");
     try {
       await backgroundService({ command: "uninstall" }, root, { platform: "win32", env, task, stop: () => stopReach(root, { ...stopping, print: () => {} }), print: () => {} });
     } catch {}
     try { task.remove(); } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await backgroundService({ command: "install", local: true, folders: [], httpsPort: 8443 }, root, { platform: "win32", env, task, privateNode: () => process.execPath, allocatePort: async () => 4320, print: () => {} });
@@ -377,7 +400,9 @@ setInterval(() => { fs.appendFileSync(process.env.REACH_HOME + "\\\\beats.txt", 
   await until(() => starts().length >= 2, 60000, "the task started its Reach again");
   assert.notEqual(starts()[1], first);
   assert.ok(!said.some((line) => /didn't start again/.test(line)), said.join("\n"));
+  const windowPid = Number(fs.readFileSync(path.join(windowState, "window.pid"), "utf8"));
   const at = beats();
   await new Promise((r) => setTimeout(r, 2000));
-  assert.ok(beats() > at, "the window the first Reach opened lives on through the restart");
+  assert.equal(fs.existsSync(path.join(windowState, "done")), false, "it didn't end by itself meanwhile");
+  assert.ok(alive(windowPid) && beats() > at, "the window the first Reach opened lives on through the restart");
 });

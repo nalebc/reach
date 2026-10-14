@@ -32,9 +32,10 @@ export const taskName = (sid) => `Reach-${sid}`;
 // ASCII, so schtasks' code page can't spoil it.
 export const taskMarker = (root) => `Reach ${crypto.createHash("sha256").update(path.win32.resolve(String(root)).toLowerCase()).digest("hex").slice(0, 16)}`;
 // While this file exists, the starter doesn't start Reach again: stop, uninstall
-// and update write it first. Your own app data, whichever folder runs Reach.
-export const holdFile = (env = process.env) =>
-  path.join(env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Reach", "background.hold");
+// and update write it first. Your own app data, whichever folder runs Reach,
+// one per task.
+export const holdFile = (env = process.env, name = "background") =>
+  path.join(env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Reach", `${name}.hold`);
 
 // Element text only (no value goes in an attribute).
 const xml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -178,12 +179,12 @@ export function windowsTask({
       schtasks(["/Delete", "/TN", name(), "/F"]);
     },
     hold() {
-      const file = holdFile(env);
+      const file = holdFile(env, name());
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, String(Date.now()));
     },
     release() {
-      fs.rmSync(holdFile(env), { force: true });
+      fs.rmSync(holdFile(env, name()), { force: true });
     },
   };
   return ops;

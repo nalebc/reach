@@ -96,17 +96,30 @@ test("on real Windows, an agent's restart asks on the phone and stops nothing", 
 
 test("on real Windows, Reach's own window opens from cmd's start, titled Reach, never a child of the Reach that asked", real, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach window-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, "reach");
   const state = path.join(dir, "state");
+  const nativeDir = path.join(dir, "native");
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   fs.mkdirSync(state, { recursive: true });
-  // What the window runs: Reach's entry, here one that says where it ran.
+  t.after(async () => {
+    fs.writeFileSync(path.join(state, "stop"), "1");
+    await new Promise((r) => setTimeout(r, 1500));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  // The process list's helper, built before the window opens (the PC's
+  // compiler takes seconds, more under an antivirus).
+  await windowsProcesses({ nativeDir });
+  // What the window runs: Reach's entry, here one that says where it ran,
+  // then stays until this test says stop (or five minutes pass).
   fs.writeFileSync(
     path.join(root, "bin", "reach.mjs"),
     `import fs from "node:fs";
-fs.writeFileSync(process.env.REACH_HOME + "\\\\started.json", JSON.stringify({ pid: process.pid, title: process.title, openedBy: process.env.REACH_OPENED_BY, args: process.argv.slice(2), cwd: process.cwd() }));
-setTimeout(() => process.exit(0), 15000);
+const here = process.env.REACH_HOME;
+fs.writeFileSync(here + "\\\\started.json", JSON.stringify({ pid: process.pid, title: process.title, openedBy: process.env.REACH_OPENED_BY, args: process.argv.slice(2), cwd: process.cwd() }));
+const until = Date.now() + 5 * 60 * 1000;
+setInterval(() => {
+  if (fs.existsSync(here + "\\\\stop") || Date.now() > until) process.exit(0);
+}, 250);
 `,
   );
   startInConsole(root, { state, args: "restart --yes", env: { ...process.env, REACH_HOME: state } });
@@ -124,7 +137,7 @@ setTimeout(() => process.exit(0), 15000);
   // cmd may add the command it runs after the title; Reach sets its own (launch.mjs).
   assert.match(started.title, /^Reach\b/);
   // Its parents, while it runs: never this process (the Reach that asked).
-  const list = await windowsProcesses({ nativeDir: path.join(dir, "native") });
+  const list = await windowsProcesses({ nativeDir });
   const byPid = new Map(list.map((p) => [p.pid, p]));
   const chain = [];
   for (let p = byPid.get(started.pid); p && chain.length < 32; ) {

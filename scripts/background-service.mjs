@@ -383,7 +383,7 @@ async function windowsBackgroundService(options, root, deps) {
   const starter = await (deps.starter || (() => windowsBinary({ dataDir: serviceDir }, "background", { dir: serviceDir, target: "winexe" })))();
   const args = [
     "--log", logDir,
-    "--hold", holdFile(env),
+    "--hold", holdFile(env, found.name),
     ...[["REACH_DATA", dataDir], ...envKeys.filter((key) => key !== "REACH_DATA" && env[key] !== undefined).map((key) => [key, env[key]])].flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     "--",
     node,
