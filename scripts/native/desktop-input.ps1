@@ -228,7 +228,14 @@ try {
     'click' {$b=$screen.Bounds;$x=[int]($b.X+$p.x*($b.Width-1));$y=[int]($b.Y+$p.y*($b.Height-1));$result.clickState=[ReachDesktopInput]::Click($x,$y,($p.button -eq 'right'),[int]$p.count,[long]$p.clickId,[int]$p.clickState);$result.retargeted=([ReachDesktopInput]::ClickX -ne $x -or [ReachDesktopInput]::ClickY -ne $y);$result.point=@{x=([ReachDesktopInput]::ClickX-$b.X)/[Math]::Max(1,$b.Width-1);y=([ReachDesktopInput]::ClickY-$b.Y)/[Math]::Max(1,$b.Height-1)}}
     'focus' {$result.target=Get-ReachTextTarget $p $screen}
     'probe' {$b=$screen.Bounds;$field=[ReachDesktopFieldProbe]::At([int]($b.X+$p.x*($b.Width-1)),[int]($b.Y+$p.y*($b.Height-1)));$result.field=($field -band 1) -ne 0;$result.secure=($field -band 2) -ne 0}
-    'fields' {$b=$screen.Bounds;$result.fields=@([ReachDesktopFieldProbe]::Fields($b.X,$b.Y,$b.Width,$b.Height) | ConvertFrom-Json)}
+    'fields' {
+     $b=$screen.Bounds
+     $found=ConvertFrom-Json -InputObject ([ReachDesktopFieldProbe]::Fields($b.X,$b.Y,$b.Width,$b.Height))
+     # Windows PowerShell can retain ConvertFrom-Json's array as one pipeline
+     # object with value/Count properties. Enumerate it explicitly so the phone
+     # receives rectangles, including the empty and single-field cases.
+     $result.fields=@(foreach($field in $found){@{x=[double]$field.x;y=[double]$field.y;w=[double]$field.w;h=[double]$field.h;secure=[bool]$field.secure}})
+    }
     'context' {
      # The app in front, for context shortcuts. Never reads window content.
      $owner=[uint32]0;[void][ReachDesktopInput]::GetWindowThreadProcessId([ReachDesktopInput]::GetForegroundWindow(),[ref]$owner)
