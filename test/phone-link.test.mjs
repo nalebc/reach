@@ -29,14 +29,14 @@ test("linked computers: the shared link for the app, this computer's own for bro
   assert.match(text, /No Tailscale app\? Open https:\/\/studio\.example\.ts\.net and sign in to Tailscale in the phone's browser in the next 15 minutes/);
 });
 
-test("the pairing-code way in says, before the QR, that the phone needs the Tailscale app and which account", () => {
+test("the pairing-code way in says, before the QR, that the phone needs the Tailscale app, which account, and why browser sign-in is off", () => {
   assert.equal(
-    phoneAppFirst({ account: "sam@example.com", platform: "win32" }),
-    "  First, on your phone: install the Tailscale app, sign in as sam@example.com and turn it on.\n  On Windows, phones can't sign in from the browser yet.",
+    phoneAppFirst({ account: "sam@example.com", why: "Tailscale 1.90.0 is older than 1.104; update Tailscale." }),
+    "  First, on your phone: install the Tailscale app, sign in as sam@example.com and turn it on.\n  Signing in from the phone's browser is off here for now: Tailscale 1.90.0 is older than 1.104; update Tailscale.",
   );
   // Tailscale didn't say whose it is: the account is still named by what it is.
   assert.equal(
-    phoneAppFirst({ platform: "darwin" }),
+    phoneAppFirst({}),
     "  First, on your phone: install the Tailscale app, sign in with this computer's Tailscale account and turn it on.",
   );
 });
