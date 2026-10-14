@@ -213,6 +213,30 @@ test("Windows, Tailscale mode: Reach ended outright (a crash), its route ends to
   await routeGone(seen.fake, second);
 });
 
+// A Reach that doesn't stop by itself (it never sees the request here) is
+// ended with its process tree by Windows' own taskkill /T /F, after
+// tasklist says its id is still Node's; its route goes with it.
+test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended with its tree (taskkill), and its route with it", { ...tailscaleWindows, skip: process.platform !== "win32" && "Windows' own taskkill and tasklist" }, async (t) => {
+  const { seen, started } = windowsTailscaleReach(t);
+  const reach = await started;
+  const session = await heldRoute(seen.fake);
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "reach-no-request-"));
+  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  const said = [];
+  const result = await stopReach(seen.root, {
+    platform: "win32",
+    yes: true,
+    print: (line) => said.push(line),
+    state: () => elsewhere,
+    windows: { host: { pid: reach.child.pid }, graceMs: 500 },
+  });
+  assert.equal(result.stopped, 1);
+  assert.deepEqual(said, ["Stopped Reach."]);
+  const [code] = await reach.exited;
+  assert.equal(code, 1, "ended outright");
+  await routeGone(seen.fake, session);
+});
+
 test("Windows, Tailscale mode: an older Reach's background route, recorded as its own, is replaced by the foreground one", tailscaleWindows, async (t) => {
   const old = "http://127.0.0.1:1";
   const { seen, started } = windowsTailscaleReach(t, { serve: backgroundRoute(old), record: { origin: ORIGIN, target: old } });
