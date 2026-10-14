@@ -98,9 +98,9 @@ release notes, so date the heading before tagging.
   installed, else still images, and its log and the Screen page (Screen
   options → Connection → Video) say which and why. Installing either later
   needs no restart. Proven on GitHub's Windows runner (Microsoft's software
-  encoder, Desktop Duplication, frames decoded by Chrome's WebCodecs); not
-  yet run on a physical PC, with a graphics card's encoder, several
-  displays or Remote Desktop.
+  encoder, through Desktop Duplication and through GDI, every frame decoded
+  by Chrome's WebCodecs with its colours); not yet run on a physical PC,
+  with a graphics card's encoder, several displays or Remote Desktop.
 
 ### Changed
 
