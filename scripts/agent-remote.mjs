@@ -15,6 +15,7 @@
 // JSON-RPC and results go to stdout; everything else to stderr.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
 import path from "node:path";
@@ -149,11 +150,47 @@ export function agentHome() {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);
   if (
-    !stat.isDirectory() ||
+    !stat.isDirectory() || stat.isSymbolicLink() ||
     (process.platform !== "win32" && stat.uid !== process.getuid())
   )
     throw Error(`${dir} must be a folder that belongs to you.`);
   if (process.platform !== "win32") fs.chmodSync(dir, 0o700);
+  else {
+    // The standalone agent is one bundled JS file, so this fixed system API
+    // call needs no downloaded helper. Make the home private before creating
+    // any connection/key: files and child folders inherit only these grants.
+    const script = `& {
+try {
+$ErrorActionPreference='Stop'
+$dir=$env:REACH_PRIVATE_AGENT_DIR
+$info=Get-Item -LiteralPath $dir -Force
+if($info.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'A private folder cannot be a link'}
+$me=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$trusted=@($me.Value,'S-1-5-18','S-1-5-32-544')
+$acl=[IO.Directory]::GetAccessControl($dir)
+if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value){throw 'The folder belongs to another account'}
+$acl.SetAccessRuleProtection($true,$false)
+foreach($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]))){[void]$acl.RemoveAccessRuleSpecific($rule)}
+foreach($sid in $trusted){$who=New-Object Security.Principal.SecurityIdentifier($sid);$rule=New-Object Security.AccessControl.FileSystemAccessRule($who,'FullControl','ContainerInherit,ObjectInherit','None','Allow');$acl.AddAccessRule($rule)}
+[IO.Directory]::SetAccessControl($dir,$acl)
+$check=[IO.Directory]::GetAccessControl($dir)
+if(!$check.AreAccessRulesProtected){throw 'Inheritance was not removed'}
+foreach($rule in $check.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $trusted -notcontains $rule.IdentityReference.Value){throw 'Another account can access the folder'}}
+} catch { exit 1 }
+[Console]::WriteLine('reach-agent-private')
+exit 0
+}
+
+`;
+    const system = process.env.SystemRoot || process.env.SYSTEMROOT;
+    if (!system) throw Error("Reach couldn't locate Windows to protect the agent's credentials.");
+    try {
+      const answer = execFileSync(path.win32.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-Command", "-"],
+        { input: script, env: { ...process.env, REACH_PRIVATE_AGENT_DIR: dir }, windowsHide: true, timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+      if (!answer.toString("utf8").split(/\r?\n/).includes("reach-agent-private")) throw Error("Private-folder confirmation missing");
+    } catch { throw Error("Reach couldn't make its agent folder private to your Windows account. No credentials were saved."); }
+  }
   return dir;
 }
 const writePrivate = (file, text) => {

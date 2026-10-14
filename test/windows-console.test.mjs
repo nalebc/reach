@@ -25,7 +25,7 @@ import { windowsFixture } from "./helpers/windows-fixtures.mjs";
 // own (REACH_HOME); the checkout is CI's build, its setup stamp written as
 // bootstrap writes it (scripts/setup-stamp.mjs), so nothing is installed.
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const onWindows = { skip: process.platform !== "win32" && "a real Windows console", timeout: 300000 };
+const onWindows = { skip: (process.platform !== "win32" || process.env.REACH_TEST_WINDOWS_DESKTOP !== "1") && "the serial Windows desktop lane", timeout: 300000 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // What the console shows, as text: its escape sequences out, spaces as one.
 const plain = (raw) =>

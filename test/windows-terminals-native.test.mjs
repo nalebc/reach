@@ -25,7 +25,7 @@ import { endWindowsTerminal, isTerminal, useWindowsTerminal, whyNoWindowsTermina
 // to be (a console opened on a PC whose default terminal is Windows Terminal
 // is handed to it).
 const windows = process.platform === "win32";
-const real = { skip: !windows && "needs a real Windows PC", timeout: 170000 };
+const real = { skip: (!windows || process.env.REACH_TEST_WINDOWS_DESKTOP !== "1") && "the serial Windows desktop lane", timeout: 170000 };
 const run = promisify(execFile);
 const allow = () => {};
 const system = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
