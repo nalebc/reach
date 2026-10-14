@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { parseLaunchStatus, serviceLabel } from "./background-service.mjs";
 import { command } from "./home.mjs";
 import { loginScript } from "./login-start.mjs";
+import { windowsPath } from "../server/app-identity.mjs";
 import { handoffPersistentRoute } from "./persistent-serve.mjs";
 
 // `reach stop` / `reach restart`: every Reach running on this computer (one
@@ -255,3 +256,68 @@ export function startInTerminal(root, { state, args = "", env = process.env, nod
   open(file);
   return file;
 }
+
+// Windows' twin: Reach in a window of its own, titled Reach (the window
+// agents' presets know as Reach's), where you see it and approve new phones.
+// The script it runs carries what Reach needs (Windows Terminal starts new
+// tabs with your sign-in environment, not the caller's). Anything cmd would
+// read as a variable or a quote end in a path is refused, never mangled.
+const ENV_KEPT = ["REACH_HOME", "REACH_DATA"];
+const windowsFolder = (env) => {
+  const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR;
+  return windowsPath(root) ? root : "";
+};
+export function consoleScript(root, node, { args = "", env = process.env } = {}) {
+  // The server names its folder with a trailing \ (new URL("../")).
+  root = String(root).replace(/(?<=[^:\\/])[\\/]+$/, "");
+  const values = [root, node, ...ENV_KEPT.map((key) => env[key]).filter((value) => value !== undefined)];
+  const odd = values.find((value) => /[%"\r\n]/.test(String(value)));
+  if (odd !== undefined) throw Error(`Reach can't open a window of its own from ${odd}: its path has a % sign or a quote. Start it yourself with ${command}.`);
+  return [
+    "@echo off",
+    "rem Reach: opened in a window of its own by a restart or an update.",
+    "title Reach",
+    `set "PATH=${path.win32.dirname(node)};%PATH%"`,
+    ...ENV_KEPT.filter((key) => env[key] !== undefined).map((key) => `set "${key}=${env[key]}"`),
+    // Started for you (a restart from the phone): nobody is reading this
+    // window's QR, so no pairing window opens by itself.
+    'set "REACH_OPENED_BY=restart"',
+    `cd /d "${root}"`,
+    `"${node}" "${path.win32.join(root, "bin", "reach.mjs")}"${args ? ` ${args}` : ""}`,
+    // What went wrong stays on screen; Ctrl+C (130) closes it.
+    "if errorlevel 1 if not errorlevel 130 pause",
+    "",
+  ].join("\r\n");
+}
+// Through cmd's `start`, which returns at once: the window is never a child
+// of the Reach it restarts (stopping that Reach ends what it started). In
+// Windows Terminal when it's installed, else a console window.
+export function startInConsole(root, {
+  state,
+  args = "",
+  env = process.env,
+  node = process.execPath,
+  exists = fs.existsSync,
+  run = (file, argv, options) => execFileSync(file, argv, options),
+} = {}) {
+  const system = windowsFolder(env);
+  if (!system) throw Error("Reach couldn't find the Windows folder on this PC to open a window of its own.");
+  if (/[%"\r\n]/.test(state)) throw Error(`Reach can't open a window of its own from ${state}: its path has a % sign or a quote. Start it yourself with ${command}.`);
+  const script = consoleScript(root, node, { args, env });
+  const file = path.join(state, "start-in-console.cmd");
+  fs.mkdirSync(state, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, script, { mode: 0o700 });
+  const cmd = path.win32.join(system, "System32", "cmd.exe");
+  const local = env.LOCALAPPDATA ?? env.localappdata;
+  const terminal = windowsPath(local) ? path.win32.join(local, "Microsoft", "WindowsApps", "wt.exe") : "";
+  const tab = `"${cmd}" /d /c start-in-console.cmd`;
+  // Windows Terminal reads ; as "and then"; \; is a plain one.
+  const line = terminal && exists(terminal)
+    ? `start "Reach" /D "${state}" "${terminal}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state.replace(/;/g, "\\;")}" ${tab}`
+    : `start "Reach" /D "${state}" ${tab}`;
+  run(cmd, ["/d", "/v:off", "/s", "/c", `"${line}"`], { windowsVerbatimArguments: true, stdio: "ignore", timeout: 15000 });
+  return file;
+}
+// Reach in a window of its own, the way this computer has one.
+export const startInWindow = (root, options = {}, platform = process.platform) =>
+  platform === "win32" ? startInConsole(root, options) : startInTerminal(root, options);

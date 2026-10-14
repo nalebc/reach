@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
 import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,45 @@ const abort = () => {
 function othersRunning() {
   if (process.platform === "win32") return [];
   return reachHosts(processTable());
+}
+// Every Reach running here, Windows included: there, until it reads the
+// PC's process list, the one this folder runs (its status file).
+async function runningHosts() {
+  if (process.platform !== "win32") return othersRunning();
+  const { windowsHost } = await import("./instances.mjs");
+  const host = windowsHost(state);
+  return host && host.pid !== process.pid ? [{ pid: host.pid, root, service: !!host.service, startedAt: host.startedAt }] : [];
+}
+// Windows: the version you confirmed on the phone, left for this window by
+// the Reach it updates, read once (server/reach-updates.mjs).
+async function confirmedUpdate() {
+  const { takeUpdateRequest } = await import("../server/reach-updates.mjs");
+  const dirs = new Set();
+  for (const dir of [...(await runningHosts()).map((h) => stateOf(h.root)), state])
+    try {
+      const dataDir = JSON.parse(fs.readFileSync(path.join(dir, "host-status.json"), "utf8")).dataDir;
+      if (typeof dataDir === "string" && dataDir) dirs.add(dataDir);
+    } catch {}
+  dirs.add(process.env.REACH_DATA || path.join(state, "quick"));
+  for (const dir of dirs) {
+    const version = takeUpdateRequest(dir);
+    if (version) return version;
+  }
+  return null;
+}
+// After an update that stopped Reach first (Windows): Reach starts again as
+// it ran, the background service, or right here.
+async function startAgain({ service }) {
+  if (service) {
+    const { startService } = await import("./stop.mjs");
+    startService(root);
+    return console.log("Reach's background service started.");
+  }
+  process.exitCode = await new Promise((resolve) => {
+    child = spawn(process.execPath, [path.join(root, "bin/reach.mjs"), "restart", "--yes"], { stdio: "inherit" });
+    child.once("error", () => resolve(1));
+    child.once("exit", (code) => resolve(code ?? 0));
+  });
 }
 // The Mac app this command runs inside, when it isn't Terminal: Reach started
 // here would have a terminal but no Screen Recording or Accessibility.
@@ -312,48 +352,83 @@ async function update() {
   const { PACKAGE, installCommand, latestRelease, reachInstall } = await import("../server/reach-updates.mjs");
   const { compareVersions } = await import("../server/versions.mjs");
   const install = reachInstall(root);
+  // Windows: the version you confirmed on the phone, handed to this window by
+  // the Reach it updates (server/reach-updates.mjs). Asked nothing more.
+  const confirmed = process.platform === "win32" ? await confirmedUpdate() : null;
   if (install.source) {
     console.log(`This is a source checkout. Move it to the newest release with git fetch --tags and git checkout v<version> (https://github.com/nalebc/reach/releases), then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
   if (install.reason === "portable") return console.log(install.manual);
-  const found = await latestRelease();
-  if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
-  if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
-  if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
-  console.log(`Reach ${found.version} is out (you have ${install.version}).`);
+  let found;
+  if (confirmed) {
+    found = { state: "found", version: confirmed };
+    if (compareVersions(confirmed, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
+    console.log(`Reach ${confirmed}, as you confirmed on your phone (you have ${install.version}).`);
+  } else {
+    found = await latestRelease();
+    if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
+    if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
+    if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
+    console.log(`Reach ${found.version} is out (you have ${install.version}).`);
+  }
   if (install.reason) throw Error(`Reach can't install it into its own folder. ${install.reason === "permission" ? "" : "Run: "}${install.manual.replace("@latest", `@${found.version}`)}`);
   const plan = installCommand(install, found.version);
   if (!plan) throw Error(`npm wasn't found. Run: npm install --global ${PACKAGE}@${found.version}`);
-  if (!process.stdin.isTTY || foreignApp()) {
-    console.log(`Update it from your phone (Needs you), or run ${command} update in Terminal.`);
+  if (!confirmed && (!process.stdin.isTTY || foreignApp())) {
+    console.log(`Update it from your phone (Needs you), or run ${command} update in ${process.platform === "win32" ? "a terminal" : "Terminal"}.`);
     return;
   }
-  const running = othersRunning().length > 0;
+  const running = (await runningHosts()).length > 0;
   const service = serviceInstalled();
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(
-    running || service
-      ? "Install it and restart Reach? Its terminals and live screens end; agents pick it up by themselves. [y/N] "
-      : "Install it? [y/N] ",
-  ).catch(() => "").finally(() => rl.close());
-  if (!/^y(es)?$/i.test(answer.trim())) return console.log("Nothing was installed.");
+  if (!confirmed) {
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(
+      running || service
+        ? "Install it and restart Reach? Its terminals and live screens end; agents pick it up by themselves. [y/N] "
+        : "Install it? [y/N] ",
+    ).catch(() => "").finally(() => rl.close());
+    if (!/^y(es)?$/i.test(answer.trim())) return console.log("Nothing was installed.");
+  }
+  // Windows can't replace the files of a Reach that runs, nor the folder a
+  // program works in: Reach stops first, and this window leaves its folder.
+  const stopFirst = process.platform === "win32" && (running || service);
+  if (process.platform === "win32") process.chdir(os.homedir());
+  if (stopFirst) {
+    console.log("Reach: stopping Reach so npm can replace its files…");
+    const { stopReach } = await import("./stop.mjs");
+    await stopReach(root, { yes: true });
+  }
   console.log(`Reach: ${plan.display}`);
   const run = (args) =>
     new Promise((resolve, reject) => {
-      child = spawn(process.execPath, args, { stdio: "inherit" });
+      child = spawn(process.execPath, args, { stdio: "inherit", ...(process.platform === "win32" && { cwd: os.homedir() }) });
       child.once("error", reject);
       child.once("exit", (code) =>
         code === 0 ? resolve() : reject(Error(`${path.basename(args[0])} stopped with exit code ${code}.`)),
       );
     });
+  // Stopped for nothing: the Reach you had starts again, as it ran.
+  const failed = async (message) => {
+    if (stopFirst) {
+      console.error(`\nReach: ${message}`);
+      await startAgain({ service });
+      process.exitCode ||= 1;
+      return null;
+    }
+    throw Error(message);
+  };
   try {
     await run([plan.file, ...plan.args]);
   } catch {
-    throw Error(`The update didn't finish. Run it yourself: ${plan.display}`);
+    return failed(`The update didn't finish. Run it yourself: ${plan.display}`);
   }
-  if (reachInstall(root).version !== found.version) throw Error(`npm finished, but Reach ${found.version} isn't in place. Run it yourself: ${plan.display}`);
+  if (reachInstall(root).version !== found.version) return failed(`npm finished, but Reach ${found.version} isn't in place. Run it yourself: ${plan.display}`);
+  if (stopFirst) {
+    console.log(`Reach ${found.version} is installed. Starting it again…`);
+    return startAgain({ service });
+  }
   if (service) {
     console.log("Reach: restarting background mode on the new version…");
     // The running service holds the one-Reach-per-computer lock: it stops
@@ -444,12 +519,12 @@ async function startInBackground(options) {
 // Screen Recording and Accessibility and device approvals have a place.
 // False means: start right here, below.
 async function restart(options) {
-  const { stopReach, startInTerminal, startService } = await import("./stop.mjs");
+  const { stopReach, startInWindow, startService } = await import("./stop.mjs");
   // A checkout's agents restart Reach often (each interface edit used to
   // need it): run from an agent, the restart waits for your OK on the phone.
   // Yours, in Terminal, never asks; an installed Reach has no agents editing it.
   const asker = !packaged && (foreignApp() || (!process.stdin.isTTY && "an agent"));
-  const running = asker ? othersRunning() : [];
+  const running = asker ? await runningHosts() : [];
   if (asker && running.length) {
     // The running Reach's own state (it may run from another folder), then this folder's.
     let dataDir = "";
@@ -480,10 +555,15 @@ async function restart(options) {
     return true;
   }
   // An agent's shell has a terminal too (Codex's does): only Terminal itself
-  // holds the permissions.
-  if (process.platform === "darwin" && (!process.stdin.isTTY || foreignApp())) {
-    startInTerminal(root, { state });
-    console.log("Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.");
+  // holds the permissions. On Windows, Reach's own window, titled Reach, is
+  // where you see it and approve new phones.
+  if (["darwin", "win32"].includes(process.platform) && (!process.stdin.isTTY || foreignApp())) {
+    startInWindow(root, { state });
+    console.log(
+      process.platform === "win32"
+        ? "Reach is starting in a new window of its own."
+        : "Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.",
+    );
     return true;
   }
   options.command = undefined;

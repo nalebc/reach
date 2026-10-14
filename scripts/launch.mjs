@@ -64,6 +64,9 @@ const UNRECOGNISED =
   "Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC.";
 
 export async function launch(options, root) {
+  // Reach's window carries its name on Windows too: the window agents'
+  // presets know as Reach's (docs/WINDOWS_AGENT_PARITY.md, Decisions).
+  if (process.platform === "win32" && process.stdout.isTTY) process.title = "Reach";
   // Started for you (a restart from the phone, at sign-in): read once, and
   // not handed on to the terminals and agents Reach starts.
   const openedForYou = !!process.env.REACH_OPENED_BY;
@@ -393,6 +396,9 @@ export async function launch(options, root) {
       // Which boot (Windows reuses process ids): a status file from before a
       // restart of the PC names no Reach.
       ...(process.platform === "win32" && { boot: windowsBootTime() }),
+      // Whether it has a window of its own (`status` says so: Windows has no
+      // terminal name to read, as ps gives on a Mac).
+      ...(process.platform === "win32" && { window: !!process.stdout.isTTY }),
       instance: reach.instance,
       localUrl,
       origin: privateOrigin || localUrl,
