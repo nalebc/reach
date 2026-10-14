@@ -163,9 +163,9 @@ test("approve and status on Windows say why browser sign-in fell back to pairing
   return assert.rejects(approveDevice(root, { platform: "win32", print() {} }), { message: /^Browser sign-in is off on this PC for now: Tailscale's Windows service isn't running\. A phone joins with the pairing code/ }).then(() => {
     assert.equal(
       windowsStatusText({ pid: 7, origin: "https://pc.example.ts.net:8443", signInOff: "Tailscale's Windows service isn't running." }, { command: ".\\reach.cmd" }),
-      "Reach: running in a terminal (process 7)\nLink: https://pc.example.ts.net:8443\nBrowser sign-in is off for now: Tailscale's Windows service isn't running.",
+      "Reach: running in a terminal window (process 7)\nLink: https://pc.example.ts.net:8443\nBrowser sign-in is off for now: Tailscale's Windows service isn't running.",
     );
-    assert.equal(windowsStatusText({ pid: 7, origin: "https://pc.example.ts.net:8443" }, { command: ".\\reach.cmd" }), "Reach: running in a terminal (process 7)\nLink: https://pc.example.ts.net:8443");
+    assert.equal(windowsStatusText({ pid: 7, origin: "https://pc.example.ts.net:8443" }, { command: ".\\reach.cmd" }), "Reach: running in a terminal window (process 7)\nLink: https://pc.example.ts.net:8443");
   });
 });
 

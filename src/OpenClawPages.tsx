@@ -16,9 +16,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { post, request, type Peer } from "./api";
-import ChatSheet from "./ChatSheet";
 import { channelName, usePolling } from "./openclaw-polling";
-import { ClawPageTop, ClawRow } from "./OpenClawRow";
+import { ClawPageTop, ClawRow, ClawSubPage, useClawBack } from "./OpenClawRow";
 import { AddChannelForm, OpenSetup, ScheduleForm, WhatsAppLink, type ScheduleDraft } from "./OpenClawSetup";
 import { ClawScheduleMore } from "./OpenClawScheduleMore";
 import { ClawHealthPill } from "./OpenClawHealth";
@@ -26,7 +25,8 @@ import { ClawSpendPill } from "./OpenClawSpend";
 
 // Scheduled and Customize, as the ChatGPT app has them: tasks as cards under
 // Active/Paused pills with suggestions in dashed cards, and settings as rows
-// in rounded groups. Each thing opens in a sheet; nothing is a wall of text.
+// in rounded groups. Each thing opens as a page in place, with back (Oct 13:
+// no sheets for these); nothing is a wall of text.
 
 const base = "/api/sessions/openclaw";
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -147,6 +147,39 @@ export function ClawScheduled({ peer, refresh, onBack }: { peer: Peer; refresh: 
   const named = new Set(jobs.map((j) => j.name.trim().toLowerCase()));
   const suggestions = tab === "active" && data?.canAdd ? SUGGESTIONS.filter((s) => !named.has(s.name.toLowerCase())) : [];
   const opened = jobs.find((j) => j.id === openId);
+  useClawBack(!!draft || !!opened, () => {
+    setDraft(null);
+    setOpenId("");
+  }, "reachClawSub");
+  if (draft)
+    return (
+      <ClawSubPage title="New task" backLabel="Back to Scheduled" onBack={() => setDraft(null)}>
+        <ScheduleForm
+          peer={peer}
+          initial={draft}
+          onAdded={() => {
+            setDraft(null);
+            setTab("active");
+            changed();
+          }}
+        />
+      </ClawSubPage>
+    );
+  if (opened)
+    return (
+      <ClawSubPage title={opened.name} backLabel="Back to Scheduled" onBack={() => setOpenId("")}>
+        <TaskDetail
+          peer={peer}
+          job={opened}
+          data={data!}
+          onChanged={changed}
+          onRemoved={() => {
+            setOpenId("");
+            changed();
+          }}
+        />
+      </ClawSubPage>
+    );
   return (
     <section className="claw-page" aria-label="OpenClaw schedules">
       <ClawPageTop title="Scheduled" onBack={onBack} backLabel="Back to OpenClaw" />
@@ -234,34 +267,6 @@ export function ClawScheduled({ peer, refresh, onBack }: { peer: Peer; refresh: 
         <button type="button" className="claw-fab" onClick={() => setDraft({ name: "", message: "" })}>
           New task
         </button>
-      )}
-      {draft && (
-        <ChatSheet title="New task" className="claw-sheet" onClose={() => setDraft(null)}>
-          <ScheduleForm
-            peer={peer}
-            initial={draft}
-            onCancel={() => setDraft(null)}
-            onAdded={() => {
-              setDraft(null);
-              setTab("active");
-              changed();
-            }}
-          />
-        </ChatSheet>
-      )}
-      {opened && (
-        <ChatSheet title={opened.name} className="claw-sheet" onClose={() => setOpenId("")}>
-          <TaskDetail
-            peer={peer}
-            job={opened}
-            data={data!}
-            onChanged={changed}
-            onRemoved={() => {
-              setOpenId("");
-              changed();
-            }}
-          />
-        </ChatSheet>
       )}
     </section>
   );
@@ -461,6 +466,58 @@ export function ClawCustomize({
   const unlinked = !!data?.canLinkWhatsApp && (!whatsapp || whatsapp.status === "unconfigured");
   const listed = channels.filter((c) => !(unlinked && c === whatsapp));
   const openApp = channels.find((c) => sheet === `app:${c.channel}:${c.accountId}`);
+  const back = () => setSheet("");
+  useClawBack(sheet === "link" || sheet === "relink" || sheet === "add" || !!openApp, back, "reachClawSub");
+  if (sheet === "link" || sheet === "relink")
+    return (
+      <ClawSubPage title="WhatsApp" backLabel="Back to Customize" onBack={back}>
+        <WhatsAppLink peer={peer} relink={sheet === "relink"} onCancel={back} onDone={changed} />
+      </ClawSubPage>
+    );
+  if (sheet === "add")
+    return (
+      <ClawSubPage title="Add a messaging app" backLabel="Back to Customize" onBack={back}>
+        <AddChannelForm
+          peer={peer}
+          onAdded={() => {
+            back();
+            changed();
+          }}
+        />
+        <div className="claw-group">
+          <OpenSetup peer={peer} section="channels" row sub={peer.platform === "win32" ? "Signal, Matrix… iMessage needs a Mac." : "Signal, iMessage, Matrix…"}>
+            Other apps
+          </OpenSetup>
+        </div>
+      </ClawSubPage>
+    );
+  if (openApp)
+    return (
+      <ClawSubPage title={channelName(openApp.channel)} backLabel="Back to Customize" onBack={back}>
+        <ul className="claw-facts">
+          <li>
+            <span>Account</span>
+            <strong>{openApp.name}</strong>
+          </li>
+          <li>
+            <span>Status</span>
+            <strong className={openApp.status === "connected" ? "" : "alert"}>
+              {STATUS_WORD[openApp.status] || openApp.status}
+            </strong>
+          </li>
+        </ul>
+        {openApp.error && <p className="claw-error">{openApp.error}</p>}
+        {openApp.channel === "whatsapp" &&
+          data?.canLinkWhatsApp &&
+          ["disconnected", "unknown"].includes(openApp.status) && (
+            <div className="claw-pill-row">
+              <button type="button" className="claw-pill strong" onClick={() => setSheet("relink")}>
+                Link again with a new QR
+              </button>
+            </div>
+          )}
+      </ClawSubPage>
+    );
   return (
     <section className="claw-page" aria-label="Customize OpenClaw">
       <ClawPageTop
@@ -551,55 +608,6 @@ export function ClawCustomize({
           />
         )}
       </div>
-      {(sheet === "link" || sheet === "relink") && (
-        <ChatSheet title="WhatsApp" className="claw-sheet" onClose={() => setSheet("")}>
-          <WhatsAppLink peer={peer} relink={sheet === "relink"} onCancel={() => setSheet("")} onDone={changed} />
-        </ChatSheet>
-      )}
-      {sheet === "add" && (
-        <ChatSheet title="Add a messaging app" className="claw-sheet" onClose={() => setSheet("")}>
-          <AddChannelForm
-            peer={peer}
-            onCancel={() => setSheet("")}
-            onAdded={() => {
-              setSheet("");
-              changed();
-            }}
-          />
-          <div className="claw-sheet-foot">
-            <span>Signal, iMessage, Matrix…</span>
-            <OpenSetup peer={peer} section="channels">
-              Other apps
-            </OpenSetup>
-          </div>
-        </ChatSheet>
-      )}
-      {openApp && (
-        <ChatSheet title={channelName(openApp.channel)} className="claw-sheet" onClose={() => setSheet("")}>
-          <ul className="claw-facts">
-            <li>
-              <span>Account</span>
-              <strong>{openApp.name}</strong>
-            </li>
-            <li>
-              <span>Status</span>
-              <strong className={openApp.status === "connected" ? "" : "alert"}>
-                {STATUS_WORD[openApp.status] || openApp.status}
-              </strong>
-            </li>
-          </ul>
-          {openApp.error && <p className="claw-error">{openApp.error}</p>}
-          {openApp.channel === "whatsapp" &&
-            data?.canLinkWhatsApp &&
-            ["disconnected", "unknown"].includes(openApp.status) && (
-              <div className="claw-pill-row">
-                <button type="button" className="claw-pill strong" onClick={() => setSheet("relink")}>
-                  Link again with a new QR
-                </button>
-              </div>
-            )}
-        </ChatSheet>
-      )}
     </section>
   );
 }

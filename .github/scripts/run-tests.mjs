@@ -25,8 +25,14 @@ export const suites = {
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
+    // Bug bash recovery: shared chat/file UI and native input refusals.
+    "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // Mascots for invited agents and people: the shared deck and faces (Oct 13).
+    "mascot-deck", "mascots-ui",
+    // Shared cross-agent archives and bounded context on macOS and Windows.
+    "portable-history", "transfer-context", "agent-move", "agent-move-sessions", "move-provider-authorization",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
@@ -35,6 +41,13 @@ export const suites = {
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
     "face-join", "fleet",
+    // Workstreams K and L: the PC's process list (one Reach per computer),
+    // status, stop, restart and Reach's own window, sleep prevention and the
+    // background task, on a real PC.
+    "windows-processes", "windows-lifecycle", "windows-stay-awake", "windows-background",
+    // The first run's install alongside its setup, numbered menus included,
+    // on Windows' own Node (audit #31; the real console is workstream U's).
+    "first-start", "prompts",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // The Claude desktop app on Windows, workstream N: its data in either
@@ -51,6 +64,21 @@ export const suites = {
     "document-text", "file-kinds",
     // Voice memos as words through Windows' own recognizer (audit #35).
     "voice-messages",
+    // OpenClaw natively (audit #15, Oct 13): npm's OpenClaw started through
+    // Node with whole arguments, a key only in its variable or on stdin,
+    // Telegram's token file closed to others, a timeout ending the whole
+    // tree, and the install terminal's verdict.
+    "windows-openclaw",
+    // The PC's own terminals, workstream T: Windows Terminal's tabs and
+    // console windows listed, read, typed into, closed and opened from the
+    // phone, the real helper driven on this runner; the shared list and its
+    // checks with them.
+    "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
+    "desktop-terminals", "terminal-titles", "terminal-list-ui",
+    // Hearing the computer beside its screen (Oct 13): the shared part.
+    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
+    // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
+    "openclaw-wizard",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
@@ -62,6 +90,8 @@ export const suites = {
     "node-runtime-files", "security-resilience-cursor-native",
     "remote-desktop", "remote-screen-hub", "tool-page-runtime",
     "ios-background-transfer-native",
+    // The Mac's sound helper, built and self-tested (Oct 13).
+    "screen-sound-native",
   ],
 };
 

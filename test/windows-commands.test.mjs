@@ -13,10 +13,14 @@ import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fak
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
 // paths (test/helpers/as-windows.mjs), `.\reach.cmd status` naming it, and
 // `stop` asking it through the file it watches, so it stops itself as Ctrl+C
-// stops it. Real processes; only process.platform is Windows. Stopping goes
-// through stopReach with platform "win32" and no process list, so it can never
-// reach a Reach that really runs on this computer.
+// stops it. Real processes; only process.platform is Windows. On this Mac the
+// PC's process list can't be read (no C# compiler), so status and stop fall
+// back to the Reach this folder runs, and say so; on a real Windows runner
+// they find it in the process list (its entry is a scripts\bootstrap.mjs of
+// its own). Stopping is limited to this test's Reach either way, so it can
+// never reach a Reach that really runs on this computer.
 const AS_WINDOWS = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
+const UNREAD = /^Reach couldn't read this PC's process list \(Windows' C# compiler isn't on this PC\), so it only knows the Reach run from this folder\.\n/;
 
 function windowsReach(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-as-windows-"));
@@ -24,17 +28,12 @@ function windowsReach(t) {
   fs.mkdirSync(path.join(dir, "share"));
   const env = { ...process.env, REACH_HOME: state, REACH_DATA: path.join(state, "quick") };
   const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
-  const child = spawn(
-    process.execPath,
-    [
-      "--import",
-      AS_WINDOWS,
-      "--input-type=module",
-      "-e",
-      `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(path.join(dir, "share"))}], port: 0 }, ${JSON.stringify(dir)}); console.log("REACH ENDED");`,
-    ],
-    { env, stdio: ["pipe", "pipe", "pipe"] },
+  fs.mkdirSync(path.join(dir, "scripts"));
+  fs.writeFileSync(
+    path.join(dir, "scripts", "bootstrap.mjs"),
+    `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(path.join(dir, "share"))}], port: 0 }, ${JSON.stringify(dir)}); console.log("REACH ENDED");\n`,
   );
+  const child = spawn(process.execPath, ["--import", AS_WINDOWS, path.join(dir, "scripts", "bootstrap.mjs")], { env, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
@@ -75,12 +74,21 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   const host = JSON.parse(fs.readFileSync(reach.statusFile, "utf8"));
   assert.equal(host.pid, reach.child.pid);
   assert.ok(Number.isFinite(host.startedAt), "it says when it started");
-  // `.\reach.cmd status`, through the real launcher.
-  assert.match(
-    await status(reach.env),
-    new RegExp(`^Reach: running in a terminal \\(process ${reach.child.pid}\\), since [^\\n]+\\nLink: http://127\\.0\\.0\\.1:\\d+$`),
+  // `.\reach.cmd status`, through the real launcher: the Mac's lines.
+  const said = await status(reach.env);
+  assert.equal(UNREAD.test(said), process.platform !== "win32", said);
+  // A real Windows runner runs two test files at once: another test's Reach
+  // may be listed too; this one's lines are among them.
+  if (process.platform === "win32")
+    assert.ok(said.includes(`Link: ${host.origin}`) && /Reach: running in the background, with no window, since /.test(said), said);
+  else assert.match(
+    said.replace(UNREAD, ""),
+    // Its sleep prevention too: here its helper can't be built.
+    new RegExp(`^Reach: running in the background, with no window, since [^\\n]+\\nLink: http://127\\.0\\.0\\.1:\\d+\\nSleep prevention: always · not active · Could not enable sleep prevention\\. Reach will retry in 10 minutes\\.\\nIt has no window: it can't take device approvals\\. Run \\.\\\\reach\\.cmd restart to run it in a window of its own\\.$`),
   );
   const killed = [];
+  const { windowsReaches } = await import("../scripts/instances.mjs");
+  const { windowsProcesses } = await import("../server/windows-processes.mjs");
   const result = await stopReach(reach.dir, {
     platform: "win32",
     yes: true,
@@ -88,7 +96,16 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
     state: () => reach.state,
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: (pid) => killed.push(pid) },
+    windows: {
+      taskkill: (pid) => killed.push(pid),
+      // What it left running may be ended; never the Reach itself.
+      end: (pid) => pid === reach.child.pid && killed.push(pid),
+      // This test's Reach only, never another on this computer.
+      reaches: async () => {
+        const found = await windowsReaches({ root: reach.dir, state: reach.state, list: () => windowsProcesses({ nativeDir: path.join(reach.state, "native") }) });
+        return { ...found, hosts: found.hosts.filter((h) => h.pid === reach.child.pid) };
+      },
+    },
   });
   const [code] = await reach.exited;
   assert.equal(result.stopped, 1);
@@ -98,7 +115,7 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   assert.equal(fs.existsSync(reach.statusFile), false, "its status goes with it");
   assert.equal(fs.existsSync(path.join(reach.state, "stop-request.json")), false);
   // And now it isn't running, as status says.
-  assert.equal(await status(reach.env), "Reach isn't running from this folder. Start it with .\\reach.cmd.");
+  assert.match(await status(reach.env), /(^|\n)Reach isn't running( from this folder)?\. Start it with \.\\reach\.cmd\.$/);
 });
 
 // First-run matrix T23, in Tailscale mode: a Windows Reach, through a
@@ -275,6 +292,40 @@ test("Windows: an occupied launcher lock names restart without starting anything
   assert.match(result.text, /already starting or running/);
   assert.ok(result.text.includes(".\\reach.cmd restart"), result.text);
   assert.equal(JSON.parse(fs.readFileSync(lock)).pid, process.pid);
+});
+
+// One Reach per computer, through the real launcher (audit #10): the PC's
+// process list here is written out (REACH_TEST_WINDOWS_PROCESSES, tests
+// only), naming a Reach from another folder; this test process stands in for
+// it. status names it, a second start is refused, and an agent's restart (no
+// terminal) asks on the phone. Nothing is stopped: stop would end this process.
+test("Windows, from the process list: status names a Reach from another folder, a second is refused, an agent's restart asks", { timeout: 60000 }, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-list-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const state = path.join(home, "state");
+  const dataDir = path.join(state, "quick");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const other = "C:\\Users\\Me\\other reach";
+  const startedAt = Date.now() - 60000;
+  fs.writeFileSync(path.join(state, "host-status.json"), JSON.stringify({ pid: process.pid, startedAt, dataDir, origin: "http://127.0.0.1:1", window: true, awake: { mode: "always", active: true } }));
+  const list = path.join(home, "processes.json");
+  fs.writeFileSync(list, JSON.stringify({ processes: [
+    { pid: 4, ppid: 0, image: "System", path: null, commandLine: null, startedAt: null },
+    { pid: process.pid, ppid: 4, image: "node.exe", path: "C:\\node\\node.exe", commandLine: `"C:\\node\\node.exe" "${other}\\scripts\\bootstrap.mjs"`, startedAt },
+  ] }));
+  const env = { ...process.env, REACH_HOME: state, REACH_DATA: dataDir, REACH_COMMAND: "", REACH_TEST_WINDOWS_PROCESSES: list };
+  const reach = (args) => new Promise((resolve) => execFile(process.execPath, ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", ...args], { env, timeout: 30000 },
+    (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })));
+  const status = await reach(["status"]);
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, new RegExp(`^Reach: running in a terminal window \\(process ${process.pid}\\), since [^\\n]+, from C:\\\\Users\\\\Me\\\\other reach\\nLink: http://127\\.0\\.0\\.1:1\\nSleep prevention: always · active\\n$`));
+  const second = await reach(["--local"]);
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, new RegExp(`Reach: already running in a terminal window \\(process ${process.pid}\\), since [^\\n]+, from C:\\\\Users\\\\Me\\\\other reach\\.\\nUse that window, or:\\n {2}\\.\\\\reach\\.cmd restart`));
+  const restart = await reach(["restart"]);
+  assert.equal(restart.code, 0, restart.stderr);
+  assert.match(restart.stdout, /^Asked on the phone \(Needs you\): Reach restarts when the user taps Restart\. Nothing restarted yet; don't run this again\./);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dataDir, "restart-request.json"), "utf8")).id, "the request the phone shows");
 });
 
 test("Windows: service guidance uses the active command, and related hints have no hard-coded launcher", async () => {

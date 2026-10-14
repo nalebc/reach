@@ -4,10 +4,15 @@ Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on
 
 ## Today on Windows (Oct 13)
 
-- On by detection, with no switch, not yet run on a real PC: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why.
+- On by detection, with no switch: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why. Its unit and launch tests pass on GitHub's Windows runner; the runner's peer-check spike against a real LocalSystem service is being worked on, and no physical PC has run it.
+- Built Oct 13 and passing on GitHub's Windows runner (not yet on a physical PC): the Claude desktop app's records, archive and links in either install's folder, and the PC's idle and lock readings (N, part); Reach's terminals in the owner's own shell (#34); drives attached later (#40); the launcher named as the PC runs it (#43); the notification-area icon with Pause and Resume (#16); apps' icons and agents' logos (#28); Word, RTF and OpenDocument previews (#37); voice memos as words (#35).
 - Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E; agents' and invited people's commands (no sandbox; refused since `aa09b7da` instead of running unsandboxed) until C.
+- Built, not yet run on a real PC: the PC's own terminals (T). Windows Terminal tabs and console windows are listed beside Reach's terminals on the Terminals page and Home, read, typed into, brought forward and closed from the phone, and terminal shortcuts open new ones. On by detection; a PC that can't build the helper says why.
 - Works: command-line agents over the tailnet for files.
-- Missing: background mode and start at sign-in, sleep prevention (K); one Reach per PC, restarts and updates in a visible window (L); the rest of P, T, G, H and N.
+- Built on Oct 13, with no switch, not yet run on a real PC (K, L): background mode and start at sign-in (a Scheduled Task of yours, InteractiveToken), sleep prevention in the Mac's three modes, one Reach per PC from its process list, restarts and updates in Reach's own window, and the first run's install alongside its setup.
+- Built, not yet run on a real PC: the PC's own terminals on the phone (T): Windows Terminal tabs and console windows listed, read, typed into, brought forward and closed; terminal shortcuts open new ones.
+- Built, not yet run on a real PC: OpenClaw natively, as on a Mac (#15). It's installed, set up and given keys and channels from the phone, and its health and Node recovery work there too. iMessage needs a Mac (below).
+- Being built (Oct 13): B, C, P #26 (H.264 without FFmpeg), U (proof on the runner). Still to start: E and F after B and C; G and H after B; P's guest mask and owner field probe after B; N's app-open detection after L.
 
 ## What parity means
 
@@ -18,6 +23,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Reading or answering UAC prompts | The secure desktop is closed to every app by design | The agent is told an administrator prompt is up and waits; the owner answers at the PC |
 | Hidden per-app displays (`apps:drive`, owner profiles only) | Needs an attestation-signed virtual display driver | Apps run on the real screen, as the Apps preset already does on a Mac |
 | Acting in elevated (administrator) windows | UIPI; needs a signed `uiAccess` helper installed in Program Files | Refused with the reason, as a guardrail |
+| OpenClaw's iMessage channel | OpenClaw's iMessage plugin runs `imsg` on a signed-in Mac (docs.openclaw.ai/plugins/reference/imessage); a Gateway elsewhere reaches iMessage only through a Mac | Where the phone offers other messaging apps, a Windows PC reads "iMessage needs a Mac". Telegram, Discord and Slack (by token) and WhatsApp (by QR) are added from the phone as on a Mac |
 
 ## Decisions: the same on Mac and Windows (owner, Oct 12)
 
@@ -43,7 +49,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Start at sign-in | Offered on both by `./reach setup` |
 | Guests' live screen and clipboard | Filtered on both (password managers, Reach's own windows, concealed copies); on Windows refused with the reason until its filter exists (done Oct 12) |
 | Files hides what the OS hides | Finder's rule on a Mac; hidden and system attributes on Windows |
-| OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows |
+| OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows. It does: OpenClaw documents its native Windows CLI and Gateway. Built Oct 13; only iMessage is a gap (table above). Neither replaces the computer's own Node: OpenClaw gets one of its own beside it. On a Mac that's Homebrew's node@24, offered when an update needs it. On Windows it's OpenClaw's own Node, added at install when the PC's is older than 24.16 (said on the phone first), and in the same update recovery. Whether the Mac's install should add node@24 the same way is the owner's call |
 | Reach's terminals | The owner's own shell on both: `$SHELL` on a Mac; Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell |
 
 Only what Windows itself makes impossible differs (table above): UAC prompts, hidden per-app displays, administrator windows.
@@ -74,7 +80,29 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 - #44: `reach cli` writes a `reach.cmd`.
 - #48: docs.
 
-Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12. Neither has been compiled or run on Windows yet.
+Built on Oct 13, each with unit tests and its real-Windows test passing on GitHub's windows-2025 runner (not a physical PC):
+
+| Item | What | Runner |
+| --- | --- | --- |
+| D (no switch) | Browser sign-in, invites, Face ID join, linked computers on by detection; security review fixes | [38509795461](https://github.com/nalebc/reach/actions/runs/38509795461) |
+| #9 (part) | The Claude app's records in %APPDATA%\Claude or its package's copy; idle and lock readings (scripts/native/presence.cs); claude:// links through Windows' own handler | [38508473706](https://github.com/nalebc/reach/actions/runs/38508473706) |
+| #34, #40, #43 | The owner's shell (Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell); drives attached later; the launcher's name on the phone | [38508476228](https://github.com/nalebc/reach/actions/runs/38508476228) |
+| #16 | Reach's icon in the notification area (scripts/native/tray.cs) | [38508861579](https://github.com/nalebc/reach/actions/runs/38508861579) |
+| #28 | Apps' icons and agents' logos (scripts/native/app-icons.cs) | [38509987557](https://github.com/nalebc/reach/actions/runs/38509987557) |
+| #37 | Word, RTF and OpenDocument text read in JS off a Mac; .doc stays a download | [38510232232](https://github.com/nalebc/reach/actions/runs/38510232232) |
+| #35 | Voice memos through System.Speech (scripts/native/transcribe.cs) | [38511383861](https://github.com/nalebc/reach/actions/runs/38511383861) |
+
+Built on Oct 13 (workstreams K and L), with unit tests on this Mac and real-Windows tests in the Windows lane, not yet run there:
+
+- #3: sleep prevention on Windows, in the Mac's three modes: a C# helper (`scripts/native/stay-awake.cs`) holds `SetThreadExecutionState` for the system and the display, says what it holds, and lets go when Reach ends; `reach status` shows it. The lane checks `powercfg /requests`.
+- #4: background mode and start at sign-in: `reach install`, `setup background`, `uninstall`, `stop`, `restart` and `update` handle a Scheduled Task of yours (`scripts/windows-task.mjs`): your sign-in, your session's InteractiveToken logon (Tailscale's route check and the desktop need it; never batch or S4U), least privilege, no time limit, on battery. It runs a windowless C# starter (`scripts/native/background.cs`) that runs the launcher with `--service` on Reach's own Node, logs, and starts it again 5 s after it ends unexpectedly. The old `npm run install-service` Startup entry is retired and removed.
+- #10: one Reach per computer: the launcher reads the PC's process list (`scripts/native/processes.cs`, `server/windows-processes.mjs`) for lock, status, stop, restart and update; an agent's restart (no terminal, or an editor's or agent's shell, from the parent chain) asks on the phone; `update` stops Reach before npm. Where the list can't be read, the per-folder H20 behaviour, said as such.
+- #11: restarts and updates in a visible window: Windows Terminal, else a console window, titled Reach, through cmd's `start` (never a child of the Reach it stops), for `reach restart`, the phone's Restart card and phone updates. A phone update hands the confirmed version to that window as a one-time request, since Windows can't replace a running Reach's files.
+- #31: the first run installs while its setup asks, on Windows too.
+- #32: `reach status` prints the Mac's lines on Windows (routes, sleep prevention, sign-in).
+
+
+Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12.
 
 - **D:** on by detection since Oct 13, with no switch, Face ID join and linked computers included (owner: "No flag should exist"). A security review of the switch-free door runs with that change.
 - **M:**
@@ -85,6 +113,14 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
   - #33: agent updates.
   - #45: Gemini is detected.
   - #14: the team bridge runs on a named pipe.
+  - #15 (Oct 13): OpenClaw natively, as its makers document it (docs.openclaw.ai/platforms/windows). The pieces:
+    - Install: OpenClaw's own PowerShell installer, without onboarding, in a Reach terminal. On a PC whose Node is older than 24.16, OpenClaw's own Node is added first (its installer's `-NodeOnly`, in `~\.openclaw\tools\cli-node`). The phone says so before the tap.
+    - Running it: npm's `openclaw.cmd` is found as the `openclaw.mjs` it runs, also where an install made since Reach started puts it. It's started with a Node OpenClaw accepts, fixed arguments, and no shell.
+    - Secrets: keys go only in OpenClaw's own variable or on its stdin. Telegram's token file is closed to all but the owner, SYSTEM and Administrators before the token goes in.
+    - Timeouts end the whole process tree.
+    - Node recovery after an update runs the installer in OpenClaw's package.
+    - OpenClaw's own Windows app (Windows Hub) keeps its Gateway in a WSL distro of its own, which Reach can't see from Windows. Setup from the phone won't start a second Gateway beside it, and says why. Whether Reach should use that Gateway is the owner's call.
+    - Proof so far: `test/windows-openclaw.test.mjs`, in the Windows lane.
 
 Follow-ups the reviews left, both for a real PC:
 - **Stale Claude Code record.** One whose pid Windows gave to another `node.exe` reads as held until the record goes. Compare the process's start time (CIM `Win32_Process.CreationDate`) with the record's.
@@ -113,11 +149,11 @@ The rest are in workstreams K to W below.
 | E | Presets on Windows: lift the refusals once B/C/D pass; invite UI wording | B, C, D | `browser-access.mjs`, `BrowserInvite.tsx` |
 | F | End to end on real Windows CI: invite → admission → MCP tool calls (screenshot, click and type into a test window, guardrail refusals on a password field and a protected window), sandboxed command, Files boundary, per-agent pause, phone control and Reach's pause stopping agent input | B, C, E | `test/windows-agent-e2e.test.mjs`, `ci.yml` |
 | G | Saved browser tools: Chrome/Edge extension + native messaging host (replaces JXA) | B | new |
-| T | The PC's own terminals, as the Mac's Terminal/iTerm2 tabs (`server/desktop-terminals.mjs`, `scripts/native/mac-terminals.js`, `src/Sessions.tsx` "Mac tabs", the Terminals page's default source): list the PC's open console and Windows Terminal tabs, read their text (console API for conhost, UI Automation TextPattern for Windows Terminal), type into them, focus and close them, and open a new visible one in a chosen folder from the phone (`wt.exe -d`, else a console window). Found Oct 12: a tester opened a terminal from the phone and nothing appeared on the laptop | B (helper) | `server/desktop-terminals.mjs`, new `scripts/native/windows-terminals.cs`, `src/Sessions.tsx`, `src/capabilities.ts` |
+| T | The PC's own terminals, as the Mac's Terminal/iTerm2 tabs. Found Oct 12: a tester opened a terminal from the phone and nothing appeared on the laptop. **Built Oct 13, not yet run on a real PC** (`test/windows-terminals-native.test.mjs` drives it on the windows-2025 runner). One C# helper: <br>• **Finds** each console by its window: a classic window (ConsoleWindowClass), or the PseudoConsoleWindow a Windows Terminal tab has, which Windows Terminal owns (tabs handed over as the default terminal included). Windows names the console's first program as the window's, so a console is window + that program + its start time; a reused pid never matches. Reach's own terminals (shells Reach started) and other apps' pseudo consoles (VS Code) aren't listed; administrator consoles can't be, since Windows keeps a normal program out of them. <br>• **Reads** through the console API (AttachConsole, ReadConsoleOutputCharacterW): a console window with its scrollback; a Windows Terminal tab its screen, its scrollback staying in Windows Terminal, as iTerm2 gives only its screen. <br>• **Types** with WriteConsoleInputW, no focus needed. <br>• **Focuses** as B does: raised, then SetForegroundWindow once (a tab chosen by title through UI Automation when only one has it), `front:false` when Windows refuses. <br>• **Closes** a console window with WM_CLOSE, as its close button does. A Windows Terminal tab by ending the programs in it: Windows Terminal then closes just that tab or pane, never its other tabs and never with a question left on the PC; programs started from it that left it go on. <br>• **Opens** `wt.exe -w new new-tab -d <folder>` (its default profile, or the owner's shell running the command), else a console window. PowerShell gets the command encoded, cmd as the rest of its line, so it is only ever the shell's argument. <br>• **Watches** as the same helper run as a watch: console WinEvents for windows, a look once a second at listed Windows Terminal tabs while phones are connected (their consoles don't say when they print). | — | `scripts/native/windows-terminals.cs`, `server/windows-terminals.mjs`, `server/desktop-terminals.mjs`, `server/mac-terminal-watch.mjs`, `server/app-shortcuts.mjs`, `src/Sessions.tsx`, `src/TerminalList.tsx`, `src/MacTerminalView.tsx`, `src/terminal-titles.ts`, `src/capabilities.ts` |
 | J | Real user journeys on real Windows and a real Mac: a headless browser drives the actual phone interface against a real Reach on GitHub's windows-2025 and macos-15 runners, page by page (Home, Chat with install and sign-in, Files, Terminals including the computer's own, Screen and control, Apps, Agents & people, invites, updates, pause), with real installers where they're free to run and no stand-in terminals or detection. Each journey runs on both platforms and must end in the same visible result; a step with no visible outcome fails. Found Oct 12: fakes let "installed but not found" and "terminal not on the PC" pass | A | new `test/journeys/*.test.mjs`, `ci.yml` |
 | S | Signing: SignPath project *Reach*; a release job builds the helpers on Windows with product metadata *Reach* and the release version, submits them for signing (manual approval), verifies the signature, and adds them and their SHA-256 to the npm package; the server prefers a verified signed helper and falls back to `windowsBinary` | B, owner's SignPath approval | `.github/workflows/release.yml`, `server/desktop-native.mjs`, `scripts/native/*.cs` |
-| K | Keep the PC reachable (audit #3, #4, #32): a keep-awake helper with the Mac's three modes; start at sign-in as a per-user Scheduled Task running the real launcher; `reach status` lines | A | `scripts/launch.mjs`, `scripts/stay-awake.mjs`, `scripts/background-service.mjs`, `scripts/setup.mjs`, `scripts/login-start.mjs`, `scripts/service.mjs`, `scripts/instances.mjs` |
-| L | Launcher lifecycle (audit #10, #11, #30, #31, #41, #44, #49): one process inventory for lock, status, stop, restart and update, shipped together with a visible-console restart; `reach cli` shim; bootstrap.ps1 download, ARM64 | — | `scripts/bootstrap.mjs`, `scripts/stop.mjs`, `scripts/instances.mjs`, `restart-requests.mjs`, `reach-updates.mjs`, `scripts/bootstrap.ps1` |
+| K | Keep the PC reachable (audit #3, #4, #32): a keep-awake helper with the Mac's three modes; start at sign-in as a per-user Scheduled Task running the real launcher; `reach status` lines. Built Oct 13 | A | `scripts/launch.mjs`, `scripts/stay-awake.mjs`, `scripts/background-service.mjs`, `scripts/windows-task.mjs`, `scripts/setup.mjs`, `scripts/service.mjs`, `scripts/instances.mjs`, `scripts/native/stay-awake.cs`, `scripts/native/background.cs` |
+| L | Launcher lifecycle (audit #10, #11, #30, #31, #41, #44, #49): one process inventory for lock, status, stop, restart and update, shipped together with a visible-console restart; `reach cli` shim; bootstrap.ps1 download, ARM64. Built Oct 13 (#30, #41, #44, #49 on Oct 12) | — | `scripts/bootstrap.mjs`, `scripts/stop.mjs`, `scripts/instances.mjs`, `server/windows-processes.mjs`, `scripts/native/processes.cs`, `restart-requests.mjs`, `reach-updates.mjs`, `scripts/bootstrap.ps1` |
 | M | Coding agents (audit #2, #7, #8, #14, #15, #17, #33, #45, #46): Codex daemon transport, Git for Windows in health, team bridge on a SID-restricted pipe, pipe owner checks, updates, Gemini/Antigravity/Cursor detection, Codex holder, OpenClaw | — | `agent-sessions/*`, `agent-install.mjs`, `agent-updates.mjs`, `openclaw*.mjs` |
 | N | Claude desktop app on Windows (audit #9): its record folder found on a real PC, then list, archive, watching and `claude://` links | — | `agent-sessions/claude-import.mjs`, `agent-sessions/claude.mjs`, `agent-watch.mjs` |
 | P | Screen, control and guests (audit #5, #12, #13, #16, #26, #27, #47): guests' mask and concealed clipboard; locked state as the Mac's idle byte; H.264 without FFmpeg; UI Automation in the owner's input helper; tray Pause/Resume | B (classifier, UIA), S | `remote-screen.mjs`, `screen-stream.mjs`, `scripts/native/*.ps1`, `desktop-connection.mjs` |

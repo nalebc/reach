@@ -16,6 +16,7 @@ import { createSignIn } from "./sign-in.mjs";
 import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { findWindowsCli } from "../agent-cli.mjs";
+import { findOpenClaw } from "../openclaw-windows.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
@@ -76,8 +77,10 @@ export const KNOWN_AGENTS = [
   { agent: "cursor", name: "Cursor", app: "/Applications/Cursor.app", cli: "cursor-agent" },
 ];
 let detected = null;
-export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir() } = {}) {
-  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env;
+// OpenClaw on Windows: as Reach starts it (npm's openclaw.cmd as its
+// openclaw.mjs), also where an install made since Reach started puts it.
+export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw } = {}) {
+  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw;
   if (cacheable && !fresh && detected && Date.now() - detected.at < 60000) return detected.value;
   const value = Promise.all(
     known.map(async ({ agent, name, app, cli, supported = false }) => {
@@ -85,6 +88,7 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
       if (agent === "openclaw") {
         const config = env.REACH_OPENCLAW_CONFIG || env.OPENCLAW_CONFIG_PATH || path.join(env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw"), "openclaw.json");
         installed ||= exists(config);
+        if (!installed && platform === "win32") return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)), signedIn: false, supported };
       }
       if (!installed && cli)
         installed = await run(platform === "win32" ? "where.exe" : env.SHELL || "/bin/sh", platform === "win32" ? [cli] : ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
@@ -1405,12 +1409,16 @@ export function createAgentSessions({
           }
         }
         authorize();
+        // The working context must stop at the same selected fork point as
+        // the archive. A moved Codex chat's full shown history can extend past it.
+        const context = { items: memory ? items.slice(memory.from) : complete, summary: memory?.summary || "" };
         if (to === "codex") {
           ({ threadId: target } = await codexLive.forkHistory({
             cwd: session.cwd,
             name: title,
             items: complete,
             from,
+            context,
             authorize,
           }));
           nativeHistory = true;
@@ -1419,7 +1427,7 @@ export function createAgentSessions({
           const notes = fork ? forkNotes(complete, from) : openClawNotes(turns, { note, from });
           ({ key: target } = await openClaw.fork({ title, notes, label: `${fork ? "Forked" : "Moved"} from ${from}` }, authorize));
         } else {
-          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, context, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
           authorize();

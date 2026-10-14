@@ -28,7 +28,11 @@ export function findChrome() {
             "/usr/bin/chromium-browser",
             "/snap/bin/chromium",
           ]
-        : [];
+        : process.platform === "win32"
+          ? [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA]
+              .filter(Boolean)
+              .map((base) => path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+          : [];
   return candidates.find((file) => fs.existsSync(file)) || null;
 }
 

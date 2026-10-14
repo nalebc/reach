@@ -40,7 +40,7 @@ import { ClawOnboard } from "./OpenClawOnboard";
 import { ClawRelayAction } from "./OpenClawRelay";
 import { channelName, usePolling } from "./openclaw-polling";
 import { ClawCustomize, ClawScheduled } from "./OpenClawPages";
-import { ClawPageTop } from "./OpenClawRow";
+import { ClawPageTop, useClawBack } from "./OpenClawRow";
 import { ClawTooOld } from "./OpenClawHealth";
 import "./openclaw.css";
 import { ChatCompanion } from "./ChatCompanion";
@@ -642,6 +642,14 @@ export default function OpenClawSpace({
     onOpened?.();
   }, [openKey, sessions, onOpened]);
   const reload = () => setRefresh((n) => n + 1);
+  // Back (the chevron, the iPhone's swipe, Android's) steps out one level:
+  // a chat or a page to the chats, Agents or Skills to Customize.
+  useClawBack(!!opened, () => {
+    setOpened(null);
+    reload();
+  }, "reachClawChat");
+  useClawBack(page !== "home", () => setPage("home"), "reachClawPage");
+  useClawBack(page === "agents" || page === "skills", () => setPage("customize"), "reachClawSub");
   if (opened)
     return (
       <Conversation

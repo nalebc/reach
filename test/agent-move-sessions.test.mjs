@@ -100,7 +100,7 @@ const setup = (replies = {}, extra = {}, codexItems = {}) => {
     claudeImports: { add: async (id) => imported.push(id), close() {} },
     ...extra,
   });
-  return { root, projects, daemon, sessions, imported };
+  return { root, projects, daemon, sessions, imported, claude };
 };
 const text = (items) => items.map((i) => `${i.role}:${i.kind}:${i.text}`);
 
@@ -114,6 +114,46 @@ test("Claude to Codex preserves visible pre-compaction messages and full tool ou
   const archive = fs.readFileSync(params.path, "utf8");
   for (const content of ["Build the login page", "Done: the login page is built.", "Now add tests", "all 12 passed", "Tests pass."]) assert.ok(archive.includes(content), content);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an oversized Claude transfer continues from its compaction summary without losing the full archive", async t => {
+  const { root, projects, daemon, sessions } = setup();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(projects, "-work-app", `${CLAUDE}.jsonl`);
+  const rows = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  const original = rows.find(row => row.uuid === "a1");
+  original.message.content[0].text += "x".repeat(600_000);
+  fs.writeFileSync(file, rows.map(line).join("\n") + "\n");
+  await sessions.move("claude", CLAUDE, { to: "codex", resume: true });
+  const params = daemon.calls.find(([method]) => method === "thread/fork")[1];
+  const imported = fs.readFileSync(params.path, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(imported.find(row => row.type === "response_item" && row.payload.role === "assistant").payload.content[0].text, original.message.content[0].text);
+  const compact = imported.at(-1);
+  assert.equal(compact.type, "compacted");
+  const context = compact.payload.replacement_history.map(t => t.content[0].text).join("\n");
+  assert.match(context, /We built the login page together\./);
+  assert.match(context, /Now add tests/);
+  assert.match(context, /Tests pass\./);
+  assert.doesNotMatch(context, /xxxx/);
+  assert.ok(daemon.calls.some(([method]) => method === "turn/start"));
+});
+
+test("a large imported Codex fork excludes future messages from its compacted Claude context", async t => {
+  const codexItems = {};
+  const { root, projects, sessions, claude } = setup({}, {}, codexItems);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(projects, "-work-app", `${CLAUDE}.jsonl`);
+  const rows = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  rows.find(row => row.uuid === "a1").message.content[0].text += "x".repeat(600_000);
+  fs.writeFileSync(file, rows.map(line).join("\n") + "\n");
+  await sessions.move("claude", CLAUDE, { to: "codex" });
+  codexItems[NEW_CODEX].push({ id: "future", role: "user", kind: "text", text: "Future request must stay out" });
+  const fork = await sessions.fork("codex", NEW_CODEX, { to: "claude", through: "imported-1" });
+  const archive = await claude.history(fork.id);
+  assert.ok(archive.memory, "the selected history is large enough to need bounded context");
+  assert.match(archive.memory.summary, /Build the login page/);
+  assert.doesNotMatch(archive.memory.summary, /Future request|Now add tests|Tests pass/);
+  assert.ok(!archive.items.some(item => /Future request|Now add tests/.test(item.text)), "the complete visible archive stops at the selected reply too");
 });
 
 test("a moved chat remains readable without the source and pages its own complete history exactly once", async () => {

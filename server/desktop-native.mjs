@@ -50,15 +50,19 @@ export function cscCandidates({ env = process.env } = {}) {
 // antivirus. Node reports those as access errors or UNKNOWN.
 const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCES", "EPERM", "UNKNOWN"].includes(error?.code);
 /** A Windows helper built from scripts/native/<kind>.cs into the data folder (or `dir`), named by its source's hash: its path. */
-export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false } = {}) {
+// `target: "winexe"`: a Windows program with no console window of its own
+// (the background task's starter); every other helper is a console program.
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe" } = {}) {
   signal?.throwIfAborted();
   if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
   if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
+  if (!["exe", "winexe"].includes(target)) throw fail(400, "Unknown helper.");
+  const flags = CSC_FLAGS.map((flag) => (flag === "/target:exe" ? `/target:${target}` : flag));
   const sourceFile = path.join(native, `${kind}.cs`);
   // Its source and how it's built name it: any change to either rebuilds it.
   const source = await fs.readFile(sourceFile);
   const extras = EXTRA_REFERENCES[kind] || [];
-  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, extras.length ? [...REFERENCES, ...extras] : REFERENCES])).digest("hex").slice(0, 12);
+  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES])).digest("hex").slice(0, 12);
   // `fresh`: built now under a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
   const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
@@ -74,7 +78,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
         return found || null;
       },
       args: (tmp) => [
-        ...CSC_FLAGS,
+        ...flags,
         `/out:${tmp}`,
         ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`),
         ...extras.map((name) => `/reference:${extraCandidates(framework, name, env).find((file) => exists(file)) || path.win32.join(framework, name)}`),

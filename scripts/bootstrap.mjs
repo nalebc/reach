@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
-import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
+import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startedOf, stateOf, statusText, windowsBootTime, windowsHostApp, windowsImage, windowsReaches, withoutHandover } from "./instances.mjs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
@@ -25,23 +26,93 @@ const abort = () => {
   stopInstall();
   process.exit(130);
 };
-// Any other Reach on this computer, whichever folder it runs from.
-function othersRunning() {
-  if (process.platform === "win32") return [];
-  return reachHosts(processTable());
+// Windows' process list (server/windows-processes.mjs), read once per
+// command unless asked `fresh` (the lock, after a restart stopped Reach): its
+// helper is built into Reach's folder the first time, by the PC's own C#
+// compiler. Where it can't be read, the Reach this folder runs (instances.mjs
+// windowsReaches), said as such.
+let inventory = null;
+function windowsInventory({ fresh = false } = {}) {
+  if (fresh) inventory = null;
+  inventory ||= (async () => {
+    const list = async () => {
+      const { windowsProcesses } = await import("../server/windows-processes.mjs");
+      const slow = setTimeout(() => console.error("Reach: checking for another Reach on this PC (the first time takes a few seconds)…"), 2000);
+      let limit;
+      try {
+        return await Promise.race([
+          windowsProcesses({ nativeDir: path.join(state, "native") }),
+          new Promise((_, reject) => {
+            limit = setTimeout(() => reject(Error("it took too long")), 60000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(slow);
+        clearTimeout(limit);
+      }
+    };
+    return windowsReaches({ root, state, list });
+  })();
+  return inventory;
 }
-// The Mac app this command runs inside, when it isn't Terminal: Reach started
-// here would have a terminal but no Screen Recording or Accessibility.
-function foreignApp() {
+// Every other Reach on this computer, whichever folder it runs from, with
+// why only this folder's is known when Windows' process list can't be read.
+async function reaches(options) {
+  if (process.platform !== "win32") return { hosts: reachHosts(processTable()), partial: "" };
+  const { hosts, partial } = await windowsInventory(options);
+  return { hosts, partial };
+}
+const othersRunning = async (options) => (await reaches(options)).hosts;
+// Windows: the version you confirmed on the phone, left for this window by
+// the Reach it updates, read once (server/reach-updates.mjs).
+async function confirmedUpdate() {
+  const { takeUpdateRequest } = await import("../server/reach-updates.mjs");
+  const dirs = new Set();
+  for (const dir of [...(await othersRunning()).filter((h) => h.root).map((h) => stateOf(h.root)), state])
+    try {
+      const dataDir = JSON.parse(fs.readFileSync(path.join(dir, "host-status.json"), "utf8")).dataDir;
+      if (typeof dataDir === "string" && dataDir) dirs.add(dataDir);
+    } catch {}
+  dirs.add(process.env.REACH_DATA || path.join(state, "quick"));
+  for (const dir of dirs) {
+    const version = takeUpdateRequest(dir);
+    if (version) return version;
+  }
+  return null;
+}
+// After an update that stopped Reach first (Windows): Reach starts again as
+// it ran, the background service, or right here.
+async function startAgain({ service }) {
+  if (service) {
+    const { startService } = await import("./stop.mjs");
+    startService(root);
+    return console.log("Reach's background service started.");
+  }
+  process.exitCode = await new Promise((resolve) => {
+    child = spawn(process.execPath, [path.join(root, "bin/reach.mjs"), "restart", "--yes"], { stdio: "inherit" });
+    child.once("error", () => resolve(1));
+    child.once("exit", (code) => resolve(code ?? 0));
+  });
+}
+// The app this command runs inside, when it isn't a terminal: on a Mac,
+// Reach started there would have a terminal but no Screen Recording or
+// Accessibility; on Windows, it would end with that app (an editor, an
+// agent's app or CLI), in no window of its own.
+async function foreignApp() {
+  if (process.platform === "win32") {
+    const { processes } = await windowsInventory();
+    const app = processes ? windowsHostApp(processes, process.pid) : "";
+    return outsideTerminal(app) ? app : "";
+  }
   if (process.platform !== "darwin") return "";
   const app = hostApp(processTable(), process.pid);
   return outsideTerminal(app) ? app : "";
 }
-function lock() {
+async function lock() {
   // One Reach per computer: a second one says where the first runs instead.
-  const others = withoutHandover(othersRunning(), state);
+  const others = withoutHandover(await othersRunning({ fresh: true }), state);
   if (others.length)
-    throw Error(alreadyRunning(others, { command, started: startTimes(others.map((h) => h.pid)) }));
+    throw Error(alreadyRunning(others, { command, started: startedOf(others) }));
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   let bootSession;
   try {
@@ -286,48 +357,83 @@ async function update() {
   const { PACKAGE, installCommand, latestRelease, reachInstall } = await import("../server/reach-updates.mjs");
   const { compareVersions } = await import("../server/versions.mjs");
   const install = reachInstall(root);
+  // Windows: the version you confirmed on the phone, handed to this window by
+  // the Reach it updates (server/reach-updates.mjs). Asked nothing more.
+  const confirmed = process.platform === "win32" ? await confirmedUpdate() : null;
   if (install.source) {
     console.log(`This is a source checkout. Move it to the newest release with git fetch --tags and git checkout v<version> (https://github.com/nalebc/reach/releases), then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
     return;
   }
   if (install.reason === "portable") return console.log(install.manual);
-  const found = await latestRelease();
-  if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
-  if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
-  if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
-  console.log(`Reach ${found.version} is out (you have ${install.version}).`);
+  let found;
+  if (confirmed) {
+    found = { state: "found", version: confirmed };
+    if (compareVersions(confirmed, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
+    console.log(`Reach ${confirmed}, as you confirmed on your phone (you have ${install.version}).`);
+  } else {
+    found = await latestRelease();
+    if (found.state === "unpublished") return console.log(`No Reach release is published yet. You have ${install.version}.`);
+    if (found.state !== "found") throw Error("Couldn't reach npm to check for a newer Reach. Try again in a moment.");
+    if (compareVersions(found.version, install.version) !== 1) return console.log(`Reach ${install.version} is up to date.`);
+    console.log(`Reach ${found.version} is out (you have ${install.version}).`);
+  }
   if (install.reason) throw Error(`Reach can't install it into its own folder. ${install.reason === "permission" ? "" : "Run: "}${install.manual.replace("@latest", `@${found.version}`)}`);
   const plan = installCommand(install, found.version);
   if (!plan) throw Error(`npm wasn't found. Run: npm install --global ${PACKAGE}@${found.version}`);
-  if (!process.stdin.isTTY || foreignApp()) {
-    console.log(`Update it from your phone (Needs you), or run ${command} update in Terminal.`);
+  if (!confirmed && (!process.stdin.isTTY || (await foreignApp()))) {
+    console.log(`Update it from your phone (Needs you), or run ${command} update in ${process.platform === "win32" ? "a terminal" : "Terminal"}.`);
     return;
   }
-  const running = othersRunning().length > 0;
+  const running = (await othersRunning()).length > 0;
   const service = serviceInstalled();
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(
-    running || service
-      ? "Install it and restart Reach? Its terminals and live screens end; agents pick it up by themselves. [y/N] "
-      : "Install it? [y/N] ",
-  ).catch(() => "").finally(() => rl.close());
-  if (!/^y(es)?$/i.test(answer.trim())) return console.log("Nothing was installed.");
+  if (!confirmed) {
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(
+      running || service
+        ? "Install it and restart Reach? Its terminals and live screens end; agents pick it up by themselves. [y/N] "
+        : "Install it? [y/N] ",
+    ).catch(() => "").finally(() => rl.close());
+    if (!/^y(es)?$/i.test(answer.trim())) return console.log("Nothing was installed.");
+  }
+  // Windows can't replace the files of a Reach that runs, nor the folder a
+  // program works in: Reach stops first, and this window leaves its folder.
+  const stopFirst = process.platform === "win32" && (running || service);
+  if (process.platform === "win32") process.chdir(os.homedir());
+  if (stopFirst) {
+    console.log("Reach: stopping Reach so npm can replace its files…");
+    const { stopReach } = await import("./stop.mjs");
+    await stopReach(root, { yes: true });
+  }
   console.log(`Reach: ${plan.display}`);
   const run = (args) =>
     new Promise((resolve, reject) => {
-      child = spawn(process.execPath, args, { stdio: "inherit" });
+      child = spawn(process.execPath, args, { stdio: "inherit", ...(process.platform === "win32" && { cwd: os.homedir() }) });
       child.once("error", reject);
       child.once("exit", (code) =>
         code === 0 ? resolve() : reject(Error(`${path.basename(args[0])} stopped with exit code ${code}.`)),
       );
     });
+  // Stopped for nothing: the Reach you had starts again, as it ran.
+  const failed = async (message) => {
+    if (stopFirst) {
+      console.error(`\nReach: ${message}`);
+      await startAgain({ service });
+      process.exitCode ||= 1;
+      return null;
+    }
+    throw Error(message);
+  };
   try {
     await run([plan.file, ...plan.args]);
   } catch {
-    throw Error(`The update didn't finish. Run it yourself: ${plan.display}`);
+    return failed(`The update didn't finish. Run it yourself: ${plan.display}`);
   }
-  if (reachInstall(root).version !== found.version) throw Error(`npm finished, but Reach ${found.version} isn't in place. Run it yourself: ${plan.display}`);
+  if (reachInstall(root).version !== found.version) return failed(`npm finished, but Reach ${found.version} isn't in place. Run it yourself: ${plan.display}`);
+  if (stopFirst) {
+    console.log(`Reach ${found.version} is installed. Starting it again…`);
+    return startAgain({ service });
+  }
   if (service) {
     console.log("Reach: restarting background mode on the new version…");
     // The running service holds the one-Reach-per-computer lock: it stops
@@ -343,7 +449,7 @@ async function update() {
           target = found;
         }
       } catch {}
-      for (let i = 0; i < 40 && withoutHandover(othersRunning(), state).length; i++)
+      for (let i = 0; i < 40 && withoutHandover(await othersRunning(), state).length; i++)
         await new Promise((r) => setTimeout(r, 250));
     }
     try {
@@ -405,7 +511,7 @@ async function startInBackground(options) {
       if (fs.readFileSync(handover, "utf8") === String(process.pid)) fs.rmSync(handover);
     } catch {}
   });
-  if (process.platform === "darwin") {
+  if (process.platform === "darwin" || process.platform === "win32") {
     const { ensureRuntime } = await import("./runtime.mjs");
     await ensureRuntime(state);
   }
@@ -418,16 +524,16 @@ async function startInBackground(options) {
 // Screen Recording and Accessibility and device approvals have a place.
 // False means: start right here, below.
 async function restart(options) {
-  const { stopReach, startInTerminal, startService } = await import("./stop.mjs");
+  const { stopReach, startInWindow, startService } = await import("./stop.mjs");
   // A checkout's agents restart Reach often (each interface edit used to
   // need it): run from an agent, the restart waits for your OK on the phone.
   // Yours, in Terminal, never asks; an installed Reach has no agents editing it.
-  const asker = !packaged && (foreignApp() || (!process.stdin.isTTY && "an agent"));
-  const running = asker ? othersRunning() : [];
+  const asker = !packaged && ((await foreignApp()) || (!process.stdin.isTTY && "an agent"));
+  const running = asker ? await othersRunning() : [];
   if (asker && running.length) {
     // The running Reach's own state (it may run from another folder), then this folder's.
     let dataDir = "";
-    for (const dir of [...running.map((h) => stateOf(h.root)), state]) {
+    for (const dir of [...running.filter((h) => h.root).map((h) => stateOf(h.root)), state]) {
       try {
         dataDir = JSON.parse(fs.readFileSync(path.join(dir, "host-status.json"), "utf8")).dataDir || "";
       } catch {}
@@ -454,10 +560,15 @@ async function restart(options) {
     return true;
   }
   // An agent's shell has a terminal too (Codex's does): only Terminal itself
-  // holds the permissions.
-  if (process.platform === "darwin" && (!process.stdin.isTTY || foreignApp())) {
-    startInTerminal(root, { state });
-    console.log("Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.");
+  // holds the permissions. On Windows, Reach's own window, titled Reach, is
+  // where you see it and approve new phones.
+  if (["darwin", "win32"].includes(process.platform) && (!process.stdin.isTTY || (await foreignApp()))) {
+    startInWindow(root, { state });
+    console.log(
+      process.platform === "win32"
+        ? "Reach is starting in a new window of its own."
+        : "Reach is starting in a new Terminal window, where it keeps its Screen Recording and Accessibility.",
+    );
     return true;
   }
   options.command = undefined;
@@ -483,9 +594,9 @@ ${command} update              Update to the latest Reach (installed with npm)
 ${command} import <folder>     Bring paired phones and settings from another Reach folder
 ${command} --version           Show the installed version
 ${command} cli                 Make reach a command in every Terminal
-${command} install             Mac: install a background LaunchAgent
+${command} install             ${process.platform === "win32" ? "Start Reach at sign-in, in the background (a scheduled task)" : "Mac: install a background LaunchAgent"}
 ${command} install --stay-awake Keep system/display awake while plugged in
-${command} uninstall           Stop and remove the service and its own Serve route
+${command} uninstall           ${process.platform === "win32" ? "Stop and remove the background task" : "Stop and remove the service and its own Serve route"}
 ${command} status              Where Reach runs (whichever folder), since when, its link
 ${command} stop                Stop every Reach on this computer: in any terminal, started
                                detached, or the background service (asks first if its
@@ -502,18 +613,17 @@ ${command} --local              Local access only
 ${command} --port 4318          Local port (service saves a fixed port)
 ${command} --https-port 8443    Tailscale HTTPS port
 
-Stay-awake uses temporary power assertions; it never changes system settings
-or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.
+${process.platform === "win32"
+  ? `Stay-awake asks Windows to keep the PC awake while Reach runs; it never changes
+power settings or unlocks a locked PC. The background task starts at sign-in.`
+  : `Stay-awake uses temporary power assertions; it never changes system settings
+or unlocks a locked Mac. LaunchAgents run after sign-in, not before FileVault.`}
 Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
 `);
-  } else if (options.command === "status" && process.platform !== "win32") {
-    // What really runs (any folder, any way), not only the background service.
-    const hosts = othersRunning();
-    console.log(statusText(hosts, { command, started: startTimes(hosts.map((h) => h.pid)) }));
   } else if (options.command === "status") {
-    // Windows: no ps; the Reach this folder runs, from its own status file.
-    const { windowsHost, windowsStatusText } = await import("./instances.mjs");
-    console.log(windowsStatusText(windowsHost(state), { command }));
+    // What really runs (any folder, any way), not only the background service.
+    const { hosts, partial } = await reaches();
+    console.log(statusText(hosts, { command, started: startedOf(hosts), partial }));
   } else if (options.command === "cli") {
     if (packaged) console.log("reach is already a command in every Terminal (installed with npm).");
     else {
@@ -583,13 +693,14 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     await pairRunningHost(root);
   } else if (options.command || options.background || options.stopBackground) {
     if (options.command === "install" || options.background) {
-      lock();
-      // An installed reach has no ./reach script to fetch the pinned runtime.
-      if (packaged && process.platform === "darwin") {
+      await lock();
+      // An installed reach has no ./reach script to fetch the pinned runtime;
+      // on Windows, .\reach.cmd runs the PC's own Node when it has one.
+      if ((packaged && process.platform === "darwin") || process.platform === "win32") {
         const { ensureRuntime } = await import("./runtime.mjs");
         await ensureRuntime(state);
       }
-      if (!options.local && process.platform !== "win32") {
+      if (!options.local) {
         await ensureTailscale();
         const preferences = readPreferences(root) || (await configure(root));
         options = applyPreferences(options, preferences, process.argv.slice(2));
@@ -602,15 +713,19 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     }
     const { backgroundService } = await import("./background-service.mjs");
     await backgroundService(options, root);
-  } else if (!options.service && foreignApp()) {
-    // Started from another app's shell: Reach opens in Terminal instead.
-    const others = withoutHandover(othersRunning(), state);
+  } else if (!options.service && (await foreignApp())) {
+    // Started from another app's shell: Reach opens in a window of its own
+    // instead (Terminal on a Mac).
+    const others = withoutHandover(await othersRunning(), state);
     if (others.length)
-      throw Error(alreadyRunning(others, { command, started: startTimes(others.map((h) => h.pid)) }));
-    const { startInTerminal } = await import("./stop.mjs");
-    startInTerminal(root, { state });
+      throw Error(alreadyRunning(others, { command, started: startedOf(others) }));
+    const app = await foreignApp();
+    const { startInWindow } = await import("./stop.mjs");
+    startInWindow(root, { state });
     console.log(
-      `Reach is starting in a new Terminal window: inside ${foreignApp()} it would have no Screen Recording or Accessibility (no live screen, no control).`,
+      process.platform === "win32"
+        ? `Reach is starting in a new window of its own: inside ${app} it would end when ${app} closes.`
+        : `Reach is starting in a new Terminal window: inside ${app} it would have no Screen Recording or Accessibility (no live screen, no control).`,
     );
   } else {
     if (options.service) {
@@ -620,10 +735,12 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       const saved = JSON.parse(
         fs.readFileSync(path.join(state, "service.json"), "utf8"),
       );
+      // Windows names the same file in any case.
+      const same = (a, b) => (process.platform === "win32" ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
       if (
         !saved.installed ||
-        saved.root !== root ||
-        saved.node !== process.execPath ||
+        !same(saved.root, root) ||
+        !same(saved.node, process.execPath) ||
         saved.options.port !== options.port
       )
         throw Error(
@@ -631,7 +748,7 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         );
       process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ""}`;
     }
-    lock();
+    await lock();
     process.once("SIGINT", abort);
     process.once("SIGTERM", abort);
     // An installed package ships ready to run; only a checkout installs and
@@ -642,12 +759,9 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       );
     // A first run in a terminal installs while its setup asks about
     // Tailscale (first-start.mjs); every other start installs first.
+    const { installsWhileSetup } = await import("./first-start.mjs");
     const guided =
-      !packaged &&
-      !options.local &&
-      process.platform !== "win32" &&
-      !options.service &&
-      process.stdin.isTTY &&
+      installsWhileSetup({ packaged, local: options.local, service: options.service, tty: process.stdin.isTTY }) &&
       (await import("./setup.mjs")).needsOnboarding(root);
     let installing = null;
     if (guided) {
