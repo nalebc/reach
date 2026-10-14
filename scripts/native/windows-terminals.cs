@@ -513,6 +513,7 @@ static class Terminals {
   // keeps a background program from taking the foreground).
   static string Focus(string provider, IntPtr window, uint pid) {
     IntPtr frame = window;
+    string chosen = "";
     if (provider == "windows-terminal") {
       frame = TerminalWindow(window, pid, Processes());
       if (frame == IntPtr.Zero || frame == window) return "{\"ok\":true,\"front\":false}";
@@ -524,7 +525,8 @@ static class Terminals {
         } finally {
           FreeConsole();
         }
-      SelectTab(frame, title);
+      // `tab`: whether its tab was chosen (Windows Terminal shows one tab).
+      chosen = ",\"tab\":" + (SelectTab(frame, title) ? "true" : "false");
     }
     if (IsIconic(frame)) ShowWindowAsync(frame, SW_RESTORE);
     SetWindowPos(frame, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
@@ -534,20 +536,38 @@ static class Terminals {
       front = GetAncestor(GetForegroundWindow(), GA_ROOT) == frame;
       if (!front) Thread.Sleep(100);
     }
-    return "{\"ok\":true,\"front\":" + (front ? "true" : "false") + "}";
+    return "{\"ok\":true,\"front\":" + (front ? "true" : "false") + chosen + "}";
+  }
+  // Text with its spaces as one: titles differ in them ("Administrator:  ").
+  static string Spaced(string text) {
+    return string.Join(" ", (text ?? "").Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries));
   }
   static bool SelectTab(IntPtr frame, string title) {
     if (string.IsNullOrEmpty(title)) return false;
     try {
       AutomationElementCollection tabs = AutomationElement.FromHandle(frame).FindAll(TreeScope.Descendants,
         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TabItem));
-      AutomationElement match = null;
-      int matches = 0;
-      foreach (AutomationElement tab in tabs)
-        if (string.Equals((tab.Current.Name ?? "").Trim(), title.Trim(), StringComparison.Ordinal)) {
+      // Its name is the tab's title: the console's, unless Windows Terminal
+      // puts something before it ("Administrator: " for an elevated one, in
+      // the PC's language). Exact first, else the one tab ending with it.
+      string wanted = Spaced(title);
+      AutomationElement match = null, ending = null;
+      int matches = 0, endings = 0;
+      foreach (AutomationElement tab in tabs) {
+        string name = Spaced(tab.Current.Name);
+        if (name.Length == 0) continue;
+        if (name == wanted) {
           match = tab;
           matches++;
+        } else if (name.EndsWith(" " + wanted, StringComparison.Ordinal) || wanted.EndsWith(" " + name, StringComparison.Ordinal)) {
+          ending = tab;
+          endings++;
         }
+      }
+      if (matches == 0 && endings == 1) {
+        match = ending;
+        matches = 1;
+      }
       if (matches != 1) return false;
       object pattern;
       if (match.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) {

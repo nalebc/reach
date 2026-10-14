@@ -126,6 +126,7 @@ import { startInConsole, startInTerminal, startInWindow } from "../scripts/stop.
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
+import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -1169,16 +1170,37 @@ export async function createReach(overrides = {}) {
     const off = async () => { throw fail(503, `${why}.`); };
     return { append: off, history: off, close: async () => {} };
   });
-  // What the sandbox around agents' commands and jobs denies; null off macOS.
-  // Reach's sockets wherever they are: the private one Tailscale uses, and
-  // the permission-prompt one in the temp folder when the data folder's path
-  // is too long for a socket (an agent could post prompts to your phone).
-  const jobSandbox = () => overrides.jobSandbox !== undefined ? overrides.jobSandbox
-    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] }) : null;
+  // What the sandbox around agents' commands and jobs denies. On a Mac it's the
+  // sandbox-exec deny list (agentShellSandbox); on Windows the AppContainer
+  // descriptor (server/windows-sandbox.mjs), which the hash-verified helper runs
+  // the job inside — the deny set mirrors the Mac's (findings 1, 5). null on any
+  // other platform. Reach's sockets wherever they are: the private one Tailscale
+  // uses, and the permission-prompt one in the temp folder when the data
+  // folder's path is too long for a socket (an agent could post prompts to you).
+  const jobSandbox = (client) => overrides.jobSandbox !== undefined ? overrides.jobSandbox
+    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] })
+    : process.platform === "win32" ? windowsJobSandbox(config, client, { sockets: privateSocket ? [path.dirname(privateSocket)] : [] })
+    : null;
+  // The Windows command sandbox: it builds the helper once in the private folder
+  // D confirmed this launch (overrides.windowsSandboxHelper) and runs the launch
+  // self-test at start (§2.2). Absent that folder, or where policy blocks it,
+  // the jobs POST refuses with the reason. null off Windows.
+  const windowsSandbox = process.platform === "win32"
+    ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
+    : null;
+  // The grants ledger and its revoke walk (§4.6): a changed or revoked session
+  // loses its capability on the next launch with no walk; this reclaims the
+  // on-disk ACEs. null off Windows and when the sandbox isn't prepared.
+  const windowsGrants = windowsSandbox && overrides.windowsSandboxHelper
+    ? createWindowsGrantLedger({ dir: config.dataDir, revoke: windowsRevoker(windowsSandbox) })
+    : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
-  // the other agent commands.
+  // the other agent commands. On Windows its production runner is injected here
+  // (not through the test override): a Job Object on the owner's token, no
+  // AppContainer, which ignores the Mac env createAgentShell passes (§3.2).
   const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
-    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun }
+      : process.platform === "win32" ? { run: windowsShellRunner(windowsSandbox) } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1201,7 +1223,7 @@ export async function createReach(overrides = {}) {
     notify,
     record,
     execute: async (action, authorize, request, progress) => {
-      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations }); }
+      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations, windowsSandbox }); }
       const actions = browserRequestActions(action);
       const batch = action.type === "batch";
       if (actions.every((step) => ["terminal", "terminal-change"].includes(step.type))) {
@@ -2677,9 +2699,22 @@ export async function createReach(overrides = {}) {
     void agentApps.release(id).catch(() => {});
     // A revoked phone gets no more notifications.
     push.forgetClient(id);
+    // Windows: kill this session's running jobs first, then reclaim its
+    // capability ACEs on disk (§4.6). Off Windows windowsGrants is null.
+    if (windowsGrants) {
+      for (const job of jobs.list()) if (job.clientId === id && job.status === "running") jobs.cancel(job.id);
+      void windowsGrants.revokeClient(id).catch(() => {});
+    }
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  // Windows: a startup sweep reclaims grants whose client is gone or expired
+  // (expiry fires no event), and an hourly sweep keeps up with expiries (§4.6).
+  if (windowsGrants) {
+    const sweep = () => void windowsGrants.sweep((id) => !!auth.list().find((c) => c.id === id)).catch(() => {});
+    setTimeout(sweep, 5000).unref?.();
+    setInterval(sweep, 3600000).unref?.();
+  }
   const endClient = (id) => {
     auth.revoke(id);
     lastUse.delete(id);
@@ -2790,7 +2825,7 @@ export async function createReach(overrides = {}) {
     // Keep the original root and relative path; resolving a symbolic link here
     // would conceal it from the helper's descriptor-relative traversal.
     return browserFileOperation({ op: operation, root, path: relative,
-      ...limits, privatePaths: browserPaths() }, check, { config });
+      ...limits, privatePaths: browserPaths() }, check, { config, windowsSandbox });
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
   // The Mac's own Shortcuts an agent may run: the owner's list (server/mac-shortcuts.mjs).
@@ -3220,7 +3255,7 @@ export async function createReach(overrides = {}) {
     requireOwner(req.client, j);
     return j;
   };
-  app.post("/api/jobs", (req, res) => {
+  app.post("/api/jobs", async (req, res) => {
     const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const timeoutMs =
@@ -3228,16 +3263,30 @@ export async function createReach(overrides = {}) {
     if (req.client.maxJobMs && timeoutMs > req.client.maxJobMs)
       throw fail(403, "Job duration exceeds this agent profile limit.");
     // Your own devices run as you; anyone else's job runs in the sandbox
-    // Full control agents' commands do.
+    // Full control agents' commands do (win32: a refused grant throws here).
     const own = req.client.kind === "device" && req.client.scopes.includes("admin");
-    const sandbox = own ? null : jobSandbox();
-    // No sandbox here yet (Windows and Linux): an agent's or invited
+    const sandbox = own ? null : jobSandbox(req.client);
+    // No sandbox on a platform without one (Linux): an agent's or invited
     // person's command would run as you, free to rewrite Reach's own files
     // and so its own access. It doesn't run, as without sandbox-exec on a
     // Mac (jobs.mjs). Oct 12: Windows and Linux had run them unsandboxed.
     if (!own && !sandbox)
       throw fail(503, `Commands from agents and invited people run only in a sandbox, which this ${computerWord(process.platform)} doesn't have yet. Your own devices can run commands.`);
-    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox });
+    // Windows runs the sandboxed job through the helper: prove the OS lets the
+    // helper run (§2.2) and hand jobs.start the hash-verified helper. Fails
+    // closed with the reason (Smart App Control, application control, or its
+    // private folder not ready); never falls back to an interpreter.
+    let helper = null;
+    if (!own && process.platform === "win32") {
+      const ready = await windowsSandbox.ready();
+      if (!ready.ok) throw fail(503, ready.reason);
+      helper = ready.built;
+    }
+    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox, helper });
+    // Record the capability grant so a later revoke or sweep can reclaim its
+    // on-disk ACEs (§4.6); the live token already loses access on the next launch.
+    if (helper && sandbox?.grants?.length)
+      windowsGrants?.record({ clientId: req.client.id, roots: sandbox.grants.map((g) => g.root), expiresAt: req.client.expiresAt });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });
@@ -6013,6 +6062,9 @@ if (
   // Reach's Terminal window carries its name, so the agents' checker always
   // recognises it.
   if (process.stdout.isTTY && process.platform === "darwin") process.stdout.write("\u001b]0;Reach\u0007");
+  // On Windows its console window (or terminal tab) is titled Reach the same
+  // way, and the agents' checker closes the window that carries the name.
+  if (process.stdout.isTTY && process.platform === "win32") process.title = "Reach";
   reach.server.listen(reach.config.port, reach.config.host, () => {
     console.log(
       `\n  Reach is ready · http://localhost:${reach.config.port}\n  Pairing code: ${reach.auth.pairing.code.slice(0, 4)} ${reach.auth.pairing.code.slice(4)} (one use, expires in 10 minutes)\n  Shared folders: ${reach.config.roots.join(", ")}\n  Run npm run share to connect through Tailscale.\n`,

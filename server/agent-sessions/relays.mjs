@@ -301,7 +301,9 @@ export function createRelays({
           r.problem = "";
           r.updatedAt = now();
           save();
-          void say(r, "Auto-continue waiting", `${agentName(src.agent)} ran out of usage and no other provider is free yet. Continues with the first one back.`);
+          void say(r, "Auto-continue waiting", r.priority.length === 1
+            ? `${agentName(src.agent)} ran out of usage. Continues here when it's back.`
+            : `${agentName(src.agent)} ran out of usage and no other provider is free yet. Continues with the first one back.`);
         };
         let health;
         try {
@@ -633,9 +635,10 @@ export function createRelays({
       const ordered = priority === null ? null : checkContinuePriority(priority);
       if (ordered && (trigger !== "usage" || steps !== undefined)) throw bad("Use a priority order instead of relay steps for auto-continue.");
       const checked = ordered ? ordered.filter((a) => a !== from.agent).map((agent) => ({ kind: "build", agent })) : checkSteps(steps, from, agents);
-      if (ordered && (!canContinue(from.agent) || !ordered.includes(from.agent) ||
-          !checked.some((s) => canContinue(s.agent)) || atOnce || item || postBack))
-        throw bad("Include this provider and at least one other provider Reach can continue in.");
+      // This chat's own provider is always in the order; others are optional
+      // (alone, it continues here once its usage is back).
+      if (ordered && (!canContinue(from.agent) || !ordered.includes(from.agent) || atOnce || item || postBack))
+        throw bad("Include this chat's own provider.");
       if (!["reply", "usage"].includes(trigger)) throw bad("Unknown relay trigger.");
       if (trigger === "usage" && !ordered && (!RELAY_AGENTS.includes(from.agent) || checked.length !== 1 ||
           checked[0].kind !== "build" || !RELAY_AGENTS.includes(checked[0].agent) || checked[0].agent === from.agent ||

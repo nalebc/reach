@@ -85,6 +85,22 @@ release notes, so date the heading before tagging.
   its own titled Reach; `update` stops Reach before replacing its files. A
   first run sets up while it installs, as on a Mac. Built, not yet run on a
   physical Windows PC.
+- 2026-10-14: A Windows PC's live screen is H.264 video with nothing to
+  install, as a Mac's is, instead of still images at up to 20 a second.
+  Reach's helper captures with Desktop Duplication (only what changed, the
+  pointer drawn from its own shape; GDI where that isn't available) and
+  encodes with Media Foundation's H.264 encoder, the graphics card's first,
+  else Microsoft's own. As on a Mac it sends nothing while nothing moves,
+  says "Windows PC locked" on the lock screen, starts a fresh picture when
+  the phone asks, and names its colours (BT.709). Windows N and KN editions
+  without the Media Feature Pack, and Windows Server without Media
+  Foundation, have no H.264 encoder: there Reach uses FFmpeg's video if it's
+  installed, else still images, and its log and the Screen page (Screen
+  options → Connection → Video) say which and why. Installing either later
+  needs no restart. Proven on GitHub's Windows runner (Microsoft's software
+  encoder, through Desktop Duplication and through GDI, every frame decoded
+  by Chrome's WebCodecs with its colours); not yet run on a physical PC,
+  with a graphics card's encoder, several displays or Remote Desktop.
 
 ### Changed
 
