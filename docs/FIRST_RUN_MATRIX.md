@@ -201,7 +201,7 @@ Automated rows run with `npm run test:file -- <file>`. Manual rows need real pho
 | D1 | No Apple Command Line Tools | The screen says to install them. Saved tools say why instead of vanishing. Mac prompts retry later. No internal helper names | S, D | `first-run-agents` | fixed, passed Oct 10 |
 | D2 | No Screen Recording or Accessibility | Each permission named | S, D | `outside-terminal`, `agent-preset-invitations`, `screen-ask-ui` | passed Oct 10 |
 | D3 | Linux host | No Screen tab | U, M | `capabilities`, M7 | fixed (its assertion), passed Oct 10; on Ubuntu (M7) the API says no screen too |
-| D4 | Windows without FFmpeg | Compatibility video; FFmpeg installed later is found within minutes, no restart | U | `setup-blockers` | fixed, passed Oct 10 |
+| D4 | Windows without FFmpeg | H.264 from Windows itself (Media Foundation), nothing to install. A PC without an H.264 encoder (an N edition without the Media Feature Pack, Windows Server without Media Foundation) gets FFmpeg's video if it's installed, else still images, and the Screen page says why. Either installed later is found within minutes, no restart | U | `setup-blockers`, `windows-video`, `windows-screen-video-native` | fixed, passed Oct 10; Windows' own H.264 Oct 14 (GitHub's Windows runner, not yet a physical PC) |
 
 ## M. Manual checks (real devices)
 

@@ -10,6 +10,8 @@ import { DesktopTerminals } from "../server/desktop-terminals.mjs";
 import { windowsArg, windowsLaunch, windowsTerminalRunner, wtEscape } from "../server/windows-terminals.mjs";
 import { MacTerminalWatch, terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
 import { createAppShortcuts } from "../server/app-shortcuts.mjs";
+import { windowsTerminalExe } from "../server/windows-shell.mjs";
+import { startInConsole } from "../scripts/stop.mjs";
 import { powershellCall } from "../server/powershell.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
@@ -362,6 +364,26 @@ test("phones hear when consoles start or stop running as administrator, as when 
   assert.notEqual(watch.version, before);
   assert.equal(watch.list(allow).providers[0].administrator, 1);
   watch.end();
+});
+
+test("Windows Terminal is found as its alias first, then on PATH, by the PC's terminals and Reach's own window alike", async (t) => {
+  const env = { SystemRoot: "C:\\Windows", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", Path: 'C:\\Windows;"C:\\Tools\\Windows Terminal";relative' };
+  const alias = "C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe";
+  const portable = "C:\\Tools\\Windows Terminal\\wt.exe";
+  assert.equal(windowsTerminalExe({ env, exists: (f) => f === alias || f === portable }), alias);
+  assert.equal(windowsTerminalExe({ env, exists: (f) => f === portable }), portable);
+  assert.equal(windowsTerminalExe({ env, exists: (f) => f === "relative\\wt.exe" }), "", "never one PATH names relatively");
+  assert.equal(windowsTerminalExe({ env: { SystemRoot: "C:\\Windows" }, exists: () => true }), "");
+  // Reach's own window (scripts/stop.mjs) opens in the one on PATH too.
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "reach own window-"));
+  t.after(() => fs.rm(state, { recursive: true, force: true }));
+  const ran = [];
+  startInConsole("C:\\reach", { state, env, node: "C:\\node\\node.exe", run: (file, argv) => ran.push(argv), exists: (f) => f === portable });
+  assert.ok(ran[0][4].startsWith(`"start "Reach" /D "${state}" "${portable}" -w new new-tab --title Reach --suppressApplicationTitle`), ran[0][4]);
+  // One whose path cmd would read as a variable: a console window instead.
+  const odd = "C:\\100%\\wt.exe";
+  startInConsole("C:\\reach", { state, env: { ...env, Path: "C:\\100%" }, node: "C:\\node\\node.exe", run: (file, argv) => ran.push(argv), exists: (f) => f === odd });
+  assert.ok(ran[1][4].startsWith(`"start "Reach" /D "${state}" "C:\\Windows\\System32\\cmd.exe"`), ran[1][4]);
 });
 
 test("shortcuts on a Windows PC open the PC's own terminal in the shortcut's folder", async (t) => {

@@ -93,6 +93,11 @@ then landscape and desktop. Wide tables and code blocks must scroll internally
 while prose stays at phone width. This fixture simulates unzip by adding sample
 folders in memory; it never extracts files on the computer.
 
+Open `/scripts/demo/auto-continue.html` for "If usage runs out" on a Codex chat
+out of usage: Continue here (default), `?view=switch` for the provider order,
+`?view=on-here` or `?view=on-switch` when it's already on. Turning it on is
+refused (sample data only).
+
 Open `/scripts/demo/chat-rebuild.html?queue=1` for synthetic queue editing,
 expansion, ordering, Send now and cancellation. Changes affect only in-memory
 sample entries; no native provider receives or executes those messages.
