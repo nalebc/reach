@@ -195,6 +195,8 @@ function InstallRow({ peer, recheck }: { peer: Peer; recheck: () => void }) {
           : `Your own AI assistant, on your ${computerWord(peer.platform)} and your messaging apps.`}
       </OnboardHero>
       {step === "confirm" && plan && <pre className="claw-onboard-command">{plan.command}</pre>}
+      {/* What the install adds first (a Node for OpenClaw only: agent-install.mjs). */}
+      {step === "confirm" && plan?.note && <p className="claw-onboard-note">{plan.note}</p>}
       {(step === "running" || step === "failed") && line && <code className="claw-onboard-line">{line}</code>}
       {step === "failed" && <p className="claw-error">The install stopped.</p>}
       {problem && (

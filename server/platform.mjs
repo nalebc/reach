@@ -66,6 +66,17 @@ async function scanApps() {
   }
   return appCache;
 }
+// A link opened by this PC's own handler for it (a browser for https:, the
+// Claude app for claude:, Codex for codex:). Not explorer.exe: it exits with
+// 1 even when the link opened, so every open read as failed (launchApp
+// below). Start-Process says when one really fails; the link travels as
+// data, never as script text.
+export const openLinkOnWindows = (url, { run = exec } = {}) =>
+  run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:REACH_URL"], {
+    timeout: 12000,
+    windowsHide: true,
+    env: { ...process.env, REACH_URL: url },
+  });
 export async function launchApp(appId) {
   // apps() refreshes a list older than 30 s; an app installed since is found.
   let app = (await apps()).find((a) => a.id === appId);
