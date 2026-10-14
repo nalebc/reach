@@ -418,6 +418,8 @@ async function signIn(page, computer) {
     computer.reach.answer(code);
   } else {
     await page.see(/Pairing code/, "the pairing code form", 60000);
+    // How to get a fresh code, as this computer gives one.
+    await page.see(/For a fresh one, run (reach|\.\/reach|\.\\reach\.cmd) pair on your computer\./, "how to get a fresh code");
     await page.shot("connect");
     await page.fill("input.pair-code", computer.pairing);
     await page.tap("Connect computer");
