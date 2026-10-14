@@ -41,6 +41,8 @@ export const suites = {
     "windows-app-icons",
     // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
     "document-text", "file-kinds",
+    // Voice memos as words through Windows' own recognizer (audit #35).
+    "voice-messages",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
