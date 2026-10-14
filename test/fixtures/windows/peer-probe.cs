@@ -7,12 +7,14 @@
 //
 //   peer-probe.exe [<out file>]
 //   peer-probe.exe <out file> as medium|no-admin|no-admin-medium|no-admin-no-local
+//   peer-probe.exe <out file> logon <user> <password> 2|3|4
 //
 // Lines: "<call> ok …" or "<call> error <Win32 code>" (NT calls: status in
 // hex). Reads only, like the helper. `as`: started by an administrator, it
 // runs itself again with its own token narrowed (integrity lowered to
-// Medium, or Administrators and LOCAL made deny-only), so a refusal can be
-// pinned to the group or level it depends on. C# 5; mscorlib and System.
+// Medium, or Administrators and LOCAL made deny-only); `logon`: as <user>,
+// with the token LogonUser makes for that logon type. So a refusal can be
+// pinned to the group, level or logon it depends on. C# 5; mscorlib and System.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -86,6 +88,12 @@ static class PeerProbe {
   static extern bool CreateProcessAsUserW(IntPtr token, string application, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, int flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
   [DllImport("kernel32.dll")]
   static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+  [DllImport("kernel32.dll")]
+  static extern bool GetExitCodeProcess(IntPtr process, out int code);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool LogonUserW(string user, string domain, string password, int type, int provider, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessWithTokenW(IntPtr token, int logonFlags, string application, StringBuilder commandLine, int flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
 
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   struct STARTUPINFO {
@@ -119,6 +127,7 @@ static class PeerProbe {
 
   static int Main(string[] args) {
     if (args.Length == 3 && args[1] == "as") return As(args[2], args[0]);
+    if (args.Length == 5 && args[1] == "logon") return Logon(args[2], args[3], int.Parse(args[4]), args[0]);
     Say("probe pid " + GetCurrentProcessId() + " 64-bit " + (IntPtr.Size == 8));
     foreach (var part in new Action[] { Token, Manager, Tables, Processes }) {
       try {
@@ -138,10 +147,13 @@ static class PeerProbe {
   }
 
   // This program again, under this process's token narrowed as asked: its
-  // lines go to <out>, or why it couldn't start.
+  // lines go to <out>, or why it didn't run.
   static int As(string variant, string outFile) {
     var disable = new List<string>();
-    if (variant.StartsWith("no-admin")) disable.Add("S-1-5-32-544");
+    if (variant.StartsWith("no-admin")) {
+      disable.Add("S-1-5-32-544");
+      disable.Add("S-1-5-114");
+    }
     if (variant == "no-admin-no-local") disable.Add("S-1-2-0");
     bool medium = variant.EndsWith("medium");
     if (disable.Count == 0 && !medium) return 2;
@@ -159,6 +171,17 @@ static class PeerProbe {
         }
         if (!CreateRestrictedToken(own, 0, disable.Count, array, 0, IntPtr.Zero, 0, IntPtr.Zero, out token))
           problem = "CreateRestrictedToken " + Failed(Marshal.GetLastWin32Error());
+        else {
+          // What it makes is owned by the user, not by Administrators (deny-only now).
+          IntPtr user = TokenInfo(own, 1);
+          if (user == IntPtr.Zero) problem = "TokenUser";
+          else {
+            held.Add(user);
+            IntPtr owner = Hold(held, 8);
+            Marshal.WriteIntPtr(owner, 0, Marshal.ReadIntPtr(user, 0));
+            if (!SetTokenInformation(token, 4, owner, 8)) problem = "SetTokenInformation owner " + Failed(Marshal.GetLastWin32Error());
+          }
+        }
       } else if (!DuplicateTokenEx(own, TOKEN_ALL_ACCESS, IntPtr.Zero, 2, 1, out token))
         problem = "DuplicateTokenEx " + Failed(Marshal.GetLastWin32Error());
       if (problem == null && medium) {
@@ -170,20 +193,7 @@ static class PeerProbe {
         if (!SetTokenInformation(token, 25, label, 16 + level.BinaryLength))
           problem = "SetTokenInformation " + Failed(Marshal.GetLastWin32Error());
       }
-      if (problem == null) {
-        var startup = new STARTUPINFO();
-        startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-        PROCESS_INFORMATION info;
-        string self = System.Reflection.Assembly.GetEntryAssembly().Location;
-        var line = new StringBuilder("\"" + self + "\" \"" + outFile + "\"");
-        if (!CreateProcessAsUserW(token, null, line, IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref startup, out info))
-          problem = "CreateProcessAsUserW " + Failed(Marshal.GetLastWin32Error());
-        else {
-          WaitForSingleObject(info.hProcess, 120000);
-          CloseHandle(info.hThread);
-          CloseHandle(info.hProcess);
-        }
-      }
+      if (problem == null) problem = Start(token, false, outFile);
     } finally {
       if (token != IntPtr.Zero) CloseHandle(token);
       if (own != IntPtr.Zero) CloseHandle(own);
@@ -191,6 +201,46 @@ static class PeerProbe {
     }
     if (problem != null) File.WriteAllText(outFile, "as " + variant + ": " + problem + "\r\n");
     return problem == null ? 0 : 1;
+  }
+
+  // This program again as <user>, with the token Windows makes for its
+  // password and logon type (2 interactive, 3 network, 4 batch).
+  static int Logon(string user, string password, int type, string outFile) {
+    IntPtr token, primary = IntPtr.Zero;
+    string problem = null;
+    if (!LogonUserW(user, ".", password, type, 0, out token)) problem = "LogonUserW " + Failed(Marshal.GetLastWin32Error());
+    else {
+      try {
+        if (!DuplicateTokenEx(token, TOKEN_ALL_ACCESS, IntPtr.Zero, 2, 1, out primary)) problem = "DuplicateTokenEx " + Failed(Marshal.GetLastWin32Error());
+        else problem = Start(primary, true, outFile);
+      } finally {
+        if (primary != IntPtr.Zero) CloseHandle(primary);
+        CloseHandle(token);
+      }
+    }
+    if (problem != null) File.WriteAllText(outFile, "logon " + type + ": " + problem + "\r\n");
+    return problem == null ? 0 : 1;
+  }
+
+  // Runs this program with <token> and waits; null once it wrote <out>.
+  static string Start(IntPtr token, bool withToken, string outFile) {
+    var startup = new STARTUPINFO();
+    startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+    PROCESS_INFORMATION info;
+    string self = System.Reflection.Assembly.GetEntryAssembly().Location;
+    var line = new StringBuilder("\"" + self + "\" \"" + outFile + "\"");
+    bool started;
+    if (withToken) {
+      startup.lpDesktop = "winsta0\\default";
+      started = CreateProcessWithTokenW(token, 1, null, line, 0x08000000, IntPtr.Zero, Path.GetDirectoryName(self), ref startup, out info);
+    } else started = CreateProcessAsUserW(token, null, line, IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref startup, out info);
+    if (!started) return (withToken ? "CreateProcessWithTokenW " : "CreateProcessAsUserW ") + Failed(Marshal.GetLastWin32Error());
+    WaitForSingleObject(info.hProcess, 120000);
+    int code;
+    GetExitCodeProcess(info.hProcess, out code);
+    CloseHandle(info.hThread);
+    CloseHandle(info.hProcess);
+    return File.Exists(outFile) ? null : "it ran but wrote nothing, exit 0x" + code.ToString("x8");
   }
 
   static IntPtr Hold(List<IntPtr> held, int size) {
@@ -417,6 +467,10 @@ static class PeerProbe {
     int status;
     int count = 0;
     string service = "absent";
+    long serviceCreated = 0;
+    var children = new List<string>();
+    var childIds = new List<long>();
+    var childCreated = new List<long>();
     while (true) {
       IntPtr buffer = Marshal.AllocHGlobal(size);
       try {
@@ -432,12 +486,21 @@ static class PeerProbe {
             IntPtr entry = new IntPtr(buffer.ToInt64() + offset);
             count++;
             long id = Marshal.ReadIntPtr(entry, 0x50).ToInt64();
-            if (servicePid > 0 && id == servicePid) {
+            long parent = Marshal.ReadIntPtr(entry, 0x58).ToInt64();
+            if (servicePid > 0 && (id == servicePid || parent == servicePid)) {
               int length = Marshal.ReadInt16(entry, 0x38) & 0xFFFF;
               IntPtr image = Marshal.ReadIntPtr(entry, 0x40);
-              service = "image " + (image == IntPtr.Zero ? "" : Marshal.PtrToStringUni(image, length / 2)) +
-                " parent " + Marshal.ReadIntPtr(entry, 0x58).ToInt64() + " session " + Marshal.ReadInt32(entry, 0x64) +
+              string described = "image " + (image == IntPtr.Zero ? "" : Marshal.PtrToStringUni(image, length / 2)) +
+                " parent " + parent + " session " + Marshal.ReadInt32(entry, 0x64) +
                 " created " + Marshal.ReadInt64(entry, 0x20);
+              if (id == servicePid) {
+                service = described;
+                serviceCreated = Marshal.ReadInt64(entry, 0x20);
+              } else {
+                children.Add(id + " " + described);
+                childIds.Add(id);
+                childCreated.Add(Marshal.ReadInt64(entry, 0x20));
+              }
             }
             int next = Marshal.ReadInt32(entry, 0);
             if (next <= 0) break;
@@ -452,6 +515,10 @@ static class PeerProbe {
     }
     Say("NtQuerySystemInformation 5 status 0x" + status.ToString("x8") + " processes " + count + " service " + servicePid + " " + service);
     if (servicePid > 0) Say("NtQuerySystemInformation 88 service " + ImagePath(servicePid));
+    // The service's children, as the helper would weigh them: created after
+    // it, and the kernel's path of each program.
+    for (int i = 0; i < children.Count; i++)
+      Say("child " + children[i] + " after-service " + (serviceCreated > 0 && childCreated[i] >= serviceCreated) + " path " + ImagePath(childIds[i]));
     Say("NtQuerySystemInformation 88 self " + ImagePath(GetCurrentProcessId()));
     string file = serviceBinary == null ? null : Executable(serviceBinary);
     if (file != null) {
