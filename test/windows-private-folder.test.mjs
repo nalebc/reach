@@ -76,7 +76,8 @@ test("Reach's state and data folders are tightened with SIDs only, inheritance r
   assert.deepEqual(whoami.args, ["/user", "/fo", "csv", "/nh"]);
   const icacls = rest.filter((c) => c.file === path.win32.join(system, "icacls.exe"));
   assert.deepEqual(icacls.map((c) => c.args), [s.state, s.data].map((dir) => [
-    dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${SID}:(OI)(CI)F`, "/Q",
+    dir, "/inheritance:r", "/remove:g", "*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545", "*S-1-15-2-1", "*S-1-15-2-2",
+    "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${SID}:(OI)(CI)F`, "/Q",
   ]));
   // Made if missing; Reach's code is never changed, only checked.
   assert.ok(existsSync(s.data));
