@@ -29,6 +29,11 @@ export const suites = {
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // The user journeys, workstream J: the built phone interface in headless
+    // Chrome against a real first install of Reach, page by page, ending in
+    // the same visible result as on a Mac. What needs the PC's desktop (its
+    // screen, input, windows) runs with REACH_TEST_WINDOWS_DESKTOP only.
+    "journeys/home",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
