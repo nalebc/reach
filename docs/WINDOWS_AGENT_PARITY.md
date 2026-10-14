@@ -8,7 +8,8 @@ Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on
 - Built Oct 13 and passing on GitHub's Windows runner (not yet on a physical PC): the Claude desktop app's records, archive and links in either install's folder, and the PC's idle and lock readings (N, part); Reach's terminals in the owner's own shell (#34); drives attached later (#40); the launcher named as the PC runs it (#43); the notification-area icon with Pause and Resume (#16); apps' icons and agents' logos (#28); Word, RTF and OpenDocument previews (#37); voice memos as words (#35).
 - Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E; agents' and invited people's commands (no sandbox; refused since `aa09b7da` instead of running unsandboxed) until C.
 - Works: command-line agents over the tailnet for files.
-- Being built (Oct 13): K and L, B, C, T, M #15 (OpenClaw), P #26 (H.264 without FFmpeg), U (proof on the runner). Still to start: E and F after B and C; G and H after B; P's guest mask and owner field probe after B; N's app-open detection after L.
+- Built, not yet run on a real PC: OpenClaw natively, as on a Mac (#15). It's installed, set up and given keys and channels from the phone, and its health and Node recovery work there too. iMessage needs a Mac (below).
+- Being built (Oct 13): K and L, B, C, T, P #26 (H.264 without FFmpeg), U (proof on the runner). Still to start: E and F after B and C; G and H after B; P's guest mask and owner field probe after B; N's app-open detection after L.
 
 ## What parity means
 
@@ -19,6 +20,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Reading or answering UAC prompts | The secure desktop is closed to every app by design | The agent is told an administrator prompt is up and waits; the owner answers at the PC |
 | Hidden per-app displays (`apps:drive`, owner profiles only) | Needs an attestation-signed virtual display driver | Apps run on the real screen, as the Apps preset already does on a Mac |
 | Acting in elevated (administrator) windows | UIPI; needs a signed `uiAccess` helper installed in Program Files | Refused with the reason, as a guardrail |
+| OpenClaw's iMessage channel | OpenClaw's iMessage plugin runs `imsg` on a signed-in Mac (docs.openclaw.ai/plugins/reference/imessage); a Gateway elsewhere reaches iMessage only through a Mac | Where the phone offers other messaging apps, a Windows PC reads "iMessage needs a Mac". Telegram, Discord and Slack (by token) and WhatsApp (by QR) are added from the phone as on a Mac |
 
 ## Decisions: the same on Mac and Windows (owner, Oct 12)
 
@@ -44,7 +46,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Start at sign-in | Offered on both by `./reach setup` |
 | Guests' live screen and clipboard | Filtered on both (password managers, Reach's own windows, concealed copies); on Windows refused with the reason until its filter exists (done Oct 12) |
 | Files hides what the OS hides | Finder's rule on a Mac; hidden and system attributes on Windows |
-| OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows |
+| OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows. It does: OpenClaw documents its native Windows CLI and Gateway. Built Oct 13; only iMessage is a gap (table above). Neither replaces the computer's own Node: OpenClaw gets one of its own beside it. On a Mac that's Homebrew's node@24, offered when an update needs it. On Windows it's OpenClaw's own Node, added at install when the PC's is older than 24.16 (said on the phone first), and in the same update recovery. Whether the Mac's install should add node@24 the same way is the owner's call |
 | Reach's terminals | The owner's own shell on both: `$SHELL` on a Mac; Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell |
 
 Only what Windows itself makes impossible differs (table above): UAC prompts, hidden per-app displays, administrator windows.
@@ -98,6 +100,14 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
   - #33: agent updates.
   - #45: Gemini is detected.
   - #14: the team bridge runs on a named pipe.
+  - #15 (Oct 13): OpenClaw natively, as its makers document it (docs.openclaw.ai/platforms/windows). The pieces:
+    - Install: OpenClaw's own PowerShell installer, without onboarding, in a Reach terminal. On a PC whose Node is older than 24.16, OpenClaw's own Node is added first (its installer's `-NodeOnly`, in `~\.openclaw\tools\cli-node`). The phone says so before the tap.
+    - Running it: npm's `openclaw.cmd` is found as the `openclaw.mjs` it runs, also where an install made since Reach started puts it. It's started with a Node OpenClaw accepts, fixed arguments, and no shell.
+    - Secrets: keys go only in OpenClaw's own variable or on its stdin. Telegram's token file is closed to all but the owner, SYSTEM and Administrators before the token goes in.
+    - Timeouts end the whole process tree.
+    - Node recovery after an update runs the installer in OpenClaw's package.
+    - OpenClaw's own Windows app (Windows Hub) keeps its Gateway in a WSL distro of its own, which Reach can't see from Windows. Setup from the phone won't start a second Gateway beside it, and says why. Whether Reach should use that Gateway is the owner's call.
+    - Proof so far: `test/windows-openclaw.test.mjs`, in the Windows lane.
 
 Follow-ups the reviews left, both for a real PC:
 - **Stale Claude Code record.** One whose pid Windows gave to another `node.exe` reads as held until the record goes. Compare the process's start time (CIM `Win32_Process.CreationDate`) with the record's.

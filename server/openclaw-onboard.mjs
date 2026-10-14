@@ -15,13 +15,14 @@
 // - Default model: `openclaw models set <ref>`, OpenClaw's own onboard ref.
 // Keys go to OpenClaw only: its env or its own store, never argv, shell
 // text, a log or a response. Errors are Reach's fixed words.
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+// The same on Windows, where OpenClaw runs natively (openclaw-windows.mjs).
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { hasCommand } from "./agent-install.mjs";
-import { openClawShell } from "./openclaw-run.mjs";
+import { openClawShell, runOpenClaw, secretEnv } from "./openclaw-run.mjs";
+import { findOpenClaw, killTree, typedCli } from "./openclaw-windows.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -96,9 +97,11 @@ export const defaultArgs = (provider) => ["models", "set", pick(provider).model]
 
 // One run with something on its stdin (execFile has no input), bounded in
 // time and output; its output is never shown or logged.
+// On Windows the whole process tree ends with it (runTree).
 export function pipeRun(file, args, { input = "", timeout = 30000, env = process.env } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(file, args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const kill = () => (process.platform === "win32" ? killTree(child.pid) : child.kill("SIGKILL"));
     let done = false, size = 0;
     const finish = (error) => {
       if (done) return;
@@ -106,10 +109,10 @@ export function pipeRun(file, args, { input = "", timeout = 30000, env = process
       clearTimeout(timer);
       error ? reject(error) : resolve();
     };
-    const timer = setTimeout(() => (child.kill("SIGKILL"), finish(new Error("timeout"))), timeout);
+    const timer = setTimeout(() => (kill(), finish(new Error("timeout"))), timeout);
     const count = (chunk) => {
       size += chunk.length;
-      if (size > 1024 * 1024) child.kill("SIGKILL");
+      if (size > 1024 * 1024) kill();
     };
     child.stdout.on("data", count);
     child.stderr.on("data", count);
@@ -122,17 +125,17 @@ export function pipeRun(file, args, { input = "", timeout = 30000, env = process
 
 // The key in OpenClaw's own store (on stdin), then read back from OpenClaw's
 // list, which shows ids and types only, never keys.
-export async function saveApiKey(provider, key, { pipe = pipeRun, run = promisify(execFile), env = process.env, platform = process.platform, runtime } = {}) {
+export async function saveApiKey(provider, key, { pipe = pipeRun, run = runOpenClaw, env = process.env, platform = process.platform, runtime } = {}) {
   pick(provider);
   // OpenClaw's default agent (the one onboard set up), by its own list.
-  const [agentsFile, agents] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime });
-  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env })).stdout || "null"));
+  const [agentsFile, agents, agentsEnv = env] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime });
+  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env: agentsEnv })).stdout || "null"));
   const agent = (Array.isArray(roster) ? roster : roster?.agents)?.find?.((a) => a?.isDefault === true)?.id;
   if (typeof agent !== "string" || !AGENT.test(agent)) throw new Error("no default agent");
-  const [file, args] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime });
-  await pipe(file, args, { input: `${key}\n`, timeout: 60000, env });
-  const [listFile, list] = await openClawShell(listArgs(provider, agent), { env, platform, runtime });
-  const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env });
+  const [file, args, pasteEnv = env] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime });
+  await pipe(file, args, { input: `${key}\n`, timeout: 60000, env: pasteEnv });
+  const [listFile, list, listEnv = env] = await openClawShell(listArgs(provider, agent), { env, platform, runtime });
+  const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env: listEnv });
   const profiles = JSON.parse(String(stdout || "null"))?.profiles;
   const saved = Array.isArray(profiles) && profiles.find((p) => p?.id === `${provider}:default`);
   if (!saved || saved.provider !== provider || saved.type !== "api_key") throw new Error("not saved");
@@ -147,21 +150,25 @@ export const onboardSetup = () => (setup ? { ...setup } : null);
 // Resolves once the current run has ended (tests, shutdown).
 export const onboardSettled = () => setupRun || Promise.resolve();
 
-export async function onboardStatus({ has = (name) => hasCommand(name), file = configFile(), platform = process.platform } = {}) {
+// On Windows, installed is what Reach can start (openclaw-windows.mjs),
+// found where an install made since Reach started puts it.
+export async function onboardStatus({ has, file = configFile(), platform = process.platform } = {}) {
+  has ??= (name) => (platform === "win32" ? findOpenClaw().then(Boolean, () => false) : hasCommand(name));
   const [installed, configured] = await Promise.all([has("openclaw"), exists(file)]);
-  return { installed, configured, supported: platform !== "win32", providers: Object.keys(PROVIDERS), setup: onboardSetup() };
+  return { installed, configured, supported: true, providers: Object.keys(PROVIDERS), setup: onboardSetup() };
 }
 
 // Why a setup run failed, in Reach's own words. OpenClaw's output is read
 // only to tell causes apart, never echoed: it can carry the key.
+const partial = (cli) => `OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: ${cli} gateway install`;
 export const SETUP_ERRORS = {
   missing: "OpenClaw isn't installed on this computer. Install it, then set it up.",
   node: "OpenClaw needs Node 24.16 or newer on this computer. Update Node, then set it up again.",
-  partial: "OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: openclaw gateway install",
+  partial: partial("openclaw"),
   timeout: "OpenClaw's setup took over 3 minutes and was stopped. Try again.",
   failed: "OpenClaw didn't finish setting up. Check the key and try again.",
 };
-export async function setupFailure(error, file) {
+export async function setupFailure(error, file, platform = process.platform) {
   const output = `${error?.stderr ?? ""}\n${error?.stdout ?? ""}`.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   // The login shell's "command not found", or no shell at all.
   if (error?.code === 127 || error?.code === "ENOENT") return { state: "failed", error: SETUP_ERRORS.missing };
@@ -169,9 +176,22 @@ export async function setupFailure(error, file) {
   // older "requires Node" wording updateRecovery reads.
   if (/OpenClaw requires|requires Node|Node [\w.]+ is unsupported|Use Node\.js \d/i.test(output)) return { state: "failed", error: SETUP_ERRORS.node };
   // Config written, daemon not: a retry would only get "already set up".
-  if (await exists(file)) return { state: "partial", error: SETUP_ERRORS.partial };
+  if (await exists(file)) return { state: "partial", error: platform === "win32" ? partial(typedCli(platform)) : SETUP_ERRORS.partial };
   if (error?.killed === true || error?.signal === "SIGTERM" || error?.signal === "SIGKILL") return { state: "failed", error: SETUP_ERRORS.timeout };
   return { state: "failed", error: SETUP_ERRORS.failed };
+}
+
+// OpenClaw's own Windows app keeps its Gateway in a WSL distro of its own:
+// nothing on Windows says it's set up, yet it answers on the Gateway's port.
+// Anything answering there, or not refusing (Windows takes about two seconds
+// to refuse a closed port on this PC itself), counts.
+export async function gatewayAnswers({ port = GATEWAY_PORT, get = fetch, timeoutMs = 6000 } = {}) {
+  try {
+    await get(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch (error) {
+    return (error?.cause?.code ?? error?.code) !== "ECONNREFUSED";
+  }
 }
 
 let busy = false;
@@ -187,27 +207,33 @@ const once = async (work) => {
 
 export async function onboardOpenClaw(
   { provider, key, acceptRisk } = {},
-  { run = promisify(execFile), env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
+  { run = runOpenClaw, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, gateway = gatewayAnswers, ...windows } = {},
 ) {
   authorize();
   const args = onboardArgs(provider);
   const value = checkKey(key);
   // --accept-risk is the owner's own yes, never Reach's.
   if (acceptRisk !== true) throw fail(400, "Accept OpenClaw's risk to set it up.");
-  if (platform === "win32") throw fail(409, "On Windows, set up OpenClaw on this computer.");
   if (busy) throw fail(409, "OpenClaw is being set up. Try again in a moment.");
   busy = true;
   let started = false;
   try {
     // Never over an existing setup (new Gateway token, Tailscale off).
     if (await exists(file)) throw fail(409, "OpenClaw is already set up.");
+    // Nor beside a Gateway Reach can't see (Windows: OpenClaw's own app).
+    if (platform === "win32" && (await gateway()))
+      throw fail(409, "OpenClaw already runs on this PC (likely its Windows app), with a Gateway Reach can't see. Reach won't start a second one.");
     authorize();
-    const [shell, argv] = await openClawShell(args, { env, platform, secret: pick(provider).envVar, runtime });
+    const secret = pick(provider).envVar;
+    // Windows finds OpenClaw before it runs: none there is said now.
+    const [shell, argv, childEnv = env] = await openClawShell(args, { env, platform, secret, runtime, ...windows }).catch((error) => {
+      throw error?.code === "ENOENT" ? fail(409, SETUP_ERRORS.missing) : error;
+    });
     // Up to 3 minutes, past a phone's request: it runs on here and the
     // phone polls onboard/status. Busy (no Add key) until OpenClaw exits.
     setup = { state: "running", provider };
-    setupRun = run(shell, argv, { timeout: 180000, maxBuffer: 4 * 1024 * 1024, env: { ...env, REACH_SECRET: value } })
-      .then(() => ({ state: "done" }), (error) => setupFailure(error, file))
+    setupRun = run(shell, argv, { timeout: 180000, maxBuffer: 4 * 1024 * 1024, env: secretEnv(childEnv, { platform, secret, value }) })
+      .then(() => ({ state: "done" }), (error) => setupFailure(error, file, platform))
       .catch(() => ({ state: "failed", error: SETUP_ERRORS.failed }))
       .then((end) => { setup = { ...end, provider }; })
       .finally(() => { busy = false; });
@@ -220,13 +246,12 @@ export async function onboardOpenClaw(
 
 export async function addOpenClawProvider(
   { provider, key, setDefault } = {},
-  { run = promisify(execFile), save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
+  { run = runOpenClaw, save = saveApiKey, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime } = {},
 ) {
   authorize();
   pick(provider);
   const value = checkKey(key);
   if (setDefault !== undefined && typeof setDefault !== "boolean") throw fail(400, "Choose whether to use it by default.");
-  if (platform === "win32") throw fail(409, "On Windows, add keys in OpenClaw on this computer.");
   return once(async () => {
     if (!(await exists(file))) throw fail(409, "Set up OpenClaw first.");
     authorize();
@@ -238,8 +263,8 @@ export async function addOpenClawProvider(
     if (setDefault) {
       authorize();
       try {
-        const [shell, argv] = await openClawShell(defaultArgs(provider), { env, platform, runtime });
-        await run(shell, argv, { timeout: 30000, env });
+        const [shell, argv, childEnv = env] = await openClawShell(defaultArgs(provider), { env, platform, runtime });
+        await run(shell, argv, { timeout: 30000, env: childEnv });
       } catch {
         throw fail(409, "The key is saved, but the default model didn't change.");
       }

@@ -51,6 +51,11 @@ export const suites = {
     "document-text", "file-kinds",
     // Voice memos as words through Windows' own recognizer (audit #35).
     "voice-messages",
+    // OpenClaw natively (audit #15, Oct 13): npm's OpenClaw started through
+    // Node with whole arguments, a key only in its variable or on stdin,
+    // Telegram's token file closed to others, a timeout ending the whole
+    // tree, and the install terminal's verdict.
+    "windows-openclaw",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
