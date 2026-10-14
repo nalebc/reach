@@ -15,6 +15,9 @@ export class Jobs {
       status: j.status === "running" ? "interrupted" : j.status,
     }));
     this.running = new Map();
+    // A completed main command can leave the sandbox helper or inherited
+    // output pipes alive. Keep native retirement separate from job status.
+    this.children = new Map();
   }
   list() {
     return this.jobs.slice().reverse();
@@ -99,6 +102,9 @@ export class Jobs {
               env,
               detached: true,
             });
+    let retired;
+    this.children.set(child, new Promise((resolve) => { retired = resolve; }));
+    child.once("close", () => { this.children.delete(child); retired(); });
     // At the deadline: a job still running times out. One already finished
     // (its shell exited) only has whatever it left in the background ended.
     const timer = setTimeout(() => {
@@ -195,7 +201,17 @@ export class Jobs {
     }
     return j;
   }
-  dispose() {
+  async dispose() {
+    const active = new Set(this.running.values());
+    const retiring = [...this.children.values()];
     for (const j of this.jobs) if (this.running.has(j.id)) this.cancel(j.id);
+    for (const child of this.children.keys()) if (!active.has(child)) this.kill(child);
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(retiring),
+        new Promise((resolve) => { timer = setTimeout(resolve, 10000); timer.unref(); }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 }

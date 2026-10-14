@@ -6056,8 +6056,8 @@ export async function createReach(overrides = {}) {
       journal.flush?.();
       const terminalExit = terminals.dispose();
       codex.dispose();
-      jobs.dispose();
-      await Promise.all([apps, closed, terminalExit]);
+      const jobExit = jobs.dispose();
+      await Promise.all([apps, closed, terminalExit, jobExit]);
       clearTimeout(cutoff);
       // The last agent timings still on their way to disk land before Reach
       // says it stopped (a test removing the data folder raced them).
