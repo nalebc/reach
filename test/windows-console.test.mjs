@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
 import { loadPty, releaseExitedPty } from "../server/pty-helper.mjs";
+import { cleanPowerShellEnv } from "../server/powershell.mjs";
 import { setupStamp } from "../scripts/setup-stamp.mjs";
 import { fakeTailscale, tailnetPreload, HOST } from "./helpers/fake-tailscale.mjs";
 import { windowsFixture } from "./helpers/windows-fixtures.mjs";
@@ -48,14 +50,16 @@ function consoleEnv(extra) {
   return { ...env, Path: PATH, PORT: "0", ...extra };
 }
 
-function windowsConsole(t, env, args = []) {
+// `launcher`: what's typed, run through cmd as PowerShell runs a .cmd
+// (this checkout's reach.cmd, or npm's shim of an installed Reach).
+function windowsConsole(t, env, { launcher = "reach.cmd", args = [], cwd = repo } = {}) {
   // The console host Windows Terminal ships (node-pty's own ConPTY), as
   // Reach's terminals use it: it lets go of everything once its programs end.
-  const term = loadPty().spawn(process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe", ["/d", "/c", "reach.cmd", ...args], {
+  const term = loadPty().spawn(process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe", ["/d", "/c", launcher, ...args], {
     name: "xterm-256color",
     cols: 220,
     rows: 60,
-    cwd: repo,
+    cwd,
     env,
     useConptyDll: true,
   });
@@ -107,7 +111,9 @@ function windowsConsole(t, env, args = []) {
 // A PC Reach has never run on, without Tailscale yet: the stand-in Tailscale
 // (installed when `install()` says), Program Files where its app appears, the
 // browser recording what it's asked to open, and a state folder of its own.
-async function freshPC(t) {
+// `tailscale`: "missing" (installed later, by `install()`), or "on": installed,
+// running, signed in, HTTPS on, as Tailscale names real nodes.
+async function freshPC(t, { tailscale: start = "missing" } = {}) {
   const stamp = setupStamp(repo);
   assert.ok(stamp.agent && fs.existsSync(path.join(repo, "dist", "index.html")), "a built checkout (npm run build:release)");
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-console-")));
@@ -118,13 +124,17 @@ async function freshPC(t) {
   const tailscale = path.join(base, "tailscale");
   fs.mkdirSync(tailscale);
   const fake = await fakeTailscale(tailscale, { version: "1.104.0" });
-  fs.renameSync(fake.cli, `${fake.cli}.later`);
   const programFiles = path.join(base, "Program Files");
   fs.mkdirSync(path.join(programFiles, "Tailscale"), { recursive: true });
   const bin = path.join(base, "bin");
   fs.mkdirSync(bin);
   const recorder = await windowsFixture("opened");
   fs.copyFileSync(recorder, path.join(bin, "explorer.exe"));
+  if (start === "missing") fs.renameSync(fake.cli, `${fake.cli}.later`);
+  else {
+    fs.copyFileSync(recorder, path.join(programFiles, "Tailscale", "tailscale-ipn.exe"));
+    await fake.setStatus({ Self: { ID: "nX6k7CNTRL", UserID: 42, DNSName: `${HOST}.`, HostName: "mac", KeyExpiry: "0001-01-01T00:00:00Z", TailscaleIPs: ["100.64.0.10"] } });
+  }
   const preload = path.join(base, "tailnet.mjs");
   const source = tailnetPreload(fake.state);
   fs.writeFileSync(preload, decodeURIComponent(source.slice(source.indexOf(",") + 1)));
@@ -273,6 +283,70 @@ test("Windows console: Ctrl+C while setup waits, at a menu or between, pauses it
   t.diagnostic(`exit after Ctrl+C while waiting: ${code}`);
   assert.equal(fs.existsSync(pc.lock), false, "its lock goes");
   assert.doesNotMatch(second.text(), /starting again in/);
+});
+
+// The npm `reach` entry (audit #18): Reach as `npm install --global` leaves
+// it, from this checkout's own package (npm pack, its dependencies from npm),
+// npm's own reach.cmd shim run in a real console against Tailscale already
+// on: its first run to the pairing code and QR, its hints naming `reach`,
+// Ctrl+C stopping it for good. Then npm's reach-agent, and what typing
+// `reach` does in Windows PowerShell under this PC's script policy (npm
+// leaves a reach.ps1 beside reach.cmd).
+test("Windows console, npm install: npm's reach.cmd runs the first run to the pairing code and QR, Ctrl+C stops it for good; reach-agent too", { ...onWindows, timeout: 600000 }, async (t) => {
+  const pc = await freshPC(t, { tailscale: "on" });
+  assert.ok(process.env.npm_execpath, "run through npm");
+  const npmEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(REACH_|npm_config_|NODE_TEST_CONTEXT$|NODE_OPTIONS$)/i.test(key)));
+  const npm = (args) =>
+    new Promise((resolve, reject) =>
+      execFile(process.execPath, [process.env.npm_execpath, ...args], { cwd: pc.base, env: { ...npmEnv, npm_config_update_notifier: "false" }, timeout: 300000, maxBuffer: 64 << 20, windowsHide: true }, (error, stdout, stderr) =>
+        error ? reject(Object.assign(error, { message: `npm ${args[0]}: ${stderr || error.message}` })) : resolve({ stdout, stderr })));
+  const [{ filename }] = JSON.parse((await npm(["pack", "--ignore-scripts", "--json", "--pack-destination", pc.base, repo])).stdout);
+  const prefix = path.join(pc.base, "npm");
+  await npm(["install", "--global", "--prefix", prefix, "--no-audit", "--no-fund", "--loglevel=error", path.join(pc.base, filename)]);
+  const installed = path.join(prefix, "node_modules", "@nalebc", "reach");
+  assert.ok(fs.existsSync(path.join(installed, "bin", "reach.mjs")));
+  assert.equal(fs.existsSync(path.join(installed, "src", "main.tsx")), false, "an installed package, not a checkout");
+  for (const shim of ["reach.cmd", "reach.ps1", "reach-agent.cmd"]) assert.ok(fs.existsSync(path.join(prefix, shim)), shim);
+  const env = { ...pc.env, Path: `${prefix};${pc.env.Path}` };
+  const reach = windowsConsole(t, env, { launcher: path.join(prefix, "reach.cmd"), cwd: pc.base });
+  await reach.waitFor('Reach: first run here. Moving from a Reach folder you ran before? Stop now (Ctrl+C) and run "reach import <that folder>"', "an installed Reach's first run");
+  await reach.waitFor("Welcome to Reach. 3 steps, about 3 minutes. Ctrl+C stops; reach picks up here.", "the welcome, naming reach");
+  await reach.waitFor("Which Tailscale account should Reach use?", "the account menu");
+  reach.write(ENTER);
+  await reach.waitFor(`✔ 2. Your private link — ${HOST}`, "the link step done");
+  const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the pairing code", { ms: 180000 });
+  assert.ok(squeezed(phone).includes(squeezed(`Open on your phone: https://${HOST}:8443 Pairing code:`)), phone.slice(-3000));
+  await reach.waitFor("Scan with your phone camera, then tap Connect.", "the QR's line");
+  assert.ok([...reach.raw()].filter((char) => "▀▄█".includes(char)).length > 100, "a QR code");
+  assert.doesNotMatch(reach.text(), /\.\\reach\.cmd|\.\/reach\b/, "an installed Reach names reach, never the checkout's launchers");
+  reach.write(CTRL_C);
+  await reach.ended(90000);
+  assert.doesNotMatch(reach.text(), /starting again in/, "never started again");
+  assert.equal(fs.existsSync(pc.lock), false, "its lock goes");
+  for (const until = Date.now() + 5000; (await pc.fake.sessions()).length && Date.now() < until; ) await sleep(100);
+  assert.deepEqual(await pc.fake.sessions(), [], "its route ends with it");
+  // npm's reach-agent, as cmd (and so PowerShell) runs it.
+  const project = path.join(pc.base, "a project");
+  fs.mkdirSync(project);
+  const policy = path.join(pc.base, "agent policy.json");
+  const agent = await new Promise((resolve) =>
+    execFile(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${path.join(prefix, "reach-agent.cmd")}" policy init --folder "${project}" --out "${policy}""`], { windowsVerbatimArguments: true, timeout: 60000, windowsHide: true }, (error, stdout, stderr) =>
+      resolve({ code: error ? error.code : 0, stdout, stderr })));
+  assert.equal(agent.code, 0, agent.stderr);
+  assert.equal(JSON.parse(agent.stdout).policy, policy);
+  // Typed in Windows PowerShell, under this PC's own script policy.
+  const psEnv = { ...npmEnv, Path: `${prefix};${env.Path}` };
+  cleanPowerShellEnv(psEnv, "win32");
+  const typed = (command) =>
+    new Promise((resolve) =>
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { env: psEnv, timeout: 60000, windowsHide: true }, (error, stdout, stderr) =>
+        resolve({ code: error ? error.code : 0, stdout: String(stdout).trim(), stderr: String(stderr).trim() })));
+  const version = JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).version;
+  const cmd = await typed("reach.cmd --version");
+  assert.equal(cmd.stdout, version, cmd.stderr);
+  const plainReach = await typed("reach --version");
+  t.diagnostic(`plain \`reach\` in Windows PowerShell here: exit ${plainReach.code}: ${plainReach.stdout || plainReach.stderr.split(/\r?\n/)[0]}`);
+  assert.ok(plainReach.stdout === version || /running scripts is disabled|cannot be loaded/i.test(plainReach.stderr), JSON.stringify(plainReach));
 });
 
 test("Windows console: Reach stopping by itself (exit 70) starts again in the same window after 1, 5, 15, 30, 30 s, and not after five in ten minutes", onWindows, async (t) => {

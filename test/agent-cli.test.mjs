@@ -7,6 +7,7 @@ import http from "node:http";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { readAgentPolicy, intersectRoots } from "../server/agent-policy.mjs";
@@ -487,9 +488,15 @@ test(
   },
 );
 
+// A test certificate's maker: the system's openssl, or on Windows the one
+// Git for Windows carries (the proxy itself is the same on every platform).
+const openssl =
+  process.platform === "win32"
+    ? ["usr\\bin", "mingw64\\bin"].map((dir) => path.win32.join(process.env.ProgramFiles || "C:\\Program Files", "Git", dir, "openssl.exe")).find((file) => existsSync(file))
+    : "/usr/bin/openssl";
 test(
   "HTTPS over the userspace proxy validates certificates and keeps tokens out of CONNECT",
-  { skip: process.platform === "win32" },
+  { skip: !openssl && "no openssl here to make a test certificate (Git for Windows carries one)" },
   async () => {
     const https = await import("node:https");
     const net = await import("node:net");
@@ -501,7 +508,7 @@ test(
       conf,
       "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=mac.fixture.ts.net\n[ext]\nsubjectAltName=DNS:mac.fixture.ts.net\nbasicConstraints=CA:TRUE\n",
     );
-    await exec("/usr/bin/openssl", [
+    await exec(openssl, [
       "req",
       "-x509",
       "-newkey",
