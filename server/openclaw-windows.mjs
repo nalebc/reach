@@ -143,23 +143,33 @@ export function leadPath(env, dir) {
 // [file, argv, env] for one openclaw run: Node, openclaw.mjs and the fixed
 // arguments. `runtime`: a Node chosen already (OpenClaw's own, for an
 // update). Missing: ENOENT, as a missing program reads everywhere else.
-export async function windowsOpenClaw(args, { env = process.env, home = os.homedir(), runtime, find = findOpenClaw, pick = openClawNode, node = process.execPath } = {}) {
+// Run on another Node than the one beside it, npm (OpenClaw's updater uses
+// it) is told where OpenClaw is installed: a Node from a zip, OpenClaw's own
+// among them, would otherwise name its own folder as npm's global one.
+export async function windowsOpenClaw(args, { env = process.env, home = os.homedir(), runtime, find = findOpenClaw, pick = openClawNode, node = process.execPath, isFile = fileAt } = {}) {
   const found = await find({ env, home });
   if (!found) throw Object.assign(new Error("OpenClaw isn't installed on this computer."), { code: "ENOENT" });
   if (/\.(exe|com)$/i.test(found)) return [found, [...args], env];
   const file = runtime || (await pick({ env, home, script: found })) || node;
-  return [file, [found, ...args], leadPath(env, path.win32.dirname(file))];
+  let child = leadPath(env, path.win32.dirname(file));
+  // npm's global layout: <prefix>\node_modules\openclaw\openclaw.mjs, with
+  // its openclaw.cmd in <prefix> (pnpm's isn't, and is left alone).
+  const prefix = path.dirname(path.dirname(path.dirname(found)));
+  if (/[\\/]node_modules[\\/]openclaw[\\/]openclaw\.mjs$/i.test(found) && path.win32.dirname(file).toLowerCase() !== prefix.toLowerCase() && (await isFile(path.join(prefix, "openclaw.cmd"))))
+    child = withVariable(child, "NPM_CONFIG_PREFIX", prefix);
+  return [file, [found, ...args], child];
 }
 
+// One variable, any other spelling of its name dropped first (Windows names
+// are case-insensitive).
+const withVariable = (env, name, value) => ({
+  ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== name.toUpperCase())),
+  [name]: value,
+});
 // The variable OpenClaw reads, set directly (no shell to move it there, as
-// REACH_SECRET is on a Mac); any other spelling of its name dropped first.
-export function withSecret(env, name, value) {
-  const out = {};
-  for (const [key, entry] of Object.entries(env))
-    if (key.toUpperCase() !== name.toUpperCase() && key.toUpperCase() !== "REACH_SECRET") out[key] = entry;
-  out[name] = value;
-  return out;
-}
+// REACH_SECRET is on a Mac).
+export const withSecret = (env, name, value) =>
+  withVariable(Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "REACH_SECRET")), name, value);
 
 // execFile's timeout ends only the process it started, and Windows doesn't
 // end children with their parent: OpenClaw's launcher may have started

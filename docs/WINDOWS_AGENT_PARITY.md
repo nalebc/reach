@@ -93,6 +93,7 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
     - Secrets: keys go only in OpenClaw's own variable or on its stdin. Telegram's token file is closed to all but the owner, SYSTEM and Administrators before the token goes in.
     - Timeouts end the whole process tree.
     - Node recovery after an update runs the installer in OpenClaw's package.
+    - OpenClaw's own Windows app (Windows Hub) keeps its Gateway in a WSL distro of its own, which Reach can't see from Windows. Setup from the phone won't start a second Gateway beside it, and says why. Whether Reach should use that Gateway is the owner's call.
     - Proof so far: `test/windows-openclaw.test.mjs`, in the Windows lane.
 
 Follow-ups the reviews left, both for a real PC:

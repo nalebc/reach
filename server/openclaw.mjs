@@ -2215,7 +2215,10 @@ export async function startOpenClawGateway({
   authorize();
   try {
     const [file, argv, childEnv] = await openClawShell(["gateway", "start"], { env, platform, runtime });
-    await run(file, argv, { timeout: 30000, ...(childEnv && { env: childEnv }) });
+    // Windows: OpenClaw's Scheduled Task checks may wait up to a minute for
+    // a cold PowerShell (docs.openclaw.ai/platforms/windows), and a timeout
+    // there ends OpenClaw itself (runTree), mid-start.
+    await run(file, argv, { timeout: platform === "win32" ? 90000 : 30000, ...(childEnv && { env: childEnv }) });
   } catch {
     throw fail(
       503,

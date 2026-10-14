@@ -282,7 +282,8 @@ export async function restartOpenClawGateway({
   authorize();
   try {
     const [file, argv, childEnv] = await openClawShell(["gateway", "restart"], { env, platform, runtime });
-    await run(file, argv, { timeout: 25000, ...(childEnv && { env: childEnv }) });
+    // Windows: as startOpenClawGateway's.
+    await run(file, argv, { timeout: platform === "win32" ? 90000 : 25000, ...(childEnv && { env: childEnv }) });
   } catch {
     throw fail(
       503,

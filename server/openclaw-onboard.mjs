@@ -181,6 +181,19 @@ export async function setupFailure(error, file, platform = process.platform) {
   return { state: "failed", error: SETUP_ERRORS.failed };
 }
 
+// OpenClaw's own Windows app keeps its Gateway in a WSL distro of its own:
+// nothing on Windows says it's set up, yet it answers on the Gateway's port.
+// Anything answering there, or not refusing (Windows takes about two seconds
+// to refuse a closed port on this PC itself), counts.
+export async function gatewayAnswers({ port = GATEWAY_PORT, get = fetch, timeoutMs = 6000 } = {}) {
+  try {
+    await get(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch (error) {
+    return (error?.cause?.code ?? error?.code) !== "ECONNREFUSED";
+  }
+}
+
 let busy = false;
 const once = async (work) => {
   if (busy) throw fail(409, "OpenClaw is being set up. Try again in a moment.");
@@ -194,7 +207,7 @@ const once = async (work) => {
 
 export async function onboardOpenClaw(
   { provider, key, acceptRisk } = {},
-  { run = runOpenClaw, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, ...windows } = {},
+  { run = runOpenClaw, env = process.env, platform = process.platform, file = configFile({ env }), authorize = () => {}, runtime, gateway = gatewayAnswers, ...windows } = {},
 ) {
   authorize();
   const args = onboardArgs(provider);
@@ -207,6 +220,9 @@ export async function onboardOpenClaw(
   try {
     // Never over an existing setup (new Gateway token, Tailscale off).
     if (await exists(file)) throw fail(409, "OpenClaw is already set up.");
+    // Nor beside a Gateway Reach can't see (Windows: OpenClaw's own app).
+    if (platform === "win32" && (await gateway()))
+      throw fail(409, "OpenClaw already runs on this PC (likely its Windows app), with a Gateway Reach can't see. Reach won't start a second one.");
     authorize();
     const secret = pick(provider).envVar;
     // Windows finds OpenClaw before it runs: none there is said now.

@@ -9,7 +9,7 @@ import { openClawShell, runOpenClaw, secretEnv } from "../server/openclaw-run.mj
 import {
   findOpenClaw, installNode, leadPath, openClawNode, ownerOnlyFile, privateNodeDir, runTree, supportedNode, withSecret,
 } from "../server/openclaw-windows.mjs";
-import { addOpenClawProvider, onboardArgs, onboardOpenClaw, onboardSettled, onboardSetup, onboardStatus, saveApiKey, SETUP_ERRORS, setupFailure } from "../server/openclaw-onboard.mjs";
+import { addOpenClawProvider, gatewayAnswers, onboardArgs, onboardOpenClaw, onboardSettled, onboardSetup, onboardStatus, saveApiKey, SETUP_ERRORS, setupFailure } from "../server/openclaw-onboard.mjs";
 import { addOpenClawChannel, startOpenClawGateway } from "../server/openclaw.mjs";
 import { restartOpenClawGateway, runOpenClawMaintenance } from "../server/openclaw-health.mjs";
 import { availableUpdateRuntime, installUpdateRuntime, publicRecovery, updateRecovery } from "../server/openclaw-update-recovery.mjs";
@@ -117,7 +117,7 @@ test("setup from the phone on Windows: OpenClaw's own onboarding, the key in its
   const calls = [];
   const done = await onboardOpenClaw(
     { provider: "openrouter", key: KEY, acceptRisk: true },
-    { run: async (...a) => (calls.push(a), { stdout: "" }), env, platform: "win32", file, home: at("home"), runtime: at("node/node.exe") },
+    { run: async (...a) => (calls.push(a), { stdout: "" }), env, platform: "win32", file, home: at("home"), runtime: at("node/node.exe"), gateway: async () => false },
   );
   assert.deepEqual(done, { started: true, provider: "openrouter" });
   await onboardSettled();
@@ -131,9 +131,45 @@ test("setup from the phone on Windows: OpenClaw's own onboarding, the key in its
   // Not installed: said at once, in Reach's words.
   const empty = layout(t, {});
   await assert.rejects(
-    onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async () => assert.fail("must not run"), env: { PATH: empty("x") }, platform: "win32", file: empty("c.json"), home: empty("home"), runtime: null, findRuntime: async () => null }),
+    onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async () => assert.fail("must not run"), env: { PATH: empty("x") }, platform: "win32", file: empty("c.json"), home: empty("home"), runtime: null, findRuntime: async () => null, gateway: async () => false }),
     (e) => e.status === 409 && e.message === SETUP_ERRORS.missing,
   );
+});
+
+// OpenClaw's own Windows app (Windows Hub) keeps its Gateway in a WSL distro
+// of its own: no setup Reach can see here, yet a Gateway on its port. Reach
+// doesn't start a second one beside it, and says why.
+test("on Windows, setup isn't started beside a Gateway Reach can't see", async (t) => {
+  const at = npmOpenClaw(t);
+  await assert.rejects(
+    onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async () => assert.fail("must not run"), env: { PATH: at("npm") }, platform: "win32", file: at("home/none.json"), runtime: "C:\\n\\node.exe", gateway: async () => true }),
+    (e) => e.status === 409 && e.message === "OpenClaw already runs on this PC (likely its Windows app), with a Gateway Reach can't see. Reach won't start a second one.",
+  );
+  // Refused at once: nothing there. Any answer, or none in time: something.
+  const refused = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:18789"), { code: "ECONNREFUSED" }) });
+  assert.equal(await gatewayAnswers({ get: async () => { throw refused; } }), false);
+  assert.equal(await gatewayAnswers({ get: async () => new Response("", { status: 404 }) }), true);
+  assert.equal(await gatewayAnswers({ get: async () => { throw new DOMException("timed out", "TimeoutError"); } }), true);
+  const asked = [];
+  await gatewayAnswers({ get: async (url, init) => (asked.push([url, init.signal instanceof AbortSignal]), new Response("{}")) });
+  assert.deepEqual(asked, [["http://127.0.0.1:18789/readyz", true]]);
+});
+
+test("run on another Node than npm's own, npm is told where OpenClaw is installed; pnpm's layout is left alone", async (t) => {
+  const at = npmOpenClaw(t, { "pnpm/openclaw.cmd": progShim("global\\5\\node_modules\\openclaw\\openclaw.mjs"), "pnpm/global/5/node_modules/openclaw/openclaw.mjs": "" });
+  const own = at("home/.openclaw/tools/cli-node/tools/node/node.exe");
+  const envFor = async (PATH, node) => (await openClawShell(["update"], { env: { PATH, npm_config_prefix: "C:\\elsewhere" }, platform: "win32", home: at("home"), runtime: node, findRuntime: async () => null }))[2];
+  // OpenClaw's own Node, a zip whose npm would name its own folder.
+  const onOwn = await envFor(at("npm"), own);
+  assert.equal(onOwn.NPM_CONFIG_PREFIX, at("npm"));
+  assert.ok(!("npm_config_prefix" in onOwn), "one spelling");
+  // The Node beside npm's own .cmd: npm knows already.
+  const beside = await envFor(at("npm"), at("npm/node.exe"));
+  assert.equal(beside.NPM_CONFIG_PREFIX, undefined);
+  assert.equal(beside.npm_config_prefix, "C:\\elsewhere");
+  // pnpm's global folder isn't npm's to change.
+  const pnpm = await envFor(at("pnpm"), own);
+  assert.equal(pnpm.NPM_CONFIG_PREFIX, undefined);
 });
 
 test("a key from the phone on Windows: OpenClaw's paste-api-key with the key on stdin, then read back", async (t) => {
@@ -215,6 +251,9 @@ test("the Gateway on Windows starts and restarts through OpenClaw's own commands
   await startOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run });
   await restartOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run });
   assert.deepEqual(ran.map(([file, argv]) => [file, argv]), [["C:\\n\\node.exe", [script, "gateway", "start"]], ["C:\\n\\node.exe", [script, "gateway", "restart"]]]);
+  // A cold PowerShell in OpenClaw's task checks may take a minute; a
+  // timeout ends OpenClaw itself.
+  assert.deepEqual(ran.map(([, , options]) => options.timeout), [90000, 90000]);
   assert.ok(ran.every(([, , options]) => options.env.PATH.startsWith("C:\\n;")), "its Node's folder first");
   // What to type at the PC when it can't: openclaw.cmd, which PowerShell
   // runs under Windows' default policy (npm's openclaw.ps1 it refuses).
