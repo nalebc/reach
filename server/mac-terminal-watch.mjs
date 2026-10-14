@@ -243,7 +243,8 @@ export class MacTerminalWatch {
         });
         const version = digest([
           result.sessions.map((s) => [s.id, steady(s.name)]),
-          result.providers.map((p) => [p.id, !!p.running, p.error || ""]),
+          // A Windows PC also counts the consoles it can't show.
+          result.providers.map((p) => [p.id, !!p.running, p.error || "", ...(p.administrator ? [p.administrator] : [])]),
         ]);
         if (version !== this.version) {
           this.version = version;

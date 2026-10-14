@@ -87,6 +87,8 @@ export function TerminalView({
       () => knownMacTabs.get(peer.id) ?? [],
     ),
     [macError, setMacError] = useState(""),
+    // Consoles running as administrator, which a Windows PC can't show.
+    [macHidden, setMacHidden] = useState(0),
     // Home opens a Mac tab directly with source "mac:<id>".
     [macSelected, setMacSelected] = useState(() =>
       source.startsWith("mac:") ? source.slice(4) : "",
@@ -136,13 +138,16 @@ export function TerminalView({
     const list = async () => {
       if (document.hidden) return;
       try {
-        const r = await request<{ sessions: MacTerminal[] }>(
-          peer,
-          "/api/terminals/desktop",
-        );
+        const r = await request<{
+          sessions: MacTerminal[];
+          providers?: { administrator?: number }[];
+        }>(peer, "/api/terminals/desktop");
         if (stopped) return;
         knownMacTabs.set(peer.id, r.sessions);
         setMacTabs(r.sessions);
+        setMacHidden(
+          (r.providers || []).reduce((n, p) => n + (p.administrator || 0), 0),
+        );
         setMacLoaded(true);
         setMacFresh(true);
         setMacError("");
@@ -577,6 +582,7 @@ export function TerminalView({
             macTabs={macTabs}
             macLoaded={macLoaded}
             macError={macError}
+            macHidden={macHidden}
             showMac={showMacTabs}
             currentKey={currentKey}
             onOpen={openReach}
@@ -670,6 +676,7 @@ export function TerminalView({
           macTabs={macTabs}
           macLoaded={macLoaded}
           macError={macError}
+          macHidden={macHidden}
           showMac={showMacTabs}
           currentKey={currentKey}
           agents={agents}

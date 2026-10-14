@@ -5,7 +5,7 @@
 // One JSON request on stdin, one JSON line on stdout (ASCII only), then exit:
 //   {"action":"list","exclude":<Reach's pid>}
 //     {"sessions":[{"provider","target":{"window","pid","start"},"name","tty"}],
-//      "running":{…},"installed":{…}}
+//      "running":{…},"installed":{…},"administrator":{…}}
 //   {"action":"read"|"send"|"focus"|"close","provider","target",…}
 //   {"action":"create","provider","cwd","terminal":<wt.exe's arguments>,
 //    "console":{"file","line"}}
@@ -340,6 +340,9 @@ static class Terminals {
     foreach (Proc p in all.Values)
       if (string.Equals(p.Exe, TERMINAL_EXE, StringComparison.OrdinalIgnoreCase)) terminalRunning = true;
     List<string> sessions = new List<string>();
+    // Consoles running as administrator: Windows keeps a normal program out
+    // of them, so they're counted for the phone to say so, never listed.
+    int[] administrator = new int[2];
     foreach (IntPtr window in ConsoleWindows()) {
       string kind = ClassOf(window);
       uint root = OwnerOf(window);
@@ -358,8 +361,10 @@ static class Terminals {
       if (StartedBy(root, exclude, all)) continue;
       string title;
       FreeConsole();
-      // Administrator consoles turn this away; they aren't listed.
-      if (!AttachConsole(root)) continue;
+      if (!AttachConsole(root)) {
+        if (Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED) administrator[provider == "console" ? 1 : 0]++;
+        continue;
+      }
       try {
         if (GetConsoleWindow() != window || Clients().Count == 0) continue;
         title = Title();
@@ -372,7 +377,8 @@ static class Terminals {
         + ",\"start\":" + Json.Quote(started.ToString(CultureInfo.InvariantCulture)) + "},\"name\":" + Json.Quote(title) + ",\"tty\":" + Json.Quote(key) + "}");
     }
     return "{\"sessions\":[" + string.Join(",", sessions.ToArray()) + "],\"running\":{\"windows-terminal\":" + (terminalRunning ? "true" : "false")
-      + ",\"console\":true},\"installed\":{\"windows-terminal\":" + (TerminalPath() != null ? "true" : "false") + ",\"console\":true}}";
+      + ",\"console\":true},\"installed\":{\"windows-terminal\":" + (TerminalPath() != null ? "true" : "false") + ",\"console\":true}"
+      + ",\"administrator\":{\"windows-terminal\":" + administrator[0] + ",\"console\":" + administrator[1] + "}}";
   }
 
   // The console a target names, still the same one: its window, of the
