@@ -1174,7 +1174,7 @@ export async function createReach(overrides = {}) {
     notify,
     record,
     execute: async (action, authorize, request, progress) => {
-      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations }); }
+      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations, windowsSandbox }); }
       const actions = browserRequestActions(action);
       const batch = action.type === "batch";
       if (actions.every((step) => ["terminal", "terminal-change"].includes(step.type))) {

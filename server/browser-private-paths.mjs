@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { windowsCanonicalPath, windowsWithin } from './app-identity.mjs';
+import { windowsCanonicalPath, windowsWithin, windowsShortName } from './app-identity.mjs';
 
 export const browserPrivateNames = ['.reach', '.ssh', '.aws', '.azure', '.kube', '.gnupg', '.codex', '.claude', '.config', '.netrc', '.npmrc', '.git-credentials',
   '.git', '.gitconfig', '.zshenv', '.zshrc', '.zprofile', '.zlogin', '.zlogout', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
@@ -96,12 +96,16 @@ export function isBrowserPrivatePath(target, privatePaths, { platform = process.
 // Narrow file grants stay in data/project folders. The owner-issued Full and
 // Read only presets also permit the exact Home they advertise; their operations
 // still enforce private-name/path exclusions and the native descriptor boundary.
-export function validateBrowserRoot(root, { home = os.homedir(), runtime = process.execPath, policy } = {}) {
+export function validateBrowserRoot(root, { home = os.homedir(), runtime = process.execPath, policy, platform = process.platform, env = process.env } = {}) {
   const homePreset = policy?.browser === true && ['full', 'readonly'].includes(policy.preset);
   const error = () => Object.assign(new Error(homePreset
     ? 'Choose Home, a project folder or Desktop. System and application installation folders cannot be shared with agents.'
     : 'Choose a project folder or Desktop. Home, system, and application installation folders cannot be shared with agents.'), { status: 403 });
-  if (typeof root !== 'string' || !path.isAbsolute(root)) throw error();
+  if (typeof root !== 'string') throw error();
+  // Windows uses one canonical name per file (case, prefix, dots folded) and
+  // its own protected roots; the Mac path below is unchanged (finding 12).
+  if (platform === 'win32') return validateBrowserRootWindows(root, { home, runtime, policy, env, homePreset, error });
+  if (!path.isAbsolute(root)) throw error();
   const canonical = value => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
   const selected = canonical(root);
   if (policy?.browser === true && policy.preset === 'full') return selected;
@@ -114,4 +118,31 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
   if (homePreset && selected !== path.parse(selected).root && selected === userHome) return selected;
   if (selected === path.parse(selected).root || within(userHome, selected) || protectedRoots.some(protectedRoot => within(selected, protectedRoot) || within(protectedRoot, selected))) throw error();
   return selected;
+}
+
+// The Windows sibling of the root check (finding 12): a drive root, Home, an
+// ancestor of Home, and Windows' protected roots (%WINDIR%, both Program Files,
+// %ProgramData%, the Node runtime directory, %LOCALAPPDATA%\Programs) are
+// refused; everything compares on one canonical name (case/prefix/dots folded).
+// Pure — no filesystem — so it is driven on any host with an injected platform.
+function validateBrowserRootWindows(root, { home, runtime, policy, env, homePreset, error }) {
+  const abs = (value) => (typeof value === 'string' && /^[a-z]:[\\/]/i.test(value) ? value : null);
+  if (!abs(root) && !root.startsWith('\\\\')) throw error();
+  // An 8.3 short alias (PROGRA~1) could name a protected folder under a name the
+  // canonical check wouldn't match; refuse it outright (finding 12).
+  if (windowsShortName(root)) throw error();
+  const canonical = windowsCanonicalPath(root);
+  const homeCanonical = windowsCanonicalPath(home);
+  const driveRoot = /^[a-z]:\\$/.test(canonical);
+  // Full control may share the exact drive/Home it advertises; its operations
+  // still enforce the private-name/path exclusions and the broker boundary.
+  if (policy?.browser === true && policy.preset === 'full') return canonical;
+  const programData = abs(env.ProgramData) || abs(env.ALLUSERSPROFILE) || 'C:\\ProgramData';
+  const systemRoot = abs(env.SystemRoot) || abs(env.windir) || 'C:\\Windows';
+  const protectedRoots = [systemRoot, abs(env.ProgramFiles) || 'C:\\Program Files', abs(env['ProgramFiles(x86)']) || 'C:\\Program Files (x86)',
+    abs(env.ProgramW6432), programData, runtime ? path.win32.dirname(runtime) : null, abs(env.LOCALAPPDATA) ? path.win32.join(env.LOCALAPPDATA, 'Programs') : null]
+    .filter(Boolean).map(windowsCanonicalPath);
+  if (homePreset && !driveRoot && canonical === homeCanonical) return canonical;
+  if (driveRoot || windowsWithin(homeCanonical, canonical) || protectedRoots.some((pr) => windowsWithin(canonical, pr) || windowsWithin(pr, canonical))) throw error();
+  return canonical;
 }

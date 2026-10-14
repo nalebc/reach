@@ -1,10 +1,11 @@
 import os from "node:os";
+import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { spawnVerified } from "./desktop-native.mjs";
 import { computerWord } from "./computer-word.mjs";
 import { fail } from "./core.mjs";
-import { browserPrivatePaths } from "./browser-private-paths.mjs";
+import { browserPrivatePaths, browserPrivateNames } from "./browser-private-paths.mjs";
 import { windowsCanonicalPath, windowsWithin } from "./app-identity.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -350,4 +351,46 @@ export function windowsShellRunner(windowsSandbox, { start = spawnVerified, inte
       try { child.stdin.write(encodeSandboxRequest(shellRequestEntries({ command, cwd, timeoutMs, interpreter }))); } catch { die(fail(503, "The command could not start.")); }
     });
   };
+}
+
+// ---------------------------------------------------------------------------
+// §3.3 Browser scripts. The strictest shape: an LPAC AppContainer with no
+// capabilities beyond what the interpreter needs to start, no network, a
+// one-process Job Object with CHILD_PROCESS_RESTRICTED, the one shared root
+// granted (plus the Node runtime read+execute), browserPrivatePaths + the
+// private names denied, and a post-run scan for planted private names (finding
+// 5). Grants still refuse a drive root, Home or an ancestor of Home (finding 2).
+export function windowsScriptSandbox(config, root, { privatePaths = [], home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+  const [canonicalRoot] = windowsGrantRoots([root], { home, platform });
+  return {
+    mode: "script",
+    client: "script",
+    grants: [{ root: canonicalRoot, access: "rw" }],
+    nodeRuntime: path.win32.dirname(process.execPath),
+    denies: [...browserPrivatePaths(config, { home, platform, env }), ...privatePaths],
+    denyNames: [...browserPrivateNames],
+    network: "none",
+    lpac: true,
+    limits: { activeProcesses: 1, childRestricted: true },
+  };
+}
+
+export function scriptRequestEntries(descriptor, { executable, args = [], cwd, timeoutMs }) {
+  const entries = [
+    ["mode", "script"],
+    ["client", descriptor.client || "script"],
+    ["executable", executable],
+    ["cwd", cwd || ""],
+    ["timeoutMs", String(timeoutMs || 30000)],
+    ["network", "none"],
+    ["lpac", descriptor.lpac ? "1" : "0"],
+    ["activeProcesses", String(descriptor.limits?.activeProcesses ?? 1)],
+    ["childRestricted", descriptor.limits?.childRestricted ? "1" : "0"],
+  ];
+  for (const arg of args) entries.push(["arg", arg]);
+  for (const { root, access } of descriptor.grants || []) entries.push(["grant", root], ["grantAccess", access || "rw"]);
+  if (descriptor.nodeRuntime) entries.push(["nodeRuntime", descriptor.nodeRuntime]);
+  for (const deny of descriptor.denies || []) entries.push(["deny", deny]);
+  for (const name of descriptor.denyNames || []) entries.push(["denyName", name]);
+  return entries;
 }

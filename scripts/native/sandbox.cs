@@ -146,6 +146,8 @@ static class Sandbox {
         return Jobs.Run(request, Emit);
       case "shell":
         return Shell.Run(request, Emit);
+      case "script":
+        return Scripts.Run(request, Emit);
       default:
         throw new Refused(400, "This sandbox mode is not available on this computer.");
     }
@@ -611,6 +613,8 @@ static class NativeProc {
   static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
   static readonly IntPtr PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = new IntPtr(0x00020009);
   static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = new IntPtr(0x0002000D);
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY = new IntPtr(0x0002000E);
+  const int PROCESS_CREATION_CHILD_PROCESS_RESTRICTED = 0x1;
   const uint SE_GROUP_ENABLED = 0x4;
   const uint TOKEN_QUERY = 0x8, TOKEN_DUPLICATE = 0x2;
   const int JobObjectBasicUIRestrictions = 4, JobObjectBasicAccountingInformation = 1, JobObjectExtendedLimitInformation = 9;
@@ -789,7 +793,7 @@ static class NativeProc {
     }
   }
 
-  public static Launched LaunchContained(string commandLine, string cwd, Container container, JobObject job, bool suspended) {
+  public static Launched LaunchContained(string commandLine, string cwd, Container container, JobObject job, bool suspended, bool childRestricted = false) {
     var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = 1; sa.lpSecurityDescriptor = IntPtr.Zero;
     IntPtr outRead, outWrite, errRead, errWrite;
     if (!CreatePipe(out outRead, out outWrite, ref sa, 0) || !CreatePipe(out errRead, out errWrite, ref sa, 0))
@@ -802,7 +806,7 @@ static class NativeProc {
     // window), inherits only these three handles, and — for jobs and scripts —
     // is placed in the AppContainer. The Full-control shell has no container, so
     // it runs on the owner's token with no SECURITY_CAPABILITIES attribute.
-    int attrCount = (container != null ? 1 : 0) + 2;
+    int attrCount = (container != null ? 1 : 0) + 2 + (childRestricted ? 1 : 0);
     IntPtr size = IntPtr.Zero;
     InitializeProcThreadAttributeList(IntPtr.Zero, attrCount, 0, ref size);
     IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
@@ -810,9 +814,12 @@ static class NativeProc {
     IntPtr handleArray = Marshal.AllocHGlobal(IntPtr.Size * 3);
     Marshal.WriteIntPtr(handleArray, 0, nul); Marshal.WriteIntPtr(handleArray, IntPtr.Size, outWrite); Marshal.WriteIntPtr(handleArray, IntPtr.Size * 2, errWrite);
     IntPtr jobHandlePtr = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobHandlePtr, job.Handle);
+    IntPtr childPolicyPtr = IntPtr.Zero;
     if (container != null) UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
     UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobHandlePtr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero);
     UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handleArray, (IntPtr)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero);
+    // Scripts also forbid any child process (finding 7): one process, no fork.
+    if (childRestricted) { childPolicyPtr = Marshal.AllocHGlobal(4); Marshal.WriteInt32(childPolicyPtr, PROCESS_CREATION_CHILD_PROCESS_RESTRICTED); UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, childPolicyPtr, (IntPtr)4, IntPtr.Zero, IntPtr.Zero); }
 
     var startup = new STARTUPINFOEX();
     startup.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
@@ -825,6 +832,7 @@ static class NativeProc {
     bool ok = CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags, env, cwd, ref startup, out pi);
     int error = Marshal.GetLastWin32Error();
     Marshal.FreeHGlobal(env); Marshal.FreeHGlobal(handleArray); Marshal.FreeHGlobal(jobHandlePtr);
+    if (childPolicyPtr != IntPtr.Zero) Marshal.FreeHGlobal(childPolicyPtr);
     if (!ok) {
       DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs);
       foreach (IntPtr h in new IntPtr[] { nul, outWrite, errWrite, outRead, errRead }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
@@ -951,5 +959,128 @@ static class Shell {
   }
   static byte[] BeBytes(int value) {
     return new byte[] { (byte)((value >> 24) & 0xff), (byte)((value >> 16) & 0xff), (byte)((value >> 8) & 0xff), (byte)(value & 0xff) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §3.3 Browser scripts. The approved program runs in an AppContainer with no
+// network and only the capabilities it needs (its root and the Node runtime),
+// inside a one-process Job Object with CHILD_PROCESS_RESTRICTED. After it exits,
+// the root is scanned for a newly created or renamed private name and the run is
+// failed if one appeared (finding 5), so a script can't plant .npmrc or a .git
+// that would run as the owner later. (True LPAC marking and the probe-minimal
+// capability set are refinements for the real-Windows runner, §9.1.)
+static class Scripts {
+  public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
+    string executable = request.Get("executable", "");
+    string cwd = request.Get("cwd", null);
+    if (string.IsNullOrEmpty(cwd)) cwd = null;
+    int timeoutMs = request.Int("timeoutMs", 30000);
+    List<string> args = request.List("arg");
+    List<string> grants = request.List("grant");
+    List<string> grantAccess = request.List("grantAccess");
+    string nodeRuntime = request.Get("nodeRuntime", null);
+    List<string> denies = request.List("deny");
+    List<string> denyNames = request.List("denyName");
+    string containerName = "reach.script." + Hash(request.Get("client", "script"));
+
+    // The grant walk (§4.4), skipping the private names (finding 5). The Node
+    // runtime is granted read+execute only, or the run is refused (finding 10).
+    for (int i = 0; i < grants.Count; i++) {
+      bool writable = i >= grantAccess.Count || grantAccess[i] != "ro";
+      Grants.ApplyGrant(grants[i], writable, denyNames, denies);
+    }
+    if (!string.IsNullOrEmpty(nodeRuntime)) {
+      if (!Directory.Exists(nodeRuntime)) throw Sandbox.Refusal(503, "The Node runtime isn't where Reach can grant it, so the script was refused.");
+      Grants.ApplyGrant(nodeRuntime, false, new List<string>(), new List<string>());
+    }
+
+    IntPtr containerSid = NativeProc.EnsureAppContainer(containerName);
+    var caps = new List<SecurityIdentifier>();
+    foreach (string root in grants) caps.Add(Grants.RootCapability(root));
+    if (!string.IsNullOrEmpty(nodeRuntime)) caps.Add(Grants.RootCapability(nodeRuntime));
+    caps.Add(Grants.DenyCapability());
+
+    // The before-snapshot for the post-run scan: the private names already there.
+    var before = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (string root in grants) PrivateNameScan(root, denyNames, before);
+
+    using (var container = new NativeProc.Container(containerSid, caps)) {
+      using (var job = NativeProc.JobObject.CreateForJobs(1)) {
+        string commandLine = QuoteArg(executable);
+        foreach (string arg in args) commandLine += " " + QuoteArg(arg);
+        NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true, true);
+        try {
+          lock (NativeProc.AclLock) {
+            string reachable = NativeProc.FirstReachableSecret(launched.Process, denies);
+            if (reachable != null) { launched.Kill(); throw Sandbox.Refusal(403, "A script grant would have exposed Reach's own files, so it was refused."); }
+          }
+          emit(Sandbox.TypeStarted, BeBytes(launched.ProcessId));
+          launched.Resume();
+          var pump = new List<Thread>();
+          pump.Add(NativeProc.Pump(launched.StdoutRead, Sandbox.TypeStdout, emit));
+          pump.Add(NativeProc.Pump(launched.StderrRead, Sandbox.TypeStderr, emit));
+          Thread lifeline = new Thread(delegate () {
+            try { Stream stdin = Console.OpenStandardInput(); byte[] one = new byte[1]; while (stdin.Read(one, 0, 1) > 0) { } } catch (Exception) { }
+            try { job.Terminate(); } catch (Exception) { }
+          });
+          lifeline.IsBackground = true; lifeline.Start();
+          int code = launched.WaitForExit(timeoutMs);
+          foreach (Thread t in pump) { try { t.Join(1000); } catch (Exception) { } }
+          // Post-run scan (finding 5): a private name that appeared during the run
+          // fails the run, whatever its exit code.
+          var after = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+          foreach (string root in grants) PrivateNameScan(root, denyNames, after);
+          foreach (string path in after) if (!before.Contains(path)) { job.Terminate(); throw Sandbox.Refusal(403, "The script created or renamed a protected name (" + Path.GetFileName(path) + "), so the run was refused."); }
+          emit(Sandbox.TypeExit, BeBytes(code));
+          job.Terminate();
+          return 0;
+        } finally { launched.Dispose(); }
+      }
+    }
+  }
+
+  // Every path under `root` whose final component is a private name (bounded).
+  static void PrivateNameScan(string root, List<string> denyNames, HashSet<string> into) {
+    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (string n in denyNames) names.Add(n);
+    var pending = new Stack<string>(); pending.Push(root); int seen = 0;
+    while (pending.Count > 0) {
+      string dir = pending.Pop();
+      IEnumerable<string> entries;
+      try { entries = Directory.EnumerateFileSystemEntries(dir); } catch (Exception) { continue; }
+      foreach (string entry in entries) {
+        if (++seen > 200000) return;
+        if (names.Contains(Path.GetFileName(entry))) { into.Add(entry); continue; }
+        try { if ((File.GetAttributes(entry) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == FileAttributes.Directory) pending.Push(entry); } catch (Exception) { }
+      }
+    }
+  }
+
+  static string QuoteArg(string value) {
+    if (value.Length > 0 && value.IndexOfAny(new char[] { ' ', '\t', '"' }) < 0) return value;
+    var sb = new StringBuilder("\"");
+    int backslashes = 0;
+    foreach (char c in value) {
+      if (c == '\\') { backslashes++; continue; }
+      if (c == '"') { sb.Append('\\', backslashes * 2 + 1); backslashes = 0; sb.Append('"'); continue; }
+      if (backslashes > 0) { sb.Append('\\', backslashes); backslashes = 0; }
+      sb.Append(c);
+    }
+    sb.Append('\\', backslashes * 2);
+    sb.Append('"');
+    return sb.ToString();
+  }
+
+  static byte[] BeBytes(int value) {
+    return new byte[] { (byte)((value >> 24) & 0xff), (byte)((value >> 16) & 0xff), (byte)((value >> 8) & 0xff), (byte)(value & 0xff) };
+  }
+  static string Hash(string value) {
+    using (SHA256 sha = SHA256.Create()) {
+      byte[] digest = sha.ComputeHash(Encoding.Unicode.GetBytes(value));
+      StringBuilder hex = new StringBuilder(24);
+      for (int i = 0; i < 12; i++) hex.Append(digest[i].ToString("x2"));
+      return hex.ToString();
+    }
   }
 }
