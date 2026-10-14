@@ -69,7 +69,14 @@ test(`Chat: the phone says which agents this ${word} has, and shows Claude Code'
 
 test(
   `Chat: Claude Code installed from the phone is found on this ${word}, and the phone says it needs signing in`,
-  { skip: skip || (!windows ? "on a Mac, Claude Code could find its owner's own sign-in" : !desktop && "installs from the internet on the PC (REACH_TEST_WINDOWS_DESKTOP=1)"), timeout: 600000 },
+  {
+    skip:
+      skip ||
+      (!windows
+        ? "on a Mac, Claude Code could find its owner's own sign-in"
+        : (!desktop || process.env.REACH_TEST_AGENT_INSTALL !== "1") && "installs from Anthropic's site on the PC (windows-validation.yml: REACH_TEST_WINDOWS_DESKTOP=1, REACH_TEST_AGENT_INSTALL=1)"),
+    timeout: 600000,
+  },
   async (t) => {
     const { page } = await claudeOffered(t);
     await page.tap({ selector: "div.chat-setup-actions button", text: "Install" }, "Install");

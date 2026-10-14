@@ -379,6 +379,7 @@ async function signIn(page, computer) {
     computer.reach.answer(code);
   } else {
     await page.see(/Pairing code/, "the pairing code form", 60000);
+    await page.shot("connect");
     await page.fill("input.pair-code", computer.pairing);
     await page.tap("Connect computer");
   }

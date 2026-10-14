@@ -40,6 +40,9 @@ jobs:
           # LocalSystem service and standard users, on this disposable runner
           # only. It joins ci.yml after three green runs here.
           REACH_TEST_WINDOWS_PEER: "1"
+          # The user journeys install an agent from its maker's site here
+          # (test/journeys/chat.test.mjs); ci.yml leaves the internet out.
+          REACH_TEST_AGENT_INSTALL: "1"
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
           if ($LASTEXITCODE) { exit 1 }

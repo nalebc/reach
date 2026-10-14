@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
-import { startComputer, phone, skip, word } from "../helpers/journey.mjs";
+import { startComputer, phone, skip, word, desktop } from "../helpers/journey.mjs";
 
 // Home, the first page a new phone sees once it's in: the computer's card
 // with its own name, its status and what's live on it, and the Access card
@@ -16,6 +16,13 @@ test(`Home: a new phone signs in, and Home shows this ${word} by its name, onlin
   const title = await page.see(() => document.querySelector(".home-hero-text h1")?.textContent, "the computer's card");
   assert.equal(title, name, "the card names the computer as it names itself");
   await page.see(/Online · Tailscale/, "the computer online over Tailscale");
+  // Its screen, live inside the card, or why not, said on it.
+  if (desktop)
+    await page.see(
+      () => /· live/.test(document.querySelector(".home-hero-text")?.innerText || "") || document.querySelector(".home-hero-status")?.innerText,
+      "the screen live on the card, or why not",
+      90000,
+    );
   // What runs on it: its own terminals as they are, or how to start one.
   const live = await page.see(() => document.querySelector(".home-section")?.innerText, `"Live on your ${word}"`);
   assert.match(live, new RegExp(`^Live on your ${word}\\n`));
