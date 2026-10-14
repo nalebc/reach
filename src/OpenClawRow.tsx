@@ -138,6 +138,12 @@ function settle() {
 if (typeof window !== "undefined")
   // Added when this file loads, so it hears a pop before any view does.
   window.addEventListener("popstate", () => {
+    // An entry this step took away is no level's any more. A closed level's
+    // mark left on it until settle() ran, and a level opened meanwhile at
+    // that depth had its new entry taken for the closed one's: settle()
+    // stepped back over it, and the next back was swallowed as Reach's own
+    // (a chat opened just after back closed Customize stayed open, Oct 14).
+    for (const level of LEVELS) if (!shownLevels.has(level) && !standing(level)) entryAt.delete(level);
     if (!ownStep) return;
     ownStep = false;
     for (const level of LEVELS) if (shownLevels.has(level) && !standing(level)) enter(level);
@@ -152,7 +158,10 @@ export function useClawBack(shown: boolean, close: () => void, level: ClawLevel)
     const onPop = () => {
       // Stepping back for an interface reload: what's open stays open.
       if (leavingForReload()) return;
-      if (!standing(level)) closeNow.current();
+      if (standing(level)) return;
+      // Its entry went with this step: forgotten now, not once it has closed.
+      entryAt.delete(level);
+      closeNow.current();
     };
     window.addEventListener("popstate", onPop);
     return () => {

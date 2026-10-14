@@ -5,6 +5,9 @@ import os from 'node:os';
 import { fail } from './core.mjs';
 import { terminalLocation } from './restricted-terminal.mjs';
 import { browserPrivatePaths, browserPrivateNames, isBrowserPrivatePath, validateBrowserRoot } from './browser-private-paths.mjs';
+import { windowsCanonicalPath, windowsWithin } from './app-identity.mjs';
+import { encodeSandboxRequest, createSandboxFrameReader, windowsScriptSandbox, scriptRequestEntries } from './windows-sandbox.mjs';
+import { spawnVerified } from './desktop-native.mjs';
 import { stripVTControlCharacters } from 'node:util';
 import { browserOperationCoordinator } from './browser-operation-coordinator.mjs';
 import { nodeRuntimeFiles } from './node-runtime-files.mjs';
@@ -28,8 +31,11 @@ export function parseBrowserScript(command) {
 const systemRoots = ['/bin', '/usr/bin', '/usr/lib', '/System/Library', '/System/Volumes/Preboot/Cryptexes/OS'];
 const within = (p, root) => p === root || p.startsWith(root + path.sep);
 const literal = (p) => JSON.stringify(p);
-function rejectProtectedProgram(program) {
-  const name = path.basename(program).normalize('NFKC').toLowerCase();
+export function rejectProtectedProgram(program, { platform = process.platform } = {}) {
+  // On Windows a program's name carries an extension; strip it before the check
+  // so reach.cmd and tailscale.exe are caught too (finding 12).
+  let name = (platform === 'win32' ? path.win32 : path).basename(program).normalize('NFKC').toLowerCase();
+  if (platform === 'win32') name = name.replace(/\.(exe|cmd|bat|ps1|com)$/i, '');
   if (['reach', 'reach-agent', 'tailscale', 'tailscaled'].includes(name))
     throw fail(403, 'Reach and Tailscale management commands are protected and cannot be approved for agents.');
 }
@@ -38,19 +44,48 @@ let runtimeFiles;
 // asked: the sandbox would deny it anyway, so an approval could only fail.
 // "~" is the owner's home here, as a shell would read it (the command itself
 // never sees a shell, where it would be a folder named "~").
-function rejectOutsidePaths(args, cwd, root) {
+export function rejectOutsidePaths(args, cwd, root, { platform = process.platform, home = os.homedir() } = {}) {
+  if (platform === 'win32') return rejectOutsidePathsWindows(args, cwd, root, home);
   for (const arg of args) {
     const value = arg.includes('=') && arg.startsWith('-') ? arg.slice(arg.indexOf('=') + 1) : arg;
     if (!value || (value.startsWith('-') && !value.includes('/'))) continue;
     const pathLike = value.startsWith('~') || value.startsWith('/') || value === '.' || value === '..' || value.startsWith('./') || value.startsWith('../') || value.split('/').includes('..');
     if (!pathLike) continue;
-    const home = value === '~' || value.startsWith('~/') ? os.homedir() + value.slice(1) : null;
-    if (value.startsWith('~') && home === null) throw fail(403, 'Stay inside the selected shared folder.');
-    const full = path.resolve(cwd, home ?? value);
+    const home2 = value === '~' || value.startsWith('~/') ? home + value.slice(1) : null;
+    if (value.startsWith('~') && home2 === null) throw fail(403, 'Stay inside the selected shared folder.');
+    const full = path.resolve(cwd, home2 ?? value);
     if (!within(full, root)) throw fail(403, 'Stay inside the selected shared folder.');
   }
 }
+// The Windows sibling (finding 12): drive-letter (C:\, C:/), UNC (\\host\share),
+// \\?\, root-relative (\x) and backslash-relative (..\x) arguments are resolved
+// and refused if they fall outside the shared folder, compared on one canonical
+// name. Pure, so it is driven on any host with an injected platform.
+function rejectOutsidePathsWindows(args, cwd, root, home) {
+  const rootCanonical = windowsCanonicalPath(root);
+  const outside = () => fail(403, 'Stay inside the selected shared folder.');
+  for (const arg of args) {
+    const value = arg.includes('=') && arg.startsWith('-') ? arg.slice(arg.indexOf('=') + 1) : arg;
+    if (!value) continue;
+    const pathLike = /[\\/]/.test(value) || /^[a-z]:/i.test(value) || value.startsWith('~') || value === '.' || value === '..';
+    if (value.startsWith('-') && !pathLike) continue;
+    if (!pathLike) continue;
+    // 8.3 short aliases aren't blanket-refused: a literal short name resolves to
+    // itself, so one that leaves the root is caught by the within-check below,
+    // and the broker's final-path verify expands it (§7.2).
+    let full;
+    if (value === '~' || value.startsWith('~\\') || value.startsWith('~/')) full = home + value.slice(1);
+    else if (value.startsWith('~')) throw outside();
+    else if (/^[a-z]:/i.test(value) || value.startsWith('\\\\') || value.startsWith('\\') || value.startsWith('/')) full = value;
+    else full = path.win32.join(cwd, value);
+    if (!windowsWithin(windowsCanonicalPath(full), rootCanonical)) throw outside();
+  }
+}
 export function validateBrowserScript(action, authorize, { resolve, privatePaths = [], config = {} } = {}) {
+  // The darwin gate stays the sandbox-exec check; Windows runs the same
+  // validation with its own path rules (finding 12) and leaves the
+  // helper-availability check to the run path; any other platform refuses.
+  if (process.platform === 'win32') return validateBrowserScriptWindows(action, authorize, { resolve, privatePaths, config });
   if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/sandbox-exec')) throw fail(503, 'Isolated script execution is not available on this computer. Nothing was run.');
   const client = authorize();
   if (action.type !== 'terminal-script' || !Number.isSafeInteger(action.root) || action.root < 0 || client.kind !== 'agent' || client.policy?.browser !== true || client.policy.restrictedTerminal !== true || client.policy.scriptApproval !== true || !client.agentRoots?.[action.root]) throw fail(403, 'Script approval requests are not enabled for this invitation.');
@@ -71,6 +106,40 @@ export function validateBrowserScript(action, authorize, { resolve, privatePaths
   rejectProtectedProgram(executable);
   if (!within(executable, root) && !systemRoots.some(p => within(executable, p)) && executable !== fs.realpathSync(process.execPath)) throw fail(403, 'That program is outside the isolated runtime.');
   if (['sudo', 'su', 'sandbox-exec'].includes(path.basename(executable))) throw fail(403, 'Administrator commands cannot run inside a folder-scoped approval.');
+  return { root, cwd, executable, args: words.slice(1), client };
+}
+// The Windows sibling of validateBrowserScript. Same invitation checks and the
+// same program rules, with Windows path logic (finding 12): the program is node,
+// a program inside the shared folder (named with \ or /), or a system tool in
+// System32; .bat/.cmd/.ps1 are refused as the program; everything compares on
+// one canonical name. Filesystem-bound, so proven on the real-Windows runner.
+function validateBrowserScriptWindows(action, authorize, { resolve, privatePaths = [], config = {} } = {}) {
+  const client = authorize();
+  if (action.type !== 'terminal-script' || !Number.isSafeInteger(action.root) || action.root < 0 || client.kind !== 'agent' || client.policy?.browser !== true || client.policy.restrictedTerminal !== true || client.policy.scriptApproval !== true || !client.agentRoots?.[action.root]) throw fail(403, 'Script approval requests are not enabled for this invitation.');
+  terminalLocation({ ...action, command: 'cd' });
+  const root = client.agentRoots[action.root], cwd = resolve(action.root, action.cwd || '', client);
+  if (validateBrowserRoot(root) !== root || resolve(action.root, '', client) !== root) throw fail(403, 'The shared folder changed. Request access again.');
+  const privates = [...browserPrivatePaths(config), ...privatePaths];
+  if (isBrowserPrivatePath(root, privates) || isBrowserPrivatePath(cwd, privates)) throw fail(403, 'Reach, credentials, and private application data are not shared.');
+  const rootC = windowsCanonicalPath(root), cwdC = windowsCanonicalPath(cwd);
+  if (!windowsWithin(cwdC, rootC) || !fs.statSync(cwd).isDirectory() || /^[a-z]:\\$/.test(rootC)) throw fail(403, 'Choose a shared project folder.');
+  const words = parseBrowserScript(action.command);
+  rejectOutsidePaths(words.slice(1), cwd, root);
+  rejectProtectedProgram(words[0]);
+  const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  const nodePath = fs.realpathSync.native(process.execPath);
+  const bad = /\.(bat|cmd|ps1)$/i;
+  if (bad.test(words[0])) throw fail(403, 'Batch files and PowerShell scripts cannot be the program. Use a system tool, node, or a program inside the shared folder.');
+  let executable;
+  if (/^node(\.exe)?$/i.test(words[0])) executable = nodePath;
+  else if (/[\\/]/.test(words[0]) || /^[a-z]:/i.test(words[0])) executable = path.win32.resolve(cwd, words[0]);
+  else executable = [path.win32.join(system32, words[0]), path.win32.join(system32, words[0] + '.exe')].find(p => fs.existsSync(p));
+  if (!executable) throw fail(400, 'That program is not available in the isolated terminal. Use a system tool, node, or a program in the shared folder.');
+  if (fs.existsSync(executable)) executable = fs.realpathSync.native(executable);
+  rejectProtectedProgram(executable);
+  if (bad.test(executable)) throw fail(403, 'Batch files and PowerShell scripts cannot be the program. Use a system tool, node, or a program inside the shared folder.');
+  const executableC = windowsCanonicalPath(executable);
+  if (!windowsWithin(executableC, rootC) && !windowsWithin(executableC, windowsCanonicalPath(system32)) && executableC !== windowsCanonicalPath(nodePath)) throw fail(403, 'That program is outside the isolated runtime.');
   return { root, cwd, executable, args: words.slice(1), client };
 }
 export function scriptProfile(root, privatePaths = [], runtime = [], guarded = { writes: [], special: [] }) {
@@ -165,7 +234,11 @@ export async function runBrowserScript(action, authorize, { coordinator = browse
   return await coordinator.run({ clientId: plan.client.id, root: plan.root, kind: 'script', authorize },
     ({ authorize: current }) => executeBrowserScript(action, current, options));
 }
-async function executeBrowserScript(action, authorize, { resolve, privatePaths = [], timeoutMs = 30000, config = {} } = {}) {
+async function executeBrowserScript(action, authorize, options = {}) {
+  if (process.platform === 'win32') return executeBrowserScriptWindows(action, authorize, options);
+  return executeBrowserScriptDarwin(action, authorize, options);
+}
+async function executeBrowserScriptDarwin(action, authorize, { resolve, privatePaths = [], timeoutMs = 30000, config = {} } = {}) {
   const plan = validateBrowserScript(action, authorize, { resolve, privatePaths, config });
   const rootStat = fs.lstatSync(plan.root);
   const current = () => {
@@ -192,5 +265,55 @@ async function executeBrowserScript(action, authorize, { resolve, privatePaths =
     const check = setInterval(() => { try { current(); } catch (e) { stop(e); } }, 50);
     child.on('error', () => { failure ||= fail(503, 'The isolated command could not start. Nothing was retried.'); });
     child.on('close', (code, signal) => { done = true; clearTimeout(timer); clearInterval(check); try { current(); } catch (error) { failure ||= error; } if (failure) reject(failure); else resolveResult({ output: stripVTControlCharacters(output).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '') || (signal ? `Command stopped (${signal}).` : ""), exitCode: code }); });
+  });
+}
+
+// The Windows sibling of executeBrowserScript: the approved program runs through
+// the sandbox helper in an LPAC AppContainer + one-process Job Object, with the
+// same per-tick revalidation, output cap and timeout as the Mac path. Its answers
+// come back as frames; a post-run private-name scan in the helper fails the run
+// with a refusal frame (finding 5). Filesystem- and helper-bound, so proven on
+// the real-Windows runner; `windowsSandbox` is threaded from index.mjs.
+async function executeBrowserScriptWindows(action, authorize, { resolve, privatePaths = [], timeoutMs = 30000, config = {}, windowsSandbox, spawnHelper } = {}) {
+  const plan = validateBrowserScriptWindows(action, authorize, { resolve, privatePaths, config });
+  if (!windowsSandbox) throw fail(503, 'Isolated script execution is not available on this computer. Nothing was run.');
+  const ready = await windowsSandbox.ready();
+  if (!ready.ok) throw fail(503, ready.reason);
+  const rootStat = fs.lstatSync(plan.root);
+  const current = () => {
+    const client = authorize();
+    const root = client.agentRoots[action.root], cwd = resolve(action.root, action.cwd || '', client);
+    if (client.policy?.restrictedTerminal !== true || client.policy?.scriptApproval !== true || validateBrowserRoot(root) !== root || resolve(action.root, '', client) !== root)
+      throw fail(403, 'This invitation no longer allows the approved command.');
+    const stat = fs.lstatSync(root);
+    if (root !== plan.root || cwd !== plan.cwd || !stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== rootStat.dev || stat.ino !== rootStat.ino) throw fail(403, 'The shared folder changed. Command stopped.');
+    return client;
+  };
+  const descriptor = windowsScriptSandbox(config, plan.root, { privatePaths });
+  current();
+  const request = encodeSandboxRequest(scriptRequestEntries(descriptor, { executable: plan.executable, args: plan.args, cwd: plan.cwd, timeoutMs }));
+  return await new Promise((resolveResult, reject) => {
+    let output = '', size = 0, failure, done = false, exitCode = null;
+    const start = spawnHelper || ((built) => spawnVerified(built.file, built.sha256, ['run'], { cwd: plan.cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
+    const child = start(ready.built);
+    const stop = (error) => { failure ||= error; if (!done) { try { child.stdin.end(); } catch {} try { child.kill(); } catch {} } };
+    const append = (chunk) => { size += chunk.length; if (size > 65536) return stop(fail(403, 'Command stopped after reaching its output limit.')); output += chunk.toString(); };
+    const read = createSandboxFrameReader({
+      onStdout: append, onStderr: append,
+      onExit: (code) => { exitCode = code; },
+      onRefused: ({ status, message }) => stop(fail([400, 403, 409, 504].includes(status) ? status : 403, message)),
+      onError: () => stop(fail(503, 'The isolated command could not complete.')),
+    });
+    child.stdout.on('data', read);
+    const timer = setTimeout(() => stop(fail(504, 'Command stopped after 30 seconds. Request approval again if needed.')), Math.min(timeoutMs, 30000));
+    const check = setInterval(() => { try { current(); } catch (e) { stop(e); } }, 50);
+    child.on('error', () => { failure ||= fail(503, 'The isolated command could not start. Nothing was retried.'); });
+    child.on('close', () => {
+      done = true; clearTimeout(timer); clearInterval(check);
+      try { current(); } catch (error) { failure ||= error; }
+      if (failure) reject(failure);
+      else resolveResult({ output: stripVTControlCharacters(output).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, '') || '', exitCode });
+    });
+    try { child.stdin.write(request); } catch { stop(fail(503, 'The isolated command could not start. Nothing was retried.')); }
   });
 }

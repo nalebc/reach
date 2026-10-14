@@ -98,12 +98,12 @@ test("a folder icacls couldn't tighten, or an account Reach can't name, refuses 
   for (const whoami of [`"NT AUTHORITY\\SYSTEM","S-1-5-18"`, `"AzureAD\\Owner","S-1-12-1-1-2-3-4"`, ""]) {
     const s = await setup(t, { whoami });
     const result = await ensurePrivateFolders(s.options);
-    assert.deepEqual(result, { ok: false, reason: "Reach couldn't tell which Windows account it runs as, so browser sign-in stays off." });
+    assert.deepEqual(result, { ok: false, problem: "Reach couldn't tell which Windows account it runs as", reason: "Reach couldn't tell which Windows account it runs as, so browser sign-in stays off." });
     assert.ok(!s.run.calls.some((c) => c.file.endsWith("icacls.exe")));
   }
   const noWindows = await setup(t);
   assert.match((await ensurePrivateFolders({ ...noWindows.options, env: {} })).reason, /couldn't find the Windows folder/);
-  assert.deepEqual(await ensurePrivateFolders({ ...noWindows.options, platform: "darwin" }), { ok: false, reason: "Windows only." });
+  assert.deepEqual(await ensurePrivateFolders({ ...noWindows.options, platform: "darwin" }), { ok: false, problem: "Windows only.", reason: "Windows only." });
 });
 
 test("the checker is compiled fresh on every call; older checkers are removed; the cached helper is built once", async (t) => {
@@ -139,6 +139,11 @@ test("anything the checker finds open refuses, naming the folder; Reach's code i
   assert.equal((await answer("open 0 limit")).reason, `Reach's folder ${s.state} holds too many files to check, ${off}`);
   assert.equal((await answer("open 2 ace")).reason, `Reach's folder ${s.code} can be changed by other people on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
   assert.equal((await answer("open 2 owner")).reason, `Reach's folder ${s.code} belongs to another account on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
+  // What's wrong, without what it turns off for sign-in: agents' helpers say it their own way.
+  const code = await answer("open 2 ace");
+  assert.equal(code.problem, `Reach's folder ${s.code} can be changed by other people on this PC`);
+  assert.equal(code.advice, "Move it into your user folder, or install Reach with npm.");
+  assert.equal((await answer("open 0 ace")).problem, `Reach's folder ${s.state} can be read or changed by other people on this PC`);
   const helper = await answer("open 3 ace");
   assert.match(helper.reason, /^Reach's helper .*reach-tailscaled-peer-[0-9a-f]{12}\.exe can be read or changed by other people on this PC/);
   for (const line of ["open 4 ace", "open 0 weird", "", "OK", "ok but", "open -1 ace", "open 99999 ace"])

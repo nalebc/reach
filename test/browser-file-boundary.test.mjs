@@ -5,9 +5,37 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { once } from 'node:events';
-import { browserFileOperation, fileBoundaryProfile } from '../server/browser-file-boundary.mjs';
+import { once, EventEmitter } from 'node:events';
+import { browserFileOperation, fileBoundaryProfile, runWindowsFileOperation } from '../server/browser-file-boundary.mjs';
 const native = process.platform === 'darwin' && process.env.REACH_TEST_FILE_BOUNDARY === '1';
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function windowsFileChild() {
+ const child = new EventEmitter(); child.pid = 99; child.stdout = new EventEmitter(); child.stdin = new EventEmitter();
+ child.stdin.write = () => true;
+ child.kill = () => { child.killed = true; };
+ return child;
+}
+const windowsFileReady = {ready: async () => ({ok:true,built:{file:'C:\\private\\broker.exe',sha256:'fixture'}})};
+test('Windows Files keeps a failed broker operation owned until native close', async t => {
+ const child=windowsFileChild(); t.after(()=>child.emit('close',1)); let completed=false;
+ const promise=runWindowsFileOperation({maxBytes:1024},()=>{},windowsFileReady,{start:()=>child});
+ promise.then(()=>{completed=true;},()=>{completed=true;});
+ await tick();
+ const bytes=Buffer.from('not JSON'),head=Buffer.alloc(5);head[0]='R'.charCodeAt(0);head.writeUInt32BE(bytes.length,1);
+ child.stdout.emit('data',Buffer.concat([head,bytes]));
+ assert.equal(child.killed,true);await tick();
+ assert.equal(completed,false,'requesting termination does not release file ownership');
+ child.emit('close',1);await assert.rejects(promise,{status:503});
+});
+test('Windows Files retires its broker before a revocation rejection completes', async t => {
+ const child=windowsFileChild(); t.after(()=>child.emit('close',1)); let revoked=false,completed=false;
+ const promise=runWindowsFileOperation({maxBytes:1024},()=>{if(revoked)throw Object.assign(Error('Access ended'),{status:403});},windowsFileReady,{start:()=>child});
+ promise.then(()=>{completed=true;},()=>{completed=true;});
+ await tick();revoked=true;
+ for(let i=0;!child.killed && i<20;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(child.killed,true);assert.equal(completed,false);
+ child.emit('close',1);await assert.rejects(promise,{status:403});
+});
 function fixture(t) {
  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reach-file-boundary-')));
  const root = path.join(temp, 'shared'), outside = path.join(temp, 'outside'), cache = path.join(temp, 'cache');
