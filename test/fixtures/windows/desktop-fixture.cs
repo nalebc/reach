@@ -76,6 +76,11 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref int length);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint ms);
   [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
@@ -112,6 +117,7 @@ static class DesktopFixture {
 
   [STAThread]
   static int Main(string[] args) {
+    if (args.Length == 2 && args[0] == "process-probe") return ProcessProbe(int.Parse(args[1]));
     try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
     if (args.Length >= 9 && args[0] == "window") return Window(args);
     if (args.Length == 4 && args[0] == "sleeper") return Sleeper(args[1], args[2], args[3]);
@@ -146,7 +152,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -325,6 +331,23 @@ static class DesktopFixture {
     int level = Marshal.ReadInt32(GetSidSubAuthority(sid, count - 1));
     Console.WriteLine("integrity " + level.ToString("X") + " elevated " + (Marshal.ReadInt32(elevation) != 0 ? "yes" : "no"));
     return 0;
+  }
+  static int ProcessProbe(int pid) {
+    IntPtr process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) { Console.WriteLine("{\"openError\":" + Marshal.GetLastWin32Error() + "}"); return 0; }
+    try {
+      long created, exited, kernel, user;
+      bool times = GetProcessTimes(process, out created, out exited, out kernel, out user);
+      int timeError = times ? 0 : Marshal.GetLastWin32Error();
+      var image = new StringBuilder(32768); int size = image.Capacity;
+      bool imageRead = QueryFullProcessImageNameW(process, 0, image, ref size);
+      int imageError = imageRead ? 0 : Marshal.GetLastWin32Error();
+      var package = new StringBuilder(1024); uint length = (uint)package.Capacity;
+      int packageStatus = GetPackageFullName(process, ref length, package);
+      Console.WriteLine("{\"openError\":0,\"timeError\":" + timeError + ",\"imageError\":" + imageError +
+        ",\"packageStatus\":" + packageStatus + ",\"pointerBytes\":" + IntPtr.Size + "}");
+      return 0;
+    } finally { CloseHandle(process); }
   }
   static int Fail(string step) { Console.Error.WriteLine("error " + step + " " + Marshal.GetLastWin32Error()); return 3; }
 

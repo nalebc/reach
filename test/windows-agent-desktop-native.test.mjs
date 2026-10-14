@@ -113,6 +113,10 @@ async function window(t, name, title, color, [x, y, width, height], ...flags) {
   children.add(child);
   const file = path.join(work, `${name}.json`);
   const shown = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), `${name} shown`));
+  if (flags.includes("medium")) {
+    const probe = await exec(fixtureConsole, ["medium", fixtureConsole, "process-probe", String(shown.pid)], { windowsHide: true, timeout: 15000 });
+    note({ processProbe: { name, ...JSON.parse(probe.stdout.trim()) } });
+  }
   const kill = () => { try { process.kill(shown.pid); } catch {} try { child.kill(); } catch {} children.delete(child); };
   t.after(kill);
   const log = () => (fs.existsSync(path.join(work, `${name}.log`)) ? fs.readFileSync(path.join(work, `${name}.log`), "utf8") : "");
