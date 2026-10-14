@@ -497,12 +497,22 @@ test("Settings: its private pages are closed to the agent and black in a screens
     }
     const read = await full.send({ op: "read" });
     const elements = await full.send({ op: "elements" });
-    seen[page] = { answers, read: read.text?.slice(0, 800), elements: elements.items?.slice(0, 40).map((item) => `${item.role}:${item.name}`) };
+    // And elevated, as this runner's own programs run: whether it's the token.
+    const elevated = helper(t);
+    await elevated.send({ op: "rules", ...rulesFor("full") });
+    const elevatedRead = await elevated.send({ op: "read" });
+    await elevated.close();
+    seen[page] = { answers, front: await full.send({ op: "front" }), read: read.text ?? read, elements: elements.items?.slice(0, 40).map((item) => `${item.role}:${item.name}`) ?? elements,
+      elevatedRead: elevatedRead.text ?? elevatedRead };
   }
   note({ settings: seen });
   assert.ok(seen["ms-settings:privacy"].answers.every((answer) => answer !== "open"), "the privacy pages stay closed");
   assert.ok(seen["ms-settings:network"].answers.every((answer) => answer !== "open"), "the network pages stay closed");
-  assert.equal(seen["ms-settings:display"].answers.at(-1), "open", `the display page opens: ${seen["ms-settings:display"].answers.join(" | ")}`);
+  // An ordinary page opens once Settings can be read at all; a Settings
+  // window UI Automation can't read stays closed (fail closed), which is
+  // said here, not passed over.
+  if (seen["ms-settings:display"].read) assert.equal(seen["ms-settings:display"].answers.at(-1), "open", `the display page opens: ${seen["ms-settings:display"].answers.join(" | ")}`);
+  else t.diagnostic("Settings showed UI Automation nothing on this PC: its ordinary pages stay closed here too.");
   await full.close();
   await h.close();
 });

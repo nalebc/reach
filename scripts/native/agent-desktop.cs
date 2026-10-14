@@ -4035,6 +4035,9 @@ static partial class Desk {
     for (int i = 0; i < count && i < 200; i++) {
       var info = new Native.MENUITEMINFO { cbSize = Marshal.SizeOf(typeof(Native.MENUITEMINFO)), fMask = Native.MIIM_STRING | Native.MIIM_STATE | Native.MIIM_SUBMENU | Native.MIIM_FTYPE };
       if (!Native.GetMenuItemInfoW(menu, (uint)i, true, ref info) || (info.fType & Native.MFT_SEPARATOR) != 0) continue;
+      // Kept before the string is asked for: that second call needn't keep them.
+      IntPtr submenu = info.hSubMenu;
+      uint state = info.fState;
       string text = "";
       if (info.cch > 0 && info.cch < 4096) {
         IntPtr buffer = Marshal.AllocHGlobal((int)(info.cch + 1) * 2);
@@ -4051,7 +4054,7 @@ static partial class Desk {
       text = text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
       int tab = text.IndexOf('\t');
       var entry = new MenuEntry { Title = (tab >= 0 ? text.Substring(0, tab) : text).Trim(), Key = tab >= 0 ? Limit(text.Substring(tab + 1).Trim(), 12) : "",
-        Enabled = (info.fState & Native.MFS_DISABLED) == 0, Checked = (info.fState & Native.MFS_CHECKED) != 0, Submenu = info.hSubMenu };
+        Enabled = (state & Native.MFS_DISABLED) == 0, Checked = (state & Native.MFS_CHECKED) != 0, Submenu = submenu };
       if (entry.Title.Length > 0) entries.Add(entry);
     }
     return entries;

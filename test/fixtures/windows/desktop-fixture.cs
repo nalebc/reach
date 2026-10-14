@@ -165,7 +165,10 @@ static class DesktopFixture {
         return parameters;
       }
     }
-    public void Note(string line) { lock (log) File.AppendAllText(log, line + "\n"); }
+    // A box can hold half a character for a moment (an emoji's first half):
+    // written as U+FFFD then, never thrown over.
+    static readonly Encoding Lenient = new UTF8Encoding(false, false);
+    public void Note(string line) { lock (log) File.AppendAllText(log, line + "\n", Lenient); }
   }
 
   static int Window(string[] args) {
