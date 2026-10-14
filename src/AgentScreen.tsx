@@ -1334,7 +1334,7 @@ export default function AgentScreen({
                 {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
                 <li>Numbered labels mark what you can click. Click a label to press that exact thing; it beats aiming at small targets.</li>
                 <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
-                <li>To sign in, use what the browser already has: "Sign in with Google", or click the field and pick the saved password it lists. Your vault (Sign in) only when it has none.</li>
+                <li>To sign in, use what the browser already has: "Sign in with Google", or click the field and take the saved password it lists (Down, then Return). Your vault (Sign in) only when it has none.</li>
                 <li>The browser asks for the owner's fingerprint or password? Tell your user and wait.</li>
                 <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
                 <li>"Not done" says why. Try another way. Small text: Zoom in.</li>

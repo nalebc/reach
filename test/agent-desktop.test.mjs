@@ -293,7 +293,7 @@ test("the screen as text lists a form's fields, for one fill", () => {
   assert.match(text, /\[2\] SecureTextField "Password" \(password field: click it for the browser's saved password, else your vault\)/);
   assert.match(text, /Fields: "Email", "Password" \(password\)\. Fill them in one call: reach_fill/);
   // Oct 13: the browser's own sign-in and saved passwords come before a vault.
-  assert.match(text, /To sign in, the browser's own first: "Sign in with Google", or the saved password it lists when you click the field \(reach_screenshot shows the list\); else a value from your vault with "secret":true\./);
+  assert.match(text, /To sign in, the browser's own first: "Sign in with Google", or the saved password it lists when you click the field \(Down, then Return, takes the first; reach_screenshot shows the list\); else a value from your vault with "secret":true\./);
   assert.doesNotMatch(describeScreen({ app: "Calculator", items: [{ n: 1, role: "Button", name: "7", x: 0, y: 0, w: 0.1, h: 0.1 }], texts: [] }), /Fields:/);
 });
 

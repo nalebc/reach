@@ -87,7 +87,7 @@ export function describeScreen({ app = "", title = "", snapshot = "", windowRef 
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
   const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
   const form = fields.length
-    ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}. To sign in, the browser's own first: "Sign in with Google", or the saved password it lists when you click the field (reach_screenshot shows the list); else a value from your vault with "secret":true.`
+    ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}. To sign in, the browser's own first: "Sign in with Google", or the saved password it lists when you click the field (Down, then Return, takes the first; reach_screenshot shows the list); else a value from your vault with "secret":true.`
     : "";
   const text = head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
   return truncate ? text.slice(0, 30000) : text;
