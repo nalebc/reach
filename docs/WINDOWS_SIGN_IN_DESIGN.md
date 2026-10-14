@@ -2,11 +2,11 @@
 
 Status: built on October 12, 2026 (workstream D; its implementation spec, `docs/parity/D-public-door.md`, replaced this proposal) and on by detection since October 13, with no switch (owner: "No flag should exist. We should detect platform and support."). A PC that can't hold the keyed route uses pairing codes and says why. Not yet run on a physical Windows PC: the manual acceptance below is still owed (`docs/FIRST_RUN_MATRIX.md` M8).
 
-## Why Windows lacks it
+## Why Windows needs a different private route
 
 On Mac and Linux, Tailscale Serve proxies to a mode-0600 Unix socket in a 0700 directory (`server/tailscale-auth.mjs` `listenPrivateIngress`). Only tailscaled can be the peer, so Reach trusts Tailscale's identity headers (`Tailscale-User-Login`, `Tailscale-Funnel-Request`, `X-Forwarded-For` → WhoIs). That trust turns on account approval, the Funnel start page where a phone without the Tailscale app signs in from its browser, and invite keys.
 
-On Windows, Serve can't target Unix sockets (Tailscale 1.104 `ipn/serve.go` refuses them there) and Node can't listen on AF_UNIX (`listen(path)` makes a named pipe). Reach listens on `127.0.0.1:<port>`, where any local process could connect and forge those headers. So Windows uses pairing codes, no start page and no invite links (`scripts/configure.mjs` `accountApproval`), and the phone needs the Tailscale app.
+On Windows, Serve can't target Unix sockets (Tailscale 1.104 `ipn/serve.go` refuses them there) and Node can't listen on AF_UNIX (`listen(path)` makes a named pipe). A plain loopback listener would let local processes forge identity headers. Reach now uses the keyed proxy route plus a Tailscale peer check described below. When those checks cannot work on a PC, it explains the reason and falls back to pairing codes with the phone's Tailscale app.
 
 ## Options
 

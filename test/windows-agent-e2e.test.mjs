@@ -167,7 +167,8 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   const shellRoot = clients.full.access.roots.find(root => root.path.toLowerCase() === shared.toLowerCase());
   assert.ok(shellRoot, "Full control includes the synthetic project folder");
   const shell = await tool("full", "reach_shell", { command: "Write-Output 'synthetic shell result'", root: shellRoot.index, cwd: "" });
-  assert.match(JSON.stringify(shell), /synthetic shell result/);
+  assert.equal(shell.exitCode, 0);
+  assert.match(shell.output, /synthetic shell result/);
   await tool("full", "reach_screenshot");
   assert.equal((await request("/api/browser/agents/pause", { method: "POST", body: { clientId: clients.full.id, paused: true } })).status, 200);
   await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => e.status === 409 && e.kind === "paused");
