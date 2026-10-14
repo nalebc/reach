@@ -85,10 +85,20 @@ test("authorization and current filesystem paths are checked immediately before 
   assert.equal((await fs.readdir(root)).includes("copy"), false, "validation alone never mutates files");
 });
 
-// Windows must refuse this feature rather than weaken its path guarantees.
-test("Windows refuses every approved file mutation without changing files", { skip: process.platform !== "win32" }, async (t) => {
+// Windows runs approved file changes through the sandbox's Files broker (the
+// same owner-token broker the Files preset uses), as the Mac runs them through
+// its descriptor helper (E): no longer a platform refusal. Without a prepared
+// broker the execution says so and never mutates; the validation belt runs on
+// the real Windows path module here.
+test("Windows runs approved file mutations through the Files broker, not a platform refusal", { skip: process.platform !== "win32" }, async (t) => {
   const { root, run } = await fixture(t);
-  for (const command of ["mkdir notes", "touch note.txt", "cp note.txt copy.txt", "rm note.txt"])
-    await assert.rejects(run(command), /not supported on Windows/);
+  for (const command of ["mkdir notes", "touch note.txt"]) {
+    const error = await run(command).then(() => null, (e) => e);
+    assert.ok(error, command);
+    assert.doesNotMatch(String(error.message), /not supported on Windows/, command);
+    // No broker is wired in this unit fixture, so execution fails closed with
+    // the unavailable wording — never a silent mutation.
+    assert.match(String(error.message), /unavailable|broker|not ready/i, command);
+  }
   assert.deepEqual(await fs.readdir(root), []);
 });

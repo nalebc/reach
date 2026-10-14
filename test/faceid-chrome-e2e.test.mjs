@@ -126,14 +126,20 @@ async function tailscaleServe({ tls, socket, page, hold = 1500 }) {
       const out = http.request(
         { socketPath: socket, path: req.url, method: req.method, headers: headers(req) },
         (answer) => {
+          answer.on("error", () => res.destroy());
           res.writeHead(answer.statusCode, answer.headers);
           answer.pipe(res);
         },
       );
       out.on("error", () => res.destroy());
+      req.on("error", () => out.destroy());
+      res.once("close", () => out.destroy());
       req.pipe(out);
     };
-    if (held(req)) setTimeout(forward, hold);
+    if (held(req)) {
+      const timer = setTimeout(forward, hold);
+      res.once("close", () => clearTimeout(timer));
+    }
     else forward();
   });
   server.on("upgrade", (req, client, head) => {
