@@ -57,13 +57,13 @@ const choose = (c, title) => click(preset(c, title));
 const place = (c, label) => [...c.querySelectorAll('[aria-label="How the agent connects"] [role="radio"]')].find((b) => b.textContent.trim() === label);
 const create = (c) => click(button(c, "Create invite"));
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function mock({ desktopAvailable = true, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false, runtime = "ab".repeat(32) } = {}) {
+function mock({ desktopAvailable = true, protectedFilesSupported = true, desktopReason, filesUnsupportedReason, maxFunnelSeconds = 86400, standingAllowed = false, toolsStandingAllowed = false, runtime = "ab".repeat(32) } = {}) {
   const calls = [];
   globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
     const route = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push([init.method || "GET", route, body]);
-    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
+    if (route === "/api/agents/browser-options") return reply({ terminals: [], desktopAvailable, protectedFilesSupported, desktopReason, filesUnsupportedReason, presetApps, screenAvailable: true, appAccessAvailable: false, apps: [], ...(maxFunnelSeconds ? { maxFunnelSeconds } : {}), ...(standingAllowed ? { standingAllowed } : {}), ...(toolsStandingAllowed ? { toolsStandingAllowed } : {}) });
     if (route === "/api/agents/browser-invitations")
       return reply({ invitation: secret, url: `https://mac.tail.ts.net/agent-browser#invite=${secret}`, clientId: "muse", preset: body.preset, expiresAt: Date.now() + 3600000, joinBy: Date.now() + 900000, scopes: [], ...(runtime ? { runtime } : {}) });
     if (route === "/api/files") return reply({ items: [] });

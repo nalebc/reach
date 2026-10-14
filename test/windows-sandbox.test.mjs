@@ -213,18 +213,23 @@ test("a Windows job runs through the helper: the framed request carries the gran
     child.kill = () => {};
     return child;
   };
-  const sandbox = { mode: "jobs", client: "agent", grants: [{ root: "C:\\Users\\me\\Projects\\acme", access: "rw" }], denies: ["C:\\Users\\me\\.reach"], network: "internet", capabilities: ["internetClient"], limits: { activeProcesses: 512 } };
+  // cmd runs the command verbatim; the owner's shell is injected so the
+  // framing is deterministic off Windows (windowsShell reads the host otherwise).
+  const sandbox = { mode: "jobs", client: "agent", interpreter: { file: "C:\\Windows\\System32\\cmd.exe", kind: "cmd" }, grants: [{ root: "C:\\Users\\me\\Projects\\acme", access: "rw" }], reads: [{ root: "C:\\Users\\me\\AppData\\Local\\Temp", access: "ro" }], denies: ["C:\\Users\\me\\.reach"], network: "internet", capabilities: ["internetClient"], loopback: [{ address: "127.0.0.1", port: 8443 }], limits: { activeProcesses: 512 } };
   const job = jobs.start({ command: "echo hi", cwd: "C:\\Users\\me\\Projects\\acme", timeoutMs: 60000 }, "agent",
     { sandbox, helper: { file: "C:\\state\\native\\reach-sandbox.exe", sha256: "abc" }, spawnHelper });
 
   // The framed request the helper receives carries the mode, the grant, the
-  // deny and the command verbatim.
+  // read, the deny, the loopback target and the command verbatim.
   const { entries } = decodeRequest(Buffer.concat(written));
   assert.ok(entries.some(([k, v]) => k === "mode" && v === "jobs"));
   assert.ok(entries.some(([k, v]) => k === "grant" && /acme/i.test(v)));
+  assert.ok(entries.some(([k, v]) => k === "read" && /Temp/i.test(v)));
   assert.ok(entries.some(([k, v]) => k === "deny" && /\.reach/i.test(v)));
+  assert.ok(entries.some(([k, v]) => k === "loopback" && v === "127.0.0.1:8443"));
   assert.ok(entries.some(([k, v]) => k === "command" && v === "echo hi"));
-  assert.ok(entries.some(([k, v]) => k === "interpreter" && v === "cmd.exe"));
+  assert.ok(entries.some(([k, v]) => k === "interpreter" && /cmd\.exe$/i.test(v)));
+  assert.ok(entries.some(([k, v]) => k === "interpreterKind" && v === "cmd"));
 
   // Frames drive the job: started, output, then the main process's exit code.
   child.stdout.emit("data", frame("S", beInt(4242)));

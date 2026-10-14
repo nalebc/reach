@@ -1010,10 +1010,13 @@ export async function createReach(overrides = {}) {
   // Mac pausing an agent did nothing. One store, kept across restarts; the
   // desktop service, where there is one, acts on it.
   const agentPauses = overrides.agentPauses || createAgentPauses({ file: path.join(config.dataDir, "agent-pauses.json") });
-  // Screen, input and the app list for preset agents (server/agent-desktop.mjs).
-  // Tests inject a stand-in; null means this Mac can't offer them, and the
-  // screen presets refuse to be created.
-  agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (process.platform === "darwin" || overrides.agentDesktopFactory ? (overrides.agentDesktopFactory || createAgentDesktop)(config, {
+  // Screen, input and the app list for preset agents (server/agent-desktop.mjs):
+  // a Mac's Swift helper, or a Windows PC's C# one, built in the folder Reach
+  // confirmed private this start (scripts/launch.mjs); without that folder it
+  // says why, and the screen presets refuse with that reason. Tests inject a
+  // stand-in; null means this computer can't offer them.
+  agentDesktop = overrides.agentDesktop !== undefined ? overrides.agentDesktop : (["darwin", "win32"].includes(process.platform) || overrides.agentDesktopFactory ? (overrides.agentDesktopFactory || createAgentDesktop)(config, {
+    ...(process.platform === "win32" ? { windowsHelper: overrides.windowsDesktopHelper || null, helpersOff: overrides.windowsHelpersOff || "" } : {}),
     available: () => browserScreenAvailable() && !paused && transportAvailable,
     hosts: () => reachAddresses(config), titles: () => ["reach"], protectedPaths: () => browserPaths(),
     verifyClient: (id) => auth.list().find((client) => client.id === id),
@@ -1186,7 +1189,7 @@ export async function createReach(overrides = {}) {
   // self-test at start (§2.2). Absent that folder, or where policy blocks it,
   // the jobs POST refuses with the reason. null off Windows.
   const windowsSandbox = process.platform === "win32"
-    ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
+    ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null, off: overrides.windowsHelpersOff || "" })
     : null;
   // The grants ledger and its revoke walk (§4.6): a changed or revoked session
   // loses its capability on the next launch with no walk; this reclaims the
@@ -1232,9 +1235,11 @@ export async function createReach(overrides = {}) {
           const check = () => { notPaused(); return authorize(); };
           check();
           if (batch) await progress(index, "executing");
+          // On Windows each file step goes through the sandbox's Files broker
+          // (browser-file-boundary.mjs), as the Mac's goes through its helper.
           output = step.type === "terminal-change"
-            ? await runBrowserMutation(step, check, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations })
-            : await runTerminalCommand(step, check, resolve, { config, privatePaths: browserPaths() });
+            ? await runBrowserMutation(step, check, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations, windowsSandbox })
+            : await runTerminalCommand(step, check, resolve, { config, privatePaths: browserPaths(), windowsSandbox });
           if (batch) await progress(index, "executed", output);
         }
         return output;
@@ -2852,7 +2857,13 @@ export async function createReach(overrides = {}) {
     noteAgentRuntime: (client, value) => agentRuntimes.note(client, value),
     toolsStandingAllowed: () => !!guestKeys?.configured(),
     auth, config, terminals, desktopTerminals, resolve, resolveAsync, record, browserFiles,
-    protectedFilesSupported: overrides.browserFilesSupported ?? process.platform === "darwin",
+    // Files needs the Mac's descriptor helper, or on Windows the sandbox's
+    // owner-token broker (built only in the folder D confirmed private this
+    // start). Without that folder, Files is refused with the reason.
+    protectedFilesSupported: overrides.browserFilesSupported ?? (process.platform === "darwin" || (process.platform === "win32" && !!overrides.windowsSandboxHelper)),
+    filesUnsupportedReason: () => process.platform === "win32"
+      ? (overrides.windowsHelpersOff || "Agent file access isn't ready on this Windows PC yet. Your own files and terminals remain available.")
+      : "Browser-agent file access requires macOS. Your own files and terminals remain available.",
     appAccess: browserAppAccess, appAccessAvailable: browserAppAvailable, hostGuard: browserHostGuard,
     desktop: agentDesktop, shell: agentShell, shortcuts: agentShortcuts, tools: agentTools, services: agentServices, macShortcuts, actions: logAction,
     // Screen text an agent didn't read again (savings.mjs, "screen-diff").
@@ -4604,8 +4615,13 @@ export async function createReach(overrides = {}) {
   // Tag in, for agents with apps:drive: open an app on its own hidden
   // display, look at it, act in it, hand it to the person, wait, close.
   const driveOnMac = () => {
+    // "Tag in" on a hidden per-app display needs an attestation-signed virtual
+    // display driver on Windows (docs/WINDOWS_AGENT_PARITY.md difference table);
+    // a PC's agents use apps on the real screen through the Apps preset instead.
     if (appThreads.platform !== "darwin")
-      throw fail(501, "Agents can use apps on a Mac for now.");
+      throw fail(501, process.platform === "win32"
+        ? "Hidden per-app displays need a Mac. On a Windows PC, agents use apps on the real screen with the Apps preset."
+        : "Agents can use apps on a Mac for now.");
     if (!config.screen)
       throw fail(403, "Screen viewing is off on this computer.");
   };

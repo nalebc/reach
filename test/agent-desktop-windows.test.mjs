@@ -138,11 +138,12 @@ test("on Windows the helper receives Windows modifiers; on a Mac, the agent's na
 // answered, against a stand-in process. Nothing is built or run.
 const helperFile = String.raw`C:\Users\me\.reach\reach-agent-desktop-0123456789ab.exe`;
 const ready = (mode, extra = {}) => ({ ok: true, accessibility: true, screen: true, mode, elevated: false, desktop: "Default", reachConsole: "classic", ...extra });
-function windowsHelperWorld(t, { replies = {}, preset = "apps", sac = 0, blocked = false, exit = false, missing = false, binary } = {}) {
+function windowsHelperWorld(t, { replies = {}, preset = "apps", sac = 0, blocked = false, exit = false, missing = false, changed = false, binary } = {}) {
   const home = String.raw`C:\Users\me`;
   const policy = { invite: true, browser: true, preset, roots: [], apps: preset === "apps" ? [{ id: chromeExe, name: "Google Chrome", bundleId: "" }] : [] };
   const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
-  const spawned = [], builds = [], policyReads = [];
+  const spawned = [], builds = [], policyReads = [], verified = [];
+  const sha = "a".repeat(64);
   const answers = { rules: (request) => ready(request.mode), front: () => ({ ok: true, app: "Notepad", bundle: "exe:notepad.exe", title: "", terminalLike: false, secure: false, blocked: "", path: "", layout: "" }), ...replies };
   const spawnProcess = (file, args, options) => {
     const child = new EventEmitter();
@@ -170,13 +171,17 @@ function windowsHelperWorld(t, { replies = {}, preset = "apps", sac = 0, blocked
   };
   const desktop = createAgentDesktop({ screen: true, dataDir: String.raw`C:\Users\me\.reach` }, {
     platform: "win32", available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(),
-    helperBinary: async (config, kind) => { builds.push(kind); return binary ?? helperFile; }, spawnProcess,
+    // The helper comes from Reach's private folder as { file, sha256 }, checked
+    // again right before every spawn (assertUnchanged); the fixture stands both in.
+    windowsHelper: async () => { builds.push("agent-desktop"); return { file: binary ?? helperFile, sha256: sha }; },
+    verify: (file, sha256) => { verified.push(file); if (changed) throw Object.assign(Error("changed"), { code: "ECHANGED" }); },
+    spawnProcess,
     launch: { smartAppControl: async () => sac, blockedByPolicy: async (file) => { policyReads.push(file); return blocked; } },
     env: { SystemRoot: String.raw`C:\Windows`, ProgramFiles: String.raw`C:\Program Files`, ComSpec: String.raw`C:\Windows\system32\cmd.exe`, COR_ENABLE_PROFILING: "1", COMPlus_x: "1", DOTNET_x: "1", REACH_TOKEN: "secret" },
     processId: 4242, consoleAttached: () => true,
   });
   t.after(() => desktop.close());
-  return { desktop, client, authorize: () => client, spawned, builds, policyReads };
+  return { desktop, client, authorize: () => client, spawned, builds, policyReads, verified };
 }
 
 test("a Windows helper is built here, started detached with Reach's process and Windows' own environment, and told the rules alone", async (t) => {
@@ -244,6 +249,11 @@ test("a PC that won't run the helper Reach built is told why, from Smart App Con
   await assert.rejects(gone.desktop.front(gone.client, gone.authorize), (error) => error.status === 503 && error.permanent === true && /Windows security removed Reach's agent helper/.test(error.message));
   assert.deepEqual(gone.builds, ["agent-desktop", "agent-desktop"]);
   assert.equal(gone.spawned.length, 2);
+  // Changed on disk since its build (a swap by another user of the PC): the
+  // file exists, so it isn't rebuilt — it's refused and never started.
+  const swapped = windowsHelperWorld(t, { changed: true });
+  await assert.rejects(swapped.desktop.front(swapped.client, swapped.authorize), (error) => error.status === 503 && /agent helper changed on this Windows PC/.test(error.message));
+  assert.equal(swapped.spawned.length, 0, "a changed helper is never spawned");
 });
 
 test("a Windows helper's first answer may take a cold start; it then answers within the usual time, and is given 1.5 s to let go when stopped", async (t) => {
@@ -283,21 +293,32 @@ test("a Windows helper's first answer may take a cold start; it then answers wit
   assert.deepEqual(macKills, ["SIGTERM"]);
 });
 
-test("a Windows PC's desktop says it isn't available unless told: presets open there with the sandbox", () => {
-  const options = { pauses: createAgentPauses(), spawnHelper: async () => assert.fail("never started") };
-  assert.equal(createAgentDesktop({ screen: true }, { ...options, platform: "win32" }).available(), false);
-  assert.equal(createAgentDesktop({ screen: true }, { ...options, platform: "darwin" }).available(), true);
-  assert.equal(createAgentDesktop({ screen: false }, { ...options, platform: "darwin" }).available(), false);
+test("a Windows PC's desktop needs its helper (E): on with it and the screen, off with the reason without it", () => {
+  const base = { pauses: createAgentPauses(), spawnHelper: async () => assert.fail("never started") };
+  const helper = async () => ({ file: String.raw`C:\Users\me\.reach\native\reach-agent-desktop-0123456789ab.exe`, sha256: "a".repeat(64) });
+  // On, once E lifts the refusals: a prepared helper (or an injected one) and
+  // the screen setting.
+  assert.equal(createAgentDesktop({ screen: true }, { ...base, platform: "win32", windowsHelper: helper }).available(), true);
+  assert.equal(createAgentDesktop({ screen: true }, { ...base, platform: "win32" }).available(), true, "spawnHelper counts as a helper");
+  // Off, with the reason, when Reach's private folder wasn't ready this start.
+  const off = createAgentDesktop({ screen: true }, { pauses: createAgentPauses(), platform: "win32", helpersOff: "Reach couldn't make its folder private, so agents can't use this PC's screen." });
+  assert.equal(off.available(), false);
+  assert.match(off.reason(), /couldn't make its folder private/);
+  // Off when screen viewing is off in Reach, even with a helper.
+  assert.equal(createAgentDesktop({ screen: false }, { ...base, platform: "win32", windowsHelper: helper }).available(), false);
+  // The Mac is unchanged.
+  assert.equal(createAgentDesktop({ screen: true }, { ...base, platform: "darwin" }).available(), true);
+  assert.equal(createAgentDesktop({ screen: false }, { ...base, platform: "darwin" }).available(), false);
 });
 
-test("on Windows, typed text into a terminal is refused outside Full control until Windows' command checks are complete; a Mac's is checked as before", async (t) => {
-  const run = async (platform, preset, { windowsCommandChecks, text = "dir" } = {}) => {
+test("on Windows, typed text into a terminal meets Windows' command deny list (E completed it), as a Mac's meets the shell list", async (t) => {
+  const run = async (platform, preset, { text = "dir" } = {}) => {
     const home = platform === "win32" ? String.raw`C:\Users\me` : "/Users/me";
     const policy = { invite: true, browser: true, preset, roots: [], apps: preset === "apps" ? [{ id: platform === "win32" ? chromeExe : "/Applications/Terminal.app", name: "Terminal", bundleId: "" }] : [] };
     const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
     const sent = [];
     const desktop = createAgentDesktop({ screen: true }, {
-      platform, available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(), ...(windowsCommandChecks !== undefined ? { windowsCommandChecks } : {}),
+      platform, available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(),
       spawnHelper: async () => ({ async send(request, beforeSend) {
         beforeSend?.();
         sent.push(request.op);
@@ -312,14 +333,14 @@ test("on Windows, typed text into a terminal is refused outside Full control unt
       return { error, sent };
     }
   };
-  const refused = await run("win32", "apps");
+  // A benign command types through; Windows' deny list refuses a dangerous one.
+  assert.equal((await run("win32", "apps")).ok, true);
+  const refused = await run("win32", "apps", { text: "reg add HKLM\\x" });
   assert.equal(refused.error?.status, 403);
   assert.equal(refused.error.kind, "blocked");
-  assert.match(refused.error.message, /Windows command checks/);
-  assert.deepEqual(refused.sent, ["front"], "nothing typed");
-  // Once the checks are there, Windows' deny list decides.
-  assert.equal((await run("win32", "apps", { windowsCommandChecks: true })).ok, true);
-  assert.match((await run("win32", "apps", { windowsCommandChecks: true, text: "reg add HKLM\\x" })).error.message, /who can control this PC/);
+  assert.match(refused.error.message, /who can control this PC/);
+  assert.deepEqual(refused.sent, ["front"], "nothing typed when refused");
+  assert.match((await run("win32", "apps", { text: "Restart-Computer" })).error.message, /shut down, restart or sign out/);
   // Full control types anywhere; a Mac's terminal meets the shell list as before.
   assert.equal((await run("win32", "full")).ok, true);
   assert.equal((await run("darwin", "apps")).ok, true);

@@ -130,34 +130,49 @@ export async function launch(options, root) {
   const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
   let peerCheck = null,
     windowsSandboxHelper = null,
+    windowsDesktopHelper = null,
+    windowsHelpersOff = "",
     ingressKey = "",
     keyedState = null,
     signInOff = "";
+  // Reach's folders on Windows, private to your account on every start, as
+  // 0700 keeps them on a Mac (docs/WINDOWS_AGENT_PARITY.md, Decisions:
+  // "Reach's folders"), whether or not browser sign-in is set up: Windows
+  // ignores 0700. Its keyed route's peer check is built there too. The
+  // helpers that act for agents are built only in that folder, once it's
+  // confirmed private, on first use and cached by hash: the sandbox around
+  // their commands and files (scripts/native/sandbox.cs) and the agent desktop
+  // (scripts/native/agent-desktop.cs), so neither owner-token helper can be
+  // swapped by another user of the PC. A folder that isn't private turns
+  // agents' screen, files and commands off with the reason; a build failure
+  // refuses those, never sign-in. `privateFolders` is a code-only option
+  // (tests), never read from argv.
+  let folders = null;
+  if (process.platform === "win32") {
+    const nativeDir = path.join(privateDir, "native");
+    folders = await (options.privateFolders || ensurePrivateFolders)({
+      protect: [...new Set([privateDir, dataDir])],
+      check: [root],
+      nativeDir,
+      helpers: keyedDoor ? ["tailscaled-peer"] : [],
+    });
+    if (folders.ok) {
+      windowsSandboxHelper = options.windowsSandboxHelper || (() => windowsHelper("sandbox", { dir: nativeDir }));
+      windowsDesktopHelper = options.windowsDesktopHelper || (() => windowsHelper("agent-desktop", { dir: nativeDir }));
+    } else
+      windowsHelpersOff = `${folders.problem || "Reach couldn't check who can use its folders on this PC"}, so agents can't use this PC's screen, files or commands yet.${folders.advice ? ` ${folders.advice}` : ""}`;
+  }
   if (preferences) {
     const status = await tailscaleJson(["status", "--json"]);
     assertOwnerAccount(status, preferences);
     if (!keyedDoor) await assertSocketSupport();
     else {
-      // Its folders private first (Windows ignores 0700), then Tailscale's
-      // own needs, then its check that a connection is Tailscale's. Anything
-      // missing: pairing codes, with the reason. `privateFolders` and
-      // `peerCheck` are code-only options (tests), never read from argv.
-      const folders = await (options.privateFolders || ensurePrivateFolders)({
-        protect: [...new Set([privateDir, dataDir])],
-        check: [root],
-        nativeDir: path.join(privateDir, "native"),
-        helpers: ["tailscaled-peer"],
-      });
+      // Its folders private first (above: Windows ignores 0700), then
+      // Tailscale's own needs, then its check that a connection is
+      // Tailscale's. Anything missing: pairing codes, with the reason.
+      // `peerCheck` is a code-only option (tests), never read from argv.
       if (folders.ok) {
         keyedState = await readKeyedState().catch(() => ({ status }));
-        // The command sandbox builds its helper (scripts/native/sandbox.cs) in
-        // the same folder this check just confirmed private, on first use and
-        // cached by hash (server/windows-sandbox.mjs). Only with a confirmed
-        // private folder, so the owner-token helper can't be swapped by another
-        // user of the PC; a build failure refuses jobs, never sign-in.
-        windowsSandboxHelper =
-          options.windowsSandboxHelper ||
-          (() => windowsHelper("sandbox", { dir: path.join(privateDir, "native") }));
         const hooks = {
           // Its helper stopped, timed out or wouldn't start again: said
           // once per reason, so a refusal that follows has its cause.
@@ -239,9 +254,12 @@ export async function launch(options, root) {
     // Set up for browser sign-in, on pairing codes for now: why, for the
     // phone's answers about invite links.
     ...(signInOff && { signInOff }),
-    // Windows: the command sandbox helper, built in the folder confirmed
-    // private this launch (server/windows-sandbox.mjs). Absent it, jobs refuse.
+    // Windows: the helpers that act for agents, built in the folder confirmed
+    // private this launch (server/windows-sandbox.mjs, server/agent-desktop.mjs).
+    // Absent them, agents' screen, files and commands refuse with the reason.
     ...(windowsSandboxHelper ? { windowsSandboxHelper } : {}),
+    ...(windowsDesktopHelper ? { windowsDesktopHelper } : {}),
+    ...(windowsHelpersOff ? { windowsHelpersOff } : {}),
     privatePaths: [privateDir],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
     tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },

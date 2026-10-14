@@ -8,8 +8,36 @@ import { computerWord } from "./computer-word.mjs";
 import { fail } from "./core.mjs";
 import { browserPrivatePaths, browserPrivateNames } from "./browser-private-paths.mjs";
 import { windowsCanonicalPath, windowsWithin } from "./app-identity.mjs";
+import { windowsShell, windowsPowerShell } from "./windows-shell.mjs";
 
 const execFileAsync = promisify(execFile);
+
+// The interpreter an agent's command and the Full-control shell run through,
+// the owner's own shell as the Mac uses $SHELL for both (the Mac's jobs run
+// `$SHELL -lc`, not a fixed /bin/sh, and reach_shell runs /bin/zsh): Windows
+// Terminal's default profile, else PowerShell 7, else Windows PowerShell
+// (server/windows-shell.mjs), exactly as Reach's own terminals pick it. A
+// profile that can't run a command by its path (a WSL distro, a custom
+// command line) can't carry an agent's command, so PowerShell stands in, as
+// windowsTerminal does. { file, kind }: kind is "cmd" or "powershell".
+export function windowsSandboxInterpreter({ env = process.env, exists = fs.existsSync } = {}) {
+  const shell = windowsShell({ env, exists });
+  const usable = shell.kind === "cmd" || shell.kind === "powershell" ? shell : windowsPowerShell({ env, exists });
+  return { file: usable.file, kind: usable.kind };
+}
+// The fixed arguments and the command, for the chosen interpreter. cmd runs
+// the command as the rest of its line (`/d /s /c`); PowerShell runs it
+// -EncodedCommand (UTF-16LE base64), so no quoting of the command is needed
+// and the UTF-8 output fix runs first (as the own-device jobs path does,
+// audit #23). `-NoProfile -NonInteractive` is the twin of a non-interactive
+// `zsh -c`. For cmd the command is carried verbatim in one field; for
+// PowerShell the pre-split argv is carried, each a separate field.
+export function windowsShellInvocation(kind, command) {
+  if (kind === "cmd") return { command, args: null };
+  const needsPrefix = !/^\s*(?:using\s|param\s*\()/i.test(command);
+  const script = needsPrefix ? `try { [Console]::OutputEncoding = $OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}\n${command}` : command;
+  return { command: null, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] };
+}
 
 // The Node end of Reach's Windows sandbox (scripts/native/sandbox.cs,
 // docs/parity/C-sandbox.md). It frames requests to the helper, reads its
@@ -208,24 +236,84 @@ export function windowsJobDenies(config, { home = os.homedir(), platform = proce
   return browserPrivatePaths(config, { home, platform, env });
 }
 
+// §4.3 / D-C-5: the user-profile tool directories a job gets read+execute on,
+// so ordinary commands work as on the Mac's allow-default sandbox (the Mac
+// reads most of the disk by default; the AppContainer reads nothing it isn't
+// granted). The named list the owner chose (docs/WINDOWS_AGENT_PARITY.md):
+// %TEMP%, the npm cache, %APPDATA%\npm, nvm-windows, fnm, Volta, .gitconfig,
+// the user's Python, cargo, go and dotnet tools. Read-only: a job can run them
+// but not change them. System installs (Git, Node, dotnet in Program Files;
+// the Windows folder) are left out — Program Files and System32 already grant
+// ALL APPLICATION PACKAGES read+execute, so an AppContainer reads them with no
+// grant and no system-ACL rewrite. The private-path denies stay
+// (windowsJobDenies); a tool path that is itself a deny entry (~\.gitconfig)
+// is dropped from the denies so the preflight AccessCheck doesn't refuse the
+// launch for granting it. Only existing paths are granted.
+export function windowsJobReads(config, { home = os.homedir(), platform = process.platform, env = process.env, exists = fs.existsSync } = {}) {
+  if (platform !== "win32") return [];
+  const p = path.win32;
+  const of = (name, fallback) => { const v = env[name] || env[name.toUpperCase()]; return typeof v === "string" && /^[a-z]:[\\/]/i.test(v) ? v : fallback; };
+  const under = (value) => { const v = of(value, ""); return v && windowsWithin(windowsCanonicalPath(v), windowsCanonicalPath(home)) ? v : ""; };
+  const local = of("LOCALAPPDATA", p.join(home, "AppData", "Local"));
+  const roaming = of("APPDATA", p.join(home, "AppData", "Roaming"));
+  const candidates = [
+    of("TEMP", of("TMP", p.join(local, "Temp"))),
+    of("npm_config_cache", p.join(local, "npm-cache")), p.join(roaming, "npm"), p.join(roaming, "npm-cache"),
+    under("NVM_HOME") || p.join(roaming, "nvm"), under("FNM_DIR") || p.join(roaming, "fnm"), p.join(local, "fnm_multishells"),
+    of("VOLTA_HOME", p.join(home, ".volta")), p.join(home, ".gitconfig"),
+    p.join(local, "Programs", "Python"), p.join(local, "pypoetry"), p.join(local, "pip", "cache"),
+    of("CARGO_HOME", p.join(home, ".cargo")), of("RUSTUP_HOME", p.join(home, ".rustup")),
+    under("GOPATH") || p.join(home, "go"), p.join(local, "go-build"),
+    p.join(home, ".dotnet"), p.join(home, ".nuget"),
+  ].filter(Boolean);
+  const canonicalHome = windowsCanonicalPath(home);
+  const seen = new Set();
+  const reads = [];
+  for (const candidate of candidates) {
+    const canonical = windowsCanonicalPath(candidate);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    // Only user-profile paths: a stray env var must never make Reach ACL a
+    // system folder. (Home itself is never a tool folder.)
+    if (canonical !== canonicalHome && !windowsWithin(canonical, canonicalHome)) continue;
+    try { if (exists(candidate)) reads.push(canonical); } catch { /* unreadable: skip */ }
+  }
+  return reads;
+}
+
 // §3.1, §8: the descriptor the jobs POST hands the helper. Not a profile
 // string — a regular AppContainer with per-root capability grants, the mirror
 // deny set, internet (the loopback/tailnet self-test refuses any reach to
 // Reach, §5), a fork-bomb process cap and a runaway-memory cap, and no job CPU
 // time limit (finding 10). Grants come from the client's current roots, never
 // from config.roots (findings 1, 2); a refused root throws a worded 403.
-export function windowsJobSandbox(config, client, { sockets = [], home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+export function windowsJobSandbox(config, client, { sockets = [], home = os.homedir(), platform = process.platform, env = process.env, exists = fs.existsSync, interfaces, publicOrigin } = {}) {
   const roots = client?.agentRoots?.length ? client.agentRoots : config.roots || [];
   const grants = windowsGrantRoots(roots, { home, platform }).map((root) => ({ root, access: "rw" }));
+  const reads = windowsJobReads(config, { home, platform, env, exists }).map((root) => ({ root, access: "ro" }));
+  // A tool path that is itself a deny entry (~\.gitconfig) is dropped from the
+  // deny set: granting read on it while it stays denied would make the
+  // preflight AccessCheck refuse the whole launch (findings 1, 5, D-C-5).
+  const readSet = new Set(reads.map((r) => r.root.toLowerCase()));
+  const denies = [...windowsJobDenies(config, { home, platform, env }), ...sockets]
+    .filter((deny) => !readSet.has(windowsCanonicalPath(deny).toLowerCase()));
   return {
     mode: "jobs",
     // A stable per-client AppContainer package SID (§4.1); the per-root
     // capabilities handed to each launch decide what it can touch.
     client: client?.id || "jobs",
+    // The owner's shell runs the command, as the Mac's jobs run $SHELL (D-C-1).
+    interpreter: windowsSandboxInterpreter({ env, exists }),
     grants,
-    denies: [...windowsJobDenies(config, { home, platform, env }), ...sockets],
+    // Read+execute on the named tool directories, so git/npm/node and the
+    // like work as on a Mac (D-C-5), the private-path denies kept.
+    reads,
+    denies,
     network: "internet",
     capabilities: ["internetClient"],
+    // Reach's own listener must be unreachable from the job: every local
+    // address the §5 self-test checks before the launch (fail closed).
+    loopback: windowsReachLoopback(config, { interfaces, publicOrigin }),
     // A fork-bomb guard only, and a runaway-memory cap; no JOB_TIME, so a
     // parallel build isn't cut off before its wall-clock timeout (finding 10).
     limits: { activeProcesses: 512, memoryBytes: 0 },
@@ -245,6 +333,33 @@ export function windowsLoopbackTargets({ port, lanIps = [], tailnetIps = [], mag
   return [...new Set(addresses.filter(Boolean))].map((address) => ({ address, port }));
 }
 
+// Every local address a jobs AppContainer must find Reach unreachable on
+// before a launch (§5): Reach's own HTTP port on loopback and every local IP
+// (LAN and the tailnet 100.x), and 443 — where Serve and the public Funnel
+// present Reach — on the tailnet IPs and the public MagicDNS name. The probe
+// is fail-closed, so a wider list only makes it stricter. `interfaces` and
+// `hostname` are injected in tests.
+export function windowsReachLoopback(config = {}, { interfaces = os.networkInterfaces(), publicOrigin = config.publicOrigin } = {}) {
+  const port = Number(config.port) || 0;
+  const local = [], tailnet = [];
+  for (const list of Object.values(interfaces || {}))
+    for (const entry of list || []) {
+      if (entry.internal || typeof entry.address !== "string") continue;
+      // Tailscale's own 100.64.0.0/10 (CGNAT) and its fd7a:: ULA.
+      const tailscale = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(entry.address) || /^fd7a:/i.test(entry.address);
+      (tailscale ? tailnet : local).push(entry.address);
+    }
+  let magicDns = "";
+  try { magicDns = publicOrigin ? new URL(publicOrigin).hostname.toLowerCase() : ""; } catch { /* not set */ }
+  const targets = new Map();
+  const add = (address, at) => { if (address && at) targets.set(`${address}:${at}`, { address, port: at }); };
+  if (port) for (const address of ["127.0.0.1", "::1", ...local, ...tailnet]) add(address, port);
+  // 443 is where the owner node's Serve/Funnel answers, so Reach could appear
+  // under the owner's identity there (Tailscale Serve); keep it closed too.
+  for (const address of [magicDns, ...tailnet, ...local]) add(address, 443);
+  return [...targets.values()];
+}
+
 export const SANDBOX_UNPREPARED = (platform = process.platform) =>
   `Reach couldn't prepare its command sandbox on this ${computerWord(platform)} (its private folder isn't ready), so agents' commands can't run here yet.`;
 
@@ -253,10 +368,12 @@ export const SANDBOX_UNPREPARED = (platform = process.platform) =>
 // runs the launch self-test once at start, caching the outcome. A permanent
 // policy block stays cached; a transient "won't start" is re-tried on the next
 // request, never retried in a loop and never falling back to an interpreter.
-export function createWindowsSandbox({ helper = null, start = spawnVerified, run = execFileAsync, platform = process.platform, env = process.env } = {}) {
+// `off`: why there's no helper this start (Reach's folders not private,
+// scripts/launch.mjs), said in place of the general wording.
+export function createWindowsSandbox({ helper = null, off = "", start = spawnVerified, run = execFileAsync, platform = process.platform, env = process.env } = {}) {
   let pending = null;
   const ready = () => {
-    if (!helper) return Promise.resolve({ ok: false, permanent: true, reason: SANDBOX_UNPREPARED(platform) });
+    if (!helper) return Promise.resolve({ ok: false, permanent: true, reason: off || SANDBOX_UNPREPARED(platform) });
     if (pending) return pending;
     pending = (async () => {
       let built;
@@ -276,24 +393,31 @@ export function createWindowsSandbox({ helper = null, start = spawnVerified, run
   return { ready, reset: () => { pending = null; } };
 }
 
-// The request entries for one job, in the order the helper reads them. cmd.exe
-// /d /s /c is the interpreter for jobs (D-C-1); the command string is carried
-// verbatim as one field, never concatenated into a shell line.
-export function jobRequestEntries(descriptor, { command, cwd, timeoutMs, interpreter = "cmd.exe", loopback = [] }) {
+// The request entries for one job, in the order the helper reads them. The
+// interpreter is the owner's shell (windowsSandboxInterpreter); cmd runs the
+// command verbatim after /d /s /c, PowerShell -EncodedCommand (no quoting).
+// `loopback` falls back to the descriptor's own (windowsJobSandbox); the §5
+// self-test refuses the launch if any is reachable.
+export function jobRequestEntries(descriptor, { command, cwd, timeoutMs, interpreter, loopback }) {
+  const shell = interpreter || descriptor.interpreter || windowsSandboxInterpreter();
+  const invocation = windowsShellInvocation(shell.kind, command);
   const entries = [
     ["mode", "jobs"],
     ["client", descriptor.client || "jobs"],
-    ["interpreter", interpreter],
-    ["command", command],
+    ["interpreter", shell.file],
+    ["interpreterKind", shell.kind],
+    ...(invocation.command != null ? [["command", invocation.command]] : []),
     ["cwd", cwd],
     ["timeoutMs", String(timeoutMs)],
     ["network", descriptor.network || "internet"],
     ["activeProcesses", String(descriptor.limits?.activeProcesses ?? 512)],
   ];
+  for (const arg of invocation.args || []) entries.push(["shellArg", arg]);
   for (const { root, access } of descriptor.grants || []) entries.push(["grant", root], ["grantAccess", access || "rw"]);
+  for (const { root, access } of descriptor.reads || []) entries.push(["read", root], ["readAccess", access || "ro"]);
   for (const deny of descriptor.denies || []) entries.push(["deny", deny]);
   for (const capability of descriptor.capabilities || []) entries.push(["capability", capability]);
-  for (const { address, port } of loopback) entries.push(["loopback", address + ":" + port]);
+  for (const { address, port } of loopback || descriptor.loopback || []) entries.push(["loopback", address + ":" + port]);
   return entries;
 }
 
@@ -304,11 +428,15 @@ export function jobRequestEntries(descriptor, { command, cwd, timeoutMs, interpr
 // completion, as the Mac's process-group kill leaves them). The env is the
 // owner's (built helper-side with CreateEnvironmentBlock + REACH_AGENT=1), so
 // the Mac env createAgentShell passes is ignored (finding 17).
-export function shellRequestEntries({ command, cwd, timeoutMs, interpreter = "cmd.exe" }) {
+export function shellRequestEntries({ command, cwd, timeoutMs, interpreter }) {
+  const shell = interpreter || windowsSandboxInterpreter();
+  const invocation = windowsShellInvocation(shell.kind, command);
   return [
     ["mode", "shell"],
-    ["interpreter", interpreter],
-    ["command", command],
+    ["interpreter", shell.file],
+    ["interpreterKind", shell.kind],
+    ...(invocation.command != null ? [["command", invocation.command]] : []),
+    ...(invocation.args || []).map((arg) => ["shellArg", arg]),
     ["cwd", cwd || ""],
     ["timeoutMs", String(timeoutMs || 60000)],
   ];
@@ -318,7 +446,7 @@ export function shellRequestEntries({ command, cwd, timeoutMs, interpreter = "cm
 // agentShell creation, not the test override). It proves the helper runs (§2.2),
 // then streams one shell command through it, honouring the caller's timeout and
 // its revocation signal (stdin-EOF aborts; the Job Object reaps the tree).
-export function windowsShellRunner(windowsSandbox, { start = spawnVerified, interpreter = "cmd.exe" } = {}) {
+export function windowsShellRunner(windowsSandbox, { start = spawnVerified, interpreter } = {}) {
   return async ({ command, cwd, timeoutMs = 60000, maxOutput = 256 * 1024, signal }) => {
     if (signal?.aborted) throw signal.reason;
     const ready = await windowsSandbox.ready();

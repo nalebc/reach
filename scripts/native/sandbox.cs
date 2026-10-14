@@ -171,6 +171,48 @@ static class Sandbox {
   // A refusal raised from a mode handler: same framed channel as Main's.
   public static Exception Refusal(int status, string message) { return new Refused(status, message); }
 
+  // The command line for the owner's shell (jobs and the Full-control shell run
+  // through it, as the Mac uses $SHELL for both). cmd runs the command as the
+  // rest of its line (/d /s /c); PowerShell runs the pre-split argv Node built
+  // (-NoProfile -NonInteractive -EncodedCommand …), each argument quoted for
+  // CommandLineToArgvW. The interpreter is accepted only from the allow-list
+  // its kind names (System32 cmd, Windows PowerShell or pwsh), a full path that
+  // exists; anything else is refused (fail closed).
+  public static string ShellCommandLine(string interpreter, string kind, string command, List<string> shellArgs) {
+    if (string.IsNullOrEmpty(interpreter) || !System.IO.Path.IsPathRooted(interpreter) || !System.IO.File.Exists(interpreter))
+      throw Refusal(400, "The sandbox interpreter must be a program on this PC.");
+    string name = System.IO.Path.GetFileName(interpreter).ToLowerInvariant();
+    if (kind == "cmd") {
+      if (name != "cmd.exe") throw Refusal(400, "The sandbox cmd interpreter must be cmd.exe.");
+      return "\"" + interpreter + "\" /d /s /c " + command;
+    }
+    if (kind == "powershell") {
+      if (name != "powershell.exe" && name != "pwsh.exe") throw Refusal(400, "The sandbox PowerShell interpreter must be powershell.exe or pwsh.exe.");
+      StringBuilder sb = new StringBuilder();
+      sb.Append('"').Append(interpreter).Append('"');
+      foreach (string arg in shellArgs) { sb.Append(' '); sb.Append(ArgvQuote(arg)); }
+      return sb.ToString();
+    }
+    throw Refusal(400, "Unknown sandbox interpreter kind.");
+  }
+
+  // Quote one argument the way CommandLineToArgvW parses it, so a value with a
+  // space, a quote or a trailing backslash reaches the child intact.
+  static string ArgvQuote(string arg) {
+    if (arg.Length > 0 && arg.IndexOfAny(new char[] { ' ', '\t', '\n', '\v', '"' }) < 0) return arg;
+    StringBuilder sb = new StringBuilder();
+    sb.Append('"');
+    for (int i = 0; ; i++) {
+      int backslashes = 0;
+      while (i < arg.Length && arg[i] == '\\') { i++; backslashes++; }
+      if (i == arg.Length) { sb.Append('\\', backslashes * 2); break; }
+      if (arg[i] == '"') { sb.Append('\\', backslashes * 2 + 1).Append('"'); }
+      else { sb.Append('\\', backslashes).Append(arg[i]); }
+    }
+    sb.Append('"');
+    return sb.ToString();
+  }
+
   // Read exactly `count` bytes or throw: a short read means the pipe closed
   // mid-frame, which is never a valid request.
   static byte[] ReadExactly(Stream stream, int count) {
@@ -340,6 +382,37 @@ static class Grants {
     Walk(root, writable, allow, denyNames, ref seen);
   }
 
+  // A named tool folder granted read+execute (D-C-5). Best-effort and never
+  // fatal: a folder Reach can't ACE (a system location, a permission it lacks)
+  // or one too large to walk fully leaves that tool unreadable, rather than
+  // failing the job. Read-only always (never Write); a cache the walk stops
+  // short of (ReadLimit) keeps its freshly-created entries readable through the
+  // inheritable ALLOW, and a job re-fetches what isn't covered.
+  const int ReadLimit = 60000;
+  public static void ApplyReadGrant(string path) {
+    try {
+      SecurityIdentifier allow = RootCapability(path);
+      bool directory = Directory.Exists(path);
+      if (!directory && !File.Exists(path)) return;
+      AllowObject(path, directory, false, allow, directory);
+      if (directory) { int seen = 0; ReadWalk(path, allow, ref seen); }
+    } catch (Exception) { /* best-effort: this tool stays unreadable */ }
+  }
+
+  static void ReadWalk(string dir, SecurityIdentifier allow, ref int seen) {
+    IEnumerable<string> entries;
+    try { entries = Directory.EnumerateFileSystemEntries(dir); } catch (Exception) { return; }
+    foreach (string entry in entries) {
+      if (++seen > ReadLimit) return; // a huge cache: stop, don't fail
+      FileAttributes attributes;
+      try { attributes = File.GetAttributes(entry); } catch (Exception) { continue; }
+      bool directory = (attributes & FileAttributes.Directory) != 0;
+      if ((attributes & FileAttributes.ReparsePoint) != 0) { if (NativeSec.IsNameSurrogate(entry)) continue; }
+      try { AllowObject(entry, directory, false, allow, false); } catch (Exception) { continue; }
+      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) ReadWalk(entry, allow, ref seen);
+    }
+  }
+
   static void Walk(string dir, bool writable, SecurityIdentifier allow, ICollection<string> denyNames, ref int seen) {
     IEnumerable<string> entries;
     try { entries = Directory.EnumerateFileSystemEntries(dir); }
@@ -504,14 +577,16 @@ static class Jobs {
   }
 
   public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
-    string interpreter = request.Get("interpreter", "cmd.exe");
-    if (interpreter != "cmd.exe") throw Sandbox.Refusal(400, "Jobs run through cmd.exe on Windows.");
+    string interpreter = request.Get("interpreter", NativeProc.ComSpec());
+    string interpreterKind = request.Get("interpreterKind", "cmd");
     string command = request.Get("command", "");
+    List<string> shellArgs = request.List("shellArg");
     string cwd = request.Get("cwd", null);
     int timeoutMs = request.Int("timeoutMs", 60000);
     int activeProcesses = request.Int("activeProcesses", 512);
     List<string> grants = request.List("grant");
     List<string> grantAccess = request.List("grantAccess");
+    List<string> reads = request.List("read");
     List<string> denies = request.List("deny");
     List<string> capabilityNames = request.List("capability");
     List<string> loopback = request.List("loopback");
@@ -524,13 +599,19 @@ static class Jobs {
       bool writable = i >= grantAccess.Count || grantAccess[i] != "ro";
       Grants.ApplyGrant(grants[i], writable, noNames, denies);
     }
+    // The named tool folders, read+execute only (D-C-5): best-effort, so a
+    // folder Reach can't ACE (or a cache too big to walk fully) leaves that
+    // tool unreadable rather than refusing the whole job.
+    foreach (string read in reads) Grants.ApplyReadGrant(read);
 
     // The AppContainer and its capabilities: the package SID is stable per
     // client; the launch carries only this client's per-root capabilities, the
-    // Reach-wide deny capability, and internetClient (§4.1, §5).
+    // tool-folder read capabilities, the Reach-wide deny capability, and
+    // internetClient (§4.1, §5).
     IntPtr containerSid = NativeProc.EnsureAppContainer(containerName);
     var caps = new List<SecurityIdentifier>();
     foreach (string root in grants) caps.Add(Grants.RootCapability(root));
+    foreach (string read in reads) caps.Add(Grants.RootCapability(read));
     caps.Add(Grants.DenyCapability());
     foreach (string name in capabilityNames) if (name == "internetClient") caps.Add(new SecurityIdentifier("S-1-15-3-1"));
 
@@ -546,7 +627,7 @@ static class Jobs {
             throw Sandbox.Refusal(403, "This PC let a sandboxed command reach Reach itself, so the command was refused.");
         }
 
-        string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+        string commandLine = Sandbox.ShellCommandLine(interpreter, interpreterKind, command, shellArgs);
         NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true);
         try {
           // §4.5 preflight: the real launch token, AccessChecked against every
@@ -950,12 +1031,15 @@ static class NativeProc {
 // apps survive), terminating it only on abort (Node's stdin EOF) or timeout.
 static class Shell {
   public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
+    string interpreter = request.Get("interpreter", NativeProc.ComSpec());
+    string interpreterKind = request.Get("interpreterKind", "cmd");
     string command = request.Get("command", "");
+    List<string> shellArgs = request.List("shellArg");
     string cwd = request.Get("cwd", "");
     if (string.IsNullOrEmpty(cwd)) cwd = null;
     int timeoutMs = request.Int("timeoutMs", 60000);
     using (NativeProc.JobObject job = NativeProc.JobObject.CreateForShell()) {
-      string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+      string commandLine = Sandbox.ShellCommandLine(interpreter, interpreterKind, command, shellArgs);
       NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, null, job, false);
       try {
         emit(Sandbox.TypeStarted, BeBytes(launched.ProcessId));
