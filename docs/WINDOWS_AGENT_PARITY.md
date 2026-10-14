@@ -10,7 +10,7 @@ Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on
 - Built, not yet run on a real PC: the PC's own terminals (T). Windows Terminal tabs and console windows are listed beside Reach's terminals on the Terminals page and Home, read, typed into, brought forward and closed from the phone, and terminal shortcuts open new ones. On by detection; a PC that can't build the helper says why.
 - Works: command-line agents over the tailnet for files.
 - Built, not yet run on a real PC: the PC's own terminals on the phone (T): Windows Terminal tabs and console windows listed, read, typed into, brought forward and closed; terminal shortcuts open new ones.
-- Built, not yet run on a real PC: OpenClaw natively, as on a Mac (#15). It's installed, set up and given keys and channels from the phone, and its health and Node recovery work there too. iMessage needs a Mac (below).
+- Built, not yet run on a real PC: OpenClaw natively, as on a Mac (#15). It's installed, set up and given keys and channels from the phone, and its health and Node recovery work there too. Beside OpenClaw's own Windows app, Reach uses the Gateway the app keeps in WSL. iMessage needs a Mac (below).
 - Being built (Oct 13): K and L, B, C, P #26 (H.264 without FFmpeg), U (proof on the runner). Still to start: E and F after B and C; G and H after B; P's guest mask and owner field probe after B; N's app-open detection after L.
 
 ## What parity means
@@ -112,7 +112,8 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
       - Over its WebSocket on loopback: chats, health, logs, WhatsApp, schedules. A record the app reaches at a tailnet address (its Tailscale Serve option) is refused: Reach is the private way in.
       - Inside the distro, as the app itself runs OpenClaw: `wsl.exe -d <distro> --user openclaw -- bash -s`, the script on stdin, fixed words only (wsl.exe rewrites `$` in arguments, never stdin). Keys come on stdin after the script; Telegram's token by bash's own `read` into a file only `openclaw` reads. Nothing goes through `WSLENV`. Covers keys, the default model, Telegram, Doctor, and the Gateway's start and restart.
       - Refused, with the reason: Discord and Slack (OpenClaw takes their tokens only on a command line, and their plugins aren't part of OpenClaw; OpenClaw's guided setup does them over the WebSocket), repairs and updates (the app keeps that Gateway), a second install or setup.
-      - Unproven until a real PC with the app: WSL's localhost forwarding reaching the Gateway as loopback (else it asks to approve Reach as a device, and the phone says to approve it in the app); WSL stopping its VM when the app isn't running (the app keeps it awake; Reach doesn't).
+      - The Gateway's token: the app's record keeps it in plaintext and never clears it after pairing (only the one-time bootstrap token goes); a record carried over from the app's older settings may have none, and then it's read from the Gateway's own `openclaw.json` in the distro, with the same checks as this PC's own config.
+      - Unproven until a real PC with the app: WSL's localhost forwarding reaching the Gateway as loopback (else it asks to approve Reach as a device, and the phone says to approve it in the app); WSL stopping its VM when the app isn't running (the app keeps it awake; Reach doesn't); wsl.exe's own notes on stdout (Reach drops lines starting `wsl: ` before reading OpenClaw's JSON).
     - Proof so far: `test/windows-openclaw.test.mjs` and `test/windows-openclaw-hub.test.mjs`, in the Windows lane; the WSL scripts run by real bash on Mac and Linux (WSL can't run on GitHub's runners).
 
 Follow-ups the reviews left, both for a real PC:

@@ -15,7 +15,7 @@ import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { ownerOnlyFile, typedCli } from "./openclaw-windows.mjs";
-import { hubGateway, hubTelegram, openClawTarget } from "./openclaw-hub.mjs";
+import { hubConfigToken, hubGateway, hubTelegram, NO_TOKEN, openClawTarget } from "./openclaw-hub.mjs";
 import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibility.mjs";
 
 // Features in files of their own, each adding its routes.
@@ -84,6 +84,7 @@ export async function localOpenClawConfig({
   home = os.homedir(),
   platform = process.platform,
   hub = hubGateway,
+  hubToken = cachedHubToken,
 } = {}) {
   const state = env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw");
   const file =
@@ -100,7 +101,7 @@ export async function localOpenClawConfig({
     if (error.code === "ENOENT" && platform === "win32") {
       const kept = await hub({ env, home });
       if (kept?.error) throw kept.error;
-      if (kept) return { url: `ws://127.0.0.1:${kept.port}`, token: kept.token, password: undefined, hub: true };
+      if (kept) return { url: `ws://127.0.0.1:${kept.port}`, token: kept.token ?? (await hubToken({ distro: kept.distro, env })), password: undefined, hub: true };
     }
     if (error.code === "ENOENT")
       throw Object.assign(
@@ -157,6 +158,17 @@ export async function localOpenClawConfig({
       env.OPENCLAW_GATEWAY_PASSWORD || config.gateway?.auth?.password,
     ),
   };
+}
+
+// A record with no token of its own: the distro's config read at most every
+// five minutes, never on each look; a failure isn't kept.
+let hubTokenKept = null;
+async function cachedHubToken({ distro, env }) {
+  if (hubTokenKept?.distro === distro && Date.now() - hubTokenKept.at < 5 * 60 * 1000) return hubTokenKept.token;
+  const token = await hubConfigToken({ distro, env, run: runOpenClaw, parse: JSON5.parse });
+  if (!token) throw fail(503, NO_TOKEN);
+  hubTokenKept = { distro, token, at: Date.now() };
+  return token;
 }
 
 async function deviceIdentity(file) {

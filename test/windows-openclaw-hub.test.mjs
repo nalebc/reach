@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { HUB_KEEPS, hubGateway, hubShell, hubTelegram, openClawTarget, wslExe } from "../server/openclaw-hub.mjs";
+import { HUB_KEEPS, hubConfigToken, hubGateway, hubShell, hubTelegram, NO_TOKEN, openClawTarget, withoutWslNotes, wslExe } from "../server/openclaw-hub.mjs";
+import { openClawSource } from "../server/keep-in-sync.mjs";
 import { openClawShell } from "../server/openclaw-run.mjs";
 import { runTree } from "../server/openclaw-windows.mjs";
 import { addOpenClawProvider, onboardOpenClaw, onboardStatus, saveApiKey } from "../server/openclaw-onboard.mjs";
@@ -53,7 +54,9 @@ test("the app's Gateway: from its registry, the active record of a distro it set
   assert.equal(served.error.status, 503);
   assert.match(served.error.message, /publishes its Gateway on your tailnet/);
   assert.doesNotMatch(served.error.message, /tail1234/, "no tailnet name to the phone");
-  assert.match((await hubGateway(registry(t, { gateways: [record({ sharedGatewayToken: "" })] }))).error.message, /no Gateway token Reach can use/);
+  // A record carried over from the app's older settings may hold no token:
+  // the Gateway's own config in the distro has it (hubConfigToken).
+  assert.deepEqual(await hubGateway(registry(t, { gateways: [record({ sharedGatewayToken: "" })] })), { ...kept, token: null });
   assert.match((await hubGateway(registry(t, { gateways: [record({ setupManagedDistroName: "bad name; rm" })] }))).error.message, /can't read which Gateway/);
 });
 
@@ -69,7 +72,12 @@ test("one answer for everything: this PC's own setup first, then the app's Gatew
 
 test("chats go to the app's Gateway on this PC's loopback, with its token; a Mac never looks for it", async (t) => {
   const { env, home } = registry(t, { gateways: [record({ url: "ws://localhost:18790" })], activeId: "a1b2c3" });
-  assert.deepEqual(await localOpenClawConfig({ env, home, platform: "win32" }), { url: "ws://127.0.0.1:18790", token: "shared-token-0123456789", password: undefined, hub: true });
+  assert.deepEqual(await localOpenClawConfig({ env, home, platform: "win32", hubToken: async () => assert.fail("the record has one") }), { url: "ws://127.0.0.1:18790", token: "shared-token-0123456789", password: undefined, hub: true });
+  // No token in the record: the distro's own config's.
+  const bare = registry(t, { gateways: [record({ sharedGatewayToken: null })] });
+  const asked = [];
+  assert.equal((await localOpenClawConfig({ ...bare, platform: "win32", hubToken: async (o) => (asked.push(o.distro), "from-the-distro") })).token, "from-the-distro");
+  assert.deepEqual(asked, ["OpenClawGateway"]);
   await assert.rejects(localOpenClawConfig({ env, home, platform: "darwin" }), (e) => e.notSetUp === true);
   const served = registry(t, { gateways: [record({ url: "wss://pc.tail1234.ts.net" })] });
   await assert.rejects(localOpenClawConfig({ ...served, platform: "win32" }), (e) => e.status === 503 && /tailnet/.test(e.message));
@@ -217,4 +225,36 @@ test("in the distro, the key reaches OpenClaw's stdin and Telegram's token its f
   const refused = runScript(input, { STUB_EXIT: "1" });
   assert.equal(refused.status, 1);
   assert.equal(fs.existsSync(file), false);
+});
+
+// The token from the Gateway's own config in the distro: read as the app
+// reads it there (a fixed script on stdin), into memory only, with the
+// checks this PC's own config gets.
+test("a record with no token: the distro's openclaw.json gives it, with the same checks; anything else is said, not guessed", async () => {
+  const env = { SystemRoot: "C:\\Windows" };
+  const answer = (config, note = "") => async (file, argv, options) => {
+    assert.equal(file, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(argv, ["-d", "OpenClawGateway", "--user", "openclaw", "--", "bash", "-s"]);
+    assert.match(options.input, /\nexec cat \/home\/openclaw\/\.openclaw\/openclaw\.json\n$/);
+    return { stdout: `${note}${typeof config === "string" ? config : JSON.stringify(config)}` };
+  };
+  const ok = { gateway: { mode: "local", bind: "loopback", auth: { mode: "token", token: "distro-token" } } };
+  assert.equal(await hubConfigToken({ distro: "OpenClawGateway", env, run: answer(ok) }), "distro-token");
+  // wsl.exe's own notes before it don't break the reading.
+  assert.equal(await hubConfigToken({ distro: "OpenClawGateway", env, run: answer(ok, "wsl: A localhost proxy configuration was detected but not mirrored into WSL.\n") }), "distro-token");
+  for (const config of [
+    { gateway: { bind: "lan", auth: { token: "t" } } },
+    { gateway: { tailscale: { mode: "serve" }, auth: { token: "t" } } },
+    { gateway: { mode: "remote", auth: { token: "t" } } },
+  ])
+    await assert.rejects(hubConfigToken({ distro: "OpenClawGateway", env, run: answer(config) }), (e) => e.status === 503 && /open beyond that distro/.test(e.message), JSON.stringify(config));
+  for (const config of [{ gateway: { auth: { token: "${OPENCLAW_GATEWAY_TOKEN}" } } }, { gateway: { auth: { token: { source: "store", id: "T" } } } }, { gateway: {} }, "not json"])
+    await assert.rejects(hubConfigToken({ distro: "OpenClawGateway", env, run: answer(config) }), (e) => e.status === 503 && e.message === NO_TOKEN, JSON.stringify(config));
+  assert.equal(withoutWslNotes("wsl: note\n[1]\n"), "[1]\n");
+});
+
+test("too old an OpenClaw in the app's Gateway: Needs you says to update it from that app", async () => {
+  const source = (kept) => openClawSource({ tooOld: () => ({ version: "2026.1.0", to: "2026.2.26" }), kept: async () => kept });
+  assert.equal((await source(true).check()).how, "Update it from OpenClaw's Windows app");
+  assert.equal((await source(false).check()).how, "Update it from OpenClaw in Reach");
 });

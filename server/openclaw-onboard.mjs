@@ -24,7 +24,7 @@ import { hasCommand } from "./agent-install.mjs";
 import { openClawShell, runOpenClaw, secretEnv } from "./openclaw-run.mjs";
 import { findOpenClaw, killTree, typedCli } from "./openclaw-windows.mjs";
 import { computerWord } from "./computer-word.mjs";
-import { hubGateway } from "./openclaw-hub.mjs";
+import { hubGateway, withoutWslNotes } from "./openclaw-hub.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -133,14 +133,14 @@ export async function saveApiKey(provider, key, { pipe = pipeRun, run = runOpenC
   pick(provider);
   // OpenClaw's default agent (the one onboard set up), by its own list.
   const [agentsFile, agents, agentsEnv = env, agentsScript] = await openClawShell(["agents", "list", "--json"], { env, platform, runtime, ...where });
-  const roster = JSON.parse(String((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env: agentsEnv, ...scripted(agentsScript) })).stdout || "null"));
+  const roster = JSON.parse(withoutWslNotes((await run(agentsFile, agents, { timeout: 30000, maxBuffer: 1024 * 1024, env: agentsEnv, ...scripted(agentsScript) })).stdout) || "null");
   const agent = (Array.isArray(roster) ? roster : roster?.agents)?.find?.((a) => a?.isDefault === true)?.id;
   if (typeof agent !== "string" || !AGENT.test(agent)) throw new Error("no default agent");
   const [file, args, pasteEnv = env, pasteScript = ""] = await openClawShell(pasteArgs(provider, agent), { env, platform, runtime, ...where });
   await pipe(file, args, { input: `${pasteScript}${key}\n`, timeout: 60000, env: pasteEnv });
   const [listFile, list, listEnv = env, listScript] = await openClawShell(listArgs(provider, agent), { env, platform, runtime, ...where });
   const { stdout } = await run(listFile, list, { timeout: 30000, maxBuffer: 1024 * 1024, env: listEnv, ...scripted(listScript) });
-  const profiles = JSON.parse(String(stdout || "null"))?.profiles;
+  const profiles = JSON.parse(withoutWslNotes(stdout) || "null")?.profiles;
   const saved = Array.isArray(profiles) && profiles.find((p) => p?.id === `${provider}:default`);
   if (!saved || saved.provider !== provider || saved.type !== "api_key") throw new Error("not saved");
 }

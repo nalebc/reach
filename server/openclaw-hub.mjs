@@ -38,6 +38,11 @@ const managed = (record) =>
 // token } to use; { error } for one Reach can't use, with the reason (a
 // Gateway it publishes on the tailnet through Tailscale Serve, which the
 // app then reaches at a wss://…ts.net address: Reach is the private way in).
+// The app keeps the Gateway's shared token in plaintext in its record and
+// never clears it after pairing (it clears only the one-time bootstrap
+// token: BootstrapTokenLifecycle.cs); a record carried over from the app's
+// older settings may have none, and then `token` is null: the Gateway's own
+// openclaw.json in the distro has it (hubConfigToken).
 export async function hubGateway({ env = process.env, home = os.homedir(), readFile = fs.readFile } = {}) {
   let data;
   try {
@@ -59,10 +64,32 @@ export async function hubGateway({ env = process.env, home = os.homedir(), readF
     return { distro, error: fail(503, "OpenClaw's Windows app publishes its Gateway on your tailnet (Tailscale Serve in its WSL distro). Turn tailnet access off in that app; Reach is the private way in.") };
   const port = Number(url.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return unread;
-  if (typeof record.sharedGatewayToken !== "string" || !record.sharedGatewayToken.trim())
-    return { distro, error: fail(503, "OpenClaw's Windows app keeps no Gateway token Reach can use. Set its Gateway up again in that app.") };
-  return { distro, port, token: record.sharedGatewayToken.trim() };
+  const token = typeof record.sharedGatewayToken === "string" && record.sharedGatewayToken.trim() ? record.sharedGatewayToken.trim() : null;
+  return { distro, port, token };
 }
+
+export const NO_TOKEN = "OpenClaw's Windows app keeps no Gateway token Reach can use. Set its Gateway up again in that app.";
+// The token from the Gateway's own openclaw.json in the distro, read as the
+// app reads it there (a fixed script on stdin; the file comes back on stdout
+// into memory only), with the checks this PC's own config gets: loopback,
+// no Tailscale, a token written out (an expansion or a reference Reach
+// can't resolve from Windows is refused).
+export async function hubConfigToken({ distro, env = process.env, run, parse = JSON.parse } = {}) {
+  const [file, argv, childEnv, input] = hubShellCommand(["cat", `${HUB_HOME}/.openclaw/openclaw.json`], { distro, env });
+  let config;
+  try {
+    config = parse(withoutWslNotes((await run(file, argv, { env: childEnv, input, timeout: 60000, maxBuffer: 4 * 1024 * 1024 })).stdout));
+  } catch {
+    throw fail(503, NO_TOKEN);
+  }
+  if (config?.gateway?.mode === "remote" || (config?.gateway?.bind ?? "loopback") !== "loopback" || (config?.gateway?.tailscale?.mode ?? "off") !== "off")
+    throw fail(503, "OpenClaw's Gateway in its Windows app's WSL distro is open beyond that distro. Reach is the private way in.");
+  const token = config?.gateway?.auth?.token;
+  if (typeof token !== "string" || !token.trim() || token.includes("${")) throw fail(503, NO_TOKEN);
+  return token.trim();
+}
+// wsl.exe can put its own notes ("wsl: …") on stdout before the program's.
+export const withoutWslNotes = (text) => String(text ?? "").split(/\r?\n/).filter((line) => !/^wsl: /.test(line)).join("\n");
 
 // Which OpenClaw Reach drives here: this computer's own setup when there is
 // one, else on Windows the app's Gateway in WSL, else this computer's own
@@ -107,8 +134,10 @@ const head = (prefix) => `set -e\nexport PATH="${prefix}:$PATH"\n`;
 // the command reads on its stdin (a key) goes right after the script: bash
 // reads its script a line at a time and `exec` hands the rest to OpenClaw.
 export function hubShell(args, { distro, env = process.env, prefix = HUB_PATH } = {}) {
-  return [wslExe(env), wslArgs(distro), env, `${head(prefix)}exec openclaw ${words(args)}\n`];
+  return hubShellCommand(["openclaw", ...args], { distro, env, prefix });
 }
+const hubShellCommand = ([program, ...args], { distro, env = process.env, prefix = HUB_PATH } = {}) =>
+  [wslExe(env), wslArgs(distro), env, `${head(prefix)}exec ${words([program, ...args])}\n`];
 
 // Telegram's token into the distro: a file only `openclaw` can read
 // (umask 077, bash's own printf: no program gets it as an argument), then
