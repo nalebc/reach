@@ -3429,6 +3429,8 @@ export async function createReach(overrides = {}) {
         clientId: current.id,
         // A failed download fails the install too (curl … | bash).
         command: installTerminalCommand({ ...plan, lead }),
+        // Windows: PowerShell's own text, whatever the owner's shell.
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -3460,6 +3462,7 @@ export async function createReach(overrides = {}) {
         name: `Update ${plan.name}`,
         clientId: current.id,
         command: installTerminalCommand(plan),
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;

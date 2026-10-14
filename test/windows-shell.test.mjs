@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandFor, parseJsonc, splitCommandLine, terminalSettingsFiles, windowsPowerShell, windowsShell } from "../server/windows-shell.mjs";
+import { commandFor, parseJsonc, splitCommandLine, terminalSettingsFiles, windowsPowerShell, windowsShell, windowsTerminal } from "../server/windows-shell.mjs";
 import { powershellCall } from "../server/powershell.mjs";
 
 // Reach's terminals on Windows open the owner's own shell, as a Mac opens
@@ -75,4 +75,19 @@ test("the pieces: JSON with comments, and a command line's program", () => {
   assert.deepEqual(splitCommandLine('"C:\\Program Files\\Git\\bin\\bash.exe" -i -l'), { file: "C:\\Program Files\\Git\\bin\\bash.exe", rest: "-i -l" });
   assert.deepEqual(splitCommandLine("cmd.exe /k echo hi"), { file: "cmd.exe", rest: "/k echo hi" });
   assert.equal(splitCommandLine("   "), null);
+});
+
+// An install or update types PowerShell's own text (agent-install.mjs): it
+// opens PowerShell whatever the owner's shell, or cmd would get PowerShell
+// text (found merging OpenClaw's Windows installer, Oct 13).
+test("a Reach terminal on Windows: the owner's shell, an agent's command written for it, PowerShell for installs", () => {
+  const cmd = { file: "C:\\Windows\\System32\\cmd.exe", args: "", kind: "cmd", name: "Command Prompt" };
+  const bash = { file: "C:\\Git\\bin\\bash.exe", args: "-i -l", kind: "other", name: "Git Bash" };
+  const ps = { file: "C:\\pwsh.exe", args: ["-NoLogo"], kind: "powershell", name: "PowerShell" };
+  const at = (own) => ({ own: () => own, fallback: () => ps, call: powershellCall });
+  assert.deepEqual(windowsTerminal({ ...at(cmd) }), { shell: cmd, typed: "" });
+  assert.deepEqual(windowsTerminal({ ...at(cmd), command: '"C:\\claude.exe"' }), { shell: cmd, typed: '"C:\\claude.exe"' });
+  assert.deepEqual(windowsTerminal({ ...at(bash), command: '"C:\\claude.exe"' }), { shell: ps, typed: "& 'C:\\claude.exe'" });
+  const install = "$ErrorActionPreference = 'Stop'; try { irm https://claude.ai/install.ps1 | iex; exit 0 } catch { exit 1 }";
+  for (const own of [cmd, bash, ps]) assert.deepEqual(windowsTerminal({ ...at(own), command: install, powershell: true }), { shell: ps, typed: install }, own.name);
 });
