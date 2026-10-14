@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { localOpenClawConfig } from "./openclaw.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
+import { typedCli } from "./openclaw-windows.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -285,7 +286,7 @@ export async function restartOpenClawGateway({
   } catch {
     throw fail(
       503,
-      "OpenClaw’s Gateway didn’t restart. On this computer, run: openclaw gateway restart",
+      `OpenClaw’s Gateway didn’t restart. On this computer, run: ${typedCli(platform)} gateway restart`,
     );
   }
 }

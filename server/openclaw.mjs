@@ -14,7 +14,7 @@ import * as skillsFeature from "./openclaw-skills.mjs";
 import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
-import { ownerOnlyFile } from "./openclaw-windows.mjs";
+import { ownerOnlyFile, typedCli } from "./openclaw-windows.mjs";
 import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibility.mjs";
 
 // Features in files of their own, each adding its routes.
@@ -2219,7 +2219,7 @@ export async function startOpenClawGateway({
   } catch {
     throw fail(
       503,
-      "OpenClaw’s Gateway didn’t start. On this computer, run: openclaw gateway start",
+      `OpenClaw’s Gateway didn’t start. On this computer, run: ${typedCli(platform)} gateway start`,
     );
   }
 }

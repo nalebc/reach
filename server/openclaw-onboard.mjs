@@ -22,7 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { hasCommand } from "./agent-install.mjs";
 import { openClawShell, runOpenClaw, secretEnv } from "./openclaw-run.mjs";
-import { findOpenClaw, killTree } from "./openclaw-windows.mjs";
+import { findOpenClaw, killTree, typedCli } from "./openclaw-windows.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -160,14 +160,15 @@ export async function onboardStatus({ has, file = configFile(), platform = proce
 
 // Why a setup run failed, in Reach's own words. OpenClaw's output is read
 // only to tell causes apart, never echoed: it can carry the key.
+const partial = (cli) => `OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: ${cli} gateway install`;
 export const SETUP_ERRORS = {
   missing: "OpenClaw isn't installed on this computer. Install it, then set it up.",
   node: "OpenClaw needs Node 24.16 or newer on this computer. Update Node, then set it up again.",
-  partial: "OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: openclaw gateway install",
+  partial: partial("openclaw"),
   timeout: "OpenClaw's setup took over 3 minutes and was stopped. Try again.",
   failed: "OpenClaw didn't finish setting up. Check the key and try again.",
 };
-export async function setupFailure(error, file) {
+export async function setupFailure(error, file, platform = process.platform) {
   const output = `${error?.stderr ?? ""}\n${error?.stdout ?? ""}`.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   // The login shell's "command not found", or no shell at all.
   if (error?.code === 127 || error?.code === "ENOENT") return { state: "failed", error: SETUP_ERRORS.missing };
@@ -175,7 +176,7 @@ export async function setupFailure(error, file) {
   // older "requires Node" wording updateRecovery reads.
   if (/OpenClaw requires|requires Node|Node [\w.]+ is unsupported|Use Node\.js \d/i.test(output)) return { state: "failed", error: SETUP_ERRORS.node };
   // Config written, daemon not: a retry would only get "already set up".
-  if (await exists(file)) return { state: "partial", error: SETUP_ERRORS.partial };
+  if (await exists(file)) return { state: "partial", error: platform === "win32" ? partial(typedCli(platform)) : SETUP_ERRORS.partial };
   if (error?.killed === true || error?.signal === "SIGTERM" || error?.signal === "SIGKILL") return { state: "failed", error: SETUP_ERRORS.timeout };
   return { state: "failed", error: SETUP_ERRORS.failed };
 }
@@ -216,7 +217,7 @@ export async function onboardOpenClaw(
     // phone polls onboard/status. Busy (no Add key) until OpenClaw exits.
     setup = { state: "running", provider };
     setupRun = run(shell, argv, { timeout: 180000, maxBuffer: 4 * 1024 * 1024, env: secretEnv(childEnv, { platform, secret, value }) })
-      .then(() => ({ state: "done" }), (error) => setupFailure(error, file))
+      .then(() => ({ state: "done" }), (error) => setupFailure(error, file, platform))
       .catch(() => ({ state: "failed", error: SETUP_ERRORS.failed }))
       .then((end) => { setup = { ...end, provider }; })
       .finally(() => { busy = false; });

@@ -41,6 +41,11 @@ export const portableNodeDir = ({ env = process.env, home = os.homedir() } = {})
 export const openClawDirs = ({ env = process.env, home = os.homedir() } = {}) =>
   [...windowsCliDirs(env, home), portableNodeDir({ env, home })];
 
+// What the owner types at the PC: openclaw.cmd, as PowerShell would run
+// npm's openclaw.ps1 for a bare `openclaw`, which Windows' default policy
+// refuses ("running scripts is disabled"); cmd takes either.
+export const typedCli = (platform = process.platform) => (platform === "win32" ? "openclaw.cmd" : "openclaw");
+
 // openclaw.mjs, as npm's openclaw.cmd runs it (or an openclaw.exe); null when
 // Reach can't find one it can start.
 export const findOpenClaw = ({ env = process.env, home = os.homedir(), find = findWindowsCli, ...files } = {}) =>

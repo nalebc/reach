@@ -9,7 +9,7 @@ import { openClawShell, runOpenClaw, secretEnv } from "../server/openclaw-run.mj
 import {
   findOpenClaw, installNode, leadPath, openClawNode, ownerOnlyFile, privateNodeDir, runTree, supportedNode, withSecret,
 } from "../server/openclaw-windows.mjs";
-import { addOpenClawProvider, onboardArgs, onboardOpenClaw, onboardSettled, onboardSetup, onboardStatus, saveApiKey, SETUP_ERRORS } from "../server/openclaw-onboard.mjs";
+import { addOpenClawProvider, onboardArgs, onboardOpenClaw, onboardSettled, onboardSetup, onboardStatus, saveApiKey, SETUP_ERRORS, setupFailure } from "../server/openclaw-onboard.mjs";
 import { addOpenClawChannel, startOpenClawGateway } from "../server/openclaw.mjs";
 import { restartOpenClawGateway, runOpenClawMaintenance } from "../server/openclaw-health.mjs";
 import { availableUpdateRuntime, installUpdateRuntime, publicRecovery, updateRecovery } from "../server/openclaw-update-recovery.mjs";
@@ -216,7 +216,18 @@ test("the Gateway on Windows starts and restarts through OpenClaw's own commands
   await restartOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run });
   assert.deepEqual(ran.map(([file, argv]) => [file, argv]), [["C:\\n\\node.exe", [script, "gateway", "start"]], ["C:\\n\\node.exe", [script, "gateway", "restart"]]]);
   assert.ok(ran.every(([, , options]) => options.env.PATH.startsWith("C:\\n;")), "its Node's folder first");
-  await assert.rejects(startOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run: async () => { throw new Error("x"); } }), (e) => e.status === 503);
+  // What to type at the PC when it can't: openclaw.cmd, which PowerShell
+  // runs under Windows' default policy (npm's openclaw.ps1 it refuses).
+  const broken = async () => { throw new Error("x"); };
+  await assert.rejects(startOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run: broken }),
+    (e) => e.status === 503 && e.message === "OpenClaw’s Gateway didn’t start. On this computer, run: openclaw.cmd gateway start");
+  await assert.rejects(restartOpenClawGateway({ configuration: async () => ({}), env, platform: "win32", runtime: "C:\\n\\node.exe", run: broken }),
+    (e) => e.status === 503 && e.message === "OpenClaw’s Gateway didn’t restart. On this computer, run: openclaw.cmd gateway restart");
+  const config = at("home/openclaw.json");
+  fs.writeFileSync(config, "{}");
+  assert.deepEqual(await setupFailure({ code: 1 }, config, "win32"), { state: "partial", error: "OpenClaw saved its setup, but its Gateway service didn't install. On this computer, run: openclaw.cmd gateway install" });
+  assert.deepEqual(await setupFailure({ code: 1 }, config, "darwin"), { state: "partial", error: SETUP_ERRORS.partial });
+  assert.match(SETUP_ERRORS.partial, /run: openclaw gateway install$/);
 });
 
 test("maintenance on Windows: the same fixed commands, as arguments; the update read as on a Mac", async (t) => {
