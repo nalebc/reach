@@ -50,7 +50,12 @@ function check(authorize, signal) {
 
 async function runNative(config, request, authorize, signal) {
   check(authorize, signal);
-  if (process.platform !== "darwin") throw fail(501, "Protected app sharing requires macOS 14.2 or later.");
+  // Legacy single-window ("Selected apps") sharing is macOS-only; a Windows PC
+  // shares apps through the Apps preset (the agent desktop helper), not this.
+  // Window-only streaming on Windows is workstream H.
+  if (process.platform !== "darwin") throw fail(501, process.platform === "win32"
+    ? "This older single-window sharing needs a Mac. On a Windows PC, invite the agent with the Apps preset instead."
+    : "Protected app sharing requires macOS 14.2 or later.");
   const binary = await desktopBinary(config, "browser-app");
   check(authorize, signal);
   const body = JSON.stringify(request);

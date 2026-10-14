@@ -780,6 +780,8 @@ export type InstallPlan = {
   agent: string;
   name: string;
   command: string;
+  // What runs before it, in words (OpenClaw on a PC whose Node it can't use).
+  note?: string;
   terminal?: { id: string; status: string; exitCode?: number; preview?: string };
 };
 export const installAgent = (peer: Peer, agent: string, confirm = false) =>
@@ -907,6 +909,10 @@ export async function phoneJpeg(
     return { file, name };
   }
 }
+
+// A picture's preview while it's sent: only the object URL made for it on
+// this phone (blob:), never another address as an image's source.
+export const previewUrl = (url: string) => (url.startsWith("blob:") ? url : undefined);
 
 export async function uploadImage(peer: Peer, picked: Blob, given = "image") {
   const { file, name } = await phoneJpeg(picked, given);

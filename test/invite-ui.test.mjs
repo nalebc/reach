@@ -168,8 +168,9 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
 });
 
 // Windows refuses invited people its screen until it can leave password
-// managers out of their picture (parity audit #12): nothing offers it there.
-test("on a Windows PC nobody is invited to watch or control the screen", async () => {
+// managers out of their picture (parity audit #12): nothing offers it there,
+// and the sheet says why (found by the user journeys on Windows, Oct 14).
+test("on a Windows PC nobody is invited to watch or control the screen, and the sheet says why", async () => {
   computers();
   const pc = { ...device("Mac A", "mac-a"), platform: "win32" };
   pc.capabilities = { ...pc.capabilities, guestScreen: false };
@@ -179,7 +180,17 @@ test("on a Windows PC nobody is invited to watch or control the screen", async (
   assert.equal(access(c, "Can control"), undefined);
   assert.ok(access(c, "Can use files"), "the other roles stay");
   assert.notEqual(chosen(c), "Can watch");
+  assert.equal(
+    c.querySelector(".ivt-no-screen")?.textContent,
+    "Watching or controlling the screen isn't offered on this Windows PC yet: Reach can't hide password managers and its own windows from invited people there.",
+  );
   await view.unmount();
+  // A Mac offers both, with nothing to explain.
+  computers();
+  const mac = await render({});
+  assert.ok(access(mac.container, "Can watch") && access(mac.container, "Can control"));
+  assert.equal(mac.container.querySelector(".ivt-no-screen"), null);
+  await mac.unmount();
 });
 
 test("Custom on two computers: control, folders on each, terminal, editable, 1 day", async () => {
@@ -317,11 +328,12 @@ test("without invite keys: one slim line, never in the way; Tailscale sharing on
   await view.unmount();
 });
 
-// First-run matrix T26: a Windows Reach can't make invite keys. The sheet
-// says why instead of a setup that can't work, and Tailscale sharing (the
-// way that does) is open from the start.
+// First-run matrix T26: a computer that can't make invite keys for now (a
+// PC set up for browser sign-in, on pairing codes until Tailscale is new
+// enough). The sheet says why instead of a setup that can't work, and
+// Tailscale sharing (the way that does) is open from the start.
 test("a computer that can't make invite links: says why, no setup, Tailscale sharing open", async () => {
-  const why = "Invite links for people and agents without Tailscale aren't available on Windows yet.";
+  const why = "Invite links are off on this Windows PC for now: Tailscale 1.90.0 is older than 1.104; update Tailscale.";
   const log = computers({ keyed: false, unavailable: why });
   const view = await render();
   const c = view.container;
