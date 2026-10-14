@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { cscCandidates } from "../server/desktop-native.mjs";
@@ -17,7 +17,9 @@ import { parseNetstat, parseScQueryex, parseWhoamiGroups } from "./helpers/windo
 // test/fixtures/windows/fake-tailscaled.cs, registered as "Tailscale"; Reach
 // stood in for by test/fixtures/windows/peer-host.mjs, run as a standard user
 // with an interactive logon; another standard user trying everything else.
-// Windows' own netstat, sc and CIM are the second opinion.
+// Windows' own netstat, sc and CIM are the second opinion, and
+// test/fixtures/windows/peer-probe.cs names which of the helper's calls
+// Windows refuses, for whom.
 //
 // Only on a disposable CI runner (it creates users and a service named
 // Tailscale, and refuses if one exists): REACH_TEST_WINDOWS_PEER=1, CI=true.
@@ -56,7 +58,16 @@ const netCmd = (...args) => run(system("net.exe"), args);
 const icacls = (...args) => run(system("icacls.exe"), args);
 const pwsh = (command) => run("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command]);
 const readLines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean) : []);
+const readText = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : "(nothing written)");
 const events = (results) => readLines(path.join(results, "events.jsonl")).map((line) => JSON.parse(line));
+// The probe's lines where Windows said no: a Win32 error, or an NT status other than 0.
+const refusals = (text) => text.split(/\r?\n/).filter((line) => / error \d+|status 0x(?!00000000)/.test(line));
+// A group's attributes in the probe's "token groups" line: NaN if it isn't there.
+const groupAttributes = (text, sid) => {
+  const line = text.split(/\r?\n/).find((l) => l.startsWith("token groups ")) || "";
+  const found = line.split(" ").find((part) => part.startsWith(`${sid}:`));
+  return found ? parseInt(found.slice(sid.length + 1), 16) : NaN;
+};
 
 async function compile(source, out, references = []) {
   const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
@@ -79,9 +90,11 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   const tailscaled = path.win32.join(SERVICE_DIR, "tailscaled.exe");
   const runAs = path.join(bin, "run-as.exe");
   const bindProbe = path.join(bin, "bind-probe.exe");
+  const peerProbe = path.join(bin, "peer-probe.exe");
   await compile(path.join(fixtures, "fake-tailscaled.cs"), tailscaled, ["System.ServiceProcess.dll"]);
   await compile(path.join(fixtures, "run-as.cs"), runAs);
   await compile(path.join(fixtures, "bind-probe.cs"), bindProbe);
+  await compile(path.join(fixtures, "peer-probe.cs"), peerProbe);
 
   // Two standard users: reachci runs Reach, reachci2 is somebody else on the PC.
   const users = { reachci: password(), reachci2: password() };
@@ -91,7 +104,10 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   }
   const sids = {};
   for (const name of Object.keys(users)) sids[name] = (await run(runAs, ["sid", name])).stdout.trim();
+  // The runner's own account, for its token without elevation.
+  const runnerSid = (await run(runAs, ["sid", os.userInfo().username])).stdout.trim();
   const rightsAdded = new Set();
+  let batchRight = false;
   t.after(async () => {
     await sc("stop", "Tailscale");
     await sc("delete", "Tailscale");
@@ -100,16 +116,19 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     for (const name of Object.keys(users)) {
       if (sids[name]) await run(runAs, ["desktop", "revoke", sids[name]]);
       if (rightsAdded.has(name)) await run(runAs, ["logon-right", "remove", name]);
+      if (name === "reachci" && batchRight) await run(runAs, ["logon-right", "remove", name, "SeBatchLogonRight"]);
       await netCmd("user", name, "/delete");
     }
-    await run(system("schtasks.exe"), ["/delete", "/tn", "ReachPeerCI", "/f"]);
+    if (runnerSid) await run(runAs, ["desktop", "revoke", runnerSid]);
+    for (const task of ["ReachPeerCI", "ReachPeerProbe", "ReachPeerLaunch"]) await run(system("schtasks.exe"), ["/delete", "/tn", task, "/f"]);
   });
-  for (const name of Object.keys(users)) {
-    const granted = await run(runAs, ["desktop", "grant", sids[name]]);
+  for (const sid of [...Object.values(sids), runnerSid]) {
+    const granted = await run(runAs, ["desktop", "grant", sid]);
     assert.equal(granted.code, 0, granted.stdout);
   }
   // Folders each user may write: reachci's results, reachci2's probe logs,
   // the service's log, and reachci's state (tightened by peer-host itself).
+  // `results` and `state` are Reach's, as `reachMode` runs it (case 1).
   const folder = async (dir, ...grants) => {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
@@ -117,10 +136,17 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     assert.equal(set.code, 0, set.stdout);
     return dir;
   };
-  const results = await folder(path.join(CI_ROOT, "results"), sids.reachci);
+  const reachciResults = await folder(path.join(CI_ROOT, "results"), sids.reachci);
   const probes = await folder(path.join(CI_ROOT, "probes"), sids.reachci2);
   const serviceLog = path.join(await folder(path.join(CI_ROOT, "service")), "fake.log");
-  const state = await folder(path.join(CI_ROOT, "reachci-state"), sids.reachci);
+  const reachciState = await folder(path.join(CI_ROOT, "reachci-state"), sids.reachci);
+  let results = reachciResults;
+  let state = reachciState;
+  // "session": reachci, interactive, in session 0 (Windows' CreateProcessAsUser,
+  // from a SYSTEM task); "secondary": reachci in the runner's session (the
+  // secondary logon service); "limited": the runner without elevation, in its
+  // own session; "runner": the runner itself.
+  let reachMode = "session";
 
   // As a user, interactively; logon right added if Windows Server lacks it.
   const asUser = async (name, commandLine, { wait = true, dir = CI_ROOT } = {}) => {
@@ -137,10 +163,19 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   const quote = (value) => `"${value}"`;
   const node = quote(process.execPath);
   const peerHostScript = quote(path.join(fixtures, "peer-host.mjs"));
-  // Reach (peer-host) as reachci, until `stop`.
+  // Reach (peer-host) as reachci (or the runner), until `stop`.
   const startPeerHost = async (dir = results, code = "") => {
     for (const name of ["peer-host.json", "events.jsonl", "stop"]) fs.rmSync(path.join(dir, name), { force: true });
-    await asUser("reachci", `${node} ${peerHostScript} ${quote(dir)} ${quote(state)}${code ? ` ${quote(code)}` : ""}`, { wait: false, dir: repo });
+    // What it runs if its check won't start (peer-host.mjs).
+    fs.copyFileSync(peerProbe, path.join(dir, "peer-probe.exe"));
+    const command = `${node} ${peerHostScript} ${quote(dir)} ${quote(state)}${code ? ` ${quote(code)}` : ""}`;
+    if (reachMode === "runner") spawn(process.execPath, [path.join(fixtures, "peer-host.mjs"), dir, state, ...(code ? [code] : [])], { cwd: repo, detached: true, stdio: "ignore", windowsHide: true }).unref();
+    else if (reachMode === "limited") await run(runAs, ["filtered", repo, "nowait", command]);
+    else if (reachMode === "session") {
+      const said = await launch("reachci", command, { session: 0, wait: false, dir: repo });
+      if (!/^pid \d+/.test(said)) throw Error(`the SYSTEM task said: ${said}`);
+    }
+    else await asUser("reachci", command, { wait: false, dir: repo });
     const ready = await until(() => {
       try {
         return JSON.parse(fs.readFileSync(path.join(dir, "peer-host.json"), "utf8"));
@@ -157,8 +192,8 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   };
 
   // The interactive token really is interactive.
-  await asUser("reachci", `cmd.exe /c whoami /groups /fo csv > ${quote(path.join(results, "whoami.csv"))}`);
-  const groups = parseWhoamiGroups(fs.readFileSync(path.join(results, "whoami.csv"), "utf8"));
+  await asUser("reachci", `cmd.exe /c whoami /groups /fo csv > ${quote(path.join(reachciResults, "whoami.csv"))}`);
+  const groups = parseWhoamiGroups(fs.readFileSync(path.join(reachciResults, "whoami.csv"), "utf8"));
   assert.ok(groups.includes("S-1-5-4"), `INTERACTIVE missing from reachci's token: ${groups.join(" ")}`);
 
   // The service: Tailscale's name, LocalSystem, its own process.
@@ -170,28 +205,136 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     assert.equal(sdset.code, 0, sdset.stdout);
   }
   t.diagnostic(`sc sdshow Tailscale: ${(await sc("sdshow", "Tailscale")).stdout.trim()}`);
+  t.diagnostic(`sc sdshow scmanager: ${(await sc("sdshow", "scmanager")).stdout.trim()}`);
+  const serviceState = async () => parseScQueryex((await sc("queryex", "Tailscale")).stdout).state;
+  // Stopped for good (1), not just stopping: only then does it start again.
+  const stopService = async () => {
+    await sc("stop", "Tailscale");
+    await until(async () => (await serviceState()) === 1, "the service stopped");
+  };
+  // One mode at a time: whatever runs (idle, or an earlier case's mode) stops first.
   const startService = async (...args) => {
+    if ((await serviceState()) !== 1) await stopService();
     fs.rmSync(serviceLog, { force: true });
     const started = await sc("start", "Tailscale", ...args);
     assert.equal(started.code, 0, started.stdout);
-    await until(async () => parseScQueryex((await sc("queryex", "Tailscale")).stdout).running, "the service running");
+    await until(async () => (await serviceState()) === 4, "the service running");
   };
-  const stopService = async () => {
-    await sc("stop", "Tailscale");
-    await until(async () => !parseScQueryex((await sc("queryex", "Tailscale")).stdout).running, "the service stopped");
+  // Running, as Tailscale's service is whenever Reach starts: idle until a
+  // case starts it in its own mode.
+  await startService();
+
+  // As reachci, with LogonUser's interactive token, put in `session` by a
+  // SYSTEM task (run-as system-run: Windows' CreateProcessAsUser, not the
+  // secondary logon service): what it answered ("pid", "exit" or "error").
+  const launchFile = path.join(CI_ROOT, "service", "launch.args");
+  const launchTask = await run(system("schtasks.exe"), ["/create", "/tn", "ReachPeerLaunch", "/ru", "SYSTEM", "/sc", "once", "/st", "23:59", "/tr", `${runAs} system-run ${launchFile}`, "/f"]);
+  assert.equal(launchTask.code, 0, launchTask.stdout + launchTask.stderr);
+  const launch = async (name, commandLine, { session = 0, wait = true, dir = CI_ROOT } = {}) => {
+    const answer = `${launchFile}.out`;
+    fs.rmSync(answer, { force: true });
+    fs.writeFileSync(launchFile, `${[name, users[name], session, dir, wait ? "wait" : "nowait", commandLine].join("\r\n")}\r\n`);
+    await run(system("schtasks.exe"), ["/run", "/tn", "ReachPeerLaunch"]);
+    await until(() => fs.existsSync(answer), "the SYSTEM task's launch", 120000).then(() => sleep(500), () => {});
+    return readText(answer).replace(/\r?\n/g, ", ");
   };
 
-  // 1. Ready as the interactive standard user: the service manager, the TCP
-  // table and the process list all answer without elevation.
-  const host = await startPeerHost();
-  assert.deepEqual(host.ready, { ok: true });
+  // What each of the helper's calls gives whom (peer-probe.cs), from the
+  // service manager's descriptor down: the runner (an administrator); the
+  // runner without elevation in its own session (as UAC gives a Terminal);
+  // reachci, interactive, in session 0 and in the runner's session (put
+  // there by Windows itself); reachci put in the runner's session by the
+  // secondary logon service (run-as run); reachci with a batch token.
+  t.diagnostic(`rpc filters: ${(await run(system("netsh.exe"), ["rpc", "filter", "show", "filter"])).stdout.trim()}`);
+  const saved = await pwsh(String.raw`try { $v = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\ServiceGroupOrder\Security' -ErrorAction Stop).Security; ([System.Security.AccessControl.RawSecurityDescriptor]::new([byte[]]$v, 0)).GetSddlForm('All') } catch { 'none: ' + $_.Exception.Message }`);
+  t.diagnostic(`scmanager saved descriptor: ${saved.stdout.trim()}${saved.stderr.trim()}`);
+  const probeDir = await folder(path.join(CI_ROOT, "as"), "S-1-1-0");
+  const probeOut = (label) => path.join(probeDir, `${label}.txt`);
+  const brief = (text) => text.split(/\r?\n/).filter((line) => /^(token (session|integrity|groups)|OpenSCManagerW|OpenServiceW|  QueryServiceStatusEx|exception)/.test(line)).join("\n");
+  await run(peerProbe, [probeOut("runner")]);
+  const runnerProbed = readText(probeOut("runner"));
+  t.diagnostic(`peer-probe as the runner:\n${runnerProbed}`);
+  const runnerSession = Number(/^token session (\d+)$/m.exec(runnerProbed)?.[1] ?? NaN);
+  const limitedRan = await run(runAs, ["filtered", CI_ROOT, "wait", `${quote(peerProbe)} ${quote(probeOut("limited"))}`]);
+  t.diagnostic(`peer-probe as the runner without elevation (${`${limitedRan.stdout}${limitedRan.stderr}`.trim().replace(/\r?\n/g, ", ")}):\n${brief(readText(probeOut("limited")))}`);
+  for (const session of new Set([0, runnerSession])) {
+    const label = `reachci-session-${session}`;
+    const said = await launch("reachci", `${quote(peerProbe)} ${quote(probeOut(label))}`, { session });
+    t.diagnostic(`peer-probe as reachci, interactive, in session ${session} (${said}):\n${brief(readText(probeOut(label)))}`);
+  }
+  const reachciProbe = path.join(reachciResults, "probe-reachci.txt");
+  await asUser("reachci", `${quote(peerProbe)} ${quote(reachciProbe)}`);
+  const probed = readText(reachciProbe);
+  t.diagnostic(`peer-probe as reachci, put in the runner's session by the secondary logon service:\n${probed}`);
+  const scQc = path.join(reachciResults, "sc-qc.txt");
+  await asUser("reachci", `cmd.exe /c ${system("sc.exe")} qc Tailscale > ${quote(scQc)} 2>&1`);
+  t.diagnostic(`sc qc Tailscale, the same way: ${readText(scQc).replace(/\r?\n\s*/g, " ")}`);
+  // reachci with a batch token: a scheduled task with its password, once
+  // reachci may log on as a batch job (Windows Server doesn't let Users).
+  const batchGranted = await run(runAs, ["logon-right", "add", "reachci", "SeBatchLogonRight"]);
+  batchRight = batchGranted.code === 0;
+  assert.ok(batchRight, `SeBatchLogonRight for reachci: ${batchGranted.stdout}`);
+  const batchProbe = path.join(reachciResults, "probe-batch.txt");
+  const task = await run(system("schtasks.exe"), ["/create", "/tn", "ReachPeerProbe", "/ru", "reachci", "/rp", users.reachci, "/sc", "once", "/st", "23:59", "/tr", `${peerProbe} ${batchProbe}`, "/f"]);
+  if (task.code === 0) {
+    await run(system("schtasks.exe"), ["/run", "/tn", "ReachPeerProbe"]);
+    await until(() => fs.existsSync(batchProbe), "the batch probe", 60000).then(() => sleep(1000), () => {});
+  }
+  t.diagnostic(`peer-probe as reachci with a batch token:\n${task.code ? `${task.stdout}${task.stderr}` : brief(readText(batchProbe))}`);
+  await run(system("schtasks.exe"), ["/delete", "/tn", "ReachPeerProbe", "/f"]);
+
+  // 1. Ready without elevation: the service manager, the TCP table and the
+  // process list all answer, with the reason in words when they don't.
+  // Each way Reach can be run here, one at a time; the first that's ready
+  // (reachci's, if Windows lets it) serves the cases after.
+  const limitedResults = await folder(path.join(CI_ROOT, "results-limited"), runnerSid);
+  const limitedState = await folder(path.join(CI_ROOT, "limited-state"), runnerSid);
+  const tryReach = async (mode, dir, stateDir) => {
+    reachMode = mode;
+    results = dir;
+    state = stateDir;
+    let ready;
+    try {
+      ready = await startPeerHost(dir);
+    } catch (error) {
+      ready = { ready: { ok: false, reason: `peer-host didn't start: ${error.message}` } };
+    }
+    if (!ready.ready.ok) t.diagnostic(`${mode}: peer-probe from its own Node: ${brief(readText(path.join(dir, "peer-probe-node.txt")))}`);
+    return ready;
+  };
+  const limited = await tryReach("limited", limitedResults, limitedState);
+  if (limited.ready.ok) await stopPeerHost(limitedResults);
+  const secondary = await tryReach("secondary", reachciResults, reachciState);
+  if (secondary.ready.ok) await stopPeerHost(reachciResults);
+  const own = await tryReach("session", reachciResults, reachciState);
+  await t.test("1. a standard user with an interactive token (reachci, started by Windows in session 0): ready", () => {
+    // INTERACTIVE is there and enabled (4), not deny-only (0x10).
+    const interactive = groupAttributes(readText(probeOut("reachci-session-0")), "S-1-5-4");
+    assert.ok((interactive & 0x4) && !(interactive & 0x10), `INTERACTIVE in reachci's token: ${interactive.toString(16)}`);
+    assert.deepEqual(own.ready, { ok: true }, `refused for reachci: ${refusals(readText(probeOut("reachci-session-0"))).join("; ") || "nothing the probe saw"}`);
+  });
+  await t.test("1a. this PC's own user without elevation, in its own session (UAC's limited token, as a Terminal gets it): ready", () => {
+    assert.deepEqual(limited.ready, { ok: true }, `refused: ${refusals(readText(probeOut("limited"))).join("; ") || "nothing the probe saw"}`);
+  });
+  await t.test("1c. a standard user's program the secondary logon service puts in another user's session: ready, or refused in words", () => {
+    t.diagnostic(`secondary logon: ${JSON.stringify(secondary.ready)} (${refusals(probed).join("; ") || "no refusals"})`);
+    if (!secondary.ready.ok)
+      assert.match(secondary.ready.reason, /^Windows didn't let Reach read Tailscale's service settings\. This happens when Reach runs outside a signed-in Windows session/);
+  });
+  // The Reach the cases below run against.
+  let host = own;
+  if (!own.ready.ok && limited.ready.ok) host = await tryReach("limited", limitedResults, limitedState);
+  else if (!own.ready.ok) host = await tryReach("runner", await folder(path.join(CI_ROOT, "results-runner")), await folder(path.join(CI_ROOT, "runner-state")));
+  t.diagnostic(`the cases below run against Reach as: ${reachMode}`);
+  assert.deepEqual(host.ready, { ok: true }, `Reach as ${reachMode}`);
   const url = `http://127.0.0.1:${host.port}/r-${host.key}`;
   const Q = host.port;
 
   await t.test("1b. a batch logon (a scheduled task): ready, or refused in words", async () => {
     const batch = await folder(path.join(CI_ROOT, "results-batch"), sids.reachci);
+    fs.copyFileSync(peerProbe, path.join(batch, "peer-probe.exe"));
     const script = path.join(CI_ROOT, "bin", "batch.cmd");
-    fs.writeFileSync(script, `@${node} ${peerHostScript} ${quote(batch)} ${quote(state)}\r\n`);
+    fs.writeFileSync(script, `@${node} ${peerHostScript} ${quote(batch)} ${quote(reachciState)}\r\n`);
     const made = await run(system("schtasks.exe"), ["/create", "/tn", "ReachPeerCI", "/ru", "reachci", "/rp", users.reachci, "/sc", "once", "/st", "23:59", "/tr", script, "/f"]);
     assert.equal(made.code, 0, made.stdout + made.stderr);
     await run(system("schtasks.exe"), ["/run", "/tn", "ReachPeerCI"]);
@@ -203,6 +346,7 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
       }
     }, "the batch peer-host", 180000);
     t.diagnostic(`batch logon: ${JSON.stringify(answer.ready)}`);
+    if (!answer.ready.ok) t.diagnostic(`peer-probe with the batch token:\n${readText(path.join(batch, "peer-probe-node.txt"))}`);
     if (!answer.ready.ok)
       assert.match(answer.ready.reason, /^Windows didn't let Reach read Tailscale's service settings\. This happens when Reach runs outside a signed-in Windows session/);
     await stopPeerHost(batch);
@@ -241,6 +385,10 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   });
 
   await t.test("4-5. the same program started by anyone else, or in session 0 through WMI: refused", async () => {
+    // With the service up, so each is refused as another process's (o), not
+    // because Tailscale's service is down (n).
+    await startService();
+    const before = events(results).length;
     const direct = path.join(probes, "direct.log");
     await run(tailscaled, ["/direct", url, direct]);
     assert.ok(readLines(direct).every((line) => / error /.test(line)), readLines(direct).join("\n"));
@@ -250,6 +398,10 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     await until(() => readLines(wmi).length >= 2, "the WMI process's probes");
     assert.ok(readLines(wmi).every((line) => / error /.test(line)), readLines(wmi).join("\n"));
     assert.ok(events(results).some((e) => e.refused === "peer"));
+    const answers = events(results).slice(before).filter((e) => e.answer).map((e) => e.answer.value);
+    t.diagnostic(`answers: ${answers.join(" ")}`);
+    assert.ok(answers.length >= 2 && answers.every((value) => value === "o"), `each refused as another process's: ${answers.join(" ")}`);
+    await stopService();
   });
 
   await t.test("6. an orphan of a stopped service, and after the service starts again: refused", async () => {
@@ -352,6 +504,7 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   });
 
   await t.test("10. no Tailscale service at all: pairing codes, with the reason", async () => {
+    await stopService();
     await sc("delete", "Tailscale");
     // A fresh build of the helper (the swapped one was set aside).
     fs.rmSync(path.join(state, "native"), { recursive: true, force: true });
@@ -375,17 +528,17 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     };
     await asUser("reachci", `cmd.exe /c mkdir ${quote(quick)}`);
     await asUser("reachci2", `cmd.exe /c echo planted> ${quote(path.join(quick, "x.json"))}`);
-    const planted = await check(open, path.join(results, "planted.json"));
+    const planted = await check(open, path.join(reachciResults, "planted.json"));
     t.diagnostic(`planted: ${JSON.stringify(planted)}`);
     assert.equal(planted.ok, false);
     fs.rmSync(path.join(quick, "x.json"), { force: true });
-    const shared = await check(open, path.join(results, "shared.json"));
+    const shared = await check(open, path.join(reachciResults, "shared.json"));
     t.diagnostic(`code under C:\\: ${JSON.stringify(shared)}`);
     assert.equal(shared.ok, false);
     assert.match(shared.reason, /can be changed by other people on this PC/);
     const own = `C:\\Users\\reachci\\code`;
     await asUser("reachci", `cmd.exe /c mkdir ${quote(own)}`);
-    const fine = await check(own, path.join(results, "fine.json"));
+    const fine = await check(own, path.join(reachciResults, "fine.json"));
     assert.deepEqual(fine, { ok: true });
     const secret = path.join(quick, "tailscale-oauth.json");
     await asUser("reachci", `cmd.exe /c echo {}> ${quote(secret)}`);

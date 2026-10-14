@@ -32,9 +32,9 @@ const clock = (t) => {
 };
 
 // Each flow runs on both private routes: a Mac's Unix socket, and Windows'
-// keyed loopback route (REACH_WINDOWS_ACCOUNT=1; docs/parity/D-public-door.md
-// §7.2), whose door and gateway are the same. Not yet on a real Windows
-// runner: its presets wait for workstream E.
+// keyed loopback route (docs/parity/D-public-door.md §7.2), whose door and
+// gateway are the same. Not yet on a real Windows runner: its presets wait
+// for workstream E.
 const keyedRuns = new WeakSet();
 const both = (name, options, fn) => {
   test(name, options, fn);

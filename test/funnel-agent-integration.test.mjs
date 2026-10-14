@@ -2,8 +2,8 @@ import { nativeFiles, expectFileResponse } from "./helpers/protected-files.mjs";
 import nodeTest from "node:test";
 // This suite exercises the POSIX private ingress socket and its UID/mode checks.
 // Signed request, admission and scope suites also run on Windows.
-// Each flow runs again on Windows' keyed loopback route (REACH_WINDOWS_ACCOUNT=1;
-// docs/parity/D-public-door.md §7.2), whose door and gateway are the same; not
+// Each flow runs again on Windows' keyed loopback route
+// (docs/parity/D-public-door.md §7.2), whose door and gateway are the same; not
 // yet on a real Windows runner, where agent presets wait for workstream E.
 const keyedRuns = new WeakSet();
 const both = (name, skip, fn) => {
