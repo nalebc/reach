@@ -513,6 +513,7 @@ static class Terminals {
   // keeps a background program from taking the foreground).
   static string Focus(string provider, IntPtr window, uint pid) {
     IntPtr frame = window;
+    string chosen = "";
     if (provider == "windows-terminal") {
       frame = TerminalWindow(window, pid, Processes());
       if (frame == IntPtr.Zero || frame == window) return "{\"ok\":true,\"front\":false}";
@@ -524,7 +525,8 @@ static class Terminals {
         } finally {
           FreeConsole();
         }
-      SelectTab(frame, title);
+      // `tab`: whether its tab was chosen (Windows Terminal shows one tab).
+      chosen = ",\"tab\":" + (SelectTab(frame, title) ? "true" : "false");
     }
     if (IsIconic(frame)) ShowWindowAsync(frame, SW_RESTORE);
     SetWindowPos(frame, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
@@ -534,7 +536,7 @@ static class Terminals {
       front = GetAncestor(GetForegroundWindow(), GA_ROOT) == frame;
       if (!front) Thread.Sleep(100);
     }
-    return "{\"ok\":true,\"front\":" + (front ? "true" : "false") + "}";
+    return "{\"ok\":true,\"front\":" + (front ? "true" : "false") + chosen + "}";
   }
   static bool SelectTab(IntPtr frame, string title) {
     if (string.IsNullOrEmpty(title)) return false;

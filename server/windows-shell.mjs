@@ -135,3 +135,18 @@ export function windowsTerminal({ command = "", powershell = false, call, own = 
   const typed = commandFor(shell.kind, command, call);
   return typed == null ? { shell: fallback(), typed: call(command) } : { shell, typed };
 }
+// Windows Terminal's wt.exe: its App Execution Alias (the Store's build),
+// else the first on PATH (one installed without a package: winget's portable
+// build, Scoop). "" without one. The PC's own terminals helper
+// (scripts/native/windows-terminals.cs) looks in the same order.
+export function windowsTerminalExe({ env = process.env, exists = fs.existsSync } = {}) {
+  const local = envOf(env, "LOCALAPPDATA");
+  const alias = local && p.isAbsolute(local) ? p.join(local, "Microsoft", "WindowsApps", "wt.exe") : "";
+  if (alias && exists(alias)) return alias;
+  for (const dir of (envOf(env, "PATH") || "").split(";").map((d) => d.trim().replace(/^"(.*)"$/, "$1"))) {
+    if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(dir)) continue;
+    const file = p.join(dir, "wt.exe");
+    if (exists(file)) return file;
+  }
+  return "";
+}
