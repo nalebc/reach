@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { windowsReaches } from "../../scripts/instances.mjs";
 import { windowsProcesses } from "../../server/windows-processes.mjs";
@@ -15,15 +13,3 @@ export const onlyReach = ({ pid, root, state = path.join(root, ".reach") }) => a
   const listed = found.processes.find((p) => p.pid === pid);
   return { ...found, hosts: listed ? [{ pid, startedAt: listed.startedAt, root, terminals: [], descendants: [] }] : [] };
 };
-
-// A process list naming no process (REACH_TEST_WINDOWS_PROCESSES, tests
-// only), for a launcher run under a test runner: there the real one leads up
-// to GitHub's runner service, which Reach rightly takes for another app (and
-// opens a window of its own instead).
-export function emptyProcessList(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-processes-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const file = path.join(dir, "processes.json");
-  fs.writeFileSync(file, JSON.stringify({ processes: [] }));
-  return file;
-}

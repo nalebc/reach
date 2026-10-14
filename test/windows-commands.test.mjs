@@ -9,7 +9,7 @@ import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fake-tailscale.mjs";
-import { emptyProcessList, onlyReach } from "./helpers/windows-stop.mjs";
+import { onlyReach } from "./helpers/windows-stop.mjs";
 
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
 // paths (test/helpers/as-windows.mjs), `.\reach.cmd status` naming it, and
@@ -296,12 +296,9 @@ test("Windows: an occupied launcher lock names restart without starting anything
   fs.mkdirSync(state);
   const lock = path.join(state, "launcher.lock");
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
-  // On a real runner, a process list naming nothing: the real one leads up
-  // to GitHub's runner service, which Reach takes for another app and opens
-  // a window of its own instead of reaching the lock.
   const result = await new Promise(resolve => execFile(process.execPath,
     ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "--local"],
-    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "", ...(process.platform === "win32" && { REACH_TEST_WINDOWS_PROCESSES: emptyProcessList(t) }) }, timeout: 30000 },
+    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "" }, timeout: 30000 },
     (error, stdout, stderr) => resolve({ error, text: stdout + stderr })));
   assert.equal(result.error?.code, 1);
   assert.match(result.text, /already starting or running/);
