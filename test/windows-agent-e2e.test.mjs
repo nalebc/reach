@@ -168,15 +168,19 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   assert.ok(shellRoot, "Full control includes the synthetic project folder");
   const shell = await tool("full", "reach_shell", { command: "Write-Output 'synthetic shell result'", root: shellRoot.index, cwd: "" });
   assert.match(JSON.stringify(shell), /synthetic shell result/);
+  await tool("full", "reach_screenshot");
   assert.equal((await request("/api/browser/agents/pause", { method: "POST", body: { clientId: clients.full.id, paused: true } })).status, 200);
-  await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => [403, 423].includes(e.status));
+  await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => e.status === 409 && e.kind === "paused");
   assert.equal((await request("/api/browser/agents/pause", { method: "POST", body: { clientId: clients.full.id, paused: false } })).status, 200);
+  await tool("full", "reach_screenshot");
   assert.equal((await request("/api/screen/control", { method: "POST", body: { enabled: true } })).status, 200);
   await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => [403, 409, 423].includes(e.status));
   assert.equal((await request("/api/screen/control", { method: "POST", body: { enabled: false } })).status, 200);
+  await tool("full", "reach_screenshot");
   assert.equal((await request("/api/settings/pause", { method: "POST", body: { paused: true } })).status, 200);
-  await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => [403, 423, 503].includes(e.status));
+  await assert.rejects(tool("full", "reach_act", { type: "type", text: "never typed", describe: false }), e => [409, 423].includes(e.status) && /paused/i.test(e.message));
   assert.ok(!log().includes("never typed"));
+  assert.ok(!fs.readFileSync(path.join(dir, "vault.log"), "utf8").includes("never typed"));
   fs.mkdirSync("reports", { recursive: true });
   fs.writeFileSync("reports/windows-agent-e2e.json", JSON.stringify({ presets: Object.keys(clients), nativeScreen: true, nativeInput: true,
     nativeFiles: true, nativeShell: true, pauseAndOwnerControl: true, injected: ["Tailscale identity and peer", "fixture catalog entry", "SAFER medium launch"], physicalPC: false }, null, 2));
