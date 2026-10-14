@@ -204,13 +204,15 @@ export default function TerminalList({
         </section>
       )}
       {showMac && (macTabs.length > 0 || macError || !macLoaded) && (
-        <section aria-label="On your Mac">
-          <h3>On your Mac</h3>
+        <section aria-label={`On your ${computerWord(peer.platform)}`}>
+          <h3>On your {computerWord(peer.platform)}</h3>
           {macError ? (
             <p className="terminal-list-note">{macError}</p>
           ) : !macLoaded ? (
             <p className="terminal-list-note">
-              Looking for Terminal and iTerm2 windows…
+              {peer.platform === "win32"
+                ? "Looking for Windows Terminal and console windows…"
+                : "Looking for Terminal and iTerm2 windows…"}
             </p>
           ) : (
             <ul className="terminal-group">
@@ -232,7 +234,7 @@ export default function TerminalList({
                     {onCloseMac && (
                       <button
                         className="terminal-row-action"
-                        aria-label={`Close ${tab.name || "this window"} on your Mac`}
+                        aria-label={`Close ${tab.name || "this window"} on your ${computerWord(peer.platform)}`}
                         onClick={() => onCloseMac(tab)}
                       >
                         <Square size={13} />

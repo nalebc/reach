@@ -1,0 +1,196 @@
+import test, { after } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { windowsBinary } from "../server/desktop-native.mjs";
+import { DesktopTerminals } from "../server/desktop-terminals.mjs";
+import { windowsLaunch } from "../server/windows-terminals.mjs";
+import { terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
+
+// The PC's own terminals on a real Windows PC (GitHub's windows-2025 runner):
+// scripts/native/windows-terminals.cs built with the PC's csc.exe, driving a
+// real console window (conhost, never handed to Windows Terminal), a console
+// opened as Reach opens one, and a Windows Terminal tab when Windows Terminal
+// is installed. Each is listed, read, typed into and closed exactly as the
+// phone does it, through DesktopTerminals. What each run saw is kept in
+// reports/windows-terminals-native.json.
+const windows = process.platform === "win32";
+const real = { skip: !windows && "needs a real Windows PC", timeout: 170000 };
+const run = promisify(execFile);
+const allow = () => {};
+const system = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+const cmd = path.join(system, "cmd.exe");
+const seen = { tests: {} };
+let dataDir = null;
+// One build for the file, in a folder with a space as most PCs' have.
+async function folder() {
+  if (dataDir) return dataDir;
+  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "reach terminals-"));
+  const started = Date.now();
+  await windowsBinary({ dataDir }, "windows-terminals");
+  seen.buildMs = Date.now() - started;
+  return dataDir;
+}
+after(async () => {
+  if (!windows) return;
+  await fs.mkdir("reports", { recursive: true });
+  await fs.writeFile("reports/windows-terminals-native.json", JSON.stringify(seen, null, 2));
+  if (dataDir) await fs.rm(dataDir, { recursive: true, force: true }).catch(() => {});
+});
+const marker = (kind) => `reach-${kind}-${crypto.randomBytes(4).toString("hex")}`;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function eventually(what, check, ms = 30000) {
+  const end = Date.now() + ms;
+  let last;
+  for (;;) {
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch (error) {
+      last = error;
+    }
+    if (Date.now() > end) throw Error(`Timed out: ${what}${last ? ` (last: ${last.message})` : ""}`);
+    await pause(400);
+  }
+}
+// The console's programs ended for good, whatever the test's outcome.
+const sweep = (pids) => Promise.all(pids.filter(Boolean).map((pid) => run("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }).catch(() => {})));
+const terminals = async (options = {}) =>
+  new DesktopTerminals({ platform: "win32", dataDir: await folder(), reach: 0, ...options });
+const find = async (d, name) => (await d.list(allow)).sessions.find((s) => s.name.includes(name));
+const lines = (text) => String(text).split("\n").map((line) => line.trim());
+
+// List it, type into it, read the answer back (screen and scrollback), bring
+// it forward and close it: the phone's whole round trip.
+async function roundTrip(d, name, record) {
+  const tab = await eventually(`${name} listed`, () => find(d, name));
+  record.provider = tab.provider;
+  record.tty = tab.tty;
+  const target = d.targets.get(tab.id).target;
+  record.pid = target.pid;
+  const echo = `ok-${crypto.randomBytes(3).toString("hex")}`;
+  const sentAt = Date.now();
+  await d.action(tab.id, "send", { text: `echo ${echo}` }, allow);
+  const screen = await eventually("the answer on screen", async () => {
+    const { text } = await d.action(tab.id, "read", null, allow);
+    return lines(text).includes(echo) && text;
+  });
+  record.echoMs = Date.now() - sentAt;
+  assert.ok(lines(screen).some((line) => line.endsWith(`echo ${echo}`)), "the typed line shows where it was typed");
+  const { text: scrollback } = await d.action(tab.id, "read", { scrollback: true }, allow);
+  assert.ok(lines(scrollback).includes(echo));
+  // Typed with Windows' own keyboard and as Unicode, Enter included.
+  const unicode = "héllo-✓";
+  await d.action(tab.id, "send", { text: `echo ${unicode}` }, allow);
+  await eventually("Unicode typed and read back", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes(unicode));
+  const front = await d.action(tab.id, "focus", {}, allow);
+  assert.equal(front.ok, true);
+  record.front = front.front;
+  await d.action(tab.id, "close", { confirm: true }, allow);
+  await eventually(`${name} gone from the list`, async () => !(await find(d, name)), 20000);
+  return target;
+}
+
+test("a console window on the PC is listed, read, typed into, brought forward and closed", real, async (t) => {
+  const record = (seen.tests.console = {});
+  const name = marker("console");
+  // conhost.exe started with a command line keeps its own window: Windows
+  // never hands it to Windows Terminal.
+  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
+  const exited = new Promise((resolve) => host.once("exit", resolve));
+  t.after(() => sweep([host.pid]));
+  const d = await terminals();
+  const target = await roundTrip(d, name, record);
+  assert.equal(record.provider, "console");
+  assert.match(record.tty, /^\d+$/);
+  // Closed as its close button closes it: the window and its programs end.
+  await Promise.race([exited, pause(15000).then(() => assert.fail("conhost didn't exit after closing"))]);
+  // The helper knows a console that's gone, never another in its place.
+  await assert.rejects(d.run({ provider: "console", action: "read", target }), { status: 404, message: "This terminal has closed. Refresh the list." });
+});
+
+test("Reach's own consoles are left out of the PC's list", real, async (t) => {
+  const name = marker("own");
+  // A console this test's process started: to the helper, Reach's own.
+  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
+  t.after(() => sweep([host.pid]));
+  const everyone = await terminals();
+  await eventually(`${name} listed for others`, () => find(everyone, name));
+  const reach = await terminals({ reach: process.pid });
+  assert.equal(await find(reach, name), undefined, "a console under Reach's process isn't the PC's");
+  seen.tests.own = { excluded: true };
+});
+
+test("a new terminal opens from the phone in the folder asked, running its command", real, async (t) => {
+  const record = (seen.tests.created = {});
+  const name = marker("created");
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "reach new;terminal "));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }).catch(() => {}));
+  // cmd as the owner's shell, so the command line is the one Reach writes.
+  const d = await terminals({ launch: (options) => windowsLaunch({ ...options, shell: { file: cmd, args: ["/d"], kind: "cmd", name: "Command Prompt" } }) });
+  const opened = await d.create("console", allow, `title ${name} & cd & echo created-ok`, { cwd });
+  record.opened = opened.provider;
+  assert.equal(opened.provider, "console");
+  const tab = await eventually(`${name} listed`, () => find(d, name));
+  t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
+  // Handed to Windows Terminal when it's this PC's default terminal app.
+  record.provider = tab.provider;
+  const { text } = await eventually("its command ran in its folder", async () => {
+    const read = await d.action(tab.id, "read", null, allow);
+    return lines(read.text).includes("created-ok") && read;
+  });
+  assert.ok(lines(text).includes(cwd), `it started in ${cwd}`);
+  await roundTrip(d, name, (record.roundTrip = {}));
+});
+
+const terminalExe = [path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", "wt.exe"), ...(process.env.PATH || "").split(";").filter(Boolean).map((dir) => path.join(dir, "wt.exe"))].find(
+  (file) => windows && path.isAbsolute(file) && existsSync(file),
+);
+test(
+  "a Windows Terminal tab opened from the phone is listed, read, typed into and closed",
+  { ...real, skip: real.skip || (!terminalExe && "Windows Terminal isn't installed on this PC (no wt.exe)") },
+  async (t) => {
+    const record = (seen.tests.windowsTerminal = { wt: terminalExe });
+    const name = marker("wt");
+    const d = await terminals({ launch: (options) => windowsLaunch({ ...options, shell: { file: cmd, args: ["/d"], kind: "cmd", name: "Command Prompt" } }) });
+    const opened = await d.create("windows-terminal", allow, `title ${name} & echo wt-ok`, { cwd: os.tmpdir() });
+    assert.equal(opened.provider, "windows-terminal");
+    const tab = await eventually(`${name} listed`, () => find(d, name), 60000);
+    t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
+    assert.equal(tab.provider, "windows-terminal");
+    await eventually("its command ran", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes("wt-ok"));
+    await roundTrip(d, name, record);
+  },
+);
+
+test("the watch says when a console opens, prints and closes", real, async (t) => {
+  const record = (seen.tests.watch = {});
+  const dir = await folder();
+  const helper = await terminalWatchHelper({ dataDir: dir }, { platform: "win32" })();
+  t.after(() => helper.stop());
+  const events = [];
+  helper.on("event", (event) => events.push({ at: Date.now(), ...event }));
+  await eventually("ready", () => events.some((e) => e.type === "ready"));
+  const name = marker("watch");
+  const started = Date.now();
+  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
+  t.after(() => sweep([host.pid]));
+  await eventually("opened", () => events.some((e) => e.type === "opened" && e.at >= started));
+  const d = await terminals();
+  const tab = await eventually(`${name} listed`, () => find(d, name));
+  helper.send({ ttys: [tab.tty] });
+  await eventually("watching", () => events.some((e) => e.type === "watching" && e.ttys === 1));
+  const typed = Date.now();
+  await d.action(tab.id, "send", { text: "echo watched" }, allow);
+  const output = await eventually("output", () => events.find((e) => e.type === "output" && e.tty === tab.tty && e.at >= typed));
+  record.outputMs = output.at - typed;
+  const closing = Date.now();
+  await d.action(tab.id, "close", { confirm: true }, allow);
+  await eventually("closed", () => events.some((e) => e.type === "closed" && e.at >= closing));
+  record.closedMs = Date.now() - closing;
+});
