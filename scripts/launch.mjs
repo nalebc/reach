@@ -3,8 +3,6 @@ import {
   assertSocketSupport,
   assertOwnerAccount,
   preferencesFile,
-  accountApproval,
-  flagMissing,
   keyedSupportProblem,
 } from "./configure.mjs";
 import {
@@ -36,6 +34,8 @@ import {
   recordedRouteOwned,
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
+import { windowsBinary } from "../server/desktop-native.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 import { createReach } from "../server/index.mjs";
 import { sweepScreenHelpers } from "../server/screen-stream.mjs";
 import { installCrashGuard } from "../server/crash-guard.mjs";
@@ -61,7 +61,17 @@ import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 import { ForegroundServe, createLock } from "./foreground-serve.mjs";
 import { ForegroundFunnel } from "./foreground-funnel.mjs";
 
+// Windows' keyed route: its check took Tailscale's own connections for
+// another program's, or didn't answer in time again and again.
+const UNRECOGNISED =
+  "Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC.";
+const UNANSWERED = "Reach's check of Tailscale's connections kept failing to answer on this PC.";
+const HOUR = 3600000;
+
 export async function launch(options, root) {
+  // Reach's window carries its name on Windows too: the window agents'
+  // presets know as Reach's (docs/WINDOWS_AGENT_PARITY.md, Decisions).
+  if (process.platform === "win32" && process.stdout.isTTY) process.title = "Reach";
   // Started for you (a restart from the phone, at sign-in): read once, and
   // not handed on to the terminals and agents Reach starts.
   const openedForYou = !!process.env.REACH_OPENED_BY;
@@ -92,14 +102,30 @@ export async function launch(options, root) {
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
-  let preferences =
-    !options.local && accountApproval() ? readPreferences(root) : null;
-  // Set up for browser sign-in, started without the flag: said, never silently.
-  if (!preferences && process.platform === "win32" && !options.local && flagMissing(root))
-    console.log("Reach: browser sign-in is off: REACH_WINDOWS_ACCOUNT=1 isn't set in this terminal. Phones join with a pairing code and need the Tailscale app.");
-  // Windows has no Unix socket: with REACH_WINDOWS_ACCOUNT=1 a keyed loopback
-  // route only Tailscale's own process may use (docs/parity/D-public-door.md).
+  let preferences = !options.local ? readPreferences(root) : null;
+  // Windows has no Unix socket: a keyed loopback route only Tailscale's own
+  // process may use (docs/parity/D-public-door.md).
   const keyedDoor = !!preferences && process.platform === "win32";
+  // What an earlier start noted about that route (below): Tailscale's own
+  // connections taken for another program's (pairing codes for a day, or
+  // until Tailscale changes), or its check not answering in time twice
+  // within an hour (pairing codes for an hour). Then it's tried again.
+  const unrecognisedFile = path.join(privateDir, "sign-in-unrecognised.json");
+  const noted = () => (keyedDoor ? loadJson(unrecognisedFile, null) : null);
+  const unrecognised = (state) => {
+    const seen = noted();
+    if (!seen) return "";
+    const age = Date.now() - Number(seen.at);
+    const version = String(state?.status?.Version || "");
+    if (seen.tailscale === version && age >= 0) {
+      if (seen.kind === "other" && age < 24 * HOUR) return UNRECOGNISED;
+      if (seen.kind === "late" && age < HOUR) return seen.count >= 2 ? UNANSWERED : "";
+    }
+    fs.rmSync(unrecognisedFile, { force: true });
+    return "";
+  };
+  // The check's answers for this start: yes, or "another program's".
+  const peerAnswers = { yes: 0, other: 0 };
   const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
   let peerCheck = null,
     ingressKey = "",
@@ -122,26 +148,37 @@ export async function launch(options, root) {
       });
       if (folders.ok) {
         keyedState = await readKeyedState().catch(() => ({ status }));
+        const hooks = {
+          // Its helper stopped, timed out or wouldn't start again: said
+          // once per reason, so a refusal that follows has its cause.
+          onProblem: (reason) => {
+            const said = {
+              stopped: "Reach's Tailscale check stopped; it starts again in a moment.",
+              timeout: "Reach's Tailscale check didn't answer in time; it starts again in a moment.",
+              garbled: "Reach's Tailscale check gave an answer Reach couldn't read; it starts again in a moment.",
+            }[reason] || String(reason);
+            console.warn(`Reach: ${said}`);
+            try {
+              log?.write(`Reach: ${said}`);
+            } catch {}
+          },
+          onAnswer: (answer) => {
+            if (answer?.ok) peerAnswers.yes++;
+            else if (answer?.value === "o") peerAnswers.other++;
+          },
+        };
+        // A test's stand-in check is given the same hooks.
         peerCheck =
-          options.peerCheck ||
-          createTailscaledPeerCheck({
-            helper: folders.helper("tailscaled-peer"),
-            // Its helper stopped, timed out or wouldn't start again: said
-            // once per reason, so a refusal that follows has its cause.
-            onProblem: (reason) => {
-              const said = {
-                stopped: "Reach's Tailscale check stopped; it starts again in a moment.",
-                timeout: "Reach's Tailscale check didn't answer in time; it starts again in a moment.",
-                garbled: "Reach's Tailscale check gave an answer Reach couldn't read; it starts again in a moment.",
-              }[reason] || String(reason);
-              console.warn(`Reach: ${said}`);
-              try {
-                log?.write(`Reach: ${said}`);
-              } catch {}
-            },
-          });
+          typeof options.peerCheck === "function"
+            ? options.peerCheck(hooks)
+            : options.peerCheck || createTailscaledPeerCheck({ helper: folders.helper("tailscaled-peer"), ...hooks });
       }
-      const problem = folders.reason || keyedSupportProblem(keyedState) || (await peerCheck.ready()).reason || "";
+      const problem =
+        folders.reason ||
+        keyedSupportProblem(keyedState) ||
+        unrecognised(keyedState) ||
+        (await peerCheck.ready()).reason ||
+        "";
       if (problem) {
         signInOff = problem;
         console.log(`Reach: browser sign-in is off on this PC for now: ${problem} Phones join with a pairing code and need the Tailscale app.`);
@@ -189,6 +226,9 @@ export async function launch(options, root) {
         }
       : {}),
     tailscaleOwner: preferences?.owner,
+    // Set up for browser sign-in, on pairing codes for now: why, for the
+    // phone's answers about invite links.
+    ...(signInOff && { signInOff }),
     privatePaths: [privateDir],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
     tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },
@@ -250,7 +290,8 @@ export async function launch(options, root) {
     const deadline = setTimeout(() => {
       console.error("Reach: shutdown took too long; exiting now.");
       forgetStatus();
-      process.exit(1);
+      // Asked to start again (the keyed route, above): still so.
+      process.exit(process.exitCode || 1);
     }, 5000);
     deadline.unref();
     stopPromise = (async () => {
@@ -376,6 +417,9 @@ export async function launch(options, root) {
       // Which boot (Windows reuses process ids): a status file from before a
       // restart of the PC names no Reach.
       ...(process.platform === "win32" && { boot: windowsBootTime() }),
+      // Whether it has a window of its own (`status` says so: Windows has no
+      // terminal name to read, as ps gives on a Mac).
+      ...(process.platform === "win32" && { window: !!process.stdout.isTTY }),
       instance: reach.instance,
       localUrl,
       origin: privateOrigin || localUrl,
@@ -563,7 +607,8 @@ export async function launch(options, root) {
       reach.setTransportAvailable(false);
       await startTunnel();
       recovery.nextRestart = Date.now() + 15000;
-      const deadline = Date.now() + 90000;
+      // `healthWaitMs`: a code-only option (tests), never read from argv.
+      const deadline = Date.now() + (options.healthWaitMs || 90000);
       let healthy = false;
       while (!stopped && Date.now() < deadline) {
         await recovery.check();
@@ -583,12 +628,27 @@ export async function launch(options, root) {
         await delay(1000);
       }
       if (stopped) return;
-      // Windows' keyed route answered nothing it was asked: Tailscale's
-      // connections weren't recognised as its own, so it stays closed.
-      if (!healthy && ingressKey && refusals.peer > 0)
-        throw Error(
-          "Reach couldn't confirm that its private route comes from Tailscale's own service on this PC, so it stays closed. Start without REACH_WINDOWS_ACCOUNT=1 to use pairing codes.",
+      // Windows' keyed route answered nothing it was asked, its check
+      // refusing Tailscale's connections. Taken for another program's with
+      // none let through: noted for a day, and Reach starts again at once
+      // with pairing codes. Not answered in time (a hiccup): Reach starts
+      // again and tries the route once more; twice within an hour, noted,
+      // and pairing codes for that hour. The crash code: started again by
+      // the window it runs in (supervise.mjs) or its service.
+      if (!healthy && ingressKey && refusals.peer > 0) {
+        const tailscale = String(keyedState?.status?.Version || "");
+        const other = peerAnswers.other > 0 && peerAnswers.yes === 0;
+        const prior = noted();
+        const count = !other && prior?.kind === "late" && prior.tailscale === tailscale && Date.now() - prior.at >= 0 && Date.now() - prior.at < HOUR ? (prior.count || 1) + 1 : 1;
+        atomicJson(unrecognisedFile, { kind: other ? "other" : "late", count, tailscale, at: Date.now() });
+        process.exitCode = 70;
+        throw Object.assign(
+          Error(other ? `${UNRECOGNISED} It stays closed; Reach starts again with pairing codes.` : count >= 2 ? `${UNANSWERED} Reach starts again with pairing codes for an hour.` : "Reach's check of Tailscale's connections didn't answer in time; Reach starts again and tries once more."),
+          { relaunch: true },
         );
+      }
+      // It answered: an earlier start's note is done with.
+      if (healthy && ingressKey) fs.rmSync(unrecognisedFile, { force: true });
       if (!healthy)
         throw Error(
           "The private phone link could not connect. Check Tailscale and HTTPS setup, then rerun Reach. No public tunnel was opened.",
@@ -686,7 +746,7 @@ export async function launch(options, root) {
       console.log(
         `\n${heading(renew)}\n\n  ${options.local ? "Open on this computer" : "Open on your phone"}: ${origin}\n  Pairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\n`,
       );
-      if (phoneNeedsApp) console.log(`${phoneAppFirst({ account: phoneAccount })}\n`);
+      if (phoneNeedsApp) console.log(`${phoneAppFirst({ account: phoneAccount, why: signInOff })}\n`);
       if (!options.local && process.stdout.isTTY) {
         const fragment = new URLSearchParams({
           pair: pairing.code,
@@ -860,15 +920,18 @@ export async function launch(options, root) {
         }
       });
     }
-    if (process.platform === "darwin") {
+    // The same three modes on a Mac (caffeinate) and a Windows PC (its own
+    // helper, built on first use: scripts/native/stay-awake.cs).
+    if (process.platform === "darwin" || process.platform === "win32") {
       const mode = stayAwakeMode(options.stayAwake);
       console.log(
         mode === "off"
-          ? "Reach: sleep prevention is off. Screen sharing can stop when this Mac sleeps. Use --stay-awake-always to enable it."
+          ? `Reach: sleep prevention is off. Screen sharing can stop when this ${computerWord()} sleeps. Use --stay-awake-always to enable it.`
           : `Reach: keeping system and display awake ${mode === "ac" ? "while plugged in" : "while Reach runs, including on battery"}. Manual locking, lid closure and managed lock policies still apply.`,
       );
       power = keepAwake({
         mode,
+        helper: () => windowsBinary(reach.config, "stay-awake"),
         changed: (awake) => {
           const current = loadJson(statusFile, null);
           if (current?.instance === reach.instance)
