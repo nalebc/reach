@@ -37,6 +37,8 @@ type Method = {
   login?: string;
   // This browser signed in with Face ID here before (its access ended).
   faceJoin?: boolean;
+  // How Reach is run on that computer: reach, ./reach or .\reach.cmd.
+  command?: string;
 };
 type Pending = {
   id: string;
@@ -95,7 +97,8 @@ export default function ConnectForm({
 }: {
   initialUrl?: string;
   onPaired: (peer: Peer) => void;
-  legacy: (url: string) => ReactNode;
+  // `command`: how this computer runs Reach (reach, ./reach, .\reach.cmd).
+  legacy: (url: string, command?: string) => ReactNode;
   name: string;
 }) {
   const [url, setUrl] = useState(
@@ -478,7 +481,7 @@ export default function ConnectForm({
         <ErrorLine error={faceNote} />
       </div>
     );
-  if (method?.method === "pairing" || fallback) return <>{legacy(url)}</>;
+  if (method?.method === "pairing" || fallback) return <>{legacy(url, method?.command)}</>;
   // Signed in from the browser: this is the second of two steps.
   const browserSignIn =
     document.documentElement.dataset.connection === "browser";
@@ -526,7 +529,7 @@ export default function ConnectForm({
               <strong className="approval-code">{pending.verification}</strong>
               {faceNote && <p className="form-note">{faceNote}</p>}
               <span className="form-note">
-                Reach in the background? Run <code>./reach approve</code> there.
+                Reach in the background? Run <code>{method?.command || "reach"} approve</code> there.
               </span>
             </>
           )}

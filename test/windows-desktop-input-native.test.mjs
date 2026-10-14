@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { inputAction } from "../server/desktop-protocol.mjs";
@@ -71,7 +73,7 @@ test(
   {
     skip: process.platform !== "win32",
   },
-  async () => {
+  async (t) => {
     const provider = `
 namespace System.Windows {
  public struct Point { public double X,Y;public Point(double x,double y){X=x;Y=y;} }
@@ -111,10 +113,14 @@ namespace System.Windows.Automation {
 `;
     const focus = ["Get-ReachFocusedTextElement", "Get-ReachTextTarget", "Assert-ReachTypingTarget"]
       .map((name) => source.match(new RegExp(`function ${name}[^\\n]*\\n[\\s\\S]*?\\r?\\n}\\r?\\n`))[0]).join("\n");
+    // This fixture replaces only the point-provider API. Field-tree scans use
+    // the actual UI Automation provider in windows-desktop-e2e, so keep their
+    // separate methods out of this intentionally small provider stub.
+    const pointProbe = fieldProbe.replace(/ public static string Fields[\s\S]*?(?= static int Read\()/, "");
     const script = `
 $ErrorActionPreference='Stop'
 Add-Type @'
-${fieldProbe}
+${pointProbe}
 ${provider}
 '@
 ${focus}
@@ -186,12 +192,15 @@ Start-Sleep -Milliseconds 900
 Check 0 ([ReachDesktopFieldProbe]::At(-1100,70))
 Write-Output 'Windows field probe and focus guards passed'
 `;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-field-probe-check-"));
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    const file = path.join(dir, "probe.ps1");
+    await fs.writeFile(file, script, "utf8");
     const { stdout } = await exec(
       "powershell.exe",
       [
         "-NoProfile",
-        "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64"),
+        "-ExecutionPolicy", "Bypass", "-File", file,
       ],
       { timeout: 45000, windowsHide: true, maxBuffer: 65536 },
     );
