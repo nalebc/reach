@@ -1,5 +1,9 @@
+import os from "node:os";
 import { spawnVerified } from "./desktop-native.mjs";
 import { computerWord } from "./computer-word.mjs";
+import { fail } from "./core.mjs";
+import { browserPrivatePaths } from "./browser-private-paths.mjs";
+import { windowsCanonicalPath, windowsWithin } from "./app-identity.mjs";
 
 // The Node end of Reach's Windows sandbox (scripts/native/sandbox.cs,
 // docs/parity/C-sandbox.md). It frames requests to the helper, reads its
@@ -152,4 +156,69 @@ export async function sandboxSelfTest({
     child.on("error", (error) => { if (refusedToStart(error)) return void onSpawnRefused().then(finish); finish({ ok: false, permanent: false, reason: HELPER_WONT_START(platform) }); });
     child.on("exit", () => { if (!started) void onEarlyExit().then(finish); });
   });
+}
+
+// ---------------------------------------------------------------------------
+// §4.3 What may be granted, and §4.4 what is denied. A jobs or scripts grant is
+// confined to a per-root capability SID the helper ACLs onto that root's tree;
+// the file boundary is the intersection of the owner's access and the
+// capability grant, so a folder is reachable only if both allow it (§4.1). The
+// access masks and the DENY carve-outs live on the helper side (§4.4, §4.5);
+// here we only decide which roots may be granted and which paths must be denied.
+
+const isDriveRoot = (canonical) => /^[a-z]:\\$/.test(canonical);
+
+// Finding 2: a jobs or scripts grant whose root is a drive root, Home, or an
+// ancestor of Home is refused with a worded reason; grants never come from a
+// drive letter. This closes the Home/drive walk and keeps an ALLOW out of
+// appRoot/dataDir/state even when a root would contain them (finding 1). The
+// cost — a client whose only roots are Home plus drive letters can't run jobs
+// on Windows — is the §10 parity break the owner accepted.
+export function windowsGrantRoots(roots, { home = os.homedir(), platform = process.platform } = {}) {
+  const canonicalHome = windowsCanonicalPath(home);
+  const granted = [];
+  for (const root of roots || []) {
+    if (typeof root !== "string" || !root) continue;
+    const canonical = windowsCanonicalPath(root);
+    if (isDriveRoot(canonical))
+      throw fail(403, `A whole drive (${root}) can't be shared with an agent's commands on a ${computerWord(platform)}. Share a project folder inside it.`);
+    // windowsWithin(home, root) is true when root is Home itself or an ancestor
+    // of Home, so both cases refuse with the same reason.
+    if (windowsWithin(canonicalHome, canonical))
+      throw fail(403, `Your home folder (or a folder that contains it) can't be shared with an agent's commands on a ${computerWord(platform)}. Share a project folder inside it.`);
+    granted.push(canonical);
+  }
+  return granted;
+}
+
+// §4.4 The jobs deny set mirrors agentShellSandbox's read/write lists on the
+// Mac: Reach's code and data, the agent vault, the credential and browser
+// stores, Tailscale's state, the Windows persistence points — but NOT the
+// in-root private names (.git, .npmrc, .config), so git and npm work in a
+// shared folder exactly as they do on the Mac (finding 5). browserPrivatePaths
+// on win32 already builds this set from the environment (server/
+// browser-private-paths.mjs windowsPrivatePaths).
+export function windowsJobDenies(config, { home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+  return browserPrivatePaths(config, { home, platform, env });
+}
+
+// §3.1, §8: the descriptor the jobs POST hands the helper. Not a profile
+// string — a regular AppContainer with per-root capability grants, the mirror
+// deny set, internet (the loopback/tailnet self-test refuses any reach to
+// Reach, §5), a fork-bomb process cap and a runaway-memory cap, and no job CPU
+// time limit (finding 10). Grants come from the client's current roots, never
+// from config.roots (findings 1, 2); a refused root throws a worded 403.
+export function windowsJobSandbox(config, client, { sockets = [], home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+  const roots = client?.agentRoots?.length ? client.agentRoots : config.roots || [];
+  const grants = windowsGrantRoots(roots, { home, platform }).map((root) => ({ root, access: "rw" }));
+  return {
+    mode: "jobs",
+    grants,
+    denies: windowsJobDenies(config, { home, platform, env }),
+    network: "internet",
+    capabilities: ["internetClient"],
+    // A fork-bomb guard only, and a runaway-memory cap; no JOB_TIME, so a
+    // parallel build isn't cut off before its wall-clock timeout (finding 10).
+    limits: { activeProcesses: 512, memoryBytes: 0 },
+  };
 }

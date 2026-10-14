@@ -39,6 +39,10 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 
 static class Sandbox {
@@ -209,5 +213,233 @@ static class Sandbox {
     if (text == null) return "";
     text = text.Replace("\r", " ").Replace("\n", " ");
     return text.Length > 300 ? text.Substring(0, 300) : text;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §4 Capability granting. Confinement for jobs and scripts is a custom
+// capability SID per shared root (DeriveCapabilitySidsFromName, the precedent
+// is Chromium's lpacChromeInstallFiles), ACE'd onto that root's tree once at
+// grant time. The AppContainer launch is handed only the capabilities for the
+// client's current roots (slice 3), so removing or changing a root takes effect
+// on the next launch with no new walk (finding 3). Secrets inside a granted
+// root additionally carry a DENY for a fixed Reach-wide capability SID every
+// Reach-launched token holds, placed before the ALLOWs in canonical order.
+static class Grants {
+  // FileSystemRights built to match finding 6's masks. Read is
+  // FILE_GENERIC_READ|FILE_GENERIC_EXECUTE; write adds FILE_GENERIC_WRITE and
+  // DELETE but never FILE_DELETE_CHILD (DeleteSubdirectoriesAndFiles), so a
+  // script can't delete or rename a private-named child it was never granted
+  // (finding 5): rename/delete of an allowed child goes through that child's own
+  // DELETE right, which private names never receive.
+  const FileSystemRights Read = FileSystemRights.ReadAndExecute;
+  const FileSystemRights Write = FileSystemRights.ReadAndExecute | FileSystemRights.Write | FileSystemRights.Delete;
+
+  public static SecurityIdentifier CapabilitySid(string name) {
+    IntPtr groups = IntPtr.Zero, sids = IntPtr.Zero;
+    int groupCount = 0, sidCount = 0;
+    if (!NativeSec.DeriveCapabilitySidsFromName(name, out groups, out groupCount, out sids, out sidCount) || sidCount < 1 || sids == IntPtr.Zero)
+      throw new Exception("DeriveCapabilitySidsFromName failed for " + name);
+    try {
+      IntPtr first = Marshal.ReadIntPtr(sids);
+      int length = NativeSec.GetLengthSid(first);
+      byte[] raw = new byte[length];
+      Marshal.Copy(first, raw, 0, length);
+      return new SecurityIdentifier(raw, 0);
+    } finally {
+      FreeSidArray(groups, groupCount);
+      FreeSidArray(sids, sidCount);
+    }
+  }
+
+  static void FreeSidArray(IntPtr array, int count) {
+    if (array == IntPtr.Zero) return;
+    for (int i = 0; i < count; i++) {
+      IntPtr sid = Marshal.ReadIntPtr(array, i * IntPtr.Size);
+      if (sid != IntPtr.Zero) NativeSec.LocalFree(sid);
+    }
+    NativeSec.LocalFree(array);
+  }
+
+  // The per-root capability, named from the root's canonical path so the same
+  // root always derives the same SID and a changed root derives a different one.
+  public static SecurityIdentifier RootCapability(string canonicalRoot) {
+    using (SHA256 sha = SHA256.Create()) {
+      byte[] digest = sha.ComputeHash(Encoding.Unicode.GetBytes(canonicalRoot.ToLowerInvariant()));
+      StringBuilder hex = new StringBuilder(32);
+      for (int i = 0; i < 16; i++) hex.Append(digest[i].ToString("x2"));
+      return CapabilitySid("reach.root." + hex.ToString());
+    }
+  }
+
+  // The fixed Reach-wide capability every Reach-launched token carries; secrets
+  // deny it, so no sandboxed token can reach them whatever ALLOW a root carried.
+  public static SecurityIdentifier DenyCapability() {
+    return CapabilitySid("reach.sandbox.deny");
+  }
+
+  static bool IsPrivateName(string name, ICollection<string> denyNames) {
+    foreach (string deny in denyNames) if (string.Equals(name, deny, StringComparison.OrdinalIgnoreCase)) return true;
+    return false;
+  }
+
+  // One handle walk at grant time (§4.4). An OI|CI ACE does not reach existing
+  // descendants, so each existing object is ACE'd by name; a hard-linked file or
+  // a name-surrogate reparse point is skipped (not ACE'd, not recursed) and the
+  // walk carries on, refusing only on a scan error or above a bound (finding
+  // 11). No ALLOW is ever written inside a private-named subtree (findings 1, 5).
+  const int MaxEntries = 200000;
+
+  public static void ApplyGrant(string root, bool writable, ICollection<string> denyNames, ICollection<string> denyPaths) {
+    SecurityIdentifier allow = RootCapability(root);
+    SecurityIdentifier deny = DenyCapability();
+    // DENY carve-outs first: the known secret paths that fall inside the root.
+    foreach (string path in denyPaths) {
+      if (!Within(root, path)) continue;
+      DenyEverywhere(path, deny);
+    }
+    // The root itself: an inheritable ALLOW for new descendants, plus this walk
+    // for the ones already there.
+    AllowObject(root, true, writable, allow, true);
+    int seen = 0;
+    Walk(root, writable, allow, denyNames, ref seen);
+  }
+
+  static void Walk(string dir, bool writable, SecurityIdentifier allow, ICollection<string> denyNames, ref int seen) {
+    IEnumerable<string> entries;
+    try { entries = Directory.EnumerateFileSystemEntries(dir); }
+    catch (Exception) { throw new Exception("The shared folder could not be read while granting access."); }
+    foreach (string entry in entries) {
+      if (++seen > MaxEntries) throw new Exception("This folder has too many entries to grant access safely. Share a smaller project folder.");
+      string name = Path.GetFileName(entry);
+      if (IsPrivateName(name, denyNames)) continue; // never ACE a private-named object or its subtree
+      FileAttributes attributes;
+      try { attributes = File.GetAttributes(entry); }
+      catch (Exception) { continue; }
+      bool directory = (attributes & FileAttributes.Directory) != 0;
+      if ((attributes & FileAttributes.ReparsePoint) != 0) {
+        // A name-surrogate reparse point (a junction or symlink) is skipped so a
+        // link can't drag an ACE onto, or the walk into, somewhere outside the
+        // root. Cloud/WOF/dedup tags are data: ACE the placeholder, don't follow.
+        if (NativeSec.IsNameSurrogate(entry)) continue;
+      }
+      if (!directory && NativeSec.HardLinked(entry)) continue; // an alias to an outside inode: never ACE'd
+      AllowObject(entry, directory, writable, allow, false);
+      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) Walk(entry, writable, allow, denyNames, ref seen);
+    }
+  }
+
+  static void AllowObject(string path, bool directory, bool writable, SecurityIdentifier cap, bool inheritable) {
+    FileSystemRights rights = writable ? Write : Read;
+    InheritanceFlags inheritance = directory && inheritable ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
+    var rule = new FileSystemAccessRule(cap, rights, inheritance, PropagationFlags.None, AccessControlType.Allow);
+    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
+    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+  }
+
+  static void DenyEverywhere(string path, SecurityIdentifier cap) {
+    bool directory = Directory.Exists(path);
+    if (!directory && !File.Exists(path)) return;
+    InheritanceFlags inheritance = directory ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
+    // FullControl denied: no access of any kind for a token carrying the cap.
+    var rule = new FileSystemAccessRule(cap, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Deny);
+    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
+    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+  }
+
+  // Revocation (§4.6): the ACEs for a root's capability are removed in a walk
+  // that continues past reparse points, never aborting, so a planted junction
+  // can't preserve an ACE. The job is killed first by the caller.
+  public static void Revoke(string root, ICollection<string> denyNames) {
+    SecurityIdentifier allow;
+    try { allow = RootCapability(root); } catch (Exception) { return; }
+    RemoveObject(root, true, allow);
+    int seen = 0;
+    RevokeWalk(root, allow, ref seen);
+  }
+
+  static void RevokeWalk(string dir, SecurityIdentifier allow, ref int seen) {
+    IEnumerable<string> entries;
+    try { entries = Directory.EnumerateFileSystemEntries(dir); } catch (Exception) { return; }
+    foreach (string entry in entries) {
+      if (++seen > MaxEntries) return;
+      FileAttributes attributes;
+      try { attributes = File.GetAttributes(entry); } catch (Exception) { continue; }
+      bool directory = (attributes & FileAttributes.Directory) != 0;
+      RemoveObject(entry, directory, allow);
+      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) RevokeWalk(entry, allow, ref seen);
+    }
+  }
+
+  static void RemoveObject(string path, bool directory, SecurityIdentifier cap) {
+    try {
+      if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.PurgeAccessRules(cap); Directory.SetAccessControl(path, security); }
+      else { FileSecurity security = File.GetAccessControl(path); security.PurgeAccessRules(cap); File.SetAccessControl(path, security); }
+    } catch (Exception) { /* a reparse point or a locked file: carry on */ }
+  }
+
+  public static bool Within(string root, string path) {
+    string r = root.TrimEnd('\\').ToLowerInvariant();
+    string p = path.TrimEnd('\\').ToLowerInvariant();
+    return p == r || p.StartsWith(r + "\\", StringComparison.Ordinal);
+  }
+}
+
+// P/Invoke that the managed security classes don't cover: deriving a capability
+// SID, and reading a reparse tag or a file's link count so the grant walk can
+// skip name-surrogate links and hard links (finding 11).
+static class NativeSec {
+  [DllImport("kernelbase.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern bool DeriveCapabilitySidsFromName(string capName, out IntPtr capabilityGroupSids, out int capabilityGroupSidCount, out IntPtr capabilitySids, out int capabilitySidCount);
+  [DllImport("advapi32.dll")]
+  public static extern int GetLengthSid(IntPtr sid);
+  [DllImport("kernel32.dll")]
+  public static extern IntPtr LocalFree(IntPtr handle);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetFileInformationByHandleEx(IntPtr file, int infoClass, IntPtr info, int size);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetFileInformationByHandle(IntPtr file, out BY_HANDLE_FILE_INFORMATION info);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool CloseHandle(IntPtr handle);
+
+  public const uint FILE_READ_ATTRIBUTES = 0x80;
+  public const uint FILE_SHARE_ALL = 0x7;
+  public const uint OPEN_EXISTING = 3;
+  public const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+  public const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+  const int FileAttributeTagInfo = 9;
+  static readonly IntPtr InvalidHandle = new IntPtr(-1);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct BY_HANDLE_FILE_INFORMATION {
+    public uint FileAttributes, CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+    public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+  }
+
+  // A reparse tag is a name surrogate (a junction or symbolic link) when its
+  // high bit group is set; cloud, WOF and dedup tags are not, and are data.
+  public static bool IsNameSurrogate(string path) {
+    IntPtr handle = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+    if (handle == InvalidHandle) return true; // can't inspect it: treat as a surrogate and skip
+    try {
+      IntPtr buffer = Marshal.AllocHGlobal(8);
+      try {
+        if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, buffer, 8)) return true;
+        uint tag = (uint)Marshal.ReadInt32(buffer, 4);
+        return (tag & 0x20000000) != 0; // IsReparseTagNameSurrogate
+      } finally { Marshal.FreeHGlobal(buffer); }
+    } finally { CloseHandle(handle); }
+  }
+
+  public static bool HardLinked(string path) {
+    IntPtr handle = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+    if (handle == InvalidHandle) return false;
+    try {
+      BY_HANDLE_FILE_INFORMATION info;
+      if (!GetFileInformationByHandle(handle, out info)) return false;
+      return info.NumberOfLinks > 1;
+    } finally { CloseHandle(handle); }
   }
 }

@@ -103,7 +103,9 @@ test("the sandbox helper source uses no C# 6+ constructs", () => {
     [/\?\[/, "null-conditional indexing"],
     [/\bnameof\s*\(/, "nameof"],
     [/\busing\s+static\b/, "using static"],
-    [/\bout\s+(?:var|int|uint|bool|string|byte|long|IntPtr)\b/, "inline out variable"],
+    // Inline out variables are C# 7; `out var` is the unambiguous marker (a
+    // typed `out IntPtr x` is legal C# 5 in a P/Invoke signature).
+    [/\bout\s+var\b/, "inline out variable"],
   ])
     assert.ok(!pattern.test(source), `sandbox.cs must not use ${what}`);
 });
@@ -147,4 +149,43 @@ test("the launch self-test passes when the helper answers, refusing otherwise wi
     sac: async () => false,
   });
   assert.deepEqual(stalled, { ok: false, permanent: false, reason: HELPER_WONT_START("win32") });
+});
+
+import { windowsGrantRoots, windowsJobDenies, windowsJobSandbox } from "../server/windows-sandbox.mjs";
+
+const WIN = { home: "C:\\Users\\me", platform: "win32", env: {} };
+
+test("jobs and script grants refuse drive-root, Home and Home-ancestor roots (findings 1, 2)", () => {
+  for (const [root, why] of [["C:\\", /whole drive/], ["c:\\", /whole drive/], ["C:\\Users\\me", /home folder/], ["C:\\Users", /home folder/]])
+    assert.throws(() => windowsGrantRoots([root], WIN), (e) => e.status === 403 && why.test(e.message), root);
+  // A project folder inside Home is granted, returned canonicalised.
+  assert.deepEqual(windowsGrantRoots(["C:\\Users\\me\\Projects\\acme"], WIN), ["c:\\users\\me\\projects\\acme"]);
+  // One bad root refuses the whole grant, naming nothing of the others.
+  assert.throws(() => windowsGrantRoots(["C:\\Users\\me\\Projects\\acme", "D:\\"], WIN), { status: 403 });
+});
+
+test("the jobs deny set mirrors the Mac's read/write lists and omits in-root private names (finding 5)", () => {
+  const config = { dataDir: "C:\\Users\\me\\.reach\\quick", agentPolicyFile: "C:\\Users\\me\\.reach\\policy.json", roots: ["C:\\Users\\me"] };
+  const denies = windowsJobDenies(config, WIN);
+  assert.ok(denies.some((d) => /\.reach\\quick$/i.test(d)), "Reach's data is denied");
+  assert.ok(denies.some((d) => /\\AppData$/i.test(d)), "the whole AppData tree is denied (credentials, browsers, startup)");
+  assert.ok(denies.some((d) => /System32\\config$/i.test(d)), "the Windows password database is denied");
+  // The finding-5 distinction: an in-root .git / .npmrc is NOT denied, so git
+  // and npm keep working inside a shared folder as they do on the Mac.
+  assert.ok(!denies.includes("C:\\Users\\me\\Projects\\acme\\.git"), "an in-root .git is not denied");
+  assert.ok(!denies.includes("C:\\Users\\me\\Projects\\acme\\.npmrc"), "an in-root .npmrc is not denied");
+});
+
+test("the jobs descriptor carries grants, the mirror denies, internet and a fork-bomb cap", () => {
+  const config = { dataDir: "C:\\Users\\me\\.reach\\quick", roots: ["C:\\Users\\me"] };
+  const client = { agentRoots: ["C:\\Users\\me\\Projects\\acme"] };
+  const d = windowsJobSandbox(config, client, WIN);
+  assert.equal(d.mode, "jobs");
+  assert.equal(d.network, "internet");
+  assert.deepEqual(d.capabilities, ["internetClient"]);
+  assert.deepEqual(d.grants, [{ root: "c:\\users\\me\\projects\\acme", access: "rw" }]);
+  assert.equal(d.limits.memoryBytes, 0, "no fixed memory cap beyond a runaway guard");
+  assert.ok(d.denies.length > 0);
+  // A client whose only root is Home is refused here (the §10 parity break).
+  assert.throws(() => windowsJobSandbox(config, { agentRoots: ["C:\\Users\\me"] }, WIN), { status: 403 });
 });
