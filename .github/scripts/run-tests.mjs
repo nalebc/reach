@@ -34,6 +34,8 @@ export const suites = {
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Hearing the computer beside its screen (Oct 13): the shared part.
+    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
@@ -45,6 +47,8 @@ export const suites = {
     "node-runtime-files", "security-resilience-cursor-native",
     "remote-desktop", "remote-screen-hub", "tool-page-runtime",
     "ios-background-transfer-native",
+    // The Mac's sound helper, built and self-tested (Oct 13).
+    "screen-sound-native",
   ],
 };
 

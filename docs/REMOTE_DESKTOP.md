@@ -31,6 +31,17 @@ Clipboard access depends on browser permissions and a secure context. Use the HT
 
 Switching displays, pausing, hiding the app, or leaving the page releases control. Re-enable it when ready. Only one owner browser controls the laptop at a time. Temporary guests and screen-scoped agents can view when authorized but cannot control or access the clipboard.
 
+## Sound
+
+Tap the speaker in Screen's bar to hear the computer on your phone while you watch; tap it again to stop. Sound starts off each time you open Screen, and stops when you leave Screen, switch computers, put Reach in the background or lock the phone, pause Reach, or turn screen viewing off.
+
+- **What you hear:** what the computer plays, never its microphone. A Mac captures it with ScreenCaptureKit, under the Screen Recording permission the picture already uses (macOS 13 or newer). A Windows PC captures its default output (a WASAPI loopback); switch speakers or headphones and the sound follows after a short reconnect. Protected content (some streaming apps) may be silent, as it is black in the picture.
+- **Who:** you and people with full access. Invited people with less access and agents never hear it. It isn't offered in a browser on the computer itself (it would play into what it captures), and it travels only over the private link, never the public one.
+- **Quality:** IMA ADPCM, about 0.4 Mbps at 48 kHz stereo: good for videos, calls and alerts, not hi-fi. A link that backs up gets 24 kHz stereo, then 24 kHz mono, and skips rather than falls behind; it has its own connection, so it never holds up the picture. The phone keeps about a tenth of a second queued, a little more after a late packet, a little less after calm. A silent computer sends one small packet a second.
+- **iPhone:** it plays with the ringer switch on silent on iOS 17 and later; earlier versions follow the switch. The phone's volume buttons set the level.
+
+The phone and the computer keep slightly different time, so over a long listen the queue can run dry or grow: a brief skip every quarter of an hour or more at worst.
+
 ## Video and performance
 
 The default automatically targets up to 60 fps at 1600 px wide and 4 Mbps. Congestion reduces delivery rate toward 20 fps; Mac encoding also reduces bitrate toward 750 Kbps without reconnecting. Recovery raises quality gradually after healthy intervals. Slow viewers have individual bounded windows, so one slow viewer does not force faster viewers to degrade. These are targets, not guaranteed rates. Manual legacy API presets remain available for integrations; no bitrate/fps selector is shown in the main UI.
@@ -66,7 +77,7 @@ REACH_TEST_VIDEO_HELPER=/tmp/reach-screen-video-test npm test
 
 For a real end-to-end check, test on the intended phone over cellular: move and resize a harmless window, select text, compare all four click corners before/after zoom, use modifier shortcuts, transfer a test clipboard string both ways, switch monitors, rotate/fullscreen, then hide the phone browser during a drag and verify the mouse releases. Revoke the phone or let a guest expire and verify access ends. Re-enable only the permissions you intend to use.
 
-The browser interface has no audio, image clipboard sync, cross-device drag-and-drop, or unattended login/lock-screen access. Windows native behavior, Retina/mixed-DPI multi-monitor input, and physical iOS/Android keyboards, dictation, selection menus and multitouch need device validation. The streamed desktop is video, so native phone selection handles apply to the local typing/clipboard text, not arbitrary pixels in the stream. See [Security](SECURITY.md) for trust boundaries.
+The browser interface has no image clipboard sync, cross-device drag-and-drop, or unattended login/lock-screen access. Sound has been captured for real on a Mac (macOS 26.6) and played end to end in headless Chrome under Reach's own page policy; Safari on an iPhone, Android phones and a real Windows PC still need trying (Windows' helper is built and run on GitHub's Windows runner, which has no speakers). Windows native behavior, Retina/mixed-DPI multi-monitor input, and physical iOS/Android keyboards, dictation, selection menus and multitouch need device validation. The streamed desktop is video, so native phone selection handles apply to the local typing/clipboard text, not arbitrary pixels in the stream. See [Security](SECURITY.md) for trust boundaries.
 
 ### Phone keyboard and fullscreen
 
