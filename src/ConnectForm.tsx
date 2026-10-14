@@ -97,7 +97,8 @@ export default function ConnectForm({
 }: {
   initialUrl?: string;
   onPaired: (peer: Peer) => void;
-  legacy: (url: string) => ReactNode;
+  // `command`: how this computer runs Reach (reach, ./reach, .\reach.cmd).
+  legacy: (url: string, command?: string) => ReactNode;
   name: string;
 }) {
   const [url, setUrl] = useState(
@@ -480,7 +481,7 @@ export default function ConnectForm({
         <ErrorLine error={faceNote} />
       </div>
     );
-  if (method?.method === "pairing" || fallback) return <>{legacy(url)}</>;
+  if (method?.method === "pairing" || fallback) return <>{legacy(url, method?.command)}</>;
   // Signed in from the browser: this is the second of two steps.
   const browserSignIn =
     document.documentElement.dataset.connection === "browser";
