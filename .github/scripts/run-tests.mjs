@@ -47,6 +47,8 @@ export const suites = {
     "openclaw-wizard",
     // Auto-continue: here when usage is back, or the first provider free (Oct 14).
     "auto-continue", "across-agents-ui", "claude-usage-ui",
+    // Usage back on time when Claude's sign-in lapsed while unused (Oct 14).
+    "usage-watch", "account-usage",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
