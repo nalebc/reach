@@ -40,6 +40,13 @@ export function parseProcesses(stdout) {
   return rows;
 }
 
+// Where the server's own readings build the helper: Reach's data folder, set
+// once it's known (agent-sessions/index.mjs), as windows-presence.mjs's is.
+let folder = null;
+export const useProcessesFolder = (dir) => {
+  folder = dir || null;
+};
+
 /**
  * Every process now: [{ pid, ppid, image, path, commandLine, startedAt }].
  * `image` is the program's file name ("node.exe"), `path` its full path,
@@ -47,7 +54,7 @@ export function parseProcesses(stdout) {
  * Windows won't say. A parent is one only if it started before its child
  * (Windows hands ids out again). `nativeDir`: where the helper is built.
  */
-export async function windowsProcesses({ run = exec, nativeDir, build = windowsBinary, platform = process.platform, signal } = {}) {
+export async function windowsProcesses({ run = exec, nativeDir = folder, build = windowsBinary, platform = process.platform, signal } = {}) {
   if (platform !== "win32") throw Object.assign(new Error("Reading the process list this way is for Windows."), { status: 501 });
   // Tests only: a Reach started on a Mac as Windows (test/helpers/as-windows.mjs)
   // reads this list instead (one helper line in a file).

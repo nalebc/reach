@@ -14,6 +14,8 @@ import {
 import { readPreferences } from "../scripts/configure.mjs";
 import { command } from "../scripts/home.mjs";
 import { approveDevice } from "../scripts/approve-device.mjs";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 // A tailnet ready for the phone's HTTPS link.
 const READY = {
@@ -56,6 +58,8 @@ function deps(scene, extra = {}) {
     ...extra,
   };
 }
+// The launcher's own name in a pattern: ./reach, or .\reach.cmd on Windows.
+const CMD = command.replace(/[.\\]/g, "\\$&");
 const tmp = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-setup-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -87,7 +91,7 @@ test("a fresh run: three steps shown once, Tailscale and the link, then the phon
   assert.match(text, /✔ 1\. Tailscale on this computer {2}— {2}me@x\.test/);
   assert.match(text, /✔ 2\. Your private link {2}— {2}mac\.tail1\.ts\.net/);
   assert.match(text, /▸ 3\. Your phone\n {5}Reach starts now: scan its QR code with your phone's camera, then tap Connect\./);
-  assert.match(text, /Later, when you want them:\n {4}\.\/reach setup invites +invite people and agents with a link\n {4}\.\/reach setup background +keep Reach running after this window closes/);
+  assert.match(text, new RegExp(`Later, when you want them:\\n {4}${CMD} setup invites {2,}invite people and agents with a link\\n {4}${CMD} setup background {2,}keep Reach running after this window closes`));
   assert.doesNotMatch(text, /Install the Tailscale app on your phone/, "phones sign in from the browser here");
   // A finished setup is not offered again.
   assert.equal(needsOnboarding(root), false);
@@ -408,14 +412,14 @@ test("background first run: start page not reachable → private link; deny keep
   assert.equal(ok, false);
   assert.match(text, /Open on your phone: https:\/\/mac\.tail1\.ts\.net:8443/);
   assert.match(text, /Connection denied\./);
-  assert.match(text, /No phone yet\. Later: open https:\/\/mac\.tail1\.ts\.net:8443 on it, then run \.\/reach approve/);
+  assert.match(text, new RegExp(`No phone yet\\. Later: open https://mac\\.tail1\\.ts\\.net:8443 on it, then run ${CMD} approve`));
   // Reach never started: say how to finish later.
   const none = [];
   assert.equal(
     await connectPhone(root, { deps: { print: (m) => none.push(m), sleep: async () => {}, readHost: () => null, startMs: 5 } }),
     false,
   );
-  assert.match(none.join("\n"), /still starting\. When it's ready: \.\/reach status/);
+  assert.match(none.join("\n"), new RegExp(`still starting\\. When it's ready: ${CMD} status`));
 });
 
 // First-run matrix H14, T22: Windows gets the guided setup, as a Mac does:
@@ -524,6 +528,18 @@ test("Windows: setup background asks the Mac's question and offers the backgroun
   assert.match(question.choices[1].description, /^Installs a background task \(you can remove it\)\. It has no window: the live screen and control work while you're signed in, and new phones are approved with \S+ approve\.$/);
   assert.doesNotMatch(JSON.stringify(question), /Terminal window|macOS|Screen Recording/);
   assert.equal(readProgress(root).steps.background, "background");
+});
+
+// Found on a real Windows runner (Oct 14): ".\reach.cmd setup background" is
+// longer than the column ./reach's lines were padded to, and ran into its hint.
+test("the later steps line up whatever the launcher is called: .\\reach.cmd as well as ./reach", () => {
+  const asWindows = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
+  const said = execFileSync(process.execPath, ["--import", asWindows, "--input-type=module", "-e", `
+    import { phoneStep } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/setup.mjs")).href)};
+    const all = [{ id: "account" }, { id: "invites", later: true, hint: "invite people and agents with a link" }, { id: "background", later: true, hint: "keep Reach running after this window closes" }];
+    process.stdout.write(phoneStep({ first: all.slice(0, 1), all }));
+  `], { encoding: "utf8", env: { ...process.env, REACH_COMMAND: "" } });
+  assert.match(said, /\n {4}\.\\reach\.cmd setup invites {5}invite people and agents with a link\n {4}\.\\reach\.cmd setup background {2}keep Reach running after this window closes\n$/);
 });
 
 test("Windows: invite links and your account are sections, as on a Mac; approve asks for a running Reach set up with your account", async (t) => {

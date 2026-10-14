@@ -46,8 +46,11 @@ test('Windows discovers OpenClaw as Reach runs it, never by where.exe or a Unix 
   const found = await detectAgents({ known, platform: 'win32', env: { APPDATA: 'C:\\Users\\test\\AppData\\Roaming' }, home: 'C:/Users/test', exists: () => false, run,
     openClaw: async (options) => (asked.push(options), 'C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\openclaw\\openclaw.mjs') });
   assert.equal(found[0].installed, true); assert.equal(asked[0].home, 'C:/Users/test');
-  const missing = await detectAgents({ known, platform: 'win32', env: {}, home: 'C:/Users/test', exists: () => false, run, openClaw: async () => null });
+  const missing = await detectAgents({ known, platform: 'win32', env: {}, home: 'C:/Users/test', exists: () => false, run, openClaw: async () => null, hub: async () => null });
   assert.equal(missing[0].installed, false);
+  // OpenClaw's own Windows app keeping its Gateway in WSL: there too.
+  const kept = await detectAgents({ known, platform: 'win32', env: {}, home: 'C:/Users/test', exists: () => false, run, openClaw: async () => null, hub: async () => ({ distro: 'OpenClawGateway', port: 18789, token: 't' }) });
+  assert.equal(kept[0].installed, true);
 });
 
 test('a missing Codex binary prompts installation; a failed connection prompts retry', async () => {

@@ -37,10 +37,12 @@ function fakePc() {
   const pc = {
     calls: [],
     sessions: [session(100), session(200, "console", "Command Prompt - npm  run dev")],
+    // Consoles running as administrator, which Windows keeps Reach out of.
+    administrator: { "windows-terminal": 0, console: 0 },
     run: async (payload) => {
       pc.calls.push(payload);
       if (payload.action === "list")
-        return { sessions: pc.sessions, running: { "windows-terminal": true, console: true }, installed: { "windows-terminal": true, console: true } };
+        return { sessions: pc.sessions, running: { "windows-terminal": true, console: true }, installed: { "windows-terminal": true, console: true }, administrator: pc.administrator };
       if (!pc.sessions.some((s) => JSON.stringify(s.target) === JSON.stringify(payload.target)) && payload.action !== "create")
         throw Object.assign(Error("This terminal has closed. Refresh the list."), { status: 404 });
       if (payload.action === "read") return { text: payload.scrollback ? "earlier\nPS C:\\> " : "PS C:\\> " };
@@ -54,6 +56,7 @@ function fakePc() {
 test("a Windows PC lists its Windows Terminal tabs and console windows in one look, leaving Reach's own out", async () => {
   const pc = fakePc();
   pc.sessions.push({ ...session(300), provider: "vscode" }, { ...session(400), ended: true });
+  pc.administrator = { "windows-terminal": 0, console: 2 };
   const d = new DesktopTerminals({ platform: "win32", run: pc.run, reach: 4242 });
   const first = await d.list(allow);
   assert.deepEqual(pc.calls, [{ action: "list", exclude: 4242 }], "one helper run, told Reach's own process");
@@ -61,9 +64,10 @@ test("a Windows PC lists its Windows Terminal tabs and console windows in one lo
     ["windows-terminal", "PowerShell", "100"],
     ["console", "Command Prompt - npm  run dev", "200"],
   ]);
+  // Two consoles run as administrator: counted for the phone, never listed.
   assert.deepEqual(first.providers, [
     { id: "windows-terminal", name: "Windows Terminal", running: true, installed: true },
-    { id: "console", name: "Console window", running: true, installed: true },
+    { id: "console", name: "Console window", running: true, installed: true, administrator: 2 },
   ]);
   // Ids come from the target, not the title or the order.
   pc.sessions = [{ ...session(200, "console"), name: "renamed" }, session(100)];
@@ -342,6 +346,21 @@ test("the PC's watch is its terminals helper run as a watch, hidden, and its out
   fakeHelper.emit("event", { type: "output", tty: "100" });
   await next;
   assert.ok(pc.calls.filter((c) => c.action === "read").length > reads, "output read the tab it named");
+  watch.end();
+});
+
+test("phones hear when consoles start or stop running as administrator, as when a tab opens", async () => {
+  const pc = fakePc();
+  const helper = Object.assign(new EventEmitter(), { sent: [], send: (m) => helper.sent.push(m), stop() {} });
+  const watch = new MacTerminalWatch({ terminals: new DesktopTerminals({ platform: "win32", run: pc.run }), start: async () => helper });
+  watch.retain();
+  for (let i = 0; i < 300 && !watch.ready; i++) await new Promise((r) => setTimeout(r, 5));
+  const before = watch.version;
+  assert.ok(before);
+  pc.administrator = { "windows-terminal": 1, console: 0 };
+  await watch.refresh();
+  assert.notEqual(watch.version, before);
+  assert.equal(watch.list(allow).providers[0].administrator, 1);
   watch.end();
 });
 

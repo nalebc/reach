@@ -26,6 +26,8 @@ import { startDom, settle, typeInto } from "./dom/harness.mjs";
 const base = "/api/sessions/openclaw";
 const KEY = "sk-or-v1-SECRETKEY0123456789";
 const env = { SHELL: "/bin/zsh" };
+// Nothing on OpenClaw's Gateway port (this Mac's own may well answer there).
+const free = async () => false;
 // Homebrew's node@24, as availableUpdateRuntime finds it (a fake path).
 const runtime = "/brew/opt/node@24/bin/node";
 const LEAD = `export PATH='/brew/opt/node@24/bin:/brew/bin':"$PATH"`;
@@ -115,7 +117,7 @@ test("setup runs openclaw through the login shell, the key in its environment on
   let auth = 0;
   const done = await onboardOpenClaw(
     { provider: "openrouter", key: KEY, acceptRisk: true },
-    { run: async (...a) => (calls.push(a), { stdout: KEY }), env, platform: "darwin", file, runtime, authorize: () => auth++ },
+    { run: async (...a) => (calls.push(a), { stdout: KEY }), env, platform: "darwin", file, runtime, authorize: () => auth++, gateway: free },
   );
   assert.deepEqual(done, { started: true, provider: "openrouter" });
   await onboardSettled();
@@ -140,6 +142,9 @@ test("setup never runs without accepting the risk or over an existing config", a
     await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk }, { run, env, platform: "darwin", file: await tempConfig() }), (e) => e.status === 400 && /risk/.test(e.message));
   const existing = await tempConfig({ make: true });
   await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file: existing }), (e) => e.status === 409 && /already set up/.test(e.message));
+  // Nor beside a Gateway nothing here set up: the same on a Mac as on a PC.
+  await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file: await tempConfig(), gateway: async () => true }),
+    (e) => e.status === 409 && e.message === "Something already answers on OpenClaw's Gateway port on this Mac, and Reach can't see what set it up. Reach won't start a second Gateway beside it.");
   // A revoked device stops it before anything runs.
   await assert.rejects(onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file: await tempConfig(), authorize: () => { throw Object.assign(new Error("Revoked"), { status: 401 }); } }), (e) => e.status === 401);
 });
@@ -149,7 +154,7 @@ test("a failing OpenClaw never carries the key back", async () => {
   const original = { error: console.error, log: console.log, warn: console.warn };
   for (const k of Object.keys(original)) console[k] = (...a) => logged.push(a.join(" "));
   try {
-    await onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async (_s, argv) => { throw leaky(argv); }, env, platform: "darwin", file: await tempConfig(), runtime });
+    await onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async (_s, argv) => { throw leaky(argv); }, env, platform: "darwin", file: await tempConfig(), runtime, gateway: free });
     await onboardSettled();
     assert.deepEqual(onboardSetup(), { state: "failed", provider: "openrouter", error: "OpenClaw didn't finish setting up. Check the key and try again." });
     noKey(onboardSetup());
@@ -230,10 +235,12 @@ test("status reports install and setup; config path as OpenClaw's", async () => 
 });
 
 test("OpenClaw's own installer, via the agent-install route", async () => {
-  const options = (tools) => ({ platform: "darwin", has: async (tool) => tools.includes(tool), findRuntime: async () => null });
-  assert.deepEqual(await installPlan("openclaw", options(["npm"])), { agent: "openclaw", name: "OpenClaw", command: "npm install -g openclaw@latest" });
-  const script = await installPlan("openclaw", options([]));
-  assert.match(script.command, /^curl -fsSL --proto '=https' --tlsv1\.2 https:\/\/openclaw\.ai\/install\.sh \| bash -s -- --no-prompt --no-onboard$/);
+  // On a Mac whatever it has (npm or not): OpenClaw's install.sh.
+  const node = async () => ({ version: "24.21.0", supported: true });
+  for (const tools of [["npm"], []]) {
+    const script = await installPlan("openclaw", { platform: "darwin", has: async (tool) => tools.includes(tool), findRuntime: async () => null, node });
+    assert.match(script.command, /^curl -fsSL --proto '=https' --tlsv1\.2 https:\/\/openclaw\.ai\/install\.sh \| bash -s -- --no-prompt --no-onboard$/);
+  }
   // Windows: its PowerShell installer (windows-openclaw.test.mjs).
   assert.match((await installPlan("openclaw", { platform: "win32", has: async () => true, node: async () => ({ version: "24.16.0", supported: true }) })).command, /install\.ps1\)\)\) -NoOnboard$/);
 });
@@ -255,7 +262,7 @@ test("a failed setup names its cause: missing command, Node, partial setup, time
       if (writesConfig) await fs.writeFile(file, "{}"); // config first, then the daemon failed
       return fails(extra)(shell, argv, options);
     };
-    await onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file, runtime });
+    await onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, { run, env, platform: "darwin", file, runtime, gateway: free });
     await onboardSettled();
     assert.deepEqual(onboardSetup(), { state, provider: "openai", error });
     noKey(onboardSetup());
@@ -266,7 +273,7 @@ test("setup outlasts the phone's request: busy until OpenClaw exits, then polled
   let exit;
   const file = await tempConfig();
   const started = await onboardOpenClaw({ provider: "openai", key: KEY, acceptRisk: true }, {
-    run: () => new Promise((resolve) => { exit = resolve; }), env, platform: "darwin", file, runtime,
+    run: () => new Promise((resolve) => { exit = resolve; }), env, platform: "darwin", file, runtime, gateway: free,
   });
   assert.deepEqual(started, { started: true, provider: "openai" });
   assert.deepEqual(onboardSetup(), { state: "running", provider: "openai" });
@@ -392,7 +399,7 @@ test("ClawOnboard on a Windows PC: OpenClaw's installer, the Node it adds said f
     agent: "openclaw",
     name: "OpenClaw",
     command: "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard",
-    note: "OpenClaw needs Node 24.16 or newer, and this PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this PC's Node as it is.",
+    note: "OpenClaw needs Node 24.16 or newer, and this Windows PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this Windows PC's Node as it is.",
   };
   const dom = await startDom({
     routes: {

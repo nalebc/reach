@@ -48,9 +48,14 @@ export function privateNodePath(root, arch = process.arch, platform = process.pl
       : path.join(dir, "runtime", `node-v22.23.3-darwin-${arch}`, "bin/node"),
   );
   const expected = candidates.find((c) => fs.existsSync(c)) || candidates[0];
-  // Windows names the same file in any case.
-  const same = (a, b) => (platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
-  if (!fs.existsSync(expected) || !same(fs.realpathSync.native(expected), expected))
+  // The file itself, never a link to another Node. Windows names one folder
+  // in many ways (any case, 8.3 short names like RUNNER~1): its own folder,
+  // resolved the same way, is what it's compared with there.
+  const own = (file) =>
+    platform === "win32"
+      ? fs.realpathSync.native(file).toLowerCase() === path.join(fs.realpathSync.native(path.dirname(file)), path.basename(file)).toLowerCase()
+      : fs.realpathSync.native(file) === file;
+  if (!fs.existsSync(expected) || !own(expected))
     throw Error(
       `Reach's private Node runtime is missing. Run ${reachCommand} install to prepare it; system Node is not used for the service.`,
     );

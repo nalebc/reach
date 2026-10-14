@@ -149,10 +149,17 @@ export class DesktopTerminals {
         tty: session.tty,
       });
     }
+    // Consoles running as administrator, which Windows keeps Reach out of:
+    // counted, so the phone can say they aren't shown.
+    const administrator = (id) => {
+      const count = Number(result?.administrator?.[id]);
+      return Number.isSafeInteger(count) && count > 0 ? { administrator: count } : {};
+    };
     const providers = this.providers.map((provider) => ({
       ...provider,
       running: !!result?.running?.[provider.id],
       installed: result?.installed?.[provider.id] !== false,
+      ...administrator(provider.id),
     }));
     this.targets = next;
     return { sessions, providers };

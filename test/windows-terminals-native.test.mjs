@@ -58,7 +58,8 @@ async function eventually(what, check, ms = 30000) {
     } catch (error) {
       last = error;
     }
-    if (Date.now() > end) throw Error(`Timed out: ${what}${last ? ` (last: ${last.message})` : ""}`);
+    if (Date.now() > end)
+      throw Error(`Timed out: ${what}${last ? ` (last: ${last.message})` : ""}; the PC's terminals were: ${JSON.stringify(lastSeen)}`);
     await pause(400);
   }
 }
@@ -67,6 +68,31 @@ const sweep = (pids) => Promise.all(pids.filter(Boolean).map((pid) => run("taskk
 const terminals = async (options = {}) =>
   new DesktopTerminals({ platform: "win32", dataDir: await folder(), reach: 0, ...options });
 const module = (file) => JSON.stringify(new URL(`../server/${file}`, import.meta.url).href);
+// A console window as the Run box or Start menu opens one: conhost.exe
+// started by the shell, so it has no standard handles. Given some, as Node
+// gives every program it starts (NUL for ignored ones), conhost takes them
+// for a pseudo console's pipes and shows no window (the first runner run,
+// Oct 13). Its pid, ended whatever the test's outcome.
+async function consoleWindow(t, title) {
+  const conhost = path.join(system, "conhost.exe");
+  const { stdout } = await run(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", `(Start-Process -FilePath '${conhost}' -ArgumentList '${cmd} /d /k title ${title}' -PassThru).Id`],
+    { windowsHide: true, timeout: 60000 },
+  );
+  const pid = Number(stdout.trim());
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, `conhost started: ${stdout}`);
+  t.after(() => sweep([pid]));
+  return pid;
+}
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 // A script run by its own Node process, from a folder of its own.
 async function script(t, source) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach terminals child-"));
@@ -91,7 +117,13 @@ process.exit(0);
   const { stdout } = await run(process.execPath, [file, provider, name, await folder(), cwd, cmd], { timeout: 120000, windowsHide: true });
   return JSON.parse(stdout.trim().split(/\r?\n/).pop());
 }
-const find = async (d, name) => (await d.list(allow)).sessions.find((s) => s.name.includes(name));
+// What the list had, said when a wait for a terminal runs out.
+let lastSeen = [];
+const find = async (d, name) => {
+  const { sessions } = await d.list(allow);
+  lastSeen = sessions.map((s) => `${s.provider}: ${s.name}`);
+  return sessions.find((s) => s.name.includes(name));
+};
 const lines = (text) => String(text).split("\n").map((line) => line.trim());
 
 // List it, type into it, read the answer back (screen and scrollback), bring
@@ -130,15 +162,13 @@ test("a console window on the PC is listed, read, typed into, brought forward an
   const name = marker("console");
   // conhost.exe started with a command line keeps its own window: Windows
   // never hands it to Windows Terminal.
-  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
-  const exited = new Promise((resolve) => host.once("exit", resolve));
-  t.after(() => sweep([host.pid]));
+  const host = await consoleWindow(t, name);
   const d = await terminals();
   const target = await roundTrip(d, name, record);
   assert.equal(record.provider, "console");
   assert.match(record.tty, /^\d+$/);
   // Closed as its close button closes it: the window and its programs end.
-  await Promise.race([exited, pause(15000).then(() => assert.fail("conhost didn't exit after closing"))]);
+  await eventually("conhost exited after closing", () => !alive(host), 15000);
   // The helper knows a console that's gone, never another in its place.
   await assert.rejects(d.run({ provider: "console", action: "read", target }), { status: 404, message: "This terminal has closed. Refresh the list." });
 });
@@ -244,8 +274,7 @@ test("the watch says when a console opens, prints and closes", real, async (t) =
   await eventually("ready", () => events.some((e) => e.type === "ready"));
   const name = marker("watch");
   const started = Date.now();
-  const host = spawn(path.join(system, "conhost.exe"), [cmd, "/d", "/k", `title ${name}`], { stdio: "ignore" });
-  t.after(() => sweep([host.pid]));
+  await consoleWindow(t, name);
   await eventually("opened", () => events.some((e) => e.type === "opened" && e.at >= started));
   const d = await terminals();
   const tab = await eventually(`${name} listed`, () => find(d, name));

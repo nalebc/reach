@@ -216,7 +216,8 @@ test("a Reach started with a relative script path (npm run go) is found through 
   const { reachHosts } = await import("../scripts/instances.mjs");
   const table = [{ pid: 700, ppid: 1, tty: "ttys001", command: "node scripts/bootstrap.mjs" }];
   const found = reachHosts(table, { self: 1, cwdOf: (pid) => (pid === 700 ? "/Users/me/reach" : "") });
-  assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, "/Users/me/reach"]]);
+  // Resolved as this computer resolves a path (a drive in front, on Windows).
+  assert.deepEqual(found.map((h) => [h.pid, h.root]), [[700, path.resolve("/Users/me/reach")]]);
 });
 
 // First-run matrix H20, now only where Windows' process list can't be read:
@@ -227,7 +228,9 @@ test("Windows status from the status file: only while its process lives, with th
   const { windowsHost, windowsStatusText } = await import("../scripts/instances.mjs");
   const status = { pid: 4242, startedAt: Date.parse("2026-10-10T09:05:00"), origin: "https://pc.t.ts.net:8443", window: true };
   const read = () => JSON.stringify(status);
-  const host = windowsHost("/state", { read, alive: (pid) => pid === 4242 });
+  // Its process, as tasklist would name it (this test may run on a real PC).
+  const live = { image: () => "node.exe", boot: () => undefined };
+  const host = windowsHost("/state", { read, alive: (pid) => pid === 4242, ...live });
   assert.equal(host.pid, 4242);
   const text = windowsStatusText(host, { command: ".\\reach.cmd", now: Date.parse("2026-10-10T12:00:00") });
   assert.match(text, /^Reach: running in a terminal window \(process 4242\), since [^\n]*9:05[^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443$/);
@@ -237,9 +240,9 @@ test("Windows status from the status file: only while its process lives, with th
     /^Reach: running in the background, with no window, since [^\n]*\nLink: https:\/\/pc\.t\.ts\.net:8443\nPrivate route: up since [^\n]*9:06[^\n]* · 1 interruption\nPublic link: off\nSleep prevention: ac · not active\nIt has no window: it can't take device approvals\. Run \.\\reach\.cmd restart to run it in a window of its own\.$/,
   );
   // A status file a stopped (or force-ended) Reach left: not running.
-  assert.equal(windowsHost("/state", { read, alive: () => false }), null);
-  assert.equal(windowsHost("/state", { read: () => { throw Object.assign(Error("gone"), { code: "ENOENT" }); } }), null);
-  assert.equal(windowsHost("/state", { read: () => "{\"pid\":\"x\"}", alive: () => true }), null);
+  assert.equal(windowsHost("/state", { read, alive: () => false, ...live }), null);
+  assert.equal(windowsHost("/state", { read: () => { throw Object.assign(Error("gone"), { code: "ENOENT" }); }, ...live }), null);
+  assert.equal(windowsHost("/state", { read: () => "{\"pid\":\"x\"}", alive: () => true, ...live }), null);
   assert.equal(windowsStatusText(null, { command: ".\\reach.cmd" }), "Reach isn't running from this folder. Start it with .\\reach.cmd.");
 });
 

@@ -15,6 +15,8 @@ const tabs = [
 ];
 const focused = [];
 const closed = [];
+// Consoles running as administrator the PC reports (it can't show them).
+let administrator = 0;
 let dom, React, TerminalView, HomeLive, workspaceCapabilities;
 before(async () => {
   dom = await startDom({
@@ -24,7 +26,13 @@ before(async () => {
       "@xterm/addon-fit": "test/dom/fakes/xterm.mjs",
     },
     routes: {
-      "/api/terminals/desktop": () => ({ sessions: tabs, providers: [] }),
+      "/api/terminals/desktop": () => ({
+        sessions: tabs,
+        providers: [
+          { id: "windows-terminal", name: "Windows Terminal", running: true },
+          { id: "console", name: "Console window", running: true, ...(administrator ? { administrator } : {}) },
+        ],
+      }),
       "/api/terminals/agents": () => ({ agents: [] }),
       "/api/terminals/desktop/w1": () => ({ text: "PS C:\\Users\\me> " }),
       "/api/terminals/desktop/w2": () => ({ text: "> npm run dev" }),
@@ -93,6 +101,17 @@ test("the list says Windows PC and names Windows Terminal tabs and console windo
   assert.doesNotMatch(text(root), /\bMac\b/);
   await view.unmount();
   assert.deepEqual(dom.errors, []);
+});
+
+test("consoles running as administrator are said once not to be shown, in the PC's words", async (t) => {
+  administrator = 2;
+  t.after(() => (administrator = 0));
+  const view = await dom.render(page({ peer: { ...pc, id: "pc-admin" } }));
+  t.after(() => view.unmount());
+  const root = view.container;
+  await dom.waitFor(() => root.querySelectorAll(".terminal-row").length === 4);
+  const notes = [...root.querySelectorAll("section .terminal-list-note")].map(text);
+  assert.deepEqual(notes, ["Terminals running as administrator on your Windows PC aren't shown: Windows keeps Reach out of them."]);
 });
 
 test("an open PC tab says what it is, and Show on Screen says when Windows kept it behind", async (t) => {

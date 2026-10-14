@@ -17,11 +17,13 @@ import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { findWindowsCli } from "../agent-cli.mjs";
 import { findOpenClaw } from "../openclaw-windows.mjs";
+import { hubGateway } from "../openclaw-hub.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
 import { claudeAppDataDirs } from "./claude-app-paths.mjs";
 import { usePresenceFolder } from "../windows-presence.mjs";
+import { useProcessesFolder } from "../windows-processes.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createAppCards } from "./app-cards.mjs";
 import { agentAskSocket, createAgentAsks, stillAsked } from "./agent-asks.mjs";
@@ -78,9 +80,10 @@ export const KNOWN_AGENTS = [
 ];
 let detected = null;
 // OpenClaw on Windows: as Reach starts it (npm's openclaw.cmd as its
-// openclaw.mjs), also where an install made since Reach started puts it.
-export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw } = {}) {
-  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw;
+// openclaw.mjs), also where an install made since Reach started puts it, or
+// the Gateway OpenClaw's own Windows app keeps in WSL (openclaw-hub.mjs).
+export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw, hub = hubGateway } = {}) {
+  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw && hub === hubGateway;
   if (cacheable && !fresh && detected && Date.now() - detected.at < 60000) return detected.value;
   const value = Promise.all(
     known.map(async ({ agent, name, app, cli, supported = false }) => {
@@ -88,7 +91,8 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
       if (agent === "openclaw") {
         const config = env.REACH_OPENCLAW_CONFIG || env.OPENCLAW_CONFIG_PATH || path.join(env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw"), "openclaw.json");
         installed ||= exists(config);
-        if (!installed && platform === "win32") return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)), signedIn: false, supported };
+        if (!installed && platform === "win32")
+          return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)) || !!(await hub({ env, home }).catch(() => null)), signedIn: false, supported };
       }
       if (!installed && cli)
         installed = await run(platform === "win32" ? "where.exe" : env.SHELL || "/bin/sh", platform === "win32" ? [cli] : ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
@@ -374,8 +378,10 @@ export function createAgentSessions({
   // Windows' owner checks (Codex's pipes, the files it holds) build their
   // helper in this data folder (windows-owners.mjs).
   useOwnersFolder(dataDir);
-  // And its idle and lock readings (windows-presence.mjs).
+  // And its idle and lock readings (windows-presence.mjs), and its process
+  // list, to tell when the Claude app runs (windows-processes.mjs).
   usePresenceFolder(dataDir);
+  useProcessesFolder(dataDir);
   if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT) void prepareOwners(dataDir).catch(() => {});
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
@@ -723,6 +729,11 @@ export function createAgentSessions({
             }
           },
         }));
+  // The Claude app's own window (its box, Stop, its model menu) is worked
+  // through the Mac's helper (claude-compose.mjs). A Windows PC has none yet:
+  // there Stop and the model go through Claude Code, as for a chat the app
+  // doesn't show, and drafts stay on the phone.
+  const appWindow = !!claudeCompose && process.platform === "darwin";
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
@@ -787,7 +798,7 @@ export function createAgentSessions({
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
-          if (typeIntoApp && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
+          if (typeIntoApp && appWindow && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
             // Marked on its way only once the app is about to be typed into:
             // marked while it still queued behind other Claude app work, a
             // Reach restart paused it as maybe sent when it never was.
@@ -1497,7 +1508,7 @@ export function createAgentSessions({
       // at the level it was started with, and nothing outside it changes
       // that but a click in its menu (never, Oct 10). Claude Code continues
       // it at that level instead, as for a locked Mac.
-      if (typeIntoApp && claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+      if (typeIntoApp && appWindow && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
@@ -1550,7 +1561,7 @@ export function createAgentSessions({
       adapter(agent);
       if (agent === "claude" && !claudeHost.drives(id)) {
         const { session } = await claude.read(id, { limit: 1 });
-        const appOpen = !!claudeCompose && (await claudeOpen());
+        const appOpen = appWindow && (await claudeOpen());
         if (session.inApp && (appOpen || effort)) {
           // Apply to the app's own visible chat; the CLI host cannot mutate a
           // desktop-owned process. Catalog IDs become exact native menu names.
@@ -1618,7 +1629,7 @@ export function createAgentSessions({
     },
     async draft(agent, id, { text, owner }) {
       adapter(agent);
-      if (agent !== "claude" || !claudeCompose?.draft) return { synced: false, supported: false };
+      if (agent !== "claude" || !appWindow || !claudeCompose.draft) return { synced: false, supported: false };
       if (outbox.list(id).length) throw Object.assign(new Error("Waiting for the previous message to send."), { status: 409 });
       const { session } = await claude.read(id, { limit: 1 });
       if (!session.inApp || claudeHost.drives(id)) return { synced: false, supported: false };
@@ -1640,7 +1651,7 @@ export function createAgentSessions({
     },
     async stop(agent, id) {
       const current = host(agent);
-      if (agent === "claude" && !claudeHost.drives(id) && claudeCompose?.stop) {
+      if (agent === "claude" && !claudeHost.drives(id) && appWindow && claudeCompose.stop) {
         const { session } = await claude.read(id, { limit: 1 });
         if (session.inApp) return claudeCompose.stop(id, { title: session.appTitle || "Untitled" });
       }

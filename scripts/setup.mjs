@@ -401,10 +401,12 @@ export function phoneStep({ first, all }) {
   const lines = [`  ▸ ${n}. Your phone`];
   lines.push("     Reach starts now: scan its QR code with your phone's camera, then tap Connect.");
   const later = all.filter((s) => s.later);
+  // As wide as the longest command too: .\reach.cmd's are longer than ./reach's.
+  const width = Math.max(28, ...later.map((s) => `${command} setup ${s.id}`.length + 2));
   if (later.length)
     lines.push(
       "\n  Later, when you want them:",
-      ...later.map((s) => `    ${`${command} setup ${s.id}`.padEnd(28)}${s.hint}`),
+      ...later.map((s) => `    ${`${command} setup ${s.id}`.padEnd(width)}${s.hint}`),
     );
   return lines.join("\n") + "\n";
 }

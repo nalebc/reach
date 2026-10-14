@@ -48,6 +48,8 @@ export const suites = {
     // The first run's install alongside its setup, numbered menus included,
     // on Windows' own Node (audit #31; the real console is workstream U's).
     "first-start", "prompts",
+    // Setup, status and stop on Windows' own Node: first run there Oct 14.
+    "setup", "instances", "stop",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // The Claude desktop app on Windows, workstream N: its data in either
@@ -67,8 +69,10 @@ export const suites = {
     // OpenClaw natively (audit #15, Oct 13): npm's OpenClaw started through
     // Node with whole arguments, a key only in its variable or on stdin,
     // Telegram's token file closed to others, a timeout ending the whole
-    // tree, and the install terminal's verdict.
-    "windows-openclaw",
+    // tree, and the install terminal's verdict. Beside OpenClaw's own
+    // Windows app, its Gateway in WSL (the WSL scripts run by bash only on
+    // Mac and Linux: WSL can't run on the runner).
+    "windows-openclaw", "windows-openclaw-hub",
     // The PC's own terminals, workstream T: Windows Terminal's tabs and
     // console windows listed, read, typed into, closed and opened from the
     // phone, the real helper driven on this runner; the shared list and its
