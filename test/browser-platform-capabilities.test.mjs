@@ -46,7 +46,7 @@ test("browser options expose the actual host's protected file support", async (t
     const before = f.reach.auth.list();
     const invite = await f.invite();
     assert.equal(invite.status, 503);
-    assert.match(invite.body.error, /file access requires macOS/);
+    assert.match(invite.body.error, process.platform === "win32" ? /Agent file access isn't ready on this Windows PC yet/ : /file access requires macOS/);
     assert.deepEqual(f.reach.auth.list(), before, "unsupported host issues no credential");
   }
 });
@@ -60,7 +60,7 @@ test("unsupported browser file invitations fail before credentials; owner and sc
   const before = f.reach.auth.list();
   const refused = await f.invite();
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
-  assert.match(refused.body.error, /file access requires macOS/);
+  assert.match(refused.body.error, process.platform === "win32" ? /Agent file access isn't ready on this Windows PC yet/ : /file access requires macOS/);
   assert.deepEqual(f.reach.auth.list(), before, "failed creation leaves no usable or pending credential");
   const ownFiles = await f.call("/api/files?root=0&path=");
   assert.equal(ownFiles.status, 200);

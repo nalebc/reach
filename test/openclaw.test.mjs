@@ -2068,3 +2068,19 @@ test("a future protocol mismatch explains the compatibility problem without echo
   assert.match(result.error, /incompatible connection versions/);
   assert.doesNotMatch(result.error, /private downstream/);
 });
+
+// The Gateway OpenClaw's own Windows app keeps in WSL may ask to approve
+// Reach as a new device (WSL's forwarding may not look local to it): said
+// with where to approve it, as any pairing request is.
+test("a pairing request from OpenClaw's Windows app's Gateway says where to approve Reach", async (t) => {
+  for (const [hub, said] of [
+    [true, "OpenClaw's Windows app asks to approve Reach as a new device. Approve it in that app's device requests, then retry."],
+    [false, "OpenClaw requires device pairing. Approve the Reach device in OpenClaw, then retry."],
+  ]) {
+    const { c, handle } = await fixture(t, { configuration: async () => ({ url: "ws://127.0.0.1:18789", token: "secret-token", ...(hub ? { hub } : {}) }) });
+    handle((req) => (req.method === "connect" ? { error: { code: "NOT_PAIRED", message: "device pairing required" } } : undefined));
+    const first = await c.overview();
+    assert.equal(first.connected, false);
+    assert.equal(first.error, said);
+  }
+});

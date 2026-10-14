@@ -5,8 +5,15 @@
 // own Node 22 leads PATH (scripts/bootstrap.mjs). "$@": every value is an
 // argument, never shell text. A secret is never an argument: `secret` names
 // the variable OpenClaw reads, set from REACH_SECRET in the env, then unset.
+// On Windows (openclaw-windows.mjs): Node and openclaw.mjs, no shell at all;
+// or, where OpenClaw's own Windows app keeps the Gateway in WSL, OpenClaw
+// inside that distro (openclaw-hub.mjs).
 import path from "node:path/posix";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
+import { runTree, windowsOpenClaw, withSecret } from "./openclaw-windows.mjs";
+import { hubShell, openClawTarget } from "./openclaw-hub.mjs";
 
 const quote = (value) => "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
 // "$@", export and unset need a POSIX shell (fish and nu have neither).
@@ -23,12 +30,26 @@ export function runtimePath(runtime) {
   return `export PATH=${quote(lead.join(":"))}:"$PATH"`;
 }
 
+// [file, argv] for one run; on Windows [file, argv, env], the env the child
+// gets (its Node's folder first on PATH), or with OpenClaw's Windows app
+// [file, argv, env, script]: the script goes on the child's stdin, before
+// anything the command itself reads there.
 export async function openClawShell(args, {
   env = process.env, platform = process.platform, secret = "",
-  runtime, findRuntime = availableUpdateRuntime,
+  runtime, findRuntime = availableUpdateRuntime, target = openClawTarget, ...windows
 } = {}) {
   if (secret && !/^[A-Z][A-Z0-9_]{1,63}$/.test(secret)) throw new Error("bad variable");
+  if (platform === "win32") {
+    const where = await target({ env, platform, ...(windows.home ? { home: windows.home } : {}) });
+    if (where.kind === "hub") {
+      if (where.error) throw where.error;
+      // No secret goes into the app's distro through the environment.
+      if (secret) throw new Error("no secret through WSL");
+      return hubShell(args, { distro: where.distro, env });
+    }
+  }
   runtime ??= await findRuntime({ platform }).catch(() => null);
+  if (platform === "win32") return windowsOpenClaw(args, { env, runtime, ...windows });
   const script = [
     runtimePath(runtime),
     secret ? `export ${secret}="$REACH_SECRET"; unset REACH_SECRET` : "",
@@ -36,3 +57,14 @@ export async function openClawShell(args, {
   ].filter(Boolean).join("; ");
   return [loginShell(env, platform), ["-lc", script, "openclaw", ...args]];
 }
+
+// The env for a run that carries a secret: REACH_SECRET, which the login
+// shell moves into `secret` and unsets; on Windows `secret` itself.
+export const secretEnv = (env, { platform = process.platform, secret, value }) =>
+  platform === "win32" ? withSecret(env, secret, value) : { ...env, REACH_SECRET: value };
+
+// How Reach runs it: execFile, or on Windows the same with the whole process
+// tree ended at the timeout.
+const execFileAsync = promisify(execFile);
+export const runOpenClaw = (file, args, options) =>
+  process.platform === "win32" ? runTree(file, args, options) : execFileAsync(file, args, options);
