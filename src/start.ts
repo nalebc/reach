@@ -380,7 +380,7 @@ async function browserMode(
           : {
               title: "You're in, but the computer isn't reachable yet",
               detail:
-                "Ask the person who invited you to finish setting up guest access (./reach invites on their computer).",
+                "Ask the person who invited you to finish setting up invite links (reach setup invites on their computer).",
               action: { label: "Try again", onClick: () => location.reload() },
             },
       );
@@ -397,7 +397,7 @@ async function browserMode(
           ? {
               title: `${config.name} isn’t reachable from this browser yet`,
               detail:
-                "Try again in a moment. If it keeps happening, run ./reach setup invites on your computer.",
+                "Try again in a moment. If it keeps happening, run reach setup invites on your computer.",
               action: { label: "Try again", onClick: () => location.reload() },
             }
           : {
