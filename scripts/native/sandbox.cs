@@ -171,6 +171,48 @@ static class Sandbox {
   // A refusal raised from a mode handler: same framed channel as Main's.
   public static Exception Refusal(int status, string message) { return new Refused(status, message); }
 
+  // The command line for the owner's shell (jobs and the Full-control shell run
+  // through it, as the Mac uses $SHELL for both). cmd runs the command as the
+  // rest of its line (/d /s /c); PowerShell runs the pre-split argv Node built
+  // (-NoProfile -NonInteractive -EncodedCommand …), each argument quoted for
+  // CommandLineToArgvW. The interpreter is accepted only from the allow-list
+  // its kind names (System32 cmd, Windows PowerShell or pwsh), a full path that
+  // exists; anything else is refused (fail closed).
+  public static string ShellCommandLine(string interpreter, string kind, string command, List<string> shellArgs) {
+    if (string.IsNullOrEmpty(interpreter) || !System.IO.Path.IsPathRooted(interpreter) || !System.IO.File.Exists(interpreter))
+      throw Refusal(400, "The sandbox interpreter must be a program on this PC.");
+    string name = System.IO.Path.GetFileName(interpreter).ToLowerInvariant();
+    if (kind == "cmd") {
+      if (name != "cmd.exe") throw Refusal(400, "The sandbox cmd interpreter must be cmd.exe.");
+      return "\"" + interpreter + "\" /d /s /c " + command;
+    }
+    if (kind == "powershell") {
+      if (name != "powershell.exe" && name != "pwsh.exe") throw Refusal(400, "The sandbox PowerShell interpreter must be powershell.exe or pwsh.exe.");
+      StringBuilder sb = new StringBuilder();
+      sb.Append('"').Append(interpreter).Append('"');
+      foreach (string arg in shellArgs) { sb.Append(' '); sb.Append(ArgvQuote(arg)); }
+      return sb.ToString();
+    }
+    throw Refusal(400, "Unknown sandbox interpreter kind.");
+  }
+
+  // Quote one argument the way CommandLineToArgvW parses it, so a value with a
+  // space, a quote or a trailing backslash reaches the child intact.
+  static string ArgvQuote(string arg) {
+    if (arg.Length > 0 && arg.IndexOfAny(new char[] { ' ', '\t', '\n', '\v', '"' }) < 0) return arg;
+    StringBuilder sb = new StringBuilder();
+    sb.Append('"');
+    for (int i = 0; ; i++) {
+      int backslashes = 0;
+      while (i < arg.Length && arg[i] == '\\') { i++; backslashes++; }
+      if (i == arg.Length) { sb.Append('\\', backslashes * 2); break; }
+      if (arg[i] == '"') { sb.Append('\\', backslashes * 2 + 1).Append('"'); }
+      else { sb.Append('\\', backslashes).Append(arg[i]); }
+    }
+    sb.Append('"');
+    return sb.ToString();
+  }
+
   // Read exactly `count` bytes or throw: a short read means the pipe closed
   // mid-frame, which is never a valid request.
   static byte[] ReadExactly(Stream stream, int count) {
@@ -340,6 +382,43 @@ static class Grants {
     Walk(root, writable, allow, denyNames, ref seen);
   }
 
+  // A named tool folder granted read+execute (D-C-5). Best-effort and never
+  // fatal: a folder Reach can't ACE (a system location, a permission it lacks)
+  // or one too large to walk fully leaves that tool unreadable, rather than
+  // failing the job. Read-only always (never Write); a cache the walk stops
+  // short of (ReadLimit) keeps its freshly-created entries readable through the
+  // inheritable ALLOW, and a job re-fetches what isn't covered.
+  const int ReadLimit = 60000;
+  public static void ApplyReadGrant(string path, ICollection<string> denyPaths) {
+    try {
+      foreach (string denied in denyPaths) if (Within(denied, path)) return;
+      SecurityIdentifier allow = RootCapability(path);
+      bool directory = Directory.Exists(path);
+      if (!directory && !File.Exists(path)) return;
+      foreach (string denied in denyPaths) if (Within(path, denied)) DenyEverywhere(denied, DenyCapability());
+      AllowObject(path, directory, false, allow, directory);
+      if (directory) { int seen = 0; ReadWalk(path, allow, denyPaths, ref seen); }
+    } catch (Exception) { /* best-effort: this tool stays unreadable */ }
+  }
+
+  static void ReadWalk(string dir, SecurityIdentifier allow, ICollection<string> denyPaths, ref int seen) {
+    IEnumerable<string> entries;
+    try { entries = Directory.EnumerateFileSystemEntries(dir); } catch (Exception) { return; }
+    foreach (string entry in entries) {
+      if (++seen > ReadLimit) return; // a huge cache: stop, don't fail
+      bool denied = false;
+      foreach (string secret in denyPaths) if (Within(secret, entry)) { denied = true; break; }
+      if (denied) continue;
+      FileAttributes attributes;
+      try { attributes = File.GetAttributes(entry); } catch (Exception) { continue; }
+      bool directory = (attributes & FileAttributes.Directory) != 0;
+      if ((attributes & FileAttributes.ReparsePoint) != 0) { if (NativeSec.IsNameSurrogate(entry)) continue; }
+      if (!directory && NativeSec.HardLinked(entry)) continue;
+      try { AllowObject(entry, directory, false, allow, directory); } catch (Exception) { continue; }
+      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) ReadWalk(entry, allow, denyPaths, ref seen);
+    }
+  }
+
   static void Walk(string dir, bool writable, SecurityIdentifier allow, ICollection<string> denyNames, ref int seen) {
     IEnumerable<string> entries;
     try { entries = Directory.EnumerateFileSystemEntries(dir); }
@@ -359,7 +438,7 @@ static class Grants {
         if (NativeSec.IsNameSurrogate(entry)) continue;
       }
       if (!directory && NativeSec.HardLinked(entry)) continue; // an alias to an outside inode: never ACE'd
-      AllowObject(entry, directory, writable, allow, false);
+      AllowObject(entry, directory, writable, allow, directory);
       if (directory && (attributes & FileAttributes.ReparsePoint) == 0) Walk(entry, writable, allow, denyNames, ref seen);
     }
   }
@@ -368,18 +447,27 @@ static class Grants {
     FileSystemRights rights = writable ? Write : Read;
     InheritanceFlags inheritance = directory && inheritable ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
     var rule = new FileSystemAccessRule(cap, rights, inheritance, PropagationFlags.None, AccessControlType.Allow);
-    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
-    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+    NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.AddAccessRule(rule); });
   }
 
   static void DenyEverywhere(string path, SecurityIdentifier cap) {
+    int seen = 0;
+    DenyTree(path, cap, ref seen);
+  }
+
+  static void DenyTree(string path, SecurityIdentifier cap, ref int seen) {
+    if (++seen > MaxEntries) throw Sandbox.Refusal(403, "That private folder is too large to protect safely.");
     bool directory = Directory.Exists(path);
     if (!directory && !File.Exists(path)) return;
     InheritanceFlags inheritance = directory ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
     // FullControl denied: no access of any kind for a token carrying the cap.
     var rule = new FileSystemAccessRule(cap, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Deny);
-    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
-    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+    NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.AddAccessRule(rule); });
+    if (directory) foreach (string child in Directory.EnumerateFileSystemEntries(path)) {
+      FileAttributes attributes = File.GetAttributes(child);
+      if ((attributes & FileAttributes.ReparsePoint) != 0 || ((attributes & FileAttributes.Directory) == 0 && NativeSec.HardLinked(child))) continue;
+      DenyTree(child, cap, ref seen);
+    }
   }
 
   // Revocation (§4.6): the ACEs for a root's capability are removed in a walk
@@ -408,8 +496,7 @@ static class Grants {
 
   static void RemoveObject(string path, bool directory, SecurityIdentifier cap) {
     try {
-      if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.PurgeAccessRules(cap); Directory.SetAccessControl(path, security); }
-      else { FileSecurity security = File.GetAccessControl(path); security.PurgeAccessRules(cap); File.SetAccessControl(path, security); }
+      NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.PurgeAccessRules(cap); });
     } catch (Exception) { /* a reparse point or a locked file: carry on */ }
   }
 
@@ -424,6 +511,42 @@ static class Grants {
 // SID, and reading a reparse tag or a file's link count so the grant walk can
 // skip name-surrogate links and hard links (finding 11).
 static class NativeSec {
+  [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+  [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+  [DllImport("advapi32.dll")] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+
+  // Check and update one held object. A path-based SetAccessControl after a
+  // separate link check could follow a junction swapped in between them and
+  // grant an outside secret. NtCreateFile refuses reparses in every component;
+  // the same handle supplies both the link count and the DACL to be changed.
+  public static void ChangeAcl(string path, bool directory, Action<FileSystemSecurity> change) {
+    IntPtr handle = NtFiles.OpenAclPath(path, directory);
+    try {
+      BY_HANDLE_FILE_INFORMATION info;
+      if (!GetFileInformationByHandle(handle, out info) || (!directory && info.NumberOfLinks > 1))
+        throw Sandbox.Refusal(403, "That linked path cannot be granted access.");
+      IntPtr owner, group, dacl, sacl, descriptor;
+      if (GetSecurityInfo(handle, 1, 4, out owner, out group, out dacl, out sacl, out descriptor) != 0)
+        throw Sandbox.Refusal(403, "That folder's access could not be checked.");
+      byte[] raw;
+      try {
+        raw = new byte[GetSecurityDescriptorLength(descriptor)];
+        Marshal.Copy(descriptor, raw, 0, raw.Length);
+      } finally { LocalFree(descriptor); }
+      FileSystemSecurity security = directory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+      security.SetSecurityDescriptorBinaryForm(raw, AccessControlSections.Access);
+      change(security);
+      byte[] updated = security.GetSecurityDescriptorBinaryForm();
+      GCHandle pinned = GCHandle.Alloc(updated, GCHandleType.Pinned);
+      try {
+        bool present, defaulted;
+        if (!GetSecurityDescriptorDacl(pinned.AddrOfPinnedObject(), out present, out dacl, out defaulted) || !present || dacl == IntPtr.Zero ||
+            SetSecurityInfo(handle, 1, 4, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero) != 0)
+          throw Sandbox.Refusal(403, "That folder's access could not be changed safely.");
+      } finally { pinned.Free(); }
+    } finally { NtFiles.Close(handle); }
+  }
   [DllImport("kernelbase.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   public static extern bool DeriveCapabilitySidsFromName(string capName, out IntPtr capabilityGroupSids, out int capabilityGroupSidCount, out IntPtr capabilitySids, out int capabilitySidCount);
   [DllImport("advapi32.dll")]
@@ -488,6 +611,23 @@ static class NativeSec {
 // same AppContainer confirms Reach's own listener is unreachable (§5); either
 // failing refuses the launch.
 static class Jobs {
+  static string ProbeCommand(List<string> targets) {
+    // The trusted helper lives beside Reach's private data. An AppContainer
+    // must not read that folder, so it cannot execute a copy of this helper
+    // there. Windows' own PowerShell is readable by application containers;
+    // run only this fixed connection probe, with literal targets encoded as
+    // data. A policy that refuses it leaves the command unavailable.
+    string powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
+    if (!File.Exists(powershell)) throw Sandbox.Refusal(503, "This PC cannot check its sandboxed network access.");
+    StringBuilder script = new StringBuilder("$ErrorActionPreference='Stop'; $targets=@(");
+    for (int i = 0; i < targets.Count; i++) {
+      if (i > 0) script.Append(',');
+      script.Append('\'').Append(targets[i].Replace("'", "''")).Append('\'');
+    }
+    script.Append("); foreach($target in $targets){$at=$target.LastIndexOf(':'); $hostName=$target.Substring(0,$at); $port=[int]$target.Substring($at+1); $client=New-Object Net.Sockets.TcpClient; $open=$false; try{$pending=$client.BeginConnect($hostName,$port,$null,$null); if($pending.AsyncWaitHandle.WaitOne(1500) -and $client.Connected){$client.EndConnect($pending); $open=$true}}catch{}finally{$client.Dispose()}; if($open){[Console]::WriteLine('open '+$target)}else{[Console]::WriteLine('shut '+$target)}}");
+    return Sandbox.ShellCommandLine(powershell, "powershell", "", new List<string> { "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(script.ToString())) });
+  }
+
   public static string Probe(string target) {
     int idx = target.LastIndexOf(':');
     if (idx <= 0) return "shut " + target;
@@ -504,14 +644,16 @@ static class Jobs {
   }
 
   public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
-    string interpreter = request.Get("interpreter", "cmd.exe");
-    if (interpreter != "cmd.exe") throw Sandbox.Refusal(400, "Jobs run through cmd.exe on Windows.");
+    string interpreter = request.Get("interpreter", NativeProc.ComSpec());
+    string interpreterKind = request.Get("interpreterKind", "cmd");
     string command = request.Get("command", "");
+    List<string> shellArgs = request.List("shellArg");
     string cwd = request.Get("cwd", null);
     int timeoutMs = request.Int("timeoutMs", 60000);
     int activeProcesses = request.Int("activeProcesses", 512);
     List<string> grants = request.List("grant");
     List<string> grantAccess = request.List("grantAccess");
+    List<string> reads = request.List("read");
     List<string> denies = request.List("deny");
     List<string> capabilityNames = request.List("capability");
     List<string> loopback = request.List("loopback");
@@ -524,13 +666,19 @@ static class Jobs {
       bool writable = i >= grantAccess.Count || grantAccess[i] != "ro";
       Grants.ApplyGrant(grants[i], writable, noNames, denies);
     }
+    // The named tool folders, read+execute only (D-C-5): best-effort, so a
+    // folder Reach can't ACE (or a cache too big to walk fully) leaves that
+    // tool unreadable rather than refusing the whole job.
+    foreach (string read in reads) Grants.ApplyReadGrant(read, denies);
 
     // The AppContainer and its capabilities: the package SID is stable per
     // client; the launch carries only this client's per-root capabilities, the
-    // Reach-wide deny capability, and internetClient (§4.1, §5).
+    // tool-folder read capabilities, the Reach-wide deny capability, and
+    // internetClient (§4.1, §5).
     IntPtr containerSid = NativeProc.EnsureAppContainer(containerName);
     var caps = new List<SecurityIdentifier>();
     foreach (string root in grants) caps.Add(Grants.RootCapability(root));
+    foreach (string read in reads) caps.Add(Grants.RootCapability(read));
     caps.Add(Grants.DenyCapability());
     foreach (string name in capabilityNames) if (name == "internetClient") caps.Add(new SecurityIdentifier("S-1-15-3-1"));
 
@@ -539,14 +687,17 @@ static class Jobs {
         // §5 self-test: inside this AppContainer, Reach's listener must be
         // unreachable on every local address. Any "open" refuses the launch.
         if (loopback.Count > 0) {
-          string probeLine = "\"" + NativeProc.SelfPath() + "\" netprobe";
-          foreach (string target in loopback) probeLine += " " + target;
+          string probeLine = ProbeCommand(loopback);
           string probeOut = NativeProc.RunContainedCaptured(probeLine, cwd, container, job, timeoutMs < 10000 ? timeoutMs : 10000);
           if (probeOut.IndexOf("open ", StringComparison.Ordinal) >= 0)
             throw Sandbox.Refusal(403, "This PC let a sandboxed command reach Reach itself, so the command was refused.");
+          var answered = new HashSet<string>(probeOut.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.Ordinal);
+          foreach (string target in loopback)
+            if (!answered.Contains("shut " + target))
+              throw Sandbox.Refusal(503, "This PC could not confirm that sandboxed commands cannot reach Reach itself.");
         }
 
-        string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+        string commandLine = Sandbox.ShellCommandLine(interpreter, interpreterKind, command, shellArgs);
         NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true);
         try {
           // §4.5 preflight: the real launch token, AccessChecked against every
@@ -950,12 +1101,15 @@ static class NativeProc {
 // apps survive), terminating it only on abort (Node's stdin EOF) or timeout.
 static class Shell {
   public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
+    string interpreter = request.Get("interpreter", NativeProc.ComSpec());
+    string interpreterKind = request.Get("interpreterKind", "cmd");
     string command = request.Get("command", "");
+    List<string> shellArgs = request.List("shellArg");
     string cwd = request.Get("cwd", "");
     if (string.IsNullOrEmpty(cwd)) cwd = null;
     int timeoutMs = request.Int("timeoutMs", 60000);
     using (NativeProc.JobObject job = NativeProc.JobObject.CreateForShell()) {
-      string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+      string commandLine = Sandbox.ShellCommandLine(interpreter, interpreterKind, command, shellArgs);
       NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, null, job, false);
       try {
         emit(Sandbox.TypeStarted, BeBytes(launched.ProcessId));
@@ -1149,7 +1303,7 @@ static class Files {
       } else {
         if (parts.Length == 0) throw Sandbox.Refusal(400, "Choose a file inside the shared folder.");
         IntPtr parent = Traverse(rootHandle, root, Ancestors(parts), true);
-        try { json = Mutate(op, parent, root, parts[parts.Length - 1], to, request.Get("data", null), privateNames, privatePaths, full); }
+        try { json = Mutate(op, parent, rootHandle, root, parts[parts.Length - 1], to, request.Get("data", null), privateNames, privatePaths, full, maxBytes); }
         finally { NtFiles.Close(parent); }
       }
       emit(Sandbox.TypeResult, Encoding.UTF8.GetBytes(json));
@@ -1157,7 +1311,21 @@ static class Files {
     } finally { NtFiles.Close(rootHandle); }
   }
 
-  static string[] SplitRel(string rel) { return rel.Length == 0 ? new string[0] : rel.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries); }
+  static string[] SplitRel(string rel) {
+    if (rel.Length > 4096 || Path.IsPathRooted(rel) || rel.IndexOf(':') >= 0) throw Sandbox.Refusal(400, "Use a relative path inside the shared folder.");
+    foreach (char c in rel) if (c < 32 || c == 127) throw Sandbox.Refusal(400, "That path is not supported.");
+    var parts = new List<string>();
+    foreach (string part in rel.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)) {
+      if (part == ".") continue;
+      if (part == ".." || part.EndsWith(".", StringComparison.Ordinal) || part.EndsWith(" ", StringComparison.Ordinal)) throw Sandbox.Refusal(400, "That path is not supported.");
+      string name = part.Split('.')[0].ToUpperInvariant();
+      if (name == "CON" || name == "PRN" || name == "AUX" || name == "NUL" ||
+          (name.Length == 4 && (name.StartsWith("COM", StringComparison.Ordinal) || name.StartsWith("LPT", StringComparison.Ordinal)) && name[3] >= '1' && name[3] <= '9'))
+        throw Sandbox.Refusal(400, "That path is not supported.");
+      parts.Add(part);
+    }
+    return parts.ToArray();
+  }
   static string[] Ancestors(string[] parts) { var a = new string[parts.Length - 1]; Array.Copy(parts, a, parts.Length - 1); return a; }
 
   // Walk the components relative to the root handle, each opened no-reparse so a
@@ -1185,8 +1353,9 @@ static class Files {
   }
 
   static void VerifyPrivate(IntPtr handle, string root, HashSet<string> privateNames, List<string> privatePaths, bool full) {
-    if (full) return;
     string finalPath = NtFiles.FinalPath(handle);
+    NtFiles.VerifyUnder(handle, root, finalPath);
+    if (full) return;
     foreach (string part in finalPath.Split('\\')) if (privateNames.Contains(part)) throw Sandbox.Refusal(403, "That name is not shared.");
     string lower = finalPath.ToLowerInvariant();
     foreach (string p in privatePaths) { string q = p.ToLowerInvariant().TrimEnd('\\'); if (lower == q || lower.StartsWith(q + "\\", StringComparison.Ordinal)) throw Sandbox.Refusal(403, "That folder is not shared."); }
@@ -1201,6 +1370,8 @@ static class Files {
     // Best-effort match: the Node side stringifies BigInt dev/ino; an empty
     // value skips the check (the real-Windows test pins the exact equality).
     if (!string.IsNullOrEmpty(dev) && dev != info.VolumeSerialNumber.ToString()) throw Sandbox.Refusal(403, "The shared folder changed.");
+    ulong index = ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow;
+    if (!string.IsNullOrEmpty(ino) && ino != index.ToString()) throw Sandbox.Refusal(403, "The shared folder changed.");
   }
 
   static string List(IntPtr handle, int maxEntries) {
@@ -1242,21 +1413,63 @@ static class Files {
     return "{\"data\":" + JsonString(Convert.ToBase64String(buffer)) + ",\"stat\":" + StatJson(handle) + "}";
   }
 
-  static string Mutate(string op, IntPtr parent, string root, string leaf, string to, string data, HashSet<string> privateNames, List<string> privatePaths, bool full) {
+  static long RegularSize(IntPtr file) {
+    NativeSec.BY_HANDLE_FILE_INFORMATION info;
+    if (!NativeSec.GetFileInformationByHandle(file, out info) || (info.FileAttributes & (uint)FileAttributes.Directory) != 0 || info.NumberOfLinks != 1)
+      throw Sandbox.Refusal(403, "Choose a regular file with only one name.");
+    return ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
+  }
+
+  static string Mutate(string op, IntPtr parent, IntPtr rootHandle, string root, string leaf, string to, string data, HashSet<string> privateNames, List<string> privatePaths, bool full, long maxBytes) {
     if (!full && privateNames.Contains(leaf)) throw Sandbox.Refusal(403, "That name is not shared.");
     switch (op) {
       case "mkdir": NtFiles.CreateChildDir(parent, leaf); break;
-      case "touch": NtFiles.Close(NtFiles.CreateChildFile(parent, leaf, false)); break;
-      case "rm": NtFiles.DeleteChild(parent, leaf); break;
+      case "touch": {
+        IntPtr file = NtFiles.CreateChildFile(parent, leaf, false);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); } finally { NtFiles.Close(file); }
+        break;
+      }
+      case "rm": {
+        IntPtr file = NtFiles.OpenDeleteChild(parent, leaf);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); NtFiles.DeleteOpened(file); } finally { NtFiles.Close(file); }
+        break;
+      }
       case "write": {
         byte[] bytes = Convert.FromBase64String(data ?? "");
-        IntPtr file = NtFiles.CreateChildFile(parent, leaf, true);
-        try { VerifyPrivate(file, root, privateNames, privatePaths, full); NtFiles.WriteAll(file, bytes); } finally { NtFiles.Close(file); }
+        if (bytes.Length > maxBytes) throw Sandbox.Refusal(413, "That file is larger than the allowed size.");
+        // OPEN_IF does not truncate an existing file. Verify the held object's
+        // path and link count first, then resize and write through that handle.
+        IntPtr file = NtFiles.CreateChildFile(parent, leaf, false);
+        try { VerifyPrivate(file, root, privateNames, privatePaths, full); RegularSize(file); NtFiles.Truncate(file); NtFiles.WriteAll(file, bytes); } finally { NtFiles.Close(file); }
         break;
       }
       case "cp": {
         if (to == null) throw Sandbox.Refusal(400, "Choose where to copy the file.");
-        throw Sandbox.Refusal(501, "Copy isn't available in the Windows broker yet.");
+        string[] target = SplitRel(to);
+        if (target.Length == 0) throw Sandbox.Refusal(400, "Choose a destination file inside the shared folder.");
+        if (!full) foreach (string part in target) if (privateNames.Contains(part)) throw Sandbox.Refusal(403, "That name is not shared.");
+        IntPtr source = NtFiles.OpenCopySource(parent, leaf);
+        try {
+          VerifyPrivate(source, root, privateNames, privatePaths, full);
+          long size = RegularSize(source);
+          if (size > maxBytes || size > int.MaxValue) throw Sandbox.Refusal(413, "That file is larger than the allowed size.");
+          byte[] bytes = NtFiles.ReadAll(source, (int)size);
+          if (bytes.Length != size) throw Sandbox.Refusal(409, "The source file changed while it was copied. Read it again.");
+          IntPtr destinationParent = Traverse(rootHandle, root, Ancestors(target), true);
+          try {
+            VerifyPrivate(destinationParent, root, privateNames, privatePaths, full);
+            IntPtr destination = NtFiles.CreateNewChildFile(destinationParent, target[target.Length - 1]);
+            bool complete = false;
+            try {
+              VerifyPrivate(destination, root, privateNames, privatePaths, full); RegularSize(destination);
+              NtFiles.WriteAll(destination, bytes); complete = true;
+            } finally {
+              if (!complete) try { NtFiles.DeleteOpened(destination); } catch { }
+              NtFiles.Close(destination);
+            }
+          } finally { NtFiles.Close(destinationParent); }
+        } finally { NtFiles.Close(source); }
+        break;
       }
       default: throw Sandbox.Refusal(400, "Unknown file operation.");
     }
@@ -1307,17 +1520,31 @@ static class NtFiles {
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr file, byte[] buffer, int count, out int read, IntPtr overlapped);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr file, byte[] buffer, int count, out int written, IntPtr overlapped);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetFileInformationByHandle(IntPtr file, int type, IntPtr data, uint length);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern int GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, int length, int flags);
 
   public static void Close(IntPtr handle) { if (handle != IntPtr.Zero && handle != Invalid) NativeSec.CloseHandle(handle); }
 
   public static IntPtr OpenByPath(string path, bool directory, bool write) {
-    // The root is a directory opened with traverse/list so it can be the parent
-    // of relative opens; FILE_FLAG_BACKUP_SEMANTICS only enables a dir handle.
-    uint access = directory ? DIR_ACCESS : (write ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ);
-    IntPtr handle = CreateFileW(path, access, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
-    if (handle == Invalid) throw Sandbox.Refusal(403, "The shared folder isn't available.");
-    return handle;
+    string full = Path.GetFullPath(path);
+    if (full.Length < 3 || full[1] != ':' || full[2] != '\\') throw Sandbox.Refusal(403, "Choose a local folder on this PC.");
+    // Reject reparses in the entire root path, and keep it pinned against
+    // deletion/rename until its relative operations finish.
+    uint access = directory ? DIR_ACCESS : FILE_GENERIC_READ | SYNCHRONIZE;
+    if (write && !directory) access |= FILE_GENERIC_WRITE;
+    return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE, FILE_OPEN, access, 0);
+  }
+
+  public static IntPtr OpenAclPath(string path, bool directory) {
+    string full = Path.GetFullPath(path);
+    if (full.Length < 3 || full[1] != ':' || full[2] != '\\') throw Sandbox.Refusal(403, "Grant a local folder on this PC.");
+    // SetSecurityInfo propagates an inheritable ACE to existing children by
+    // itself, including hard links that our walk deliberately skips. Opening
+    // with MAXIMUM_ALLOWED disables that automatic propagation; we update
+    // only the checked handle and explicitly walk existing descendants.
+    // https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
+    return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE,
+      FILE_OPEN, 0x02000000 | SYNCHRONIZE, 0);
   }
 
   // Open `name` relative to `parent`, following no reparse point. A reparse in
@@ -1326,7 +1553,26 @@ static class NtFiles {
     return OpenRelative(parent, name, (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE), FILE_OPEN, directory ? DIR_ACCESS : (FILE_GENERIC_READ | SYNCHRONIZE), 0);
   }
   public static IntPtr CreateChildFile(IntPtr parent, string name, bool overwrite) {
-    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0);
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0, 0);
+  }
+  public static IntPtr OpenCopySource(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_GENERIC_READ | SYNCHRONIZE, 0, 0);
+  }
+  public static IntPtr CreateNewChildFile(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE, 0, 0);
+  }
+  public static IntPtr OpenDeleteChild(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0, 0);
+  }
+  public static void Truncate(IntPtr file) {
+    IntPtr data = Marshal.AllocHGlobal(8);
+    try { Marshal.WriteInt64(data, 0); if (!SetFileInformationByHandle(file, 6, data, 8)) throw Sandbox.Refusal(403, "That file could not be resized."); }
+    finally { Marshal.FreeHGlobal(data); }
+  }
+  public static void DeleteOpened(IntPtr file) {
+    IntPtr data = Marshal.AllocHGlobal(1);
+    try { Marshal.WriteByte(data, 1); if (!SetFileInformationByHandle(file, 4, data, 1)) throw Sandbox.Refusal(403, "That file could not be removed."); }
+    finally { Marshal.FreeHGlobal(data); }
   }
   public static void CreateChildDir(IntPtr parent, string name) {
     Close(OpenRelative(parent, name, FILE_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_WRITE | SYNCHRONIZE, 0));
@@ -1335,7 +1581,7 @@ static class NtFiles {
     Close(OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | SYNCHRONIZE, FILE_DELETE_ON_CLOSE));
   }
 
-  static IntPtr OpenRelative(IntPtr parent, string name, uint typeOption, uint disposition, uint access, uint extraOptions) {
+  static IntPtr OpenRelative(IntPtr parent, string name, uint typeOption, uint disposition, uint access, uint extraOptions, uint sharing = 3) {
     IntPtr namePtr = Marshal.StringToHGlobalUni(name);
     try {
       var us = new UNICODE_STRING();
@@ -1351,10 +1597,11 @@ static class NtFiles {
         oa.ObjectName = usPtr;
         oa.Attributes = OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE;
         IntPtr handle; IO_STATUS_BLOCK iosb;
-        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, FILE_SHARE_ALL, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | extraOptions, IntPtr.Zero, 0);
+        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, sharing, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | extraOptions, IntPtr.Zero, 0);
         if (status != 0) {
           int code = RtlNtStatusToDosError(status);
           if (code == 2 || code == 3) throw Sandbox.Refusal(404, "That file or folder is not there.");
+          if (code == 80 || code == 183) throw Sandbox.Refusal(409, "A file or folder with that name already exists.");
           if (code == 5) throw Sandbox.Refusal(403, "That file or folder is not shared.");
           throw Sandbox.Refusal(403, "That path can't be opened inside the shared folder (" + code + ").");
         }

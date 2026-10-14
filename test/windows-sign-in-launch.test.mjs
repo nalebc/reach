@@ -260,7 +260,7 @@ for (const [name, options, why] of [
     assert.match(status.signInOff, why);
   });
 
-test("Windows without account settings (paired by code before): pairing codes, its folders untouched, nothing said of a switch", asWindows, async (t) => {
+test("Windows without account settings: pairing codes and private helper folders, without a sign-in switch", asWindows, async (t) => {
   const { seen, started } = keyedReach(t, { prefs: false, ready: /No public internet tunnel is enabled/ });
   const reach = await started;
   const text = reach.output();
@@ -269,7 +269,9 @@ test("Windows without account settings (paired by code before): pairing codes, i
   const [session] = await seen.fake.sessions();
   assert.match(session.args.at(-1), /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.ok(!(await seen.fake.read()).calls.some(([command]) => command === "funnel"));
-  assert.equal(fs.existsSync(path.join(seen.root, "folders.json")), false, "its folders untouched");
+  const folders = JSON.parse(fs.readFileSync(path.join(seen.root, "folders.json"), "utf8"));
+  assert.ok(folders.protect.length, "agent helpers are prepared even with pairing codes");
+  assert.deepEqual(folders.helpers, [], "the Tailscale peer helper is not needed without account settings");
 });
 
 const UNRECOGNISED = /Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC\./;

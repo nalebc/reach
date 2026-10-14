@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
-import { desktopBinary, windowsBinary } from "./desktop-native.mjs";
+import { assertUnchanged, desktopBinary } from "./desktop-native.mjs";
 import { COLD_START_MS } from "./powershell.mjs";
 import { blockedByPolicy, POLICY_REFUSAL, QUARANTINE_REFUSAL, SMART_APP_CONTROL_REFUSAL, smartAppControlState, windowsHelperEnv } from "./windows-helper-launch.mjs";
 import { fail } from "./core.mjs";
@@ -356,10 +356,10 @@ export class AgentDesktopHelper {
 }
 
 export function createAgentDesktop(config, {
-  // A Windows PC's desktop (scripts/native/agent-desktop.cs) is built and
-  // tested, but opened to presets only with the sandbox (workstreams C and
-  // E): until then it says it isn't available unless told otherwise.
-  available = () => platform === "darwin" && !!config.screen,
+  // Whether agents may use this computer's screen now (Reach's screen setting,
+  // pause and connection: server/index.mjs). On a Windows PC also its helper
+  // (below): without it, never.
+  available = () => ["darwin", "win32"].includes(platform) && !!config.screen,
   hosts = () => [],
   titles = () => ["reach"],
   protectedPaths = () => [],
@@ -392,18 +392,20 @@ export function createAgentDesktop(config, {
   // Whose names for apps and files the agent gives (app-identity.mjs): a
   // Mac's, or on Windows an .exe or Store app id and a drive-letter path.
   platform = process.platform,
-  // Windows' helper (docs/parity/B-desktop-helper.md §3, §12): how it's built
-  // and started, and what it's told of Reach. Tests replace these.
-  helperBinary = windowsBinary,
+  // Windows' helper (docs/parity/B-desktop-helper.md §3, §12): built only in
+  // Reach's folder confirmed private this start (scripts/launch.mjs), as
+  // { file, sha256 }, and started only while the file still has that hash
+  // (desktop-native.mjs assertUnchanged): it acts as the owner, so a copy
+  // another user of the PC swapped in never runs. Without it (a folder that
+  // isn't private), agents get no screen, with `helpersOff` saying why.
+  windowsHelper = null,
+  helpersOff = "",
+  verify = assertUnchanged,
   spawnProcess = spawn,
   launch = { smartAppControl: () => smartAppControlState(), blockedByPolicy: (file) => blockedByPolicy(file) },
   env = process.env,
   processId = process.pid,
   consoleAttached = () => process.stdout.isTTY === true,
-  // Typed text into a terminal on a Windows PC is refused outside Full
-  // control until Windows' command deny list is complete (§1.3 item 4,
-  // §12 item 9): the shell list above is a Mac's.
-  windowsCommandChecks = false,
   // A Windows file's one true name (junctions and aliases followed), checked
   // as well as the name the agent gave.
   realpath = (file) => realpathSync.native(file),
@@ -412,6 +414,9 @@ export function createAgentDesktop(config, {
     throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
   const windows = platform === "win32";
   const word = machine(platform);
+  // A Windows PC's screen needs its helper, from Reach's private folder.
+  const helperReady = () => !windows || !!windowsHelper || !!spawnHelper;
+  const ready = () => available() && helperReady();
   // An app (or browser) to open: a Mac bundle's path; on Windows an .exe's
   // path or a Store app's id.
   const appTarget = (value) => windows
@@ -437,9 +442,25 @@ export function createAgentDesktop(config, {
   // whose security won't run it is told why, from Windows' own logs.
   let rebuilt = false;
   const startWindows = async (rules) => {
+    // The owner's app picker starts a utility helper without a client policy.
+    // Windows still needs a valid initial rules handshake; view rules let it
+    // enumerate apps without enabling input or dereferencing a missing mode.
+    rules ||= nativeRules({ preset: "readonly" }, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
+    if (!windowsHelper) throw Object.assign(fail(503, helpersOff || "Reach couldn't prepare its agent helper on this Windows PC."), { permanent: true });
     if ((await launch.smartAppControl()) === 1) throw Object.assign(fail(503, SMART_APP_CONTROL_REFUSAL), { permanent: true });
     for (;;) {
-      const file = await helperBinary(config, "agent-desktop");
+      const { file, sha256 } = await windowsHelper();
+      // Removed after its build (an antivirus), or changed: never started.
+      // Built again once per run when it's gone; a changed one waits for the
+      // next start, which builds it again (windowsHelper's own note).
+      try { verify(file, sha256); }
+      catch {
+        if (!existsSync(file)) {
+          if (!rebuilt) { rebuilt = true; continue; }
+          throw Object.assign(fail(503, QUARANTINE_REFUSAL), { permanent: true });
+        }
+        throw fail(503, "Reach's agent helper changed on this Windows PC after it was built, so it wasn't started. Try again.");
+      }
       const child = spawnProcess(file, ["--reach-pid", String(processId), "--reach-console", consoleAttached() ? "1" : "0"],
         { stdio: ["pipe", "pipe", "pipe"], detached: true, windowsHide: true, env: windowsHelperEnv(env) });
       const helper = new AgentDesktopHelper(child, { platform, coldStartMs: COLD_START_MS });
@@ -448,8 +469,9 @@ export function createAgentDesktop(config, {
       try {
         ready = await helper.send({ op: "rules", ...rules });
       } catch (error) {
-        // It never answered: removed after its build (built again, once per
-        // run), blocked by Windows' application control, or it stopped.
+        // It never answered: removed between its check and its start (built
+        // again, once per run), blocked by Windows' application control, or
+        // it stopped.
         if (helper.spawnError?.code === "ENOENT" && !existsSync(file)) {
           if (!rebuilt) { rebuilt = true; continue; }
           throw Object.assign(fail(503, QUARANTINE_REFUSAL), { permanent: true });
@@ -505,8 +527,15 @@ export function createAgentDesktop(config, {
     if (hold) throw ownerHoldRefusal(hold, platform);
     return latest;
   };
+  // Why agents can't use this computer's screen right now; "" when they can.
+  const unavailable = () => {
+    if (!helperReady()) return Object.assign(fail(503, helpersOff || "Reach couldn't prepare its agent helper on this Windows PC."), { permanent: true });
+    if (!available()) return fail(503, windows ? "Screen access for agents is off on this Windows PC: screen viewing is off in Reach, or Reach is paused." : "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+    return null;
+  };
   const session = async (client) => {
-    if (!available()) throw fail(503, windows ? "Screen access for agents is off on this Windows PC." : "Screen access for agents needs this Mac's Screen Recording and Accessibility permissions.");
+    const off = unavailable();
+    if (off) throw off;
     const fp = fingerprint(client);
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
@@ -613,7 +642,10 @@ export function createAgentDesktop(config, {
     onActivity(client.id, entry);
   };
   return {
-    available,
+    available: ready,
+    // Why agents can't use the screen now, said to the owner when inviting;
+    // "" when they can.
+    reason: () => unavailable()?.message || "",
     automationBusy,
     // Owner control interrupts queued/current agent input, but receives an
     // actual process-exit barrier rather than the promptly rejected request.
@@ -632,7 +664,7 @@ export function createAgentDesktop(config, {
     /** Every app on this Mac, for the owner's picker: {id, name, bundleId, running}. */
     async catalog(authorize = () => {}) {
       authorize();
-      if (!available()) throw fail(503, `The app list needs this ${word}'s screen helpers.`);
+      if (!ready()) throw fail(503, windows && !helperReady() ? unavailable().message : `The app list needs this ${word}'s screen helpers.`);
       if (catalogCache && catalogCache.until > now()) return structuredClone(catalogCache.apps);
       if (!utility || utility.stopped) utility = await start(null);
       clearTimeout(utilityIdle);
@@ -869,10 +901,6 @@ export function createAgentDesktop(config, {
           take(latest);
           const front = answer(await state.helper.send({ op: "front" }));
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
-          // Windows' command deny list isn't complete yet: no typed text into
-          // a terminal on a Windows PC outside Full control (§12 item 9).
-          if (windows && !windowsCommandChecks && latest.policy.preset !== "full" && front.terminalLike === true)
-            throw Object.assign(fail(403, "Typing commands on this PC needs Reach's Windows command checks, which this version doesn't have yet."), { kind: "blocked" });
           for (const entry of typing) {
             if (entry.secret) {
               // Apps keeps vault values out of terminals. Full control may use

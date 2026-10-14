@@ -41,6 +41,7 @@ export const suites = {
     "portable-history", "transfer-context", "agent-move", "agent-move-sessions", "move-provider-authorization",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
+    "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
@@ -119,7 +120,7 @@ export const suites = {
     // tests run here on any host; the escape e2e are gated on a real runner
     // (REACH_TEST_WINDOWS_DESKTOP=1, CI=true) and skip in this lane, running in
     // ci.yml's real-Windows step and windows-validation.yml. A skip is not a pass.
-    "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e",
+    "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e", "windows-agent-e2e",
     // Auto-continue: here when usage is back, or the first provider free (Oct 14).
     "auto-continue",
   ],

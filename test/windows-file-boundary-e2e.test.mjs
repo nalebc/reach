@@ -70,6 +70,7 @@ test("the Files broker reads inside the root but follows no link out and refuses
   await asUser(`cmd.exe /c mkdir ${q(root)} & mkdir ${q(outside)} & mkdir ${q(path.join(root, ".ssh"))} & echo shared> ${q(path.join(root, "safe.txt"))} & echo secret> ${q(path.join(outside, "secret.txt"))} & echo key> ${q(path.join(root, ".ssh", "id_ed25519"))}`);
   // A directory symlink inside the root pointing outside (made by the runner).
   await run(system("cmd.exe"), ["/c", "mklink", "/d", path.join(root, "escape"), outside]);
+  fs.linkSync(path.join(outside, "secret.txt"), path.join(root, "hard.txt"));
 
   const node = q(process.execPath);
   const driver = q(path.join(fixtures, "drive-sandbox.mjs"));
@@ -107,5 +108,20 @@ test("the Files broker reads inside the root but follows no link out and refuses
     t.diagnostic(JSON.stringify(out));
     // Listing the symlink itself is refused (no-reparse open); the outside file is never named.
     assert.ok(out.refused || (out.result && !/secret\.txt/.test(out.result)), "the outside listing leaked");
+  });
+  await t.test("copy creates a new file inside the root and refuses an escaping destination", async () => {
+    const copied = await drive("cp", "safe.txt", [["to", "copy.txt"]]);
+    assert.ok(copied.result, JSON.stringify(copied.refused));
+    assert.equal(fs.readFileSync(path.join(root, "copy.txt"), "utf8").trim(), "shared");
+    assert.ok((await drive("cp", "safe.txt", [["to", "escape\\copy.txt"]])).refused);
+    assert.ok(!fs.existsSync(path.join(outside, "copy.txt")));
+    assert.ok((await drive("cp", "safe.txt", [["to", "hard.txt"]])).refused, "an existing destination is never replaced");
+  });
+  await t.test("write, touch and remove refuse a hard link before changing its outside object", async () => {
+    for (const op of ["write", "touch", "rm"])
+      assert.ok((await drive(op, "hard.txt", [["data", Buffer.from("changed").toString("base64")]])).refused, op);
+    assert.equal(fs.readFileSync(path.join(outside, "secret.txt"), "utf8").trim(), "secret", "the outside bytes were not truncated");
+    assert.ok(fs.existsSync(path.join(root, "hard.txt")), "the hard link was not removed");
+    assert.ok((await drive("read", "safe.txt", [["rootIno", "123"]])).refused, "a changed root identity is refused");
   });
 });
