@@ -17,10 +17,14 @@
 //   frame <window handle>
 //       Prints the window's frame as "x,y,width,height".
 //   medium <program> [arguments...]
-//       Runs a program at medium integrity (a restricted copy of this
-//       process's token: no administrators' rights) with this process's
-//       standard handles, and exits with its code. GitHub's runners run
-//       everything elevated; Reach on a PC doesn't.
+//       Runs a program unelevated, as the signed-in user's own programs run
+//       (the shell's token: User Account Control's filtered one), with this
+//       process's standard handles and environment, and exits with its code.
+//       Where the shell's token can't be had, a restricted copy of this
+//       process's (no administrators' rights, medium integrity). GitHub's
+//       runners run everything elevated; Reach on a PC doesn't.
+//   integrity
+//       Prints this process's integrity level and whether it's elevated.
 //   click <x> <y>
 //       A real left click there (brings that window to the front).
 //   buttons
@@ -37,6 +41,11 @@
 //   env-block
 //       Prints PATH, ProgramFiles and ComSpec as Windows builds them for the
 //       user (CreateEnvironmentBlock, not inheriting this process's).
+//   find <text>
+//       Prints "handle,x,y,width,height" of the first visible window whose
+//       title holds the text (any case); exits 1 when there's none.
+//   short <path>
+//       Prints the path's 8.3 form (the same path when it has none).
 using System;
 using System.Drawing;
 using System.IO;
@@ -54,6 +63,11 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, int data, UIntPtr extra);
   [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr window);
+  delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc each, IntPtr data);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern int GetShortPathNameW(string path, StringBuilder shortPath, int size);
   [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
@@ -64,6 +78,16 @@ static class DesktopFixture {
   [DllImport("advapi32.dll", SetLastError = true)]
   static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr delete, uint restrictCount, IntPtr restrict, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int kind, IntPtr info, int size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info, int size, out int needed);
+  [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, int index);
+  [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attributes, int level, int type, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder command, uint flags, IntPtr environment, string directory,
+    ref STARTUPINFO startup, out PROCESS_INFORMATION information);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSidW(string sid, out IntPtr result);
   [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -101,6 +125,15 @@ static class DesktopFixture {
     if (args.Length == 1 && args[0] == "clipboard-get") { Console.WriteLine(Clipboard.ContainsText() ? Clipboard.GetText() : "(none)"); return 0; }
     if (args.Length == 1 && args[0] == "clipboard-clear") { Clipboard.Clear(); return 0; }
     if (args.Length == 1 && args[0] == "env-block") return EnvironmentBlock();
+    if (args.Length == 2 && args[0] == "find") return Find(args[1]);
+    if (args.Length == 1 && args[0] == "integrity") return Integrity();
+    if (args.Length == 2 && args[0] == "short") {
+      var name = new StringBuilder(32768);
+      int length = GetShortPathNameW(args[1], name, name.Capacity);
+      if (length <= 0 || length >= name.Capacity) return Fail("short");
+      Console.WriteLine(name.ToString(0, length));
+      return 0;
+    }
     // Started by name, with nothing (the agent's open) or with a file or an
     // address (an association's or a browser's launch): it reports.
     if (args.Length == 0 || args[0] == "env-report" || Array.IndexOf(Kinds, args[0]) < 0) return Report(args);
@@ -108,7 +141,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -207,15 +240,100 @@ static class DesktopFixture {
       if (i > 1) command.Append(' ');
       command.Append(args[i].IndexOf(' ') >= 0 || args[i].Length == 0 ? "\"" + args[i] + "\"" : args[i]);
     }
-    var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), dwFlags = 0x100, hStdInput = GetStdHandle(-10), hStdOutput = GetStdHandle(-11), hStdError = GetStdHandle(-12) };
-    PROCESS_INFORMATION started;
-    if (!CreateProcessAsUserW(restricted, null, command, IntPtr.Zero, IntPtr.Zero, true, 0, IntPtr.Zero, null, ref startup, out started)) return Fail("start");
+    // A console program's own console stays out of sight.
+    bool console = Subsystem(args[1]) == 3;
+    var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), dwFlags = 0x100 | (console ? 0x1 : 0), wShowWindow = 0,
+      hStdInput = GetStdHandle(-10), hStdOutput = GetStdHandle(-11), hStdError = GetStdHandle(-12) };
+    var started = new PROCESS_INFORMATION();
+    IntPtr shell = ShellToken();
+    // The handles and the environment this process was given, exactly.
+    foreach (IntPtr handle in new[] { startup.hStdInput, startup.hStdOutput, startup.hStdError }) SetHandleInformation(handle, 1, 1);
+    IntPtr environment = OwnEnvironment();
+    bool ran = shell != IntPtr.Zero && CreateProcessWithTokenW(shell, 0, null, new StringBuilder(command.ToString()), 0x400, environment, null, ref startup, out started);
+    if (!ran) {
+      startup.dwFlags = 0x100;
+      // Without a console of its own: a restricted token gets none.
+      if (!CreateProcessAsUserW(restricted, null, command, IntPtr.Zero, IntPtr.Zero, true, console ? 0x8u : 0, IntPtr.Zero, null, ref startup, out started)) return Fail("start");
+    }
     WaitForSingleObject(started.hProcess, 0xFFFFFFFF);
     uint code;
     GetExitCodeProcess(started.hProcess, out code);
     return (int)code;
   }
+  static IntPtr OwnEnvironment() {
+    var names = new System.Collections.Generic.List<string>();
+    foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) names.Add((string)entry.Key);
+    names.Sort(StringComparer.OrdinalIgnoreCase);
+    var block = new StringBuilder();
+    foreach (string name in names) block.Append(name).Append('=').Append(Environment.GetEnvironmentVariable(name)).Append('\0');
+    return Marshal.StringToHGlobalUni(block.Append('\0').ToString());
+  }
+  // The signed-in user's shell's token, as a primary one: what their own
+  // unelevated programs run with. IntPtr.Zero when there's no shell.
+  static IntPtr ShellToken() {
+    int session = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+    foreach (var shell in System.Diagnostics.Process.GetProcessesByName("explorer")) {
+      try {
+        if (shell.SessionId != session) continue;
+        IntPtr process = OpenProcess(0x1000, false, shell.Id), token, primary;
+        if (process == IntPtr.Zero) continue;
+        bool opened = OpenProcessToken(process, 0x0001 | 0x0002 | 0x0008, out token);
+        CloseHandle(process);
+        if (!opened) continue;
+        bool duplicated = DuplicateTokenEx(token, 0x02000000, IntPtr.Zero, 2, 1, out primary);
+        CloseHandle(token);
+        if (duplicated) return primary;
+      } catch (Exception) {
+      }
+    }
+    return IntPtr.Zero;
+  }
+  // A program's subsystem from its PE header: 2 windows, 3 console.
+  static int Subsystem(string file) {
+    try {
+      using (var stream = File.OpenRead(file)) {
+        var reader = new BinaryReader(stream);
+        stream.Position = 0x3C;
+        stream.Position = reader.ReadInt32() + 4 + 20 + 68;
+        return reader.ReadUInt16();
+      }
+    } catch (Exception) {
+      return 0;
+    }
+  }
+  static int Integrity() {
+    IntPtr token;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out token)) return Fail("token");
+    int size;
+    GetTokenInformation(token, 25, IntPtr.Zero, 0, out size);
+    IntPtr label = Marshal.AllocHGlobal(size);
+    IntPtr elevation = Marshal.AllocHGlobal(4);
+    int ignored;
+    if (!GetTokenInformation(token, 25, label, size, out size) || !GetTokenInformation(token, 20, elevation, 4, out ignored)) return Fail("information");
+    IntPtr sid = Marshal.ReadIntPtr(label);
+    int count = Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+    int level = Marshal.ReadInt32(GetSidSubAuthority(sid, count - 1));
+    Console.WriteLine("integrity " + level.ToString("X") + " elevated " + (Marshal.ReadInt32(elevation) != 0 ? "yes" : "no"));
+    return 0;
+  }
   static int Fail(string step) { Console.Error.WriteLine("error " + step + " " + Marshal.GetLastWin32Error()); return 3; }
+
+  static int Find(string text) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindowsProc each = (window, data) => {
+      var title = new StringBuilder(1024);
+      GetWindowTextW(window, title, title.Capacity);
+      if (!IsWindowVisible(window) || title.ToString().IndexOf(text, StringComparison.OrdinalIgnoreCase) < 0) return true;
+      found = window;
+      return false;
+    };
+    EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    RECT rect;
+    if (found == IntPtr.Zero || !GetWindowRect(found, out rect)) return 1;
+    Console.WriteLine(found.ToInt64() + "," + rect.Left + "," + rect.Top + "," + (rect.Right - rect.Left) + "," + (rect.Bottom - rect.Top));
+    return 0;
+  }
 
   static int Click(int x, int y) {
     SetCursorPos(x, y);

@@ -2300,16 +2300,27 @@ static partial class Desk {
     }
     return result;
   }
+  // BitBlt itself: the .NET Framework's CopyFromScreen refuses CaptureBlt,
+  // which layered windows need to be in the picture.
   static Bitmap CaptureScreen(Box screen) {
     var bitmap = new Bitmap(screen.Width, screen.Height, PixelFormat.Format32bppRgb);
+    bool copied = false;
     try {
-      using (var graphics = Graphics.FromImage(bitmap))
-        graphics.CopyFromScreen(screen.Left, screen.Top, 0, 0, new Size(screen.Width, screen.Height), CopyPixelOperation.SourceCopy | CopyPixelOperation.CaptureBlt);
-      return bitmap;
+      using (var graphics = Graphics.FromImage(bitmap)) {
+        IntPtr target = graphics.GetHdc(), source = Native.GetDC(IntPtr.Zero);
+        try {
+          copied = source != IntPtr.Zero && Native.BitBlt(target, 0, 0, screen.Width, screen.Height, source, screen.Left, screen.Top, Native.SRCCOPY | Native.CAPTUREBLT);
+        } finally {
+          if (source != IntPtr.Zero) Native.ReleaseDC(IntPtr.Zero, source);
+          graphics.ReleaseHdc(target);
+        }
+      }
     } catch (Exception) {
-      bitmap.Dispose();
-      throw new Refusal("Windows won't let Reach see the screen right now. Keep the PC signed in and unlocked.", "unavailable");
+      copied = false;
     }
+    if (copied) return bitmap;
+    bitmap.Dispose();
+    throw new Refusal("Windows won't let Reach see the screen right now. Keep the PC signed in and unlocked.", "unavailable");
   }
   static void DrawCursor(Graphics graphics, Box screen) {
     var info = new Native.CURSORINFO();
@@ -4681,6 +4692,13 @@ static partial class Desk {
         entry["name"] = name;
         if (name.Length > 0 && !found.ContainsKey(name + "|" + entry["id"])) found[name + "|" + entry["id"]] = entry;
       }
+      // File Explorer is offered as Finder is on a Mac (§16 D5), whatever
+      // name Start gives it.
+      string explorer = CanonicalFile(Path.Combine(WindowsFolder(), "explorer.exe"));
+      bool listed = false;
+      foreach (var entry in found.Values) if (explorer != null && string.Equals((string)entry["id"], explorer, StringComparison.OrdinalIgnoreCase)) listed = true;
+      if (explorer != null && !listed)
+        found["File Explorer|" + explorer] = new Dictionary<string, object> { { "id", explorer }, { "bundleId", "exe:explorer.exe" }, { "name", "File Explorer" } };
       return new List<Dictionary<string, object>>(found.Values);
     }, "The app list is taking too long.");
     // Running: some process's own path is the app's.

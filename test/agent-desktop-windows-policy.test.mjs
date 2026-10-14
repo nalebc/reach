@@ -13,13 +13,14 @@ import { csharpPolicyProgram, macCases, pureSections, reachUrlCases, windowsCase
 // (docs/parity/B-desktop-helper.md §7.2, §13.2). Its source is read here on
 // any computer; the corpus is compiled with the PC's own csc.exe and run on
 // Windows only.
-const source = fs.readFileSync(new URL("../scripts/native/agent-desktop.cs", import.meta.url), "utf8");
+// Line ends as written: a Windows checkout may turn them into CRLF.
+const source = fs.readFileSync(new URL("../scripts/native/agent-desktop.cs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const pure = pureSections(source);
 // Its code without its comments (whole-line ones, and those after code).
 const code = (text) => text.split("\n").filter((line) => !/^\s*\/\//.test(line)).map((line) => line.replace(/\s\/\/\s.*$/, ""));
 
 test("the corpus's copy of the Reach-address cases is the Swift policy test's own", () => {
-  const swiftTest = fs.readFileSync(new URL("./agent-desktop-policy-native.test.mjs", import.meta.url), "utf8");
+  const swiftTest = fs.readFileSync(new URL("./agent-desktop-policy-native.test.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const literal = swiftTest.split("const reachUrlCases = ")[1].split("\n];")[0] + "\n]";
   const theirs = new Function(`return ${literal};`)();
   assert.equal(JSON.stringify(theirs), JSON.stringify(reachUrlCases));
@@ -66,8 +67,8 @@ test("compiled Windows desktop policy decides the same corpus", { skip: process.
   await exec(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/codepage:65001", "/utf8output", `/out:${binary}`,
     ...["System.dll", "System.Core.dll"].map((name) => `/reference:${path.win32.join(framework, name)}`), program], { windowsHide: true, timeout: 120000, maxBuffer: 4 << 20 })
     .catch((error) => assert.fail(`${error.stdout || ""}${error.stderr || ""}`.split(/\r?\n/).filter((line) => /error CS/.test(line)).slice(0, 20).join("\n") || error.message));
-  const { stdout } = await exec(binary, [], { windowsHide: true, timeout: 60000, maxBuffer: 4 << 20 }).catch((error) => error);
-  assert.equal(String(stdout).trim(), "OK");
+  const ran = await exec(binary, [], { windowsHide: true, timeout: 60000, maxBuffer: 4 << 20 }).catch((error) => error);
+  assert.equal(String(ran.stdout).trim(), "OK", `${String(ran.stdout).slice(0, 3000)}${String(ran.stderr || "").slice(0, 2000)} (exit ${ran.code ?? 0})`);
 });
 
 // The helper's own decisions (masks, the race check, line framing, input):
@@ -82,8 +83,8 @@ test("the helper's own decisions pass their checks, compiled together with it", 
     ...["System.dll", "System.Core.dll", "System.Drawing.dll"].map((name) => `/reference:${path.win32.join(framework, name)}`),
     path.resolve("scripts/native/agent-desktop.cs"), path.resolve("test/fixtures/windows/agent-desktop-checks.cs")], { windowsHide: true, timeout: 120000, maxBuffer: 4 << 20 })
     .catch((error) => assert.fail(`${error.stdout || ""}${error.stderr || ""}`.split(/\r?\n/).filter((line) => /error CS/.test(line)).slice(0, 20).join("\n") || error.message));
-  const { stdout } = await exec(binary, [], { windowsHide: true, timeout: 60000, maxBuffer: 4 << 20 }).catch((error) => error);
-  assert.equal(String(stdout).trim(), "OK");
+  const ran = await exec(binary, [], { windowsHide: true, timeout: 60000, maxBuffer: 4 << 20 }).catch((error) => error);
+  assert.equal(String(ran.stdout).trim(), "OK", `${String(ran.stdout).slice(0, 3000)}${String(ran.stderr || "").slice(0, 2000)} (exit ${ran.code ?? 0})`);
 });
 
 const body = (name) => source.split(`static Dictionary<string, object> ${name}(`)[1].split("\n  }\n")[0];
@@ -184,7 +185,7 @@ test("the UI Automation interfaces match the Windows SDK's IDL, member by member
   const kits = path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Windows Kits", "10", "Include");
   const versions = fs.existsSync(kits) ? fs.readdirSync(kits).filter((name) => fs.existsSync(path.join(kits, name, "um", "UIAutomationClient.idl"))).sort() : [];
   if (!versions.length) return t.skip("no Windows SDK on this runner");
-  const idl = fs.readFileSync(path.join(kits, versions.at(-1), "um", "UIAutomationClient.idl"), "utf8").replace(/\/\/.*$/gm, "");
+  const idl = fs.readFileSync(path.join(kits, versions.at(-1), "um", "UIAutomationClient.idl"), "utf8").replace(/\r\n/g, "\n").replace(/\/\/.*$/gm, "");
   const sdk = new Map();
   for (const match of idl.matchAll(/uuid\(([0-9a-fA-F-]{36})\)[^\]]*\]\s*interface\s+(\w+)\s*:\s*(\w+)\s*\{([\s\S]*?)\n\s*\}/g)) {
     const [, uuid, name, base, body] = match;

@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { cscCandidates, windowsBinary } from "../server/desktop-native.mjs";
 import { nativeRules } from "../server/agent-guard.mjs";
-import { smartAppControlState } from "../server/windows-helper-launch.mjs";
+import { smartAppControlState, windowsHelperEnv } from "../server/windows-helper-launch.mjs";
 
 // The Windows agent helper (scripts/native/agent-desktop.cs) on a real
 // Windows runner, driven as Reach drives it: one JSON line in, one out
@@ -63,11 +64,11 @@ test.after(async () => {
 // The helper as Reach starts it: detached, its own environment, Reach's pid.
 // medium: at medium integrity, as Reach runs on a PC (GitHub's runners run
 // everything elevated, and an elevated helper gets no input, Rule S).
-function helper(t, { reachPid = process.pid, console = false, medium = false } = {}) {
+// env: the environment it starts with (Reach gives it windowsHelperEnv's).
+function helper(t, { reachPid = process.pid, console = false, medium = false, env } = {}) {
   const args = ["--reach-pid", String(reachPid), "--reach-console", console ? "1" : "0"];
-  const child = medium
-    ? spawn(fixtureConsole, ["medium", helperFile, ...args], { stdio: ["pipe", "pipe", "pipe"], detached: true, windowsHide: true })
-    : spawn(helperFile, args, { stdio: ["pipe", "pipe", "pipe"], detached: true, windowsHide: true });
+  const options = { stdio: ["pipe", "pipe", "pipe"], detached: true, windowsHide: true, ...(env ? { env } : {}) };
+  const child = medium ? spawn(fixtureConsole, ["medium", helperFile, ...args], options) : spawn(helperFile, args, options);
   children.add(child);
   let buffer = "", stderr = "";
   const waiting = [];
@@ -81,7 +82,7 @@ function helper(t, { reachPid = process.pid, console = false, medium = false } =
     }
   });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
-  const exited = new Promise((resolve) => child.once("exit", (code) => { for (const item of waiting.splice(0)) item.reject(Error(`helper exited ${code}`)); resolve(code); }));
+  const exited = new Promise((resolve) => child.once("exit", (code) => { for (const item of waiting.splice(0)) item.reject(Error(`helper exited ${code} ${stderr.slice(0, 500)}`)); resolve(code); }));
   const send = (request, ms = 60000) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(Error(`no answer to ${request.op ?? "a line"}`)), ms);
     waiting.push({ resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
@@ -91,7 +92,8 @@ function helper(t, { reachPid = process.pid, console = false, medium = false } =
   t.after(() => { if (child.exitCode === null) child.kill(); });
   return { child, send, close, exited, stderr: () => stderr };
 }
-const rulesFor = (preset, extra = {}) => nativeRules({ preset, ...extra }, { hosts: ["localhost:8443"], titles: ["reach"], protectedPaths: [], home: os.homedir(), platform: "win32" });
+const rulesFor = (preset, extra = {}, guard = {}) =>
+  nativeRules({ preset, ...extra }, { hosts: ["localhost:8443"], titles: ["reach"], protectedPaths: [], home: os.homedir(), platform: "win32", ...guard });
 
 // A fixture window: a copy of the fixture under its own name (an app is its
 // .exe), started visibly; its JSON once shown.
@@ -145,6 +147,9 @@ test("probe: what this runner is, and the helper built and answering within its 
   probe.codeIntegrityLog = (await read(path.join(SYSTEM32, "wevtutil.exe"), ["qe", "Microsoft-Windows-CodeIntegrity/Operational", "/rd:true", "/c:1", "/f:text"])).slice(0, 200);
   probe.appLockerLog = (await read(path.join(SYSTEM32, "wevtutil.exe"), ["qe", "Microsoft-Windows-AppLocker/EXE and DLL", "/rd:true", "/c:1", "/f:text"])).slice(0, 200);
   probe.dotnet = await read(path.join(SYSTEM32, "reg.exe"), ["query", "HKLM\\SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\Full", "/v", "Release"]);
+  // This job's own integrity, and what the medium launcher gives a program.
+  probe.ownIntegrity = await read(fixtureConsole, ["integrity"]);
+  probe.mediumIntegrity = await read(fixtureConsole, ["medium", fixtureConsole, "integrity"]);
   const h = helper(t);
   const started = Date.now();
   const ready = await h.send({ op: "rules", ...rulesFor("readonly") });
@@ -217,11 +222,14 @@ test("screenshots: View blacks out protected windows, captionless ones too; Apps
 test("Reach's own console window is closed to the agent whatever its title, and requests flow after the probe", { skip, timeout: 300000 }, async (t) => {
   // Reach's stand-in in a classic console window titled "Windows PowerShell",
   // at medium integrity as on a PC.
-  const conhost = spawn(fixtureConsole, ["medium", path.join(SYSTEM32, "conhost.exe"), fixtureConsole, "sleeper", work, "reach", "Windows PowerShell"], { stdio: "ignore", detached: true, windowsHide: true });
+  const conhost = spawn(fixtureConsole, ["medium", path.join(SYSTEM32, "conhost.exe"), fixtureConsole, "sleeper", work, "reach", "Windows PowerShell"], { stdio: ["ignore", "ignore", "pipe"], detached: true, windowsHide: true });
   children.add(conhost);
   t.after(() => { try { conhost.kill(); } catch {} });
+  let launcher = "";
+  conhost.stderr.on("data", (chunk) => { launcher += chunk; });
+  conhost.once("exit", (code) => { launcher += ` (exited ${code})`; });
   const file = path.join(work, "reach.json");
-  const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in"));
+  const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in").catch((error) => { throw Error(`${error.message}: the launcher said ${launcher || "nothing"}`); }));
   t.after(() => { try { process.kill(reach.pid); } catch {} });
   const [x, y, width, height] = (await exec(fixtureConsole, ["frame", String(reach.console)], { windowsHide: true })).stdout.trim().split(",").map(Number);
   await sleep(500);
@@ -457,5 +465,239 @@ test("Settings: its private pages are closed to the agent and black in a screens
     else assert.ok(front.blocked, `${page} is closed: ${JSON.stringify(front)}`);
   }
   note({ settings: seen });
+  await h.close();
+});
+
+// Launching (§13.4 items 4 and 7): copies of the fixture write how they were
+// started. Every program the helper starts gets the user's own environment,
+// as Windows builds it, never the helper's.
+const LAYERS = "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers";
+const reg = (args) => exec(path.join(SYSTEM32, "reg.exe"), args, { windowsHide: true, timeout: 20000 });
+const reportOf = (exe, what, ms = 20000) => until(() => { try { return JSON.parse(fs.readFileSync(`${exe}.env.json`, "utf8")); } catch { return null; } }, what, ms);
+const neverStarted = async (exe, what) => { await sleep(1500); assert.ok(!fs.existsSync(`${exe}.env.json`), `${what}: nothing started`); };
+
+test("launching: open, open-file and open-url start programs with the user's own environment; a protected file under another name, and apps that ask for administrator rights, are refused before anything starts", { skip, timeout: 300000 }, async (t) => {
+  const folder = path.join(work, "launch");
+  const vault = path.join(folder, "Vault Folder"), docs = path.join(folder, "Docs");
+  for (const dir of [vault, docs, path.join(folder, "browser")]) fs.mkdirSync(dir, { recursive: true });
+  const [reporter, opener, flagged, browser] = ["reporter.exe", "opener.exe", "flagged.exe", path.join("browser", "chrome.exe")].map((name) => path.join(folder, name));
+  for (const exe of [reporter, opener, flagged, browser]) fs.copyFileSync(fixtureGui, exe);
+  // The fixture again, with a manifest that asks for administrator rights;
+  // and a copy that Windows' compatibility settings run as administrator.
+  const admin = path.join(folder, "admin-app.exe");
+  const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
+  await exec(csc, ["/nologo", "/noconfig", "/target:winexe", "/platform:anycpu", `/out:${admin}`, `/win32manifest:${path.resolve("test/fixtures/windows/require-admin.manifest")}`,
+    ...["System.dll", "System.Drawing.dll", "System.Windows.Forms.dll"].map((name) => `/reference:${path.win32.join(path.win32.dirname(csc), name)}`),
+    path.resolve("test/fixtures/windows/desktop-fixture.cs")], { windowsHide: true, timeout: 120000 });
+  t.after(async () => {
+    for (const args of [["delete", LAYERS, "/v", flagged, "/f"], ["delete", "HKCU\\Software\\Classes\\.reachtest", "/f"], ["delete", "HKCU\\Software\\Classes\\ReachTest.File", "/f"]])
+      await reg(args).catch(() => {});
+  });
+  await reg(["add", LAYERS, "/v", flagged, "/t", "REG_SZ", "/d", "~ RUNASADMIN", "/f"]);
+  // .reachtest files open in opener.exe: one of the user's own file types.
+  await reg(["add", "HKCU\\Software\\Classes\\.reachtest", "/ve", "/d", "ReachTest.File", "/f"]);
+  await reg(["add", "HKCU\\Software\\Classes\\ReachTest.File\\shell\\open\\command", "/ve", "/d", `"${opener}" "%1"`, "/f"]);
+  const secret = path.join(vault, "secret.reachtest"), noteFile = path.join(docs, "note.reachtest");
+  fs.writeFileSync(secret, "a secret");
+  fs.writeFileSync(noteFile, "a note");
+  const block = JSON.parse((await exec(fixtureConsole, ["env-block"], { windowsHide: true })).stdout);
+  // The helper's own environment, as Reach gives it, with two values of its own.
+  const helperEnv = { ...windowsHelperEnv(process.env), ProgramFiles: path.join(work, "helper-only"), ComSpec: path.join(work, "helper-only", "cmd.exe") };
+  const h = helper(t, { medium: true, env: helperEnv });
+  const apps = [reporter, opener, flagged, browser, admin].map((exe) => ({ id: exe, bundleId: "", name: path.basename(exe, ".exe") }));
+  assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps }, { protectedPaths: [vault] }) })).ok, true);
+  const seen = { block, helperPath: helperEnv.PATH, association: (await reg(["query", "HKCU\\Software\\Classes\\ReachTest.File\\shell\\open\\command", "/ve"])).stdout.trim() };
+  const theUsers = (report, how) => {
+    for (const name of ["PATH", "ProgramFiles", "ComSpec"]) {
+      assert.equal(report[name], block[name], `${how}: ${name} as Windows builds it for the user`);
+      assert.notEqual(report[name], helperEnv[name], `${how}: ${name} isn't the helper's own`);
+    }
+  };
+  // Refused before anything starts: the protected file by any of its names, and a program.
+  const PROTECTED = "That path holds your passwords, keys or Reach's own files.";
+  const refused = {};
+  const refuse = async (file, what, kinds = ["blocked"]) => {
+    const answer = await h.send({ op: "open-file", path: file });
+    refused[what] = { file, answer };
+    assert.notEqual(answer.ok, true, `${what}: ${JSON.stringify(answer)}`);
+    assert.ok(kinds.includes(answer.kind), `${what}: ${JSON.stringify(answer)}`);
+    return answer.error;
+  };
+  assert.equal(await refuse(secret, "the protected file"), PROTECTED);
+  assert.equal(await refuse(secret.toUpperCase(), "in capitals"), PROTECTED);
+  let alias = null;
+  try {
+    await exec(path.join(SYSTEM32, "fsutil.exe"), ["file", "setshortname", vault, "VLTALIAS"], { windowsHide: true, timeout: 20000 });
+    alias = path.join(folder, "VLTALIAS");
+  } catch (error) {
+    seen.setShortName = String(error.stdout || error.message).trim().split("\n")[0];
+    const short = (await exec(fixtureConsole, ["short", vault], { windowsHide: true })).stdout.trim();
+    if (short.toLowerCase() !== vault.toLowerCase()) alias = short;
+  }
+  seen.alias = alias;
+  if (alias) assert.equal(await refuse(path.join(alias, "secret.reachtest"), "its folder by its 8.3 name"), PROTECTED);
+  else t.diagnostic("No 8.3 names on this volume: the alias case wasn't run.");
+  await refuse(`${secret}.`, "a trailing dot", ["blocked", "invalid"]);
+  await refuse(path.join(`${vault}.`, "secret.reachtest"), "a trailing dot on its folder", ["blocked", "invalid"]);
+  const junction = path.join(docs, "Link");
+  fs.symlinkSync(vault, junction, "junction");
+  assert.equal(await refuse(path.join(junction, "secret.reachtest"), "through a junction"), PROTECTED);
+  const hard = path.join(docs, "copy.reachtest");
+  fs.linkSync(secret, hard);
+  assert.match(await refuse(hard, "a hard link to it"), /another name elsewhere/);
+  assert.match(await refuse(reporter, "a program"), /would run as a program/);
+  await neverStarted(opener, "the refused files");
+  // Apps that ask for administrator rights: refused, never started.
+  for (const [exe, what] of [[admin, "a manifest asking for administrator rights"], [flagged, "compatibility settings that run it as administrator"]]) {
+    const answer = await h.send({ op: "open", app: exe });
+    refused[what] = { file: exe, answer };
+    assert.equal(answer.kind, "blocked", `${what}: ${JSON.stringify(answer)}`);
+    assert.equal(answer.error, "That app asks for administrator rights. The owner opens it at the PC.");
+    await neverStarted(exe, what);
+  }
+  // open: the program alone.
+  const opened = await h.send({ op: "open", app: reporter });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  const byOpen = await reportOf(reporter, "started by open");
+  theUsers(byOpen, "open");
+  assert.deepEqual(byOpen.args, []);
+  // open-file: the program its file type names, with the file alone.
+  const fileOpened = await h.send({ op: "open-file", path: noteFile });
+  assert.equal(fileOpened.ok, true, JSON.stringify(fileOpened));
+  const byFile = await reportOf(opener, "started by open-file");
+  theUsers(byFile, "open-file");
+  assert.deepEqual(byFile.args.map((arg) => arg.toLowerCase()), [noteFile.toLowerCase()]);
+  // open-url: the browser chosen by its path, the address its one argument.
+  const address = "https://example.com/launch-test?x=1";
+  const urlOpened = await h.send({ op: "open-url", url: address, app: browser });
+  assert.equal(urlOpened.ok, true, JSON.stringify(urlOpened));
+  const byUrl = await reportOf(browser, "started by open-url");
+  theUsers(byUrl, "open-url");
+  assert.deepEqual(byUrl.args, [address]);
+  // The app list: Start's apps, File Explorer among them.
+  const catalog = await h.send({ op: "catalog" });
+  assert.equal(catalog.ok, true, JSON.stringify(catalog).slice(0, 300));
+  note({ launching: { ...seen, refused, byOpen, byFile, byUrl, catalog: { count: catalog.apps.length, apps: catalog.apps.slice(0, 60) } } });
+  assert.ok(catalog.apps.some((app) => /\\explorer\.exe$/i.test(app.id)), "File Explorer is offered");
+  for (const app of catalog.apps) assert.ok(app.name && (/^[a-z]:\\.+\.exe$/i.test(app.id) || /^[a-z0-9.-]+_[0-9a-z]{13}!/i.test(app.id)), `a program's path or a Store app's id: ${JSON.stringify(app)}`);
+  assert.equal(h.stderr(), "");
+  await h.close();
+});
+
+// Bank sites in real browsers (§13.4 item 8): pages served here, the bank
+// being localhost. Edge gates, and Chrome when it's installed; Firefox is
+// recorded.
+test("bank sites in Edge and Chrome: the page's and a frame's address read, Transfer refused, account numbers masked; a chosen browser opens a website", { skip, timeout: 600000 }, async (t) => {
+  const MONEY_PAGE = "This bank page moves money. The agent may read it and leave (Back, Accounts, Sign out), nothing else.";
+  const hits = [];
+  let port = 0;
+  const pages = {
+    "/accounts": `<!doctype html><title>Test Bank Accounts</title><h1>Accounts</h1><p>Checking 12345678901234</p><p>Card 4111 1111 1111 1111</p>`,
+    "/transfer": `<!doctype html><title>Test Bank Transfer</title><h1>Move funds</h1><button onclick="fetch('/clicked?what=transfer')">Transfer</button>`,
+    "/shop": () => `<!doctype html><title>Test Shop</title><h1>Shop</h1><button onclick="fetch('/clicked?what=continue')">Continue</button>` +
+      `<p><iframe title="payment" src="http://localhost:${port}/transfer" width="420" height="220"></iframe>`,
+  };
+  const serve = (request, response) => {
+    hits.push(request.url);
+    const page = pages[new URL(request.url, "http://localhost").pathname];
+    response.writeHead(page ? 200 : 204, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    response.end(typeof page === "function" ? page() : page || "");
+  };
+  const servers = [http.createServer(serve), http.createServer(serve)];
+  await new Promise((resolve) => servers[0].listen(0, "127.0.0.1", resolve));
+  port = servers[0].address().port;
+  // localhost can mean ::1 first; the same pages there too, when it exists.
+  await new Promise((resolve) => servers[1].once("error", resolve).listen(port, "::1", resolve));
+  t.after(() => { for (const server of servers) server.close(); });
+  const kill = () => Promise.all(["msedge.exe", "chrome.exe", "firefox.exe"].map((image) => exec(path.join(SYSTEM32, "taskkill.exe"), ["/F", "/T", "/IM", image], { windowsHide: true }).catch(() => {})));
+  t.after(kill);
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files", programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const installed = (...candidates) => candidates.find((file) => fs.existsSync(file));
+  const browsers = [
+    { name: "Edge", gate: true, exe: installed(path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"), path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe")) },
+    { name: "Chrome", gate: true, exe: installed(path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"), path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe")) },
+    { name: "Firefox", gate: false, exe: installed(path.join(programFiles, "Mozilla Firefox", "firefox.exe"), path.join(programFilesX86, "Mozilla Firefox", "firefox.exe")) },
+  ];
+  const results = {};
+  note({ browsers: { installed: Object.fromEntries(browsers.map((browser) => [browser.name, browser.exe || null])) } });
+  assert.ok(browsers[0].exe, "Edge is on every Windows PC");
+  const h = helper(t, { medium: true });
+  const apps = browsers.filter((browser) => browser.exe).map((browser) => ({ id: fs.realpathSync.native(browser.exe), bundleId: "", name: browser.name }));
+  assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps }), moneySites: ["localhost"] })).ok, true);
+  const at = fractions((await h.send({ op: "displays" })).displays);
+  // A page in that browser, at medium integrity as the owner's, then brought
+  // to the front by a real click on it.
+  const show = async (browser, profile, url, title) => {
+    const args = browser.name === "Firefox" ? ["-profile", profile, url]
+      : ["--no-first-run", "--no-default-browser-check", "--disable-search-engine-choice-screen", "--disable-sync", "--disable-extensions", `--user-data-dir=${profile}`, url];
+    const child = spawn(fixtureConsole, ["medium", browser.exe, ...args], { stdio: "ignore", windowsHide: true });
+    children.add(child);
+    const [, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", title], { windowsHide: true })).stdout.trim(); } catch { return null; } }, `${browser.name} shows ${title}`, 60000)).split(",").map(Number);
+    await clickAt(x + Math.round(width / 2), y + height - 40);
+    return { x, y, width, height };
+  };
+  const readUntil = (want, what) => until(async () => { const answer = await h.send({ op: "read" }); return answer.ok && answer.text?.includes(want) ? answer : null; }, what, 60000);
+  const button = (name, what) => until(async () => {
+    const answer = await h.send({ op: "elements" });
+    return answer.ok && answer.items?.find((item) => item.name === name && item.role === "Button");
+  }, what, 60000);
+  const click = async (item, record) => {
+    const point = { x: item.x + item.w / 2, y: item.y + item.h / 2 };
+    let answer;
+    for (let i = 0; i < 20; i++) {
+      answer = await h.send({ op: "act", action: { type: "click", ...point } });
+      record.push(answer);
+      if (answer.kind !== "retry") break;
+      await sleep(500);
+    }
+    return answer;
+  };
+  for (const browser of browsers.filter((candidate) => candidate.exe)) {
+    const result = (results[browser.name] = { clicks: [] });
+    const profile = fs.mkdtempSync(path.join(work, `${browser.name.toLowerCase()}-profile-`));
+    if (browser.name === "Firefox") fs.writeFileSync(path.join(profile, "user.js"), ['"browser.shell.checkDefaultBrowser", false', '"browser.aboutwelcome.enabled", false',
+      '"datareporting.policy.dataSubmissionPolicyBypassNotification", true', '"browser.startup.homepage_override.mstone", "ignore"', '"toolkit.telemetry.reportingpolicy.firstRun", false']
+      .map((pref) => `user_pref(${pref});`).join("\n"));
+    try {
+      // Account numbers: only their last four digits.
+      await show(browser, profile, `http://localhost:${port}/accounts`, "Test Bank Accounts");
+      const read = await readUntil("Checking", `${browser.name}: the accounts page read`);
+      result.read = { url: read.url, text: read.text.slice(0, 400) };
+      assert.ok(read.url.startsWith(`http://localhost:${port}/accounts`), `the page's address: ${read.url}`);
+      assert.ok(read.text.includes("••••1234") && read.text.includes("••••1111"), `masked: ${read.text.slice(0, 300)}`);
+      assert.ok(!read.text.includes("12345678901234") && !read.text.includes("4111 1111 1111 1111"), "never the whole number");
+      // A transfer page: its Transfer button refused, nothing clicked.
+      await show(browser, profile, `http://localhost:${port}/transfer`, "Test Bank Transfer");
+      const transfer = await click(await button("Transfer", `${browser.name}: the Transfer button`), result.clicks);
+      assert.equal(transfer.kind, "blocked", JSON.stringify(transfer));
+      assert.equal(transfer.error, MONEY_PAGE);
+      // A shop (not the bank) holding the bank's transfer page in a frame:
+      // its own button works; the frame's address is read and its Transfer refused.
+      await show(browser, profile, `http://127.0.0.1:${port}/shop`, "Test Shop");
+      const go = await click(await button("Continue", `${browser.name}: the shop's button`), result.clicks);
+      assert.equal(go.ok, true, JSON.stringify(go));
+      await until(() => hits.includes("/clicked?what=continue"), `${browser.name}: the shop's click arrived`, 10000);
+      const framed = await click(await button("Transfer", `${browser.name}: the framed Transfer button`), result.clicks);
+      assert.equal(framed.kind, "blocked", JSON.stringify(framed));
+      assert.equal(framed.error, MONEY_PAGE);
+      await sleep(1000);
+      assert.ok(!hits.includes("/clicked?what=transfer"), "no transfer was clicked");
+      result.passed = true;
+    } catch (error) {
+      result.error = String(error.message).slice(0, 500);
+      if (browser.gate) { note({ browsers: { installed: Object.fromEntries(browsers.map((candidate) => [candidate.name, candidate.exe || null])), results } }); throw error; }
+    } finally {
+      hits.splice(0, hits.length, ...hits.filter((hit) => !hit.startsWith("/clicked")));
+      await kill();
+    }
+  }
+  // open-url with a chosen browser: the helper starts it with the address.
+  const edge = apps.find((app) => app.name === "Edge");
+  const opened = await h.send({ op: "open-url", url: `http://localhost:${port}/accounts?via=open-url`, app: edge.id });
+  results.openUrl = { answer: opened };
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  results.openUrl.arrived = await until(() => hits.includes("/accounts?via=open-url"), "Edge asked for the address", 60000).then(() => true, () => false);
+  note({ browsers: { installed: Object.fromEntries(browsers.map((browser) => [browser.name, browser.exe || null])), results } });
+  assert.equal(results.openUrl.arrived, true, "Edge opened the address");
   await h.close();
 });
