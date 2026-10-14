@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { windowsCanonicalPath, windowsWithin, windowsShortName } from './app-identity.mjs';
+import { windowsCanonicalPath, windowsWithin } from './app-identity.mjs';
 
 export const browserPrivateNames = ['.reach', '.ssh', '.aws', '.azure', '.kube', '.gnupg', '.codex', '.claude', '.config', '.netrc', '.npmrc', '.git-credentials',
   '.git', '.gitconfig', '.zshenv', '.zshrc', '.zprofile', '.zlogin', '.zlogout', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
@@ -127,10 +127,12 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
 // Pure — no filesystem — so it is driven on any host with an injected platform.
 function validateBrowserRootWindows(root, { home, runtime, policy, env, homePreset, error }) {
   const abs = (value) => (typeof value === 'string' && /^[a-z]:[\\/]/i.test(value) ? value : null);
-  if (!abs(root) && !root.startsWith('\\\\')) throw error();
-  // An 8.3 short alias (PROGRA~1) could name a protected folder under a name the
-  // canonical check wouldn't match; refuse it outright (finding 12).
-  if (windowsShortName(root)) throw error();
+  // A root must be a local drive path: a UNC share (\\host\share) is refused.
+  // 8.3 short aliases are not blanket-refused here — the owner's folder pick is
+  // realpath-expanded to its long name upstream (chooseFolders → safePath), and
+  // the Files broker's final-path verify expands 8.3 (§7.2); a path may legitimately
+  // contain a short component (a Windows TEMP under C:\Users\RUNNER~1\…).
+  if (!abs(root)) throw error();
   const canonical = windowsCanonicalPath(root);
   const homeCanonical = windowsCanonicalPath(home);
   const driveRoot = /^[a-z]:\\$/.test(canonical);

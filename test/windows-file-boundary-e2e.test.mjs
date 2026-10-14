@@ -32,7 +32,10 @@ async function compile(source, out) {
   const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
   assert.ok(csc, "csc.exe");
   const framework = path.win32.dirname(csc);
-  const built = await run(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", `/out:${out}`, `/reference:${path.win32.join(framework, "System.dll")}`, source]);
+  // Mirror the production references (server/desktop-native.mjs): System.Core.dll
+  // carries HashSet and LINQ, which sandbox.cs uses.
+  const built = await run(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", `/out:${out}`,
+    ...["System.dll", "System.Core.dll"].map((name) => `/reference:${path.win32.join(framework, name)}`), source]);
   assert.equal(built.code, 0, `${path.basename(source)}: ${built.stdout}${built.stderr}`);
 }
 

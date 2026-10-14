@@ -5,7 +5,7 @@ import os from 'node:os';
 import { fail } from './core.mjs';
 import { terminalLocation } from './restricted-terminal.mjs';
 import { browserPrivatePaths, browserPrivateNames, isBrowserPrivatePath, validateBrowserRoot } from './browser-private-paths.mjs';
-import { windowsCanonicalPath, windowsWithin, windowsShortName } from './app-identity.mjs';
+import { windowsCanonicalPath, windowsWithin } from './app-identity.mjs';
 import { encodeSandboxRequest, createSandboxFrameReader, windowsScriptSandbox, scriptRequestEntries } from './windows-sandbox.mjs';
 import { spawnVerified } from './desktop-native.mjs';
 import { stripVTControlCharacters } from 'node:util';
@@ -70,9 +70,9 @@ function rejectOutsidePathsWindows(args, cwd, root, home) {
     const pathLike = /[\\/]/.test(value) || /^[a-z]:/i.test(value) || value.startsWith('~') || value === '.' || value === '..';
     if (value.startsWith('-') && !pathLike) continue;
     if (!pathLike) continue;
-    // An 8.3 short alias could name an outside file under a name the canonical
-    // check wouldn't catch; refuse it rather than guess (finding 12).
-    if (windowsShortName(value)) throw outside();
+    // 8.3 short aliases aren't blanket-refused: a literal short name resolves to
+    // itself, so one that leaves the root is caught by the within-check below,
+    // and the broker's final-path verify expands it (§7.2).
     let full;
     if (value === '~' || value.startsWith('~\\') || value.startsWith('~/')) full = home + value.slice(1);
     else if (value.startsWith('~')) throw outside();

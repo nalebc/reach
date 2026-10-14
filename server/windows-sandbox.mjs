@@ -336,8 +336,10 @@ export function windowsShellRunner(windowsSandbox, { start = spawnVerified, inte
       const settle = (timedOut) => { if (settled) return; settled = true; cleanup(); resolve({ output: output + (truncated ? "\n[Output truncated]" : ""), exitCode, timedOut }); };
       const die = (error) => { if (settled) return; settled = true; cleanup(); try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} reject(error); };
       const onAbort = () => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} die(signal.reason); };
+      // Not unref'd: a shell run is an awaited, bounded operation (≤ timeoutMs),
+      // so the timeout must be able to fire even if nothing else keeps the loop
+      // alive (the fake-child unit tests have no other handle).
       const timer = setTimeout(() => { try { child?.stdin.end(); } catch {} try { child?.kill(); } catch {} settle(true); }, timeoutMs);
-      timer.unref?.();
       try { child = start(ready.built.file, ready.built.sha256, ["run"], { cwd, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); }
       catch { return die(fail(503, "The command could not start.")); }
       const read = createSandboxFrameReader({
