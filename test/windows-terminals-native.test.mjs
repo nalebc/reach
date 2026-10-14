@@ -128,6 +128,24 @@ const find = async (d, name) => {
 };
 const lines = (text) => String(text).split("\n").map((line) => line.trim());
 
+// Console handover needs an interactive default-terminal host. The full CI
+// lane reuses the desktop after lifecycle tests; establish a known live tab
+// before exercising handover, then close only this test's tab. The console
+// under test is still created through Node/CreateProcess, never wt.exe.
+async function handoverHost(t) {
+  const terminal = await useWindowsTerminal();
+  const name = marker("handover-host");
+  await openFrom(t, "windows-terminal", name, await folder());
+  const d = await terminals();
+  const tab = await eventually(`${name} ready for console handover`, () => find(d, name));
+  assert.equal(tab.provider, "windows-terminal");
+  seen.handoverHost = { source: terminal.source, ready: true };
+  t.after(async () => {
+    try { await d.action(tab.id, "close", { confirm: true }, allow); }
+    catch (error) { if (error.status !== 404) throw error; }
+  });
+}
+
 // List it, type into it, read the answer back (screen and scrollback), bring
 // it forward and close it: the phone's whole round trip.
 async function roundTrip(d, name, record) {
@@ -176,6 +194,7 @@ test("a console window on the PC is listed, read, typed into, brought forward an
 });
 
 test("Reach's own terminals are left out of the PC's list; a console Reach's process opened itself is too, others aren't", real, async (t) => {
+  await handoverHost(t);
   const record = (seen.tests.own = {});
   const own = marker("own");
   const shell = marker("shell");
@@ -227,6 +246,7 @@ process.stdin.on("end", () => {
 });
 
 test("a new terminal opens from the phone in the folder asked, running its command, and stays after Reach is gone", real, async (t) => {
+  await handoverHost(t);
   const record = (seen.tests.created = {});
   const name = marker("created");
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "reach new;terminal "));
