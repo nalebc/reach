@@ -95,7 +95,7 @@ test("a sandboxed job runs in its grant but can't touch Reach's data or a folder
   // Create the folders as the user, and plant a secret.
   await asUser(`cmd.exe /c mkdir ${q(project)} & mkdir ${q(secretDir)} & echo TOPSECRET> ${q(path.join(secretDir, "clients.json"))}`);
 
-  const jobEntries = (command, cwd) => [["mode", "jobs"], ["client", user], ["interpreter", "cmd.exe"],
+  const jobEntries = (command, cwd) => [["mode", "jobs"], ["client", user], ["interpreter", path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe")],
     ["command", command], ["cwd", cwd], ["timeoutMs", "60000"], ["network", "internet"], ["activeProcesses", "512"],
     ["grant", project.toLowerCase()], ["grantAccess", "rw"], ["deny", secretDir.toLowerCase()], ["capability", "internetClient"]];
 

@@ -123,16 +123,16 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
         for (const listener of listeners.get(message.method) || []) listener(message.params, message.sessionId);
     }
   });
-  // Every call has an answer within 20 s, or fails: a stuck page never
-  // holds a test past its own timeout.
-  const send = (method, params = {}, sessionId) =>
+  // Page calls keep their 20 s bound. The first browser handshake also
+  // includes cold profile/sandbox startup on a shared runner.
+  const send = (method, params = {}, sessionId, timeoutMs = 20000) =>
     new Promise((resolve, reject) => {
       if (child.exitCode !== null) return reject(Error(`Chrome exited: ${stderr.slice(-400)}`));
       const id = next++;
       const timer = setTimeout(() => {
         waiting.delete(id);
-        reject(Error(`${method}: no answer from Chrome in 20 s${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
-      }, 20000);
+        reject(Error(`${method}: no answer from Chrome in ${timeoutMs / 1000} s${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
+      }, timeoutMs);
       waiting.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v)),
         reject: (e) => (clearTimeout(timer), reject(e)),
@@ -150,7 +150,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
   t.after(close);
   // Answers once it's up.
   await Promise.race([
-    send("Browser.getVersion"),
+    send("Browser.getVersion", {}, undefined, 60000),
     exited.then(() => {
       throw Error(`Chrome didn't start: ${stderr.slice(-400)}`);
     }),
