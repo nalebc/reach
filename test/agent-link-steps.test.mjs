@@ -13,6 +13,7 @@ import { transpile } from "./helpers/transpile.mjs";
 import { createPublicStart } from "../server/public-start.mjs";
 import { serveBuild } from "../server/delivery.mjs";
 import { agentSteps, stepsCommand, wantsPage, windowsStepsCommand, YOUR_LINK } from "../server/agent-steps.mjs";
+import { agentPowerShell, UNUSABLE } from "./helpers/windows-powershell.mjs";
 
 // Oct 12: the invite message is a line and a link; the link explains itself
 // to a command-line agent. curl (and any program that doesn't ask for a
@@ -166,6 +167,50 @@ test("the steps install only the runtime the link's r= names, then join with the
   // A link without r= (or a broken one): no unchecked download is ever used.
   for (const r of [undefined, "", "not-a-hash", sha(served).toUpperCase()]) {
     const none = await run(withLink(linkFor(r)), home);
+    assert.notEqual(none.code, 0, String(r));
+    assert.match(none.stderr, /names no runtime|not the runtime/);
+    assert.equal(fs.readFileSync(runtime, "utf8"), before);
+  }
+});
+
+// The Windows steps as an agent on a real Windows PC runs them: in Windows
+// PowerShell, under the PC's own script policy (Restricted, as a new PC's).
+test("Windows: the steps in PowerShell install only the runtime the link's r= names, then join with the link on standard input", { skip: process.platform !== "win32", timeout: 180000 }, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-steps-run-"));
+  let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
+  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
+  const start = `http://127.0.0.1:${server.address().port}`;
+  const steps = agentSteps(start, { platform: "win32" });
+  const command = steps.split("\n").find((line) => line.trim().startsWith("$L = '")).trim();
+  assert.equal(command, windowsStepsCommand(start));
+  const withLink = (link) => {
+    assert.ok(!link.includes("'"));
+    return command.replace(YOUR_LINK, link);
+  };
+  const runtime = path.join(home, ".reach-agent", "agent.mjs");
+  const linkFor = (r) => `https://mac.t.ts.net/agent#i=${encodeURIComponent(`https://mac.t.ts.net:8443~${SECRET}`)}&t=funnel${r === undefined ? "" : `&r=${r}`}`;
+
+  const link = linkFor(sha(served));
+  const ok = await agentPowerShell(withLink(link), home);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(ok.stdout.trim(), `runtime v2: join ${link}`, "the link arrives on standard input, never as an argument");
+  assert.doesNotMatch(ok.stderr, UNUSABLE, "every command it uses works here");
+  assert.equal(fs.readFileSync(runtime, "utf8"), served);
+
+  const before = fs.readFileSync(runtime, "utf8");
+  served = 'console.log("swapped");\n';
+  const refused = await agentPowerShell(withLink(linkFor(sha("what the invitation named"))), home);
+  assert.doesNotMatch(refused.stdout, /swapped/, `never run: ${refused.stderr}`);
+  assert.equal(fs.readFileSync(runtime, "utf8"), before);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /This is not the runtime your invitation names/);
+
+  for (const r of [undefined, "", "not-a-hash", sha(served).toUpperCase()]) {
+    const none = await agentPowerShell(withLink(linkFor(r)), home);
+    assert.doesNotMatch(none.stdout, /swapped/, String(r));
     assert.notEqual(none.code, 0, String(r));
     assert.match(none.stderr, /names no runtime|not the runtime/);
     assert.equal(fs.readFileSync(runtime, "utf8"), before);

@@ -85,8 +85,8 @@ export function buildNative(file, args, { timeout = 120000, signal, missing, run
 // arguments for writing the temporary file. Windows runs a program only by
 // its extension, so the temporary file ends in .exe too. Same rules as above:
 // one build per file at a time, whole or not at all, older builds removed.
-export function buildWindowsNative(file, { compiler, args, timeout = 120000, signal, run = exec, prune = true }) {
-  return buildOnce(file, { signal, prune, suffix: ".tmp.exe",
+export function buildWindowsNative(file, { compiler, args, timeout = 120000, signal, run = exec, prune = true, rename = renameScanned }) {
+  return buildOnce(file, { signal, prune, suffix: ".tmp.exe", rename,
     prepare: async () => {
       const found = await compiler();
       if (!found) throw Object.assign(new Error("Windows' C# compiler (csc.exe) isn't on this PC."), { status: 503, compiler: false });
@@ -96,10 +96,25 @@ export function buildWindowsNative(file, { compiler, args, timeout = 120000, sig
   });
 }
 
+// Windows' antivirus holds a freshly written .exe open while it scans it, so
+// the build's rename into place is tried again, 8 times over about 8
+// seconds; a build that appeared there meanwhile (another caller's) counts.
+export async function renameScanned(tmp, file, { attempts = 8, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), rename = fs.rename, exists = existsSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await rename(tmp, file);
+    } catch (error) {
+      if (exists(file)) return await fs.rm(tmp, { force: true });
+      if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code) || attempt >= attempts) throw error;
+      await wait(Math.min(1600, 100 * 2 ** attempt));
+    }
+  }
+}
+
 // One build of `file` at a time across every caller: `prepare` checks the
 // compiler is there (its answer goes to `compile`), `compile` writes the
 // temporary file, which then takes the file's name in one rename.
-function buildOnce(file, { signal, prepare, compile, prune = true, suffix = ".tmp" }) {
+function buildOnce(file, { signal, prepare, compile, prune = true, suffix = ".tmp", rename = fs.rename }) {
   if (signal?.aborted) return Promise.reject(signal.reason);
   if (existsSync(file)) return Promise.resolve(file);
   let build = building.get(file);
@@ -116,7 +131,7 @@ function buildOnce(file, { signal, prepare, compile, prune = true, suffix = ".tm
         compiling.throwIfAborted();
         await fs.chmod(tmp, 0o700);
         compiling.throwIfAborted();
-        await fs.rename(tmp, file);
+        await rename(tmp, file);
       } catch (e) {
         await fs.rm(tmp, { force: true });
         throw e;

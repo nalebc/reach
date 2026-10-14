@@ -49,6 +49,19 @@ test("not on PATH: Claude Code is found where its installer and the Claude app p
     readdir: (dir) => { if (!winTree[dir]) throw Error("ENOENT"); return winTree[dir]; },
     exists: (f) => f === "C:\\Users\\me\\AppData\\Roaming\\Claude\\claude-code\\2.1.295\\9d64\\.verified" });
   assert.deepEqual(win, ["C:\\Users\\me\\AppData\\Roaming\\Claude\\claude-code\\2.1.295\\9d64\\claude.exe"]);
+  // The packaged app (MSIX: Microsoft Store, WinGet) keeps its copy in its
+  // package's folder: found there first, then the installer's.
+  const pkg = "C:\\Users\\me\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code";
+  const msixTree = {
+    ...winTree,
+    "C:\\Users\\me\\AppData\\Local\\Packages": ["Claude_pzs8sxrjxfjjc", "Claude_notapackage", "Microsoft.WindowsTerminal_8wekyb3d8bbwe"],
+    [pkg]: ["2.1.301"],
+    [`${pkg}\\2.1.301`]: ["ab12"],
+  };
+  const msix = claudeInstallLocations({ platform: "win32", env: { APPDATA: "C:\\Users\\me\\AppData\\Roaming", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, home: "C:\\Users\\me",
+    readdir: (dir) => { if (!msixTree[dir]) throw Error("ENOENT"); return msixTree[dir]; },
+    exists: (f) => f.endsWith("\\.verified") });
+  assert.deepEqual(msix, [`${pkg}\\2.1.301\\ab12\\claude.exe`, "C:\\Users\\me\\AppData\\Roaming\\Claude\\claude-code\\2.1.295\\9d64\\claude.exe"]);
 
   // The shell doesn't know it: the first location that runs is used.
   forgetClaudeMiss();

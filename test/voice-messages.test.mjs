@@ -109,7 +109,48 @@ test("a memo never fails: words, or the reason there are none", async () => {
   assert.match((await noTools.transcribe("/a.wav")).problem, /Command Line Tools/);
   const garbled = createVoice({ platform: "darwin", binary: async () => "/helper", exec: async () => ({ stdout: "not json" }) });
   assert.ok((await garbled.transcribe("/a.wav")).problem);
-  assert.match((await createVoice({ platform: "win32" }).transcribe("/a.wav")).problem, /on a Mac/);
+  assert.match((await createVoice({ platform: "linux" }).transcribe("/a.wav")).problem, /on a Mac or a Windows PC, not on this computer/);
+});
+
+// A Windows PC makes words of a memo too (parity audit #35): its own speech
+// recognizer, through scripts/native/transcribe.cs, with the same answers.
+test("a Windows PC: its words, its own reasons, and the recording kept when there are none", async () => {
+  const asked = [];
+  const ok = createVoice({ platform: "win32", binary: async () => "C:\\r\\reach-transcribe-abc.exe", exec: async (file, args, options) => (asked.push({ file, args, options }), { stdout: '{"text":" bonjour ","locale":"fr-FR"}\r\n' }) });
+  assert.deepEqual(await ok.transcribe("C:\\r\\memo.wav", { locale: "fr-FR" }), { text: "bonjour" });
+  assert.deepEqual(asked[0].args, ["C:\\r\\memo.wav", "fr-FR"]);
+  assert.equal(asked[0].options.windowsHide, true);
+  for (const said of ["This PC has no speech recognizer for this language.", "This recording's format can't be read on the PC."]) {
+    const v = createVoice({ platform: "win32", binary: async () => "/helper", exec: async () => { throw Object.assign(new Error("exit 1"), { stderr: `${said}\r\n` }); } });
+    assert.equal((await v.transcribe("/a.wav")).problem, said);
+  }
+  const other = createVoice({ platform: "win32", binary: async () => "/helper", exec: async () => { throw Object.assign(new Error("exit 1"), { stderr: "C:\\secret\\path failed\n" }); } });
+  assert.equal((await other.transcribe("/a.wav")).problem, "This Windows PC couldn't transcribe the memo. Keep the recording attached.", "never the helper's own words");
+  const blocked = createVoice({ platform: "win32", binary: async () => { throw new Error("csc blocked"); } });
+  assert.match((await blocked.transcribe("/a.wav")).problem, /C# compiler is missing or blocked/);
+});
+
+test("on a real Windows PC: built with its C# compiler (System.Speech), it answers words or a known reason", { skip: process.platform !== "win32", timeout: 240000 }, async (t) => {
+  const { windowsBinary } = await import("../server/desktop-native.mjs");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-voice-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const helper = await windowsBinary({ dataDir }, "transcribe");
+  // One second of a quiet tone: no words, or no recognizer on this image.
+  const rate = 16000;
+  const samples = new Int16Array(rate).map((_, i) => Math.round(Math.sin(i / 10) * 300));
+  const wav = Buffer.alloc(44 + samples.length * 2);
+  wav.write("RIFF", 0); wav.writeUInt32LE(36 + samples.length * 2, 4); wav.write("WAVE", 8); wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write("data", 36); wav.writeUInt32LE(samples.length * 2, 40); Buffer.from(samples.buffer).copy(wav, 44);
+  const file = path.join(dataDir, "memo.wav");
+  fs.writeFileSync(file, wav);
+  const voice = createVoice({ platform: "win32", binary: async () => helper });
+  const result = await voice.transcribe(file, { locale: "en-US" });
+  t.diagnostic(JSON.stringify(result));
+  assert.ok(
+    result.text !== undefined || ["This PC has no speech recognizer for this language.", "No words were heard in that memo."].includes(result.problem),
+    JSON.stringify(result),
+  );
 });
 
 const macOS = process.env.REACH_TEST_VOICE_NATIVE === "1" && !process.env.CI && process.platform === "darwin" ? Number(execFileSync("sw_vers", ["-productVersion"]).toString().split(".")[0]) : 0;
