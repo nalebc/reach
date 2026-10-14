@@ -859,6 +859,30 @@ test("a messaging app is added in Reach by its bot token, not in a terminal", as
   assert.ok(!dom.document.body.textContent.includes("MTA-secret-token"));
 });
 
+// OpenClaw runs natively on a Windows PC (docs.openclaw.ai/platforms/
+// windows); only iMessage needs a Mac (its plugin runs imsg on a signed-in
+// Mac), and that's said where the other apps are offered, never hidden.
+test("on a Windows PC the other messaging apps leave out iMessage, and say it needs a Mac", async () => {
+  peer.platform = "win32";
+  try {
+    await mount();
+    await click("Customize");
+    await dom.waitFor(() => button("Add a messaging app"));
+    await click("Add a messaging app");
+    const foot = await dom.waitFor(() => dom.document.querySelector(".claw-sheet-foot"));
+    assert.equal(foot.querySelector("span").textContent, "Signal, Matrix… iMessage needs a Mac.");
+    assert.ok(dom.document.querySelector('[aria-label="Telegram bot token"]'), "Telegram, Discord and Slack are added there as on a Mac");
+    await click("Close add a messaging app");
+  } finally {
+    peer.platform = "darwin";
+  }
+  await view?.unmount();
+  await mount();
+  await click("Customize");
+  await click("Add a messaging app");
+  const foot = await dom.waitFor(() => dom.document.querySelector(".claw-sheet-foot"));
+  assert.equal(foot.querySelector("span").textContent, "Signal, iMessage, Matrix…");
+});
 
 test("OpenClaw keeps account limits visible in the provider dropdown and conversation rail", async () => {
   await mount("Weekend plans", [

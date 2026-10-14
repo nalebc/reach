@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CornerDownLeft } from "lucide-react";
 import { Peer, post, request } from "./api";
 import type { MacTerminal } from "./DesktopTerminals";
+import { computerWord } from "./pause";
 import "./key-row.css";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
@@ -15,11 +16,20 @@ import {
   writeSnapshot,
 } from "./terminal-options";
 
-// A tab already open in Terminal on the Mac, shown full page. Its text comes
-// as soon as the tab prints (the Mac answers a waiting request then), or about
-// once a second from a Mac that can't wait. Typing appears in place and Enter sends the
-// line to the tab, which keeps working while the Mac is locked and never
-// brings the tab to the front.
+// What one of the computer's own terminals is called: a Mac tab, a Windows
+// Terminal tab, a console window.
+export function desktopTabWord(provider: string, platform?: string) {
+  if (provider === "windows-terminal") return "Windows Terminal tab";
+  if (provider === "console") return "console window";
+  return `${computerWord(platform)} tab`;
+}
+
+// A tab already open in Terminal on the Mac (or Windows Terminal or a console
+// window on a Windows PC), shown full page. Its text comes as soon as the tab
+// prints (the computer answers a waiting request then), or about once a
+// second from one that can't wait. Typing appears in place and Enter sends
+// the line to the tab, which keeps working while the computer is locked and
+// never brings the tab to the front.
 export default function MacTerminalView({
   peer,
   tab,
@@ -198,7 +208,7 @@ export default function MacTerminalView({
         pending.current = Array.from(pending.current).slice(0, -1).join("");
         draw();
       } else if (/^[\x00-\x1f\x7f]/.test(data)) {
-        setHint("Esc, ctrl and arrows aren't available in Mac tabs yet.");
+        setHint(`Esc, ctrl and arrows aren't available in ${desktopTabWord(tab.provider, peer.platform)}s yet.`);
       } else {
         // Typed or pasted text, without control characters.
         pending.current += data.replace(/[\x00-\x1f\x7f]/g, "");
@@ -248,7 +258,7 @@ export default function MacTerminalView({
       {history.reading && <button className="terminal-latest" onClick={history.latest}>↓ Latest output</button>}
       <div className="key-row terminal-key-row mac-line" role="toolbar" aria-label="Terminal keys">
         <span className="terminal-line-hint">
-          {hint || "Type, then Enter sends the line to this Mac tab."}
+          {hint || `Type, then Enter sends the line to this ${desktopTabWord(tab.provider, peer.platform)}.`}
         </span>
         <button
           aria-label="Enter"

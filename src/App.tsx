@@ -1615,8 +1615,8 @@ function LegacyPairForm({
       <p className="form-note">
         <ShieldCheck size={14} />
         Codes work once and expire after 10 minutes. Press Enter in your
-        computer’s Reach terminal in local mode, or run ./reach pair for a fresh
-        code.
+        computer’s Reach terminal in local mode, or run reach pair there for a
+        fresh code.
       </p>
     </form>
   );
