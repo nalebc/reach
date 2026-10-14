@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadPty } from "../server/pty-helper.mjs";
+import { loadPty, releaseExitedPty } from "../server/pty-helper.mjs";
 import { setupStamp } from "../scripts/setup-stamp.mjs";
 import { fakeTailscale, tailnetPreload, HOST } from "./helpers/fake-tailscale.mjs";
 import { windowsFixture } from "./helpers/windows-fixtures.mjs";
@@ -49,17 +49,25 @@ function consoleEnv(extra) {
 }
 
 function windowsConsole(t, env, args = []) {
+  // The console host Windows Terminal ships (node-pty's own ConPTY), as
+  // Reach's terminals use it: it lets go of everything once its programs end.
   const term = loadPty().spawn(process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe", ["/d", "/c", "reach.cmd", ...args], {
     name: "xterm-256color",
     cols: 220,
     rows: 60,
     cwd: repo,
     env,
+    useConptyDll: true,
   });
   let raw = "";
   let code = null;
   term.onData((data) => (raw += data));
-  const exited = new Promise((resolve) => term.onExit(({ exitCode }) => resolve((code = exitCode))));
+  const exited = new Promise((resolve) =>
+    term.onExit(({ exitCode }) => {
+      releaseExitedPty(term);
+      resolve((code = exitCode));
+    }),
+  );
   // cmd asks after Ctrl+C whether to end its batch file: yes, as a person would.
   let answered = 0;
   const asking = setInterval(() => {
@@ -120,10 +128,12 @@ async function freshPC(t) {
   fs.writeFileSync(preload, decodeURIComponent(source.slice(source.indexOf(",") + 1)));
   const processes = path.join(base, "processes.json");
   fs.writeFileSync(processes, JSON.stringify({ processes: [] }));
+  // Windows gives every 64-bit program ProgramW6432 as its ProgramFiles.
   const env = consoleEnv({
     REACH_HOME: state,
     REACH_TAILSCALE: fake.cli,
     ProgramFiles: programFiles,
+    ProgramW6432: programFiles,
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
     REACH_TEST_WINDOWS_PROCESSES: processes,
   });
@@ -166,7 +176,8 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   // 2. Installed, its service not running: its app opened, the service named.
   await pc.install();
   await reach.waitFor("Tailscale is installed but not running.", "Tailscale closed");
-  await reach.waitFor("net start Tailscale", "how to start its service");
+  await reach.waitFor("Reach: opening Tailscale…", "its app, found in Program Files");
+  await reach.waitFor("If it still isn't running, start its service from a terminal opened as administrator: net start Tailscale", "how to start its service");
   await pc.until(() => pc.opened().includes("tailscale-ipn.exe\t"), "Tailscale's app");
   // 3. Signed out: the sign-in page, and its link said in case.
   await pc.fake.setStatus({ closed: false, BackendState: "NeedsLogin" });

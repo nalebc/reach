@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST, SELF_IP } from "./helpers/fake-tailscale.mjs";
+import { onlyReach } from "./helpers/windows-stop.mjs";
 
 // Windows' browser sign-in, wired end to end (docs/parity/D-public-door.md
 // §7): a real Reach set up with your account that takes its Windows paths
@@ -134,7 +135,7 @@ const leaked = (key, texts) => {
 };
 const assertNoKey = (key, root, output) =>
   assert.equal(leaked(key, [["output", output], ...files(root).map((file) => [file, fs.readFileSync(file, "latin1")])]), "");
-const stop = (root) =>
+const stop = (root, pid) =>
   stopReach(root, {
     platform: "win32",
     yes: true,
@@ -142,7 +143,7 @@ const stop = (root) =>
     state: () => path.join(root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: () => assert.fail("it stops itself") },
+    windows: { taskkill: () => assert.fail("it stops itself"), end: () => assert.fail("it stops itself"), reaches: onlyReach({ pid, root }) },
   });
 
 test("Windows set up with your account: a keyed private route and a foreground Funnel, browser sign-in, and a key nobody else sees", { ...asWindows, timeout: 180000 }, async (t) => {
@@ -222,7 +223,7 @@ test("Windows set up with your account: a keyed private route and a foreground F
     }
   })();
   const stoppedAt = Date.now();
-  const result = await stop(root);
+  const result = await stop(root, reach.child.pid);
   assert.equal(result.stopped, 1);
   const [code] = await reach.exited;
   await watching;
