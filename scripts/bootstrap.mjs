@@ -785,12 +785,9 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
       );
     // A first run in a terminal installs while its setup asks about
     // Tailscale (first-start.mjs); every other start installs first.
+    const { installsWhileSetup } = await import("./first-start.mjs");
     const guided =
-      !packaged &&
-      !options.local &&
-      process.platform !== "win32" &&
-      !options.service &&
-      process.stdin.isTTY &&
+      installsWhileSetup({ packaged, local: options.local, service: options.service, tty: process.stdin.isTTY }) &&
       (await import("./setup.mjs")).needsOnboarding(root);
     let installing = null;
     if (guided) {

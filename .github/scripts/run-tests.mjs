@@ -39,6 +39,9 @@ export const suites = {
     // status, stop, restart and Reach's own window, sleep prevention and the
     // background task, on a real PC.
     "windows-processes", "windows-lifecycle", "windows-stay-awake", "windows-background",
+    // The first run's install alongside its setup, numbered menus included,
+    // on Windows' own Node (audit #31; the real console is workstream U's).
+    "first-start", "prompts",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
