@@ -2,11 +2,11 @@ import fs from "node:fs";
 import { detachedWarning } from "./detached.mjs";
 import { alreadyRunning, handoverFile, hostApp, outsideTerminal, processTable, ProcessInventoryError, reachHosts, sameBoot, startTimes, stateOf, statusText, windowsBootTime, windowsImage, withoutHandover } from "./instances.mjs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { parseOptions } from "./launcher-options.mjs";
 import { command, packaged, stateDir } from "./home.mjs";
+import { agentStamp, dependenciesStamp, sourceStamp } from "./setup-stamp.mjs";
 // Windows PowerShell gets its own modules, never PowerShell 7's (started from
 // a PowerShell 7 window, every helper and terminal failed to load them).
 import { cleanPowerShellEnv } from "../server/powershell.mjs";
@@ -124,21 +124,6 @@ function lock() {
   }
   locked = true;
 }
-function digest(files) {
-  const h = crypto.createHash("sha256");
-  function visit(file) {
-    if (!fs.existsSync(file)) return;
-    if (fs.statSync(file).isDirectory()) {
-      for (const name of fs.readdirSync(file).sort())
-        visit(path.join(file, name));
-    } else {
-      h.update(file);
-      h.update(fs.readFileSync(file));
-    }
-  }
-  files.forEach(visit);
-  return h.digest("hex");
-}
 function npmCli() {
   for (const dir of (process.env.PATH || "").split(path.delimiter)) {
     const candidate = path.join(
@@ -192,23 +177,12 @@ async function prepare(options, { say, step, signal }) {
   try {
     stamp = JSON.parse(fs.readFileSync(stampFile, "utf8"));
   } catch {}
-  const dependencies = `${digest(["package.json", "package-lock.json"])}:${process.versions.modules}:${process.platform}:${process.arch}`;
-  const source = digest([
-    "src",
-    "public",
-    "index.html",
-    "start.html",
-    "vite.config.mjs",
-    "tsconfig.json",
-  ]);
+  const dependencies = dependenciesStamp(root);
+  const source = sourceStamp(root);
   // Reach for agents (dist/agent.mjs): every file it was built from, as
   // esbuild listed them beside it. A server file it bundles (a tool's
   // schema) rebuilds it, alone; agents then pick it up by themselves.
-  const agentSource = () => {
-    let files;
-    try { files = JSON.parse(fs.readFileSync("dist/.agent-inputs.json", "utf8")); } catch { return ""; }
-    return Array.isArray(files) && files.length && files.every((file) => typeof file === "string") ? digest(files) : "";
-  };
+  const agentSource = () => agentStamp(root);
   let built = false;
   if (
     !packaged &&
