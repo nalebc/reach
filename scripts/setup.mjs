@@ -263,7 +263,7 @@ function makeSteps(root, deps) {
       title: "Keep Reach running after this window closes",
       hint: "keep Reach running after this window closes",
       later: true,
-      skip: platform !== "darwin",
+      skip: platform !== "darwin" && platform !== "win32",
       async run({ select }) {
         // In Documents (and the like) a background service never starts:
         // Reach opens in Terminal at sign-in instead.
@@ -282,11 +282,20 @@ function makeSteps(root, deps) {
                   label: "Yes, open it in Terminal each time I sign in",
                   description: `macOS keeps background services out of your ${folder} folder, where Reach is. Terminal can use it, and keeps Reach's live screen and control.`,
                 }
-              : {
-                  value: "background",
-                  label: "Yes, start it at login and keep it running",
-                  description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
-                },
+              : platform === "win32"
+                ? {
+                    // Windows has no Screen Recording or Accessibility to
+                    // grant: a Reach started at sign-in in your session keeps
+                    // the live screen and control while you're signed in.
+                    value: "background",
+                    label: "Yes, start it at sign-in and keep it running",
+                    description: `Installs a background task (you can remove it). It has no window: the live screen and control work while you're signed in, and new phones are approved with ${command} approve.`,
+                  }
+                : {
+                    value: "background",
+                    label: "Yes, start it at login and keep it running",
+                    description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
+                  },
           ],
         });
         return { state: choice, note: labelFor("background", choice) };

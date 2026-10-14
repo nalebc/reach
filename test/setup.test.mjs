@@ -501,6 +501,31 @@ test("Windows: HTTPS certificates off: the DNS page opens, the wait says how to 
   assert.equal(readProgress(root).done, true);
 });
 
+// Start at sign-in on Windows too (audit #4), the same question, saying
+// what's true there: no permissions to grant, so the background task keeps
+// the live screen and control while you're signed in.
+test("Windows: setup background asks the Mac's question and offers the background task, in Windows' words", async (t) => {
+  const root = tmp(t);
+  const offered = [];
+  const s = scene({ "Keep Reach running after you close this terminal?": "background" });
+  const select = s.select;
+  s.select = async (question) => (offered.push(question), select(question));
+  const printed = [];
+  await runSetup(root, { deps: windows(scene(), { print: (m) => printed.push(m) }) });
+  assert.match(printed.join("\n"), /setup background +keep Reach running after this window closes/, "offered for later, as on a Mac");
+  const result = await runSetup(root, { only: "background", deps: windows(s) });
+  assert.equal(result.launch, "background");
+  const [question] = offered;
+  assert.equal(question.message, "Keep Reach running after you close this terminal?");
+  assert.deepEqual(question.choices.map((c) => [c.value, c.label]), [
+    ["foreground", "No, only while this terminal is open"],
+    ["background", "Yes, start it at sign-in and keep it running"],
+  ]);
+  assert.match(question.choices[1].description, /^Installs a background task \(you can remove it\)\. It has no window: the live screen and control work while you're signed in, and new phones are approved with \S+ approve\.$/);
+  assert.doesNotMatch(JSON.stringify(question), /Terminal window|macOS|Screen Recording/);
+  assert.equal(readProgress(root).steps.background, "background");
+});
+
 test("Windows: invite links and your account are sections, as on a Mac; approve asks for a running Reach set up with your account", async (t) => {
   const root = tmp(t);
   const d = windows(scene());

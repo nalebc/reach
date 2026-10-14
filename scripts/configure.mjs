@@ -8,6 +8,7 @@ import { atomicJson, loadJson } from "../server/core.mjs";
 import { defaultFileRoots } from "../server/file-roots.mjs";
 import { tailscaleJson, tailscaleCli, readKeyedState } from "./tailscale.mjs";
 import { stateDir, command } from "./home.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 const exec = promisify(execFile);
 export const preferencesFile = (root) =>
   path.join(stateDir(root), "preferences.json");
@@ -263,7 +264,7 @@ export async function configure(root, deps = {}) {
     "Your approved devices can browse all configured locations using your OS permissions. Guests and agent profiles only receive the access you grant them. Use --folder to restrict file browsing.",
   );
   say(
-    "Reach keeps the system and display awake while running, including on battery. Use --no-stay-awake to allow idle sleep. This does not unlock a locked Mac.",
+    `Reach keeps the system and display awake while running, including on battery. Use --no-stay-awake to allow idle sleep. This does not unlock a locked ${computerWord(platform)}.`,
   );
   const preferences = {
     version: 1,

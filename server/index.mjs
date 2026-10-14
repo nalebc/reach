@@ -117,12 +117,12 @@ import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
-import { createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
+import { askUpdate, createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
 import { createAgentRuntimes, fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { agentGuide } from "./agent-guide.mjs";
 import { agentAskSocket } from "./agent-sessions/agent-asks.mjs";
 import { keepRuntime } from "./runtime-archive.mjs";
-import { startInTerminal } from "../scripts/stop.mjs";
+import { startInConsole, startInTerminal, startInWindow } from "../scripts/stop.mjs";
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
@@ -4623,6 +4623,15 @@ export async function createReach(overrides = {}) {
     restart: overrides.restartReach || (process.platform === "darwin"
       ? () => startInTerminal(fileURLToPath(new URL("../", import.meta.url)), { state: config.dataDir, args: "restart --yes" })
       : null),
+    // Windows can't replace a running Reach's files: the confirmed version's
+    // update goes to a window of its own, which stops Reach, installs and
+    // starts it again (scripts/bootstrap.mjs update).
+    handoff: overrides.updateHandoff || (process.platform === "win32"
+      ? (version) => {
+          askUpdate(config.dataDir, version);
+          startInConsole(fileURLToPath(new URL("../", import.meta.url)), { state: config.dataDir, args: "update" });
+        }
+      : null),
     record: (title) => record("update", title),
   });
   reachUpdates.listen?.(() => {
@@ -4688,7 +4697,7 @@ export async function createReach(overrides = {}) {
     restart:
       overrides.restartReach ||
       (() =>
-        startInTerminal(fileURLToPath(new URL("../", import.meta.url)), {
+        startInWindow(fileURLToPath(new URL("../", import.meta.url)), {
           state: config.dataDir,
           args: "restart --yes",
         })),
