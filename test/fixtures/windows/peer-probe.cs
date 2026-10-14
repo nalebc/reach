@@ -6,15 +6,9 @@
 // each went, so a refusal names its call; and this process's token.
 //
 //   peer-probe.exe [<out file>]
-//   peer-probe.exe <out file> as medium|no-admin|no-admin-medium|no-admin-no-local
-//   peer-probe.exe <out file> logon <user> <password> 2|3|4
 //
 // Lines: "<call> ok …" or "<call> error <Win32 code>" (NT calls: status in
-// hex). Reads only, like the helper. `as`: started by an administrator, it
-// runs itself again with its own token narrowed (integrity lowered to
-// Medium, or Administrators and LOCAL made deny-only); `logon`: as <user>,
-// with the token LogonUser makes for that logon type. So a refusal can be
-// pinned to the group, level or logon it depends on. C# 5; mscorlib and System.
+// hex). Reads only, like the helper. C# 5; mscorlib and System.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -35,7 +29,6 @@ static class PeerProbe {
   const int SC_STATUS_PROCESS_INFO = 0;
   const int DACL_SECURITY_INFORMATION = 4;
   const int LABEL_SECURITY_INFORMATION = 0x10;
-  const uint TOKEN_ALL_ACCESS = 0xF01FF;
   const int SystemProcessInformation = 5;
   const int SystemProcessIdInformation = 88;
   const int STATUS_INFO_LENGTH_MISMATCH = unchecked((int)0xC0000004);
@@ -78,40 +71,6 @@ static class PeerProbe {
   static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returned);
   [DllImport("kernel32.dll")]
   static extern bool CloseHandle(IntPtr handle);
-  [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attributes, int level, int type, out IntPtr copy);
-  [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool CreateRestrictedToken(IntPtr token, uint flags, int disableCount, IntPtr disable, int deleteCount, IntPtr delete, int restrictCount, IntPtr restrict, out IntPtr restricted);
-  [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool SetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool CreateProcessAsUserW(IntPtr token, string application, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, int flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
-  [DllImport("kernel32.dll")]
-  static extern uint WaitForSingleObject(IntPtr handle, uint ms);
-  [DllImport("kernel32.dll")]
-  static extern bool GetExitCodeProcess(IntPtr process, out int code);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool LogonUserW(string user, string domain, string password, int type, int provider, out IntPtr token);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool CreateProcessWithTokenW(IntPtr token, int logonFlags, string application, StringBuilder commandLine, int flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
-
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  struct STARTUPINFO {
-    public int cb;
-    public string lpReserved;
-    public string lpDesktop;
-    public string lpTitle;
-    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-    public short wShowWindow, cbReserved2;
-    public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
-  }
-
-  [StructLayout(LayoutKind.Sequential)]
-  struct PROCESS_INFORMATION {
-    public IntPtr hProcess, hThread;
-    public int dwProcessId, dwThreadId;
-  }
-
   [StructLayout(LayoutKind.Sequential)]
   struct QueryServiceConfig {
     public int ServiceType;
@@ -126,8 +85,6 @@ static class PeerProbe {
   }
 
   static int Main(string[] args) {
-    if (args.Length == 3 && args[1] == "as") return As(args[2], args[0]);
-    if (args.Length == 5 && args[1] == "logon") return Logon(args[2], args[3], int.Parse(args[4]), args[0]);
     Say("probe pid " + GetCurrentProcessId() + " 64-bit " + (IntPtr.Size == 8));
     foreach (var part in new Action[] { Token, Manager, Tables, Processes }) {
       try {
@@ -144,118 +101,6 @@ static class PeerProbe {
 
   static void Say(string line) {
     lines.Add(line);
-  }
-
-  // This program again, under this process's token narrowed as asked: its
-  // lines go to <out>, or why it didn't run.
-  static int As(string variant, string outFile) {
-    var disable = new List<string>();
-    if (variant.StartsWith("no-admin")) {
-      disable.Add("S-1-5-32-544");
-      disable.Add("S-1-5-114");
-    }
-    if (variant == "no-admin-no-local") disable.Add("S-1-2-0");
-    bool medium = variant.EndsWith("medium");
-    if (disable.Count == 0 && !medium) return 2;
-    var held = new List<IntPtr>();
-    IntPtr own = IntPtr.Zero, token = IntPtr.Zero;
-    string problem = null;
-    try {
-      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own)) problem = "OpenProcessToken " + Failed(Marshal.GetLastWin32Error());
-      else if (disable.Count > 0) {
-        // SID_AND_ATTRIBUTES (64-bit): the SID's address, then its attributes, 16 bytes.
-        IntPtr array = Hold(held, 16 * disable.Count);
-        for (int i = 0; i < disable.Count; i++) {
-          Marshal.WriteIntPtr(array, 16 * i, Sid(held, disable[i]));
-          Marshal.WriteInt64(array, 16 * i + 8, 0);
-        }
-        if (!CreateRestrictedToken(own, 0, disable.Count, array, 0, IntPtr.Zero, 0, IntPtr.Zero, out token))
-          problem = "CreateRestrictedToken " + Failed(Marshal.GetLastWin32Error());
-        else {
-          // What it makes is owned by the user, not by Administrators (deny-only now).
-          IntPtr user = TokenInfo(own, 1);
-          if (user == IntPtr.Zero) problem = "TokenUser";
-          else {
-            held.Add(user);
-            IntPtr owner = Hold(held, 8);
-            Marshal.WriteIntPtr(owner, 0, Marshal.ReadIntPtr(user, 0));
-            if (!SetTokenInformation(token, 4, owner, 8)) problem = "SetTokenInformation owner " + Failed(Marshal.GetLastWin32Error());
-          }
-        }
-      } else if (!DuplicateTokenEx(own, TOKEN_ALL_ACCESS, IntPtr.Zero, 2, 1, out token))
-        problem = "DuplicateTokenEx " + Failed(Marshal.GetLastWin32Error());
-      if (problem == null && medium) {
-        var level = new SecurityIdentifier("S-1-16-8192");
-        // TOKEN_MANDATORY_LABEL: one SID_AND_ATTRIBUTES, SE_GROUP_INTEGRITY.
-        IntPtr label = Hold(held, 16);
-        Marshal.WriteIntPtr(label, 0, Sid(held, level.Value));
-        Marshal.WriteInt64(label, 8, 0x20);
-        if (!SetTokenInformation(token, 25, label, 16 + level.BinaryLength))
-          problem = "SetTokenInformation " + Failed(Marshal.GetLastWin32Error());
-      }
-      if (problem == null) problem = Start(token, false, outFile);
-    } finally {
-      if (token != IntPtr.Zero) CloseHandle(token);
-      if (own != IntPtr.Zero) CloseHandle(own);
-      foreach (IntPtr block in held) Marshal.FreeHGlobal(block);
-    }
-    if (problem != null) File.WriteAllText(outFile, "as " + variant + ": " + problem + "\r\n");
-    return problem == null ? 0 : 1;
-  }
-
-  // This program again as <user>, with the token Windows makes for its
-  // password and logon type (2 interactive, 3 network, 4 batch).
-  static int Logon(string user, string password, int type, string outFile) {
-    IntPtr token, primary = IntPtr.Zero;
-    string problem = null;
-    if (!LogonUserW(user, ".", password, type, 0, out token)) problem = "LogonUserW " + Failed(Marshal.GetLastWin32Error());
-    else {
-      try {
-        if (!DuplicateTokenEx(token, TOKEN_ALL_ACCESS, IntPtr.Zero, 2, 1, out primary)) problem = "DuplicateTokenEx " + Failed(Marshal.GetLastWin32Error());
-        else problem = Start(primary, true, outFile);
-      } finally {
-        if (primary != IntPtr.Zero) CloseHandle(primary);
-        CloseHandle(token);
-      }
-    }
-    if (problem != null) File.WriteAllText(outFile, "logon " + type + ": " + problem + "\r\n");
-    return problem == null ? 0 : 1;
-  }
-
-  // Runs this program with <token> and waits; null once it wrote <out>.
-  static string Start(IntPtr token, bool withToken, string outFile) {
-    var startup = new STARTUPINFO();
-    startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-    PROCESS_INFORMATION info;
-    string self = System.Reflection.Assembly.GetEntryAssembly().Location;
-    var line = new StringBuilder("\"" + self + "\" \"" + outFile + "\"");
-    bool started;
-    if (withToken) {
-      startup.lpDesktop = "winsta0\\default";
-      started = CreateProcessWithTokenW(token, 1, null, line, 0x08000000, IntPtr.Zero, Path.GetDirectoryName(self), ref startup, out info);
-    } else started = CreateProcessAsUserW(token, null, line, IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref startup, out info);
-    if (!started) return (withToken ? "CreateProcessWithTokenW " : "CreateProcessAsUserW ") + Failed(Marshal.GetLastWin32Error());
-    WaitForSingleObject(info.hProcess, 120000);
-    int code;
-    GetExitCodeProcess(info.hProcess, out code);
-    CloseHandle(info.hThread);
-    CloseHandle(info.hProcess);
-    return File.Exists(outFile) ? null : "it ran but wrote nothing, exit 0x" + code.ToString("x8");
-  }
-
-  static IntPtr Hold(List<IntPtr> held, int size) {
-    IntPtr block = Marshal.AllocHGlobal(size);
-    held.Add(block);
-    return block;
-  }
-
-  static IntPtr Sid(List<IntPtr> held, string value) {
-    var sid = new SecurityIdentifier(value);
-    byte[] binary = new byte[sid.BinaryLength];
-    sid.GetBinaryForm(binary, 0);
-    IntPtr block = Hold(held, binary.Length);
-    Marshal.Copy(binary, 0, block, binary.Length);
-    return block;
   }
 
   static string Failed(int error) {
