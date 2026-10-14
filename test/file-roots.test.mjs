@@ -129,3 +129,24 @@ test("Files hides what Finder or Explorer hides, and only there", async () => {
   for (const [name, dir] of [["Templates", "C:\\Users\\Sam\\code"], ["Recovery", "C:\\Users\\Sam\\Documents"], ["ProgramData", "C:\\Users\\Sam"], ["Documents", "C:\\Users\\Sam"], ["Program Files", "C:\\"]])
     assert.equal(win(name, dir), false, `${dir}\\${name}`);
 });
+
+// Parity audit #40: drives attached after Reach started appear, as a Mac's
+// "/" holds every volume; numbers never move.
+test("Windows sharing whole drives: a drive attached later joins at the end; one that's gone is left out, its number kept", async () => {
+  const { refreshDriveRoots } = await import("../server/file-roots.mjs");
+  const attached = new Set(["C:\\", "E:\\"]);
+  const exists = (p) => attached.has(p);
+  const roots = ["C:\\Users\\me", "C:\\", "D:\\"];
+  assert.deepEqual(refreshDriveRoots(roots, { platform: "win32", exists }), [
+    { id: 0, path: "C:\\Users\\me" },
+    { id: 1, path: "C:\\" },
+    { id: 3, path: "E:\\" },
+  ]);
+  assert.deepEqual(roots, ["C:\\Users\\me", "C:\\", "D:\\", "E:\\"], "added at the end");
+  attached.add("D:\\");
+  attached.delete("E:\\");
+  assert.deepEqual(refreshDriveRoots(roots, { platform: "win32", exists }).map((r) => r.id), [0, 1, 2]);
+  // A folder shared on its own, or a Mac: as they were.
+  assert.deepEqual(refreshDriveRoots(["C:\\Work"], { platform: "win32", exists: () => true }), [{ id: 0, path: "C:\\Work" }]);
+  assert.deepEqual(refreshDriveRoots(["/Users/me", "/"], { platform: "darwin", exists: () => false }), [{ id: 0, path: "/Users/me" }, { id: 1, path: "/" }]);
+});

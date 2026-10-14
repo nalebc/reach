@@ -35,7 +35,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs, refreshDriveRoots } from "./file-roots.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
@@ -44,7 +44,7 @@ import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
-import { createAppIconCache } from "./app-icons.mjs";
+import { createAppIconCache, useAppIconFolder } from "./app-icons.mjs";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
@@ -89,6 +89,7 @@ import { installLock, installPlan, installTerminalCommand } from "./agent-instal
 import { createAgentUpdates } from "./agent-updates.mjs";
 import { agentSource, codexServiceSource, createKeepInSync, openClawSource } from "./keep-in-sync.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
+import { createWindowsTray } from "./windows-tray.mjs";
 import {
   MacTerminalWatch,
   terminalWatchHelper,
@@ -116,15 +117,16 @@ import { desktopConnection } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
-import { createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
+import { askUpdate, createReachUpdates, mountReachUpdates } from "./reach-updates.mjs";
 import { createAgentRuntimes, fromBrowserPage, updateNotice } from "./agent-runtimes.mjs";
 import { agentGuide } from "./agent-guide.mjs";
 import { agentAskSocket } from "./agent-sessions/agent-asks.mjs";
 import { keepRuntime } from "./runtime-archive.mjs";
-import { startInTerminal } from "../scripts/stop.mjs";
+import { startInConsole, startInTerminal, startInWindow } from "../scripts/stop.mjs";
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
+import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -189,6 +191,8 @@ export async function createReach(overrides = {}) {
     config.agentPolicyFile,
   ];
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  // Windows builds its app-icon helper here (app-icons.mjs).
+  useAppIconFolder(config.dataDir);
   // Settings changed from a paired phone persist; REACH_SCREEN only sets the default.
   const settingsFile = path.join(config.dataDir, "settings.json");
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
@@ -296,9 +300,8 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
-  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
+    config.tailscaleOwner && config.publicOrigin
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -319,13 +322,12 @@ export async function createReach(overrides = {}) {
   originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
-  // Invite keys need phones approved by your Tailscale account: not on a
-  // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
-  // before this computer is set up. Said the same way wherever it's asked.
-  const noInviteKeys =
-    hostPlatform === "win32" && !config.tailscaleOwner
-      ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
-      : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
+  // Invite keys need phones approved by your Tailscale account: not before
+  // this computer is set up, nor while a PC set up for it is on pairing codes
+  // (scripts/launch.mjs signInOff). Said the same way wherever it's asked.
+  const noInviteKeys = config.signInOff
+    ? `Invite links are off on this ${computerWord(hostPlatform)} for now: ${config.signInOff}`
+    : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
     ? createGuestKeys({
         dataDir: config.dataDir,
@@ -335,10 +337,9 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
-  // on Windows yet, even with browser sign-in: its own acceptance first.
+  // login (server/face-join.mjs): a passkey here and invite keys set up.
   const faceJoin =
-    passkeys && guestKeys && hostPlatform !== "win32"
+    passkeys && guestKeys
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -524,6 +525,10 @@ export async function createReach(overrides = {}) {
   const warming = new AbortController();
   if (process.platform === "darwin" && !process.env.NODE_TEST_CONTEXT)
     server.once("listening", () => void desktopBinary(config, "browser-files", { signal: warming.signal }).catch(() => {}));
+  // A Windows PC's terminals helper too, so the phone's first look at the
+  // PC's own terminals doesn't wait for csc (windows-terminals.mjs).
+  if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void windowsBinary(config, "windows-terminals", { signal: warming.signal }).catch(() => {}));
   // The Claude app's typefaces, for Claude's chats on the phone (fonts.mjs).
   const agentFonts = overrides.agentFonts || createAgentFonts();
   const appShortcuts = createAppShortcuts({
@@ -531,6 +536,9 @@ export async function createReach(overrides = {}) {
     // Terminal shortcuts open a Mac terminal window and run one command.
     macTerminal: (command, authorize) =>
       desktopTerminals.create("terminal", authorize, command),
+    // On a Windows PC: Windows Terminal, else a console window, in the folder.
+    windowsTerminal: ({ cwd, command }, authorize) =>
+      desktopTerminals.create("windows-terminal", authorize, command, { cwd }),
     resolveFolder: (root, folder) => {
       const dir = resolve(root, folder);
       if (!fs.statSync(dir).isDirectory()) throw fail(400, "Choose a folder.");
@@ -541,13 +549,15 @@ export async function createReach(overrides = {}) {
   // System-dialog input needs an owner device or explicit Full-person
   // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
-  const desktopTerminals = new DesktopTerminals(overrides.desktopTerminals);
-  // The Mac's Terminal windows, told by events while a phone is connected;
-  // changes reach phones at once through their live connection.
+  const desktopTerminals = new DesktopTerminals({ dataDir: config.dataDir, ...overrides.desktopTerminals });
+  // The computer's own terminal windows (a Mac's Terminal and iTerm2, a
+  // Windows PC's Windows Terminal and consoles), told by events while a
+  // phone is connected; changes reach phones at once through their live
+  // connection.
   const presenceNudges = new Set();
   const macTerminalWatch = new MacTerminalWatch({
     terminals: desktopTerminals,
-    start: overrides.terminalWatch || terminalWatchHelper(config),
+    start: overrides.terminalWatch || terminalWatchHelper(config, { platform: desktopTerminals.platform }),
     onChange: () => {
       for (const nudge of presenceNudges) nudge();
     },
@@ -593,7 +603,10 @@ export async function createReach(overrides = {}) {
     },
   });
   // Messages from the phone waiting for their Claude app chat: listed in
-  // Reach's menu bar item, where a click opens the chat.
+  // Reach's menu bar item, where a click opens the chat (on Windows, its
+  // icon in the notification area: windowsTray below).
+  let windowsTray = null;
+  let waitingChats = [];
   if (agentSessions.onOutbox && agentSessions.waitingOnMac) {
     let listed = "[]";
     const showWaiting = () => {
@@ -601,7 +614,9 @@ export async function createReach(overrides = {}) {
       const next = JSON.stringify(chats);
       if (next === listed) return;
       listed = next;
+      waitingChats = chats;
       appThreads.waiting(chats);
+      windowsTray?.update({ waiting: chats });
     };
     agentSessions.onOutbox(showWaiting);
     showWaiting();
@@ -895,6 +910,7 @@ export async function createReach(overrides = {}) {
       if (!value) auth.restartQuietClock();
       settings.paused = value;
       atomicJson(settingsFile, settings);
+      windowsTray?.update({ paused: value });
       if (value) {
         desktopAutomation.interrupt();
         browserApprovals.cancelPending();
@@ -937,6 +953,17 @@ export async function createReach(overrides = {}) {
     void setPaused(value).catch((e) =>
       console.warn(`Reach: ${e.message}`),
     );
+  // Reach's icon in the Windows notification area, with Pause and Resume, as
+  // a Mac has its menu bar item (windows-tray.mjs). Tests never start the
+  // real helper.
+  if (overrides.windowsTray || (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT))
+    server.once("listening", () => {
+      windowsTray = (overrides.windowsTray || createWindowsTray)({
+        dataDir: config.dataDir,
+        onMenu: (value) => appThreads.onMenu(value),
+      });
+      windowsTray.update({ paused, waiting: waitingChats });
+    });
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
   appThreads.onFrontmost = (bundle) => {
@@ -1143,16 +1170,37 @@ export async function createReach(overrides = {}) {
     const off = async () => { throw fail(503, `${why}.`); };
     return { append: off, history: off, close: async () => {} };
   });
-  // What the sandbox around agents' commands and jobs denies; null off macOS.
-  // Reach's sockets wherever they are: the private one Tailscale uses, and
-  // the permission-prompt one in the temp folder when the data folder's path
-  // is too long for a socket (an agent could post prompts to your phone).
-  const jobSandbox = () => overrides.jobSandbox !== undefined ? overrides.jobSandbox
-    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] }) : null;
+  // What the sandbox around agents' commands and jobs denies. On a Mac it's the
+  // sandbox-exec deny list (agentShellSandbox); on Windows the AppContainer
+  // descriptor (server/windows-sandbox.mjs), which the hash-verified helper runs
+  // the job inside — the deny set mirrors the Mac's (findings 1, 5). null on any
+  // other platform. Reach's sockets wherever they are: the private one Tailscale
+  // uses, and the permission-prompt one in the temp folder when the data
+  // folder's path is too long for a socket (an agent could post prompts to you).
+  const jobSandbox = (client) => overrides.jobSandbox !== undefined ? overrides.jobSandbox
+    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] })
+    : process.platform === "win32" ? windowsJobSandbox(config, client, { sockets: privateSocket ? [path.dirname(privateSocket)] : [] })
+    : null;
+  // The Windows command sandbox: it builds the helper once in the private folder
+  // D confirmed this launch (overrides.windowsSandboxHelper) and runs the launch
+  // self-test at start (§2.2). Absent that folder, or where policy blocks it,
+  // the jobs POST refuses with the reason. null off Windows.
+  const windowsSandbox = process.platform === "win32"
+    ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
+    : null;
+  // The grants ledger and its revoke walk (§4.6): a changed or revoked session
+  // loses its capability on the next launch with no walk; this reclaims the
+  // on-disk ACEs. null off Windows and when the sandbox isn't prepared.
+  const windowsGrants = windowsSandbox && overrides.windowsSandboxHelper
+    ? createWindowsGrantLedger({ dir: config.dataDir, revoke: windowsRevoker(windowsSandbox) })
+    : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
-  // the other agent commands.
+  // the other agent commands. On Windows its production runner is injected here
+  // (not through the test override): a Job Object on the owner's token, no
+  // AppContainer, which ignores the Mac env createAgentShell passes (§3.2).
   const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
-    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun }
+      : process.platform === "win32" ? { run: windowsShellRunner(windowsSandbox) } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1175,7 +1223,7 @@ export async function createReach(overrides = {}) {
     notify,
     record,
     execute: async (action, authorize, request, progress) => {
-      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations }); }
+      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations, windowsSandbox }); }
       const actions = browserRequestActions(action);
       const batch = action.type === "batch";
       if (actions.every((step) => ["terminal", "terminal-change"].includes(step.type))) {
@@ -1399,6 +1447,9 @@ export async function createReach(overrides = {}) {
       ...(faceJoin?.available() && faceJoin.ownDevice(req.reachIdentity)
         ? { faceJoin: true }
         : {}),
+      // How this computer's Reach is run, for the phone's hints: reach,
+      // ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
+      command,
     }),
   );
   app.use("/api", (req, res, next) => {
@@ -1504,7 +1555,9 @@ export async function createReach(overrides = {}) {
       config.tailscaleOwner,
       fromHere ? { thisComputer: true } : undefined,
     );
-    if (from)
+    // A linked computer's ticket vouches for a device, not for whoever is
+    // signed in here: from this computer itself, only the code typed here.
+    if (from && !fromHere)
       try {
         approvals.decide(created.id, "approve", from);
       } catch {}
@@ -2064,8 +2117,8 @@ export async function createReach(overrides = {}) {
       platform: process.platform,
       release: os.release(),
       arch: os.arch(),
-      roots: (req.client.agentRoots || config.roots).map((p, index) => ({
-        id: index,
+      roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
+        id,
         name: fileRootName(p),
         path: p,
       })),
@@ -2646,9 +2699,22 @@ export async function createReach(overrides = {}) {
     void agentApps.release(id).catch(() => {});
     // A revoked phone gets no more notifications.
     push.forgetClient(id);
+    // Windows: kill this session's running jobs first, then reclaim its
+    // capability ACEs on disk (§4.6). Off Windows windowsGrants is null.
+    if (windowsGrants) {
+      for (const job of jobs.list()) if (job.clientId === id && job.status === "running") jobs.cancel(job.id);
+      void windowsGrants.revokeClient(id).catch(() => {});
+    }
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  // Windows: a startup sweep reclaims grants whose client is gone or expired
+  // (expiry fires no event), and an hourly sweep keeps up with expiries (§4.6).
+  if (windowsGrants) {
+    const sweep = () => void windowsGrants.sweep((id) => !!auth.list().find((c) => c.id === id)).catch(() => {});
+    setTimeout(sweep, 5000).unref?.();
+    setInterval(sweep, 3600000).unref?.();
+  }
   const endClient = (id) => {
     auth.revoke(id);
     lastUse.delete(id);
@@ -2759,7 +2825,7 @@ export async function createReach(overrides = {}) {
     // Keep the original root and relative path; resolving a symbolic link here
     // would conceal it from the helper's descriptor-relative traversal.
     return browserFileOperation({ op: operation, root, path: relative,
-      ...limits, privatePaths: browserPaths() }, check, { config });
+      ...limits, privatePaths: browserPaths() }, check, { config, windowsSandbox });
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
   // The Mac's own Shortcuts an agent may run: the owner's list (server/mac-shortcuts.mjs).
@@ -2792,8 +2858,8 @@ export async function createReach(overrides = {}) {
     // Screen text an agent didn't read again (savings.mjs, "screen-diff").
     savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
-      // A Windows Reach has no public link without browser sign-in.
-      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
+      // No public link without phones approved by your Tailscale account.
+      if (!prepareFunnel && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -3189,7 +3255,7 @@ export async function createReach(overrides = {}) {
     requireOwner(req.client, j);
     return j;
   };
-  app.post("/api/jobs", (req, res) => {
+  app.post("/api/jobs", async (req, res) => {
     const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const timeoutMs =
@@ -3197,16 +3263,30 @@ export async function createReach(overrides = {}) {
     if (req.client.maxJobMs && timeoutMs > req.client.maxJobMs)
       throw fail(403, "Job duration exceeds this agent profile limit.");
     // Your own devices run as you; anyone else's job runs in the sandbox
-    // Full control agents' commands do.
+    // Full control agents' commands do (win32: a refused grant throws here).
     const own = req.client.kind === "device" && req.client.scopes.includes("admin");
-    const sandbox = own ? null : jobSandbox();
-    // No sandbox here yet (Windows and Linux): an agent's or invited
+    const sandbox = own ? null : jobSandbox(req.client);
+    // No sandbox on a platform without one (Linux): an agent's or invited
     // person's command would run as you, free to rewrite Reach's own files
     // and so its own access. It doesn't run, as without sandbox-exec on a
     // Mac (jobs.mjs). Oct 12: Windows and Linux had run them unsandboxed.
     if (!own && !sandbox)
       throw fail(503, `Commands from agents and invited people run only in a sandbox, which this ${computerWord(process.platform)} doesn't have yet. Your own devices can run commands.`);
-    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox });
+    // Windows runs the sandboxed job through the helper: prove the OS lets the
+    // helper run (§2.2) and hand jobs.start the hash-verified helper. Fails
+    // closed with the reason (Smart App Control, application control, or its
+    // private folder not ready); never falls back to an interpreter.
+    let helper = null;
+    if (!own && process.platform === "win32") {
+      const ready = await windowsSandbox.ready();
+      if (!ready.ok) throw fail(503, ready.reason);
+      helper = ready.built;
+    }
+    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox, helper });
+    // Record the capability grant so a later revoke or sweep can reclaim its
+    // on-disk ACEs (§4.6); the live token already loses access on the next launch.
+    if (helper && sandbox?.grants?.length)
+      windowsGrants?.record({ clientId: req.client.id, roots: sandbox.grants.map((g) => g.root), expiresAt: req.client.expiresAt });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });
@@ -3228,7 +3308,7 @@ export async function createReach(overrides = {}) {
     )
       throw fail(
         403,
-        "Only a paired person can access existing Mac terminals.",
+        `Only a paired person can access existing ${computerWord(desktopTerminals.platform)} terminals.`,
       );
   };
   app.get("/api/terminals/desktop", async (req, res) =>
@@ -3244,13 +3324,13 @@ export async function createReach(overrides = {}) {
       req.body?.provider,
       authorizeDesktopTerminal(req),
     );
-    record("terminal", "Opened a Mac terminal");
+    record("terminal", `Opened a ${computerWord(desktopTerminals.platform)} terminal`);
     res.json(result);
   });
   // Every Mac tab's last line, answered when one changes (Home).
   app.get("/api/terminals/desktop/activity", async (req, res) => {
     if (!macTerminalWatch.ready)
-      throw fail(409, "Mac terminals aren't being watched right now.");
+      throw fail(409, `${computerWord(desktopTerminals.platform)} terminals aren't being watched right now.`);
     const after = Number(req.query.after);
     const left = new AbortController();
     res.once("close", () => left.abort());
@@ -3302,8 +3382,8 @@ export async function createReach(overrides = {}) {
       record(
         "terminal",
         req.params.action === "close"
-          ? "Closed a Mac terminal"
-          : "Sent text to a Mac terminal",
+          ? `Closed a ${computerWord(desktopTerminals.platform)} terminal`
+          : `Sent text to a ${computerWord(desktopTerminals.platform)} terminal`,
       );
     res.json(result);
   });
@@ -3422,6 +3502,8 @@ export async function createReach(overrides = {}) {
         clientId: current.id,
         // A failed download fails the install too (curl … | bash).
         command: installTerminalCommand({ ...plan, lead }),
+        // Windows: PowerShell's own text, whatever the owner's shell.
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -3453,6 +3535,7 @@ export async function createReach(overrides = {}) {
         name: `Update ${plan.name}`,
         clientId: current.id,
         command: installTerminalCommand(plan),
+        powershell: true,
       });
       installs.started(agent, terminal.id);
       started = true;
@@ -4589,6 +4672,15 @@ export async function createReach(overrides = {}) {
     restart: overrides.restartReach || (process.platform === "darwin"
       ? () => startInTerminal(fileURLToPath(new URL("../", import.meta.url)), { state: config.dataDir, args: "restart --yes" })
       : null),
+    // Windows can't replace a running Reach's files: the confirmed version's
+    // update goes to a window of its own, which stops Reach, installs and
+    // starts it again (scripts/bootstrap.mjs update).
+    handoff: overrides.updateHandoff || (process.platform === "win32"
+      ? (version) => {
+          askUpdate(config.dataDir, version);
+          startInConsole(fileURLToPath(new URL("../", import.meta.url)), { state: config.dataDir, args: "update" });
+        }
+      : null),
     record: (title) => record("update", title),
   });
   reachUpdates.listen?.(() => {
@@ -4654,7 +4746,7 @@ export async function createReach(overrides = {}) {
     restart:
       overrides.restartReach ||
       (() =>
-        startInTerminal(fileURLToPath(new URL("../", import.meta.url)), {
+        startInWindow(fileURLToPath(new URL("../", import.meta.url)), {
           state: config.dataDir,
           args: "restart --yes",
         })),
@@ -5072,9 +5164,10 @@ export async function createReach(overrides = {}) {
         },
         changes: (client) => {
           const scopes = client.scopes || [];
-          // People who may see the Mac's own terminals keep them watched.
+          // People who may see the computer's own terminals keep them
+          // watched (a Mac's or a Windows PC's).
           const macTerminals =
-            desktopTerminals.platform === "darwin" &&
+            ["darwin", "win32"].includes(desktopTerminals.platform) &&
             scopes.includes("admin") &&
             scopes.includes("terminal");
           if (macTerminals && !ws.reachMacTerminals) {
@@ -5864,9 +5957,8 @@ export async function createReach(overrides = {}) {
         publicApp: publicDoor(publicApp),
       });
     },
-    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
-    // keyed loopback route only Tailscale's own process may use
-    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    // Windows: the same, on a keyed loopback route only Tailscale's own
+    // process may use (server/tailscale-auth.mjs listenKeyedIngress). Its port.
     async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
@@ -5896,6 +5988,7 @@ export async function createReach(overrides = {}) {
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
+      windowsTray?.stop();
       reachUpdates.close?.();
       notifications.close();
       openClawWatch.close();
@@ -5969,6 +6062,9 @@ if (
   // Reach's Terminal window carries its name, so the agents' checker always
   // recognises it.
   if (process.stdout.isTTY && process.platform === "darwin") process.stdout.write("\u001b]0;Reach\u0007");
+  // On Windows its console window (or terminal tab) is titled Reach the same
+  // way, and the agents' checker closes the window that carries the name.
+  if (process.stdout.isTTY && process.platform === "win32") process.title = "Reach";
   reach.server.listen(reach.config.port, reach.config.host, () => {
     console.log(
       `\n  Reach is ready · http://localhost:${reach.config.port}\n  Pairing code: ${reach.auth.pairing.code.slice(0, 4)} ${reach.auth.pairing.code.slice(4)} (one use, expires in 10 minutes)\n  Shared folders: ${reach.config.roots.join(", ")}\n  Run npm run share to connect through Tailscale.\n`,

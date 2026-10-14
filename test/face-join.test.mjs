@@ -9,8 +9,10 @@ import { createPasskeys } from "../server/passkeys.mjs";
 import { createGuestKeys, GUEST_TAG } from "../server/guest-keys.mjs";
 import { createFaceJoin } from "../server/face-join.mjs";
 import { publicStartHandler } from "../server/public-start.mjs";
+import { newIngressKey } from "../server/tailscale-auth.mjs";
 import { softAuthenticator } from "./helpers/soft-authenticator.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
+import { command } from "../scripts/home.mjs";
 
 // Face ID sign-in: a new browser, no Tailscale app, no Tailscale login. The
 // start page (the internet) gets a challenge, the phone answers with a passkey
@@ -173,9 +175,13 @@ test("sign-in tickets: one new browser per Face ID, once, from the device its ke
   assert.throws(() => bare.options(), { status: 404 });
 });
 
+// Through Tailscale's private socket (a Mac), and through a Windows PC's
+// keyed loopback route (docs/parity/D-public-door.md), which Tailscale's own
+// process alone may use (here a stand-in check that says it is).
+for (const transport of ["socket", "keyed"])
 test(
-  "end to end: Face ID from the internet, then that browser is yours here; only it, and only that",
-  { skip: process.platform === "win32", timeout: 30000 },
+  `end to end${transport === "keyed" ? " on a Windows PC" : ""}: Face ID from the internet, then that browser is yours here; only it, and only that`,
+  { skip: transport === "socket" && process.platform === "win32", timeout: 30000 },
   async (t) => {
     const dir = tmp(t, "reach-face-e2e-");
     const dataDir = path.join(dir, "private");
@@ -183,8 +189,6 @@ test(
     const { phone } = withPasskey(dataDir);
     configure(dataDir);
     const api = tailscaleApi();
-    const socketDir = fs.mkdtempSync("/tmp/reach-face-sock-");
-    t.after(() => fs.rmSync(socketDir, { recursive: true, force: true }));
     const owner = { userId: "42", login: "me@example.test" };
     // Tailscale devices by address; the Face ID one appears once it joins.
     const NODES = {
@@ -208,20 +212,33 @@ test(
         },
       },
       guestKeys: { request: api.request },
+      ...(transport === "keyed" && { platform: "win32" }),
     });
     await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
     const dist = path.join(dir, "dist");
     fs.mkdirSync(dist);
     fs.writeFileSync(path.join(dist, "start.html"), "<!doctype html>start");
     const startPage = publicStartHandler({ dist, tailnetDir: null, privateOrigin: `${START}:8443`, home: START, name: "Mac A", instance: reach.instance, faceId: reach.faceIdAvailable });
-    const socketPath = path.join(socketDir, "s");
     // The internet is answered only while a window is open: an unopened invitation opens one.
     reach.auth.inviteGuest({ name: "Sam", full: true, ttlSeconds: 1800 });
-    await reach.listenPrivate(socketPath, { publicApp: (req, res) => reach.publicFaceId(req, res) || startPage(req, res) });
+    const publicApp = (req, res) => reach.publicFaceId(req, res) || startPage(req, res);
+    let target;
+    if (transport === "socket") {
+      const socketDir = fs.mkdtempSync("/tmp/reach-face-sock-");
+      t.after(() => fs.rmSync(socketDir, { recursive: true, force: true }));
+      const socketPath = path.join(socketDir, "s");
+      await reach.listenPrivate(socketPath, { publicApp });
+      target = { socketPath, prefix: "" };
+    } else {
+      const key = newIngressKey();
+      const port = await reach.listenKeyed({ key, peerCheck: { check: async () => true }, publicApp });
+      target = { host: "127.0.0.1", port, prefix: `/r-${key}` };
+    }
     t.after(() => reach.close());
     const send = (headers, route, { method = "POST", body, raw } = {}) =>
       new Promise((resolve, reject) => {
-        const req = http.request({ socketPath, agent: false, path: route, method, headers: { Host: HOST, ...(body || raw ? { "Content-Type": "application/json" } : {}), ...headers } }, (res) => {
+        const { prefix, ...where } = target;
+        const req = http.request({ ...where, agent: false, path: `${prefix}${route}`, method, headers: { Host: HOST, ...(body || raw ? { "Content-Type": "application/json" } : {}), ...headers } }, (res) => {
           let text = "";
           res.on("data", (c) => (text += c));
           res.on("end", () => {
@@ -264,7 +281,7 @@ test(
     // The browser joins with that key: a tagged device named as told.
     const FACE = "100.64.0.30";
     NODES[FACE] = { id: "nFace", user: 0, name: joined.json.hostname, tags: [GUEST_TAG] };
-    assert.deepEqual((await from(FACE, "/api/auth/method", { method: "GET" })).json, { method: "tailscale", eligible: false, faceJoin: true });
+    assert.deepEqual((await from(FACE, "/api/auth/method", { method: "GET" })).json, { method: "tailscale", eligible: false, faceJoin: true, command });
     // A guest's device can't use the ticket.
     assert.equal((await from("100.64.0.20", "/api/auth/face-join", { body: { ticket: joined.json.ticket } })).status, 403);
     const signedIn = await from(FACE, "/api/auth/face-join", { body: { ticket: joined.json.ticket, name: "iPhone" } });
