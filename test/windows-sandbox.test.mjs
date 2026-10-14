@@ -151,7 +151,7 @@ test("the launch self-test passes when the helper answers, refusing otherwise wi
   assert.deepEqual(stalled, { ok: false, permanent: false, reason: HELPER_WONT_START("win32") });
 });
 
-import { windowsGrantRoots, windowsJobDenies, windowsJobSandbox } from "../server/windows-sandbox.mjs";
+import { windowsGrantRoots, windowsJobDenies, windowsJobSandbox, windowsJobReads, windowsShellInvocation } from "../server/windows-sandbox.mjs";
 
 const WIN = { home: "C:\\Users\\me", platform: "win32", env: {} };
 
@@ -168,12 +168,33 @@ test("the jobs deny set mirrors the Mac's read/write lists and omits in-root pri
   const config = { dataDir: "C:\\Users\\me\\.reach\\quick", agentPolicyFile: "C:\\Users\\me\\.reach\\policy.json", roots: ["C:\\Users\\me"] };
   const denies = windowsJobDenies(config, WIN);
   assert.ok(denies.some((d) => /\.reach\\quick$/i.test(d)), "Reach's data is denied");
-  assert.ok(denies.some((d) => /\\AppData$/i.test(d)), "the whole AppData tree is denied (credentials, browsers, startup)");
+  assert.ok(denies.some((d) => /Microsoft\\Credentials$/i.test(d)), "Windows credentials are denied");
+  assert.ok(denies.some((d) => /Google$/i.test(d)), "browser sessions are denied");
+  assert.ok(denies.some((d) => /Programs\\Startup$/i.test(d)), "startup programs are denied");
+  assert.ok(!denies.some(d => /\\AppData$/i.test(d)), "the tool installations in AppData can be read");
   assert.ok(denies.some((d) => /System32\\config$/i.test(d)), "the Windows password database is denied");
   // The finding-5 distinction: an in-root .git / .npmrc is NOT denied, so git
   // and npm keep working inside a shared folder as they do on the Mac.
   assert.ok(!denies.includes("C:\\Users\\me\\Projects\\acme\\.git"), "an in-root .git is not denied");
   assert.ok(!denies.includes("C:\\Users\\me\\Projects\\acme\\.npmrc"), "an in-root .npmrc is not denied");
+});
+
+test("jobs can read named tool directories but an environment variable cannot grant a secret directory", () => {
+  const config = { dataDir: String.raw`C:\Users\me\.reach` };
+  const reads = windowsJobReads(config, { ...WIN, exists: () => true });
+  for (const end of [String.raw`AppData\Local\npm-cache`, String.raw`AppData\Roaming\npm`, ".gitconfig", ".cargo", ".dotnet"])
+    assert.ok(reads.some(item => item.endsWith(end.toLowerCase())), end);
+  const evil = windowsJobReads(config, { ...WIN, exists: () => true,
+    env: { VOLTA_HOME: String.raw`C:\Users\me\.ssh`, TEMP: String.raw`C:\Users\me\.reach` } });
+  assert.ok(!evil.some(item => /\\(?:\.ssh|\.reach)$/.test(item)));
+});
+
+test("PowerShell receives Unicode command text as one encoded argument; cmd keeps its own syntax", () => {
+  const command = "Write-Output 'café 日本'; Write-Output '$()'";
+  const invoked = windowsShellInvocation("powershell", command);
+  assert.equal(invoked.command, null);
+  assert.match(Buffer.from(invoked.args.at(-1), "base64").toString("utf16le"), /café 日本/);
+  assert.deepEqual(windowsShellInvocation("cmd", "echo %USERNAME%"), { command: "echo %USERNAME%", args: null });
 });
 
 test("the jobs descriptor carries grants, the mirror denies, internet and a fork-bomb cap", () => {
@@ -262,13 +283,14 @@ const readyStub = { ready: async () => ({ ok: true, built: { file: "C:\\native\\
 test("the Full-control shell runner frames a shell request and reports output and exit", async () => {
   const written = [];
   let child;
-  const run = windowsShellRunner(readyStub, { start: () => (child = shellChild(written)) });
+  const interpreter = { file: String.raw`C:\Windows\System32\cmd.exe`, kind: "cmd" };
+  const run = windowsShellRunner(readyStub, { interpreter, start: () => (child = shellChild(written)) });
   const promise = run({ command: "dir", cwd: "C:\\Users\\me", timeoutMs: 5000, maxOutput: 1024, signal: new AbortController().signal });
   await until(() => !!child);
   const { entries } = decodeRequest(Buffer.concat(written));
   assert.ok(entries.some(([k, v]) => k === "mode" && v === "shell"));
   assert.ok(entries.some(([k, v]) => k === "command" && v === "dir"));
-  assert.ok(entries.some(([k, v]) => k === "interpreter" && v === "cmd.exe"));
+  assert.ok(entries.some(([k, v]) => k === "interpreter" && v === interpreter.file));
   child.stdout.emit("data", frame("O", Buffer.from("Volume in drive C")));
   child.stdout.emit("data", frame("X", i32(0)));
   assert.deepEqual(await promise, { output: "Volume in drive C", exitCode: 0, timedOut: false });

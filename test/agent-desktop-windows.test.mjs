@@ -1,4 +1,5 @@
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { AgentDesktopHelper, createAgentDesktop, normalizeAction, windowsAction, windowsModifiers } from "../server/agent-desktop.mjs";
@@ -251,7 +252,7 @@ test("a PC that won't run the helper Reach built is told why, from Smart App Con
   assert.equal(gone.spawned.length, 2);
   // Changed on disk since its build (a swap by another user of the PC): the
   // file exists, so it isn't rebuilt — it's refused and never started.
-  const swapped = windowsHelperWorld(t, { changed: true });
+  const swapped = windowsHelperWorld(t, { changed: true, binary: fileURLToPath(import.meta.url) });
   await assert.rejects(swapped.desktop.front(swapped.client, swapped.authorize), (error) => error.status === 503 && /agent helper changed on this Windows PC/.test(error.message));
   assert.equal(swapped.spawned.length, 0, "a changed helper is never spawned");
 });

@@ -233,7 +233,22 @@ export function windowsGrantRoots(roots, { home = os.homedir(), platform = proce
 // on win32 already builds this set from the environment (server/
 // browser-private-paths.mjs windowsPrivatePaths).
 export function windowsJobDenies(config, { home = os.homedir(), platform = process.platform, env = process.env } = {}) {
-  return browserPrivatePaths(config, { home, platform, env });
+  const paths = browserPrivatePaths(config, { home, platform, env });
+  if (platform !== "win32") return paths;
+  const p = path.win32;
+  const local = env.LOCALAPPDATA || p.join(home, "AppData", "Local");
+  const roaming = env.APPDATA || p.join(home, "AppData", "Roaming");
+  const broad = new Set([p.join(home, "AppData"), local, roaming].map(windowsCanonicalPath));
+  // Commands can read their tool installations, as on the Mac. Denying all
+  // AppData also denied npm, Node managers and Python. Keep the actual stores
+  // for credentials, browser sessions and persistence closed instead.
+  const localSecrets = ["Google", "Chromium", "Microsoft\\Edge", "BraveSoftware", "Vivaldi", "Opera Software",
+    "Mozilla", "Packages", "Microsoft\\Credentials", "Microsoft\\Vault", "Microsoft\\Outlook", "Claude"];
+  const roamingSecrets = ["Mozilla", "Opera Software", "Thunderbird", "Claude", "Microsoft\\Credentials",
+    "Microsoft\\Protect", "Microsoft\\Vault", "Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+    "Microsoft\\Windows\\PowerShell\\PSReadLine"];
+  return [...paths.filter(item => !broad.has(windowsCanonicalPath(item))),
+    ...localSecrets.map(item => p.join(local, item)), ...roamingSecrets.map(item => p.join(roaming, item))];
 }
 
 // §4.3 / D-C-5: the user-profile tool directories a job gets read+execute on,
@@ -269,6 +284,8 @@ export function windowsJobReads(config, { home = os.homedir(), platform = proces
   const canonicalHome = windowsCanonicalPath(home);
   const seen = new Set();
   const reads = [];
+  const denied = windowsJobDenies(config, { home, platform, env }).map(windowsCanonicalPath);
+  const gitConfig = windowsCanonicalPath(p.join(home, ".gitconfig"));
   for (const candidate of candidates) {
     const canonical = windowsCanonicalPath(candidate);
     if (seen.has(canonical)) continue;
@@ -276,6 +293,7 @@ export function windowsJobReads(config, { home = os.homedir(), platform = proces
     // Only user-profile paths: a stray env var must never make Reach ACL a
     // system folder. (Home itself is never a tool folder.)
     if (canonical !== canonicalHome && !windowsWithin(canonical, canonicalHome)) continue;
+    if (canonical !== gitConfig && denied.some(item => windowsWithin(canonical, item))) continue;
     try { if (exists(candidate)) reads.push(canonical); } catch { /* unreadable: skip */ }
   }
   return reads;

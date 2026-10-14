@@ -389,27 +389,33 @@ static class Grants {
   // short of (ReadLimit) keeps its freshly-created entries readable through the
   // inheritable ALLOW, and a job re-fetches what isn't covered.
   const int ReadLimit = 60000;
-  public static void ApplyReadGrant(string path) {
+  public static void ApplyReadGrant(string path, ICollection<string> denyPaths) {
     try {
+      foreach (string denied in denyPaths) if (Within(denied, path)) return;
       SecurityIdentifier allow = RootCapability(path);
       bool directory = Directory.Exists(path);
       if (!directory && !File.Exists(path)) return;
+      foreach (string denied in denyPaths) if (Within(path, denied)) DenyEverywhere(denied, DenyCapability());
       AllowObject(path, directory, false, allow, directory);
-      if (directory) { int seen = 0; ReadWalk(path, allow, ref seen); }
+      if (directory) { int seen = 0; ReadWalk(path, allow, denyPaths, ref seen); }
     } catch (Exception) { /* best-effort: this tool stays unreadable */ }
   }
 
-  static void ReadWalk(string dir, SecurityIdentifier allow, ref int seen) {
+  static void ReadWalk(string dir, SecurityIdentifier allow, ICollection<string> denyPaths, ref int seen) {
     IEnumerable<string> entries;
     try { entries = Directory.EnumerateFileSystemEntries(dir); } catch (Exception) { return; }
     foreach (string entry in entries) {
       if (++seen > ReadLimit) return; // a huge cache: stop, don't fail
+      bool denied = false;
+      foreach (string secret in denyPaths) if (Within(secret, entry)) { denied = true; break; }
+      if (denied) continue;
       FileAttributes attributes;
       try { attributes = File.GetAttributes(entry); } catch (Exception) { continue; }
       bool directory = (attributes & FileAttributes.Directory) != 0;
       if ((attributes & FileAttributes.ReparsePoint) != 0) { if (NativeSec.IsNameSurrogate(entry)) continue; }
+      if (!directory && NativeSec.HardLinked(entry)) continue;
       try { AllowObject(entry, directory, false, allow, false); } catch (Exception) { continue; }
-      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) ReadWalk(entry, allow, ref seen);
+      if (directory && (attributes & FileAttributes.ReparsePoint) == 0) ReadWalk(entry, allow, denyPaths, ref seen);
     }
   }
 
@@ -441,8 +447,7 @@ static class Grants {
     FileSystemRights rights = writable ? Write : Read;
     InheritanceFlags inheritance = directory && inheritable ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
     var rule = new FileSystemAccessRule(cap, rights, inheritance, PropagationFlags.None, AccessControlType.Allow);
-    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
-    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+    NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.AddAccessRule(rule); });
   }
 
   static void DenyEverywhere(string path, SecurityIdentifier cap) {
@@ -451,8 +456,7 @@ static class Grants {
     InheritanceFlags inheritance = directory ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit) : InheritanceFlags.None;
     // FullControl denied: no access of any kind for a token carrying the cap.
     var rule = new FileSystemAccessRule(cap, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Deny);
-    if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.AddAccessRule(rule); Directory.SetAccessControl(path, security); }
-    else { FileSecurity security = File.GetAccessControl(path); security.AddAccessRule(rule); File.SetAccessControl(path, security); }
+    NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.AddAccessRule(rule); });
   }
 
   // Revocation (§4.6): the ACEs for a root's capability are removed in a walk
@@ -481,8 +485,7 @@ static class Grants {
 
   static void RemoveObject(string path, bool directory, SecurityIdentifier cap) {
     try {
-      if (directory) { DirectorySecurity security = Directory.GetAccessControl(path); security.PurgeAccessRules(cap); Directory.SetAccessControl(path, security); }
-      else { FileSecurity security = File.GetAccessControl(path); security.PurgeAccessRules(cap); File.SetAccessControl(path, security); }
+      NativeSec.ChangeAcl(path, directory, delegate(FileSystemSecurity security) { security.PurgeAccessRules(cap); });
     } catch (Exception) { /* a reparse point or a locked file: carry on */ }
   }
 
@@ -497,6 +500,42 @@ static class Grants {
 // SID, and reading a reparse tag or a file's link count so the grant walk can
 // skip name-surrogate links and hard links (finding 11).
 static class NativeSec {
+  [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+  [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+  [DllImport("advapi32.dll")] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+
+  // Check and update one held object. A path-based SetAccessControl after a
+  // separate link check could follow a junction swapped in between them and
+  // grant an outside secret. NtCreateFile refuses reparses in every component;
+  // the same handle supplies both the link count and the DACL to be changed.
+  public static void ChangeAcl(string path, bool directory, Action<FileSystemSecurity> change) {
+    IntPtr handle = NtFiles.OpenAclPath(path, directory);
+    try {
+      BY_HANDLE_FILE_INFORMATION info;
+      if (!GetFileInformationByHandle(handle, out info) || (!directory && info.NumberOfLinks > 1))
+        throw Sandbox.Refusal(403, "That linked path cannot be granted access.");
+      IntPtr owner, group, dacl, sacl, descriptor;
+      if (GetSecurityInfo(handle, 1, 4, out owner, out group, out dacl, out sacl, out descriptor) != 0)
+        throw Sandbox.Refusal(403, "That folder's access could not be checked.");
+      byte[] raw;
+      try {
+        raw = new byte[GetSecurityDescriptorLength(descriptor)];
+        Marshal.Copy(descriptor, raw, 0, raw.Length);
+      } finally { LocalFree(descriptor); }
+      FileSystemSecurity security = directory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+      security.SetSecurityDescriptorBinaryForm(raw, AccessControlSections.Access);
+      change(security);
+      byte[] updated = security.GetSecurityDescriptorBinaryForm();
+      GCHandle pinned = GCHandle.Alloc(updated, GCHandleType.Pinned);
+      try {
+        bool present, defaulted;
+        if (!GetSecurityDescriptorDacl(pinned.AddrOfPinnedObject(), out present, out dacl, out defaulted) || !present || dacl == IntPtr.Zero ||
+            SetSecurityInfo(handle, 1, 4, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero) != 0)
+          throw Sandbox.Refusal(403, "That folder's access could not be changed safely.");
+      } finally { pinned.Free(); }
+    } finally { NtFiles.Close(handle); }
+  }
   [DllImport("kernelbase.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   public static extern bool DeriveCapabilitySidsFromName(string capName, out IntPtr capabilityGroupSids, out int capabilityGroupSidCount, out IntPtr capabilitySids, out int capabilitySidCount);
   [DllImport("advapi32.dll")]
@@ -602,7 +641,7 @@ static class Jobs {
     // The named tool folders, read+execute only (D-C-5): best-effort, so a
     // folder Reach can't ACE (or a cache too big to walk fully) leaves that
     // tool unreadable rather than refusing the whole job.
-    foreach (string read in reads) Grants.ApplyReadGrant(read);
+    foreach (string read in reads) Grants.ApplyReadGrant(read, denies);
 
     // The AppContainer and its capabilities: the package SID is stable per
     // client; the launch carries only this client's per-root capabilities, the
@@ -1402,6 +1441,13 @@ static class NtFiles {
     IntPtr handle = CreateFileW(path, access, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
     if (handle == Invalid) throw Sandbox.Refusal(403, "The shared folder isn't available.");
     return handle;
+  }
+
+  public static IntPtr OpenAclPath(string path, bool directory) {
+    string full = Path.GetFullPath(path);
+    if (full.Length < 3 || full[1] != ':' || full[2] != '\\') throw Sandbox.Refusal(403, "Grant a local folder on this PC.");
+    return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE,
+      FILE_OPEN, 0x20000 | 0x40000 | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0);
   }
 
   // Open `name` relative to `parent`, following no reparse point. A reparse in

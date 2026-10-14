@@ -89,7 +89,7 @@ const message = (c) => c.querySelector('textarea[aria-label="AI browser invitati
 const PAGE = "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.";
 const pageMessage = `${PAGE}\n\nhttps://mac.tail.ts.net/agent-browser#invite=${secret}`;
 
-test("Full control: chosen with a check, made with Create invite, nothing else to fill", { skip: process.platform !== "darwin" && "agent presets need macOS (its protected file and screen helpers)" }, async () => {
+test("Full control: chosen with a check, made with Create invite, nothing else to fill", async () => {
   const calls = mock();
   const { c, made } = await open();
   const name = c.querySelector('[aria-label="AI browser name"]').value;
@@ -309,11 +309,28 @@ test("a Windows PC is called a Windows PC in the message", async () => {
   const c = view.container;
   await dom.waitFor(() => preset(c, "Full control"));
   await settle(40);
+  assert.ok(presets(c).every(p => !p.disabled), "all four presets are offered when the PC supports them");
   await choose(c, "Full control");
+  assert.doesNotMatch(c.textContent, /within macOS permissions/);
   await create(c);
   await dom.waitFor(() => made);
   assert.match(message(c), /^Connect to my Windows PC with Reach: open this link and follow its steps/);
   assert.doesNotMatch(message(c), /\bMac\b/);
+});
+
+test("a Windows PC that cannot prepare its helpers names the reasons on the invitation form", async () => {
+  mock({ desktopAvailable: false, protectedFilesSupported: false,
+    desktopReason: "Reach could not prepare screen access on this PC.",
+    filesUnsupportedReason: "This PC could not prepare protected file access." });
+  const view = await render(React.createElement(BrowserInvite, {
+    peer: { ...peer, platform: "win32" }, device: { ...device, platform: "win32" },
+    keyPeer: null, onSetup: () => {}, onCreated: () => {},
+  }));
+  const c = view.container;
+  await dom.waitFor(() => presets(c).length === 4 && presets(c).every(p => p.disabled));
+  assert.match(c.textContent, /could not prepare screen access/);
+  assert.match(c.textContent, /could not prepare protected file access/);
+  assert.doesNotMatch(c.textContent, /requires macOS|require macOS/);
 });
 
 test("the three messages: a line each, the link after a blank line, short", async () => {
