@@ -113,10 +113,10 @@ async function window(t, name, title, color, [x, y, width, height], ...flags) {
   children.add(child);
   const file = path.join(work, `${name}.json`);
   const shown = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), `${name} shown`));
-  if (flags.includes("medium")) {
-    const probe = await exec(fixtureConsole, ["medium", fixtureConsole, "process-probe", String(shown.pid)], { windowsHide: true, timeout: 15000 });
-    note({ processProbe: { name, ...JSON.parse(probe.stdout.trim()) } });
-  }
+  const probeArgs = ["helper-probe", helperFile, String(shown.pid), exe];
+  const probe = await exec(fixtureConsole, flags.includes("medium") ? ["medium", fixtureConsole, ...probeArgs] : probeArgs,
+    { windowsHide: true, timeout: 15000 });
+  note({ processProbes: { ...report.processProbes, [name]: JSON.parse(probe.stdout.trim()) } });
   const kill = () => { try { process.kill(shown.pid); } catch {} try { child.kill(); } catch {} children.delete(child); };
   t.after(kill);
   const log = () => (fs.existsSync(path.join(work, `${name}.log`)) ? fs.readFileSync(path.join(work, `${name}.log`), "utf8") : "");
@@ -322,6 +322,10 @@ test("input reaches a window at the helper's own integrity: clicks, typing in an
   await clickAt(target.x + 80, target.y + 12);
   const act = async (action, what) => {
     const answer = await h.send({ op: "act", action });
+    if (!answer.ok) {
+      const probe = await exec(fixtureConsole, ["medium", fixtureConsole, "helper-probe", helperFile, String(target.pid), target.exe], { windowsHide: true });
+      note({ inputFailure: { what, answer, ...JSON.parse(probe.stdout.trim()) } });
+    }
     assert.equal(answer.ok, true, `${what}: ${JSON.stringify(answer)}`);
   };
   await act({ type: "click", ...at(target.notes) }, "a click");

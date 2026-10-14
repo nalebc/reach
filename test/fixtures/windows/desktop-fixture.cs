@@ -50,6 +50,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -66,6 +67,7 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint kind);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
   [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, int data, UIntPtr extra);
   [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr window);
   delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
@@ -119,6 +121,7 @@ static class DesktopFixture {
   [STAThread]
   static int Main(string[] args) {
     if (args.Length == 2 && args[0] == "process-probe") return ProcessProbe(int.Parse(args[1]));
+    if (args.Length == 4 && args[0] == "helper-probe") return HelperProbe(args[1], int.Parse(args[2]), args[3]);
     try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (Exception) { }
     if (args.Length >= 9 && args[0] == "window") return Window(args);
     if (args.Length == 4 && args[0] == "sleeper") return Sleeper(args[1], args[2], args[3]);
@@ -153,7 +156,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -357,6 +360,27 @@ static class DesktopFixture {
         ",\"packageStatus\":" + packageStatus + ",\"tokenError\":" + tokenError + ",\"pointerBytes\":" + IntPtr.Size + "}");
       return 0;
     } finally { CloseHandle(process); }
+  }
+  // Invoke the built helper's own identity reader at this fixture's token.
+  // Only booleans/numbers are recorded, never another program's path/title.
+  static int HelperProbe(string helper, int pid, string expectedImage) {
+    var assembly = Assembly.LoadFrom(helper);
+    var desk = assembly.GetType("Desk", true);
+    var flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+    object identity = desk.GetMethod("Identify", flags).Invoke(null, new object[] { pid });
+    var ident = identity.GetType();
+    Func<string, object> field = name => ident.GetField(name).GetValue(identity);
+    uint frontPid;
+    IntPtr front = GetAncestor(GetForegroundWindow(), 2);
+    GetWindowThreadProcessId(front, out frontPid);
+    object view = desk.GetField("View", flags).GetValue(null);
+    int integrity = (int)view.GetType().GetMethod("ForegroundIntegrity").Invoke(view, null);
+    Console.WriteLine("{\"known\":" + field("Known").ToString().ToLowerInvariant() +
+      ",\"created\":" + (((long)field("Created")) != 0).ToString().ToLowerInvariant() +
+      ",\"imageMatches\":" + string.Equals((string)field("Image"), expectedImage, StringComparison.OrdinalIgnoreCase).ToString().ToLowerInvariant() +
+      ",\"integrity\":" + field("Integrity") + ",\"foregroundPid\":" + frontPid +
+      ",\"foregroundIntegrity\":" + integrity + "}");
+    return 0;
   }
   static int Fail(string step) { Console.Error.WriteLine("error " + step + " " + Marshal.GetLastWin32Error()); return 3; }
 
