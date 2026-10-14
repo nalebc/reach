@@ -198,6 +198,7 @@ function InstallRow({ peer, recheck }: { peer: Peer; recheck: () => void }) {
       {step === "confirm" && plan && (
         <>
           <pre className="claw-onboard-command">{plan.command}</pre>
+          {plan.note && <p className="claw-onboard-note">{plan.note}</p>}
           <div className="claw-onboard-actions">
             <button type="button" className="claw-secondary" onClick={() => setStep("")}>
               Cancel

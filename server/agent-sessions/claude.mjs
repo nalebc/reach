@@ -13,6 +13,7 @@ import { createClaudeAccountUsage } from "./account-usage.mjs";
 import { claudeEnvironment, windowsGitBash, withGitBash } from "./claude-environment.mjs";
 import { spawnable } from "../agent-cli.mjs";
 import { recycle as recycleFile } from "../recycle-bin.mjs";
+import { claudeAppRecords } from "./claude-app-paths.mjs";
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +40,7 @@ const signIn = (stdout) => {
 // while app records remain; those have no history to show and are skipped.
 export function createClaudeSessions({
   projects = path.join(os.homedir(), ".claude", "projects"),
-  appRecords = path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  appRecords = claudeAppRecords(),
   cli = "claude",
   run = exec,
   env = process.env,

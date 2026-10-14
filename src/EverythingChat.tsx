@@ -809,6 +809,7 @@ function InstallAgent({ peer, agent, name, recheck, ask: askNow = false, lead }:
         <>
           {lead ? <p>{lead}</p> : <p>Reach runs {name}'s own installer on your {word}:</p>}
           <pre className="chat-setup-command">{plan.command}</pre>
+          {plan.note && <p>{plan.note}</p>}
           <div className="chat-setup-actions">
             <button className="primary" disabled={launching} onClick={() => void run()}>Install</button>
             <button disabled={launching} onClick={() => setStep("")}>Cancel</button>
@@ -865,14 +866,12 @@ const ADDABLE = [
 ];
 function AddAgents({ peer, logos, recheck }: { peer: Peer; logos: AgentLogos; recheck: () => void }) {
   const [open, setOpen] = useState("");
-  // OpenClaw's installer needs WSL on Windows: not offered there.
-  const addable = ADDABLE.filter((a) => peer.platform !== "win32" || a.agent !== "openclaw");
   return (
     <section className="chat-setup chat-add-agents" aria-label="Add an agent">
       <strong>Add an agent to {peer.name}</strong>
       <p>Install one on this {computerWord(peer.platform)} to chat with it here.</p>
       <ul>
-        {addable.map(({ agent, line }) => (
+        {ADDABLE.map(({ agent, line }) => (
           <li key={agent} className={open === agent ? "open" : undefined}>
             <div className="chat-add-row">
               <AgentLogo agent={agent} logos={logos} size={30} />
