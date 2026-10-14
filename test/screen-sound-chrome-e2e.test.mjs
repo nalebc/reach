@@ -25,10 +25,15 @@ import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs
 // Safari on an iPhone is a different engine: this says nothing about it.
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const chrome = findChrome();
+const required = process.env.CI === "true" && (
+  (process.platform === "darwin" && process.env.REACH_TEST_SOUND_CHROME === "1") ||
+  (process.platform === "win32" && process.env.REACH_TEST_WINDOWS_DESKTOP === "1")
+);
+if (required && !chrome) throw Error("The serial native audio validation requires Chrome or Chromium.");
 const skip = !chrome
   ? "no Chrome or Chromium on this computer (set REACH_TEST_CHROME to one)"
   : process.platform === "darwin"
-    ? false
+    ? process.env.CI === "true" && process.env.REACH_TEST_SOUND_CHROME !== "1" ? "the serial native lane runs clocked browser audio" : false
     : process.platform === "win32"
       ? process.env.REACH_TEST_WINDOWS_DESKTOP === "1" ? false : "the real-Windows lane runs it (it builds the PC's sound helper)"
       : "sound comes from a Mac or a Windows PC";
