@@ -116,6 +116,7 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
       await netCmd("user", name, "/delete");
     }
     await run(system("schtasks.exe"), ["/delete", "/tn", "ReachPeerCI", "/f"]);
+    await run(system("schtasks.exe"), ["/delete", "/tn", "ReachPeerProbe", "/f"]);
   });
   for (const name of Object.keys(users)) {
     const granted = await run(runAs, ["desktop", "grant", sids[name]]);
@@ -209,10 +210,35 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   const runnerProbe = path.join(CI_ROOT, "service", "probe-runner.txt");
   await run(peerProbe, [runnerProbe]);
   t.diagnostic(`peer-probe as the runner:\n${readText(runnerProbe)}`);
+  // A refusal pinned to what it depends on: the runner's own token narrowed
+  // (Medium integrity; Administrators, then LOCAL too, deny-only).
+  const narrowed = await folder(path.join(CI_ROOT, "as"), "S-1-1-0");
+  for (const variant of ["medium", "no-admin", "no-admin-medium", "no-admin-no-local"]) {
+    const out = path.join(narrowed, `${variant}.txt`);
+    await run(peerProbe, [out, "as", variant]);
+    const lines = readText(out).split(/\r?\n/).filter((line) => /^(token (integrity|groups)|OpenSCManagerW|OpenServiceW|as |exception)/.test(line));
+    t.diagnostic(`peer-probe as the runner, ${variant}:\n${lines.join("\n")}`);
+  }
+  // Windows' RPC filters, the service manager's saved descriptor (labels
+  // included) and settings, and UAC's.
+  t.diagnostic(`rpc filters: ${(await run(system("netsh.exe"), ["rpc", "filter", "show", "filter"])).stdout.trim()}`);
+  const saved = await pwsh(String.raw`try { $v = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\ServiceGroupOrder\Security' -ErrorAction Stop).Security; ([System.Security.AccessControl.RawSecurityDescriptor]::new([byte[]]$v, 0)).GetSddlForm('All') } catch { 'none: ' + $_.Exception.Message }`);
+  t.diagnostic(`scmanager saved descriptor: ${saved.stdout.trim()}${saved.stderr.trim()}`);
+  t.diagnostic(`SCMConfig: ${(await run(system("reg.exe"), ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\SCMConfig", "/s"])).stdout.trim()}`);
+  t.diagnostic(`system policies: ${(await run(system("reg.exe"), ["query", "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"])).stdout.trim()}`);
   const reachciProbe = path.join(results, "probe-reachci.txt");
   await asUser("reachci", `${quote(peerProbe)} ${quote(reachciProbe)}`);
   const probed = readText(reachciProbe);
   t.diagnostic(`peer-probe as reachci:\n${probed}`);
+  // reachci with a batch token (a scheduled task with its password).
+  const batchProbe = path.join(results, "probe-batch.txt");
+  const task = await run(system("schtasks.exe"), ["/create", "/tn", "ReachPeerProbe", "/ru", "reachci", "/rp", users.reachci, "/sc", "once", "/st", "23:59", "/tr", `${peerProbe} ${batchProbe}`, "/f"]);
+  if (task.code === 0) {
+    await run(system("schtasks.exe"), ["/run", "/tn", "ReachPeerProbe"]);
+    await until(() => fs.existsSync(batchProbe), "the batch probe", 60000).then(() => sleep(1000), () => {});
+  }
+  t.diagnostic(`peer-probe as reachci with a batch token:\n${task.code ? `${task.stdout}${task.stderr}` : readText(batchProbe)}`);
+  await run(system("schtasks.exe"), ["/delete", "/tn", "ReachPeerProbe", "/f"]);
   for (const [name, command] of [["sc-qc", `${system("sc.exe")} qc Tailscale`], ["sc-queryex", `${system("sc.exe")} queryex Tailscale`], ["whoami-all", `${system("whoami.exe")} /all`]]) {
     const out = path.join(results, `${name}.txt`);
     await asUser("reachci", `cmd.exe /c ${command} > ${quote(out)} 2>&1`);
