@@ -351,8 +351,20 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     },
   });
   reached("app launched");
+  // The page's own time. A slow simulator opening Settings or reopening the
+  // app (each under its own limit) doesn't spend it.
   const pageLimit = Math.max(0, Math.min(100000, left()));
-  const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);
+  let pageLeft = pageLimit, pageSince = 0, timer;
+  const pageClock = () => {
+    pageSince = Date.now();
+    timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLeft);
+  };
+  const simulatorStep = async (...args) => {
+    clearTimeout(timer);
+    pageLeft = Math.max(0, pageLeft - (Date.now() - pageSince));
+    try { return await sim(...args); } finally { pageClock(); }
+  };
+  pageClock();
   let report;
   let backgroundedDuringDownload = false;
   try {
@@ -361,14 +373,14 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       reached("page paired and asked for the native download");
       // The newly created simulator has no user account. Opening its Settings
       // backgrounds only this test app; release the HTTPS response while away.
-      await sim("launch Settings", ["launch", device, "com.apple.Preferences"], { attempts: 2 });
+      await simulatorStep("launch Settings", ["launch", device, "com.apple.Preferences"], { attempts: 2 });
       reached("app in the background");
       backgroundedDuringDownload = true;
       allowDownload();
       await Promise.race([downloadResponded, result]);
       reached("download answered");
       await new Promise(resolve => setTimeout(resolve, 1500));
-      await sim("reopen the app", ["launch", device, bundle], { attempts: 2 });
+      await simulatorStep("reopen the app", ["launch", device, bundle], { attempts: 2 });
       reached("app reopened");
     }
     report = first.report || await result;

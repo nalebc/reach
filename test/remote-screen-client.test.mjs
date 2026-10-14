@@ -345,27 +345,30 @@ test("a step down keeps the picture crisp while the smaller stream starts, and i
 // tells the computer why the old one ended.
 test("a dropped stream keeps the last picture, retries soon and says why", async () => {
   const { view, state } = await watch();
-  const socket = FakeSocket.all[0];
-  socket.says({ type: "ready", format: "h264", display: "1" });
-  socket.frame(1, keyframe);
-  FakeDecoder.all[0].shows();
-  await dom.waitFor(() => state().ready);
-  socket.close();
-  await settle(20);
-  assert.equal(state().ready, true, "the picture stays");
-  assert.equal(state().connecting, true);
-  assert.equal(state().width, 1320);
-  await dom.waitFor(() => FakeSocket.all[1]?.sent.length >= 2, 1500);
-  const told = FakeSocket.all[1].sent.find((m) => m.type === "diagnostic");
-  assert.match(told.text, /^screen reconnecting \(1× since the last frame\) after: Screen connection ended\. Reconnecting… · closed 1000 · /);
-  assert.match(told.text, /last frame \d+\.\d s ago/);
-  // Back: the next frame takes over with no loading scene in between.
-  FakeSocket.all[1].says({ type: "ready", format: "h264", display: "1" });
-  FakeSocket.all[1].frame(1, keyframe);
-  FakeDecoder.all.at(-1).shows();
-  await dom.waitFor(() => !state().connecting);
-  assert.equal(state().ready, true);
-  await view.unmount();
+  try {
+    const socket = FakeSocket.all[0];
+    socket.says({ type: "ready", format: "h264", display: "1" });
+    socket.frame(1, keyframe);
+    FakeDecoder.all[0].shows();
+    await dom.waitFor(() => state().ready);
+    socket.close();
+    // A slow runner can take longer than a fixed pause to re-render.
+    await dom.waitFor(() => state().connecting, 1500);
+    assert.equal(state().ready, true, "the picture stays");
+    assert.equal(state().width, 1320);
+    await dom.waitFor(() => FakeSocket.all[1]?.sent.length >= 2, 1500);
+    const told = FakeSocket.all[1].sent.find((m) => m.type === "diagnostic");
+    assert.match(told.text, /^screen reconnecting \(1× since the last frame\) after: Screen connection ended\. Reconnecting… · closed 1000 · /);
+    assert.match(told.text, /last frame \d+\.\d s ago/);
+    // Back: the next frame takes over with no loading scene in between.
+    FakeSocket.all[1].says({ type: "ready", format: "h264", display: "1" });
+    FakeSocket.all[1].frame(1, keyframe);
+    FakeDecoder.all.at(-1).shows();
+    await dom.waitFor(() => !state().connecting);
+    assert.equal(state().ready, true);
+  } finally {
+    await view.unmount();
+  }
 });
 
 test("the computer's quality reports say when the link is slow, without flickering", async () => {
