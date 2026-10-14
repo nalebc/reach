@@ -136,14 +136,13 @@ test("setup from the phone on Windows: OpenClaw's own onboarding, the key in its
   );
 });
 
-// OpenClaw's own Windows app (Windows Hub) keeps its Gateway in a WSL distro
-// of its own: no setup Reach can see here, yet a Gateway on its port. Reach
-// doesn't start a second one beside it, and says why.
+// A Gateway on OpenClaw's port that nothing Reach can see set up: setup
+// doesn't start a second one beside it, and says why (a Mac does the same).
 test("on Windows, setup isn't started beside a Gateway Reach can't see", async (t) => {
   const at = npmOpenClaw(t);
   await assert.rejects(
     onboardOpenClaw({ provider: "openrouter", key: KEY, acceptRisk: true }, { run: async () => assert.fail("must not run"), env: { PATH: at("npm") }, platform: "win32", file: at("home/none.json"), runtime: "C:\\n\\node.exe", gateway: async () => true }),
-    (e) => e.status === 409 && e.message === "OpenClaw already runs on this PC (likely its Windows app), with a Gateway Reach can't see. Reach won't start a second one.",
+    (e) => e.status === 409 && e.message === "Something already answers on OpenClaw's Gateway port on this Windows PC, and Reach can't see what set it up. Reach won't start a second Gateway beside it.",
   );
   // Refused at once: nothing there. Any answer, or none in time: something.
   const refused = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:18789"), { code: "ECONNREFUSED" }) });
@@ -305,7 +304,7 @@ test("installing on Windows: OpenClaw's own installer; a Node it can't use gets 
   );
   const old = await installPlan("openclaw", { platform: "win32", node: async () => ({ version: "22.12.0", supported: false, dir, privateReady: false }) });
   assert.equal(old.command, ready.command, "the phone shows the maker's command");
-  assert.equal(old.note, "OpenClaw needs Node 24.16 or newer, and this PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this PC's Node as it is.");
+  assert.equal(old.note, "OpenClaw needs Node 24.16 or newer, and this Windows PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this Windows PC's Node as it is.");
   assert.equal(
     old.lead,
     "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NodeOnly -NodePrefix 'C:\\Users\\Ann O''Neil\\.openclaw\\tools\\cli-node\\tools\\node'; " +

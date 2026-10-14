@@ -3,8 +3,9 @@
 // installed with npm, the Gateway kept by a Scheduled Task. No login shell
 // here: npm's openclaw.cmd is found as the openclaw.mjs it runs
 // (agent-cli.mjs) and started with a Node OpenClaw accepts, its arguments
-// fixed and no shell between (cmd would read a token's & or % as commands). A secret is never an argument: it's the variable OpenClaw reads,
-// set in the child's own environment, or its stdin.
+// fixed and no shell between (cmd would read a token's & or % as commands).
+// A secret is never an argument: it's the variable OpenClaw reads, set in
+// the child's own environment, or its stdin.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,25 +13,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { envValue, findWindowsCli, windowsCliDirs } from "./agent-cli.mjs";
 import { accountSid } from "./windows-private-folder.mjs";
+import { nodeVersion, privateNodeDir, REACH_NODE, supportedNode } from "./openclaw-node.mjs";
+
+// The Node pieces every computer shares (openclaw-node.mjs), as before.
+export { NODE_NEEDED, nodeVersion, privateNodeDir, supportedNode } from "./openclaw-node.mjs";
 
 const exec = promisify(execFile);
 
-// The Node OpenClaw runs on: 24.16 or newer on 24, 26.1 or newer, anything
-// after 26 (its engines, ">=24.16.0 <25 || >=26.1.0", and its installer's
-// Test-NodeVersionSupported).
-export const NODE_NEEDED = "24.16";
-export function supportedNode(version) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
-  if (!m) return false;
-  const [major, minor] = [Number(m[1]), Number(m[2])];
-  return major === 24 ? minor >= 16 : major === 26 ? minor >= 1 : major > 26;
-}
-
-// OpenClaw's own Node, for OpenClaw only: where its installer's -NodeOnly and
-// its "Update NodeJS" offer put it, and where its launcher looks first when
-// the Node it was started with is too old (node-runtime-update.mjs).
-export const privateNodeDir = ({ env = process.env, home = os.homedir() } = {}) =>
-  path.join(envValue(env, "OPENCLAW_HOME")?.trim() || home, ".openclaw", "tools", "cli-node", "tools", "node");
 // Where OpenClaw's installer puts a Node of its own when the PC has none it
 // can use (install.ps1's portable fallback); npm's global commands land
 // beside it then.
@@ -58,26 +47,6 @@ const fileAt = async (file) => {
     return false;
   }
 };
-// A Node's version, read once per build of it (`node -p`), or null.
-const versions = new Map();
-export async function nodeVersion(file, { run = exec, stat = fs.stat } = {}) {
-  let key;
-  try {
-    const s = await stat(file);
-    key = `${s.size}:${s.mtimeMs}`;
-  } catch {
-    return null;
-  }
-  const kept = versions.get(file);
-  if (kept?.key === key) return kept.version;
-  let version = null;
-  try {
-    version = String((await run(file, ["-p", "process.versions.node"], { timeout: 15000, windowsHide: true })).stdout).trim();
-  } catch {}
-  if (!/^\d+\.\d+\.\d+/.test(version || "")) version = null;
-  versions.set(file, { key, version });
-  return version;
-}
 
 const pathDirs = (env) =>
   (envValue(env, "PATH") || "").split(";").map((dir) => dir.trim().replace(/^"(.*)"$/, "$1")).filter((dir) => dir && path.isAbsolute(dir));
@@ -115,7 +84,6 @@ export async function openClawNode({ env = process.env, home = os.homedir(), scr
 // OpenClaw needs first (agent-install.mjs). `version` is the PC's own Node,
 // for the phone: Reach's private one (.reach\runtime, scripts/bootstrap.ps1,
 // first on PATH when the PC has none it can use) isn't the PC's.
-const REACH_NODE = /[\\/]\.reach[\\/]runtime[\\/]node-v[^\\/]+[\\/]node\.exe$/i;
 export async function installNode({ env = process.env, home = os.homedir(), version = nodeVersion, isFile = fileAt } = {}) {
   const found = [];
   for (const file of pathDirs(env).map((dir) => path.join(dir, "node.exe")))

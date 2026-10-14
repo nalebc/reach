@@ -12,6 +12,7 @@ import path from "node:path";
 import { localOpenClawConfig } from "./openclaw.mjs";
 import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { typedCli } from "./openclaw-windows.mjs";
+import { privateNode } from "./openclaw-node.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -316,7 +317,10 @@ export async function runOpenClawMaintenance(action, {
   if (platform !== "win32") {
     // exec: a timeout kills openclaw itself, not just the login shell.
     command = `exec ${command}`;
-    if (runtime) {
+    // OpenClaw's own Node isn't led on PATH: its launcher takes it by
+    // itself, and npm there would name another global folder than the one
+    // OpenClaw is in; the Gateway it installs records the Node it runs on.
+    if (runtime && runtime !== privateNode({ platform, env })) {
       if (action === "repair-service") command += ` --runtime-path ${quote(runtime)}`;
       command = `export PATH=${quote(path.dirname(runtime))}:"$PATH"; ${command}`;
     }

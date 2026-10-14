@@ -12,7 +12,7 @@ import { cleanSessions } from "./helpers/clean-machine.mjs";
 // a hand-written `errors: {}` is how a red "Codex is not installed" alert
 // went unseen.
 const peer = { id: "mac", name: "Studio", url: "https://reach.test", token: "t", platform: "darwin" };
-const MAC_OPENCLAW = { agent: "openclaw", name: "OpenClaw", command: "npm install -g openclaw@latest" };
+const MAC_OPENCLAW = { agent: "openclaw", name: "OpenClaw", command: "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard" };
 let openclawPlan = MAC_OPENCLAW;
 let dir, clean, dom, React, EverythingChat, HomeLive;
 before(async () => {
@@ -88,7 +88,7 @@ test("Install on a row shows that agent's own command first", async () => {
   const row = [...add.querySelectorAll("li")].find((li) => li.textContent.includes("OpenClaw"));
   [...row.querySelectorAll("button")].find((b) => /Install/.test(b.textContent)).click();
   const command = await dom.waitFor(() => dom.document.querySelector(".chat-setup-command"));
-  assert.equal(command.textContent, "npm install -g openclaw@latest");
+  assert.equal(command.textContent, MAC_OPENCLAW.command);
   await view.unmount();
 });
 
@@ -101,7 +101,7 @@ test("a Windows PC offers OpenClaw too: its own installer, what it needs first, 
     agent: "openclaw",
     name: "OpenClaw",
     command: "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard",
-    note: "OpenClaw needs Node 24.16 or newer, and this PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this PC's Node as it is.",
+    note: "OpenClaw needs Node 24.16 or newer, and this Windows PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this Windows PC's Node as it is.",
   };
   try {
     dom.window.localStorage.removeItem("reach.chatAgent");

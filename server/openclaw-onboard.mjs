@@ -23,6 +23,7 @@ import path from "node:path";
 import { hasCommand } from "./agent-install.mjs";
 import { openClawShell, runOpenClaw, secretEnv } from "./openclaw-run.mjs";
 import { findOpenClaw, killTree, typedCli } from "./openclaw-windows.mjs";
+import { computerWord } from "./computer-word.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 // Same shape as channel tokens (addOpenClawChannel).
@@ -181,10 +182,10 @@ export async function setupFailure(error, file, platform = process.platform) {
   return { state: "failed", error: SETUP_ERRORS.failed };
 }
 
-// OpenClaw's own Windows app keeps its Gateway in a WSL distro of its own:
-// nothing on Windows says it's set up, yet it answers on the Gateway's port.
-// Anything answering there, or not refusing (Windows takes about two seconds
-// to refuse a closed port on this PC itself), counts.
+// A Gateway on OpenClaw's port that nothing here says was set up (another
+// install, another user's): setup doesn't start a second one beside it, on
+// any computer. Anything answering there, or not refusing (Windows takes
+// about two seconds to refuse a closed port on the PC itself), counts.
 export async function gatewayAnswers({ port = GATEWAY_PORT, get = fetch, timeoutMs = 6000 } = {}) {
   try {
     await get(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(timeoutMs) });
@@ -220,9 +221,9 @@ export async function onboardOpenClaw(
   try {
     // Never over an existing setup (new Gateway token, Tailscale off).
     if (await exists(file)) throw fail(409, "OpenClaw is already set up.");
-    // Nor beside a Gateway Reach can't see (Windows: OpenClaw's own app).
-    if (platform === "win32" && (await gateway()))
-      throw fail(409, "OpenClaw already runs on this PC (likely its Windows app), with a Gateway Reach can't see. Reach won't start a second one.");
+    // Nor beside a Gateway Reach can't see.
+    if (await gateway())
+      throw fail(409, `Something already answers on OpenClaw's Gateway port on this ${computerWord(platform)}, and Reach can't see what set it up. Reach won't start a second Gateway beside it.`);
     authorize();
     const secret = pick(provider).envVar;
     // Windows finds OpenClaw before it runs: none there is said now.
