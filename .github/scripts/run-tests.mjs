@@ -42,6 +42,8 @@ export const suites = {
     // The first run's install alongside its setup, numbered menus included,
     // on Windows' own Node (audit #31; the real console is workstream U's).
     "first-start", "prompts",
+    // Setup, status and stop on Windows' own Node: first run there Oct 14.
+    "setup", "instances", "stop",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],

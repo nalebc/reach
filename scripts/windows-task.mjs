@@ -29,8 +29,16 @@ export const systemFolder = (env = process.env) => {
 // Windows' own per-user tasks are named.
 export const taskName = (sid) => `Reach-${sid}`;
 // Which Reach folder installed it: a name the task carries (its Source), in
-// ASCII, so schtasks' code page can't spoil it.
-export const taskMarker = (root) => `Reach ${crypto.createHash("sha256").update(path.win32.resolve(String(root)).toLowerCase()).digest("hex").slice(0, 16)}`;
+// ASCII, so schtasks' code page can't spoil it. One folder however Windows
+// names it (any case, 8.3 short names like RUNNER~1).
+const canonical = (root) => {
+  try {
+    return fs.realpathSync.native(String(root));
+  } catch {
+    return String(root);
+  }
+};
+export const taskMarker = (root) => `Reach ${crypto.createHash("sha256").update(path.win32.resolve(canonical(root)).toLowerCase()).digest("hex").slice(0, 16)}`;
 // While this file exists, the starter doesn't start Reach again: stop, uninstall
 // and update write it first. Your own app data, whichever folder runs Reach,
 // one per task.

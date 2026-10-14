@@ -287,7 +287,8 @@ fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ args: process.argv.
   const { stdout } = await exec(path.join(process.env.SystemRoot, "System32", "schtasks.exe"), ["/Query", "/TN", name, "/XML"], { encoding: "buffer", windowsHide: true });
   const xml = decodeOutput(stdout);
   assert.match(xml, /<LogonType>InteractiveToken<\/LogonType>/);
-  assert.match(xml, /<RunLevel>LeastPrivilege<\/RunLevel>/);
+  // Windows leaves the default, least privilege, out of the XML it gives back.
+  assert.doesNotMatch(xml, /HighestAvailable/);
   assert.ok(xml.includes(taskMarker(root)), "it names this folder");
   // Run now by install: the starter ran the stand-in, with no window and its output in the logs.
   for (const until = Date.now() + 60000; !fs.existsSync(marker); ) {
