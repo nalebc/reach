@@ -124,6 +124,7 @@ import { startInTerminal } from "../scripts/stop.mjs";
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
+import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -289,9 +290,8 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
-  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
+    config.tailscaleOwner && config.publicOrigin
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -312,13 +312,12 @@ export async function createReach(overrides = {}) {
   originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
-  // Invite keys need phones approved by your Tailscale account: not on a
-  // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
-  // before this computer is set up. Said the same way wherever it's asked.
-  const noInviteKeys =
-    hostPlatform === "win32" && !config.tailscaleOwner
-      ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
-      : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
+  // Invite keys need phones approved by your Tailscale account: not before
+  // this computer is set up, nor while a PC set up for it is on pairing codes
+  // (scripts/launch.mjs signInOff). Said the same way wherever it's asked.
+  const noInviteKeys = config.signInOff
+    ? `Invite links are off on this ${computerWord(hostPlatform)} for now: ${config.signInOff}`
+    : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
     ? createGuestKeys({
         dataDir: config.dataDir,
@@ -328,10 +327,9 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
-  // on Windows yet, even with browser sign-in: its own acceptance first.
+  // login (server/face-join.mjs): a passkey here and invite keys set up.
   const faceJoin =
-    passkeys && guestKeys && hostPlatform !== "win32"
+    passkeys && guestKeys
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -1129,16 +1127,37 @@ export async function createReach(overrides = {}) {
     const off = async () => { throw fail(503, `${why}.`); };
     return { append: off, history: off, close: async () => {} };
   });
-  // What the sandbox around agents' commands and jobs denies; null off macOS.
-  // Reach's sockets wherever they are: the private one Tailscale uses, and
-  // the permission-prompt one in the temp folder when the data folder's path
-  // is too long for a socket (an agent could post prompts to your phone).
-  const jobSandbox = () => overrides.jobSandbox !== undefined ? overrides.jobSandbox
-    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] }) : null;
+  // What the sandbox around agents' commands and jobs denies. On a Mac it's the
+  // sandbox-exec deny list (agentShellSandbox); on Windows the AppContainer
+  // descriptor (server/windows-sandbox.mjs), which the hash-verified helper runs
+  // the job inside — the deny set mirrors the Mac's (findings 1, 5). null on any
+  // other platform. Reach's sockets wherever they are: the private one Tailscale
+  // uses, and the permission-prompt one in the temp folder when the data
+  // folder's path is too long for a socket (an agent could post prompts to you).
+  const jobSandbox = (client) => overrides.jobSandbox !== undefined ? overrides.jobSandbox
+    : process.platform === "darwin" ? agentShellSandbox(config, { sockets: [...(privateSocket ? [path.dirname(privateSocket)] : []), agentAskSocket(config.dataDir)] })
+    : process.platform === "win32" ? windowsJobSandbox(config, client, { sockets: privateSocket ? [path.dirname(privateSocket)] : [] })
+    : null;
+  // The Windows command sandbox: it builds the helper once in the private folder
+  // D confirmed this launch (overrides.windowsSandboxHelper) and runs the launch
+  // self-test at start (§2.2). Absent that folder, or where policy blocks it,
+  // the jobs POST refuses with the reason. null off Windows.
+  const windowsSandbox = process.platform === "win32"
+    ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
+    : null;
+  // The grants ledger and its revoke walk (§4.6): a changed or revoked session
+  // loses its capability on the next launch with no walk; this reclaims the
+  // on-disk ACEs. null off Windows and when the sandbox isn't prepared.
+  const windowsGrants = windowsSandbox && overrides.windowsSandboxHelper
+    ? createWindowsGrantLedger({ dir: config.dataDir, revoke: windowsRevoker(windowsSandbox) })
+    : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
-  // the other agent commands.
+  // the other agent commands. On Windows its production runner is injected here
+  // (not through the test override): a Job Object on the owner's token, no
+  // AppContainer, which ignores the Mac env createAgentShell passes (§3.2).
   const agentShell = createAgentShell({ commandLog: browserCommandLog, actions: logAction,
-    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun } : {}) });
+    record, ...(overrides.agentShellRun ? { run: overrides.agentShellRun }
+      : process.platform === "win32" ? { run: windowsShellRunner(windowsSandbox) } : {}) });
   const invalidateSharedWrites = ({ clientId, root }) => browserApprovals.invalidateSharedWrites(clientId, root);
   const browserOperations = createBrowserOperationCoordinator({
     onWrite: invalidateSharedWrites,
@@ -1161,7 +1180,7 @@ export async function createReach(overrides = {}) {
     notify,
     record,
     execute: async (action, authorize, request, progress) => {
-      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations }); }
+      if (action.type === "terminal-script") { authorize(); return runBrowserScript(action, () => { notPaused(); return authorize(); }, { resolve, config, privatePaths: browserPaths(), coordinator: browserOperations, windowsSandbox }); }
       const actions = browserRequestActions(action);
       const batch = action.type === "batch";
       if (actions.every((step) => ["terminal", "terminal-change"].includes(step.type))) {
@@ -2631,9 +2650,22 @@ export async function createReach(overrides = {}) {
     void agentApps.release(id).catch(() => {});
     // A revoked phone gets no more notifications.
     push.forgetClient(id);
+    // Windows: kill this session's running jobs first, then reclaim its
+    // capability ACEs on disk (§4.6). Off Windows windowsGrants is null.
+    if (windowsGrants) {
+      for (const job of jobs.list()) if (job.clientId === id && job.status === "running") jobs.cancel(job.id);
+      void windowsGrants.revokeClient(id).catch(() => {});
+    }
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  // Windows: a startup sweep reclaims grants whose client is gone or expired
+  // (expiry fires no event), and an hourly sweep keeps up with expiries (§4.6).
+  if (windowsGrants) {
+    const sweep = () => void windowsGrants.sweep((id) => !!auth.list().find((c) => c.id === id)).catch(() => {});
+    setTimeout(sweep, 5000).unref?.();
+    setInterval(sweep, 3600000).unref?.();
+  }
   const endClient = (id) => {
     auth.revoke(id);
     lastUse.delete(id);
@@ -2744,7 +2776,7 @@ export async function createReach(overrides = {}) {
     // Keep the original root and relative path; resolving a symbolic link here
     // would conceal it from the helper's descriptor-relative traversal.
     return browserFileOperation({ op: operation, root, path: relative,
-      ...limits, privatePaths: browserPaths() }, check, { config });
+      ...limits, privatePaths: browserPaths() }, check, { config, windowsSandbox });
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
   // The Mac's own Shortcuts an agent may run: the owner's list (server/mac-shortcuts.mjs).
@@ -2777,8 +2809,8 @@ export async function createReach(overrides = {}) {
     // Screen text an agent didn't read again (savings.mjs, "screen-diff").
     savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
-      // A Windows Reach has no public link without browser sign-in.
-      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
+      // No public link without phones approved by your Tailscale account.
+      if (!prepareFunnel && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -3174,7 +3206,7 @@ export async function createReach(overrides = {}) {
     requireOwner(req.client, j);
     return j;
   };
-  app.post("/api/jobs", (req, res) => {
+  app.post("/api/jobs", async (req, res) => {
     const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const timeoutMs =
@@ -3182,16 +3214,30 @@ export async function createReach(overrides = {}) {
     if (req.client.maxJobMs && timeoutMs > req.client.maxJobMs)
       throw fail(403, "Job duration exceeds this agent profile limit.");
     // Your own devices run as you; anyone else's job runs in the sandbox
-    // Full control agents' commands do.
+    // Full control agents' commands do (win32: a refused grant throws here).
     const own = req.client.kind === "device" && req.client.scopes.includes("admin");
-    const sandbox = own ? null : jobSandbox();
-    // No sandbox here yet (Windows and Linux): an agent's or invited
+    const sandbox = own ? null : jobSandbox(req.client);
+    // No sandbox on a platform without one (Linux): an agent's or invited
     // person's command would run as you, free to rewrite Reach's own files
     // and so its own access. It doesn't run, as without sandbox-exec on a
     // Mac (jobs.mjs). Oct 12: Windows and Linux had run them unsandboxed.
     if (!own && !sandbox)
       throw fail(503, `Commands from agents and invited people run only in a sandbox, which this ${computerWord(process.platform)} doesn't have yet. Your own devices can run commands.`);
-    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox });
+    // Windows runs the sandboxed job through the helper: prove the OS lets the
+    // helper run (§2.2) and hand jobs.start the hash-verified helper. Fails
+    // closed with the reason (Smart App Control, application control, or its
+    // private folder not ready); never falls back to an interpreter.
+    let helper = null;
+    if (!own && process.platform === "win32") {
+      const ready = await windowsSandbox.ready();
+      if (!ready.ok) throw fail(503, ready.reason);
+      helper = ready.built;
+    }
+    const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox, helper });
+    // Record the capability grant so a later revoke or sweep can reclaim its
+    // on-disk ACEs (§4.6); the live token already loses access on the next launch.
+    if (helper && sandbox?.grants?.length)
+      windowsGrants?.record({ clientId: req.client.id, roots: sandbox.grants.map((g) => g.root), expiresAt: req.client.expiresAt });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });
@@ -5760,9 +5806,8 @@ export async function createReach(overrides = {}) {
         publicApp: publicDoor(publicApp),
       });
     },
-    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
-    // keyed loopback route only Tailscale's own process may use
-    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    // Windows: the same, on a keyed loopback route only Tailscale's own
+    // process may use (server/tailscale-auth.mjs listenKeyedIngress). Its port.
     async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
