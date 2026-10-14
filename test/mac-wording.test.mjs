@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // The phone said "Mac" to Windows owners in about twenty places (Oct 12
 // parity audit, docs/parity/AUDIT.md #25): words a page shows on every
@@ -21,15 +22,13 @@ const ALLOWED = {
   "BrowserInvite.tsx": 6, // workstream E
   "BrowserWorkspace.tsx": 2, // agent presets (workstream E)
   "DesktopTerminals.tsx": 10, // Terminal and iTerm2 tabs (workstream T)
-  "HomeLive.tsx": 4, // Mac tabs on Home (workstream T); the default word
+  "HomeLive.tsx": 3, // the default word; a Mac tab's badge (a PC's says PC)
   "MacPrompts.tsx": 6, // macOS permission prompts
-  "MacTerminalView.tsx": 2, // Terminal and iTerm2 tabs (workstream T)
   "MoveChat.tsx": 2, // default word
   "NeedsYou.tsx": 11, // macOS permission prompts
+  "OpenClawPages.tsx": 1, // "iMessage needs a Mac", said on a PC (true everywhere)
   "Screen.tsx": 5, // macOS permission prompts
   "ServiceAgentTools.tsx": 1, // saved browser tools (workstream G)
-  "Sessions.tsx": 3, // Terminal and iTerm2 tabs (workstream T)
-  "TerminalList.tsx": 3, // Terminal and iTerm2 tabs (workstream T)
   "ToolBrowserSetup.tsx": 4, // saved browser tools (workstream G)
   "agent-admissions.tsx": 1, // agent presets (workstream E)
   "api.ts": 1, // computerWord's own words
@@ -48,7 +47,7 @@ const said = (text) =>
 test("pages shown on every computer say computerWord, not Mac; Mac-only features keep it", () => {
   const over = [];
   for (const name of fs.readdirSync(src).filter((f) => /\.tsx?$/.test(f)).sort()) {
-    const count = said(fs.readFileSync(path.join(src.pathname, name), "utf8"));
+    const count = said(fs.readFileSync(path.join(fileURLToPath(src), name), "utf8"));
     if (count > (ALLOWED[name] || 0)) over.push(`${name}: ${count} (allowed ${ALLOWED[name] || 0})`);
   }
   assert.deepEqual(over, [], "Use computerWord(peer.platform) from src/pause.ts for words every computer shows");
