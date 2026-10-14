@@ -264,9 +264,23 @@ static class RunAs {
       }
       if (!CreateRestrictedToken(own, DISABLE_MAX_PRIVILEGE, admin.Length, array, 0, IntPtr.Zero, 0, IntPtr.Zero, out token)) throw new Win32Exception();
       try {
+        SecurityIdentifier user = WindowsIdentity.GetCurrent().User;
         IntPtr owner = Hold(held, 8);
-        Marshal.WriteIntPtr(owner, 0, Block(held, WindowsIdentity.GetCurrent().User));
+        Marshal.WriteIntPtr(owner, 0, Block(held, user));
         if (!SetTokenInformation(token, 4, owner, 8)) throw new Win32Exception();
+        // Its own objects (process, threads, what it creates) for the account
+        // and SYSTEM, as UAC's limited token has them: an administrator's
+        // default DACL names Administrators, deny-only here.
+        var acl = new RawAcl(GenericAcl.AclRevision, 2);
+        acl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, GENERIC_ALL, user, false, null));
+        acl.InsertAce(1, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, GENERIC_ALL, new SecurityIdentifier("S-1-5-18"), false, null));
+        byte[] binary = new byte[acl.BinaryLength];
+        acl.GetBinaryForm(binary, 0);
+        IntPtr aclBlock = Hold(held, binary.Length);
+        Marshal.Copy(binary, 0, aclBlock, binary.Length);
+        IntPtr dacl = Hold(held, 8);
+        Marshal.WriteIntPtr(dacl, 0, aclBlock);
+        if (!SetTokenInformation(token, 6, dacl, 8)) throw new Win32Exception();
         var medium = new SecurityIdentifier("S-1-16-8192");
         // TOKEN_MANDATORY_LABEL: one SID_AND_ATTRIBUTES, SE_GROUP_INTEGRITY.
         IntPtr label = Hold(held, 16);
