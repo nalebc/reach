@@ -2,19 +2,28 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 import crypto from "node:crypto";
-import { desktopBinary } from "./desktop-native.mjs";
+import { desktopBinary, windowsBinary } from "./desktop-native.mjs";
 import { fail } from "./core.mjs";
 
 // The Mac's Terminal and iTerm2 windows, kept current by events instead of
 // the phone asking every few seconds. A small helper reports new and closed
 // tabs and each tab's output (scripts/native/terminal-watch.swift); only then
 // is the slow AppleScript list or read run, and the phone is told through
-// its live connection. Nothing runs while the terminals are idle.
-export function terminalWatchHelper(config) {
+// its live connection. Nothing runs while the terminals are idle. A Windows
+// PC's twin is its terminals helper run as a watch
+// (scripts/native/windows-terminals.cs), saying the same things the same way;
+// a Windows Terminal tab's console never says it printed, so the twin looks
+// at listed ones once a second while phones are connected.
+export function terminalWatchHelper(config, { platform = process.platform, build = windowsBinary, start = spawn } = {}) {
   return async ({ signal } = {}) => {
-    const binary = await desktopBinary(config, "terminal-watch", { signal });
+    const windows = platform === "win32";
+    const binary = windows
+      ? await build(config, "windows-terminals", { signal })
+      : await desktopBinary(config, "terminal-watch", { signal });
     signal?.throwIfAborted();
-    const child = spawn(binary, [], { stdio: ["pipe", "pipe", "ignore"] });
+    const child = windows
+      ? start(binary, ["watch"], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
+      : start(binary, [], { stdio: ["pipe", "pipe", "ignore"] });
     const helper = new EventEmitter();
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
       try {

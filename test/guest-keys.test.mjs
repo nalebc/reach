@@ -483,7 +483,13 @@ test(
 // First-run matrix T26: a Windows Reach approves phones by pairing code, so it
 // can't make invite keys; wherever the phone asks, it hears why, not a setup
 // step that can't work there.
-test("a Windows computer says why invite links aren't available, wherever it's asked", async (t) => {
+// A Windows PC not set up with your account yet answers as a Mac does; one
+// set up for it but on pairing codes for now (scripts/launch.mjs) says why.
+for (const [name, extra, why] of [
+  ["not set up with your account yet", {}, `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`],
+  ["on pairing codes for now", { signInOff: "Tailscale 1.90.0 is older than 1.104; update Tailscale." }, "Invite links are off on this Windows PC for now: Tailscale 1.90.0 is older than 1.104; update Tailscale."],
+])
+test(`a Windows PC ${name} says why invite links are off, wherever it's asked`, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keys-win-"));
   const reach = await createReach({
     roots: [dir],
@@ -491,6 +497,7 @@ test("a Windows computer says why invite links aren't available, wherever it's a
     port: 0,
     platform: "win32",
     tailscaleStatus: async () => ({ Self: {}, Peer: {} }),
+    ...extra,
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   t.after(async () => {
@@ -507,7 +514,6 @@ test("a Windows computer says why invite links aren't available, wherever it's a
     });
     return { status: r.status, json: await r.json() };
   };
-  const why = "Invite links for people and agents without Tailscale aren't available on Windows yet.";
   const keys = await call("/api/guests/keys");
   assert.equal(keys.status, 200);
   assert.deepEqual([keys.json.configured, keys.json.available, keys.json.why], [false, false, why]);
