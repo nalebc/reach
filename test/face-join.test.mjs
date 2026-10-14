@@ -12,6 +12,7 @@ import { publicStartHandler } from "../server/public-start.mjs";
 import { newIngressKey } from "../server/tailscale-auth.mjs";
 import { softAuthenticator } from "./helpers/soft-authenticator.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
+import { command } from "../scripts/home.mjs";
 
 // Face ID sign-in: a new browser, no Tailscale app, no Tailscale login. The
 // start page (the internet) gets a challenge, the phone answers with a passkey
@@ -280,7 +281,7 @@ test(
     // The browser joins with that key: a tagged device named as told.
     const FACE = "100.64.0.30";
     NODES[FACE] = { id: "nFace", user: 0, name: joined.json.hostname, tags: [GUEST_TAG] };
-    assert.deepEqual((await from(FACE, "/api/auth/method", { method: "GET" })).json, { method: "tailscale", eligible: false, faceJoin: true });
+    assert.deepEqual((await from(FACE, "/api/auth/method", { method: "GET" })).json, { method: "tailscale", eligible: false, faceJoin: true, command });
     // A guest's device can't use the ticket.
     assert.equal((await from("100.64.0.20", "/api/auth/face-join", { body: { ticket: joined.json.ticket } })).status, 403);
     const signedIn = await from(FACE, "/api/auth/face-join", { body: { ticket: joined.json.ticket, name: "iPhone" } });

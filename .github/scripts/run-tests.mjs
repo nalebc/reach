@@ -40,6 +40,9 @@ export const suites = {
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
+    // Windows conveniences, workstream W: the owner's own shell in Reach's
+    // terminals, drives attached later, the launcher's name on the phone.
+    "windows-shell", "file-roots", "connect-states-ui",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

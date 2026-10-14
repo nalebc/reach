@@ -35,7 +35,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileRootName, hiddenByOs } from "./file-roots.mjs";
+import { fileRootName, hiddenByOs, refreshDriveRoots } from "./file-roots.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
@@ -1382,6 +1382,9 @@ export async function createReach(overrides = {}) {
       ...(faceJoin?.available() && faceJoin.ownDevice(req.reachIdentity)
         ? { faceJoin: true }
         : {}),
+      // How this computer's Reach is run, for the phone's hints: reach,
+      // ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
+      command,
     }),
   );
   app.use("/api", (req, res, next) => {
@@ -2049,8 +2052,8 @@ export async function createReach(overrides = {}) {
       platform: process.platform,
       release: os.release(),
       arch: os.arch(),
-      roots: (req.client.agentRoots || config.roots).map((p, index) => ({
-        id: index,
+      roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
+        id,
         name: fileRootName(p),
         path: p,
       })),
