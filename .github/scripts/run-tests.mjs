@@ -27,6 +27,7 @@ export const suites = {
     "tap-clicks", "screen-double-click-ui",
     // Bug bash recovery: shared chat/file UI and native input refusals.
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
+    "agent-compatibility",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
