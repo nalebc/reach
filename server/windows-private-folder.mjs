@@ -24,6 +24,9 @@ const exec = promisify(execFile);
 // `helpers`: helpers built there (cached, by hash), checked with the rest.
 const ACCOUNT = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
 const SYSTEM = "S-1-5-18", ADMINISTRATORS = "S-1-5-32-544";
+// Windows can materialize its default broad grants as explicit ACEs on a
+// newly created folder. Removing inheritance alone then leaves them intact.
+const BROAD_READERS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-15-2-1", "S-1-15-2-2"];
 const CHECKER = "private-folder";
 const OFF = "so browser sign-in stays off.";
 const UNCHECKED = "Reach couldn't check who can use its folders on this PC";
@@ -79,7 +82,8 @@ export async function ensurePrivateFolders({
       mkdirSync(dir, { recursive: true });
       await run(
         path.win32.join(system, "icacls.exe"),
-        [dir, "/inheritance:r", "/grant:r", `*${SYSTEM}:(OI)(CI)F`, `*${ADMINISTRATORS}:(OI)(CI)F`, `*${sid}:(OI)(CI)F`, "/Q"],
+        [dir, "/inheritance:r", "/remove:g", ...BROAD_READERS.map(value => `*${value}`),
+          "/grant:r", `*${SYSTEM}:(OI)(CI)F`, `*${ADMINISTRATORS}:(OI)(CI)F`, `*${sid}:(OI)(CI)F`, "/Q"],
         { timeout: 60000, windowsHide: true },
       );
     } catch {

@@ -6,6 +6,15 @@ name: Windows validation
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: Windows version and architecture
+        type: choice
+        required: false
+        default: windows-2025
+        options:
+          - windows-2025
+          - windows-2022
+          - windows-11-arm
       tests:
         description: Test files under test/, space-separated
         required: false
@@ -13,11 +22,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: windows-validation-${{ github.ref }}
+  group: windows-validation-${{ github.ref }}-${{ inputs.runner || 'windows-2025' }}
   cancel-in-progress: true
 jobs:
   windows:
-    runs-on: windows-2025
+    # Keep dispatch limited to these hosted images, including API callers.
+    runs-on: ${{ inputs.runner == 'windows-11-arm' && 'windows-11-arm' || inputs.runner == 'windows-2022' && 'windows-2022' || 'windows-2025' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

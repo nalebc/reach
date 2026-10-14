@@ -313,7 +313,10 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     } catch (error) {
       ready = { ready: { ok: false, reason: `peer-host didn't start: ${error.message}` } };
     }
-    if (!ready.ready.ok) t.diagnostic(`${mode}: peer-probe from its own Node: ${brief(readText(path.join(dir, "peer-probe-node.txt")))}`);
+    if (!ready.ready.ok) {
+      t.diagnostic(`${mode}: peer-probe from its own Node: ${brief(readText(path.join(dir, "peer-probe-node.txt")))}`);
+      t.diagnostic(`${mode}: state folder permissions: ${(await icacls(stateDir)).stdout.trim()}`);
+    }
     return ready;
   };
   const limited = await tryReach("limited", limitedResults, limitedState);
