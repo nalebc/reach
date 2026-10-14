@@ -150,6 +150,11 @@ static class Sandbox {
         return Scripts.Run(request, Emit);
       case "file":
         return Files.Run(request, Emit);
+      case "revoke":
+        // §4.6: remove each root's capability ACEs, continuing past reparse
+        // points. The job was killed first by the caller.
+        foreach (string root in request.List("grant")) Grants.Revoke(root, new List<string>());
+        return 0;
       default:
         throw new Refused(400, "This sandbox mode is not available on this computer.");
     }

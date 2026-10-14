@@ -124,7 +124,7 @@ import { startInTerminal } from "../scripts/stop.mjs";
 import { command } from "../scripts/home.mjs";
 import { BrowserScreenSnapshots } from "./browser-screen.mjs";
 import { Jobs } from "./jobs.mjs";
-import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner } from "./windows-sandbox.mjs";
+import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -1144,6 +1144,12 @@ export async function createReach(overrides = {}) {
   // the jobs POST refuses with the reason. null off Windows.
   const windowsSandbox = process.platform === "win32"
     ? createWindowsSandbox({ helper: overrides.windowsSandboxHelper || null })
+    : null;
+  // The grants ledger and its revoke walk (§4.6): a changed or revoked session
+  // loses its capability on the next launch with no walk; this reclaims the
+  // on-disk ACEs. null off Windows and when the sandbox isn't prepared.
+  const windowsGrants = windowsSandbox && overrides.windowsSandboxHelper
+    ? createWindowsGrantLedger({ dir: config.dataDir, revoke: windowsRevoker(windowsSandbox) })
     : null;
   // The shell for Full control agents (server/agent-shell.mjs): logged with
   // the other agent commands. On Windows its production runner is injected here
@@ -2644,9 +2650,22 @@ export async function createReach(overrides = {}) {
     void agentApps.release(id).catch(() => {});
     // A revoked phone gets no more notifications.
     push.forgetClient(id);
+    // Windows: kill this session's running jobs first, then reclaim its
+    // capability ACEs on disk (§4.6). Off Windows windowsGrants is null.
+    if (windowsGrants) {
+      for (const job of jobs.list()) if (job.clientId === id && job.status === "running") jobs.cancel(job.id);
+      void windowsGrants.revokeClient(id).catch(() => {});
+    }
     for (const ws of wss.clients)
       if (ws.clientId === id) ws.close(4001, "Access revoked");
   };
+  // Windows: a startup sweep reclaims grants whose client is gone or expired
+  // (expiry fires no event), and an hourly sweep keeps up with expiries (§4.6).
+  if (windowsGrants) {
+    const sweep = () => void windowsGrants.sweep((id) => !!auth.list().find((c) => c.id === id)).catch(() => {});
+    setTimeout(sweep, 5000).unref?.();
+    setInterval(sweep, 3600000).unref?.();
+  }
   const endClient = (id) => {
     auth.revoke(id);
     lastUse.delete(id);
@@ -3215,6 +3234,10 @@ export async function createReach(overrides = {}) {
       helper = ready.built;
     }
     const j = jobs.start({ ...req.body, cwd, timeoutMs }, req.client.id, { sandbox, helper });
+    // Record the capability grant so a later revoke or sweep can reclaim its
+    // on-disk ACEs (§4.6); the live token already loses access on the next launch.
+    if (helper && sandbox?.grants?.length)
+      windowsGrants?.record({ clientId: req.client.id, roots: sandbox.grants.map((g) => g.root), expiresAt: req.client.expiresAt });
     record("job", "Agent ran a command");
     res.status(202).json(j);
   });

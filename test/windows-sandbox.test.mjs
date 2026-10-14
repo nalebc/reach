@@ -296,3 +296,23 @@ test("reach_shell's description stays the Mac's wording on macOS and names the J
   assert.match(source, /macOS permissions still apply\./, "the Mac wording is unchanged");
   assert.match(source, /Runs inside a Job Object as the owner's Windows account\./, "Windows names the Job Object");
 });
+
+import { createWindowsGrantLedger, revokeRequestEntries } from "../server/windows-sandbox.mjs";
+
+test("the grants ledger revokes a client's roots and sweeps gone or expired grants (§4.6)", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-grant-ledger-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const revoked = [];
+  const ledger = createWindowsGrantLedger({ dir, revoke: async (roots) => revoked.push(roots), now: () => 1000 });
+  ledger.record({ clientId: "a", roots: ["c:\\users\\me\\a"], expiresAt: 500 }); // already expired
+  ledger.record({ clientId: "b", roots: ["c:\\users\\me\\b"], expiresAt: 0 });   // no expiry
+  // Revoking a client walks exactly its roots and forgets its entry.
+  await ledger.revokeClient("b");
+  assert.deepEqual(revoked, [["c:\\users\\me\\b"]]);
+  // The sweep reclaims a gone client and an expired grant, keeping live ones.
+  ledger.record({ clientId: "c", roots: ["c:\\users\\me\\c"], expiresAt: 0 });
+  await ledger.sweep((id) => id === "c"); // a is live-but-expired and gets swept; c stays
+  assert.deepEqual(revoked, [["c:\\users\\me\\b"], ["c:\\users\\me\\a"]]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "windows-sandbox", "grants.json"), "utf8")).map((e) => e.clientId), ["c"]);
+  assert.deepEqual(revokeRequestEntries(["c:\\x"]), [["mode", "revoke"], ["grant", "c:\\x"]]);
+});

@@ -1,4 +1,5 @@
 import os from "node:os";
+import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -393,4 +394,70 @@ export function scriptRequestEntries(descriptor, { executable, args = [], cwd, t
   for (const deny of descriptor.denies || []) entries.push(["deny", deny]);
   for (const name of descriptor.denyNames || []) entries.push(["denyName", name]);
   return entries;
+}
+
+// ---------------------------------------------------------------------------
+// §4.2, §4.6 Revocation, change and the sweeps. A change of roots already takes
+// effect on the next launch with no walk (the live token no longer carries that
+// capability); the on-disk ACEs are reclaimed by a revoke walk that continues
+// past reparse points. A ledger records which roots a client was granted, so the
+// expiry sweep (which fires no event) and the startup sweep can find orphans.
+export function revokeRequestEntries(roots) {
+  const entries = [["mode", "revoke"]];
+  for (const root of roots) entries.push(["grant", root]);
+  return entries;
+}
+
+// Spawns the helper to remove a set of roots' capability ACEs (the job is killed
+// first by the caller). Best-effort and bounded; a failure is left for a sweep.
+export function windowsRevoker(windowsSandbox, { start = spawnVerified } = {}) {
+  return async (roots) => {
+    if (!roots || !roots.length) return;
+    const ready = await windowsSandbox.ready();
+    if (!ready.ok) return;
+    await new Promise((resolve) => {
+      let child, settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { try { child?.kill(); } catch {} finish(); }, 120000);
+      timer.unref?.();
+      try { child = start(ready.built.file, ready.built.sha256, ["run"], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); }
+      catch { return finish(); }
+      child.on("close", finish);
+      child.on("error", finish);
+      try { child.stdin.write(encodeSandboxRequest(revokeRequestEntries(roots))); } catch { finish(); }
+    });
+  };
+}
+
+// The grants ledger, in an ensurePrivateFolders-protected folder. One entry per
+// client; a changed client's roots replace its entry (an atomic write).
+export function createWindowsGrantLedger({ dir, revoke = async () => {}, now = Date.now } = {}) {
+  const file = path.join(dir, "windows-sandbox", "grants.json");
+  const load = () => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return []; } };
+  const save = (list) => { fs.mkdirSync(path.dirname(file), { recursive: true }); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(list), { mode: 0o600 }); fs.renameSync(tmp, file); };
+  return {
+    record({ clientId, roots, expiresAt = 0 }) {
+      if (!clientId || !roots?.length) return;
+      const list = load().filter((entry) => entry.clientId !== clientId);
+      list.push({ clientId, roots, expiresAt, grantedAt: now() });
+      save(list);
+    },
+    async revokeClient(clientId) {
+      const list = load();
+      const entry = list.find((e) => e.clientId === clientId);
+      if (!entry) return;
+      await revoke(entry.roots);
+      save(list.filter((e) => e.clientId !== clientId));
+    },
+    // Reclaim entries whose client is gone or whose grant has expired.
+    async sweep(isLive) {
+      const list = load();
+      const keep = [];
+      for (const entry of list) {
+        if ((entry.expiresAt && entry.expiresAt <= now()) || !isLive(entry.clientId)) await revoke(entry.roots);
+        else keep.push(entry);
+      }
+      if (keep.length !== list.length) save(keep);
+    },
+  };
 }
