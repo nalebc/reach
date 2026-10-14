@@ -74,6 +74,7 @@ $f.Add_Shown({
   [IO.File]::WriteAllText("$out.ready", "$($p.X),$($p.Y)")
   $secret = $s.PointToScreen((New-Object System.Drawing.Point([int]($s.Width / 2), [int]($s.Height / 2))))
   [IO.File]::WriteAllText("$out.password", "$($secret.X),$($secret.Y)")
+  [IO.File]::WriteAllText("$out.frame", "$($f.Left),$($f.Top),$($f.Width),$($f.Height)")
   [IO.File]::WriteAllText("$out.double-ms", [string][ReachTargetDpi]::GetDoubleClickTime())
 })
 [System.Windows.Forms.Application]::Run($f)
@@ -170,6 +171,12 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     x: (boxX - primary.x) / Math.max(1, primary.width - 1),
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
   };
+  // Field maps describe the front window, as on a Mac. TopMost only makes
+  // this fixture visible; Windows can leave another app in front. Bring the
+  // fixture forward by its caption, keeping the button's initial focus and
+  // leaving its text/password boxes untouched.
+  const [left, top, width] = fs.readFileSync(`${out}.frame`, "utf8").split(",").map(Number);
+  await send({ type: "click", x: (left+width/2-primary.x)/primary.width, y: (top+12-primary.y)/primary.height, button: "left", count: 1 });
   note({ click: at });
   // UI Automation starts asynchronously and each probe is deliberately
   // bounded so it cannot hold up an owner's click. Wait for this fixture's
@@ -187,7 +194,10 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
   const contains = (field, point) => point.x>=field.x && point.x<=field.x+field.w && point.y>=field.y && point.y<=field.y+field.h;
   await until(() => input.messages.some(message => message.type === "fields" &&
     message.fields.some(field => contains(field, at) && field.secure === false) &&
-    message.fields.some(field => contains(field, secretAt) && field.secure === true)), "the text and password fields in the Windows field map", 15000);
+    message.fields.some(field => contains(field, secretAt) && field.secure === true)), "the text and password fields in the Windows field map", 15000).catch(error => {
+      note({ fieldMaps: input.messages.filter(message => message.type === "fields") });
+      throw error;
+    });
   assert.equal(fs.existsSync(`${out}.click`), false, "a probe never clicks the field");
   assert.equal(fs.existsSync(`${out}.text`), false, "a probe never types");
   assert.equal((await send({ type: "focus", ...at })).target.editable, false,
