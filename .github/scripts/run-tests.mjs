@@ -93,6 +93,11 @@ export const suites = {
     "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
+    // Workstream C, the Windows sandbox (docs/parity/C-sandbox.md). The unit
+    // tests run here on any host; the escape e2e are gated on a real runner
+    // (REACH_TEST_WINDOWS_DESKTOP=1, CI=true) and skip in this lane, running in
+    // ci.yml's real-Windows step and windows-validation.yml. A skip is not a pass.
+    "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

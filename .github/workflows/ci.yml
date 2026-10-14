@@ -166,9 +166,10 @@ jobs:
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
           if ($LASTEXITCODE) { exit 1 }
-          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/windows-screen-video-native.test.mjs test/windows-agent-desktop-native.test.mjs
+          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/windows-screen-video-native.test.mjs test/windows-agent-desktop-native.test.mjs test/windows-sandbox-e2e.test.mjs test/windows-file-boundary-e2e.test.mjs
         env:
           REACH_TEST_WINDOWS_DESKTOP: "1"
+          CI: "true"
       - run: npm run package
       - run: npm run verify:package
       - name: First-run and phone matrix against the installed npm artifact
