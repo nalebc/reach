@@ -37,6 +37,8 @@ export const suites = {
     "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Apps' icons and the agents' logos drawn by Windows (audit #28).
+    "windows-app-icons",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

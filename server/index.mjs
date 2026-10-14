@@ -44,7 +44,7 @@ import { compressJson, serveBuild } from "./delivery.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
-import { createAppIconCache } from "./app-icons.mjs";
+import { createAppIconCache, useAppIconFolder } from "./app-icons.mjs";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
@@ -188,6 +188,8 @@ export async function createReach(overrides = {}) {
     config.agentPolicyFile,
   ];
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  // Windows builds its app-icon helper here (app-icons.mjs).
+  useAppIconFolder(config.dataDir);
   // Settings changed from a paired phone persist; REACH_SCREEN only sets the default.
   const settingsFile = path.join(config.dataDir, "settings.json");
   // What each agent did on this Mac, for the owner (server/agent-actions.mjs).
