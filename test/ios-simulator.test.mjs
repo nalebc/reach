@@ -87,7 +87,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const allowed = Math.min(limit, left());
       const began = Date.now();
       try {
-        const result = await run("xcrun", ["simctl", ...args], allowed);
+        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed);
         steps.push({ step: name, attempt, seconds: since(began), ok: true });
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
@@ -287,6 +287,11 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     && (!process.env.REACH_TEST_IOS_RUNTIME || item.version === process.env.REACH_TEST_IOS_RUNTIME)).at(-1);
   assert.ok(runtime, "an iOS simulator runtime is installed");
   runtimeVersion = runtime.version;
+  // A fresh runner can still be building/scanning the runtime's shared cache
+  // after bootstatus says ready. Wait for this specific runtime's cache; never
+  // force a rebuild or touch another simulator's data.
+  await sim("runtime shared cache ready", ["runtime", "dyld_shared_cache", "update", runtime.identifier], { limit: 180000 });
+  reached("runtime shared cache ready");
   const types = JSON.parse((await sim("list devicetypes", ["list", "devicetypes", "-j"])).stdout).devicetypes;
   const supported = new Set(runtime.supportedDeviceTypes?.map(item => item.identifier));
   const phones = types.filter(item => item.name.startsWith("iPhone") && (!supported.size || supported.has(item.identifier)));
@@ -328,10 +333,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // screen, the app never started (run 38279745481's screenshot, no requests).
   await sim("install", ["install", device, app], { limit: 150000, attempts: 2 });
   reached("app installed");
-  // Twice more on a hang (PR 21 and PR 24, both attempts on the home
-  // screen): each attempt first stops a half-started copy of the app, and a
-  // third fits the lane's budget (a failing run reached launch at ~170 s).
-  await sim("launch", ["launch", "--terminate-running-process", device, bundle], { limit: 75000, attempts: 3 });
+  // A fresh device has no running copy to terminate. Stop a half-started copy
+  // only on a retry, while retaining the bounded attempts and all app checks.
+  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], { limit: 75000, attempts: 3 });
   reached("app launched");
   const pageLimit = Math.max(0, Math.min(100000, left()));
   const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);

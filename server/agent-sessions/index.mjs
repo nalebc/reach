@@ -1392,12 +1392,16 @@ export function createAgentSessions({
           }
         }
         authorize();
+        // The working context must stop at the same selected fork point as
+        // the archive. A moved Codex chat's full shown history can extend past it.
+        const context = { items: memory ? items.slice(memory.from) : complete, summary: memory?.summary || "" };
         if (to === "codex") {
           ({ threadId: target } = await codexLive.forkHistory({
             cwd: session.cwd,
             name: title,
             items: complete,
             from,
+            context,
             authorize,
           }));
           nativeHistory = true;
@@ -1406,7 +1410,7 @@ export function createAgentSessions({
           const notes = fork ? forkNotes(complete, from) : openClawNotes(turns, { note, from });
           ({ key: target } = await openClaw.fork({ title, notes, label: `${fork ? "Forked" : "Moved"} from ${from}` }, authorize));
         } else {
-          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, gitBranch: session.branch || "", authorize }));
+          ({ id: target } = await claude.write({ cwd: session.cwd, title, items: complete, from, context, gitBranch: session.branch || "", authorize }));
           nativeHistory = true;
           // In the Claude app's list too, once nobody is at the Mac.
           authorize();

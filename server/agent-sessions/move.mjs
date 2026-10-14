@@ -21,16 +21,21 @@ export const INJECT_BATCH = 120_000;
 export const agentName = (agent) =>
   ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw" })[agent] || agent;
 
+// Native JSON readers reject an unpaired surrogate. Clipping must leave an
+// emoji's two UTF-16 code units together, including at the retained tail.
+const prefix = (text, length) => text.slice(0, length).replace(/[\uD800-\uDBFF]$/, "");
+const suffix = (text, length) => length ? text.slice(-length).replace(/^[\uDC00-\uDFFF]/, "") : "";
 const oneLine = (text, max) => {
   const line = String(text || "").replace(/\s+/g, " ").trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  return line.length > max ? `${prefix(line, max - 1)}…` : line;
 };
 // Long text keeps its start and end, with how much was left out between.
 export const clipMiddle = (text, max) => {
   const value = String(text || "");
   if (value.length <= max) return value;
   const half = Math.max(0, Math.floor((max - 60) / 2));
-  return `${value.slice(0, half)}\n… (${value.length - 2 * half} characters left out) …\n${value.slice(-half)}`;
+  const first = prefix(value, half), last = suffix(value, half);
+  return `${first}\n… (${value.length - first.length - last.length} characters left out) …\n${last}`;
 };
 
 // What a tool did, in one line (its output stays in the original chat).
