@@ -30,8 +30,15 @@ export const suites = {
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
+    // computers over the keyed route.
+    "face-join", "fleet",
+    // Workstream B, the agent desktop helper (docs/parity/B-desktop-helper.md):
+    // its build, start and launch checks; its policy against the shared corpus;
+    // on a real screen only with REACH_TEST_WINDOWS_DESKTOP (ci.yml's step).
+    "windows-helper-launch", "agent-desktop-windows-policy", "windows-agent-desktop-native",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
