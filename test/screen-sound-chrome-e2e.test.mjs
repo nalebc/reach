@@ -8,19 +8,29 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { desktopBinary, windowsBinary } from "../server/desktop-native.mjs";
+import { SoundSource } from "../server/screen-sound.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
 
-// The computer's sound in a real browser engine: headless Chrome (muted:
-// nothing plays on this computer) loads a page built from the real hook
-// (src/useScreenSound.ts), served with the policy Reach gives its own pages,
-// and taps the speaker. Its connection goes to a real Reach, whose capture is
-// a stand-in playing 440 Hz in real time. Passing means the worklet loaded
-// under script-src 'self', the packets decoded, and sound came out of it.
+// The computer's sound in a real browser engine, end to end: the real sound
+// helper (scripts/native/screen-sound.swift on a Mac, screen-sound.cs on a
+// Windows PC), built as Reach builds it, plays its tone on the clock through
+// a real Reach; headless Chrome (muted: nothing plays on this computer)
+// loads a page built from the real hook (src/useScreenSound.ts), served with
+// the policy Reach gives its own pages, and taps the speaker. Passing means
+// the helper's packets crossed the server and the socket, the worklet loaded
+// under script-src 'self', and the tone came out of it, steady. Only the OS
+// capture itself is left out (no CI runner has speakers or Screen Recording);
 // Safari on an iPhone is a different engine: this says nothing about it.
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const chrome = findChrome();
-const skip =
-  process.platform !== "darwin" ? "the Mac's lane runs it (sound comes from a Mac or a PC; Chrome is found on Macs)" : !chrome ? "no Chrome or Chromium on this computer (set REACH_TEST_CHROME to one)" : false;
+const skip = !chrome
+  ? "no Chrome or Chromium on this computer (set REACH_TEST_CHROME to one)"
+  : process.platform === "darwin"
+    ? false
+    : process.platform === "win32"
+      ? process.env.REACH_TEST_WINDOWS_DESKTOP === "1" ? false : "the real-Windows lane runs it (it builds the PC's sound helper)"
+      : "sound comes from a Mac or a Windows PC";
 
 async function buildPage(dir) {
   const src = path.join(dir, "src");
@@ -73,7 +83,7 @@ createRoot(document.getElementById("root")).render(React.createElement(App));
   return out;
 }
 
-test("in a real browser, the speaker plays the computer's sound under Reach's own page policy", { skip, timeout: 120000 }, async (t) => {
+test("in a real browser, the speaker plays the real helper's sound under Reach's own page policy", { skip, timeout: 300000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-sound-e2e-"));
   const undo = [];
   t.after(async () => {
@@ -81,30 +91,17 @@ test("in a real browser, the speaker plays the computer's sound under Reach's ow
   });
   undo.push(async () => fs.rmSync(dir, { recursive: true, force: true }));
   const page = await buildPage(dir);
-  // A tone, 20 ms at a time, as a Mac's helper sends them.
+  // The real helper, its tone on the clock as a capture's packets come.
+  const binary = process.platform === "win32"
+    ? await windowsBinary({ dataDir: dir }, "screen-sound")
+    : await desktopBinary({ dataDir: dir }, "screen-sound");
   const reach = await createReach({
     roots: [dir],
     dataDir: path.join(dir, "private"),
     screen: true,
     // Its tailnet name, so its pages carry the policy a phone gets.
     publicOrigin: "https://mac-a.t.ts.net",
-    soundFactory: async () => (handlers) => {
-      const info = { rate: 48000, channels: 2 };
-      // On the clock, as capture hardware is: a late timer catches up, so
-      // the stand-in never runs slower than real time.
-      const started = Date.now();
-      let t0 = 0;
-      const timer = setInterval(() => {
-        while (t0 + 960 <= ((Date.now() - started) * 48000) / 1000) {
-          const samples = new Int16Array(1920);
-          for (let i = 0; i < 960; i++) samples[2 * i] = samples[2 * i + 1] = Math.round(10000 * Math.sin((2 * Math.PI * 440 * (t0 + i)) / 48000));
-          t0 += 960;
-          handlers.onSamples(samples, info);
-        }
-      }, 10);
-      setImmediate(() => handlers.onInfo(info));
-      return { info, stop: () => clearInterval(timer) };
-    },
+    soundFactory: async () => (handlers) => new SoundSource(binary, ["--self-test", "30", "--live"], handlers),
   });
   undo.push(() => reach.close());
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -166,10 +163,11 @@ test("in a real browser, the speaker plays the computer's sound under Reach's ow
   const tapped = Date.now();
   await tap();
   await until(`window.__sound?.state === "on"`);
-  // Sound, at the tone's level (10000 / 32768 · √½ ≈ 0.22), within a second.
+  // Sound within a few seconds: the helper's 440 Hz and 660 Hz, averaged to
+  // one channel by the analyser (12000 / 32768 / 2 ≈ 0.18).
   const level = await until(`window.__level() > 0.1 && window.__level()`, 5000);
   const heardIn = Date.now() - tapped;
-  assert.ok(level < 0.3, `level ${level}`);
+  assert.ok(level < 0.25, `level ${level}`);
   // Then steady: the tone's full level at every look for a second, no
   // dropouts (a queue that ran dry would show as a dip).
   await new Promise((r) => setTimeout(r, 800));
@@ -178,13 +176,13 @@ test("in a real browser, the speaker plays the computer's sound under Reach's ow
     steady.push(await tab.evaluate("window.__level()"));
     await new Promise((r) => setTimeout(r, 100));
   }
-  assert.ok(Math.min(...steady) > 0.19 && Math.max(...steady) < 0.24, `levels ${steady.map((v) => v.toFixed(3))}`);
+  assert.ok(Math.min(...steady) > 0.165 && Math.max(...steady) < 0.2, `levels ${steady.map((v) => v.toFixed(3))}`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
   await tap();
   await until(`window.__sound?.state === "off"`);
   await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
   await fs.promises.writeFile(
     path.join(repo, "reports", "sound-chrome-e2e.json"),
-    JSON.stringify({ heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
+    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
   );
 });

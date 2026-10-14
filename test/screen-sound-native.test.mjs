@@ -84,13 +84,27 @@ test("on real Windows, the PC's own csc.exe builds the sound helper; its tone co
   await fs.writeFile("reports/windows-sound.json", JSON.stringify({ info: seen.info, packets: seen.packets.length, said: seen.error?.message }, null, 2));
 });
 
-test("CI runs the sound everywhere it must: shared tests on Windows, the Mac's helper natively, the PC's on a real PC", async () => {
-  const { suites } = await import("../.github/scripts/run-tests.mjs");
+test("CI and every release test the sound end to end, on a Mac and a PC, and in the shipped package", async () => {
+  const { suites, testFiles } = await import("../.github/scripts/run-tests.mjs");
+  // The shared tests in the Windows lane; every file (the real-helper browser
+  // test included) on the Linux and Mac runners; the Mac's helper natively.
   for (const name of ["screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   assert.ok(suites.native.includes("screen-sound-native"), "the Mac's helper needs the native lane");
+  assert.ok(testFiles("all").includes(path.join("test", "screen-sound-chrome-e2e.test.mjs")));
   const ci = await fs.readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  // The step that builds Windows helpers with the PC's own csc.exe, with its gate on.
+  assert.match(ci, /- os: macos-15\s+node: 22\s+suite: all/, "a Mac runner runs every file");
+  // The step that builds Windows helpers with the PC's own csc.exe, gate on:
+  // the PC's helper, and the browser playing it.
   const step = ci.split("\n").find((line) => line.includes("test/windows-native-build.test.mjs"));
   assert.match(step, /test\/screen-sound-native\.test\.mjs/);
+  assert.match(step, /test\/screen-sound-chrome-e2e\.test\.mjs/);
+  // The npm and portable artifacts carry both helpers, ship the worklet as a
+  // file, and build and play the helper on the release's own OS. Releases
+  // run this same CI (release.yml uses ci.yml) before anything is published.
+  const smoke = await fs.readFile(new URL("../scripts/smoke-package.mjs", import.meta.url), "utf8");
+  for (const file of ["scripts/native/screen-sound.swift", "scripts/native/screen-sound.cs"]) assert.ok(smoke.includes(`"${file}"`), file);
+  assert.match(smoke, /verify packaged sound/);
+  const release = await fs.readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(release, /uses: \.\/\.github\/workflows\/ci\.yml/);
 });

@@ -104,15 +104,22 @@ static class ReachScreenSound
     }
 
     // 440 Hz left, 660 Hz right, 20 ms a packet, without capturing anything:
-    // what the tests run, as the Mac's helper does.
-    static void SelfTest(double seconds)
+    // what the tests run, as the Mac's helper does. Live: each packet on
+    // time, as a capture's come (a browser test plays it).
+    static void SelfTest(double seconds, bool live)
     {
         Announce(48000, 2);
         const int frames = 960;
         byte[] body = new byte[frames * 4];
         int t = 0;
+        System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
         for (int p = 0; p < (int)(seconds * 50); p++)
         {
+            if (live)
+            {
+                long wait = p * 20L - clock.ElapsedMilliseconds;
+                if (wait > 0) Thread.Sleep((int)wait);
+            }
             for (int i = 0; i < frames; i++)
             {
                 double at = (t + i) / 48000.0;
@@ -147,7 +154,7 @@ static class ReachScreenSound
         {
             double seconds = 1;
             if (args.Length > 1) double.TryParse(args[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out seconds);
-            SelfTest(Math.Max(0.02, Math.Min(10, seconds)));
+            SelfTest(Math.Max(0.02, Math.Min(30, seconds)), Array.IndexOf(args, "--live") >= 0);
             return 0;
         }
         // Reach closes the pipe (or is gone): the capture ends with this helper.

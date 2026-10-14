@@ -167,12 +167,19 @@ final class Sound: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendab
     try await capture.startCapture()
   }
   // A tone through the same packets, without capturing anything: what the
-  // tests run (no permission needed). 440 Hz left, 660 Hz right, 20 ms each.
-  func selfTest(_ seconds: Double) {
+  // tests run (no permission needed). 440 Hz left, 660 Hz right, 20 ms each;
+  // `live`: each packet on time, as a capture's come (a browser test plays it).
+  func selfTest(_ seconds: Double, live: Bool) {
     announce(48000, 2)
     let frames = 960
     var t = 0
-    for _ in 0..<Int(seconds * 50) {
+    let start = DispatchTime.now().uptimeNanoseconds
+    for p in 0..<Int(seconds * 50) {
+      if live {
+        let due = start + UInt64(p) * 20_000_000
+        let now = DispatchTime.now().uptimeNanoseconds
+        if due > now { usleep(useconds_t((due - now) / 1000)) }
+      }
       var samples = [Int16](repeating: 0, count: frames * 2)
       for i in 0..<frames {
         let at = Double(t + i) / 48000
@@ -194,8 +201,8 @@ final class Sound: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendab
     let sound = Sound()
     let args = Array(CommandLine.arguments.dropFirst())
     if args.first == "--self-test" {
-      let seconds = args.count > 1 ? min(10, max(0.02, Double(args[1]) ?? 1)) : 1
-      sound.selfTest(seconds)
+      let seconds = args.count > 1 ? min(30, max(0.02, Double(args[1]) ?? 1)) : 1
+      sound.selfTest(seconds, live: args.contains("--live"))
       exit(0)
     }
     // Stopped by Reach (SIGTERM, or its pipe closed), or Reach gone without
