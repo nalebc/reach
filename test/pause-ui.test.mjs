@@ -113,39 +113,50 @@ test("the Screen stops streaming and controlling while paused, and both come bac
     { peer, device, toast() {}, onChanged() {} },
     ON,
   );
-  button("Control").click();
-  await dom.waitFor(() => computer.connected === "primary");
-  assert.deepEqual(computer.stream, { display: "primary", thread: undefined });
+  try {
+    button("Control").click();
+    await dom.waitFor(() => computer.connected === "primary");
+    assert.deepEqual(computer.stream, {
+      display: "primary",
+      thread: undefined,
+    });
 
-  computer.stream = null;
-  await change(PAUSED);
-  // No video asked for, control let go, and the screen says why.
-  assert.equal(computer.stream, null);
-  assert.equal(computer.connected, null);
-  assert.ok(cover(), "the paused cover shows");
-  assert.equal(
-    dom.document.querySelector(".screen-state").textContent.trim(),
-    "Paused",
-  );
-  assert.equal(!!button("Control"), false, "no Control while paused");
-  assert.equal(!!dom.document.querySelector(".error-line"), false);
+    computer.stream = null;
+    await change(PAUSED);
+    // A slow runner can take longer than change()'s own pause to let go.
+    await dom.waitFor(() => computer.connected === null && cover(), 2000);
+    // No video asked for, control let go, and the screen says why.
+    assert.equal(computer.stream, null);
+    assert.equal(computer.connected, null);
+    assert.ok(cover(), "the paused cover shows");
+    assert.equal(
+      dom.document.querySelector(".screen-state").textContent.trim(),
+      "Paused",
+    );
+    assert.equal(!!button("Control"), false, "no Control while paused");
+    assert.equal(!!dom.document.querySelector(".error-line"), false);
 
-  // Resume from the cover asks the computer, then everything returns as
-  // soon as it says it's on again.
-  button("Resume").click();
-  await dom.waitFor(() => asked.some(([what]) => what === "pause"));
-  await change(ON);
-  await dom.waitFor(() => computer.connected === "primary");
-  assert.deepEqual(computer.stream, { display: "primary", thread: undefined });
-  assert.equal(!!cover(), false);
-  assert.deepEqual(asked, [
-    ["control", true],
-    ["control", false],
-    ["pause", false],
-    ["control", true],
-  ]);
-  assert.deepEqual(dom.errors, []);
-  await view.unmount();
+    // Resume from the cover asks the computer, then everything returns as
+    // soon as it says it's on again.
+    button("Resume").click();
+    await dom.waitFor(() => asked.some(([what]) => what === "pause"));
+    await change(ON);
+    await dom.waitFor(() => computer.connected === "primary");
+    assert.deepEqual(computer.stream, {
+      display: "primary",
+      thread: undefined,
+    });
+    assert.equal(!!cover(), false);
+    assert.deepEqual(asked, [
+      ["control", true],
+      ["control", false],
+      ["pause", false],
+      ["control", true],
+    ]);
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await view.unmount();
+  }
 });
 
 test("control the Mac ended because of the pause comes back on resume, without an error", async () => {
