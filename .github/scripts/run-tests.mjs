@@ -35,6 +35,9 @@ export const suites = {
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
     "face-join", "fleet",
+    // Workstream B, the agent desktop helper (docs/parity/B-desktop-helper.md):
+    // its build, start and launch checks.
+    "windows-helper-launch",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
