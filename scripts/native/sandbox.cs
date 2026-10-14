@@ -878,12 +878,27 @@ static class NativeProc {
   // folder set? "ok", or the refusal message. Isolates a cwd/grant problem from
   // a broken AppContainer launch.
   public static string ProbeContainerLaunch(Container container) {
+    // A bare AppContainer launch: only SECURITY_CAPABILITIES, no job, no handle
+    // list, not suspended, no cwd. If this works but the real launch doesn't, the
+    // problem is the job/handle-list/suspend; if this fails too, it's the
+    // capabilities or the AppContainer SID.
+    string bare;
+    IntPtr size = IntPtr.Zero;
+    InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+    IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
     try {
-      using (JobObject job = JobObject.CreateForJobs(8)) {
-        Launched launched = LaunchContained("\"" + ComSpec() + "\" /d /s /c exit", null, container, job, false);
-        try { launched.WaitForExit(3000); return "ok"; } finally { launched.Dispose(); }
+      if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) bare = "bare-init=" + Marshal.GetLastWin32Error();
+      else {
+        UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
+        var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX)); si.lpAttributeList = attrs;
+        PROCESS_INFORMATION pi;
+        bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, null, ref si, out pi);
+        int err = Marshal.GetLastWin32Error();
+        if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); bare = "bare=ok"; }
+        else bare = "bare=" + err;
       }
-    } catch (Exception error) { return error.Message; }
+    } finally { DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs); }
+    return bare;
   }
 
   public static string RunContainedCaptured(string commandLine, string cwd, Container container, JobObject job, int timeoutMs) {
