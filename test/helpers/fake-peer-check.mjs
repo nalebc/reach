@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { sessionAlive } from "./fake-tailscale.mjs";
 
 // The peer check (server/tailscaled-peer.mjs) for a Reach run against the
 // stand-in Tailscale (test/helpers/fake-tailscale.mjs): a connection is
@@ -14,7 +15,7 @@ const opened = (dir, port) => {
   for (const name of fs.readdirSync(dir).filter((f) => SESSION.test(f))) {
     try {
       const session = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
-      process.kill(session.pid, 0);
+      if (!sessionAlive(session)) continue;
       const found = (session.from || []).find((entry) => entry.port === port);
       if (found) return found;
     } catch {}

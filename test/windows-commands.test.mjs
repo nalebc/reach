@@ -8,7 +8,7 @@ import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
-import { fakeTailscale, tailnetPreload, HOST } from "./helpers/fake-tailscale.mjs";
+import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fake-tailscale.mjs";
 
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
 // paths (test/helpers/as-windows.mjs), `.\reach.cmd status` naming it, and
@@ -104,9 +104,10 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
 // First-run matrix T23, in Tailscale mode: a Windows Reach, through a
 // stand-in Tailscale (this computer's own is never asked or changed). Its
 // route goes to its local address (no Unix socket there), phones join with
-// the pairing code, and it opens no public link.
-// (The stand-in Tailscale is a #! script: not on a real Windows runner.)
-const tailscaleWindows = { skip: process.platform === "win32", timeout: 60000 };
+// the pairing code, and it opens no public link. On a real Windows runner
+// the stand-in is a tailscale.exe, and Windows itself ends a route's
+// process with Reach (Node's kill-on-close job).
+const tailscaleWindows = { timeout: 90000 };
 const ORIGIN = `https://${HOST}:8443`;
 const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`${HOST}:8443`]: { Handlers: { "/": { Proxy: target } } } } });
 // `serve` and `record`: what an earlier Reach or another service left.
@@ -131,14 +132,6 @@ function windowsTailscaleReach(t, { serve, record } = {}) {
   });
   return { seen, started };
 }
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 const until = async (check, what, ms = 10000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
@@ -161,7 +154,7 @@ const heldRoute = async (fake) => {
   return session;
 };
 const routeGone = async (fake, session) => {
-  await until(async () => !(await fake.sessions()).length && !pidAlive(session.pid), "the session to end with Reach");
+  await until(async () => !(await fake.sessions()).length && !sessionAlive(session), "the session to end with Reach");
   const state = await fake.read();
   assert.equal(state.serve.Foreground, undefined);
   assert.equal(state.serve.TCP?.[8443], undefined, "nothing left behind on the port");
