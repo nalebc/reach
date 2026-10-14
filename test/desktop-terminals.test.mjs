@@ -125,6 +125,43 @@ test("overlapping native operations are bounded and never silently repeated", as
   await creating;
   assert.equal(d.busy, false);
 });
+test("a line typed while the phone is still reading the tab waits for the read and goes, never refused", async () => {
+  // Oct 14, the user journeys: Enter in a computer's terminal on the phone
+  // came back 409 while the phone's own read of that tab was running, and
+  // the person's line didn't go.
+  const f = fixture();
+  const held = [];
+  let hold = false;
+  const d = new DesktopTerminals({
+    platform: "darwin",
+    run: (p) => (hold && (p.action === "read" || p.action === "list") ? new Promise((r) => held.push(() => r(f.run(p)))) : f.run(p)),
+  });
+  const { sessions } = await d.list(allow);
+  hold = true;
+  const pause = () => new Promise((r) => setTimeout(r, 20));
+  for (const look of [() => d.action(sessions[0].id, "read", { scrollback: true }, allow), () => d.list(allow)]) {
+    const looking = look();
+    const sent = d.action(sessions[0].id, "send", { text: "echo hi" }, allow);
+    await pause();
+    assert.equal(f.calls.some((c) => c.action === "send"), false, "it waits for the look");
+    // The look finishes (a list asks Terminal, then iTerm2).
+    for (let i = 0; i < 4; i++) {
+      while (held.length) held.shift()();
+      await pause();
+    }
+    await looking;
+    assert.deepEqual(await sent, { ok: true });
+    assert.equal(f.calls.filter((c) => c.action === "send").length, 1, "sent once");
+    f.calls.length = 0;
+  }
+  // Two of a person's own changes still never overlap.
+  let done;
+  d.run = (p) => (p.action === "send" ? new Promise((r) => (done = () => r({ ok: true }))) : f.run(p));
+  const first = d.action(sessions[0].id, "send", { text: "one" }, allow);
+  await assert.rejects(d.action(sessions[0].id, "send", { text: "two" }, allow), { status: 409 });
+  done();
+  await first;
+});
 
 const helper = await fs.readFile(
   new URL("../scripts/native/mac-terminals.js", import.meta.url),
