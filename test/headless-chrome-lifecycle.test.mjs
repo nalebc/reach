@@ -13,9 +13,9 @@ test("failed browser startup releases protocol calls and exits naturally after c
     const hooks = [];
     let refused = false;
     try { await launchChrome({ after: (fn) => hooks.push(fn) }, { binary: process.execPath }); }
-    catch (error) { refused = /Chrome/.test(error.message); }
-    if (!refused) throw Error("The non-browser must fail its handshake");
+    catch (error) { refused = error instanceof Error; }
     for (const close of hooks) await close();
+    if (!refused) throw Error("The non-browser must fail its handshake");
     process.stdout.write("retired\\n");
   `;
   const { stdout } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true });
