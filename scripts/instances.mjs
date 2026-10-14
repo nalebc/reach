@@ -266,7 +266,7 @@ export function windowsStatusText(host, { command = "reach", now } = {}) {
   return [
     `Reach: running in a terminal (process ${host.pid})${since ? `, since ${since}` : ""}`,
     ...(url ? [`Link: ${url}`] : []),
-    // Started with REACH_WINDOWS_ACCOUNT=1, then fell back to pairing codes.
+    // Set up for browser sign-in, on pairing codes for now (scripts/launch.mjs).
     ...(typeof host.signInOff === "string" && host.signInOff ? [`Browser sign-in is off for now: ${host.signInOff}`] : []),
   ].join("\n");
 }
