@@ -6,6 +6,7 @@ import path from "node:path";
 // "Tailscale's own" when one of the stand-in's live sessions opened it (its
 // proxy notes each connection's local port and when) no later than Reach
 // accepted it, within the real check's 20 ms. `problem`: ready() says no.
+// `unrecognised`: ready, but no connection is ever Tailscale's own.
 const SESSION = /^fake-tailscale-session-\d+\.json$/;
 const opened = (dir, port) => {
   for (const name of fs.readdirSync(dir).filter((f) => SESSION.test(f))) {
@@ -18,7 +19,7 @@ const opened = (dir, port) => {
   }
   return null;
 };
-export function fakePeerCheck(dir, { problem = "", log = "" } = {}) {
+export function fakePeerCheck(dir, { problem = "", log = "", unrecognised = false } = {}) {
   let closed = false;
   const note = (entry) => {
     if (log) fs.appendFileSync(log, `${JSON.stringify(entry)}\n`);
@@ -26,7 +27,7 @@ export function fakePeerCheck(dir, { problem = "", log = "" } = {}) {
   return {
     ready: async () => (problem ? { ok: false, reason: problem } : { ok: true }),
     async check(socket, acceptedAt) {
-      if (closed || socket?.remoteAddress !== "127.0.0.1" || !Number.isFinite(acceptedAt)) return false;
+      if (closed || unrecognised || socket?.remoteAddress !== "127.0.0.1" || !Number.isFinite(acceptedAt)) return false;
       // The proxy notes a connection a moment after it opens: looked for a while.
       for (const until = Date.now() + 500; Date.now() < until; ) {
         const found = opened(dir, socket.remotePort);
