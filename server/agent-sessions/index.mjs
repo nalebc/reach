@@ -342,6 +342,8 @@ export function createAgentSessions({
   claudeSettingsPath = process.env.NODE_TEST_CONTEXT ? path.join(os.tmpdir(), "reach-no-claude-settings.json") : path.join(os.homedir(), ".claude", "settings.json"),
   hookScript = fileURLToPath(new URL("../../scripts/agent-hook.mjs", import.meta.url)),
   modeHookScript = fileURLToPath(new URL("../../scripts/agent-mode-hook.sh", import.meta.url)),
+  // The Windows mode hook (Node, not /bin/sh); used only on Windows.
+  modeHookScriptWin = fileURLToPath(new URL("../../scripts/agent-mode-hook.mjs", import.meta.url)),
   // Claude Code's registry of running sessions (processes.mjs); none of this
   // Mac's in tests.
   registry = process.env.NODE_TEST_CONTEXT ? () => new Map() : readSessionRegistry,
@@ -470,17 +472,23 @@ export function createAgentSessions({
   });
   // Claude Code's permissions and questions in the Claude app and terminals,
   // held for the phone by Claude Code's own PermissionRequest hook
-  // (agent-asks.mjs) while Claude Code shows its dialog on the Mac. Headless
-  // runs and sessions Reach drives itself step aside at once.
+  // (agent-asks.mjs) while Claude Code shows its dialog on the computer.
+  // Headless runs and sessions Reach drives itself step aside at once. A Mac
+  // reaches it over a Unix socket; Windows over a named pipe whose name the
+  // hook reads from the data folder (so the command never carries a pipe name
+  // that a restart could leave stale).
   const hookCommand = () =>
-    agentHookCommand({ script: hookScript, agent: "claude", socketPath: agentAskSocket(dataDir) });
-  // A mode picked on the phone waits here until Claude Code next asks.
+    agentHookCommand({ script: hookScript, agent: "claude", socketPath: agentAskSocket(dataDir), dataDir, platform });
+  // A mode picked on the phone waits here until Claude Code next asks. The
+  // PreToolUse hook that reads it is a few /bin/sh lines on a Mac, a small
+  // Node script on Windows (no /bin/sh there).
   const modesDir = path.join(dataDir, "pending-modes");
-  const modeHookCommand = () => agentModeHookCommand({ script: modeHookScript, modesDir });
+  const modeHookCommand = () => agentModeHookCommand({ script: platform === "win32" ? modeHookScriptWin : modeHookScript, modesDir, platform });
   const agentAsks =
     givenAsks ||
     createAgentAsks({
-      socketPath: agentAskSocket(dataDir),
+      socketPath: platform === "win32" ? null : agentAskSocket(dataDir),
+      dataDir,
       modesDir,
       platform,
       skip: (agent, id) => !!hosts[agent]?.drives(id),
@@ -505,17 +513,27 @@ export function createAgentSessions({
         return stillAsked(waitingFor, items, request);
       },
     });
-  if (listenForAsks) agentAsks.listen?.().catch(() => {});
+  // Could the pipe be opened (Windows)? Null until a listen is tried; false
+  // with the reason when it couldn't, so the phone can say why rather than
+  // show a button that wouldn't work.
+  let askListen = { at: 0, ok: null, why: "" };
+  if (listenForAsks)
+    agentAsks
+      .listen?.()
+      .then(() => (askListen = { at: Date.now(), ok: true, why: "" }))
+      .catch((error) => (askListen = { at: Date.now(), ok: false, why: String(error?.message || error).slice(0, 200) }));
   // Whether Claude Code runs Reach's hook ("on", "outdated": an old command,
-  // "off", or "unsupported" without Unix sockets), read from its settings at
-  // most every few seconds.
+  // "off", or "unsupported" when answering can't work on this computer), read
+  // from its settings at most every few seconds. On Windows it works the same
+  // way as on a Mac (owner, Oct 13: no flag; detect and say why): the only
+  // "unsupported" there is a pipe that couldn't be opened at all.
   let hookSeen = { at: 0, state: "off" };
   const phoneAnswersState = () => {
     if (Date.now() - hookSeen.at > 5000)
       hookSeen = {
         at: Date.now(),
         state:
-          process.platform === "win32"
+          process.platform === "win32" && askListen.ok === false
             ? "unsupported"
             : claudeHookState({ settingsPath: claudeSettingsPath, command: hookCommand(), modeCommand: modeHookCommand() }),
       };
