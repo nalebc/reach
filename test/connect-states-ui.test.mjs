@@ -75,7 +75,17 @@ test("ready: who it's signed in as, and the code to type on the computer", async
   await connect(c);
   assert.match(c.textContent, /Type this code in Reach on your computer/);
   assert.match(c.textContent, /1A2B3C4D/);
-  assert.match(c.textContent, /\.\/reach approve/);
+  // Said as that computer runs Reach (a checkout: ./reach; npm: reach).
+  assert.match(c.textContent, /Run reach approve there/);
+  await view.unmount();
+});
+
+test("a Windows PC's checkout: the approve hint says .\\reach.cmd, as its terminal does", async () => {
+  computer({ method: { method: "tailscale", eligible: true, login: "me@x.test", command: ".\\reach.cmd" } });
+  const { view, c } = await render();
+  await settle(450);
+  await connect(c);
+  assert.match(c.textContent, /Run \.\\reach\.cmd approve there/);
   await view.unmount();
 });
 
