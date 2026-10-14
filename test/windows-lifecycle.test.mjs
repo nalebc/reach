@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startInConsole } from "../scripts/stop.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
+import { endWindowsTerminal, useWindowsTerminal, whyNoWindowsTerminal, windowsTerminalTabs } from "./helpers/windows-terminal-portable.mjs";
 
 // One Reach per computer, restarts and updates on a real Windows PC (audit
 // #10, #11), on GitHub's Windows runner: the real launcher reads the PC's
@@ -94,7 +95,7 @@ test("on real Windows, an agent's restart asks on the phone and stops nothing", 
   assert.equal(other.child.exitCode, null, "nothing stopped");
 });
 
-test("on real Windows, Reach's own window opens from cmd's start, titled Reach, never a child of the Reach that asked", real, async (t) => {
+test("on real Windows, Reach's own window opens from cmd's start in Windows Terminal, titled Reach, never a child of the Reach that asked", real, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach window-"));
   const root = path.join(dir, "reach");
   const state = path.join(dir, "state");
@@ -104,11 +105,15 @@ test("on real Windows, Reach's own window opens from cmd's start, titled Reach, 
   t.after(async () => {
     fs.writeFileSync(path.join(state, "stop"), "1");
     await new Promise((r) => setTimeout(r, 1500));
-    fs.rmSync(dir, { recursive: true, force: true });
+    await endWindowsTerminal({ nativeDir }).catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
   });
   // The process list's helper, built before the window opens (the PC's
   // compiler takes seconds, more under an antivirus).
   await windowsProcesses({ nativeDir });
+  // Windows Terminal, as the owner's PC has it: the PC's own wt.exe, else its
+  // pinned portable build put first on PATH (test/helpers/windows-terminal-portable.mjs).
+  const terminal = await useWindowsTerminal();
   // What the window runs: Reach's entry, here one that says where it ran,
   // then stays until this test says stop (or five minutes pass).
   fs.writeFileSync(
@@ -125,7 +130,7 @@ setInterval(() => {
   startInConsole(root, { state, args: "restart --yes", env: { ...process.env, REACH_HOME: state } });
   const marker = path.join(state, "started.json");
   for (const until = Date.now() + 60000; !fs.existsSync(marker); ) {
-    if (Date.now() > until) assert.fail("Reach's window never ran it.");
+    if (Date.now() > until) assert.fail(`Reach's window never ran it; ${await whyNoWindowsTerminal({ nativeDir })}`);
     await new Promise((r) => setTimeout(r, 200));
   }
   await new Promise((r) => setTimeout(r, 200));
@@ -149,4 +154,11 @@ setInterval(() => {
   }
   assert.ok(chain.length > 0, "it's running");
   assert.ok(!chain.includes(process.pid), `not a child of the Reach that asked: ${chain.join(" < ")}`);
+  // In Windows Terminal: the one wt.exe started (its own program, never a
+  // console Windows handed over), showing a tab titled Reach.
+  const hosts = chain.map((pid) => byPid.get(pid)).filter((p) => /^WindowsTerminal\.exe$/i.test(p.image));
+  assert.equal(hosts.length, 1, `Windows Terminal runs it: ${chain.map((pid) => byPid.get(pid).image).join(" < ")}`);
+  if (terminal.exe) assert.equal(String(hosts[0].path).toLowerCase(), terminal.exe.toLowerCase(), "the Windows Terminal Reach found on PATH");
+  const tabs = (await windowsTerminalTabs()).filter((w) => w.pid === hosts[0].pid);
+  assert.ok(tabs.some((w) => w.tabs.some((tab) => /^Reach\b/.test(tab.name))), `a tab titled Reach: ${JSON.stringify(tabs)}`);
 });

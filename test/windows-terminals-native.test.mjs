@@ -1,7 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -10,6 +9,8 @@ import { promisify } from "node:util";
 import { windowsBinary } from "../server/desktop-native.mjs";
 import { DesktopTerminals } from "../server/desktop-terminals.mjs";
 import { terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
+import { windowsProcesses } from "../server/windows-processes.mjs";
+import { endWindowsTerminal, useWindowsTerminal, whyNoWindowsTerminal, windowsTerminalTabs } from "./helpers/windows-terminal-portable.mjs";
 
 // The PC's own terminals on a real Windows PC (GitHub's windows-2025 runner):
 // scripts/native/windows-terminals.cs built with the PC's csc.exe, driving a
@@ -44,6 +45,7 @@ after(async () => {
   if (!windows) return;
   await fs.mkdir("reports", { recursive: true });
   await fs.writeFile("reports/windows-terminals-native.json", JSON.stringify(seen, null, 2));
+  if (dataDir) await endWindowsTerminal({ nativeDir: dataDir }).catch(() => {});
   if (dataDir) await fs.rm(dataDir, { recursive: true, force: true }).catch(() => {});
 });
 const marker = (kind) => `reach-${kind}-${crypto.randomBytes(4).toString("hex")}`;
@@ -244,25 +246,74 @@ test("a new terminal opens from the phone in the folder asked, running its comma
   await roundTrip(d, name, (record.roundTrip = {}));
 });
 
-const terminalExe = [path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", "wt.exe"), ...(process.env.PATH || "").split(";").filter(Boolean).map((dir) => path.join(dir, "wt.exe"))].find(
-  (file) => windows && path.isAbsolute(file) && existsSync(file),
-);
-test(
-  "a Windows Terminal tab opened from the phone is listed, read, typed into and closed",
-  { ...real, skip: real.skip || (!terminalExe && "Windows Terminal isn't installed on this PC (no wt.exe)") },
-  async (t) => {
-    const record = (seen.tests.windowsTerminal = { wt: terminalExe });
-    const name = marker("wt");
-    const opened = await openFrom(t, "windows-terminal", name, os.tmpdir());
-    assert.equal(opened.provider, "windows-terminal");
-    const d = await terminals();
-    const tab = await eventually(`${name} listed after the process that opened it ended`, () => find(d, name), 60000);
+// Windows Terminal itself, the PC's own or its pinned portable build
+// (test/helpers/windows-terminal-portable.mjs); never skipped. A tab is the
+// Windows Terminal's that wt.exe started when its shell is that program's
+// child (a console Windows handed over has another parent).
+async function terminalFor(t) {
+  const terminal = await useWindowsTerminal();
+  seen.windowsTerminal = { source: terminal.source, version: terminal.version, wt: terminal.wt };
+  return terminal;
+}
+async function startedBy(pid, terminal) {
+  const list = await windowsProcesses({ nativeDir: await folder() });
+  const shell = list.find((p) => p.pid === pid);
+  const parent = shell && list.find((p) => p.pid === shell.ppid);
+  return { parent, ours: !!parent && /^WindowsTerminal\.exe$/i.test(parent.image) && (!terminal.exe || String(parent.path).toLowerCase() === terminal.exe.toLowerCase()) };
+}
+const tabsNamed = async (names) => (await windowsTerminalTabs()).find((w) => names.every((name) => w.tabs.some((tab) => tab.name === name)));
+
+test("a Windows Terminal tab opened from the phone is listed, read, typed into and closed", real, async (t) => {
+  const terminal = await terminalFor(t);
+  const record = (seen.tests.windowsTerminal = {});
+  const name = marker("wt");
+  const opened = await openFrom(t, "windows-terminal", name, os.tmpdir());
+  assert.equal(opened.provider, "windows-terminal");
+  const d = await terminals();
+  const tab = await eventually(`${name} listed after the process that opened it ended`, () => find(d, name), 60000).catch(async (error) => {
+    throw Error(`${error.message}; ${await whyNoWindowsTerminal({ nativeDir: await folder() })}`);
+  });
+  t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
+  assert.equal(tab.provider, "windows-terminal");
+  const by = await startedBy(d.targets.get(tab.id).target.pid, terminal);
+  record.parent = by.parent && `${by.parent.image} ${by.parent.path}`;
+  assert.ok(by.ours, `its shell is Windows Terminal's (${terminal.wt}), not a console Windows handed over: parent ${record.parent}`);
+  await eventually("its command ran", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes("opened-ok"));
+  // Windows Terminal shows it, titled as its console is.
+  assert.ok(await tabsNamed([name]), `Windows Terminal shows a tab named ${name}`);
+  await roundTrip(d, name, record);
+});
+
+test("a Windows Terminal tab is picked by its title in a window with others, as the PC shows it", real, async (t) => {
+  const terminal = await terminalFor(t);
+  const record = (seen.tests.pickTab = {});
+  const window = marker("window");
+  const names = [marker("tab-a"), marker("tab-b")];
+  const d = await terminals();
+  // Two tabs in one window, the second chosen as it opens.
+  const tabs = [];
+  for (const name of names) {
+    await run(terminal.wt, ["-w", window, "new-tab", "-d", os.tmpdir(), "--", cmd, "/d", "/k", `title ${name}`], { windowsHide: true, timeout: 60000 });
+    const tab = await eventually(`${name} listed`, () => find(d, name), 60000).catch(async (error) => {
+      throw Error(`${error.message}; ${await whyNoWindowsTerminal({ nativeDir: await folder() })}`);
+    });
     t.after(() => sweep([d.targets.get(tab.id)?.target.pid]));
-    assert.equal(tab.provider, "windows-terminal");
-    await eventually("its command ran", async () => lines((await d.action(tab.id, "read", null, allow)).text).includes("opened-ok"));
-    await roundTrip(d, name, record);
-  },
-);
+    tabs.push(tab);
+  }
+  const shown = await eventually("both tabs in one window", () => tabsNamed(names));
+  record.window = shown.window;
+  const selected = async () => (await tabsNamed(names)).tabs.filter((tab) => tab.selected).map((tab) => tab.name);
+  assert.deepEqual(await selected(), [names[1]], "the newest tab is the one shown");
+  // Bringing the first forward shows its tab, then the second's.
+  for (const [i, tab] of [[0, tabs[0]], [1, tabs[1]]]) {
+    const front = await d.action(tab.id, "focus", {}, allow);
+    record[`focus${i}`] = front;
+    assert.equal(front.tab, true, `the helper chose ${names[i]}'s tab`);
+    await eventually(`${names[i]}'s tab shown`, async () => JSON.stringify(await selected()) === JSON.stringify([names[i]]), 15000);
+  }
+  for (const tab of tabs) await d.action(tab.id, "close", { confirm: true }, allow);
+  await eventually("both tabs closed", async () => !(await tabsNamed([names[0]])) && !(await tabsNamed([names[1]])), 20000);
+});
 
 test("the watch says when a console opens, prints and closes", real, async (t) => {
   const record = (seen.tests.watch = {});
