@@ -36,8 +36,8 @@ export const suites = {
     // computers over the keyed route.
     "face-join", "fleet",
     // Workstream B, the agent desktop helper (docs/parity/B-desktop-helper.md):
-    // its build, start and launch checks.
-    "windows-helper-launch",
+    // its build, start and launch checks; its policy against the shared corpus.
+    "windows-helper-launch", "agent-desktop-windows-policy",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
