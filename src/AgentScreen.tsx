@@ -953,7 +953,7 @@ export default function AgentScreen({
               void fillSecret(passRef.current, "password", true);
             }}
           >
-            <span className="ap-quiet">The browser has a saved password? Click the field on the Mac and pick it. Otherwise fill here from your vault, hidden.</span>
+            <span className="ap-quiet">Click the field on the Mac, fill here from your vault. Hidden, never shown.</span>
             <input ref={userRef} type="email" name="username" autoComplete="username" aria-label="Email or username for the Mac" placeholder="Email or username" />
             <button className="ap-pill" type="button" disabled={!canAct || actionBusy} onClick={() => void fillSecret(userRef.current, "username")}>
               Fill email
@@ -1334,8 +1334,8 @@ export default function AgentScreen({
                 {access.shell && <li>Prefer the terminal? Commands runs commands on the Mac.</li>}
                 <li>Numbered labels mark what you can click. Click a label to press that exact thing; it beats aiming at small targets.</li>
                 <li>The picture is the Mac, live. Click, double-click, right-click, drag, scroll and type on it. ⌘ shortcuts work (Ctrl does too).</li>
-                <li>To sign in, use what the browser already has: "Sign in with Google", or click the field and take the saved password it lists (Down, then Return). Your vault (Sign in) only when it has none.</li>
-                <li>The browser asks for the owner's fingerprint or password? Tell your user and wait.</li>
+                <li>To sign in, use "Sign in with Google" where the site offers it, otherwise your vault under Sign in. It stays hidden.</li>
+                <li>Nobody is at the Mac to help: skip the browser's saved passwords and passkeys, and cancel anything asking for the owner's fingerprint or password.</li>
                 <li>A code sent by email? Open Gmail or Mail on the Mac and read it yourself.</li>
                 <li>"Not done" says why. Try another way. Small text: Zoom in.</li>
                 <li>Ask your user before you pay, send a message or delete something.</li>

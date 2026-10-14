@@ -44,13 +44,14 @@ const RULES = [
   "Ask me before paying, sending or deleting anything.",
   "Don't share your Reach credentials.",
 ];
-// How it signs in (Oct 13: "I don't need to connect every connector… they can
-// log in to my accounts"): with what the owner's browser already has, its
-// Google (Apple, Microsoft) sign-in and the passwords it saved, before any
-// vault. A browser that asks for a fingerprint or password to fill one is
-// the owner's to answer.
+// How it signs in (Oct 13: "they can log in to my accounts… I should not
+// intervene, so either sign in SSO, or something like their vault"): the
+// owner's Google (Apple, Microsoft) sign-in in the browser, else its own
+// vault. Never what waits for the owner: the browser's saved passwords (a
+// fill can ask for the owner's fingerprint), passkeys, the computer's
+// password.
 const signIn = (page) =>
-  `Sign in with what my browser already has: "Sign in with Google" (or Apple, Microsoft) on my account, or the saved password it offers when you click the field. Your vault only when it has none, ${page ? "with Sign in" : 'typed with "secret":true'}. If the browser asks for my fingerprint or password first, tell me and wait.`;
+  `Sign in with "Sign in with Google" (or Apple, Microsoft) on my account where the site offers it, otherwise from your vault, ${page ? "with Sign in" : 'typed with "secret":true'}. I won't be there to help: skip my browser's saved passwords and passkeys, and cancel anything that asks for my fingerprint or password.`;
 const STAY_OUT = "Stay out of password apps, Reach and Tailscale.";
 
 export function agentGuide(client, { word = "computer", folders = [], page = false } = {}) {
