@@ -7,7 +7,7 @@ import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { askRestart, restartRequestFile } from "../server/restart-requests.mjs";
 import { watchInterface } from "../server/live-interface.mjs";
-import { startInTerminal } from "../scripts/stop.mjs";
+import { consoleScript, startInConsole, startInTerminal, startInWindow } from "../scripts/stop.mjs";
 
 // Oct 6: agents restarted Reach again and again, each time ending its
 // terminals and live screens (and once landing inside ChatGPT with no screen
@@ -95,12 +95,79 @@ test("an allowed restart opens Terminal running ./reach restart --yes", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// Windows' twin (audit #11): Reach in a window of its own, titled Reach,
+// through cmd's `start`, which returns at once. The window is never a child
+// of the Reach it restarts (stopping that Reach ends what it started).
+const WIN = { SystemRoot: "C:\\Windows", LOCALAPPDATA: "C:\\Users\\Me Too\\AppData\\Local", REACH_HOME: "C:\\Users\\Me Too\\reach-state" };
+const WT = "C:\\Users\\Me Too\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe";
+test("an allowed restart on Windows opens Reach's own window running restart --yes: Windows Terminal, else a console", (t) => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "reach restart win-"));
+  t.after(() => fs.rmSync(state, { recursive: true, force: true }));
+  const ran = [];
+  const run = (file, argv, options) => ran.push({ file, argv, options });
+  const root = "C:\\Users\\Me Too\\reach\\";
+  const node = "C:\\Program Files\\nodejs\\node.exe";
+  const file = startInConsole(root, { state, args: "restart --yes", env: WIN, node, run, exists: (f) => f === WT });
+  assert.equal(path.basename(file), "start-in-console.cmd");
+  const script = fs.readFileSync(file, "utf8");
+  assert.equal(script, [
+    "@echo off",
+    "rem Reach: opened in a window of its own by a restart or an update.",
+    "title Reach",
+    'set "PATH=C:\\Program Files\\nodejs;%PATH%"',
+    'set "REACH_HOME=C:\\Users\\Me Too\\reach-state"',
+    'set "REACH_OPENED_BY=restart"',
+    '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\Me Too\\reach\\bin\\reach.mjs" restart --yes',
+    "if errorlevel 1 if not errorlevel 130 pause",
+    "",
+  ].join("\r\n"));
+  // cmd from the Windows folder, never PATH; its `start` opens the window and returns.
+  assert.equal(ran.length, 1);
+  const [{ file: cmd, argv, options }] = ran;
+  assert.equal(cmd, "C:\\Windows\\System32\\cmd.exe");
+  assert.deepEqual(argv.slice(0, 4), ["/d", "/v:off", "/s", "/c"]);
+  assert.equal(options.windowsVerbatimArguments, true);
+  assert.equal(argv[4], `"start "Reach" /D "${state}" "${WT}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state}" "C:\\Windows\\System32\\cmd.exe" /d /v:off /c start-in-console.cmd"`);
+  // No Windows Terminal: a console window, titled Reach by start and by the script.
+  ran.length = 0;
+  startInConsole(root, { state, env: WIN, node, run, exists: () => false });
+  assert.equal(ran[0].argv[4], `"start "Reach" /D "${state}" "C:\\Windows\\System32\\cmd.exe" /d /v:off /c start-in-console.cmd"`);
+  assert.match(fs.readFileSync(file, "utf8"), /\r\n"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Me Too\\reach\\bin\\reach\.mjs"\r\n/, "a plain start runs Reach itself");
+});
+
+test("Windows: a path cmd would read as a variable or a quote end is refused, never mangled", (t) => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "reach restart win-"));
+  t.after(() => fs.rmSync(state, { recursive: true, force: true }));
+  const run = () => assert.fail("nothing opens");
+  for (const [root, env] of [["C:\\100%\\reach", WIN], ['C:\\a"b\\reach', WIN], ["C:\\reach", { ...WIN, REACH_DATA: "C:\\%TEMP%\\x" }]])
+    assert.throws(() => startInConsole(root, { state, env, node: "C:\\node\\node.exe", run }), /can't open a window of its own from .*: its path has a % sign or a quote\. Start it yourself with /);
+  assert.throws(() => startInConsole("C:\\reach", { state, env: {}, node: "C:\\node\\node.exe", run }), /couldn't find the Windows folder/);
+  // Windows Terminal reads ; as "and then": a folder with one stays one folder.
+  const ran = [];
+  const odd = path.join(state, "a;b");
+  startInConsole("C:\\reach", { state: odd, env: WIN, node: "C:\\node\\node.exe", run: (f, argv) => ran.push(argv), exists: () => true });
+  assert.ok(ran[0][4].includes(`-d "${odd.replace(";", "\\;")}"`), ran[0][4]);
+  // Never working in Reach's own folder: an update replaces it (Windows won't while a program works there).
+  assert.doesNotMatch(consoleScript("C:\\reach", "C:\\node\\node.exe", { env: {} }), /\bcd\b/);
+});
+
+test("a window of its own is Terminal on a Mac and Reach's console on Windows", (t) => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "reach restart any-"));
+  t.after(() => fs.rmSync(state, { recursive: true, force: true }));
+  let opened = "";
+  assert.equal(path.basename(startInWindow("/Users/me/reach", { state, nodeDir: "/n", open: (f) => (opened = f) }, "darwin")), "start-in-terminal.command");
+  assert.equal(path.basename(opened), "start-in-terminal.command");
+  const ran = [];
+  assert.equal(path.basename(startInWindow("C:\\reach", { state, env: WIN, node: "C:\\node\\node.exe", run: (f) => ran.push(f), exists: () => false }, "win32")), "start-in-console.cmd");
+  assert.deepEqual(ran, ["C:\\Windows\\System32\\cmd.exe"]);
+});
+
 test("restart run by an agent in a checkout asks instead of stopping Reach", () => {
   const source = fs.readFileSync(new URL("../scripts/bootstrap.mjs", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("async function restart("));
   const ask = body.indexOf("askRestart(");
   assert.ok(ask > 0 && ask < body.indexOf("stopReach(root"), "asks before stopping anything");
-  assert.match(body, /const asker = !packaged && \(foreignApp\(\) \|\|/);
+  assert.match(body, /const asker = !packaged && \(\(await foreignApp\(\)\) \|\|/);
 });
 
 test("interface edits rebuild once per burst of saves and refresh what phones load", async () => {
