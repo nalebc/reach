@@ -455,8 +455,13 @@ export class AppThreads {
   // `lend: false` (an agent while someone is at the Mac): only a window of
   // its own; the helper refuses with code "lend" rather than take theirs.
   async open(appId, viewport, { lend = true } = {}) {
+    // Opening an app on its own hidden display (for the phone's app view) needs
+    // a Mac's virtual-display driver; a Windows PC has no attestation-signed
+    // equivalent (docs/WINDOWS_AGENT_PARITY.md). Apps on the real screen work.
     if (this.platform !== "darwin")
-      throw fail(501, "Apps on your phone need a Mac for now.");
+      throw fail(501, this.platform === "win32"
+        ? "Apps in their own window on your phone need a Mac. On a Windows PC, use the live screen."
+        : "Apps on your phone need a Mac for now.");
     if (this.paused) throw fail(423, pausedMessage(this.platform));
     const phone = phoneViewport(viewport);
     const app = (await this.listApps()).find((a) => a.id === appId);

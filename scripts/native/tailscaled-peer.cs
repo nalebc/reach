@@ -292,8 +292,11 @@ static class TailscaledPeer {
           string binary = value.BinaryPathName == IntPtr.Zero ? "" : Marshal.PtrToStringUni(value.BinaryPathName);
           string file = Executable(binary);
           if (file == null || !string.Equals(Path.GetFileName(file), ImageName, StringComparison.OrdinalIgnoreCase)) return "not-tailscaled";
-          string nt = NtPath(file);
-          if (nt == null) return "not-tailscaled";
+          bool refused;
+          string nt = NtPath(file, out refused);
+          // Windows refusing to name the drive's device is Windows not
+          // saying, not Tailscale set up otherwise.
+          if (nt == null) return refused ? "access" : "not-tailscaled";
           service = new Service();
           service.Pid = pid;
           service.NtPath = nt;
@@ -326,9 +329,13 @@ static class TailscaledPeer {
   }
 
   // C:\Program Files\… as the kernel names it: \Device\HarddiskVolume3\Program Files\…
-  static string NtPath(string file) {
+  // null when it can't be had; `refused` when Windows denied the asking (a
+  // token sharing an elevated logon's drive map, as a restricted one does).
+  static string NtPath(string file, out bool refused) {
     var device = new StringBuilder(1024);
-    if (QueryDosDeviceW(file.Substring(0, 2), device, device.Capacity) == 0 || device.Length == 0) return null;
+    int length = QueryDosDeviceW(file.Substring(0, 2), device, device.Capacity);
+    refused = length == 0 && Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED;
+    if (length == 0 || device.Length == 0) return null;
     return device.ToString() + file.Substring(2);
   }
 
