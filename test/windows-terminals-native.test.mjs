@@ -221,7 +221,7 @@ test("Reach's own terminals are left out of the PC's list; a console Reach's pro
 import { loadPty } from ${module("pty-helper.mjs")};
 const [own, shell, cmd, launcher] = process.argv.slice(2);
 const pty = loadPty().spawn(cmd, ["/d", "/k", \`title \${own}\`], { name: "xterm-256color", cols: 90, rows: 28, cwd: process.cwd(), env: process.env, useConptyDll: true });
-const child = spawn(launcher, [cmd, shell], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+const child = spawn(launcher, [cmd, shell, String(process.pid)], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
 let ready = false, ptyReady = false, shellPid = null, said = "";
 const report = () => {
   if (ready || !ptyReady || !shellPid) return;
@@ -253,7 +253,15 @@ process.stdin.on("end", () => {
   t.after(() => sweep([pids.shell]));
   // Anyone else's view: the console window is the PC's.
   const everyone = await terminals();
-  const window = await eventually(`${shell} listed`, () => find(everyone, shell));
+  const window = await eventually(`${shell} listed`, () => find(everyone, shell)).catch(async error => {
+    const { stdout } = await run(await consoleLauncher(), ["--probe", String(pids.shell)], { windowsHide: true, timeout: 15000 });
+    record.console = JSON.parse(stdout.trim());
+    record.processes = (await windowsProcesses({ nativeDir: await folder() }))
+      .filter(p => [reach.pid, pids.shell, record.console.rootPid, record.console.ownerPid].includes(p.pid))
+      .map(({ pid, ppid, image }) => ({ pid, ppid, image }));
+    error.message += `; console: ${JSON.stringify(record)}`;
+    throw error;
+  });
   record.provider = window.provider;
   // Reach's own view: neither its terminal nor the shell it started.
   const reachs = await terminals({ reach: reach.pid });
