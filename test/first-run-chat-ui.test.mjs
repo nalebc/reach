@@ -12,6 +12,8 @@ import { cleanSessions } from "./helpers/clean-machine.mjs";
 // a hand-written `errors: {}` is how a red "Codex is not installed" alert
 // went unseen.
 const peer = { id: "mac", name: "Studio", url: "https://reach.test", token: "t", platform: "darwin" };
+const MAC_OPENCLAW = { agent: "openclaw", name: "OpenClaw", command: "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard" };
+let openclawPlan = MAC_OPENCLAW;
 let dir, clean, dom, React, EverythingChat, HomeLive;
 before(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-clean-chat-"));
@@ -29,7 +31,7 @@ before(async () => {
       "/api/sessions/models": () => ({ models: [], modes: [], mode: null }),
       "/api/sessions/agent-install/claude": () => ({ agent: "claude", name: "Claude Code", command: "curl -fsSL --proto '=https' --tlsv1.2 https://claude.ai/install.sh | bash" }),
       "/api/sessions/agent-install/codex": () => ({ agent: "codex", name: "Codex", command: "npm install -g @openai/codex" }),
-      "/api/sessions/agent-install/openclaw": () => ({ agent: "openclaw", name: "OpenClaw", command: "npm install -g openclaw@latest" }),
+      "/api/sessions/agent-install/openclaw": () => openclawPlan,
       "/api/terminals": () => [],
       "/api/clients": () => ({ current: "me", clients: [] }),
     },
@@ -86,8 +88,37 @@ test("Install on a row shows that agent's own command first", async () => {
   const row = [...add.querySelectorAll("li")].find((li) => li.textContent.includes("OpenClaw"));
   [...row.querySelectorAll("button")].find((b) => /Install/.test(b.textContent)).click();
   const command = await dom.waitFor(() => dom.document.querySelector(".chat-setup-command"));
-  assert.equal(command.textContent, "npm install -g openclaw@latest");
+  assert.equal(command.textContent, MAC_OPENCLAW.command);
   await view.unmount();
+});
+
+// A Windows PC (owner, Oct 13: OpenClaw "installed, set up and given keys
+// from the phone on both, natively"): OpenClaw is offered there too, with
+// its own installer, and what Reach adds first is said before the tap.
+test("a Windows PC offers OpenClaw too: its own installer, what it needs first, and no Mac", async () => {
+  const pc = { ...peer, id: "pc", name: "Desk", platform: "win32" };
+  openclawPlan = {
+    agent: "openclaw",
+    name: "OpenClaw",
+    command: "& ([scriptblock]::Create((iwr -useb https://openclaw.ai/install.ps1))) -NoOnboard",
+    note: "OpenClaw needs Node 24.16 or newer, and this Windows PC has Node 22.12.0. Reach adds a Node for OpenClaw only first, with OpenClaw's own installer, and keeps this Windows PC's Node as it is.",
+  };
+  try {
+    dom.window.localStorage.removeItem("reach.chatAgent");
+    const view = await dom.render(React.createElement(EverythingChat, { peer: pc, feed: feed() }));
+    const add = await dom.waitFor(() => dom.document.querySelector('[aria-label="Add an agent"]'));
+    const row = [...add.querySelectorAll("li")].find((li) => li.textContent.includes("OpenClaw"));
+    assert.ok(row, "OpenClaw is offered on Windows");
+    [...row.querySelectorAll("button")].find((b) => /Install/.test(b.textContent)).click();
+    const command = await dom.waitFor(() => dom.document.querySelector(".chat-setup-command"));
+    assert.equal(command.textContent, openclawPlan.command);
+    assert.ok([...row.querySelectorAll("p")].some((p) => p.textContent === openclawPlan.note), "the Node it adds is said first");
+    assert.match(add.textContent, /Windows PC/);
+    assert.doesNotMatch(add.textContent, /\bMac\b|macOS/);
+    await view.unmount();
+  } finally {
+    openclawPlan = MAC_OPENCLAW;
+  }
 });
 
 test("before the computer has said what it has, Chat doesn't offer to start one", async () => {

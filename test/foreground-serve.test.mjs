@@ -59,7 +59,7 @@ test("Windows route: a session that never shows is ended after the wait, never l
   assert.equal(serve.alive, false);
 });
 
-// Browser sign-in on Windows (REACH_WINDOWS_ACCOUNT=1): the route's target
+// Browser sign-in on Windows: the route's target
 // carries its key, the public route is held the same way, and both share one
 // lock on Tailscale's serve config (docs/parity/D-public-door.md §4.8).
 const KEY = "Abcdefghijklmnopqrstuvwxyz0123456789_-ABCDE";

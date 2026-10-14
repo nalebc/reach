@@ -20,6 +20,20 @@ export function defaultFileRoots({
   return [...new Set([home, paths.parse(home).root, ...volumes])];
 }
 
+// Windows: a computer that shares whole drives (setup's "All files on this
+// computer") gets the drives attached later too (a USB stick, a network
+// drive), as a Mac's "/" holds every volume. Added at the end, so every
+// shared folder keeps its number; one that's gone is left out of the list
+// and keeps its number for when it's back. Returns the roots to show, with
+// their numbers.
+export function refreshDriveRoots(roots, { platform = process.platform, exists = fs.existsSync } = {}) {
+  const drive = /^[A-Z]:\\$/i;
+  if (platform !== "win32" || !roots.some((root) => drive.test(root))) return roots.map((path, id) => ({ id, path }));
+  for (const letter of Array.from({ length: 26 }, (_, i) => `${String.fromCharCode(65 + i)}:\\`))
+    if (!roots.some((root) => root.toUpperCase() === letter) && exists(letter)) roots.push(letter);
+  return roots.map((path, id) => ({ id, path })).filter((root) => !drive.test(root.path) || exists(root.path));
+}
+
 export function fileRootName(folder) {
   if (folder === path.parse(folder).root)
     return process.platform === "win32" ? `Drive ${folder}` : "Computer";
