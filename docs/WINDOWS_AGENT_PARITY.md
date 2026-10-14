@@ -92,7 +92,7 @@ Built on Oct 13, each with unit tests and its real-Windows test passing on GitHu
 | #37 | Word, RTF and OpenDocument text read in JS off a Mac; .doc stays a download | [38510232232](https://github.com/nalebc/reach/actions/runs/38510232232) |
 | #35 | Voice memos through System.Speech (scripts/native/transcribe.cs) | [38511383861](https://github.com/nalebc/reach/actions/runs/38511383861) |
 
-Built on Oct 14 (workstream N, second part), with unit tests on this Mac and a real-Windows test in the Windows lane (`claude-app-paths`), not yet run there. GitHub's runner has no Claude app, so the real test runs stand-ins named and placed as the app, Claude Code and an Electron helper are:
+Built on Oct 14 (workstream N, second part), with unit tests on this Mac and its real-Windows tests passing on GitHub's windows-2025 runner ([38583448433](https://github.com/nalebc/reach/actions/runs/38583448433)), not yet on a physical PC. The runner has no Claude app, so its test runs stand-ins named and placed as the app, Claude Code and an Electron helper are:
 
 - #9 (rest): whether the Claude app runs, and since when, from the PC's process list (`server/windows-processes.mjs`). The app is its own program by its path: its installer's `%LOCALAPPDATA%\AnthropicClaude\…\claude.exe` or its package's `WindowsApps\Claude_<version>_<arch>__<publisher id>\…`, never one of Electron's `--type=` helpers. Claude Code's own `claude.exe` (its installer's, the app's copy in its data folder, the ones Reach starts) never counts. This makes three things work as on a Mac: a chat the open app lists isn't deleted under it ("delete it there"), chats Reach starts join an open app's list by its import link once nobody is at the PC, and the phone knows the app is open. The app's window isn't reloaded after Reach replies yet (H): it shows them once the app is opened again.
 
@@ -127,7 +127,7 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
     - Proof so far: `test/windows-openclaw.test.mjs`, in the Windows lane.
 
 Follow-ups the reviews left, both for a real PC:
-- **Stale Claude Code record** (built Oct 14, unit tests and a real-Windows test in the lane, not yet run there). Claude Code on Windows notes its process's start as Windows keeps it (`procStartFt`, GetProcessTimes' 100 ns ticks since 1601, the twin of the Mac's `procStart`). A record now holds its chat only while the PC's process list gives that pid the same start, to the millisecond. A pid Windows has given since to another Claude Code or Node no longer reads as a held chat. Where the list can't be read, tasklist's word (by program only) stands, as before.
+- **Stale Claude Code record** (built Oct 14; its real-Windows test, that Claude Code's noted start and the PC's list agree to the millisecond, passes on the runner: [38583448433](https://github.com/nalebc/reach/actions/runs/38583448433)). Claude Code on Windows notes its process's start as Windows keeps it (`procStartFt`, GetProcessTimes' 100 ns ticks since 1601, the twin of the Mac's `procStart`). A record now holds its chat only while the PC's process list gives that pid the same start, to the millisecond. A pid Windows has given since to another Claude Code or Node no longer reads as a held chat. Where the list can't be read, tasklist's word (by program only) stands, as before.
 - **Silent delete.** A file the Recycle Bin can't take is deleted for good without a word. This happens when the bin is off for that drive or the file is too big for it.
 
 The rest are in workstreams K to W below.
