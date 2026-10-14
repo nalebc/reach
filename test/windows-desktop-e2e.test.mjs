@@ -167,7 +167,8 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
   };
   note({ click: at });
   const probed = await send({ type: "probe", ...at });
-  assert.equal(probed.field, true, "the Windows field is detected before a click");
+  note({ probe: probed });
+  assert.equal(probed.field, true, `the Windows field is detected before a click: ${JSON.stringify(probed)}`);
   assert.equal(probed.secure, false);
   assert.equal(fs.existsSync(`${out}.click`), false, "a probe never clicks the field");
   assert.equal(fs.existsSync(`${out}.text`), false, "a probe never types");

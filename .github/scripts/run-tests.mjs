@@ -41,7 +41,7 @@ export const suites = {
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // Hearing the computer beside its screen (Oct 13): the shared part.
-    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet",
+    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
   ],
