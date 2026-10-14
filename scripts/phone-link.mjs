@@ -30,15 +30,16 @@ export function phoneLinkText({ oneAddress = false, attended = false, minutes = 
   return lines.join("\n");
 }
 
-// The pairing-code way in (Windows, or a computer set up before account
-// approval): the private address opens only in the Tailscale app, and there
-// is no browser sign-in. Said above the QR, where a first-time user looks
-// (Oct 11: a Windows user scanned it without the app and got "can't connect").
-export function phoneAppFirst({ account = "", platform = process.platform } = {}) {
+// The pairing-code way in (a PC whose browser sign-in can't open yet, or a
+// computer set up before account approval): the private address opens only
+// in the Tailscale app, and there is no browser sign-in. Said above the QR,
+// where a first-time user looks (Oct 11: a Windows user scanned it without
+// the app and got "can't connect"), with why when there's a reason.
+export function phoneAppFirst({ account = "", why = "" } = {}) {
   const lines = [
     `  First, on your phone: install the Tailscale app, sign in ${account ? `as ${account}` : "with this computer's Tailscale account"} and turn it on.`,
   ];
-  if (platform === "win32") lines.push("  On Windows, phones can't sign in from the browser yet.");
+  if (why) lines.push(`  Signing in from the phone's browser is off here for now: ${why}`);
   return lines.join("\n");
 }
 

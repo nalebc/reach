@@ -31,6 +31,11 @@ export const PHONE_START_WIDTH = 1920;
 const phoneScreen = () =>
   Math.min(window.screen?.width || 0, window.screen?.height || 0) > 0 &&
   Math.min(window.screen.width, window.screen.height) <= 500;
+// The computer's own words, as plain text of a bounded length.
+const said = (value: unknown, max: number) =>
+  typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max)
+    : "";
 export function useRemoteScreen(
   peer: Peer,
   enabled: boolean,
@@ -66,6 +71,10 @@ export function useRemoteScreen(
     // The Mac has nothing to show ("asleep", "locked"): the last picture
     // stays, dimmed like a reconnect, with `cause` saying why; not a stall.
     idle: "",
+    // The computer's video in a word ("H.264", "Still images"), and why not
+    // a better one when there is one (a PC without an H.264 encoder).
+    video: "",
+    videoWhy: "",
   });
   const [selectedDisplay, setSelectedDisplay] = useState("");
   const [fallback, setFallback] = useState(false);
@@ -219,6 +228,8 @@ export function useRemoteScreen(
         latency: 0,
         slow: false,
         idle: "",
+        video: "",
+        videoWhy: "",
       });
     }
     // Why the Mac sends no pictures now ("asleep", "locked"), as last told.
@@ -481,7 +492,13 @@ export function useRemoteScreen(
             wireFormat = message.format;
             targetCap = Number(message.fps) || 0;
             setSelectedDisplay(message.display);
-            setState((s) => ({ ...s, format: wireFormat, cap: targetCap }));
+            setState((s) => ({
+              ...s,
+              format: wireFormat,
+              cap: targetCap,
+              video: said(message.video, 40),
+              videoWhy: said(message.videoWhy, 400),
+            }));
           }
           if (message.type === "quality") {
             const latency = Math.max(0, Number(message.ackLatency) || 0);
