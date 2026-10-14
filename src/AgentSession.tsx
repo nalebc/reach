@@ -3119,7 +3119,7 @@ export default function AgentSessionView({
           <p className="as-divider as-when">{whenLabel(items[0].at)}</p>
         ) : null}
         {!items ? (
-          <p className="as-note">
+          !loadError && <p className="as-note">
             <LoaderCircle size={15} className="spin" /> Opening…
           </p>
         ) : (

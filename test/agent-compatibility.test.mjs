@@ -297,6 +297,23 @@ test("a changed method is disabled without disabling independent Codex methods",
   assert.deepEqual(await daemon.rpc("model/list"), { data: [] });
   assert.equal((await daemon.compatibility()).status, "degraded");
 });
+test("an unsupported item store never disables history for other chats or a recovered store", async (t) => {
+  let unsupported = true;
+  const page = { data: [{ turnId: "t1", item: { type: "agentMessage", id: "a1", text: "Recovered history" } }] };
+  const { daemon, calls } = transport(t, (m) =>
+    m.params.threadId === "unsupported" && unsupported
+      ? { error: { code: -32601, message: "The active thread store does not support item pagination" } }
+      : { result: page },
+  );
+  const read = (threadId) => daemon.rpc("thread/items/list", { threadId, sortDirection: "desc", limit: 100 });
+  await assert.rejects(read("unsupported"), { code: "AGENT_INCOMPATIBLE", retryable: false });
+  assert.deepEqual(await read("supported"), page);
+  unsupported = false;
+  assert.deepEqual(await read("unsupported"), page, "the same CLI version can recover without restarting Reach");
+  assert.equal(calls.filter((m) => m.method === "thread/items/list").length, 3);
+  assert.equal((await daemon.compatibility()).status, "available");
+});
+
 test("malformed replies never reach the UI and uncertain mutations are never retried", async (t) => {
   const { daemon, calls } = transport(t, (m) =>
     m.method === "turn/start" ? null : { result: { data: "changed" } },
