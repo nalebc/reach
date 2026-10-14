@@ -92,6 +92,10 @@ Built on Oct 13, each with unit tests and its real-Windows test passing on GitHu
 | #37 | Word, RTF and OpenDocument text read in JS off a Mac; .doc stays a download | [38510232232](https://github.com/nalebc/reach/actions/runs/38510232232) |
 | #35 | Voice memos through System.Speech (scripts/native/transcribe.cs) | [38511383861](https://github.com/nalebc/reach/actions/runs/38511383861) |
 
+Built on Oct 14 (workstream N, second part), with unit tests on this Mac and a real-Windows test in the Windows lane (`claude-app-paths`), not yet run there. GitHub's runner has no Claude app, so the real test runs stand-ins named and placed as the app, Claude Code and an Electron helper are:
+
+- #9 (rest): whether the Claude app runs, and since when, from the PC's process list (`server/windows-processes.mjs`). The app is its own program by its path: its installer's `%LOCALAPPDATA%\AnthropicClaude\…\claude.exe` or its package's `WindowsApps\Claude_<version>_<arch>__<publisher id>\…`, never one of Electron's `--type=` helpers. Claude Code's own `claude.exe` (its installer's, the app's copy in its data folder, the ones Reach starts) never counts. This makes three things work as on a Mac: a chat the open app lists isn't deleted under it ("delete it there"), chats Reach starts join an open app's list by its import link once nobody is at the PC, and the phone knows the app is open. The app's window isn't reloaded after Reach replies yet (H): it shows them once the app is opened again.
+
 Built on Oct 13 (workstreams K and L), with unit tests on this Mac and real-Windows tests in the Windows lane, not yet run there:
 
 - #3: sleep prevention on Windows, in the Mac's three modes: a C# helper (`scripts/native/stay-awake.cs`) holds `SetThreadExecutionState` for the system and the display, says what it holds, and lets go when Reach ends; `reach status` shows it. The lane checks `powercfg /requests`.
@@ -159,7 +163,7 @@ The rest are in workstreams K to W below.
 | P | Screen, control and guests (audit #5, #12, #13, #16, #26, #27, #47): guests' mask and concealed clipboard; locked state as the Mac's idle byte; H.264 without FFmpeg; UI Automation in the owner's input helper; tray Pause/Resume | B (classifier, UIA), S | `remote-screen.mjs`, `screen-stream.mjs`, `scripts/native/*.ps1`, `desktop-connection.mjs` |
 | W | Wording and conveniences (audit #25, #28, #29, #34–#40, #42, #43, #48): computerWord everywhere with a UI test, icons, hidden files, document text, HEIC, voice, Recycle Bin, shell choice | — | `src/*`, `computer-word.mjs`, `app-icons.mjs`, `document-text.mjs`, `terminal.mjs` |
 | U | Proof below the phone (audit #18–#24, #50): stand-in `tailscale.exe`, `reach.cmd` through ConPTY, jobs, Files escapes, `reach-agent`, a Windows `test:ci`, a standard-user run, windows-2022 | — | `.github/scripts/run-tests.mjs`, `.github/workflows/ci.yml`, `test/windows-*.test.mjs` |
-| H | Mac-dialog equivalents via UI Automation (SmartScreen, file security), window-only streaming (one HWND), Claude consent on Claude Desktop, permission hooks over a named pipe restricted to the user's SID | B | various |
+| H | Mac-dialog equivalents via UI Automation (SmartScreen, file security), window-only streaming (one HWND), Claude consent on Claude Desktop, the Claude app's own window (View ▸ Reload after Reach replies, its box for drafts, Stop, the model menu: `claude-compose.mjs` and `reloadClaudeWindow` are Mac-only, so a PC takes Stop and the model through Claude Code and keeps drafts on the phone), permission hooks over a named pipe restricted to the user's SID | B | various |
 
 Phases: 1) A built, B/C/D designed in detail and reviewed; 2) B, C, D built in parallel worktrees; 3) E + F, iterate on real Windows until green; 4) G, H; 5) the owner's real-PC acceptance (public door, physical phone), which lets the docs say "works".
 

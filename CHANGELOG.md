@@ -53,6 +53,12 @@ release notes, so date the heading before tagging.
   capture on a Mac (macOS 26.6) and end to end in headless Chrome under
   Reach's own page policy; Safari on an iPhone and a real Windows PC are
   still to try.
+- 2026-10-14: On a Windows PC, Reach tells when the Claude app is open, from
+  the PC's process list (the app's own program, never Claude Code's
+  claude.exe): a chat the open app lists isn't deleted under it, and chats
+  started from the phone join its list once nobody is at the PC. Unlike a
+  Mac, the app's window isn't reloaded after Reach replies yet: it shows
+  them once the app is opened again. Not yet run on a physical PC.
 - 2026-10-13: Windows keeps Reach running and reachable as a Mac does.
   `.\reach.cmd setup background` (or `install`) adds a task of yours that
   starts Reach when you sign in, in your session, with no window: the live
