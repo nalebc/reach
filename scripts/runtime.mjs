@@ -19,6 +19,22 @@ export const NODE_BUILDS = {
     "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af",
 };
 
+// Windows: the same release's zip builds, as scripts/bootstrap.ps1 pins
+// them (a test checks they match).
+export const WINDOWS_BUILDS = {
+  "win-x64":
+    "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71",
+  "win-arm64":
+    "33dad22e4cef5ee8f9fbb1b0d037fdacd0e56d12a4580f0d63f68b894deab535",
+};
+// A runtime's node: bin/node, or node.exe on Windows.
+export const runtimeNode = (runtime, platform = process.platform) =>
+  platform === "win32" ? path.join(runtime, "node.exe") : path.join(runtime, "bin", "node");
+// Windows' own tar (bsdtar, in every Windows 10 since 1803) unpacks a zip.
+const unpack = (archive, stage, platform, env = process.env) =>
+  platform === "win32"
+    ? execFileSync(path.join(env.SystemRoot || env.SYSTEMROOT || "C:\\Windows", "System32", "tar.exe"), ["-xf", archive, "-C", stage], { stdio: "ignore", windowsHide: true })
+    : execFileSync("tar", ["-xzf", archive, "-C", stage], { stdio: "ignore" });
 export async function ensureRuntime(
   state,
   {
@@ -26,20 +42,22 @@ export async function ensureRuntime(
     arch = process.arch,
     download = globalThis.fetch,
     log = console.log,
+    extract = (archive, stage) => unpack(archive, stage, platform),
   } = {},
 ) {
-  const target = `${platform}-${arch}`;
-  const expected = NODE_BUILDS[target];
+  const windows = platform === "win32";
+  const target = windows ? `win-${arch}` : `${platform}-${arch}`;
+  const expected = (windows ? WINDOWS_BUILDS : NODE_BUILDS)[target];
   if (!expected)
-    throw Error("Background mode supports Mac and Linux (arm64 or x64).");
+    throw Error("Background mode supports a Mac, Linux or a Windows PC (arm64 or x64).");
   const dir = path.join(state, "runtime");
   const runtime = path.join(dir, `node-v${NODE_VERSION}-${target}`);
-  if (fs.existsSync(path.join(runtime, "bin", "node"))) return runtime;
+  if (fs.existsSync(runtimeNode(runtime, platform))) return runtime;
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stage = fs.mkdtempSync(path.join(dir, "download."));
   try {
     log("Reach: preparing a private Node.js runtime (first time only)…");
-    const url = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${target}.tar.gz`;
+    const url = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${target}.${windows ? "zip" : "tar.gz"}`;
     const response = await download(url, { redirect: "error" });
     if (!response.ok)
       throw Error(`Couldn't download Node.js (${response.status}).`);
@@ -48,9 +66,9 @@ export async function ensureRuntime(
     const actual = crypto.createHash("sha256").update(data).digest("hex");
     if (actual !== expected)
       throw Error("Node.js checksum mismatch; stopping.");
-    const archive = path.join(stage, "node.tar.gz");
+    const archive = path.join(stage, windows ? "node.zip" : "node.tar.gz");
     fs.writeFileSync(archive, data, { mode: 0o600 });
-    execFileSync("tar", ["-xzf", archive, "-C", stage], { stdio: "ignore" });
+    extract(archive, stage);
     fs.renameSync(path.join(stage, `node-v${NODE_VERSION}-${target}`), runtime);
     return runtime;
   } finally {

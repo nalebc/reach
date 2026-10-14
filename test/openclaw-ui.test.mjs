@@ -713,6 +713,40 @@ test("the phone's back steps out one level at a time: a task to Scheduled, Sched
   assert.ok(dom.document.body.textContent.includes("Weekend plans"));
 });
 
+test("a chat opened the moment back closes a page keeps its own back step; Reach takes none of its own", async () => {
+  await mount();
+  await click("Customize");
+  await dom.waitFor(() => button("Add a messaging app"));
+  // A busy phone: the tap on a chat waited behind the render that closed
+  // Customize, so it lands before Reach has tidied that page's step away.
+  // Here it's the moment the chats are back on screen.
+  const opened = new Promise((resolve) => {
+    const watch = new dom.window.MutationObserver(() => {
+      const chat = button("Login page");
+      if (!chat || button("Add a messaging app")) return;
+      watch.disconnect();
+      chat.click();
+      resolve();
+    });
+    watch.observe(dom.document.body, { childList: true, subtree: true });
+  });
+  let steps = 0;
+  const counted = () => steps++;
+  dom.window.addEventListener("popstate", counted);
+  try {
+    dom.window.history.back();
+    await opened;
+    await dom.waitFor(() => dom.document.querySelector('[aria-label="OpenClaw conversation"]'));
+    await settle(80);
+    assert.equal(steps, 1, "only the phone's back: Reach stepped back over the chat's entry");
+    dom.window.history.back();
+    await dom.waitFor(() => !dom.document.querySelector('[aria-label="OpenClaw conversation"]'));
+    assert.ok(dom.document.body.textContent.includes("Weekend plans"));
+  } finally {
+    dom.window.removeEventListener("popstate", counted);
+  }
+});
+
 test("OpenClaw's own heartbeat: a skip is a plain note, and it turns off instead of pausing or deleting", async () => {
   setupCalls = [];
   await mount();
@@ -911,6 +945,31 @@ test("a messaging app is added in Reach by its bot token, not in a terminal", as
   assert.ok(!dom.document.body.textContent.includes("MTA-secret-token"));
 });
 
+// OpenClaw runs natively on a Windows PC (docs.openclaw.ai/platforms/
+// windows); only iMessage needs a Mac (its plugin runs imsg on a signed-in
+// Mac), and that's said where the other apps are offered, never hidden.
+test("on a Windows PC the other messaging apps leave out iMessage, and say it needs a Mac", async () => {
+  peer.platform = "win32";
+  try {
+    await mount();
+    await click("Customize");
+    await dom.waitFor(() => button("Add a messaging app"));
+    await click("Add a messaging app");
+    // Its page (the setup redesign): the other apps' row says what's left.
+    const other = () => [...dom.document.querySelectorAll("button.claw-row")].find((row) => row.textContent.includes("Other apps"));
+    const row = await dom.waitFor(() => other());
+    assert.equal(row.querySelector("small").textContent, "Signal, Matrix… iMessage needs a Mac.");
+    assert.ok(dom.document.querySelector('[aria-label="Telegram bot token"]'), "Telegram, Discord and Slack are added there as on a Mac");
+  } finally {
+    peer.platform = "darwin";
+  }
+  await view?.unmount();
+  await mount();
+  await click("Customize");
+  await click("Add a messaging app");
+  const row = await dom.waitFor(() => [...dom.document.querySelectorAll("button.claw-row")].find((r) => r.textContent.includes("Other apps")));
+  assert.equal(row.querySelector("small").textContent, "Signal, iMessage, Matrix…");
+});
 
 test("OpenClaw keeps account limits visible in the provider dropdown and conversation rail", async () => {
   await mount("Weekend plans", [

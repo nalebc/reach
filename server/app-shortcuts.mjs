@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { apps, launchApp, exec } from "./platform.mjs";
+import { apps, launchApp, exec, openLinkOnWindows } from "./platform.mjs";
 import { fail, id as newId, loadJson, atomicJson } from "./core.mjs";
 import { createAppIconCache, readAppIcons } from "./app-icons.mjs";
 import { bundledCodexPaths } from "./capabilities.mjs";
@@ -33,15 +33,7 @@ export function shortcutUrl(value) {
 async function openUrl(url) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", [url], { timeout: 12000 });
-  else if (process.platform === "win32")
-    // Not explorer.exe: it exits with 1 even when the page opened, so every
-    // shortcut read as failed (platform.mjs launchApp). The link travels as
-    // data, never as script text.
-    await exec(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:REACH_URL"],
-      { timeout: 12000, windowsHide: true, env: { ...process.env, REACH_URL: url } },
-    );
+  else if (process.platform === "win32") await openLinkOnWindows(url, { run: exec });
   else throw fail(501, "Desktop shortcuts support Mac and Windows.");
 }
 function definition(value) {
@@ -135,23 +127,6 @@ async function findCli(name, bundled = []) {
   }
   return null;
 }
-// Opens a new terminal window in `cwd` running `command`. Mac terminals are
-// provided by the host (desktop terminal integration); Windows uses PowerShell.
-async function openWindowsTerminal({ cwd, command }) {
-  if (process.platform !== "win32")
-    throw fail(501, "Terminal shortcuts are not available on this computer.");
-  const encoded = Buffer.from(powershellCall(command), "utf16le").toString("base64");
-  await exec(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `Start-Process powershell -WorkingDirectory '${cwd.replace(/['\u2018-\u201B]/g, "$&$&")}' -ArgumentList '-NoExit','-EncodedCommand','${encoded}'`,
-    ],
-    { timeout: 12000, windowsHide: true },
-  );
-}
 const RECIPES = [
   {
     id: "recipe:codex-terminal",
@@ -186,6 +161,9 @@ export function createAppShortcuts({
   loadIcon = null,
   // (command, authorize) => opens a Mac terminal window running command.
   macTerminal = null,
+  // ({ cwd, command }, authorize) => opens a Windows PC's terminal (Windows
+  // Terminal, else a console window) in `cwd` running command.
+  windowsTerminal = null,
   // (root, path) => absolute folder inside the shared folders.
   resolveFolder = () => {
     throw fail(501, "Terminal shortcuts are not available here.");
@@ -193,12 +171,15 @@ export function createAppShortcuts({
   locateCli = findCli,
   bundleId = readBundleId,
 } = {}) {
+  // A terminal opens on the computer itself, in its own terminal app
+  // (desktop-terminals.mjs): Terminal on a Mac, Windows Terminal or a console
+  // window on a Windows PC, the folder given separately there.
   const terminalAvailable =
-    process.platform === "win32" || (process.platform === "darwin" && !!macTerminal);
+    (process.platform === "win32" && !!windowsTerminal) || (process.platform === "darwin" && !!macTerminal);
   const openTerminal = async ({ cwd, command }, authorize) =>
     process.platform === "darwin"
       ? macTerminal(`cd ${shellQuote(cwd)} && ${command}`, authorize)
-      : openWindowsTerminal({ cwd, command });
+      : windowsTerminal({ cwd, command }, authorize);
   const openIn = async (root, folder, command, authorize) => {
     const cwd = resolveFolder(root, folder);
     authorize();
