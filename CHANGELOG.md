@@ -58,7 +58,10 @@ release notes, so date the heading before tagging.
   claude.exe): a chat the open app lists isn't deleted under it, and chats
   started from the phone join its list once nobody is at the PC. Unlike a
   Mac, the app's window isn't reloaded after Reach replies yet: it shows
-  them once the app is opened again. Not yet run on a physical PC.
+  them once the app is opened again. A Claude Code record whose process id
+  Windows has since given to another program no longer makes its chat read
+  as held: Reach compares the start Claude Code noted with the PC's own. Not
+  yet run on a physical PC.
 - 2026-10-13: Windows keeps Reach running and reachable as a Mac does.
   `.\reach.cmd setup background` (or `install`) adds a task of yours that
   starts Reach when you sign in, in your session, with no window: the live

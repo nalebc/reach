@@ -127,7 +127,7 @@ Workstream D (public door) and the first part of M (coding agents) were merged o
     - Proof so far: `test/windows-openclaw.test.mjs`, in the Windows lane.
 
 Follow-ups the reviews left, both for a real PC:
-- **Stale Claude Code record.** One whose pid Windows gave to another `node.exe` reads as held until the record goes. Compare the process's start time (CIM `Win32_Process.CreationDate`) with the record's.
+- **Stale Claude Code record** (built Oct 14, unit tests and a real-Windows test in the lane, not yet run there). Claude Code on Windows notes its process's start as Windows keeps it (`procStartFt`, GetProcessTimes' 100 ns ticks since 1601, the twin of the Mac's `procStart`). A record now holds its chat only while the PC's process list gives that pid the same start, to the millisecond. A pid Windows has given since to another Claude Code or Node no longer reads as a held chat. Where the list can't be read, tasklist's word (by program only) stands, as before.
 - **Silent delete.** A file the Recycle Bin can't take is deleted for good without a word. This happens when the bin is off for that drive or the file is too big for it.
 
 The rest are in workstreams K to W below.

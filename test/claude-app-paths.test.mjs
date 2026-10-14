@@ -8,6 +8,7 @@ import path from "node:path";
 import { claudeAppData, claudeAppDataDirs, claudeAppInstalled, claudeAppRecords } from "../server/agent-sessions/claude-app-paths.mjs";
 import { claudeAppAccess, claudeAppMain, claudeAppRunning, claudeAppShown, claudeAppStartedAt, createClaudeRefresh, inClaudeApp, writeClaudeRecord } from "../server/agent-sessions/claude-import.mjs";
 import { useProcessesFolder, windowsProcesses } from "../server/windows-processes.mjs";
+import { windowsStart } from "../server/agent-sessions/processes.mjs";
 
 // Where the Claude desktop app keeps its chat records: a Mac's Application
 // Support, and on Windows its installer's %APPDATA%\Claude or, packaged
@@ -186,4 +187,27 @@ test("on real Windows, the PC's own list tells the app from Claude Code and the 
   assert.equal(await claudeAppRunning(), false);
   assert.equal(await claudeAppStartedAt(), null);
   assert.ok(fs.readdirSync(dataDir).some((name) => /^reach-processes-[0-9a-f]{12}\.exe$/.test(name)), "the list was read, not refused");
+});
+
+// Claude Code on Windows notes its process's start as Windows keeps it
+// (GetProcessTimes, 100 ns since 1601: procStartFt); Reach's list gives ms
+// since 1970. The same moment, to the millisecond, or a live chat would read
+// as let go (processes.mjs liveClaudeSessions).
+test("on real Windows, a start as Claude Code notes it is the PC's list's start to the millisecond", { skip: !realWindows && "needs a real Windows PC (REACH_TEST_WINDOWS_DESKTOP=1)", timeout: 240000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach claude start-"));
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], { stdio: "ignore", windowsHide: true });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await once(child, "spawn");
+  const { execFile } = await import("node:child_process");
+  const ticks = await new Promise((resolve, reject) =>
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${child.pid}).StartTime.ToFileTimeUtc()`], { windowsHide: true, timeout: 60000 }, (error, stdout) => (error ? reject(error) : resolve(String(stdout).trim()))),
+  );
+  assert.match(ticks, /^\d{17,18}$/);
+  const listed = (await windowsProcesses({ nativeDir: path.join(root, "native") })).find((p) => p.pid === child.pid);
+  assert.ok(listed, "the child is listed");
+  assert.equal(windowsStart(ticks), listed.startedAt);
 });
