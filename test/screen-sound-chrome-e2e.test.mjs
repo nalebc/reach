@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { toneStability } from "./helpers/tone-stability.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -186,14 +187,14 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
     await new Promise((r) => setTimeout(r, 100));
   }
   const late = (await tab.evaluate("window.__late")) - lateBefore;
-  const off = steady.filter((v) => v < 0.165 || v > 0.2);
-  assert.ok(off.length <= 1 && late <= 1, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times`);
+  const stability = toneStability(steady, late);
+  assert.ok(stability.passed, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times; blips ${stability.blips}`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
   await tap();
   await until(`window.__sound?.state === "off"`);
   await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
   await fs.promises.writeFile(
     path.join(repo, "reports", "sound-chrome-e2e.json"),
-    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), ranDry: late, phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
+    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), ranDry: late, blips: stability.blips, phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
   );
 });
