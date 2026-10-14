@@ -162,11 +162,14 @@ jobs:
         # Windows PowerShell's default policy, then list displays and capture
         # a real frame exactly as Reach does. PowerShell 7 (this step's shell)
         # keeps its own policy; Reach's helpers run in Windows PowerShell.
+        # The user journeys (test/journeys) drive the phone interface against a
+        # real first install here, their desktop steps included; installing an
+        # agent from the internet stays in windows-validation.yml.
         shell: pwsh
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
           if ($LASTEXITCODE) { exit 1 }
-          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs
+          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/journeys/home.test.mjs test/journeys/terminals.test.mjs test/journeys/files.test.mjs test/journeys/chat.test.mjs test/journeys/screen.test.mjs test/journeys/apps.test.mjs test/journeys/access.test.mjs test/journeys/pause.test.mjs
         env:
           REACH_TEST_WINDOWS_DESKTOP: "1"
       - run: npm run package

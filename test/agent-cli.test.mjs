@@ -309,6 +309,28 @@ test("policy expiry, disabled profiles, root narrowing, legacy-token blocking an
   }
 });
 
+// reach-agent.cmd, as cmd (and so PowerShell) runs it on a real Windows PC:
+// the same CLI, its arguments as typed, spaces and all.
+test("Windows: reach-agent.cmd runs the agent CLI with its arguments as typed", { skip: process.platform !== "win32" && "Windows' own cmd" }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach agent cmd-"));
+  try {
+    const project = path.join(dir, "my project");
+    await fs.mkdir(project);
+    const policy = path.join(dir, "agent policy.json");
+    const launcher = fileURLToPath(new URL("../reach-agent.cmd", import.meta.url));
+    const { stdout } = await exec(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${launcher}" policy init --folder "${project}" --out "${policy}" --access read-only"`], {
+      windowsVerbatimArguments: true,
+      timeout: 30000,
+    });
+    assert.deepEqual(JSON.parse(stdout), { policy, profile: "workspace", access: "read-only", ttlSeconds: 3600 });
+    const parsed = readAgentPolicy(policy);
+    assert.deepEqual(parsed.profiles.workspace.scopes, ["device", "files:read"]);
+    assert.deepEqual(parsed.profiles.workspace.roots, [await fs.realpath(project)]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI rejects unsafe origins and readable secret files; redirects never receive credentials", async () => {
   for (const url of [
     "http://example.com",

@@ -16,9 +16,14 @@ import { createSignIn } from "./sign-in.mjs";
 import { createFileSearch } from "./file-search.mjs";
 import { findCodexExecutable } from "../capabilities.mjs";
 import { findWindowsCli } from "../agent-cli.mjs";
+import { findOpenClaw } from "../openclaw-windows.mjs";
+import { hubGateway } from "../openclaw-hub.mjs";
 import { createClaudeHost, claudeMode, SWITCHABLE_MODES } from "./claude-host.mjs";
 import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
+import { claudeAppDataDirs } from "./claude-app-paths.mjs";
+import { usePresenceFolder } from "../windows-presence.mjs";
+import { useProcessesFolder } from "../windows-processes.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createAppCards } from "./app-cards.mjs";
 import { agentAskSocket, createAgentAsks, stillAsked } from "./agent-asks.mjs";
@@ -27,7 +32,7 @@ import { createOutbox } from "./outbox.mjs";
 import { createChatModes } from "./chat-modes.mjs";
 import { CLAUDE_BUNDLE, claudeOnScreen, createClaudeCompose, draftFile, openInBackground, typeIntoClaude } from "./claude-compose.mjs";
 import { createMacPrompts } from "../mac-prompts.mjs";
-import { apps as platformApps } from "../platform.mjs";
+import { apps as platformApps, openLinkOnWindows } from "../platform.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { desktopBinary } from "../desktop-native.mjs";
 import { prepareOwners, useOwnersFolder } from "../windows-owners.mjs";
@@ -74,8 +79,11 @@ export const KNOWN_AGENTS = [
   { agent: "cursor", name: "Cursor", app: "/Applications/Cursor.app", cli: "cursor-agent" },
 ];
 let detected = null;
-export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir() } = {}) {
-  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env;
+// OpenClaw on Windows: as Reach starts it (npm's openclaw.cmd as its
+// openclaw.mjs), also where an install made since Reach started puts it, or
+// the Gateway OpenClaw's own Windows app keeps in WSL (openclaw-hub.mjs).
+export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.existsSync, fresh = false, platform = process.platform, env = process.env, home = os.homedir(), openClaw = findOpenClaw, hub = hubGateway } = {}) {
+  const cacheable = known === KNOWN_AGENTS && run === exec && exists === fs.existsSync && env === process.env && openClaw === findOpenClaw && hub === hubGateway;
   if (cacheable && !fresh && detected && Date.now() - detected.at < 60000) return detected.value;
   const value = Promise.all(
     known.map(async ({ agent, name, app, cli, supported = false }) => {
@@ -83,6 +91,8 @@ export function detectAgents({ known = KNOWN_AGENTS, run = exec, exists = fs.exi
       if (agent === "openclaw") {
         const config = env.REACH_OPENCLAW_CONFIG || env.OPENCLAW_CONFIG_PATH || path.join(env.OPENCLAW_STATE_DIR || path.join(home, ".openclaw"), "openclaw.json");
         installed ||= exists(config);
+        if (!installed && platform === "win32")
+          return { agent, name, installed: !!(await openClaw({ env, home }).catch(() => null)) || !!(await hub({ env, home }).catch(() => null)), signedIn: false, supported };
       }
       if (!installed && cli)
         installed = await run(platform === "win32" ? "where.exe" : env.SHELL || "/bin/sh", platform === "win32" ? [cli] : ["-lc", `command -v ${cli}`], { timeout: 5000 }).then(
@@ -131,22 +141,24 @@ const claudeMissMs = 30000;
 export function claudeInstallLocations({ platform = process.platform, env = process.env, home = os.homedir(), readdir = (dir) => fs.readdirSync(dir), exists = fs.existsSync } = {}) {
   const win = platform === "win32";
   const paths = win ? path.win32 : path.posix;
-  const at = (name) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
-  const appData = win ? at("APPDATA") || paths.join(home, "AppData", "Roaming") : paths.join(home, "Library", "Application Support");
   const own = win ? [] : [paths.join(home, ".local", "bin", "claude"), paths.join(home, ".claude", "local", "claude")];
   const bundled = [];
-  const root = paths.join(appData, "Claude", "claude-code");
   const version = (name) => name.split(".").map((n) => Number.parseInt(n, 10) || 0);
   const newer = (a, b) => { const x = version(a), y = version(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
-  let versions = [];
-  try { versions = readdir(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(newer); } catch {}
-  for (const v of versions) {
-    let builds = [];
-    try { builds = readdir(paths.join(root, v)); } catch {}
-    for (const build of builds) {
-      // Only a copy the app finished checking (it writes .verified last).
-      if (!exists(paths.join(root, v, build, ".verified"))) continue;
-      bundled.push(win ? paths.join(root, v, build, "claude.exe") : paths.join(root, v, build, "claude.app", "Contents", "MacOS", "claude"));
+  // The app's data folder: on Windows its installer's, or its package's
+  // (claude-app-paths.mjs).
+  for (const data of claudeAppDataDirs({ platform, env, home, readdir })) {
+    const root = paths.join(data, "claude-code");
+    let versions = [];
+    try { versions = readdir(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(newer); } catch {}
+    for (const v of versions) {
+      let builds = [];
+      try { builds = readdir(paths.join(root, v)); } catch {}
+      for (const build of builds) {
+        // Only a copy the app finished checking (it writes .verified last).
+        if (!exists(paths.join(root, v, build, ".verified"))) continue;
+        bundled.push(win ? paths.join(root, v, build, "claude.exe") : paths.join(root, v, build, "claude.app", "Contents", "MacOS", "claude"));
+      }
     }
   }
   return [...own, ...bundled];
@@ -213,9 +225,16 @@ export function createAgentSessions({
     process.env.NODE_TEST_CONTEXT ? { home: path.join(os.tmpdir(), "reach-no-gemini"), locate: async () => null } : {},
   ),
   live = liveClaudeSessions,
-  // background: deliver the link without bringing the app forward.
+  // background: deliver the link without bringing the app forward. A
+  // Windows PC opens it with its own handler (platform.mjs); the app may come
+  // forward there, so links that switch its window wait until nobody is at
+  // the PC (claude-import.mjs), as they do on a Mac.
   open = (url, { background = false } = {}) =>
-    background ? openInBackground(url) : exec("/usr/bin/open", [url], { timeout: 10000 }),
+    process.platform === "win32"
+      ? openLinkOnWindows(url)
+      : background
+        ? openInBackground(url)
+        : exec("/usr/bin/open", [url], { timeout: 10000 }),
   dataDir = path.join(os.homedir(), ".reach"),
   // Signing an agent in on the Mac from the phone (sign-in.mjs).
   signIn = createSignIn({
@@ -260,7 +279,7 @@ export function createAgentSessions({
   appRetryMs = 5000,
   // Whether the Mac's screen is locked; tests that don't say: by the app in
   // front only.
-  locked = process.env.NODE_TEST_CONTEXT || process.platform !== "darwin" ? () => false : () => screenLocked(),
+  locked = process.env.NODE_TEST_CONTEXT || !["darwin", "win32"].includes(process.platform) ? () => false : () => screenLocked(),
   // How long a chat must stay waiting before it counts as waiting on you
   // (tests that don't say count it at once, as before).
   settleMs = process.env.NODE_TEST_CONTEXT ? 0 : 6000,
@@ -359,6 +378,10 @@ export function createAgentSessions({
   // Windows' owner checks (Codex's pipes, the files it holds) build their
   // helper in this data folder (windows-owners.mjs).
   useOwnersFolder(dataDir);
+  // And its idle and lock readings (windows-presence.mjs), and its process
+  // list, to tell when the Claude app runs (windows-processes.mjs).
+  usePresenceFolder(dataDir);
+  useProcessesFolder(dataDir);
   if (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT) void prepareOwners(dataDir).catch(() => {});
   // Chats joining the Claude app's list (claude-import.mjs): its record
   // written, or its import link when the app is open and out of the way;
@@ -706,6 +729,11 @@ export function createAgentSessions({
             }
           },
         }));
+  // The Claude app's own window (its box, Stop, its model menu) is worked
+  // through the Mac's helper (claude-compose.mjs). A Windows PC has none yet:
+  // there Stop and the model go through Claude Code, as for a chat the app
+  // doesn't show, and drafts stay on the phone.
+  const appWindow = !!claudeCompose && process.platform === "darwin";
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
@@ -770,7 +798,7 @@ export function createAgentSessions({
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
           deliveringMessage.set(id, next.id);
-          if (typeIntoApp && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
+          if (typeIntoApp && appWindow && next.via === "app" && !direct.has(next.id) && !(await macLocked())) {
             // Marked on its way only once the app is about to be typed into:
             // marked while it still queued behind other Claude app work, a
             // Reach restart paused it as maybe sent when it never was.
@@ -1480,7 +1508,7 @@ export function createAgentSessions({
       // at the level it was started with, and nothing outside it changes
       // that but a click in its menu (never, Oct 10). Claude Code continues
       // it at that level instead, as for a locked Mac.
-      if (typeIntoApp && claudeCompose && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
+      if (typeIntoApp && appWindow && session.inApp && !picked && (!holder || holder.where === "claude-app") && !claudeHost.drives(id) && (await claudeOpen())) {
         if ((body.model && body.model !== session.model) || (body.effort && body.effort !== session.effort))
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
@@ -1533,7 +1561,7 @@ export function createAgentSessions({
       adapter(agent);
       if (agent === "claude" && !claudeHost.drives(id)) {
         const { session } = await claude.read(id, { limit: 1 });
-        const appOpen = !!claudeCompose && (await claudeOpen());
+        const appOpen = appWindow && (await claudeOpen());
         if (session.inApp && (appOpen || effort)) {
           // Apply to the app's own visible chat; the CLI host cannot mutate a
           // desktop-owned process. Catalog IDs become exact native menu names.
@@ -1601,7 +1629,7 @@ export function createAgentSessions({
     },
     async draft(agent, id, { text, owner }) {
       adapter(agent);
-      if (agent !== "claude" || !claudeCompose?.draft) return { synced: false, supported: false };
+      if (agent !== "claude" || !appWindow || !claudeCompose.draft) return { synced: false, supported: false };
       if (outbox.list(id).length) throw Object.assign(new Error("Waiting for the previous message to send."), { status: 409 });
       const { session } = await claude.read(id, { limit: 1 });
       if (!session.inApp || claudeHost.drives(id)) return { synced: false, supported: false };
@@ -1623,7 +1651,7 @@ export function createAgentSessions({
     },
     async stop(agent, id) {
       const current = host(agent);
-      if (agent === "claude" && !claudeHost.drives(id) && claudeCompose?.stop) {
+      if (agent === "claude" && !claudeHost.drives(id) && appWindow && claudeCompose.stop) {
         const { session } = await claude.read(id, { limit: 1 });
         if (session.inApp) return claudeCompose.stop(id, { title: session.appTitle || "Untitled" });
       }
