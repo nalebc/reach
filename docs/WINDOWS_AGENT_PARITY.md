@@ -5,7 +5,8 @@ Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on
 ## Today on Windows (Oct 13)
 
 - On by detection, with no switch, not yet run on a real PC: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why.
-- Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E; agents' and invited people's commands (no sandbox; refused since `aa09b7da` instead of running unsandboxed) until C.
+- Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E.
+- Built by detection, not yet run on a real PC (C): agents' and invited people's commands (`/api/jobs`) run in a regular AppContainer + Job Object with a per-root capability grant (the `aa09b7da` refusal is lifted on Windows once its private folder is ready). The Full-control shell (Job Object on the owner's token), approved scripts (LPAC) and the Files helper (owner-token NT-handle broker) are built and wired too, but stay behind the preset refusals until E.
 - Works: command-line agents over the tailnet for files.
 - Missing: background mode and start at sign-in, sleep prevention (K); one Reach per PC, restarts and updates in a visible window (L); the rest of P, T, G, H and N.
 
@@ -91,6 +92,24 @@ Follow-ups the reviews left, both for a real PC:
 - **Silent delete.** A file the Recycle Bin can't take is deleted for good without a word. This happens when the bin is off for that drive or the file is too big for it.
 
 The rest are in workstreams K to W below.
+
+## Workstream C (Windows sandbox) built — the parity ledger
+
+Built by detection with unit tests; **built, not yet run on a real PC** (rule 5). The design is `docs/parity/C-sandbox.md`; the helper is `scripts/native/sandbox.cs` (compiled with the PC's own csc, hash-verified before each spawn), driven from `server/windows-sandbox.mjs`. Jobs (`/api/jobs`) are live by detection; the shell, scripts and Files helper are wired but stay behind the preset refusals until E.
+
+| Mac behaviour | Windows | Note |
+| --- | --- | --- |
+| Full-control shell unsandboxed, OS user | Job Object only (kill timing on abort/timeout, UI restrictions), owner token, no AppContainer, no caps | **Byte-for-byte parity.** |
+| Jobs: allow-default deny-list, network on | Regular AppContainer, per-root capability ALLOW + DENY carve-outs + a loopback/tailnet self-test | **Stronger** on reads; same deny guarantees. Parity gain. |
+| Jobs read everything but secrets | The AppContainer can't read `%TEMP%`, the npm cache, user-scope Node managers (nvm-windows, fnm, Volta), `.gitconfig` or Git Bash unless named | **Parity break (D-C-5):** the profile-read loss is recorded; a named tool/profile directory list could be switched on in one place later. |
+| Non-admin device / full guest jobs over Home + drives | Refused: a jobs grant can't be a drive root, Home, or an ancestor of Home | **Parity break (finding 2):** such clients can't run jobs on Windows. |
+| Scripts: deny-default, no net, one process | AppContainer (LPAC intended) + one-process Job with `CHILD_PROCESS_RESTRICTED`, no network, grant walk skips links | Parity; LPAC marking and the probe-minimal capability set are real-PC items. |
+| Scripts deny `.git`/`.npmrc`… created during the run | A post-run scan reports and fails; a same-run create-and-use isn't blocked mid-run | **Residual (finding 5):** stated. |
+| Files helper: kernel-confined, descriptor-relative | Owner-token broker: NT handle-relative, no-reparse, final-path verify, private-name/path, one link | Parity; the kernel belt is replaced by broker code. Lowbox impersonation is D-C-2. |
+| Nothing left behind (per-process sandbox) | Per-root capability ACEs + a ledger; kill-then-revoke, startup + hourly sweeps | **Residual (D-C-7):** a file moved out of a root stays reachable to a live token holding that capability until revoke. |
+| — | SAC-On / App Control / AppLocker / ASR / CFA blocking the helper | **Fail closed** by the launch self-test with the policy wording; never a fallback (finding 15). Signed-helper path is D-C-6. |
+
+Not yet proven on a real PC (the escape e2e run as a standard user in CI, `test/windows-sandbox-e2e.test.mjs` and `test/windows-file-boundary-e2e.test.mjs`): that the AppContainer + capability grant actually denies Reach's data and non-granted folders; the loopback/tailnet self-test; the owner-token broker's no-reparse traversal and identity match; the Job Object's UI restrictions and brokered-launch refusals; and the full real-PC checklist (OneDrive KFM, a pnpm store, a Dev Drive/ReFS, SAC in Evaluation, Controlled Folder Access).
 
 ## Rules
 
