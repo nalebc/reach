@@ -9,10 +9,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import crypto from "node:crypto";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { localOpenClawConfig } from "./openclaw.mjs";
-import { openClawShell } from "./openclaw-run.mjs";
+import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
 import { updateRecovery, publicRecovery, installUpdateRuntime, availableUpdateRuntime } from "./openclaw-update-recovery.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -267,11 +265,11 @@ export async function readiness({ configuration = localOpenClawConfig, fetch: ge
   }
 }
 
-// `openclaw gateway restart` (launchd, systemd or schtasks), fixed args, as
-// startOpenClawGateway runs `gateway start`.
+// `openclaw gateway restart` (launchd, systemd or its Scheduled Task), fixed
+// args, as startOpenClawGateway runs `gateway start`.
 export async function restartOpenClawGateway({
   configuration = localOpenClawConfig,
-  run = promisify(execFile),
+  run = runOpenClaw,
   env = process.env,
   platform = process.platform,
   authorize = () => {},
@@ -282,15 +280,8 @@ export async function restartOpenClawGateway({
   await configuration();
   authorize();
   try {
-    if (platform === "win32")
-      await run("cmd.exe", ["/d", "/c", "openclaw gateway restart"], {
-        timeout: 25000,
-        windowsHide: true,
-      });
-    else
-      await run(...(await openClawShell(["gateway", "restart"], { env, platform, runtime })), {
-        timeout: 25000,
-      });
+    const [file, argv, childEnv] = await openClawShell(["gateway", "restart"], { env, platform, runtime });
+    await run(file, argv, { timeout: 25000, ...(childEnv && { env: childEnv }) });
   } catch {
     throw fail(
       503,
@@ -300,17 +291,18 @@ export async function restartOpenClawGateway({
 }
 
 // Fixed commands only. No terminal, no interactive stdin, bounded runtime/output.
+// On Windows the same arguments, to Node and openclaw.mjs (openClawShell).
 export async function runOpenClawMaintenance(action, {
-  run = promisify(execFile), env = process.env, platform = process.platform,
-  authorize = () => {}, configuration = localOpenClawConfig, runtime,
+  run = runOpenClaw, env = process.env, platform = process.platform,
+  authorize = () => {}, configuration = localOpenClawConfig, runtime, ...windows
 } = {}) {
   const commands = {
-    doctor: "openclaw doctor --non-interactive --no-workspace-suggestions",
-    repair: "openclaw doctor --repair --non-interactive --no-workspace-suggestions",
-    update: "openclaw update --yes --json --timeout 600",
-    "finish-update": "openclaw update repair --yes --json --timeout 600",
-    "verify-update": "openclaw gateway status --json --require-rpc",
-    "repair-service": "openclaw gateway install --force --runtime node --json",
+    doctor: ["doctor", "--non-interactive", "--no-workspace-suggestions"],
+    repair: ["doctor", "--repair", "--non-interactive", "--no-workspace-suggestions"],
+    update: ["update", "--yes", "--json", "--timeout", "600"],
+    "finish-update": ["update", "repair", "--yes", "--json", "--timeout", "600"],
+    "verify-update": ["gateway", "status", "--json", "--require-rpc"],
+    "repair-service": ["gateway", "install", "--force", "--runtime", "node", "--json"],
   };
   if (!Object.hasOwn(commands, action)) throw fail(400, "Choose an OpenClaw action.");
   authorize();
@@ -318,7 +310,7 @@ export async function runOpenClawMaintenance(action, {
   authorize();
   runtime ??= await availableUpdateRuntime({ platform });
   const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-  let command = commands[action];
+  let command = `openclaw ${commands[action].join(" ")}`;
   if (platform !== "win32") {
     // exec: a timeout kills openclaw itself, not just the login shell.
     command = `exec ${command}`;
@@ -328,10 +320,13 @@ export async function runOpenClawMaintenance(action, {
     }
   }
   let output, failed = false, failureReason = "", updateResult;
+  const options = { env, timeout: ["update", "finish-update"].includes(action) ? 1800000 : 120000, maxBuffer: 2 * 1024 * 1024, windowsHide: true };
   try {
-    output = await run(platform === "win32" ? "cmd.exe" : env.SHELL || "/bin/sh",
-      platform === "win32" ? ["/d", "/c", command] : ["-lc", command],
-      { env, timeout: ["update", "finish-update"].includes(action) ? 1800000 : 120000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+    if (platform === "win32") {
+      const args = [...commands[action], ...(runtime && action === "repair-service" ? ["--runtime-path", runtime] : [])];
+      const [file, argv, childEnv] = await openClawShell(args, { env, platform, runtime, ...windows });
+      output = await run(file, argv, { ...options, env: childEnv });
+    } else output = await run(env.SHELL || "/bin/sh", ["-lc", command], options);
   } catch (error) {
     output = { stdout: error.stdout || "", stderr: error.stderr || "" };
     failed = true;

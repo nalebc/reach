@@ -37,6 +37,11 @@ export const suites = {
     "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // OpenClaw natively (audit #15, Oct 13): npm's OpenClaw started through
+    // Node with whole arguments, a key only in its variable or on stdin,
+    // Telegram's token file closed to others, a timeout ending the whole
+    // tree, and the install terminal's verdict.
+    "windows-openclaw",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

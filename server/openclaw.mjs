@@ -4,8 +4,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import WebSocket from "ws";
 import JSON5 from "json5";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { partLabels } from "./agent-sessions/message-parts.mjs";
 import * as usageFeature from "./openclaw-usage.mjs";
 import * as healthFeature from "./openclaw-health.mjs";
@@ -15,7 +13,8 @@ import * as agentsFeature from "./openclaw-agents.mjs";
 import * as skillsFeature from "./openclaw-skills.mjs";
 import * as wizardFeature from "./openclaw-wizard.mjs";
 import * as onboardFeature from "./openclaw-onboard.mjs";
-import { openClawShell } from "./openclaw-run.mjs";
+import { openClawShell, runOpenClaw } from "./openclaw-run.mjs";
+import { ownerOnlyFile } from "./openclaw-windows.mjs";
 import { OLDEST_WORKING, tooOld, tooOldError } from "./agent-sessions/compatibility.mjs";
 
 // Features in files of their own, each adding its routes.
@@ -2201,11 +2200,11 @@ export function createOpenClaw({
 }
 
 // Starts this computer's own OpenClaw Gateway, the service OpenClaw set up
-// (`openclaw gateway start`: launchd, systemd or schtasks), for a phone that
-// found it stopped. Fixed arguments; never a remote profile.
+// (`openclaw gateway start`: launchd, systemd or its Scheduled Task), for a
+// phone that found it stopped. Fixed arguments; never a remote profile.
 export async function startOpenClawGateway({
   configuration = localOpenClawConfig,
-  run = promisify(execFile),
+  run = runOpenClaw,
   env = process.env,
   platform = process.platform,
   authorize = () => {},
@@ -2215,15 +2214,8 @@ export async function startOpenClawGateway({
   await configuration();
   authorize();
   try {
-    if (platform === "win32")
-      await run("cmd.exe", ["/d", "/c", "openclaw gateway start"], {
-        timeout: 30000,
-        windowsHide: true,
-      });
-    else
-      await run(...(await openClawShell(["gateway", "start"], { env, platform, runtime })), {
-        timeout: 30000,
-      });
+    const [file, argv, childEnv] = await openClawShell(["gateway", "start"], { env, platform, runtime });
+    await run(file, argv, { timeout: 30000, ...(childEnv && { env: childEnv }) });
   } catch {
     throw fail(
       503,
@@ -2244,7 +2236,7 @@ const tokenShape = /^[\x21-\x7e]{8,4096}$/;
 export async function addOpenClawChannel(
   { channel, token, botToken, appToken, name } = {},
   {
-    run = promisify(execFile),
+    run = runOpenClaw,
     env = process.env,
     platform = process.platform,
     authorize = () => {},
@@ -2254,6 +2246,7 @@ export async function addOpenClawChannel(
     mkdir = fs.mkdir,
     chmod = fs.chmod,
     rm = fs.rm,
+    ownerOnly = ownerOnlyFile,
   } = {},
 ) {
   authorize();
@@ -2266,11 +2259,12 @@ export async function addOpenClawChannel(
       throw fail(400, field === "appToken" ? "Paste the Slack app token (xapp-…)." : field === "botToken" ? "Paste the Slack bot token (xoxb-…)." : "Paste the bot token.");
   if (name !== undefined && name !== "" && (typeof name !== "string" || name.length > 80 || /[\u0000-\u001f]/.test(name)))
     throw fail(400, "Choose a shorter account name.");
-  if (platform === "win32") throw fail(409, "On Windows, add channels in OpenClaw on this computer.");
   // Telegram: the token in a file only this user can read, in OpenClaw's
   // credentials folder; OpenClaw keeps its path (tokenFile) and reads it
   // when it runs, so the file stays. Discord and Slack (2026.9.9) take
-  // theirs only as arguments, briefly visible to `ps` on this computer.
+  // theirs only as arguments, briefly visible to `ps` on this computer (on
+  // Windows, to this account and administrators). There no shell is
+  // between: a token's & or % stays a token.
   const args = ["channels", "add", "--channel", channel];
   let tokenFile = "";
   if (channel === "telegram") {
@@ -2284,12 +2278,20 @@ export async function addOpenClawChannel(
   try {
     if (tokenFile) {
       await mkdir(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
-      // mode applies only to a new file: an existing one is set too.
-      await writeFile(tokenFile, `${values.token.trim()}\n`, { mode: 0o600 });
-      await chmod(tokenFile, 0o600);
+      if (platform === "win32") {
+        // Windows ignores modes: the file is made empty, closed to all but
+        // this account (openclaw-windows.mjs), and only then given the token.
+        await writeFile(tokenFile, "");
+        await ownerOnly(tokenFile, { env });
+        await writeFile(tokenFile, `${values.token.trim()}\n`, { flag: "r+" });
+      } else {
+        // mode applies only to a new file: an existing one is set too.
+        await writeFile(tokenFile, `${values.token.trim()}\n`, { mode: 0o600 });
+        await chmod(tokenFile, 0o600);
+      }
     }
-    const [shell, argv] = await openClawShell(args, { env, platform, runtime });
-    await run(shell, argv, { timeout: 60000, env });
+    const [shell, argv, childEnv = env] = await openClawShell(args, { env, platform, runtime });
+    await run(shell, argv, { timeout: 60000, env: childEnv });
   } catch {
     // Not taken: no token left behind.
     if (tokenFile) await rm(tokenFile, { force: true }).catch(() => {});
