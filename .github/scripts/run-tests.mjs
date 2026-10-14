@@ -30,10 +30,22 @@ export const suites = {
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
+    // computers over the keyed route.
+    "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Windows conveniences, workstream W: the owner's own shell in Reach's
+    // terminals, drives attached later, the launcher's name on the phone.
+    "windows-shell", "file-roots", "connect-states-ui",
+    // The PC's own terminals, workstream T: Windows Terminal's tabs and
+    // console windows listed, read, typed into, closed and opened from the
+    // phone, the real helper driven on this runner; the shared list and its
+    // checks with them.
+    "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
+    "desktop-terminals", "terminal-titles", "terminal-list-ui",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
