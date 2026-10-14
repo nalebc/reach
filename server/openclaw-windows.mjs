@@ -112,20 +112,21 @@ export async function openClawNode({ env = process.env, home = os.homedir(), scr
 
 // The Node a Reach terminal would find first (what OpenClaw's installer
 // checks), and whether OpenClaw's own Node is there already: what installing
-// OpenClaw needs first (agent-install.mjs).
+// OpenClaw needs first (agent-install.mjs). `version` is the PC's own Node,
+// for the phone: Reach's private one (.reach\runtime, scripts/bootstrap.ps1,
+// first on PATH when the PC has none it can use) isn't the PC's.
+const REACH_NODE = /[\\/]\.reach[\\/]runtime[\\/]node-v[^\\/]+[\\/]node\.exe$/i;
 export async function installNode({ env = process.env, home = os.homedir(), version = nodeVersion, isFile = fileAt } = {}) {
-  let found = null;
+  const found = [];
   for (const file of pathDirs(env).map((dir) => path.join(dir, "node.exe")))
-    if (await isFile(file)) {
-      found = file;
-      break;
-    }
-  const current = found ? await version(found) : null;
+    if (await isFile(file)) found.push(file);
+  const first = found[0] ? await version(found[0]) : null;
+  const pcs = found.find((file) => !REACH_NODE.test(file));
   const dir = privateNodeDir({ env, home });
   const own = path.join(dir, "node.exe");
   return {
-    version: current,
-    supported: supportedNode(current),
+    version: pcs ? (pcs === found[0] ? first : await version(pcs)) : null,
+    supported: supportedNode(first),
     dir,
     privateReady: (await isFile(own)) && supportedNode(await version(own)),
   };

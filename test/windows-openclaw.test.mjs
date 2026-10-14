@@ -328,6 +328,15 @@ test("the Node a Reach terminal finds first decides the install's Node step", as
   assert.deepEqual(await check({ [at("a/node.exe")]: "24.18.0" }), { version: "24.18.0", supported: true, dir: path.dirname(own), privateReady: false });
   assert.deepEqual(await check({ [at("a/node.exe")]: "22.12.0", [own]: "26.1.0" }), { version: "22.12.0", supported: false, dir: path.dirname(own), privateReady: true });
   assert.equal(privateNodeDir({ env: { OPENCLAW_HOME: at("elsewhere") }, home: at("home") }), at("elsewhere/.openclaw/tools/cli-node/tools/node"));
+  // Reach's own private Node first on PATH (scripts/bootstrap.ps1, on a PC
+  // with none it can use): it decides, but the phone names the PC's own.
+  const reach = layout(t, { "reach/.reach/runtime/node-v22.23.3-win-x64/node.exe": "", "pf/nodejs/node.exe": "" });
+  const ours = reach("reach/.reach/runtime/node-v22.23.3-win-x64/node.exe");
+  const versions = { [ours]: "22.23.3", [reach("pf/nodejs/node.exe")]: "20.11.1" };
+  const both = await installNode({ env: { PATH: `${path.dirname(ours)};${reach("pf/nodejs")}` }, home: reach("home"), version: async (file) => versions[file] ?? null });
+  assert.deepEqual([both.version, both.supported], ["20.11.1", false]);
+  const alone = await installNode({ env: { PATH: path.dirname(ours) }, home: reach("home"), version: async (file) => versions[file] ?? null });
+  assert.deepEqual([alone.version, alone.supported], [null, false]);
 });
 
 // OpenClaw's launcher refuses with "openclaw requires Node >=24.16.0 <25, or
