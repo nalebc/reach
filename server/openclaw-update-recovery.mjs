@@ -61,7 +61,9 @@ export async function updateRecovery(
   if (required) {
     // Automate only the known LTS range. A different requirement must not
     // silently install a runtime that still cannot run the requested release.
-    const minimum = required.match(/^>=24\.(\d+)\.(\d+)\s+<25(?:\s*\|\|.*)?$/);
+    // Its engines say "<25 || >=26.1.0"; its launcher (2026.10.3) says
+    // "<25, or >=26.1.0": either, as on Windows (WINDOWS_RANGE).
+    const minimum = required.match(/^>=24\.(\d+)\.(\d+)\s+<25(?:(?:\s*\|\||,\s*or).*)?$/);
     let brew;
     if (platform === "darwin" && minimum)
       for (const candidate of BREW) {
