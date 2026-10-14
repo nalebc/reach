@@ -158,19 +158,20 @@ test("a new tailnet's default policy, left as it is: nothing changed, invite lin
 
 // First-run matrix T26: a Windows Reach approves phones by pairing code, so it
 // can't make invite keys; `.\reach.cmd invites` says so before anything else.
-test("Windows: invites say why they aren't available, and touch nothing", async (t) => {
+test("Windows: invites as on a Mac, once Reach's folders are private; when they can't be, why, and nothing touched", async (t) => {
   const root = computer(t);
   const api = fakeApi({ grants: [] });
   await assert.rejects(
     setupInvites(root, {
       platform: "win32",
-      status: async () => assert.fail("no Tailscale call on Windows"),
-      select: async () => assert.fail("no question on Windows"),
-      ask: async () => assert.fail("no question on Windows"),
+      privateFolders: async () => ({ ok: false, reason: "Reach's folder C:\\reach can be changed by other people on this PC, so browser sign-in stays off." }),
+      status: async () => assert.fail("no Tailscale call before its folders are private"),
+      select: async () => assert.fail("no question"),
+      ask: async () => assert.fail("no question"),
       print() {},
       request: api.request,
     }),
-    /^Error: Invite links for people and agents without Tailscale aren't available on Windows yet: .*pairing code/,
+    { message: "Reach's folder C:\\reach can be changed by other people on this PC, so browser sign-in stays off. Invite links weren't set up." },
   );
   assert.deepEqual(api.clients, []);
 });
