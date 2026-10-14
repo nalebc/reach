@@ -853,13 +853,14 @@ static class NativeProc {
     PROCESS_INFORMATION pi;
     bool ok = CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags, env, cwd, ref startup, out pi);
     int error = Marshal.GetLastWin32Error();
+    string ac = container != null ? "; ac=" + (containerSd != IntPtr.Zero ? "1" : "0") : "";
     Marshal.FreeHGlobal(env); Marshal.FreeHGlobal(handleArray); Marshal.FreeHGlobal(jobHandlePtr);
     if (childPolicyPtr != IntPtr.Zero) Marshal.FreeHGlobal(childPolicyPtr);
     if (containerSd != IntPtr.Zero) NativeSec.LocalFree(containerSd);
     if (!ok) {
       DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs);
       foreach (IntPtr h in new IntPtr[] { nul, outWrite, errWrite, outRead, errRead }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
-      throw Sandbox.Refusal(503, "Windows wouldn't start the sandboxed command (" + error + ").");
+      throw Sandbox.Refusal(503, "Windows wouldn't start the sandboxed command (" + error + ac + ").");
     }
     var launched = new Launched();
     launched.Adopt(pi, nul, outWrite, errWrite, outRead, errRead, attrs);
@@ -1286,7 +1287,7 @@ static class Files {
 // point (NtCreateFile + OBJ_DONT_REPARSE), final-path verification, and the
 // read/write/create/delete primitives. The owner's token; no AppContainer.
 static class NtFiles {
-  const uint OBJ_CASE_INSENSITIVE = 0x40, OBJ_DONT_REPARSE = 0x4000;
+  const uint OBJ_CASE_INSENSITIVE = 0x40, OBJ_DONT_REPARSE = 0x1000;
   const uint FILE_OPEN = 1, FILE_CREATE = 2, FILE_OPEN_IF = 3, FILE_OVERWRITE_IF = 5;
   const uint FILE_DIRECTORY_FILE = 0x1, FILE_NON_DIRECTORY_FILE = 0x40, FILE_SYNCHRONOUS_IO_NONALERT = 0x20, FILE_DELETE_ON_CLOSE = 0x1000;
   const uint SYNCHRONIZE = 0x100000, DELETE = 0x10000;
