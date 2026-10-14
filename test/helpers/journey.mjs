@@ -197,6 +197,14 @@ function serveStandIn(fake, { tls, ip }) {
       Object.entries(headers).filter(([name]) => !/^(tailscale-|x-forwarded-|forwarded$|x-fake-from$)/i.test(name)),
     );
   const servers = new Map();
+  // Every socket it holds, the phone's and Reach's, ended with it: a live
+  // screen's socket to Reach never keeps a test waiting.
+  const open = new Set();
+  const held = (socket) => {
+    open.add(socket);
+    socket.once("close", () => open.delete(socket));
+    return socket;
+  };
   const server = (port) => {
     if (servers.has(port)) return servers.get(port);
     const answer = https.createServer({ key: tls.key, cert: tls.cert }, async (req, res) => {
@@ -214,7 +222,7 @@ function serveStandIn(fake, { tls, ip }) {
       client.on("error", () => {});
       const to = await target(port).catch(() => null);
       if (!to) return client.destroy();
-      const upstream = to.socketPath ? net.connect(to.socketPath) : net.connect(to.port, to.host);
+      const upstream = held(to.socketPath ? net.connect(to.socketPath) : net.connect(to.port, to.host));
       upstream.on("error", () => client.destroy());
       client.on("error", () => upstream.destroy());
       upstream.once("connect", () => {
@@ -233,7 +241,7 @@ function serveStandIn(fake, { tls, ip }) {
   // and nothing else goes anywhere, so no test traffic leaves this computer.
   const proxy = http.createServer((req, res) => res.writeHead(403).end());
   proxy.on("connect", (req, socket, head) => {
-    socket.on("error", () => {});
+    held(socket).on("error", () => {});
     const [host, port] = req.url.split(":");
     if (host !== HOST || !/^\d+$/.test(port || "")) return socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -243,6 +251,7 @@ function serveStandIn(fake, { tls, ip }) {
   return {
     proxy,
     close: async () => {
+      for (const socket of open) socket.destroy();
       proxy.closeAllConnections?.();
       await new Promise((resolve) => proxy.close(resolve));
       for (const answer of servers.values()) {
