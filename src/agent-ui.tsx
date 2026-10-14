@@ -1,6 +1,7 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Check, ChevronDown, Lock, Search, X } from "lucide-react";
 import AppLogo from "./AppLogo";
+import { Mascot } from "./Mascot";
 import type { Peer } from "./api";
 import "./agent-ui.css";
 
@@ -12,18 +13,29 @@ const hues = [152, 200, 268, 32, 330, 96];
 const initial = (name: string) =>
   (name.trim().match(/[\p{L}\p{N}]/u)?.[0] || "?").toUpperCase();
 
-// An invited agent has no app of its own: a soft orb with its initial, tinted
-// by its name so two agents side by side are told apart at a glance.
+// An invited agent has no app of its own: its mascot, picked from its id
+// (Mascot.tsx). Without an id yet, a soft orb with its initial, tinted by its
+// name so two agents side by side are told apart at a glance.
 export function AgentAvatar({
   name,
+  id,
+  drawn,
   size = 40,
   done = false,
 }: {
   name: string;
+  id?: string;
+  drawn?: number;
   size?: number;
   done?: boolean;
 }) {
   const hue = hues[[...name].reduce((n, c) => n + c.charCodeAt(0), 0) % hues.length];
+  if (id && !done)
+    return (
+      <span className="ag-avatar has-mascot" style={{ width: size, height: size }} aria-hidden="true">
+        <Mascot id={id} drawn={drawn} />
+      </span>
+    );
   return (
     <span
       className={`ag-avatar${done ? " is-done" : ""}`}

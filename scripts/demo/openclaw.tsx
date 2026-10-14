@@ -1,8 +1,11 @@
 // A UI fixture with sample data only: the OpenClaw space (chats, a chat,
-// Scheduled, Customize). Nothing reaches a computer or OpenClaw.
+// Scheduled, Customize) and its setup. Nothing reaches a computer or OpenClaw.
+// ?view=setup or install: not set up yet (key, install). ?view=wizard: guided setup,
+// answered in this page's memory (&step=N opens at that step).
 import React from "react";
 import { createRoot } from "react-dom/client";
 import OpenClawSpace from "../../src/OpenClawSpace";
+import { ClawWizard } from "../../src/OpenClawWizard";
 import "../../src/styles.css";
 import "../../src/atmosphere.css";
 import "../../src/workspace.css";
@@ -76,10 +79,113 @@ const routes: Record<string, (url: URL) => unknown> = {
   "/api/sessions/openclaw/catalog": () => ({ defaultAgentId: "main", agents: [{ id: "main", name: "Personal assistant" }, { id: "work", name: "Work" }], models: [{ id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true }], canEdit: true, errors: [] }),
   "/api/sessions/logos": () => ({ version: "demo", logos: {} }),
 };
+// Guided setup, as Reach's server hands OpenClaw's steps to the phone
+// (server/openclaw-wizard.mjs): text scrubbed, options by index only.
+const params = new URLSearchParams(location.search);
+const view = params.get("view") || "";
+const SECURITY = [
+  "OpenClaw is an open-source assistant that learns and grows with you, by the OpenClaw Foundation (a non-profit).",
+  "By default, OpenClaw is a personal agent for one operator.",
+  "This bot can read files and run actions if tools are enabled.",
+  "A bad prompt can trick it into doing unsafe things.",
+  "",
+  "OpenClaw is not designed to safely separate multiple users by default.",
+  "If multiple users can message one tool-enabled agent, they can all influence how it uses its tools.",
+  "",
+  "If you're not comfortable managing access controls and security hardening, don't run OpenClaw without help.",
+  "Ask someone experienced to help before enabling tools or exposing it to the internet.",
+  "",
+  "Recommended safer setup",
+  "- Use pairing or allowlists; require mentions in group chats.",
+  "- Shared inboxes: use separate gateways and credentials; separate OS users or hosts provide stronger isolation.",
+  "- Use a sandbox and give tools only the permissions they need.",
+  "- Shared inboxes: isolate DM sessions (session.dmScope: per-channel-peer) and keep tool access minimal.",
+  "- Keep secrets outside the agent's reachable filesystem.",
+  "- Use the strongest available model for bots with tools or shared/public inboxes.",
+  "",
+  "Run regularly",
+  "openclaw security audit --deep",
+  "openclaw security audit --fix",
+  "",
+  "Learn more at https://docs.openclaw.ai",
+].join("\n");
+const option = (label: string, hint = "") => ({ label, hint });
+const STEPS = [
+  { type: "note", title: "Security disclaimer", message: SECURITY },
+  { type: "confirm", title: "", message: "I understand this is personal-by-default and shared/multi-user use requires lock-down. Continue?", selected: [1] },
+  { type: "select", title: "", message: "Setup mode", selected: [0], options: [
+    option("QuickStart (recommended)", "Recommended local setup. Change details later with openclaw configure."),
+    option("Manual", "Configure port, network, Tailscale, and auth options."),
+  ] },
+  { type: "select", title: "", message: "Model/auth provider", selected: [1], options: [
+    option("OpenAI", "Codex OAuth + API key"), option("Anthropic", "Claude API key"), option("OpenRouter", "API key"),
+    option("Google", "Gemini API key + OAuth"), option("xAI (Grok)", "API key"), option("Mistral", "API key"),
+    option("Moonshot AI (Kimi K2)", "Kimi K2 + Kimi Coding"), option("Z.AI (GLM 4.6)", "API key"), option("MiniMax", "M2 recommended"),
+    option("Qwen", "OAuth"), option("Vercel AI Gateway", "API key"), option("GitHub Copilot", "GitHub device login"),
+    option("Ollama", "Local models"), option("Skip for now"),
+  ] },
+  { type: "text", title: "", message: "Enter Anthropic API key", sensitive: true, placeholder: "sk-ant-…" },
+  { type: "select", title: "", message: "Default model", selected: [0], options: [
+    option("Keep current (anthropic/claude-sonnet-4-5)"), option("anthropic/claude-opus-4-1", "Claude Opus 4.1"),
+    option("anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5"), option("anthropic/claude-haiku-4-5", "Claude Haiku 4.5"),
+    option("Enter model manually"),
+  ] },
+  { type: "multiselect", title: "", message: "Select channels (QuickStart)", selected: [0], options: [
+    option("WhatsApp", "QR link"), option("Telegram", "Bot API"), option("Discord", "Bot API"), option("Slack", "Socket Mode"),
+    option("Signal", "signal-cli"), option("iMessage", "BlueBubbles"), option("Google Chat", "Chat API"),
+    option("Microsoft Teams", "Bot Framework"), option("Matrix", "plugin"),
+  ] },
+  { type: "progress", title: "Gateway service", message: "Installing Gateway service…" },
+  { type: "note", title: "Done", message: "OpenClaw is ready.\nDashboard: http://127.0.0.1:18789\nChat with it here in Reach, or on the apps you linked." },
+].map((s, i) => ({ id: `step-${i + 1}`, title: "", sensitive: false, placeholder: "", options: [] as { label: string; hint: string }[], selected: [] as number[], ...s }))
+  .map((s) => ({ ...s, options: s.options.map((o, index) => ({ index, ...o })) }));
+let at = params.has("step") ? Number(params.get("step")) - 1 : -1;
+let wizardStatus = at >= 0 ? "running" : params.get("status") || "idle";
+// OpenClaw's progress never reaches the phone as a step: Reach shows it
+// while it waits for the next one (busy). &device=1: a sign-in by code.
+const progressOf = (s: (typeof STEPS)[number]) =>
+  params.has("device")
+    ? { title: "GitHub Copilot", message: "Enter this one-time code on GitHub's sign-in page.\nCode expires in 15 minutes.\nNever enter it on a page you didn't open yourself.", code: "WDJB-MJHT", link: "https://github.com/login/device" }
+    : { title: s.title, message: s.message, code: "", link: "" };
+const wizardState = () => {
+  const step = wizardStatus === "running" ? STEPS[at] || null : null;
+  const working = step?.type === "progress";
+  return {
+    supported: true,
+    busy: working,
+    status: wizardStatus,
+    problem: params.get("problem") || "",
+    progress: working && step ? progressOf(step) : null,
+    step: working ? null : step,
+  };
+};
+const advance = () => {
+  at++;
+  if (at >= STEPS.length) wizardStatus = "done";
+  // Progress passes on its own, as OpenClaw finishes it.
+  if (STEPS[at]?.type === "progress") setTimeout(advance, 2500);
+};
+const wizard: Record<string, (body: Record<string, unknown>) => unknown> = {
+  start: () => { at = 0; wizardStatus = "running"; return wizardState(); },
+  answer: () => { advance(); return wizardState(); },
+  refresh: () => wizardState(),
+  cancel: () => { wizardStatus = "cancelled"; at = -1; return wizardState(); },
+};
+// ?view=setup: installed, never set up. ?view=install: not installed.
+if (view === "setup" || view === "install") {
+  routes["/api/sessions/openclaw/overview"] = () => ({ connected: false, sessions: [], approvals: [], notSetUp: true });
+  routes["/api/sessions/openclaw/onboard/status"] = () => ({ installed: view === "setup", configured: false, supported: true, providers: ["openrouter", "anthropic", "openai", "google"], setup: null });
+}
+routes["/api/sessions/openclaw/wizard"] = wizardState;
+
 // A capture in a background tab still shows data (the page skips reads while hidden).
 Object.defineProperty(document, "hidden", { get: () => false });
 window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+  const action = /\/api\/sessions\/openclaw\/wizard\/(\w+)$/.exec(url.pathname)?.[1];
+  // Guided setup's answers stay in this page.
+  if (init.method === "POST" && action && wizard[action])
+    return Response.json(wizard[action](JSON.parse(String(init.body || "{}"))));
   if (init.method === "POST") return Response.json({ error: "Sample data only." }, { status: 403 });
   // Waits for changes: never answer (the page asks again on its own).
   if (url.pathname.endsWith("/changes")) return new Promise<Response>(() => {});
@@ -94,6 +200,10 @@ const apps = [
 const noop = () => {};
 createRoot(document.getElementById("root")!).render(
   <main className="page-sessions">
-    <OpenClawSpace peer={peer} apps={apps} logos={{}} onAppChange={noop} appPending={{}} onReviewDevice={noop} onNew={noop} />
+    {view === "wizard" ? (
+      <ClawWizard peer={peer} onClose={noop} />
+    ) : (
+      <OpenClawSpace peer={peer} apps={apps} logos={{}} onAppChange={noop} appPending={{}} onReviewDevice={noop} onNew={noop} />
+    )}
   </main>,
 );

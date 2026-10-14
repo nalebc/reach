@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { agentProfile, applyAgentPolicy, validBrowserTerminalId, within } from "./agent-policy.mjs";
 import { defaultFileRoots } from "./file-roots.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
+import { createMascotDeck } from "./mascots.mjs";
 import { STANDING_SECONDS, fullControlNeedsInvitation, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
 
 export const fail = (status, message) =>
@@ -321,6 +322,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   const pairingFile = pairingWindowFile(config.dataDir);
   let clients = loadJson(file, []);
   let credentialStoreCreated = fs.existsSync(file);
+  const mascots = createMascotDeck({ file: path.join(config.dataDir, "mascots.json"), load: loadJson, save: atomicJson });
   let credentialGeneration = 0;
   const listStoredClients = () => {
     try {
@@ -344,6 +346,14 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       // A corrupt or unreadable store must never be replaced by one new
       // client: that would erase every other credential (503, as reads do).
       clients = change(listStoredClients());
+      // New agents and people draw their mascot as they're stored. Only a
+      // face: a deck that can't be saved never holds up access (the faces
+      // drawn are still kept on the records, and never two alike there).
+      try {
+        mascots.dress(clients);
+      } catch {
+        /* the deck forgets this draw; the access is written regardless */
+      }
       atomicJson(file, clients);
       credentialStoreCreated = true;
       credentialGeneration++;
@@ -806,6 +816,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       clientId: client.id,
       expiresAt: client.expiresAt,
       scopes: client.scopes,
+      mascot: client.mascot,
     };
   }
   // Invite an agent: its own folders and access, for up to 90 days, joined
@@ -862,6 +873,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       expiresAt: client.expiresAt,
       joinBy: client.inviteExpiresAt,
       scopes,
+      mascot: client.mascot,
     };
   }
   // A browser agent gets structured reads and, optionally, screen scrolling
@@ -897,7 +909,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     });
     return {
       invitation: token, clientId: client.id,
-      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes, mascot: client.mascot,
     };
   }
   // Keep convenient configured roots for Full control (presetPolicy adds the
@@ -941,7 +953,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     });
     return {
       invitation: token, clientId: client.id, preset: policy.preset,
-      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes,
+      expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes, mascot: client.mascot,
     };
   }
   function browserAccess({ terminalIds, screen, commandRequests, restrictedTerminal, terminalApproval, scriptApproval, appAccess }, roots) {
@@ -1164,6 +1176,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     requestId: client.admission.requestId,
     clientId: client.id,
     name: client.name,
+    ...(Number.isInteger(client.mascot) ? { mascot: client.mascot } : {}),
     scopes: [...client.scopes],
     roots: [...(client.policy?.roots || [])],
     browser: client.policy?.browser === true,
@@ -2080,6 +2093,10 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     pollFunnelAdmission,
     pair,
     issue,
+    // Agents and people listed before mascots draw theirs (at start).
+    dressMascots() {
+      if (mascots.needs(listStoredClients())) changeClients((latest) => latest);
+    },
     list: () =>
       (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ...rest }) => ({
         ...rest,

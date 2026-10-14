@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { DollarSign, LoaderCircle, TriangleAlert } from "lucide-react";
 import { post, request, type Peer } from "./api";
-import ChatSheet from "./ChatSheet";
 import { clawBase } from "./OpenClawControls";
+import { ClawDialog } from "./OpenClawDialog";
 import { OpenSetup } from "./OpenClawSetup";
 import { ClawAddProvider } from "./OpenClawOnboard";
 import { ClawRow } from "./OpenClawRow";
+import "./openclaw-health.css";
 import "./openclaw-spend.css";
 
 // What OpenClaw spends: a pill per chat, a pill on the status line, and a
-// sheet with the budget and which models do the background work.
+// page with the budget and which models do the background work (full
+// screen, as Gateway's: Oct 13, no sheets for these).
 
 type Spend =
   | { supported: false }
@@ -117,9 +119,16 @@ export function ClawSpendPill({ peer, refresh, row = false }: { peer: Peer; refr
         </button>
       )}
       {open && (
-        <ChatSheet title="Spend" className="claw-spend-sheet" onClose={() => setOpen(false)}>
-          <SpendSheet peer={peer} spend={spend} onChanged={load} />
-        </ChatSheet>
+        <ClawDialog
+          title="Spend"
+          subtitle={`OpenClaw · ${peer.name || "This computer"}`}
+          className="claw-gateway claw-spend-page"
+          onClose={() => setOpen(false)}
+        >
+          <div className="claw-gateway-body">
+            <SpendSheet peer={peer} spend={spend} onChanged={load} />
+          </div>
+        </ClawDialog>
       )}
     </>
   );

@@ -1,109 +1,237 @@
-/* Install and set up OpenClaw, add a provider key (OpenClawOnboard.tsx). */
+/* Install and set up OpenClaw, add a provider key (OpenClawOnboard.tsx), as
+   the ChatGPT app starts things: the mascot, a title, one line, choices as
+   rows with a check, one white pill. No card around it. */
 .claw-onboard {
   display: grid;
-  gap: 10px;
-  padding: 14px;
-  margin: 12px 0;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--panel);
+  gap: 14px;
+  min-width: 0;
+  margin: 4px 0 26px;
+  color: var(--claw-ink, var(--text-strong));
+}
+.claw-onboard-hero {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 14px 8px 2px;
+  text-align: center;
+}
+.claw-onboard-mascot {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  background: radial-gradient(
+    ellipse at 50% 70%,
+    color-mix(in srgb, var(--lime) 16%, transparent),
+    transparent 70%
+  );
+}
+.claw-onboard-mascot .brand-courier {
+  width: 40px;
+  height: 52px;
+  overflow: visible;
+}
+.claw-onboard-hero h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.claw-onboard-hero p {
+  max-width: 320px;
+  margin: 0;
+  color: var(--claw-muted, var(--muted));
+  font-size: 15px;
+  line-height: 1.5;
+}
+.claw-onboard-form {
+  display: grid;
+  gap: 12px;
   min-width: 0;
 }
-.claw-onboard-row {
+
+/* Who runs the model: rows in one rounded group, a check on the chosen. */
+.claw-onboard-providers {
+  overflow: hidden;
+  border: 1px solid var(--claw-line, var(--border));
+  border-radius: 20px;
+  background: var(--claw-group, #ffffff0b);
+}
+.claw-onboard .claw-onboard-providers button {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 38px;
-}
-.claw-onboard-row > strong {
-  min-width: 0;
-  color: var(--text-strong);
-  font-size: 14px;
-  font-weight: 550;
-}
-.claw-onboard-form {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-.claw-onboard-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.claw-onboard-pills button,
-.claw-onboard-toggle {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
+  width: 100%;
+  min-height: 52px;
+  padding: 0 16px 0 18px;
+  border: 0;
+  background: none;
+  color: inherit;
   font: inherit;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 17px;
+  text-align: left;
+  cursor: pointer;
 }
-.claw-onboard-pills button.on,
-.claw-onboard-toggle.on {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--text-strong) 10%, transparent);
-  color: var(--text-strong);
+.claw-onboard-providers button + button::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 18px;
+  border-top: 1px solid var(--claw-line, var(--border));
 }
-.claw-onboard-toggle {
-  justify-self: start;
+.claw-onboard-providers button:active {
+  background: var(--claw-press, #ffffff12);
 }
-.claw-onboard-pills button:focus-visible,
-.claw-onboard-toggle:focus-visible {
+.claw-onboard-providers button svg {
+  flex: none;
+  opacity: 0;
+}
+.claw-onboard-providers button.on svg {
+  opacity: 1;
+}
+.claw-onboard-providers button:focus-visible,
+.claw-onboard-toggle:focus-visible,
+.claw-onboard-cta:focus-visible {
   outline: 2px solid var(--lime);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 .claw-onboard-form input {
   width: 100%;
   min-width: 0;
-  min-height: 40px;
+  min-height: 52px;
   margin: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
+  padding: 0 16px;
+  border: 1px solid var(--claw-line, var(--border));
+  border-radius: 16px;
   box-shadow: none;
-  background: var(--bg);
-  color: var(--text-strong);
-  font-size: 16px;
+  background: var(--claw-field, #ffffff10);
+  color: inherit;
+  font-size: 17px;
 }
-.claw-onboard-actions {
+.claw-onboard-form input:focus {
+  border-color: #ffffff45;
+  outline: none;
+}
+.claw-onboard-note {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  gap: 7px;
+  margin: 0 4px;
+  color: var(--claw-muted, var(--muted));
+  font-size: 13px;
+  line-height: 1.4;
 }
-.claw-onboard-actions button:disabled {
-  opacity: 0.5;
+.claw-onboard-note svg {
+  flex: none;
+  color: #d6b25e;
+}
+
+/* "Use as default": a switch at the end of its row. */
+.claw-onboard .claw-onboard-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.claw-onboard-toggle::after {
+  content: "";
+  flex: none;
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 14px 50%, #fff 11px, transparent 11.5px),
+    #ffffff2e;
+  transition: background 0.15s;
+}
+.claw-onboard-toggle.on::after {
+  background:
+    radial-gradient(circle at calc(100% - 14px) 50%, #fff 11px, transparent 11.5px),
+    #34c759;
+}
+
+.claw-onboard-actions {
+  display: grid;
+  gap: 2px;
+}
+/* Past .claw-app button's font: inherit. */
+.claw-onboard .claw-onboard-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--claw-white, #f3f3f3);
+  color: var(--claw-white-ink, #0d0d0d);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.claw-onboard-cta:disabled {
+  opacity: 0.4;
+}
+.claw-onboard .claw-onboard-quiet {
+  min-height: 44px;
+  border: 0;
+  background: none;
+  color: var(--claw-muted, var(--muted));
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
 }
 .claw-onboard-command,
 .claw-onboard-line {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--muted) 8%, transparent);
-  color: var(--text-strong);
-  font-size: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--claw-field, #ffffff10);
+  color: inherit;
+  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .claw-onboard-line {
   display: block;
-  color: var(--muted);
+  color: var(--claw-muted, var(--muted));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.claw-onboard-note {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
 .claw-onboard .claw-error {
   margin: 0;
+  text-align: center;
+}
+/* Adding a key elsewhere (a chat's settings, Spend): the form alone. */
+.claw-onboard-key {
+  margin: 0;
+}
+.claw-onboard-added {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 16px;
+}
+.claw-onboard-added svg {
+  color: #5fd38a;
 }
