@@ -3949,7 +3949,7 @@ export default function AgentSessionView({
         />
       )}
       {relaySheet?.mode === "auto-continue" && (
-        <AutoContinueSheet peer={peer} session={info} health={health} on={autoOn}
+        <AutoContinueSheet peer={peer} session={info} health={health} logos={logos} on={autoOn}
           onClose={() => setRelaySheet(null)} onStarted={relayStarted}
           onOff={(r) => {
             setOffRelays((ids) => [...ids, r.id]);

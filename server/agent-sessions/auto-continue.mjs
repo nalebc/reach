@@ -17,9 +17,12 @@ export function continueUnavailable(agent, health = []) {
   if (agent !== "openclaw" && h.usable !== true) return "Usage unknown";
   return "";
 }
+// One provider alone is this chat's own: it waits for its usage to come
+// back and continues here (Oct 14: "what if I want to continue in the same
+// chat when back"). Two or more: the first free one takes the work.
 export function checkContinuePriority(priority) {
-  if (!Array.isArray(priority) || priority.length < 2 || priority.length > CONTINUE_PRIORITY.length ||
+  if (!Array.isArray(priority) || priority.length < 1 || priority.length > CONTINUE_PRIORITY.length ||
       new Set(priority).size !== priority.length || priority.some((a) => !CONTINUE_PRIORITY.includes(a)))
-    throw Object.assign(new Error("Choose at least two different providers in priority order."), { status: 400 });
+    throw Object.assign(new Error("Choose this chat, or providers in priority order."), { status: 400 });
   return [...priority];
 }
