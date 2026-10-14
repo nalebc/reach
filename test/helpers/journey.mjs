@@ -4,6 +4,9 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { firstInstall, setupMenu } from "./first-install.mjs";
 import { HOST } from "./fake-tailscale.mjs";
 import { findChrome, launchChrome, openTab, testCertificate } from "./headless-chrome.mjs";
@@ -28,6 +31,18 @@ export const word = computerWord();
 // and windows-validation.yml); on a Mac, always.
 export const desktop = !windows || process.env.REACH_TEST_WINDOWS_DESKTOP === "1";
 export const needsDesktop = desktop ? false : "needs the PC's desktop (REACH_TEST_WINDOWS_DESKTOP=1)";
+// On a Mac the desktop is its owner's: a step that brings a window up (and
+// so takes the focus) runs only while nobody has used it for two minutes.
+export function macInUse() {
+  if (process.platform !== "darwin") return false;
+  try {
+    const out = execFileSync("/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4"], { encoding: "utf8", timeout: 5000 });
+    const idle = Number(/"HIDIdleTime" = (\d+)/.exec(out)?.[1]) / 1e9;
+    return Number.isFinite(idle) && idle < 120 ? `someone is using this Mac (input ${Math.round(idle)} s ago)` : false;
+  } catch {
+    return "this Mac's idle time couldn't be read";
+  }
+}
 const chrome = findChrome();
 export const skip = !chrome
   ? "no Chrome or Chromium on this computer (set REACH_TEST_CHROME to one)"
@@ -35,6 +50,48 @@ export const skip = !chrome
     ? "the journeys run on a Mac or a Windows PC"
     : false;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const run = promisify(execFile);
+export const marker = (kind) => `reach-${kind}-${crypto.randomBytes(4).toString("hex")}`;
+// The lines a terminal shows, each trimmed.
+export const lines = (text) => String(text).split("\n").map((line) => line.trim());
+
+// A terminal window opened on the computer itself, as its owner opens one,
+// titled `title`: on a Mac a new Terminal window (Terminal's own scripting,
+// a login shell and nothing else running in it); on a Windows PC a console
+// window as the Run box opens one (conhost started by the shell: started by
+// Node it would get pipes for handles and show no window). Only this window
+// is ever touched, found by its own tty or process; it's gone when the test
+// ends, whatever happens. `open()` says whether it's still on the computer.
+export async function computerTerminal(t, title) {
+  if (windows) {
+    const system = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+    const { stdout } = await run(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", `(Start-Process -FilePath '${path.join(system, "conhost.exe")}' -ArgumentList '${path.join(system, "cmd.exe")} /d /k title ${title}' -PassThru).Id`],
+      { windowsHide: true, timeout: 60000 },
+    );
+    const pid = Number(stdout.trim());
+    assert.ok(Number.isSafeInteger(pid) && pid > 0, `the console window started: ${stdout}`);
+    t.after(() => run("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }).catch(() => {}));
+    return {
+      open: async () => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    };
+  }
+  const tell = async (body) => (await run("/usr/bin/osascript", ["-e", `tell application "Terminal"\n${body}\nend tell`], { timeout: 30000 })).stdout.trim();
+  const tty = await tell(`set t to do script ""\nset custom title of t to "${title}"\nreturn tty of t`);
+  assert.match(tty, /^\/dev\/ttys\d+$/, "a new Terminal window");
+  const each = (then) => `repeat with w in windows\nrepeat with t in tabs of w\nif tty of t is "${tty}" then\n${then}\nend if\nend repeat\nend repeat`;
+  // Its window has only this tab: Terminal closes windows, not tabs.
+  t.after(() => tell(each("close w\nreturn")).catch(() => {}));
+  return { open: async () => (await tell(`${each('return "open"')}\nreturn "gone"`)) === "open" };
+}
 
 // Where a run's screenshots go: reports/journeys/<platform>-<journey>-<step>.png
 // (the Windows workflows keep reports/).
@@ -217,6 +274,13 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
   });
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   const page = phonePage(t, tab, { name, origin: computer.origin });
+  // The page's own questions (confirm: "Close it?"), answered yes as a
+  // person would, each kept for the step that asked it.
+  browser.on("Page.javascriptDialogOpening", (params, from) => {
+    if (from !== tab.sessionId) return;
+    page.dialogs.push(params.message);
+    void tab.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  });
   await page.open("/");
   await signIn(page, computer);
   return page;
@@ -261,7 +325,7 @@ function phonePage(t, tab, { name, origin }) {
       what instanceof RegExp
         ? `(() => { const m = (document.body?.innerText || '').match(${what}); return m && m[0]; })()`
         : typeof what === "function"
-          ? `(${what})()`
+          ? `(() => { const v = (${what})(); return v instanceof Node ? true : v; })()`
           : what?.js
             ? what.js
             : `(() => (document.body?.innerText || '').includes(${JSON.stringify(what)}) && ${JSON.stringify(what)})()`;
@@ -286,14 +350,21 @@ function phonePage(t, tab, { name, origin }) {
     }
   };
   // The element a person would tap for `target`: a button, link, tab or row
-  // whose words (or label) match, or a CSS selector.
+  // whose words (or label) match; a CSS selector; or { selector, text }, the
+  // selector's elements whose words match the text (a string inside them,
+  // or a pattern).
+  const pattern = (value) => (value instanceof RegExp ? value : JSON.stringify(value));
   const find = (target) => `(() => {
-    const target = ${target instanceof RegExp ? target : JSON.stringify(target)};
+    const target = ${target?.selector ? `{ selector: ${JSON.stringify(target.selector)}, text: ${pattern(target.text)} }` : pattern(target)};
     const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.pointerEvents !== "none"; };
     const words = (el) => [el.innerText, el.getAttribute("aria-label"), el.getAttribute("title")].filter(Boolean).map((s) => s.replace(/\\s+/g, " ").trim());
     const fits = (el) => words(el).some((w) => (target instanceof RegExp ? target.test(w) : w === target));
     let candidates;
-    if (typeof target === "string" && /^[.#\\[]|^[a-z]+[.#\\[]/.test(target)) candidates = [...document.querySelectorAll(target)];
+    if (target?.selector)
+      candidates = [...document.querySelectorAll(target.selector)].filter((el) =>
+        words(el).some((w) => (target.text instanceof RegExp ? target.text.test(w) : w.includes(target.text))),
+      );
+    else if (typeof target === "string" && /^[.#\\[]|^[a-z]+[.#\\[]/.test(target)) candidates = [...document.querySelectorAll(target)];
     else {
       const clickable = [...document.querySelectorAll("button, a, [role=button], [role=tab], [role=link], [role=menuitem], [role=option], [role=switch], summary, label, input[type=checkbox], [onclick], li")];
       candidates = clickable.filter(fits);
@@ -315,7 +386,7 @@ function phonePage(t, tab, { name, origin }) {
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
-  const tap = async (target, description = String(target), ms = 20000) => {
+  const tap = async (target, description = target?.selector ? `${target.selector} (${target.text})` : String(target), ms = 20000) => {
     const at = await see({ js: find(target) }, `${description} to tap`, ms, () => tab.evaluate("JSON.stringify(window.__journeyFind || [])"));
     await touch(at.x, at.y);
     await sleep(150);
@@ -324,6 +395,7 @@ function phonePage(t, tab, { name, origin }) {
   const page = {
     tab,
     origin,
+    dialogs: [],
     text,
     see,
     shot,
@@ -334,8 +406,12 @@ function phonePage(t, tab, { name, origin }) {
     shows: async (what) =>
       what instanceof RegExp ? what.test(await text()) : (await text()).includes(what),
     open: (route) => tab.navigate(origin + route),
-    // Typing as the phone's keyboard does: into whatever has the focus.
-    type: (value) => tab.send("Input.insertText", { text: value }),
+    // Typing as the phone's keyboard does: into whatever has the focus, at
+    // a person's pace (the page sees it before the next key).
+    type: async (value) => {
+      await tab.send("Input.insertText", { text: value });
+      await sleep(250);
+    },
     key: async (key) => {
       const keys = {
         Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
