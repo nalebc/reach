@@ -8,6 +8,25 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-13: Windows keeps Reach running and reachable as a Mac does.
+  `.\reach.cmd setup background` (or `install`) adds a task of yours that
+  starts Reach when you sign in, in your session, with no window: the live
+  screen and control work while you're signed in, new phones are approved
+  with `approve`, and it starts again after a crash. While Reach runs, the PC
+  stays awake in the Mac's three modes, and `status` says so. The old
+  `npm run install-service` Startup entry, which started a Reach no phone
+  could reach, is removed. Built, not yet run on a physical Windows PC.
+- 2026-10-13: One Reach per Windows PC, as on a Mac. Reach reads the PC's
+  process list, so a second one from any folder is refused with where the
+  first runs; `status` shows whichever Reach runs with its routes and sleep
+  prevention; `stop` asks first and stops every Reach; an agent's `restart`
+  asks on your phone; restarts and phone updates open Reach in a window of
+  its own titled Reach; `update` stops Reach before replacing its files. A
+  first run sets up while it installs, as on a Mac. Built, not yet run on a
+  physical Windows PC.
+
 ### Changed
 
 - 2026-10-13: Windows PCs sign phones in from the browser as Macs do, with

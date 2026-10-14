@@ -110,7 +110,7 @@ The first run takes about 3 minutes. It shows three steps, then prompts you thro
    - **Mac or Linux:** type the code your phone shows into the terminal to approve it. No Tailscale app on the phone? Sign in from its browser in the next 15 minutes (later: `reach pair`).
    - **Windows:** install the Tailscale app on the phone first and sign in with the same account. The QR carries a one-time code; press Enter for a new one.
 
-The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes (Mac).
+The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
 
 ### Install
 
@@ -124,7 +124,7 @@ reach
 `reach` sets everything up and shows the code that pairs your phone. New releases come to your phone under **Needs you**; `reach update` installs one from the terminal.
 
 - **Mac:** allow **Screen Recording** and **Accessibility** when asked, so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
-- **Windows (experimental, not yet verified on a physical PC):** use Reach from your phone or another computer; opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Built as on a Mac, with no setting to turn on, but not yet run on a real PC: phone sign-in from the browser, invite links for people and agents, Face ID sign-in and linked computers. Not yet: background mode. Claude Code and Codex chats haven't been verified on Windows.
+- **Windows (experimental, not yet verified on a physical PC):** use Reach from your phone or another computer; opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control (still images, or video with [FFmpeg](https://ffmpeg.org/) and libx264 on the PATH). Built as on a Mac, with no setting to turn on, but not yet run on a real PC: phone sign-in from the browser, invite links for people and agents, Face ID sign-in and linked computers, background mode at sign-in, sleep prevention, one Reach per PC, and restarts and updates in a window of its own. Claude Code and Codex chats haven't been verified on Windows.
 
 To build from source (for contributors) or run from a portable folder, see [Install in the guide](docs/GUIDE.md#install).
 
@@ -155,7 +155,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 | ----------- | ---------------------------------------------------------------------------------- |
 | **macOS**   | Primary: screen, control, files, terminals, chats, agents                          |
 | **Linux**   | Files, terminals and command-line agents; no screen or agent presets               |
-| **Windows** | Experimental, not yet verified on a physical PC: guided setup, browser sign-in and invite links (Tailscale 1.104 or newer; otherwise a pairing code and the Tailscale app, with the reason), files, terminals, screen. No background mode yet |
+| **Windows** | Experimental, not yet verified on a physical PC: guided setup, browser sign-in and invite links (Tailscale 1.104 or newer; otherwise a pairing code and the Tailscale app, with the reason), files, terminals, screen, background mode and sleep prevention |
 | **Phone**   | Safari on iPhone, Chrome on Android. No app needed                                 |
 
 ## Docs
