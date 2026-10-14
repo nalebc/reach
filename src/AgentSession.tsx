@@ -2692,6 +2692,12 @@ export default function AgentSessionView({
   // menu (Relays.tsx). One turned off here is off at once, before the list says.
   const [offRelays, setOffRelays] = useState<string[]>([]);
   const autoOn = armedAutoContinue(shownRelays.filter((r) => !offRelays.includes(r.id)), initial);
+  // "When this finishes…" as a chip above the box while Codex or Claude
+  // works (unless a relay already waits on this chat): its one place then.
+  const whenChip =
+    working &&
+    (agent === "codex" || agent === "claude") &&
+    !shownRelays.some((r) => r.state === "waiting" && r.chain.at(-1)?.agent === agent && r.chain.at(-1)?.id === initial.id);
   // The team this chat leads, or works in as a helper (Teams.tsx).
   const ledTeam = teamLedBy(teams, initial);
   const helping = ledTeam ? null : teamHelping(teams, initial);
@@ -2960,8 +2966,10 @@ export default function AgentSessionView({
                   <button className="move-item move-section-back" role="menuitem" onClick={() => setAutomation(false)}>
                     <ChevronLeft size={16} /><span>Automation</span>
                   </button>
-                {/* Its work goes on to another agent once this turn ends (Relays.tsx). */}
-                <button
+                {/* Its work goes on to another agent once this turn ends
+                    (Relays.tsx). While it works the chat has its own chip
+                    for that, so the menu doesn't say it again (Oct 14). */}
+                {!whenChip && <button
                   className="relay-menu-item"
                   role="menuitem"
                   onClick={() => {
@@ -2974,7 +2982,7 @@ export default function AgentSessionView({
                     <span>{working ? "When this finishes…" : "Hand off work…"}</span>
                   </span>
                   <ChevronRight size={16} />
-                </button>
+                </button>}
                 {(info.agent === "claude" || info.agent === "codex") && (!info.movedFrom || autoOn) && (
                   <button className="relay-menu-item" role="menuitem" onClick={() => {
                     setDetails(false);
@@ -3619,9 +3627,7 @@ export default function AgentSessionView({
         )}
         {/* While it works: what happens when it's done (Relays.tsx), unless
             a relay already waits on this chat. */}
-        {working &&
-          (agent === "codex" || agent === "claude") &&
-          !shownRelays.some((r) => r.state === "waiting" && r.chain.at(-1)?.agent === agent && r.chain.at(-1)?.id === initial.id) && (
+        {whenChip && (
             <button className="relay-when-chip" aria-label="When this finishes" onClick={() => setRelaySheet({ mode: "relay", finish: true })}>
               <Workflow size={14} /> When this finishes…
             </button>

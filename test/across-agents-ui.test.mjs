@@ -337,6 +337,21 @@ test("while the agent works, a handoff has clear choices, optional follow-ups, a
   assert.deepEqual(dom.errors, []);
 });
 
+// Oct 14: "We already have when finishes in the chat. No need to have it
+// again in the menu."
+test("while it works, When this finishes is the chip in the chat, not again in the menu", async () => {
+  mac.pages[`codex:${CODEX}`].session = codexSession({ status: "running" });
+  await open(codexSession({ status: "running" }), both());
+  await dom.waitFor(() => $(".as-working"));
+  assert.ok(button("When this finishes"), "the chip above the box");
+  await click(button("More"));
+  await click(button("Automation"));
+  const rows = $$(".relay-menu-item").map(b => b.textContent.trim());
+  assert.equal(rows.some(r => /When this finishes|Hand off work/.test(r)), false);
+  assert.ok(rows.some(r => r.includes("If usage runs out")));
+  assert.deepEqual(dom.errors, []);
+});
+
 test("an idle chat's reply can go now into a chat you pick", async (t) => {
   mac.pages[`codex:${CODEX}`].items = turn();
   routes["/api/sessions/relays"] = record("/api/sessions/relays");
