@@ -47,11 +47,15 @@ test("validateBrowserRoot refuses drive roots, Home, its ancestors and Windows' 
     "C:\\Program Files", "C:\\Program Files (x86)\\x", "C:\\ProgramData\\vendor", "C:\\Program Files\\nodejs",
     "C:\\Users\\me\\AppData\\Local\\Programs\\app", "C:\\PROGRA~1\\acme"])
     assert.throws(() => validateBrowserRoot(bad, base), { status: 403 }, bad);
-  // A project folder is accepted, returned as one canonical name.
-  assert.equal(validateBrowserRoot("C:\\Users\\me\\Projects\\acme", base), "c:\\users\\me\\projects\\acme");
+  // A project folder is accepted, returned unchanged so the caller's identity
+  // check (validateBrowserRoot(root) === root) holds; case is folded only for
+  // the refuse-comparisons and in the helper.
+  assert.equal(validateBrowserRoot("C:\\Users\\me\\Projects\\acme", base), "C:\\Users\\me\\Projects\\acme");
+  // A different-case spelling of a protected root is still refused.
+  assert.throws(() => validateBrowserRoot("c:\\program files\\x", base), { status: 403 });
   // Full control may share the exact drive/Home it advertises.
-  assert.equal(validateBrowserRoot("C:\\", { ...base, policy: { browser: true, preset: "full" } }), "c:\\");
-  assert.equal(validateBrowserRoot("C:\\Users\\me", { ...base, policy: { browser: true, preset: "readonly" } }), "c:\\users\\me");
+  assert.equal(validateBrowserRoot("C:\\", { ...base, policy: { browser: true, preset: "full" } }), "C:\\");
+  assert.equal(validateBrowserRoot("C:\\Users\\me", { ...base, policy: { browser: true, preset: "readonly" } }), "C:\\Users\\me");
 });
 
 import { relative } from "../server/browser-file-boundary.mjs";
