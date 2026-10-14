@@ -113,7 +113,9 @@ test("only ⋯ offers it: no switcher in the header, nothing beside the models, 
   await dom.waitFor(() => $(".usage-strip"));
   assert.equal(button("Switch conversations"), undefined);
   assert.equal($(".move-offer"), null);
-  assert.equal($(".usage-strip .agent-logo"), null);
+  // The notice's own line (what's out, its reset, its actions) has no
+  // switcher; continuing in Codex is its own group inside the same panel.
+  assert.equal($(".usage-copy .agent-logo, .usage-strip > .usage-strip-actions .agent-logo"), null);
   for (const view of views.splice(0)) await view.unmount();
   await open(claudeChat(), both({ claude: { signedIn: false } }));
   await settle(100);
