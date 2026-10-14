@@ -43,6 +43,8 @@ export type Device = {
     screenSupported?: boolean;
     // Invited people may watch the screen here (false on Windows for now).
     guestScreen?: boolean;
+    // Its sound may be heard beside the screen (server/screen-sound.mjs).
+    sound?: boolean;
     codex: boolean;
   };
   tools?: { codex?: { installed: boolean } };
