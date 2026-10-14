@@ -4,22 +4,66 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { findOpenClaw, nodeVersion, privateNodeDir, supportedNode } from "./openclaw-windows.mjs";
 
 const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 const fail = (status, message) => Object.assign(new Error(message), { status });
+// On Windows the Mac's Homebrew node@24 is OpenClaw's own Node: installed
+// for OpenClaw only by the installer in its own package (scripts/install.ps1
+// -NodeOnly, which fetches Node from nodejs.org and checks its SHA-256),
+// where OpenClaw's launcher looks first. The PC's Node is kept. Its range
+// reads "<25 || >=26.1.0" in OpenClaw's engines and "<25, or >=26.1.0" in
+// its launcher's refusal: either is the known range, and the Node its
+// installer brings (the newest 26) must be in it.
+const WINDOWS_RANGE = /^>=24\.\d+\.\d+\s+<25(?:\s*\|\||,\s*or)\s*>=26\.(\d+)\.(\d+)$/;
+export async function bundledInstaller({ find = findOpenClaw, isFile = fileAt } = {}) {
+  const script = await find().catch(() => null);
+  if (!script || !/[\\/]openclaw\.mjs$/i.test(script)) return null;
+  const installer = path.join(path.dirname(script), "scripts", "install.ps1");
+  return (await isFile(installer)) ? installer : null;
+}
+const fileAt = async (file) => {
+  try {
+    return (await fs.stat(file)).isFile();
+  } catch {
+    return false;
+  }
+};
 export async function updateRecovery(
   details,
-  { platform = process.platform, access = fs.access } = {},
+  { platform = process.platform, access = fs.access, installer = bundledInstaller } = {},
 ) {
   details = details.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   const required = details
     .match(/requires Node ([^\n"\\]+)/i)?.[1]
     ?.trim()
     .replace(/\.$/, "");
+  if (required && platform === "win32") {
+    const file = WINDOWS_RANGE.test(required) ? await installer() : null;
+    return {
+      kind: "node",
+      title: "Upgrade Node to continue",
+      required,
+      detected: details.match(/detected Node ([\d.]+)/i)?.[1],
+      available: !!file,
+      ...(file ? { installer: file } : {}),
+      description: file
+        ? "OpenClaw needs a newer Node runtime. Reach can install one for OpenClaw only, with OpenClaw's own installer. Your current Node installation is kept."
+        : `OpenClaw requires Node ${required}. Automatic installation is not available on this computer. Install a compatible Node runtime, then retry here.`,
+      steps: [
+        "Install Node for OpenClaw only",
+        "Retry the OpenClaw update",
+        "Migrate existing settings, credentials and plugins if required",
+        "Repair the Gateway service and verify its connection",
+      ],
+    };
+  }
   if (required) {
     // Automate only the known LTS range. A different requirement must not
     // silently install a runtime that still cannot run the requested release.
-    const minimum = required.match(/^>=24\.(\d+)\.(\d+)\s+<25(?:\s*\|\|.*)?$/);
+    // Its engines say "<25 || >=26.1.0"; its launcher (2026.10.3) says
+    // "<25, or >=26.1.0": either, as on Windows (WINDOWS_RANGE).
+    const minimum = required.match(/^>=24\.(\d+)\.(\d+)\s+<25(?:(?:\s*\|\||,\s*or).*)?$/);
     let brew;
     if (platform === "darwin" && minimum)
       for (const candidate of BREW) {
@@ -71,14 +115,15 @@ export async function updateRecovery(
 
 export function publicRecovery(recovery) {
   if (!recovery) return undefined;
-  const { brew, minimum, ...publicFields } = recovery;
+  const { brew, minimum, installer, ...publicFields } = recovery;
   return publicFields;
 }
 
 export async function installUpdateRuntime(
   recovery,
-  { run = promisify(execFile), env = process.env, authorize = () => {} } = {},
+  { run = promisify(execFile), env = process.env, authorize = () => {}, platform = process.platform, installer = bundledInstaller } = {},
 ) {
+  if (platform === "win32") return installWindowsRuntime(recovery, { run, env, authorize, installer });
   if (
     !recovery?.available ||
     recovery.kind !== "node" ||
@@ -102,8 +147,9 @@ export async function installUpdateRuntime(
     maxBuffer: 2 * 1024 * 1024,
   });
   authorize();
-  const runtime = path.join(
-    path.dirname(path.dirname(recovery.brew)),
+  // Homebrew's paths are a Mac's, whatever computer reads this.
+  const runtime = path.posix.join(
+    path.posix.dirname(path.posix.dirname(recovery.brew)),
     "opt/node@24/bin/node",
   );
   const { stdout } = await run(runtime, ["-p", "process.versions.node"], {
@@ -128,14 +174,48 @@ export async function installUpdateRuntime(
   return runtime;
 }
 
+// OpenClaw's installer with its own fixed arguments, as OpenClaw's
+// "Update NodeJS" runs it, only when the recipe's installer is still the one
+// in OpenClaw's package; then that Node must be one OpenClaw accepts.
+async function installWindowsRuntime(recovery, { run, env, authorize, installer }) {
+  const file = recovery?.available && recovery.kind === "node" ? await installer() : null;
+  if (!file || file !== recovery.installer)
+    throw fail(409, "This dependency upgrade is not available. Check the update details.");
+  authorize();
+  const prefix = privateNodeDir({ env });
+  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file, "-NodeOnly", "-NodePrefix", prefix], {
+    env,
+    timeout: 20 * 60 * 1000,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsHide: true,
+  });
+  authorize();
+  const runtime = path.join(prefix, "node.exe");
+  const { stdout } = await run(runtime, ["-p", "process.versions.node"], { env, timeout: 10000, windowsHide: true });
+  authorize();
+  const [, minor, patch] = String(recovery.required).match(WINDOWS_RANGE) || [];
+  const version = String(stdout).trim().split(".").map(Number);
+  if (!supportedNode(String(stdout).trim()) || minor === undefined || version[0] !== 26 ||
+    version[1] < Number(minor) || (version[1] === Number(minor) && version[2] < Number(patch)))
+    throw fail(409, "OpenClaw's installer did not provide a Node version OpenClaw accepts. Retry in Reach.");
+  return runtime;
+}
+
 export async function availableUpdateRuntime({
   platform = process.platform,
   access = fs.access,
+  env = process.env,
+  version = nodeVersion,
 } = {}) {
+  // OpenClaw's own Node, while it's one OpenClaw accepts.
+  if (platform === "win32") {
+    const runtime = path.join(privateNodeDir({ env }), "node.exe");
+    return supportedNode(await version(runtime)) ? runtime : null;
+  }
   if (platform !== "darwin") return null;
   for (const brew of BREW) {
-    const runtime = path.join(
-      path.dirname(path.dirname(brew)),
+    const runtime = path.posix.join(
+      path.posix.dirname(path.posix.dirname(brew)),
       "opt/node@24/bin/node",
     );
     try {
