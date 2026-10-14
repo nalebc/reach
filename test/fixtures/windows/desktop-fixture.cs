@@ -73,10 +73,8 @@ static class DesktopFixture {
   delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc each, IntPtr data);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
-  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
-  [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int max);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern int GetShortPathNameW(string path, StringBuilder shortPath, int size);
@@ -138,7 +136,6 @@ static class DesktopFixture {
       return 0;
     }
     if (args.Length >= 2 && (args[0] == "medium" || args[0] == "medium-shown")) return Medium(args);
-    if (args.Length == 2 && args[0] == "close") return Close(new IntPtr(long.Parse(args[1])));
     if (args.Length == 1 && args[0] == "minimize-consoles") return MinimizeConsoles();
     if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), 0);
     if (args.Length == 4 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), uint.Parse(args[3]));
@@ -164,7 +161,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe", "close", "minimize-consoles" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe", "minimize-consoles" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -409,16 +406,6 @@ static class DesktopFixture {
     return 0;
   }
 
-  // A test's own window, closed and gone before the next test: a classic
-  // console outlives its killed program while anything else is attached.
-  static int Close(IntPtr window) {
-    for (int i = 0; i < 200 && IsWindow(window); i++) {
-      if (i % 40 == 0) PostMessageW(window, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
-      Thread.Sleep(25);
-    }
-    return IsWindow(window) ? 1 : 0;
-  }
-
   // Console windows already on the desktop before any test, minimized. Only
   // their programs' file names are printed, never a title or a path.
   static int MinimizeConsoles() {
@@ -445,7 +432,8 @@ static class DesktopFixture {
     // A shell surface in front (Start, Search, a first-run panel on Windows
     // 11 client images) covers the screen; Escape dismisses it, as an owner would.
     var shell = new System.Collections.Generic.List<string>();
-    for (int i = 0; i < 5; i++) {
+    uint escaped = 0;
+    for (int i = 0; i < 8; i++) {
       IntPtr front = GetAncestor(GetForegroundWindow(), 2);
       var kind = new StringBuilder(256);
       GetClassNameW(front, kind, kind.Capacity);
@@ -460,7 +448,9 @@ static class DesktopFixture {
         CloseHandle(process);
       }
       shell.Add("\"" + name.Replace("\\", "").Replace("\"", "") + "\"");
-      if (i < 2) {
+      if (escaped != pid) {
+        // Each surface first gets an Escape, as an owner would press.
+        escaped = pid;
         keybd_event(0x1B, 0, 0, UIntPtr.Zero);
         keybd_event(0x1B, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
       } else if (string.Equals(name, "WWAHost.exe", StringComparison.OrdinalIgnoreCase)) {
