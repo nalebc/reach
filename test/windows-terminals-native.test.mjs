@@ -6,7 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { windowsBinary } from "../server/desktop-native.mjs";
+import { cscCandidates, windowsBinary } from "../server/desktop-native.mjs";
 import { DesktopTerminals } from "../server/desktop-terminals.mjs";
 import { terminalWatchHelper } from "../server/mac-terminal-watch.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
@@ -146,6 +146,20 @@ async function handoverHost(t) {
   });
 }
 
+async function consoleLauncher() {
+  const file = path.join(await folder(), "new-console.exe");
+  try { await fs.access(file); return file; } catch {}
+  let csc;
+  for (const candidate of cscCandidates()) {
+    try { await fs.access(candidate); csc = candidate; break; } catch {}
+  }
+  assert.ok(csc, "the in-box C# compiler is present");
+  await run(csc, ["/nologo", "/noconfig", "/target:exe", `/out:${file}`,
+    `/reference:${path.join(path.dirname(csc), "System.dll")}`,
+    path.resolve("test/fixtures/windows/new-console.cs")], { windowsHide: true, timeout: 120000 });
+  return file;
+}
+
 // List it, type into it, read the answer back (screen and scrollback), bring
 // it forward and close it: the phone's whole round trip.
 async function roundTrip(d, name, record) {
@@ -205,14 +219,19 @@ test("Reach's own terminals are left out of the PC's list; a console Reach's pro
     t,
     `import { spawn } from "node:child_process";
 import { loadPty } from ${module("pty-helper.mjs")};
-const [own, shell, cmd] = process.argv.slice(2);
+const [own, shell, cmd, launcher] = process.argv.slice(2);
 const pty = loadPty().spawn(cmd, ["/d", "/k", \`title \${own}\`], { name: "xterm-256color", cols: 90, rows: 28, cwd: process.cwd(), env: process.env, useConptyDll: true });
-const child = spawn(cmd, ["/d", "/c", \`title \${shell}& ping -n 300 127.0.0.1 >nul\`], { stdio: "ignore" });
-let ready = false;
-pty.onData(() => {
-  if (ready) return;
+const child = spawn(launcher, [cmd, shell], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+let ready = false, ptyReady = false, shellPid = null, said = "";
+const report = () => {
+  if (ready || !ptyReady || !shellPid) return;
   ready = true;
-  console.log(JSON.stringify({ pty: pty.pid, shell: child.pid }));
+  console.log(JSON.stringify({ pty: pty.pid, shell: shellPid }));
+};
+pty.onData(() => { ptyReady = true; report(); });
+child.stdout.on("data", (chunk) => {
+  said += chunk;
+  if (said.includes("\\n")) { shellPid = Number(said.trim()); report(); }
 });
 process.stdin.resume();
 process.stdin.on("end", () => {
@@ -221,7 +240,7 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  const reach = spawn(process.execPath, [file, own, shell, cmd], { detached: true, stdio: ["pipe", "pipe", "inherit"] });
+  const reach = spawn(process.execPath, [file, own, shell, cmd, await consoleLauncher()], { detached: true, stdio: ["pipe", "pipe", "inherit"] });
   const gone = new Promise((resolve) => reach.once("exit", resolve));
   let said = "";
   reach.stdout.on("data", (chunk) => (said += chunk));
