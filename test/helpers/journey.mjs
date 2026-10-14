@@ -84,7 +84,12 @@ export async function desktopTurn(t) {
   return !busy;
 }
 const chrome = findChrome();
-export const skip = !chrome
+const serialWindows = process.platform === "win32" && process.env.CI === "true";
+if (serialWindows && process.env.REACH_TEST_WINDOWS_DESKTOP === "1" && !chrome)
+  throw Error("The serial Windows phone journeys require Chrome or Chromium.");
+export const skip = serialWindows && process.env.REACH_TEST_WINDOWS_DESKTOP !== "1"
+  ? "the serial Windows native lane runs every phone journey"
+  : !chrome
   ? "no Chrome or Chromium on this computer (set REACH_TEST_CHROME to one)"
   : !["darwin", "win32"].includes(process.platform)
     ? "the journeys run on a Mac or a Windows PC"
@@ -353,15 +358,16 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     return { key: fs.readFileSync(key), cert: pem, spki: crypto.createHash("sha256").update(spki).digest("base64") };
   });
   const serve = serveStandIn(computer.reach.fake, { tls, ip });
+  let browser;
+  // Register cleanup before Chrome starts: a failed launch must also release
+  // the listening proxy, otherwise this test process lives until its timeout.
+  t.after(async () => {
+    try { await browser?.close(); } finally { await serve.close(); }
+  });
   await new Promise((resolve) => serve.proxy.listen(0, "127.0.0.1", resolve));
-  const browser = await launchChrome(t, {
+  browser = await launchChrome(t, {
     spki: tls.spki,
     args: [`--proxy-server=http://127.0.0.1:${serve.proxy.address().port}`, "--lang=en-US"],
-  });
-  // Chrome before the servers it holds connections to.
-  t.after(async () => {
-    await browser.close();
-    await serve.close();
   });
   const tab = await openTab(browser);
   await tab.send("Emulation.setUserAgentOverride", { userAgent: device.userAgent, platform: device.platform, acceptLanguage: "en-US" });

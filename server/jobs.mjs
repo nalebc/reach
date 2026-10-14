@@ -7,6 +7,15 @@ import { spawnVerified } from "./desktop-native.mjs";
 import { encodeSandboxRequest, createSandboxFrameReader, jobRequestEntries } from "./windows-sandbox.mjs";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+export function terminateWindowsJob(child, terminate = (pid) => execFile("taskkill", ["/PID", String(pid), "/T", "/F"], () => {})) {
+  // Windows reuses process IDs immediately. Once the main process exited,
+  // its old PID cannot identify any remaining output holder safely.
+  if (child.exitCode != null || child.signalCode != null) {
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy?.();
+    return;
+  }
+  if (child.pid) terminate(child.pid);
+}
 export class Jobs {
   constructor(config) {
     this.file = path.join(config.dataDir, "jobs.json");
@@ -178,7 +187,7 @@ export class Jobs {
   kill(child) {
     if (!child.pid) return;
     if (process.platform === "win32")
-      execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
+      terminateWindowsJob(child);
     else {
       try {
         process.kill(-child.pid, "SIGTERM");

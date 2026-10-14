@@ -58,11 +58,12 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // launching a running app returns its pid, install replaces the same app.
   // Each retry waits 5 s longer than the last. The last failure names every
   // attempt; a step that never succeeds fails the test.
-  const sim = async (name, args, { limit = 60000, attempts = 1, progress } = {}) => {
+  const sim = async (name, args, { limit = 60000, attempts = 1, progress, beforeRetry } = {}) => {
     const tries = [];
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, Math.min(5000 * (attempt - 1), Math.max(0, left() - 10000))));
       if (left() < 5000) { tries.push(`attempt ${attempt}: the lane's time budget ran out`); break; }
+      if (attempt > 1 && beforeRetry) await beforeRetry(attempt);
       const allowed = Math.min(limit, left());
       const began = Date.now();
       try {
@@ -137,7 +138,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const downloadResponded = new Promise(resolve => { noteResponse = resolve; });
   t.after(() => allowDownload());
   let script = "";
-  let pageStarted;
+  let pageStarted, pageSeen = false;
   const appPage = new Promise(resolve => { pageStarted = resolve; });
   const handler = async (req, res) => {
     res.on("finish", () => {
@@ -159,6 +160,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       return;
     }
     if (req.url === `${probe}.js`) {
+      pageSeen = true;
       pageStarted();
       res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" }).end(script);
       return;
@@ -321,7 +323,22 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], { limit: 75000, attempts: 3, progress: appPage });
+  await sim("launch", attempt => ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], {
+    limit: 75000, attempts: 3, progress: appPage,
+    beforeRetry: async attempt => {
+      // A first boot can answer launchctl while its application launcher is
+      // stuck. Reboot only our disposable device once if the app never asked
+      // for its unique page. Installed app/data and the test CA are retained;
+      // every pairing/transfer/share assertion still has to run afterward.
+      if (attempt !== 2 || pageSeen) return;
+      await sim("stalled launch shutdown", ["shutdown", device], { limit: 30000 });
+      await sim("stalled launch boot", ["boot", device], { limit: 30000 });
+      await sim("stalled launch bootstatus", ["bootstatus", device, "-b"], { limit: 120000 });
+      const services = (await sim("stalled launch readiness", ["spawn", device, "launchctl", "list"], { limit: 30000, attempts: 2 })).stdout;
+      assert.match(services, /^\d+\s+\S+\s+com\.apple\.SpringBoard$/m, "our rebooted simulator runs SpringBoard");
+      reached("isolated simulator rebooted after stalled launch");
+    },
+  });
   reached("app launched");
   const pageLimit = Math.max(0, Math.min(100000, left()));
   const timer = setTimeout(() => rejectResult(Error(`iOS test page did not report within ${pageLimit / 1000} s`)), pageLimit);

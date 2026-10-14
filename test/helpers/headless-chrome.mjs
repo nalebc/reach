@@ -100,6 +100,14 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
     buffered = Buffer.alloc(0);
   const waiting = new Map(),
     listeners = new Map();
+  const failPending = (error) => {
+    for (const call of waiting.values()) call.reject(error);
+    waiting.clear();
+  };
+  child.on("error", failPending);
+  exited.then(() => failPending(Error(`Chrome exited: ${stderr.slice(-400)}`)));
+  toChrome.on("error", failPending);
+  fromChrome.on("error", failPending);
   fromChrome.on("data", (chunk) => {
     buffered = Buffer.concat([buffered, chunk]);
     let end;
@@ -133,7 +141,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       toChrome.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
     });
   const close = async () => {
-    if (child.exitCode === null && child.signalCode === null) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
       await exited;
     }
