@@ -1,6 +1,6 @@
-# Phone sign-in from the browser on a Windows host (design, not built)
+# Phone sign-in from the browser on a Windows host (design)
 
-Status: proposal, October 12, 2026. Off until a physical Windows PC on a real tailnet passes the acceptance below.
+Status: built on October 12, 2026 (workstream D; its implementation spec, `docs/parity/D-public-door.md`, replaced this proposal) and on by detection since October 13, with no switch (owner: "No flag should exist. We should detect platform and support."). A PC that can't hold the keyed route uses pairing codes and says why. Not yet run on a physical Windows PC: the manual acceptance below is still owed (`docs/FIRST_RUN_MATRIX.md` M8).
 
 ## Why Windows lacks it
 
@@ -47,7 +47,6 @@ Windows' private route used to be background tailscaled state that outlived Reac
 
 ## Rollout
 
-1. Foreground routes for today's Windows pairing mode.
-2. (d)+(a) behind `REACH_WINDOWS_ACCOUNT=1`, off by default; add a FIRST_RUN_MATRIX M-row for the manual run.
-3. Default-on once the manual acceptance is recorded; the flag becomes an opt-out.
-4. Face ID join and linking computers: their own flag and acceptance run.
+1. Foreground routes for today's Windows pairing mode (done, Oct 11).
+2. (d)+(a) built (Oct 12).
+3. On by detection, with no switch, Face ID join and linking computers included (owner, Oct 13). The manual acceptance above is still owed and is recorded in `docs/FIRST_RUN_MATRIX.md` M8 when it runs.
