@@ -714,10 +714,12 @@ static class NativeProc {
   // folder. Frees everything on dispose.
   public class Container : IDisposable {
     public IntPtr CapabilitiesPtr;
+    public IntPtr AppContainerSid;
     public string TempFolder;
     IntPtr sid; readonly List<IntPtr> allocations = new List<IntPtr>();
     public Container(IntPtr appContainerSid, List<SecurityIdentifier> capabilities) {
       sid = appContainerSid;
+      AppContainerSid = appContainerSid;
       TempFolder = FolderFor(appContainerSid);
       IntPtr array = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)) * Math.Max(1, capabilities.Count));
       allocations.Add(array);
@@ -882,23 +884,35 @@ static class NativeProc {
     // list, not suspended, no cwd. If this works but the real launch doesn't, the
     // problem is the job/handle-list/suspend; if this fails too, it's the
     // capabilities or the AppContainer SID.
-    string bare;
+    return "plain=" + PlainLaunch() + " apponly=" + CapsLaunch(container.AppContainerSid, IntPtr.Zero, 0) + " full=" + CapsLaunch(container.AppContainerSid, ReadCaps(container), ReadCapCount(container));
+  }
+  static IntPtr ReadCaps(Container c) { return Marshal.ReadIntPtr(c.CapabilitiesPtr, IntPtr.Size); } // SECURITY_CAPABILITIES.Capabilities
+  static int ReadCapCount(Container c) { return Marshal.ReadInt32(c.CapabilitiesPtr, IntPtr.Size * 2); }
+  static string PlainLaunch() {
+    var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+    PROCESS_INFORMATION pi;
+    bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi);
+    int err = Marshal.GetLastWin32Error();
+    if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ok"; }
+    return err.ToString();
+  }
+  static string CapsLaunch(IntPtr appContainerSid, IntPtr caps, int count) {
+    IntPtr sc = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)));
     IntPtr size = IntPtr.Zero;
     InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
     IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
     try {
-      if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) bare = "bare-init=" + Marshal.GetLastWin32Error();
-      else {
-        UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
-        var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX)); si.lpAttributeList = attrs;
-        PROCESS_INFORMATION pi;
-        bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, null, ref si, out pi);
-        int err = Marshal.GetLastWin32Error();
-        if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); bare = "bare=ok"; }
-        else bare = "bare=" + err;
-      }
-    } finally { DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs); }
-    return bare;
+      var caps0 = new SECURITY_CAPABILITIES(); caps0.AppContainerSid = appContainerSid; caps0.Capabilities = caps; caps0.CapabilityCount = count; caps0.Reserved = 0;
+      Marshal.StructureToPtr(caps0, sc, false);
+      if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) return "init" + Marshal.GetLastWin32Error();
+      UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, sc, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
+      var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX)); si.lpAttributeList = attrs;
+      PROCESS_INFORMATION pi;
+      bool ok = CreateProcessW(null, "\"" + ComSpec() + "\" /d /s /c exit", IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi);
+      int err = Marshal.GetLastWin32Error();
+      if (ok) { TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return "ok"; }
+      return err.ToString();
+    } finally { DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs); Marshal.FreeHGlobal(sc); }
   }
 
   public static string RunContainedCaptured(string commandLine, string cwd, Container container, JobObject job, int timeoutMs) {
