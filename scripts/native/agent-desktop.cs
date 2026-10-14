@@ -32,11 +32,16 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-sealed class Refusal : Exception {
+class Refusal : Exception {
   public readonly string Kind;
   public readonly List<object> Candidates;
   public Refusal(string message, string kind) : base(message) { Kind = kind; Candidates = new List<object>(); }
   public Refusal(string message, string kind, List<object> candidates) : base(message) { Kind = kind; Candidates = candidates ?? new List<object>(); }
+}
+// A refusal after which this helper ends (a thread that hung): the next
+// request starts a fresh one.
+sealed class Wedged : Refusal {
+  public Wedged(string message, string kind) : base(message, kind) { }
 }
 
 // BEGIN JSON
@@ -1331,6 +1336,51 @@ static class Masks {
 }
 // END DESKTOP MASKS
 
+// BEGIN DESKTOP INPUT SEAMS
+// What input sees of Windows, and where it goes: Windows itself (WindowsView,
+// WindowsInput), or a test's stand-ins (test/fixtures/windows/
+// agent-desktop-checks.cs), so the production checks run against both.
+interface IDesktopView {
+  Inventory Windows(Rules rules);           // every top-level window, read and decided (§4.3)
+  Win RouteAt(int x, int y, Rules rules);   // the window Windows routes a click there to; null: none
+  Win Foreground(Rules rules);              // the window in front; null: none
+  int ForegroundIntegrity();                // its process's integrity; -2 no window in front, -1 unknown
+  Seen ElementAt(int x, int y);             // UI Automation's element there; null: none
+  Seen Focused();                           // UI Automation's focused element; null: none
+  Box VirtualScreen();                      // every monitor, in physical pixels
+  int KeyFor(char c);                       // VkKeyScanExW in the front window's layout: VK | shift state << 8; -1 none
+  ushort ScanFor(ushort vk);                // MapVirtualKeyExW in the front window's layout
+  bool HostsReach(int pid, Rules rules);    // one of this process's windows (or its tabs) is Reach's
+  string InputDesktop();                    // "Default" for the owner's desktop
+}
+interface IInput {
+  bool KeyDown(int vk);                     // GetAsyncKeyState: down right now
+  uint Send(Native.INPUT[] batch);          // SendInput: one atomic batch
+  void Pause(int ms);
+}
+interface IClip {
+  string Read();                            // the clipboard's text; null when it holds none
+  void Write(string text);                  // text (or nothing for null), kept out of Clipboard History and cloud sync
+  uint Sequence();                          // changes with every write, anyone's
+}
+// What an event at a point, or a key, would reach (agent-desktop.swift's
+// Seen): its app, its window's title, for web content the page, whether it
+// takes a password; on Windows also its window, whether it's the shell or a
+// field that runs programs.
+sealed class Seen {
+  public string Bundle = "", Name = "", Path = "", Title = "", Url = "", Role = "", Control = "", Class = "", AutomationId = "";
+  public int Pid;
+  public Ident Id = new Ident();
+  public long Root;
+  public bool Secure, Web, Bank, Shell, Terminal, Reach, Explorer, Chrome, TitleRead = true;
+  public Box Frame;           // where it is, in physical pixels
+  public List<string> Frames = new List<string>(), Labels = new List<string>();
+  public bool CommandField;   // inside a box that runs programs: an address band, Run, Explorer's search (§7.8)
+  public bool FolderEdit;     // the rename box of a folder view (§7.8)
+  public bool Editable;
+}
+// END DESKTOP INPUT SEAMS
+
 static partial class Desk {
   // --- The protocol -------------------------------------------------------
   // One line at a time from stdin, as raw bytes: a line over 256 KiB, or one
@@ -1401,6 +1451,7 @@ static partial class Desk {
       answer["kind"] = refusal.Kind;
       answer["candidates"] = refusal.Candidates;
       Reply(answer);
+      if (refusal is Wedged) End();
     } catch (Exception) {
       var answer = new Dictionary<string, object>();
       answer["error"] = "The Windows PC couldn't do that.";
@@ -1448,6 +1499,13 @@ static partial class Desk {
       case "displays": return Displays();
       case "shot": return Shot(current, Math.Max(320, Math.Min(3840, Json.Int(request, "maxWidth") ?? 2560)));
       case "front": return Front(current, Json.True(request, "detail"));
+      case "act": {
+        RuleS();
+        var act = Json.Map(request, "action");
+        if (act == null) throw new Refusal("Choose an action.", "invalid");
+        var monitor = Display();
+        return Perform(act, new Box(monitor.Rect.Left, monitor.Rect.Top, monitor.Rect.Right, monitor.Rect.Bottom), current, Expected(request));
+      }
       default: throw new Refusal("Unknown request.", "invalid");
     }
   }
@@ -1468,7 +1526,7 @@ static partial class Desk {
   // Anything that fails here closes every op but the catalog, with the reason.
   static string startupProblem;
   static bool uiaReady;
-  static int ownIntegrity = -1;
+  internal static int ownIntegrity = -1;
   const int HighIntegrity = 0x3000;
 
   static void Startup() {
@@ -1519,7 +1577,7 @@ static partial class Desk {
 
   // A process's integrity level (its token's mandatory label: 0x2000 medium,
   // 0x3000 high, 0x4000 system), or -1 when it can't be read.
-  static int IntegrityOf(IntPtr process) {
+  internal static int IntegrityOf(IntPtr process) {
     IntPtr token;
     if (!Native.OpenProcessToken(process, Native.TOKEN_QUERY, out token)) return -1;
     try {
@@ -1544,7 +1602,7 @@ static partial class Desk {
 
   // The desktop that takes input now: "Default" for the owner's; the secure
   // desktop (UAC, the lock and sign-in screens) can't be opened or named.
-  static string InputDesktopName() {
+  internal static string InputDesktopName() {
     IntPtr desktop = Native.OpenInputDesktop(0, false, Native.DESKTOP_READOBJECTS);
     if (desktop == IntPtr.Zero) return "";
     try {
@@ -2115,7 +2173,7 @@ static partial class Desk {
     string reason = AppVerdict(id, judged);
     if (reason != null) return reason;
     if (w.Reach) return Policy.ReachReason;
-    reason = TitleVerdict(w, rules);
+    reason = TitleVerdict(w.Title, id.Bundle, w.Handle, w.Explorer, rules);
     if (reason != null) return reason;
     if ((IsBrowser(id) || w.Terminal) && (!w.TitleRead || w.Title.Length == 0)) return UnreadableTitleReason;
     return null;
@@ -2124,18 +2182,17 @@ static partial class Desk {
   // "Settings", so the page it shows is part of its title (closed when that
   // can't be read); a File Explorer window is also judged as Control Panel
   // when it shows Control Panel or its place can't be read.
-  static string TitleVerdict(Win w, Rules rules) {
-    var id = w.Id ?? new Ident();
-    if (Policy.SettingsApp(id.Bundle)) {
-      string page = SettingsPage(new IntPtr(w.Handle));
+  static string TitleVerdict(string title, string bundle, long root, bool explorer, Rules rules) {
+    if (Policy.SettingsApp(bundle)) {
+      string page = SettingsPage(new IntPtr(root));
       if (page == null) return Policy.ProtectedReason;
-      return Policy.TitleReason(w.Title + " " + EmDash + " " + page, id.Bundle, rules);
+      return Policy.TitleReason(title + " " + EmDash + " " + page, bundle, rules);
     }
-    string reason = Policy.TitleReason(w.Title, id.Bundle, rules);
+    string reason = Policy.TitleReason(title, bundle, rules);
     if (reason != null) return reason;
-    if (w.Explorer) {
-      string place = ExplorerPlace(new IntPtr(w.Handle));
-      if (place == null || ControlPanelPlace(place)) return Policy.TitleReason(w.Title, "windows.controlpanel", rules);
+    if (explorer) {
+      string place = ExplorerPlace(new IntPtr(root));
+      if (place == null || ControlPanelPlace(place)) return Policy.TitleReason(title, "windows.controlpanel", rules);
     }
     return null;
   }
@@ -2272,20 +2329,14 @@ static partial class Desk {
   // For the owner's "using X" line and for the server's check of typed text
   // (a terminal takes commands). An app the owner hid: not even its name.
   static Dictionary<string, object> Front(Rules rules, bool detail) {
-    IntPtr root = Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT);
     var result = Ok();
-    if (root == IntPtr.Zero) { result["app"] = ""; result["bundle"] = ""; return result; }
-    var w = Read(root, new Dictionary<long, Ident>());
-    if (w.Id == null || w.Id.Created == 0) w.Id = Identify(w.Pid);
-    var index = new Dictionary<long, Win>();
-    index[w.Handle] = w;
-    for (IntPtr owner = new IntPtr(w.Owner); owner != IntPtr.Zero && index.Count < 8; owner = Native.GetWindow(owner, Native.GW_OWNER)) {
-      var held = new Win { Handle = owner.ToInt64(), Class = ClassOf(owner), Owner = Native.GetWindow(owner, Native.GW_OWNER).ToInt64() };
-      if (index.ContainsKey(held.Handle)) break;
-      index[held.Handle] = held;
-    }
-    Decide(w, rules, index);
-    string blocked = Verdict(w, rules, false);
+    var w = View.Foreground(rules);
+    if (w == null) { result["app"] = ""; result["bundle"] = ""; return result; }
+    // The focused element, when it's this window's: its page and whether it takes a password.
+    Seen focused = View.Focused();
+    if (focused != null && focused.Pid != w.Pid) focused = null;
+    string url = focused != null ? focused.Url : "";
+    string blocked = Verdict(w, rules, false) ?? Policy.UrlReason(url, rules);
     if (blocked == Policy.HiddenReason) {
       result["app"] = ""; result["bundle"] = ""; result["title"] = ""; result["terminalLike"] = false; result["secure"] = false;
       result["blocked"] = Policy.HiddenReason; result["path"] = ""; result["layout"] = "";
@@ -2294,14 +2345,16 @@ static partial class Desk {
     var monitor = Display();
     var screen = monitor.Rect;
     string layout = (screen.Right - screen.Left).ToString(CultureInfo.InvariantCulture) + "," + (screen.Bottom - screen.Top).ToString(CultureInfo.InvariantCulture);
-    if (w.FrameRead) layout += "|" + w.Frame.Left.ToString(CultureInfo.InvariantCulture) + "," + w.Frame.Top.ToString(CultureInfo.InvariantCulture) + "," +
-      w.Frame.Width.ToString(CultureInfo.InvariantCulture) + "," + w.Frame.Height.ToString(CultureInfo.InvariantCulture);
+    Func<Box, string> geometry = box => box.Left.ToString(CultureInfo.InvariantCulture) + "," + box.Top.ToString(CultureInfo.InvariantCulture) + "," +
+      box.Width.ToString(CultureInfo.InvariantCulture) + "," + box.Height.ToString(CultureInfo.InvariantCulture);
+    if (w.FrameRead) layout += "|" + geometry(w.Frame);
+    if (focused != null) layout += "|" + geometry(focused.Frame) + "|" + focused.Role + "|" + focused.AutomationId;
     var id = w.Id ?? new Ident();
     result["app"] = id.Name;
     result["bundle"] = id.Bundle;
     result["title"] = blocked == null ? Limit(w.Title, 200) : "";
     result["terminalLike"] = w.Terminal;
-    result["secure"] = false;
+    result["secure"] = focused != null && focused.Secure;
     result["blocked"] = blocked ?? "";
     result["path"] = id.Path;
     result["layout"] = Limit(layout, 2000);
@@ -2321,12 +2374,576 @@ static partial class Desk {
   // it lets go of them where it held them before exiting, so the owner never
   // inherits a held button. Once stopping, nothing more is sent.
   static readonly object heldLock = new object();
-  static bool stopping;
-  static readonly Dictionary<int, Native.POINT> heldButtons = new Dictionary<int, Native.POINT>();
-  static readonly HashSet<ushort> heldKeys = new HashSet<ushort>();
-  static void LetGo() {
+  internal static bool stopping;
+  internal static readonly Dictionary<int, Native.POINT> heldButtons = new Dictionary<int, Native.POINT>();
+  internal static readonly HashSet<ushort> heldKeys = new HashSet<ushort>();
+
+  // --- Input (§5) -------------------------------------------------------------
+  internal static IDesktopView View = new WindowsView();
+  internal static IInput Input = new WindowsInput();
+  internal static IClip Clip = new WindowsClip();
+  const string ChangedReason = "The window at this point changed while it was checked. Look again.";
+  const string AdminWindowReason = "That window runs as administrator. Windows keeps other programs' clicks and keys out of it, so the agent leaves it to you at the PC.";
+  const string ElevatedFrontReason = "A window running as administrator is in front on the PC. Windows hides the keyboard from Reach while it is, so the agent waits until the owner switches away from it.";
+  const string HeldKeyReason = "A key or button is held down on the PC. The agent's input would mix with it. Try again in a moment.";
+  const string ElevatedReachReason = "Reach is running as administrator (or User Account Control is off). Agents act only from a standard Reach session.";
+  const string CommandFieldReason = "That box runs programs on the PC. Open folders by clicking them, or use open_file with reveal.";
+  const string ShutDownReason = "The PC's shut-down and sign-out stay with the owner.";
+  // What the agent never switches from the taskbar or Quick Settings: the
+  // network Reach answers through and who may reach this PC.
+  static readonly string[] SystemGuardedWords = { "wi-fi", "wifi", "vpn", "network", "ethernet", "firewall", "sharing", "airplane" };
+  const string SystemGuardedReason = "That control can cut Reach's connection or change who reaches this Windows PC. It stays with the owner.";
+
+  // Rule S: Reach itself elevated (or UAC off) gives the agent no input at all.
+  internal static void RuleS() {
+    if (ownIntegrity < 0 || ownIntegrity >= HighIntegrity) throw new Refusal(ElevatedReachReason, "blocked");
+  }
+  // Rule T: Windows keeps a lower program's input out of an elevated one, and
+  // says nothing; such a target is refused with the reason (§5.3).
+  static void RuleT(Ident id) {
+    if (id == null || !id.Known) return;
+    if (id.Integrity < 0) throw new Refusal(UnknownReason, "blocked");
+    if (id.Integrity >= HighIntegrity || id.Integrity > ownIntegrity) throw new Refusal(AdminWindowReason, "blocked");
+  }
+
+  static Seen SeenOf(Win w) {
+    var id = w.Id ?? new Ident { Pid = w.Pid };
+    return new Seen { Bundle = id.Bundle, Name = id.Name, Path = id.Path, Title = w.Title, TitleRead = w.TitleRead, Pid = w.Pid, Id = id, Root = w.Handle,
+      Class = w.Class, Shell = w.Shell, Terminal = w.Terminal, Reach = w.Reach, Explorer = w.Explorer };
+  }
+  // check(): the app, Reach's own windows, the title, the page.
+  static void CheckSeen(Seen s, Rules rules) {
+    if (rules.Mode == "full") return;
+    string reason = AppVerdict(s.Id, rules);
+    if (reason == null && s.Reach) reason = Policy.ReachReason;
+    if (reason == null) reason = TitleVerdict(s.Title, s.Bundle, s.Root, s.Explorer, rules);
+    if (reason == null) reason = Policy.UrlReason(s.Url, rules);
+    if (reason == null && (IsBrowser(s.Id) || s.Terminal) && (!s.TitleRead || s.Title.Length == 0)) reason = UnreadableTitleReason;
+    if (reason != null) throw new Refusal(reason, "blocked");
+  }
+
+  // The window Windows draws at a point, from its own lists: the first that
+  // shows there in band order (click-through windows included). Full
+  // control takes Windows' first walk alone.
+  internal static Win WindowAt(Inventory inventory, int x, int y, bool full) {
+    Win best = null;
+    foreach (var w in inventory.Windows) {
+      if (full && !w.InL1) continue;
+      if (!w.Shows || !w.FrameRead || !w.Frame.Contains(x, y)) continue;
+      if (best == null || (full ? w.L1Index < best.L1Index : w.Above(best))) best = w;
+    }
+    return best;
+  }
+
+  // Bank sites (§10.2): the page an event reaches, when it's a bank's; null
+  // otherwise. A browser whose page can't be read (its tree not built yet)
+  // is refused, unless the event is on the browser's own controls.
+  sealed class Page { public string Url, Title; }
+  static Page MoneyAt(Seen s, bool point, Rules rules) {
+    if (rules.Mode == "full" || !IsBrowser(s.Id) || rules.MoneySites.Count == 0) return null;
+    if (s.Web) {
+      var addresses = s.Frames.FindAll(frame => frame.Length > 0);
+      if (addresses.Count == 0) throw new Refusal(Policy.MoneyUnreadReason, "retry");
+      return Policy.MoneyFrames(addresses, rules) ? new Page { Url = string.Join(" ", addresses), Title = s.Title } : null;
+    }
+    if (s.Chrome) return null;
+    // A field outside the page (the address bar, find) takes its own text.
+    if (!point && Policy.MoneyFieldRoles.Contains(s.Role)) return null;
+    throw new Refusal(Policy.MoneyUnreadReason, "retry");
+  }
+
+  // checkPoint (agent-desktop.swift): three views of the point, any refusal
+  // wins: the window Windows draws there, the window it will route the click
+  // to, and UI Automation's element.
+  internal static Seen CheckPoint(int x, int y, Rules rules, Dictionary<string, string> expected, bool activate) {
+    bool full = rules.Mode == "full";
+    Action<Seen> checkExpected = target => {
+      if (expected == null || !Policy.PointerIdentityKnown(target.Bundle, target.Name, target.Path, target.Pid)) return;
+      string bundle, title;
+      expected.TryGetValue("bundle", out bundle);
+      bool titled = expected.TryGetValue("title", out title);
+      if (target.Bundle != bundle || (titled && target.Title.Length > 0 && Limit(target.Title, 200) != title))
+        throw new Refusal("The shortcut's target window changed. Look again before continuing.", "retry");
+    };
+    var inventory = View.Windows(rules);
+    if (!inventory.Complete && !full) throw new Refusal(ChangedReason, "retry");
+    Win at = WindowAt(inventory, x, y, full);
+    Win route = View.RouteAt(x, y, rules);
+    if (at != null && route != null && route.Pid != at.Pid && (at.ExStyle & Native.WS_EX_TRANSPARENT) == 0) throw new Refusal(ChangedReason, "retry");
+    Seen window = at != null ? SeenOf(at) : null;
+    if (window != null) {
+      if (rules.Mode == "apps" && (at.Shell || window.Bundle.Length == 0)) throw new Refusal(Policy.NotAllowedReason, "blocked");
+      if (at.Shell) { if (!full && Policy.MentionsReach(window.Title, rules)) throw new Refusal(Policy.ReachReason, "blocked"); }
+      else CheckSeen(window, rules);
+      checkExpected(window);
+    }
+    if (route != null) {
+      if (rules.Mode == "apps" && route.Shell) throw new Refusal(Policy.NotAllowedReason, "blocked");
+      if (!route.Shell) CheckSeen(SeenOf(route), rules);
+      RuleT(route.Id);
+    }
+    Seen element = View.ElementAt(x, y);
+    if (element != null) {
+      if (element.Shell) {
+        if (rules.Mode == "apps") throw new Refusal(Policy.NotAllowedReason, "blocked");
+        string words = Policy.Lower(string.Join(" ", element.Labels));
+        if (!full && Policy.MentionsReach(words, rules)) throw new Refusal(Policy.ReachReason, "blocked");
+        foreach (string word in SystemGuardedWords) if (!full && words.Contains(word)) throw new Refusal(SystemGuardedReason, "blocked");
+      } else {
+        CheckSeen(element, rules);
+        // UI Automation can't always name an element's window: the window
+        // drawn here names it when it's the same app's. Only an unnamed one
+        // falls back to the whole app, where any window showing Reach closes all.
+        bool named = window != null && window.Pid == element.Pid && window.Title.Length > 0;
+        if (!full && element.Title.Length == 0 && !named && View.HostsReach(element.Pid, rules)) throw new Refusal(Policy.ReachReason, "blocked");
+        if (element.Title.Length == 0 && named) element.Title = window.Title;
+        var page = MoneyAt(element, true, rules);
+        if (page != null) {
+          element.Bank = true;
+          string reason = activate ? Policy.MoneyClickReason(page.Url, page.Title, element.Labels, element.Control, rules) : null;
+          if (reason != null) throw new Refusal(reason, "blocked");
+        }
+      }
+      if (Policy.PointerIdentityKnown(element.Bundle, element.Name, element.Path, element.Pid)) {
+        checkExpected(element);
+        RuleT(element.Id);
+        return element;
+      }
+    }
+    if (window != null && Policy.PointerIdentityKnown(window.Bundle, window.Name, window.Path, window.Pid)) {
+      if (MoneyAt(window, true, rules) != null) window.Bank = true;
+      RuleT(window.Id);
+      return window;
+    }
+    // Full control is light: a point no app claims stays usable.
+    if (full && expected == null) return window ?? new Seen();
+    throw new Refusal("The app at this point could not be verified. Look again and retry.", "retry");
+  }
+
+  // focus (agent-desktop.swift): keys and text go to the window in front and
+  // its focused element; both are checked. Keys always reach the window in
+  // front, so its process must take them (Rule T).
+  internal sealed class Target { public Seen App; public Seen Element; public bool Terminal; }
+  internal static Target Focus(Rules rules, bool appOnly) {
+    Win front = View.Foreground(rules);
+    if (front == null || front.Pid <= 0) throw new Refusal("Nothing is ready for typing.", "retry");
+    var app = SeenOf(front);
+    string reason = AppVerdict(front.Id, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    CheckSeen(app, rules);
+    RuleT(front.Id);
+    Seen focused = View.Focused();
+    if (focused == null) {
+      if (appOnly || rules.Mode == "full") return new Target { App = app, Element = app, Terminal = front.Terminal };
+      throw new Refusal("The focused app could not be verified. Look again before typing or pressing a key.", "retry");
+    }
+    if (focused.Pid != front.Pid) {
+      if (!(appOnly || rules.Mode == "full")) throw new Refusal("The focused app changed while it was checked. Look again before typing or pressing a key.", "retry");
+      CheckSeen(focused, rules);
+      RuleT(focused.Id);
+      return new Target { App = focused, Element = focused, Terminal = focused.Terminal };
+    }
+    CheckSeen(focused, rules);
+    focused.Bundle = app.Bundle;
+    focused.Name = app.Name;
+    focused.Path = app.Path;
+    return new Target { App = app, Element = focused, Terminal = front.Terminal };
+  }
+
+  // Keys by name, as agent-desktop.swift's keyCodes: layout-independent where
+  // Windows has a key for it; punctuation through the front window's layout.
+  static readonly Dictionary<string, ushort> KeyCodes = new Dictionary<string, ushort>(StringComparer.Ordinal) {
+    { "return", 0x0D }, { "enter", 0x0D }, { "tab", 0x09 }, { "space", 0x20 }, { "delete", 0x08 }, { "backspace", 0x08 }, { "escape", 0x1B }, { "esc", 0x1B },
+    { "left", 0x25 }, { "right", 0x27 }, { "down", 0x28 }, { "up", 0x26 }, { "forwarddelete", 0x2E }, { "home", 0x24 }, { "end", 0x23 }, { "pageup", 0x21 }, { "pagedown", 0x22 },
+    { "f1", 0x70 }, { "f2", 0x71 }, { "f3", 0x72 }, { "f4", 0x73 }, { "f5", 0x74 }, { "f6", 0x75 }, { "f7", 0x76 }, { "f8", 0x77 }, { "f9", 0x78 }, { "f10", 0x79 }, { "f11", 0x7A },
+  };
+  static bool Extended(ushort vk) { return (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E; }
+  internal static ushort VirtualKey(string name) {
+    ushort vk;
+    if (KeyCodes.TryGetValue(name, out vk)) return vk;
+    if (name.Length == 1) {
+      char c = name[0];
+      if (c >= 'a' && c <= 'z') return (ushort)(c - 'a' + 0x41);
+      if (c >= '0' && c <= '9') return c;
+      if ("=-][';\\,/.`".IndexOf(c) >= 0) {
+        int mapped = View.KeyFor(c);
+        if (mapped == -1 || ((mapped >> 8) & 0xFF) != 0 || (mapped & 0xFF) == 0xFF) throw new Refusal("That key isn't on this PC's keyboard layout. Type it as text.", "invalid");
+        return (ushort)(mapped & 0xFF);
+      }
+    }
+    throw new Refusal("Unknown key.", "invalid");
+  }
+  // The agent names modifiers as on a Mac, or as the server already mapped
+  // them: Ctrl for ⌘ and control, Alt for option. Never the Windows key.
+  internal static List<ushort> Modifiers(object value) {
+    var keys = new List<ushort>();
+    var names = value as List<object>;
+    if (names == null) return keys;
+    bool control = false, alt = false, shift = false;
+    foreach (object item in names) {
+      string name = item as string;
+      if (name == "cmd" || name == "command" || name == "meta" || name == "control" || name == "ctrl") control = true;
+      else if (name == "option" || name == "alt") alt = true;
+      else if (name == "shift") shift = true;
+    }
+    if (control) keys.Add(Native.VK_CONTROL);
+    if (alt) keys.Add(Native.VK_MENU);
+    if (shift) keys.Add(Native.VK_SHIFT);
+    return keys;
+  }
+
+  // One event as SendInput takes it.
+  internal static Native.INPUT MouseEvent(uint flags, int dx, int dy, int data) {
+    var input = new Native.INPUT { type = Native.INPUT_MOUSE };
+    input.u.mi = new Native.MOUSEINPUT { dx = dx, dy = dy, mouseData = data, dwFlags = flags };
+    return input;
+  }
+  internal static Native.INPUT KeyEvent(ushort vk, ushort scan, uint flags) {
+    var input = new Native.INPUT { type = Native.INPUT_KEYBOARD };
+    input.u.ki = new Native.KEYBDINPUT { wVk = vk, wScan = scan, dwFlags = flags };
+    return input;
+  }
+  internal static Native.INPUT KeyOf(ushort vk, bool down) {
+    return KeyEvent(vk, View.ScanFor(vk), (down ? 0u : Native.KEYEVENTF_KEYUP) | (Extended(vk) ? Native.KEYEVENTF_EXTENDEDKEY : 0u));
+  }
+  // Absolute, over every monitor: Windows reads 0 to 65535 across the
+  // virtual screen; rounded up, so it lands on exactly this pixel.
+  public static int Normalize(int offset, int size) {
+    if (size <= 1) return 0;
+    long value = ((long)offset * 65536 + size - 1) / size;
+    return (int)Math.Max(0, Math.Min(65535, value));
+  }
+  internal static Native.INPUT MoveTo(int x, int y) {
+    var screen = View.VirtualScreen();
+    return MouseEvent(Native.MOUSEEVENTF_MOVE | Native.MOUSEEVENTF_ABSOLUTE | Native.MOUSEEVENTF_VIRTUALDESK, Normalize(x - screen.Left, screen.Width), Normalize(y - screen.Top, screen.Height), 0);
+  }
+
+  // The only place input goes out (§5.1). Before every batch: nothing on a
+  // secure desktop, nothing while an elevated window is in front (Rule F),
+  // nothing while the owner holds a key or button this helper doesn't. One
+  // batch is one SendInput: Windows lets nothing else in between. Once
+  // stopping, nothing more is sent.
+  static readonly int[] Watched = { Native.VK_CONTROL, Native.VK_MENU, Native.VK_SHIFT, Native.VK_LWIN, Native.VK_RWIN, Native.VK_LBUTTON, Native.VK_RBUTTON, Native.VK_MBUTTON };
+  static Native.POINT lastPoint;
+  internal static void Post(Native.INPUT[] batch, int pauseMs) {
+    if (View.InputDesktop() != "Default") throw new Refusal(SecureDesktopReason, "paused");
+    int front = View.ForegroundIntegrity();
+    if (front == -1 || front > ownIntegrity) throw new Refusal(ElevatedFrontReason, "paused");
+    lock (heldLock) {
+      if (stopping) return;
+      foreach (int vk in Watched) if (Input.KeyDown(vk) && !HeldByUs(vk)) throw new Refusal(HeldKeyReason, "retry");
+      uint sent = Input.Send(batch);
+      for (int i = 0; i < sent && i < batch.Length; i++) Track(batch[i]);
+      if (sent != batch.Length) throw new Refusal("Windows refused the input. Look at the screen before trying again.", "unavailable");
+    }
+    if (pauseMs > 0) Input.Pause(pauseMs);
+  }
+  static bool HeldByUs(int vk) {
+    if (vk == Native.VK_LBUTTON) return heldButtons.ContainsKey(0);
+    if (vk == Native.VK_RBUTTON) return heldButtons.ContainsKey(1);
+    return heldKeys.Contains((ushort)vk);
+  }
+  static void Track(Native.INPUT input) {
+    if (input.type == Native.INPUT_MOUSE) {
+      uint flags = input.u.mi.dwFlags;
+      if ((flags & Native.MOUSEEVENTF_MOVE) != 0 && (flags & Native.MOUSEEVENTF_ABSOLUTE) != 0) {
+        lastPoint = new Native.POINT { X = input.u.mi.dx, Y = input.u.mi.dy };
+        foreach (int button in new List<int>(heldButtons.Keys)) heldButtons[button] = lastPoint;
+      }
+      if ((flags & Native.MOUSEEVENTF_LEFTDOWN) != 0) heldButtons[0] = lastPoint;
+      if ((flags & Native.MOUSEEVENTF_LEFTUP) != 0) heldButtons.Remove(0);
+      if ((flags & Native.MOUSEEVENTF_RIGHTDOWN) != 0) heldButtons[1] = lastPoint;
+      if ((flags & Native.MOUSEEVENTF_RIGHTUP) != 0) heldButtons.Remove(1);
+    } else if (input.type == Native.INPUT_KEYBOARD && (input.u.ki.dwFlags & Native.KEYEVENTF_UNICODE) == 0) {
+      if ((input.u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0) heldKeys.Remove(input.u.ki.wVk);
+      else heldKeys.Add(input.u.ki.wVk);
+    }
+  }
+
+  // --- One input action (agent-desktop.swift perform) -------------------------
+  static Dictionary<string, string> Expected(Dictionary<string, object> request) {
+    var map = Json.Map(request, "expected");
+    if (map == null) return null;
+    var expected = new Dictionary<string, string>(StringComparer.Ordinal);
+    foreach (var pair in map) {
+      var text = pair.Value as string;
+      if (text == null) return null;
+      expected[pair.Key] = text;
+    }
+    return expected;
+  }
+  internal static Dictionary<string, object> Perform(Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look. It has no mouse or keyboard here.", "blocked");
+    string type = Json.Str(action, "type") ?? "";
+    Func<string, string, Native.POINT> point = (xKey, yKey) => {
+      double? nx = Json.Double(action, xKey), ny = Json.Double(action, yKey);
+      if (!nx.HasValue || !ny.HasValue || nx < 0 || nx > 1 || ny < 0 || ny > 1) throw new Refusal("Choose a point on the screen.", "invalid");
+      return new Native.POINT {
+        X = display.Left + Math.Min(display.Width - 1, (int)Math.Floor(nx.Value * display.Width)),
+        Y = display.Top + Math.Min(display.Height - 1, (int)Math.Floor(ny.Value * display.Height)),
+      };
+    };
+    if (expected != null) {
+      var current = Front(rules, false);
+      foreach (var pair in expected) {
+        object value;
+        if (!current.TryGetValue(pair.Key, out value) || !(value is string) || (string)value != pair.Value)
+          throw new Refusal("The shortcut's app, window or focused field changed. Look again before continuing.", "retry");
+      }
+      if (Json.True(current, "secure") || (Json.Str(current, "blocked") ?? "").Length > 0)
+        throw new Refusal("The shortcut's app, window or focused field changed. Look again before continuing.", "retry");
+    }
+    var reached = Ok();
+    switch (type) {
+      case "move": {
+        var p = point("x", "y");
+        CheckPoint(p.X, p.Y, rules, expected, false);
+        Post(new[] { MoveTo(p.X, p.Y) }, 8);
+        return reached;
+      }
+      case "click": {
+        var p = point("x", "y");
+        var target = CheckPoint(p.X, p.Y, rules, expected, true);
+        bool right = Json.Str(action, "button") == "right";
+        int count = Math.Max(1, Math.Min(3, Json.Int(action, "count") ?? 1));
+        // A long press: one press, the button down holdMs before it lets go. A
+        // stop meanwhile lets go at once (LetGo).
+        int holdMs = count == 1 ? Math.Max(0, Math.Min(10000, Json.Int(action, "holdMs") ?? 0)) : 0;
+        var mods = Modifiers(Json.Get(action, "modifiers"));
+        uint down = right ? Native.MOUSEEVENTF_RIGHTDOWN : Native.MOUSEEVENTF_LEFTDOWN, up = right ? Native.MOUSEEVENTF_RIGHTUP : Native.MOUSEEVENTF_LEFTUP;
+        var press = new List<Native.INPUT>();
+        foreach (ushort vk in mods) press.Add(KeyOf(vk, true));
+        press.Add(MoveTo(p.X, p.Y));
+        var release = new List<Native.INPUT>();
+        for (int i = mods.Count - 1; i >= 0; i--) release.Add(KeyOf(mods[i], false));
+        if (holdMs > 0) {
+          press.Add(MouseEvent(down, 0, 0, 0));
+          Post(press.ToArray(), holdMs);
+          release.Insert(0, MouseEvent(up, 0, 0, 0));
+          Post(release.ToArray(), 8);
+        } else {
+          for (int i = 0; i < count; i++) { press.Add(MouseEvent(down, 0, 0, 0)); press.Add(MouseEvent(up, 0, 0, 0)); }
+          press.AddRange(release);
+          Post(press.ToArray(), 8);
+        }
+        reached["app"] = target.Name;
+        reached["bundle"] = target.Bundle;
+        return reached;
+      }
+      case "drag": {
+        Native.POINT from = point("x", "y"), to = point("toX", "toY");
+        Seen start = CheckPoint(from.X, from.Y, rules, expected, false), end = CheckPoint(to.X, to.Y, rules, expected, false);
+        if (start.Bank || end.Bank) throw new Refusal(Policy.MoneyPasteReason, "blocked");
+        // holdMs: down that long before moving (a long press picks it up);
+        // durationMs: the move spread over that long, a step every ~16 ms.
+        int holdMs = Math.Max(0, Math.Min(5000, Json.Int(action, "holdMs") ?? 0));
+        int durationMs = Math.Max(0, Math.Min(5000, Json.Int(action, "durationMs") ?? 0));
+        int steps = durationMs > 0 ? Math.Max(12, Math.Min(300, durationMs / 16)) : 12;
+        int stepPause = durationMs > 0 ? durationMs / steps : 8;
+        Post(new[] { MoveTo(from.X, from.Y), MouseEvent(Native.MOUSEEVENTF_LEFTDOWN, 0, 0, 0) }, holdMs > 0 ? holdMs : 8);
+        for (int step = 1; step <= steps; step++) {
+          double t = (double)step / steps;
+          Post(new[] { MoveTo((int)Math.Round(from.X + (to.X - from.X) * t), (int)Math.Round(from.Y + (to.Y - from.Y) * t)) }, stepPause);
+        }
+        Post(new[] { MoveTo(to.X, to.Y), MouseEvent(Native.MOUSEEVENTF_LEFTUP, 0, 0, 0) }, 8);
+        return reached;
+      }
+      case "scroll": {
+        var p = point("x", "y");
+        CheckPoint(p.X, p.Y, rules, expected, false);
+        int dx = (int)Math.Max(-2000, Math.Min(2000, Json.Double(action, "dx") ?? 0));
+        int dy = (int)Math.Max(-2000, Math.Min(2000, Json.Double(action, "dy") ?? 0));
+        // dy > 0 scrolls down, dx > 0 right, as on a Mac: Windows' wheel is
+        // positive forward (up), its tilt positive right.
+        var batch = new List<Native.INPUT> { MoveTo(p.X, p.Y) };
+        if (dy != 0) batch.Add(MouseEvent(Native.MOUSEEVENTF_WHEEL, 0, 0, -dy));
+        if (dx != 0) batch.Add(MouseEvent(Native.MOUSEEVENTF_HWHEEL, 0, 0, dx));
+        Post(batch.ToArray(), 8);
+        return reached;
+      }
+      case "type": return Type(action, rules);
+      case "key": return Press(action, rules);
+      case "element":
+      case "press":
+      case "fill":
+      case "menu":
+        return Controls(type, action, display, rules, expected);
+      default:
+        throw new Refusal("Unknown action.", "invalid");
+    }
+  }
+
+  // Typed text: into the focused element, checked as it is (a password field
+  // takes only a vault value; a vault value never goes into a terminal; a box
+  // that runs programs takes nothing); a character at a time, or pasted.
+  static Dictionary<string, object> Type(Dictionary<string, object> action, Rules rules) {
+    string text = Json.Str(action, "text");
+    if (string.IsNullOrEmpty(text) || text.Length > 2000) throw new Refusal("Type up to 2000 characters.", "invalid");
+    var target = Focus(rules, false);
+    bool secret = Json.True(action, "secret");
+    bool full = rules.Mode == "full";
+    if (!full && target.Element.Secure && !secret) throw new Refusal(Policy.SecureReason, "blocked");
+    if (!full && secret && target.Terminal) throw new Refusal("Vault values don't go into a terminal. Click the sign-in field first.", "blocked");
+    if (!full && (target.Element.CommandField || (target.App.Explorer && !target.Element.FolderEdit))) throw new Refusal(CommandFieldReason, "blocked");
+    var page = MoneyAt(target.Element, false, rules);
+    if (page != null) {
+      string reason = Policy.MoneyTypeReason(page.Url, page.Title, target.Element.Labels.Count > 0 ? target.Element.Labels[0] : "", target.Element.Secure, secret, rules);
+      if (reason != null) throw new Refusal(reason, "blocked");
+    }
+    if (secret || target.Element.Secure) RememberSecret(text);
+    // The server checked the text as prose or as a command; if the focus
+    // moved to a terminal since, it must look again.
+    if (target.Terminal && !Json.True(action, "terminalLikeChecked")) throw new Refusal("A terminal is in front now. Try again.", "retry");
+    var reached = Ok();
+    reached["app"] = target.App.Name;
+    reached["bundle"] = target.App.Bundle;
+    if (Json.True(action, "paste")) {
+      if (secret) throw new Refusal("Vault values are typed, never pasted.", "invalid");
+      Paste(text);
+      reached["pasted"] = true;
+      return reached;
+    }
+    string[] lines = text.Split('\n');
+    for (int line = 0; line < lines.Length; line++) {
+      if (line > 0) Post(new[] { KeyEvent(Native.VK_RETURN, View.ScanFor(Native.VK_RETURN), 0), KeyEvent(Native.VK_RETURN, View.ScanFor(Native.VK_RETURN), Native.KEYEVENTF_KEYUP) }, 3);
+      foreach (ushort[] chunk in Text.KeyboardChunks(lines[line])) {
+        var batch = new List<Native.INPUT>();
+        foreach (ushort unit in chunk) {
+          batch.Add(KeyEvent(0, unit, Native.KEYEVENTF_UNICODE));
+          batch.Add(KeyEvent(0, unit, Native.KEYEVENTF_UNICODE | Native.KEYEVENTF_KEYUP));
+        }
+        Post(batch.ToArray(), 3);
+      }
+    }
+    return reached;
+  }
+
+  // Long text in one go: on the clipboard (kept out of Clipboard History and
+  // cloud sync), Ctrl+V, then the owner's clipboard text back, the same way;
+  // emptied when there was none. Only text is saved, as on a Mac.
+  static void Paste(string text) {
+    string previous = Clip.Read();
+    Clip.Write(text);
+    uint written = Clip.Sequence();
+    try {
+      Input.Pause(40);
+      Post(new[] { KeyOf(Native.VK_CONTROL, true), KeyOf(0x56, true), KeyOf(0x56, false), KeyOf(Native.VK_CONTROL, false) }, 250);
+    } finally {
+      // Nobody else wrote meanwhile: the board still holds the agent's text,
+      // pasted or not.
+      if (Clip.Sequence() == written) Clip.Write(previous);
+    }
+  }
+
+  // A key, with its modifiers, to the window in front.
+  static Dictionary<string, object> Press(Dictionary<string, object> action, Rules rules) {
+    string name = (Json.Str(action, "key") ?? "").ToLowerInvariant();
+    ushort vk = VirtualKey(name);
+    var mods = Modifiers(Json.Get(action, "modifiers"));
+    bool command = mods.Contains(Native.VK_CONTROL), option = mods.Contains(Native.VK_MENU), shift = mods.Contains(Native.VK_SHIFT);
+    bool navigation = System.Array.IndexOf(new[] { "tab", "escape", "esc", "left", "right", "up", "down", "home", "end", "pageup", "pagedown" }, name) >= 0;
+    var target = Focus(rules, command || navigation);
+    bool full = rules.Mode == "full";
+    if (!full) {
+      // What closes or stops a window or process holding Reach (Ctrl+Q/W/D,
+      // Ctrl+C in a console, Ctrl+Shift+W for a terminal tab, Alt+F4).
+      bool closing = (command && (name == "q" || name == "w" || name == "d" || name == "c")) || (command && shift && name == "w") || (option && name == "f4");
+      if (closing && (target.App.Reach || View.HostsReach(target.App.Pid, rules))) throw new Refusal(Policy.ReachReason, "blocked");
+      // Alt+F4 on the desktop or the taskbar offers to shut the PC down.
+      if (option && name == "f4" && target.App.Shell) throw new Refusal(ShutDownReason, "blocked");
+      // The developer tools read a page's passwords and run code (Chromium's
+      // and Firefox's keys, and the Mac's mapped).
+      if (IsBrowser(target.App.Id) && command && ((shift && "ijckez".IndexOf(name, StringComparison.Ordinal) >= 0 && name.Length == 1) || (option && (name == "i" || name == "j" || name == "c"))))
+        throw new Refusal(Policy.ProtectedReason, "blocked");
+      if (target.Element.Secure && !Policy.SecureKeyAllowed(name, command)) throw new Refusal(Policy.SecureReason, "blocked");
+      // A box that runs programs takes only Tab, Escape and the arrows.
+      bool moving = !command && !option && System.Array.IndexOf(new[] { "tab", "escape", "esc", "left", "right", "up", "down" }, name) >= 0;
+      if ((target.Element.CommandField || (target.App.Explorer && target.Element.Editable && !target.Element.FolderEdit)) && !moving)
+        throw new Refusal(CommandFieldReason, "blocked");
+    }
+    var page = MoneyAt(target.Element, false, rules);
+    if (page != null) {
+      string reason = Policy.MoneyKeyReason(page.Url, page.Title, name, command, false, Policy.MoneyFieldRoles.Contains(target.Element.Role), target.Element.Secure,
+        target.Element.Labels, target.Element.Control, rules);
+      if (reason != null) throw new Refusal(reason, "blocked");
+    }
+    var batch = new List<Native.INPUT>();
+    foreach (ushort mod in mods) batch.Add(KeyOf(mod, true));
+    batch.Add(KeyOf(vk, true));
+    batch.Add(KeyOf(vk, false));
+    for (int i = mods.Count - 1; i >= 0; i--) batch.Add(KeyOf(mods[i], false));
+    Post(batch.ToArray(), 8);
+    var reached = Ok();
+    reached["app"] = target.App.Name;
+    reached["bundle"] = target.App.Bundle;
+    return reached;
+  }
+
+  // Controls found through UI Automation (element, press, fill, menu).
+  static Dictionary<string, object> Controls(string type, Dictionary<string, object> action, Box display, Rules rules, Dictionary<string, string> expected) {
+    if (type == "element") throw new Refusal("That label is from an older look. Look at the labels again.", "retry");
+    throw new Refusal("Windows UI Automation isn't available to Reach on this PC.", "unavailable");
+  }
+
+  // What the agent typed from its vault (type or fill with secret): never
+  // shown back to it, as text or in a screenshot. In this process only.
+  internal static readonly List<string> typedSecrets = new List<string>();
+  static void RememberSecret(string text) {
+    string value = text.Trim();
+    if (new StringInfo(value).LengthInTextElements < 3 || typedSecrets.Contains(value)) return;
+    typedSecrets.Add(value);
+    if (typedSecrets.Count > 16) typedSecrets.RemoveAt(0);
+  }
+
+  // --- Windows itself, as input sees it ---------------------------------------
+  // One window, read and decided with what owns it (Explorer's dialogs).
+  internal static Win ReadDecided(IntPtr root, Rules rules) {
+    var w = Read(root, new Dictionary<long, Ident>());
+    if (w.Id == null || w.Id.Created == 0) w.Id = Identify(w.Pid);
+    var index = new Dictionary<long, Win>();
+    index[w.Handle] = w;
+    for (IntPtr owner = new IntPtr(w.Owner); owner != IntPtr.Zero && index.Count < 8; owner = Native.GetWindow(owner, Native.GW_OWNER)) {
+      var held = new Win { Handle = owner.ToInt64(), Class = ClassOf(owner), Owner = Native.GetWindow(owner, Native.GW_OWNER).ToInt64() };
+      if (index.ContainsKey(held.Handle)) break;
+      index[held.Handle] = held;
+    }
+    Decide(w, rules, index);
+    return w;
+  }
+  internal static Inventory InventoryNow(Rules rules) { return TakeInventory(rules, new Dictionary<long, Ident>()); }
+  // Any of this process's windows is Reach's (its console, or a title naming
+  // Reach): it hosts Reach, so what would close it is refused.
+  internal static bool HostsReach(int pid, Rules rules) {
+    bool found = false;
+    Native.EnumWindowsProc each = (window, data) => {
+      uint owner;
+      Native.GetWindowThreadProcessId(window, out owner);
+      if (owner != pid) return true;
+      bool readable;
+      string title = TitleOf(window, out readable);
+      if (IsReachConsole(window.ToInt64()) || Policy.TitleReason(title, "", rules) == Policy.ReachReason) { found = true; return false; }
+      return true;
+    };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    return found || TabsNameReach(pid, rules);
+  }
+  // A terminal's tab naming Reach (UI Automation): none until it can be read.
+  static bool TabsNameReach(int pid, Rules rules) { return false; }
+  // UI Automation's element at a point, and the focused one: none until it can be read.
+  internal static Seen UiaElementAt(int x, int y) { return null; }
+  internal static Seen UiaFocused() { return null; }
+
+  // Let go of whatever this helper holds, where it held it, and send nothing
+  // more (the end of input, Reach's own end, a wedged thread).
+  internal static void LetGo() {
     lock (heldLock) {
       stopping = true;
+      foreach (var held in heldButtons) {
+        uint up = held.Key == 1 ? Native.MOUSEEVENTF_RIGHTUP : Native.MOUSEEVENTF_LEFTUP;
+        Input.Send(new[] { MouseEvent(Native.MOUSEEVENTF_MOVE | Native.MOUSEEVENTF_ABSOLUTE | Native.MOUSEEVENTF_VIRTUALDESK, held.Value.X, held.Value.Y, 0), MouseEvent(up, 0, 0, 0) });
+      }
+      foreach (ushort vk in heldKeys) Input.Send(new[] { KeyEvent(vk, 0, Native.KEYEVENTF_KEYUP | (Extended(vk) ? Native.KEYEVENTF_EXTENDEDKEY : 0u)) });
       heldButtons.Clear();
       heldKeys.Clear();
     }
@@ -2336,6 +2953,154 @@ static partial class Desk {
   static Dictionary<string, object> Catalog() {
     throw new Refusal("The Windows PC couldn't do that.", "unavailable");
   }
+}
+
+
+sealed class WindowsView : IDesktopView {
+  public Inventory Windows(Rules rules) { return Desk.InventoryNow(rules); }
+  public Win RouteAt(int x, int y, Rules rules) {
+    IntPtr window = Native.WindowFromPoint(new Native.POINT { X = x, Y = y });
+    IntPtr root = window == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(window, Native.GA_ROOT);
+    return root == IntPtr.Zero ? null : Desk.ReadDecided(root, rules);
+  }
+  public Win Foreground(Rules rules) {
+    IntPtr root = Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT);
+    return root == IntPtr.Zero ? null : Desk.ReadDecided(root, rules);
+  }
+  public int ForegroundIntegrity() {
+    IntPtr front = Native.GetForegroundWindow();
+    if (front == IntPtr.Zero) return -2;
+    IntPtr root = Native.GetAncestor(front, Native.GA_ROOT);
+    uint pid;
+    Native.GetWindowThreadProcessId(root == IntPtr.Zero ? front : root, out pid);
+    IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, (int)pid);
+    if (process == IntPtr.Zero) return -1;
+    try { return Desk.IntegrityOf(process); } finally { Native.CloseHandle(process); }
+  }
+  public Seen ElementAt(int x, int y) { return Desk.UiaElementAt(x, y); }
+  public Seen Focused() { return Desk.UiaFocused(); }
+  public Box VirtualScreen() {
+    int left = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN), top = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+    return new Box(left, top, left + Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN), top + Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN));
+  }
+  // The keyboard layout of the window the key goes to, not this helper's.
+  static IntPtr Layout() {
+    uint pid;
+    return Native.GetKeyboardLayout(Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out pid));
+  }
+  public int KeyFor(char c) {
+    short mapped = Native.VkKeyScanExW(c, Layout());
+    return mapped == -1 ? -1 : mapped & 0xFFFF;
+  }
+  public ushort ScanFor(ushort vk) { return (ushort)Native.MapVirtualKeyExW(vk, Native.MAPVK_VK_TO_VSC, Layout()); }
+  public bool HostsReach(int pid, Rules rules) { return Desk.HostsReach(pid, rules); }
+  public string InputDesktop() { return Desk.InputDesktopName(); }
+}
+
+sealed class WindowsInput : IInput {
+  public bool KeyDown(int vk) { return (Native.GetAsyncKeyState(vk) & 0x8000) != 0; }
+  public uint Send(Native.INPUT[] batch) { return Native.SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(Native.INPUT))); }
+  public void Pause(int ms) { Thread.Sleep(ms); }
+}
+
+// The clipboard, from a thread of its own that owns a message-only window (a
+// clipboard owner must answer Windows' messages) and pumps them. Each use has
+// a second: reading another app's delayed data can hang, and a helper whose
+// clipboard thread hangs answers and ends (the next request starts afresh).
+sealed class WindowsClip : IClip {
+  static readonly object gate = new object();
+  static readonly Queue<Action> work = new Queue<Action>();
+  static Thread thread;
+  static IntPtr window;
+  static readonly ManualResetEvent ready = new ManualResetEvent(false);
+  const string Busy = "The clipboard is busy. Type the text instead.";
+  static T Run<T>(Func<T> job) {
+    lock (gate) {
+      if (thread == null) {
+        thread = new Thread(Loop) { IsBackground = true, Name = "clipboard" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+      }
+    }
+    if (!ready.WaitOne(5000) || window == IntPtr.Zero) throw new Refusal(Busy, "retry");
+    T result = default(T);
+    Exception failure = null;
+    var done = new ManualResetEvent(false);
+    lock (gate) work.Enqueue(() => { try { result = job(); } catch (Exception error) { failure = error; } done.Set(); });
+    Native.PostMessageW(window, Native.WM_APP, IntPtr.Zero, IntPtr.Zero);
+    if (!done.WaitOne(1000)) throw new Wedged(Busy, "retry");
+    if (failure is Refusal) throw (Refusal)failure;
+    if (failure != null) throw new Refusal(Busy, "retry");
+    return result;
+  }
+  static void Loop() {
+    window = Native.CreateWindowExW(0, "STATIC", "", 0, 0, 0, 0, 0, Native.HWND_MESSAGE, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+    ready.Set();
+    Native.MSG message;
+    while (Native.GetMessageW(out message, IntPtr.Zero, 0, 0) > 0) {
+      if (message.message == Native.WM_APP) {
+        while (true) {
+          Action next;
+          lock (gate) { if (work.Count == 0) break; next = work.Dequeue(); }
+          next();
+        }
+        continue;
+      }
+      Native.TranslateMessage(ref message);
+      Native.DispatchMessageW(ref message);
+    }
+  }
+  static void Open() {
+    for (int i = 0; i < 10; i++) {
+      if (Native.OpenClipboard(window)) return;
+      Thread.Sleep(20);
+    }
+    throw new Refusal(Busy, "retry");
+  }
+  public string Read() {
+    return Run(() => {
+      Open();
+      try {
+        if (!Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT)) return (string)null;
+        IntPtr data = Native.GetClipboardData(Native.CF_UNICODETEXT);
+        if (data == IntPtr.Zero) return null;
+        IntPtr text = Native.GlobalLock(data);
+        if (text == IntPtr.Zero) return null;
+        try { return Marshal.PtrToStringUni(text); } finally { Native.GlobalUnlock(data); }
+      } finally {
+        Native.CloseClipboard();
+      }
+    });
+  }
+  // Text (or nothing) with the three formats that keep it out of Clipboard
+  // History, cloud sync and clipboard monitors.
+  public void Write(string text) {
+    Run(() => {
+      Open();
+      try {
+        Native.EmptyClipboard();
+        if (text == null) return true;
+        Put(Native.CF_UNICODETEXT, Encoding.Unicode.GetBytes(text + "\0"));
+        foreach (string name in new[] { "ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard" }) {
+          uint format = Native.RegisterClipboardFormatW(name);
+          if (format != 0) Put(format, new byte[4]);
+        }
+        return true;
+      } finally {
+        Native.CloseClipboard();
+      }
+    });
+  }
+  static void Put(uint format, byte[] bytes) {
+    IntPtr memory = Native.GlobalAlloc(Native.GMEM_MOVEABLE, new UIntPtr((uint)bytes.Length));
+    if (memory == IntPtr.Zero) throw new Refusal(Busy, "retry");
+    IntPtr at = Native.GlobalLock(memory);
+    if (at == IntPtr.Zero) { Native.GlobalFree(memory); throw new Refusal(Busy, "retry"); }
+    Marshal.Copy(bytes, 0, at, bytes.Length);
+    Native.GlobalUnlock(memory);
+    if (Native.SetClipboardData(format, memory) == IntPtr.Zero) { Native.GlobalFree(memory); throw new Refusal(Busy, "retry"); }
+  }
+  public uint Sequence() { return Native.GetClipboardSequenceNumber(); }
 }
 
 // BEGIN NATIVE WIN32
@@ -2504,5 +3269,33 @@ static class Native {
   [DllImport("user32.dll")] public static extern bool GetIconInfo(IntPtr icon, out ICONINFO info);
   [DllImport("user32.dll")] public static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int width, int height, int step, IntPtr brush, uint flags);
   [DllImport("wintrust.dll", CharSet = CharSet.Unicode)] public static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref WINTRUST_DATA data);
+  public const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
+  public const uint MOUSEEVENTF_MOVE = 0x0001, MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004, MOUSEEVENTF_RIGHTDOWN = 0x0008, MOUSEEVENTF_RIGHTUP = 0x0010,
+    MOUSEEVENTF_WHEEL = 0x0800, MOUSEEVENTF_HWHEEL = 0x1000, MOUSEEVENTF_VIRTUALDESK = 0x4000, MOUSEEVENTF_ABSOLUTE = 0x8000;
+  public const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
+  public const ushort VK_LBUTTON = 0x01, VK_RBUTTON = 0x02, VK_MBUTTON = 0x04, VK_RETURN = 0x0D, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+  public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
+  public const uint CF_UNICODETEXT = 13, GMEM_MOVEABLE = 0x0002, WM_APP = 0x8000, MAPVK_VK_TO_VSC = 0;
+  public static readonly IntPtr HWND_MESSAGE = new IntPtr(-3);
+  [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern short VkKeyScanExW(char c, IntPtr layout);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKeyExW(uint code, uint mapType, IntPtr layout);
+  [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint thread);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool OpenClipboard(IntPtr owner);
+  [DllImport("user32.dll")] public static extern bool CloseClipboard();
+  [DllImport("user32.dll")] public static extern bool EmptyClipboard();
+  [DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint format);
+  [DllImport("user32.dll")] public static extern IntPtr SetClipboardData(uint format, IntPtr data);
+  [DllImport("user32.dll")] public static extern bool IsClipboardFormatAvailable(uint format);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint RegisterClipboardFormatW(string name);
+  [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+  [DllImport("kernel32.dll")] public static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+  [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
+  [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
+  [DllImport("kernel32.dll")] public static extern IntPtr GlobalFree(IntPtr memory);
 }
 // END NATIVE WIN32

@@ -861,6 +861,10 @@ export function createAgentDesktop(config, {
           take(latest);
           const front = answer(await state.helper.send({ op: "front" }));
           if (front.blocked) throw Object.assign(fail(403, String(front.blocked).slice(0, 300)), { kind: "blocked" });
+          // Windows' command deny list isn't complete yet: no typed text into
+          // a terminal on a Windows PC outside Full control (§12 item 9).
+          if (windows && !windowsCommandChecks && latest.policy.preset !== "full" && front.terminalLike === true)
+            throw Object.assign(fail(403, "Typing commands on this PC needs Reach's Windows command checks, which this version doesn't have yet."), { kind: "blocked" });
           for (const entry of typing) {
             if (entry.secret) {
               // Apps keeps vault values out of terminals. Full control may use

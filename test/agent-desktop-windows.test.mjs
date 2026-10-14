@@ -289,3 +289,39 @@ test("a Windows PC's desktop says it isn't available unless told: presets open t
   assert.equal(createAgentDesktop({ screen: true }, { ...options, platform: "darwin" }).available(), true);
   assert.equal(createAgentDesktop({ screen: false }, { ...options, platform: "darwin" }).available(), false);
 });
+
+test("on Windows, typed text into a terminal is refused outside Full control until Windows' command checks are complete; a Mac's is checked as before", async (t) => {
+  const run = async (platform, preset, { windowsCommandChecks, text = "dir" } = {}) => {
+    const home = platform === "win32" ? String.raw`C:\Users\me` : "/Users/me";
+    const policy = { invite: true, browser: true, preset, roots: [], apps: preset === "apps" ? [{ id: platform === "win32" ? chromeExe : "/Applications/Terminal.app", name: "Terminal", bundleId: "" }] : [] };
+    const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
+    const sent = [];
+    const desktop = createAgentDesktop({ screen: true }, {
+      platform, available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(), ...(windowsCommandChecks !== undefined ? { windowsCommandChecks } : {}),
+      spawnHelper: async () => ({ async send(request, beforeSend) {
+        beforeSend?.();
+        sent.push(request.op);
+        return request.op === "front" ? { ok: true, app: "Terminal", bundle: "", terminalLike: true, secure: false, blocked: "" } : { ok: true, app: "Terminal", bundle: "" };
+      }, stop() {} }),
+    });
+    t.after(() => desktop.close());
+    try {
+      await desktop.act(client, { type: "type", text }, () => client);
+      return { ok: true, sent };
+    } catch (error) {
+      return { error, sent };
+    }
+  };
+  const refused = await run("win32", "apps");
+  assert.equal(refused.error?.status, 403);
+  assert.equal(refused.error.kind, "blocked");
+  assert.match(refused.error.message, /Windows command checks/);
+  assert.deepEqual(refused.sent, ["front"], "nothing typed");
+  // Once the checks are there, Windows' deny list decides.
+  assert.equal((await run("win32", "apps", { windowsCommandChecks: true })).ok, true);
+  assert.match((await run("win32", "apps", { windowsCommandChecks: true, text: "reg add HKLM\\x" })).error.message, /who can control this PC/);
+  // Full control types anywhere; a Mac's terminal meets the shell list as before.
+  assert.equal((await run("win32", "full")).ok, true);
+  assert.equal((await run("darwin", "apps")).ok, true);
+  assert.match((await run("darwin", "apps", { text: "sudo rm -rf /" })).error.message, /password/);
+});

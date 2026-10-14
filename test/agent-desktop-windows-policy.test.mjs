@@ -103,7 +103,7 @@ test("what is in front never names an app the owner hid, and says why anything e
   // Closed: an identity Windows couldn't verify, Reach's own window, a title
   // that can't be read in a browser or a terminal.
   const verdict = source.split("static string Verdict(Win w, Rules rules, bool look) {")[1].split("\n  }\n")[0];
-  assert.match(verdict, /AppVerdict\(id, judged\)[\s\S]*w\.Reach[\s\S]*TitleVerdict\(w, rules\)[\s\S]*IsBrowser\(id\) \|\| w\.Terminal\) && \(!w\.TitleRead \|\| w\.Title\.Length == 0\)/);
+  assert.match(verdict, /AppVerdict\(id, judged\)[\s\S]*w\.Reach[\s\S]*TitleVerdict\(w\.Title, id\.Bundle, w\.Handle, w\.Explorer, rules\)[\s\S]*IsBrowser\(id\) \|\| w\.Terminal\) && \(!w\.TitleRead \|\| w\.Title\.Length == 0\)/);
   assert.match(source, /if \(id == null \|\| !id\.Known\) return UnknownReason;/);
 });
 
@@ -116,4 +116,38 @@ test("output is one line per request under one lock, nothing on stderr, never th
   const reply = source.split("static void Reply(")[1].split("\n  }\n")[0];
   assert.match(reply, /lock \(outLock\) \{\n\s+output\.Write\(text\);\n\s+output\.Write\('\\n'\);\n\s+output\.Flush\(\);/);
   assert.match(source, /try \{ lock \(outLock\) output\.Flush\(\); \}/, "the last flush too");
+});
+
+test("input goes out in one place, after its checks, and never through the APIs that bypass them", () => {
+  const lines = code(source);
+  const text = lines.join("\n");
+  // Only Post and LetGo send; only WindowsInput calls SendInput.
+  // Each Input.Send(, by the method it is in.
+  const senders = new Set();
+  lines.forEach((line, at) => {
+    if (!/Input\.Send\(/.test(line)) return;
+    for (let up = at; up >= 0; up--) {
+      const header = /^ {2}(?:internal |public )?static [^=(]*?\b(\w+)\(/.exec(lines[up]);
+      if (header) { senders.add(header[1]); return; }
+    }
+  });
+  assert.deepEqual([...senders].sort(), ["LetGo", "Post"]);
+  assert.equal((text.match(/Native\.SendInput\(/g) || []).length, 1);
+  assert.match(text, /public uint Send\(Native\.INPUT\[\] batch\) \{ return Native\.SendInput\(/);
+  const post = text.split("internal static void Post(Native.INPUT[] batch, int pauseMs) {")[1].split("\n  }\n")[0];
+  const order = ["View.InputDesktop()", "View.ForegroundIntegrity()", "if (stopping) return;", "Input.KeyDown(vk) && !HeldByUs(vk)", "Input.Send(batch)"].map((part) => post.indexOf(part));
+  assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), `Post checks, then sends: ${order}`);
+  for (const banned of [/\bkeybd_event\b/, /\bmouse_event\b/, /SetWindowsHookEx/, /AttachThreadInput/, /SwitchToThisWindow/, /SPI_SETFOREGROUNDLOCKTIMEOUT/, /LockSetForegroundWindow/,
+    /AllowSetForegroundWindow/, /Process\.Start/, /ShellExecute/, /IAssocHandler/, /\bGetWindowText(W|A)?\(/, /Console\.In\b/, /\.SetFocus\(/])
+    assert.ok(!banned.test(text), String(banned));
+  // The Windows key is read (is the owner holding it?) and never sent.
+  const lwin = lines.filter((line) => /VK_LWIN|VK_RWIN/.test(line));
+  assert.ok(lwin.every((line) => /static readonly int\[\] Watched|public const ushort/.test(line)), lwin.join("\n"));
+  // The target's own integrity before any pointer or key input (Rule T).
+  const checkPoint = text.split("internal static Seen CheckPoint(")[1].split("\n  }\n")[0];
+  assert.ok((checkPoint.match(/RuleT\(/g) || []).length >= 3);
+  assert.match(text.split("internal static Target Focus(")[1].split("\n  }\n")[0], /RuleT\(front\.Id\)/);
+  // A paste's clipboard never reaches Clipboard History or cloud sync, and is restored whatever happens.
+  assert.match(text, /"ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"/);
+  assert.match(text.split("static void Paste(string text) {")[1].split("\n  }\n")[0], /try \{[\s\S]*Post\([\s\S]*\} finally \{[\s\S]*if \(Clip\.Sequence\(\) == written\) Clip\.Write\(previous\);/);
 });

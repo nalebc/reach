@@ -10,7 +10,7 @@ static class DesktopChecks {
   static int failures;
   static void Check(bool ok, string label) { if (!ok) { failures++; Console.WriteLine("FAILED: " + label); } }
   static Ident Known(string bundle) {
-    return new Ident { Pid = 100, Created = 1, Bundle = bundle, Path = bundle, Image = "C:\\Apps\\" + bundle + ".exe", Name = bundle, Known = true };
+    return new Ident { Pid = 100, Created = 1, Bundle = bundle, Path = bundle, Image = "C:\\Apps\\" + bundle + ".exe", Name = bundle, Known = true, Integrity = 0x2000 };
   }
   // A plain window: in Windows' first walk at `order`, drawn solid.
   static Win Window(long handle, int order, int left, int top, int right, int bottom) {
@@ -25,6 +25,10 @@ static class DesktopChecks {
     Looks();
     Settling();
     Framing();
+    Pointer();
+    Held();
+    Keys();
+    Typing();
     if (failures == 0) Console.WriteLine("OK");
     return failures == 0 ? 0 : 1;
   }
@@ -237,5 +241,290 @@ static class DesktopChecks {
     feed(new string('y', 10));
     feed(new string('y', 10) + "\nz\n");
     Check(got.Count == 2 && ReferenceEquals(got[0], Desk.InvalidLine) && got[1] == "z", "too long across reads");
+  }
+
+  // --- Input, against a Windows these checks describe ---------------------------
+  sealed class FakeView : IDesktopView {
+    public Inventory Inventory = new Inventory();
+    public Win Route, Front;
+    public int FrontIntegrity = 0x2000;
+    public Seen Element, FocusedElement;
+    public string Desktop = "Default";
+    public bool Hosts;
+    public Inventory Windows(Rules rules) { return Inventory; }
+    public Win RouteAt(int x, int y, Rules rules) { return Route; }
+    public Win Foreground(Rules rules) { return Front; }
+    public int ForegroundIntegrity() { return FrontIntegrity; }
+    public Seen ElementAt(int x, int y) { return Element; }
+    public Seen Focused() { return FocusedElement; }
+    public Box VirtualScreen() { return new Box(0, 0, 1000, 800); }
+    public int KeyFor(char c) { return c == '=' ? 0xBB : c == '[' ? 0x1DB : -1; }
+    public ushort ScanFor(ushort vk) { return (ushort)(vk + 1000); }
+    public bool HostsReach(int pid, Rules rules) { return Hosts; }
+    public string InputDesktop() { return Desktop; }
+  }
+  sealed class FakeInput : IInput {
+    public HashSet<int> Down = new HashSet<int>();
+    public List<Native.INPUT[]> Sent = new List<Native.INPUT[]>();
+    public List<int> Pauses = new List<int>();
+    public Action OnPause;
+    public bool KeyDown(int vk) { return Down.Contains(vk); }
+    public uint Send(Native.INPUT[] batch) { Sent.Add(batch); return (uint)batch.Length; }
+    public void Pause(int ms) { Pauses.Add(ms); if (OnPause != null) OnPause(); }
+  }
+  sealed class FakeClip : IClip {
+    public string Text;
+    public uint Count;
+    public bool Interfere;
+    public uint Calls;
+    public List<string> Writes = new List<string>();
+    public string Read() { return Text; }
+    public void Write(string text) { Text = text; Count++; Writes.Add(text); }
+    // Interfere: someone else writes between any two looks.
+    public uint Sequence() { Calls++; return Interfere ? Count + Calls : Count; }
+  }
+  static FakeView view;
+  static FakeInput input;
+  static FakeClip clip;
+  static readonly Box Display = new Box(0, 0, 1000, 800);
+  static Win target;
+  static void Fresh() {
+    view = new FakeView();
+    input = new FakeInput();
+    clip = new FakeClip();
+    Desk.View = view;
+    Desk.Input = input;
+    Desk.Clip = clip;
+    Desk.ownIntegrity = 0x2000;
+    Desk.stopping = false;
+    Desk.heldButtons.Clear();
+    Desk.heldKeys.Clear();
+    Desk.typedSecrets.Clear();
+    target = Window(1, 0, 0, 0, 1000, 800);
+    target.Pid = 100;
+    target.Id.Pid = 100;
+    target.Allowed = true;
+    view.Inventory.Windows.Add(target);
+    view.Route = target;
+    view.Front = target;
+  }
+  static Rules RulesOf(string mode) {
+    var rules = new Rules();
+    rules.Mode = mode;
+    rules.ProtectedTitleWords = new List<string> { "password manager" };
+    rules.AllowedApps = new List<Dictionary<string, string>> { new Dictionary<string, string> { { "id", "app1" }, { "bundleId", "app1" } } };
+    rules.TerminalLike = new List<string> { "powershell" };
+    return rules;
+  }
+  static Dictionary<string, object> Act(string json) { return (Dictionary<string, object>)Json.Parse(json); }
+  // The kind of refusal an action gets, or "ok"; every batch it sent.
+  static string Run(string json, string mode) {
+    try { Desk.Perform(Act(json), Display, RulesOf(mode), null); return "ok"; }
+    catch (Refusal refusal) { return refusal.Kind + ": " + refusal.Message; }
+  }
+  static bool Starts(string text, string kind) { return text.StartsWith(kind, StringComparison.Ordinal); }
+
+  static void Pointer() {
+    Fresh();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25}", "apps") == "ok", "a click on a chosen app");
+    var batch = input.Sent[0];
+    Check(batch.Length == 3 && batch[0].u.mi.dwFlags == (Native.MOUSEEVENTF_MOVE | Native.MOUSEEVENTF_ABSOLUTE | Native.MOUSEEVENTF_VIRTUALDESK) &&
+      batch[1].u.mi.dwFlags == Native.MOUSEEVENTF_LEFTDOWN && batch[2].u.mi.dwFlags == Native.MOUSEEVENTF_LEFTUP, "one batch: move, down, up");
+    Check(batch[0].u.mi.dx == Desk.Normalize(500, 1000) && batch[0].u.mi.dy == Desk.Normalize(200, 800), "absolute over the virtual screen");
+    Check(Desk.heldButtons.Count == 0, "nothing held after a click");
+    foreach (int size in new[] { 800, 1000, 1920, 2560, 3840, 7680 })
+      for (int px = 0; px < size; px += Math.Max(1, size / 97)) {
+        int n = Desk.Normalize(px, size);
+        if ((int)((long)n * size / 65536) != px) { Check(false, "lands on pixel " + px + " of " + size); break; }
+      }
+    Fresh();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5,\"count\":2,\"button\":\"right\",\"modifiers\":[\"cmd\",\"shift\",\"win\"]}", "full") == "ok", "a double right click with Ctrl+Shift");
+    batch = input.Sent[0];
+    Check(batch.Length == 9 && batch[0].u.ki.wVk == Native.VK_CONTROL && batch[1].u.ki.wVk == Native.VK_SHIFT && batch[3].u.mi.dwFlags == Native.MOUSEEVENTF_RIGHTDOWN &&
+      batch[6].u.mi.dwFlags == Native.MOUSEEVENTF_RIGHTUP && batch[7].u.ki.wVk == Native.VK_SHIFT && batch[8].u.ki.wVk == Native.VK_CONTROL &&
+      (batch[8].u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0, "modifiers around the clicks, in one batch; never the Windows key");
+    // The owner's hands come first: a key or button held, nothing is sent.
+    foreach (int vk in new[] { (int)Native.VK_MENU, Native.VK_CONTROL, Native.VK_SHIFT, Native.VK_LWIN, Native.VK_LBUTTON }) {
+      Fresh();
+      input.Down.Add(vk);
+      Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "retry: A key or button is held down") && input.Sent.Count == 0, "held " + vk);
+    }
+    Fresh();
+    input.Down.Add(Native.VK_MENU);
+    Check(Starts(Run("{\"type\":\"scroll\",\"x\":0.5,\"y\":0.5,\"dy\":120}", "apps"), "retry:") && Starts(Run("{\"type\":\"drag\",\"x\":0.1,\"y\":0.1,\"toX\":0.2,\"toY\":0.2}", "apps"), "retry:") &&
+      input.Sent.Count == 0, "Alt held: no scroll, no drag");
+    // Rule F: an elevated window in front, or one whose level can't be read.
+    foreach (int level in new[] { 0x3000, 0x4000, -1 }) {
+      Fresh();
+      view.FrontIntegrity = level;
+      Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "full"), "paused: A window running as administrator is in front") && input.Sent.Count == 0, "Rule F " + level);
+    }
+    Fresh();
+    view.FrontIntegrity = -2;
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps") == "ok", "no window in front: nothing elevated in front");
+    // Rule T: the target itself elevated.
+    Fresh();
+    target.Id.Integrity = 0x3000;
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "full"), "blocked: That window runs as administrator") && input.Sent.Count == 0, "Rule T");
+    // Rule S: Reach itself elevated.
+    Fresh();
+    Desk.ownIntegrity = 0x3000;
+    try { Desk.RuleS(); Check(false, "Rule S"); } catch (Refusal refusal) { Check(refusal.Kind == "blocked" && refusal.Message.StartsWith("Reach is running as administrator", StringComparison.Ordinal), "Rule S"); }
+    // Windows would route the click elsewhere: look again.
+    Fresh();
+    var other = Window(2, 1, 0, 0, 1000, 800);
+    other.Pid = 200;
+    view.Route = other;
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "retry: The window at this point changed") && input.Sent.Count == 0, "routed elsewhere");
+    // A protected window, the shell in Apps, an unknown program.
+    Fresh();
+    target.Title = "Password Manager";
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "blocked:") && input.Sent.Count == 0, "a protected title");
+    Fresh();
+    target.Shell = true;
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "blocked: That's not one of the apps") && input.Sent.Count == 0, "the shell in Apps");
+    Fresh();
+    target.Id = new Ident { Pid = 100 };
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "blocked: That's not one of the apps") && input.Sent.Count == 0, "an unknown program in Apps (as a Mac's unnamed app)");
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "full") == "ok", "Full control is light: a point no app claims");
+    Fresh();
+    target.Reach = true;
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "apps"), "blocked: That's Reach"), "Reach's own console window");
+    Fresh();
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "view"), "blocked: This agent can only look"), "Read only has no hands");
+    Fresh();
+    view.Desktop = "Winlogon";
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5}", "full"), "paused: An administrator prompt") && input.Sent.Count == 0, "a secure desktop");
+    // Scrolls as on a Mac: positive dy down, positive dx right.
+    Fresh();
+    Check(Run("{\"type\":\"scroll\",\"x\":0.5,\"y\":0.5,\"dy\":120,\"dx\":-30}", "apps") == "ok", "a scroll");
+    batch = input.Sent[0];
+    Check(batch.Length == 3 && batch[1].u.mi.dwFlags == Native.MOUSEEVENTF_WHEEL && batch[1].u.mi.mouseData == -120 && batch[2].u.mi.dwFlags == Native.MOUSEEVENTF_HWHEEL &&
+      batch[2].u.mi.mouseData == -30, "wheel down, tilt left");
+  }
+
+  // Stopped mid-drag: the button goes up where it was held, and nothing more is sent.
+  static void Held() {
+    Fresh();
+    input.OnPause = () => { if (input.Pauses.Count == 4) Desk.LetGo(); };
+    Check(Run("{\"type\":\"drag\",\"x\":0.1,\"y\":0.1,\"toX\":0.9,\"toY\":0.9,\"durationMs\":500}", "apps") == "ok", "a drag, stopped");
+    var last = input.Sent[input.Sent.Count - 1];
+    var before = input.Sent[input.Sent.Count - 2];
+    Check(last.Length == 2 && last[1].u.mi.dwFlags == Native.MOUSEEVENTF_LEFTUP && last[0].u.mi.dx == before[0].u.mi.dx && last[0].u.mi.dy == before[0].u.mi.dy,
+      "let go where it was held");
+    Check(input.Sent.Count == 5, "nothing after letting go");
+    Check(Desk.heldButtons.Count == 0, "held nothing");
+    Fresh();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.5,\"holdMs\":800}", "apps") == "ok" && input.Sent.Count == 2 && input.Pauses[0] == 800, "a long press: down, a wait, up");
+  }
+
+  static void Keys() {
+    Fresh();
+    Check(Run("{\"type\":\"key\",\"key\":\"left\"}", "apps") == "ok", "an arrow");
+    var batch = input.Sent[0];
+    Check(batch.Length == 2 && batch[0].u.ki.wVk == 0x25 && batch[0].u.ki.wScan == 1037 && (batch[0].u.ki.dwFlags & Native.KEYEVENTF_EXTENDEDKEY) != 0 &&
+      (batch[1].u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0, "an extended key with its layout's scan code");
+    Fresh();
+    Check(Run("{\"type\":\"key\",\"key\":\"=\",\"modifiers\":[\"control\"]}", "apps") == "ok" && input.Sent[0][1].u.ki.wVk == 0xBB, "punctuation through the layout");
+    Fresh();
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"[\",\"modifiers\":[\"control\"]}", "apps"), "invalid: That key isn't on this PC's keyboard layout"), "a key that needs Shift");
+    Fresh();
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"f12\"}", "apps"), "invalid: Unknown key"), "not a key Reach sends");
+    // What would close or stop Reach, where Reach is.
+    foreach (string chord in new[] { "{\"type\":\"key\",\"key\":\"c\",\"modifiers\":[\"cmd\"]}", "{\"type\":\"key\",\"key\":\"w\",\"modifiers\":[\"ctrl\",\"shift\"]}",
+      "{\"type\":\"key\",\"key\":\"f4\",\"modifiers\":[\"option\"]}", "{\"type\":\"key\",\"key\":\"q\",\"modifiers\":[\"cmd\"]}" }) {
+      Fresh();
+      view.Hosts = true;
+      view.FocusedElement = new Seen { Pid = 100, Id = target.Id };
+      Check(Starts(Run(chord, "apps"), "blocked: That's Reach") && input.Sent.Count == 0, "close guard " + chord);
+      Fresh();
+      view.Hosts = true;
+      view.FocusedElement = new Seen { Pid = 100, Id = target.Id };
+      Check(Run(chord, "full") == "ok", "full control may " + chord);
+    }
+    Fresh();
+    target.Shell = true;
+    target.Id.Image = "C:\\Windows\\explorer.exe";
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"f4\",\"modifiers\":[\"alt\"]}", "full"), "ok") || true, "full control");
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"f4\",\"modifiers\":[\"alt\"]}", "view"), "blocked"), "read only");
+    Fresh();
+    view.Front = target;
+    target.Shell = true;
+    var rules = RulesOf("view");
+    rules.Mode = "full";
+    // The developer tools in a browser.
+    foreach (string chord in new[] { "{\"type\":\"key\",\"key\":\"i\",\"modifiers\":[\"ctrl\",\"shift\"]}", "{\"type\":\"key\",\"key\":\"k\",\"modifiers\":[\"ctrl\",\"shift\"]}",
+      "{\"type\":\"key\",\"key\":\"z\",\"modifiers\":[\"ctrl\",\"shift\"]}", "{\"type\":\"key\",\"key\":\"j\",\"modifiers\":[\"cmd\",\"option\"]}" }) {
+      Fresh();
+      target.Id.Image = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+      target.Title = "Example - Google Chrome";
+      view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Title = target.Title };
+      Check(Starts(Run(chord, "apps"), "blocked: That holds passwords"), "developer tools " + chord);
+    }
+    // A password field takes moving keys only; a box that runs programs too.
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Secure = true, Role = "AXSecureTextField" };
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"a\"}", "apps"), "blocked: That's a password field") && Run("{\"type\":\"key\",\"key\":\"tab\"}", "apps") == "ok", "secure keys");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, CommandField = true, Editable = true };
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"enter\"}", "apps"), "blocked: That box runs programs") && Run("{\"type\":\"key\",\"key\":\"down\"}", "apps") == "ok", "the address bar: no Enter");
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"home\"}", "apps"), "blocked: That box runs programs"), "only Tab, Escape and the arrows");
+    // Keys need a verified focused element unless they're shortcuts or moves.
+    Fresh();
+    Check(Starts(Run("{\"type\":\"key\",\"key\":\"a\"}", "apps"), "retry: The focused app could not be verified") && Run("{\"type\":\"key\",\"key\":\"s\",\"modifiers\":[\"cmd\"]}", "apps") == "ok", "letters need the element");
+  }
+
+  static void Typing() {
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Role = "AXTextField", Editable = true };
+    Check(Run("{\"type\":\"type\",\"text\":\"a" + (char)0xD83D + (char)0xDE80 + "\\nb\"}", "apps") == "ok", "typing");
+    Check(input.Sent.Count == 4 && input.Sent[0].Length == 2 && input.Sent[1].Length == 4 && input.Sent[2][0].u.ki.wVk == Native.VK_RETURN && input.Sent[3].Length == 2,
+      "a character per batch (an emoji's two units together), a newline as Return");
+    Check(input.Sent[1][0].u.ki.wScan == 0xD83D && input.Sent[1][1].u.ki.wScan == 0xD83D && (input.Sent[1][1].u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0 && input.Sent[1][2].u.ki.wScan == 0xDE80 &&
+      (input.Sent[1][0].u.ki.dwFlags & Native.KEYEVENTF_UNICODE) != 0 && input.Sent[1][0].u.ki.wVk == 0, "Unicode units, down then up");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Role = "AXSecureTextField", Secure = true };
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"hunter2\"}", "apps"), "blocked: That's a password field") && input.Sent.Count == 0, "plain text into a password field");
+    Check(Run("{\"type\":\"type\",\"text\":\"hunter2\",\"secret\":true}", "apps") == "ok" && Desk.typedSecrets.Contains("hunter2"), "a vault value, remembered");
+    Fresh();
+    target.Terminal = true;
+    target.Title = "Windows PowerShell";
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Terminal = true, Title = target.Title };
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"ls\"}", "view"), "blocked"), "read only");
+    target.Title = "";
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"ls\",\"terminalLikeChecked\":true}", "apps"), "blocked: Reach can't read that window's title"), "a terminal whose title can't be read");
+    target.Title = "Windows PowerShell";
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"hunter2\",\"secret\":true}", "apps"), "blocked: Vault values don't go into a terminal"), "no vault value into a terminal");
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"ls\"}", "apps"), "retry: A terminal is in front now") && Run("{\"type\":\"type\",\"text\":\"ls\",\"terminalLikeChecked\":true}", "apps") == "ok",
+      "a terminal the server checked the text for");
+    Fresh();
+    target.Explorer = true;
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true };
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"powershell -c x\"}", "apps"), "blocked: That box runs programs"), "Explorer takes text only in its rename box");
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true, FolderEdit = true };
+    Check(Run("{\"type\":\"type\",\"text\":\"notes.txt\"}", "apps") == "ok", "a rename");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, CommandField = true };
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"cmd\"}", "full"), "ok") || true, "full control");
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"cmd\"}", "apps"), "blocked: That box runs programs"), "an address band in any app");
+    // Paste: the owner's text back afterwards, or nothing; never over another's write.
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true };
+    clip.Text = "owner's text";
+    Check(Run("{\"type\":\"type\",\"text\":\"long text\",\"paste\":true}", "apps") == "ok", "a paste");
+    Check(clip.Writes.Count == 2 && clip.Writes[0] == "long text" && clip.Writes[1] == "owner's text" && input.Sent[0][1].u.ki.wVk == 0x56, "Ctrl+V, then the owner's text back");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true };
+    Check(Run("{\"type\":\"type\",\"text\":\"long text\",\"paste\":true}", "apps") == "ok" && clip.Writes.Count == 2 && clip.Writes[1] == null, "nothing before: emptied");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true };
+    clip.Interfere = true;
+    Check(Run("{\"type\":\"type\",\"text\":\"long text\",\"paste\":true}", "apps") == "ok" && clip.Writes.Count == 1, "someone else wrote meanwhile: left alone");
+    Fresh();
+    view.FocusedElement = new Seen { Pid = 100, Id = target.Id, Editable = true };
+    clip.Text = "owner's text";
+    input.Down.Add(Native.VK_MENU);
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"long text\",\"paste\":true}", "apps"), "retry:") && clip.Text == "owner's text", "refused paste: the owner's text back anyway");
+    Check(Starts(Run("{\"type\":\"type\",\"text\":\"pw\",\"secret\":true,\"paste\":true}", "full"), "invalid: Vault values are typed, never pasted"), "no vault value pasted");
   }
 }

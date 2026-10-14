@@ -16,6 +16,20 @@
 //       Prints each pixel of a JPEG as "r,g,b", one line each.
 //   frame <window handle>
 //       Prints the window's frame as "x,y,width,height".
+//   medium <program> [arguments...]
+//       Runs a program at medium integrity (a restricted copy of this
+//       process's token: no administrators' rights) with this process's
+//       standard handles, and exits with its code. GitHub's runners run
+//       everything elevated; Reach on a PC doesn't.
+//   click <x> <y>
+//       A real left click there (brings that window to the front).
+//   buttons
+//       Prints "left down" or "left up": the left button's state now.
+//   clipboard-watch <dir> <name>
+//       Appends, on every clipboard change, "formats <names> | text <text>"
+//       (or "| empty") to <dir>\<name>.log.
+//   clipboard-set <text> | clipboard-get | clipboard-clear
+//       Sets the clipboard's text, prints it (or "(none)"), or empties it.
 using System;
 using System.Drawing;
 using System.IO;
@@ -29,6 +43,36 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+  [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, int data, UIntPtr extra);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr window);
+  [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr delete, uint restrictCount, IntPtr restrict, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int kind, IntPtr info, int size);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSidW(string sid, out IntPtr result);
+  [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessAsUserW(IntPtr token, string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags,
+    IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION information);
+  [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+  [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct STARTUPINFO {
+    public int cb;
+    public string lpReserved, lpDesktop, lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2;
+    public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
 
   [STAThread]
   static int Main(string[] args) {
@@ -42,7 +86,14 @@ static class DesktopFixture {
       Console.WriteLine(rect.Left + "," + rect.Top + "," + (rect.Right - rect.Left) + "," + (rect.Bottom - rect.Top));
       return 0;
     }
-    Console.Error.WriteLine("usage: window|sleeper|pixels|frame");
+    if (args.Length >= 2 && args[0] == "medium") return Medium(args);
+    if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]));
+    if (args.Length == 1 && args[0] == "buttons") { Console.WriteLine((GetAsyncKeyState(1) & 0x8000) != 0 ? "left down" : "left up"); return 0; }
+    if (args.Length == 3 && args[0] == "clipboard-watch") return Watch(args[1], args[2]);
+    if (args.Length == 2 && args[0] == "clipboard-set") { Clipboard.SetText(args[1]); return 0; }
+    if (args.Length == 1 && args[0] == "clipboard-get") { Console.WriteLine(Clipboard.ContainsText() ? Clipboard.GetText() : "(none)"); return 0; }
+    if (args.Length == 1 && args[0] == "clipboard-clear") { Clipboard.Clear(); return 0; }
+    Console.Error.WriteLine("usage: window|sleeper|pixels|frame|medium|click|buttons|clipboard-watch|clipboard-set|clipboard-get|clipboard-clear");
     return 2;
   }
 
@@ -83,7 +134,7 @@ static class DesktopFixture {
     form.TopMost = topmost;
     form.ShowInTaskbar = !tool;
     if (popup) form.FormBorderStyle = FormBorderStyle.None;
-    var text = new TextBox { Name = "Notes", Left = 10, Top = 10, Width = Math.Max(60, width / 2), AccessibleName = "Notes" };
+    var text = new TextBox { Name = "Notes", Left = 10, Top = 10, Width = Math.Max(60, width / 2), Height = 24, Multiline = true, AcceptsReturn = true, AccessibleName = "Notes" };
     var secret = new TextBox { Name = "Password", Left = 10, Top = 40, Width = Math.Max(60, width / 2), UseSystemPasswordChar = true, AccessibleName = "Password" };
     var button = new Button { Name = "Mark", Text = "Mark", Left = 10, Top = 70, Width = 80 };
     var list = new ListBox { Name = "Rows", Left = Math.Max(100, width / 2 + 20), Top = 10, Width = Math.Max(60, width / 2 - 40), Height = Math.Max(40, height - 100) };
@@ -104,6 +155,10 @@ static class DesktopFixture {
     MouseEventHandler down = (s, e) => form.Note((e.Button == MouseButtons.Right ? "right" : e.Clicks >= 2 ? "double" : "click") + " " + e.X + "," + e.Y);
     form.MouseDown += down;
     text.MouseDown += down;
+    MouseEventHandler up = (s, e) => form.Note("up " + e.X + "," + e.Y);
+    form.MouseUp += up;
+    text.MouseUp += up;
+    list.MouseWheel += (s, e) => form.Note("wheel " + e.Delta);
     form.KeyPreview = true;
     form.KeyDown += (s, e) => form.Note("key " + (int)e.KeyCode);
     form.Shown += (s, e) => {
@@ -117,6 +172,77 @@ static class DesktopFixture {
         ",\"title\":" + Quote(title) + ",\"notes\":" + centre(text) + ",\"password\":" + centre(secret) + ",\"button\":" + centre(button) + ",\"list\":" + centre(list) + "}");
     };
     Application.Run(form);
+    return 0;
+  }
+
+
+  // A restricted copy of this process's token: administrators deny-only, no
+  // privileges, medium integrity.
+  static int Medium(string[] args) {
+    IntPtr token, restricted, admins, medium;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x0002 | 0x0008 | 0x0001 | 0x0080, out token)) return Fail("token");
+    if (!ConvertStringSidToSidW("S-1-5-32-544", out admins) || !ConvertStringSidToSidW("S-1-16-8192", out medium)) return Fail("sid");
+    var deny = new[] { new SID_AND_ATTRIBUTES { Sid = admins, Attributes = 0 } };
+    if (!CreateRestrictedToken(token, 0x1, 1, deny, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) return Fail("restricted");
+    var label = new TOKEN_MANDATORY_LABEL { Label = new SID_AND_ATTRIBUTES { Sid = medium, Attributes = 0x20 } };
+    int size = Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + GetLengthSid(medium);
+    IntPtr buffer = Marshal.AllocHGlobal(size);
+    Marshal.StructureToPtr(label, buffer, false);
+    if (!SetTokenInformation(restricted, 25, buffer, size)) return Fail("integrity");
+    var command = new StringBuilder();
+    for (int i = 1; i < args.Length; i++) {
+      if (i > 1) command.Append(' ');
+      command.Append(args[i].IndexOf(' ') >= 0 || args[i].Length == 0 ? "\"" + args[i] + "\"" : args[i]);
+    }
+    var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), dwFlags = 0x100, hStdInput = GetStdHandle(-10), hStdOutput = GetStdHandle(-11), hStdError = GetStdHandle(-12) };
+    PROCESS_INFORMATION started;
+    if (!CreateProcessAsUserW(restricted, null, command, IntPtr.Zero, IntPtr.Zero, true, 0, IntPtr.Zero, null, ref startup, out started)) return Fail("start");
+    WaitForSingleObject(started.hProcess, 0xFFFFFFFF);
+    uint code;
+    GetExitCodeProcess(started.hProcess, out code);
+    return (int)code;
+  }
+  static int Fail(string step) { Console.Error.WriteLine("error " + step + " " + Marshal.GetLastWin32Error()); return 3; }
+
+  static int Click(int x, int y) {
+    SetCursorPos(x, y);
+    mouse_event(0x2, 0, 0, 0, UIntPtr.Zero);
+    mouse_event(0x4, 0, 0, 0, UIntPtr.Zero);
+    return 0;
+  }
+
+  sealed class Watcher : Form {
+    readonly string log;
+    public Watcher(string log) { this.log = log; }
+    protected override void WndProc(ref Message message) {
+      if (message.Msg == 0x031D) { // WM_CLIPBOARDUPDATE
+        var names = new StringBuilder();
+        try {
+          if (OpenClipboard(Handle)) {
+            try {
+              for (uint format = EnumClipboardFormats(0); format != 0; format = EnumClipboardFormats(format)) {
+                var name = new StringBuilder(256);
+                names.Append(GetClipboardFormatNameW(format, name, name.Capacity) > 0 ? name.ToString() : format.ToString()).Append(',');
+              }
+            } finally { CloseClipboard(); }
+          }
+        } catch (Exception) { }
+        string text = "empty";
+        try { if (Clipboard.ContainsText()) text = "text " + Clipboard.GetText(); } catch (Exception) { text = "busy"; }
+        File.AppendAllText(log, "formats " + names + " | " + text + "\n");
+      }
+      base.WndProc(ref message);
+    }
+  }
+  [DllImport("user32.dll")] static extern bool OpenClipboard(IntPtr owner);
+  [DllImport("user32.dll")] static extern bool CloseClipboard();
+  static int Watch(string dir, string name) {
+    var watcher = new Watcher(Path.Combine(dir, name + ".log")) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized, Text = "Reach clipboard watch" };
+    watcher.Load += (s, e) => {
+      AddClipboardFormatListener(watcher.Handle);
+      File.WriteAllText(Path.Combine(dir, name + ".json"), "{\"pid\":" + System.Diagnostics.Process.GetCurrentProcess().Id + "}");
+    };
+    Application.Run(watcher);
     return 0;
   }
 
