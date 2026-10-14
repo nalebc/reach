@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Info, LoaderCircle, Plus, RefreshCw, SearchCheck, Workflow, X } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ArrowLeftRight, Check, ChevronDown, ChevronUp, Info, LoaderCircle, Plus, RotateCcw, SearchCheck, Workflow, X } from "lucide-react";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import ChatSheet from "./ChatSheet";
@@ -14,6 +14,7 @@ import {
   type RelayStep,
 } from "./agent-sessions";
 import "./relays.css";
+import { shortReset } from "./usage";
 import { CONTINUE_PRIORITY, canContinue, checkContinuePriority, continueUnavailable } from "../server/agent-sessions/auto-continue.mjs";
 
 // Working across agents (docs/ACROSS_AGENTS.md): a second opinion on a reply,
@@ -53,10 +54,16 @@ export function stepWords(step: RelayStep, chain: Relay["chain"] = [], n = 0, st
 export function relayLine(relay: Relay, here: ChatRef) {
   if (relay.trigger === "usage") {
     const target = agentLabel(relay.steps[relay.next]?.agent || relay.steps[0]?.agent || "");
+    // This chat's provider alone: it continues here once its usage is back.
+    const here = relay.priority?.length === 1 ? agentLabel(relay.priority[0]) : "";
     if (relay.state === "waiting") return relay.priority
-      ? relay.holding
-        ? `Out of usage. Waiting for the first free provider: ${relay.priority.map(agentLabel).join(", ")}.`
-        : `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Continues once with the first free provider (24 hours).`
+      ? here
+        ? relay.holding
+          ? `Out of usage. Continues here when ${here} is back.`
+          : `Auto-continue: here, when ${here}'s usage is back (24 hours).`
+        : relay.holding
+          ? `Out of usage. Waiting for the first free provider: ${relay.priority.map(agentLabel).join(", ")}.`
+          : `Auto-continue: ${relay.priority.map(agentLabel).join(" → ")}. Continues once with the first free provider (24 hours).`
       : `Auto-continue in ${target} if usage runs out (24 hours).`;
     if (relay.state === "sending") return `Continuing in ${target}…`;
     if (relay.state === "done") return `Auto-continued in ${agentLabel(relay.chain.at(-1)?.agent || relay.steps[0]?.agent || "")}.`;
@@ -616,21 +623,38 @@ export function SecondOpinionButton({ onClick, labelled = false }: { onClick: ()
 }
 
 // Uses the same persisted, cancellable watch as a relay, with a usage-only trigger.
-export function AutoContinueSheet({ peer, session, health, on = null, onClose, onStarted, onOff }: {
-  peer: Peer; session: AgentSession; health: AgentHealth[];
-  // On already (armedAutoContinue): its order can change, or it turns off.
+// If usage runs out (Oct 14, as the ChatGPT app lays a choice out): two icon
+// rows, where the work goes on. Continue here: this chat waits for its own
+// usage and carries on in place. Switch provider: the first one free takes
+// it (this chat included), in an order of logo rows. One white pill.
+export function AutoContinueSheet({ peer, session, health, logos = {}, on = null, onClose, onStarted, onOff }: {
+  peer: Peer; session: AgentSession; health: AgentHealth[]; logos?: AgentLogos;
+  // On already (armedAutoContinue): its choice can change, or it turns off.
   on?: Relay | null;
   onClose: () => void; onStarted: (started: RelayStarted) => void;
-  // The one that was on is off (turned off, or replaced by a new order).
+  // The one that was on is off (turned off, or replaced by a new choice).
   onOff?: (relay: Relay) => void;
 }) {
   const storageKey = `reach-continue-priority:${peer.id}`;
-  // On: its own order first. Off: the order remembered on this device.
-  const first = () => {
+  const modeKey = `reach-continue-mode:${peer.id}`;
+  // The switching order remembered on this device.
+  const remembered = () => {
     try {
-      return checkContinuePriority(on?.priority?.length ? on.priority : JSON.parse(localStorage.getItem(storageKey) || "null"));
+      const saved = checkContinuePriority(JSON.parse(localStorage.getItem(storageKey) || "null"));
+      return saved.length > 1 ? saved : null;
     } catch { return null; }
   };
+  // On: its own order first (when it switches). Off: the one remembered.
+  const first = () => (on?.priority && on.priority.length > 1 ? on.priority : remembered());
+  const [mode, setMode] = useState<"here" | "switch">(() => {
+    if (on?.priority) return on.priority.length > 1 ? "switch" : "here";
+    try {
+      const saved = localStorage.getItem(modeKey);
+      if (saved === "here" || saved === "switch") return saved;
+    } catch { /* private browser */ }
+    // An order saved before there was a choice: it switched.
+    return remembered() ? "switch" : "here";
+  });
   const [order, setOrder] = useState<string[]>(() => {
     const saved = first();
     return saved ? [...saved, ...CONTINUE_PRIORITY.filter((a) => !saved.includes(a))] : [...CONTINUE_PRIORITY];
@@ -639,12 +663,16 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     const saved = first();
     return !saved ? [...CONTINUE_PRIORITY] : saved.includes(session.agent) ? saved : [...saved, session.agent];
   });
-  const priority = order.filter((a) => included.includes(a));
-  // Out of usage or signed out now is fine: the first one back takes it.
-  const ready = priority.some((a) => a !== session.agent && canContinue(a));
+  const switching = order.filter((a) => included.includes(a));
+  const priority = mode === "here" ? [session.agent] : switching;
+  // Switching needs another provider Reach can continue in; out of usage or
+  // signed out now is fine: the first one back takes it.
+  const ready = mode === "here" || switching.some((a) => a !== session.agent && canContinue(a));
   const changed = !!on && priority.join() !== (on.priority || []).join();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const mine = health.find((h) => h.agent === session.agent);
+  const back = mine?.resetsAt ? shortReset(mine.resetsAt) : "";
   const reorder = (index: number, offset: number) => setOrder((previous) => {
     const next = [...previous];
     [next[index], next[index + offset]] = [next[index + offset], next[index]];
@@ -654,7 +682,10 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     const started = await startRelay(peer, {
       from: { agent: session.agent, id: session.id }, priority, trigger: "usage",
     });
-    try { localStorage.setItem(storageKey, JSON.stringify(priority)); } catch { /* private browser */ }
+    try {
+      localStorage.setItem(modeKey, mode);
+      if (mode === "switch") localStorage.setItem(storageKey, JSON.stringify(priority));
+    } catch { /* private browser */ }
     onStarted(started);
   };
   const enable = async () => {
@@ -667,7 +698,7 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
       setBusy(false);
     }
   };
-  // A new order: the one on goes, one with the new order takes its place
+  // A new choice: the one on goes, one with the new choice takes its place
   // (Reach keeps one waiting per chat). Off in between, it says so.
   const save = async () => {
     if (!on) return;
@@ -702,48 +733,67 @@ export function AutoContinueSheet({ peer, session, health, on = null, onClose, o
     }
   };
   const until = on && new Date(on.createdAt + 24 * 60 * 60 * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  const choice = (value: "here" | "switch", icon: ReactNode, title: string, line: string) => (
+    <button type="button" role="radio" aria-checked={mode === value} className={`continue-choice${mode === value ? " on" : ""}`}
+      disabled={busy} onClick={() => setMode(value)}>
+      <span className="continue-icon" aria-hidden="true">{icon}</span>
+      <span className="continue-text"><strong>{title}</strong><small>{line}</small></span>
+      <Check className="continue-tick" size={20} strokeWidth={2.4} aria-hidden="true" />
+    </button>
+  );
   // Named as its row in the chat's menu: by when it acts.
-  return <ChatSheet title="If usage runs out" className="relay-sheet reach-native" onClose={onClose}>
-    {on ? (
-      <div className="continue-on">
-        <RefreshCw size={18} aria-hidden />
+  return <ChatSheet title="If usage runs out" className="relay-sheet continue-sheet" onClose={onClose}>
+    {on && (
+      <p className="continue-on" role="status">
+        <span className="continue-dot" aria-hidden="true" />
         <span><strong>On</strong><small>Until {until}</small></span>
-      </div>
-    ) : (
-      <p className="relay-say">When usage runs out, continue with the first free provider, with the conversation history. If none is free, it waits: the first one back takes the work, this one included. If several are free, this order decides.</p>
+      </p>
     )}
-    <ol className="continue-priority" aria-label="Provider priority">
-      {order.map((agent, index) => {
-        const unavailable = continueUnavailable(agent, health);
-        const current = agent === session.agent;
-        return <li key={agent}>
-          <label>
-            <input type="checkbox" checked={included.includes(agent)} disabled={busy || current}
-              aria-label={`Use ${agentLabel(agent)}`}
-              onChange={(e) => setIncluded((list) => e.target.checked ? [...list, agent] : list.filter((a) => a !== agent))} />
-            <span><strong>{agentLabel(agent)}</strong><small>{current ? "Current provider · waits" : !canContinue(agent) ? `${unavailable} · skipped` : unavailable ? `${unavailable} · waits` : "Available"}</small></span>
-          </label>
-          <button aria-label={`Move ${agentLabel(agent)} up`} disabled={busy || index === 0} onClick={() => reorder(index, -1)}><ArrowUp size={16} /></button>
-          <button aria-label={`Move ${agentLabel(agent)} down`} disabled={busy || index === order.length - 1} onClick={() => reorder(index, 1)}><ArrowDown size={16} /></button>
-        </li>;
-      })}
-    </ol>
-    {!on && <p className="relay-say">Watches for 24 hours. Each provider uses its own permissions and usage. OpenClaw uses its own tools and may not have access to this project. Turn it off from the chat's menu. Your order is remembered on this device.</p>}
-    {!ready && <p className="relay-problem">Select another provider Reach can continue in.</p>}
+    <div className="continue-choices" role="radiogroup" aria-label="Where it continues">
+      {choice("here", <RotateCcw size={18} />, "Continue here", `When ${agentLabel(session.agent)} is back${back ? ` · ${back}` : ""}`)}
+      {choice("switch", <ArrowLeftRight size={18} />, "Switch provider", "The first one free picks it up")}
+    </div>
+    {mode === "switch" && (
+      <>
+        <p className="continue-label">Order</p>
+        <ol className="continue-priority" aria-label="Provider priority">
+          {order.map((agent, index) => {
+            const unavailable = continueUnavailable(agent, health);
+            const current = agent === session.agent;
+            const picked = included.includes(agent);
+            return <li key={agent} className={`${picked ? "picked" : ""}${canContinue(agent) ? "" : " skipped"}`}>
+              <label>
+                <input type="checkbox" checked={picked} disabled={busy || current}
+                  aria-label={`Use ${agentLabel(agent)}`}
+                  onChange={(e) => setIncluded((list) => e.target.checked ? [...list, agent] : list.filter((a) => a !== agent))} />
+                <span className="continue-box" aria-hidden="true"><Check size={13} strokeWidth={3} /></span>
+                <AgentLogo agent={agent} logos={logos} size={26} />
+                <span className="continue-text"><strong>{agentLabel(agent)}</strong><small>{current ? "This chat · when it's back" : !canContinue(agent) ? `${unavailable} · skipped` : unavailable ? `${unavailable} · waits` : "Available"}</small></span>
+              </label>
+              <button aria-label={`Move ${agentLabel(agent)} up`} disabled={busy || index === 0} onClick={() => reorder(index, -1)}><ChevronUp size={18} /></button>
+              <button aria-label={`Move ${agentLabel(agent)} down`} disabled={busy || index === order.length - 1} onClick={() => reorder(index, 1)}><ChevronDown size={18} /></button>
+            </li>;
+          })}
+        </ol>
+        {included.includes("openclaw") && <p className="continue-note">OpenClaw uses its own tools and may not reach this project.</p>}
+      </>
+    )}
+    {!ready && <p className="relay-problem">Pick another provider Reach can continue in.</p>}
     {problem && <p className="relay-problem" role="alert">{problem}</p>}
     {!on ? (
-      <button className="relay-go" disabled={!ready || busy} onClick={() => void enable()}>
+      <button className="continue-go" disabled={!ready || busy} onClick={() => void enable()}>
         {busy ? <LoaderCircle size={16} className="spin" /> : "Turn on"}
       </button>
     ) : (
       <>
         {changed && (
-          <button className="relay-go" disabled={!ready || busy} onClick={() => void save()}>
+          <button className="continue-go" disabled={!ready || busy} onClick={() => void save()}>
             {busy ? <LoaderCircle size={16} className="spin" /> : "Save order"}
           </button>
         )}
         <button className="relay-off" disabled={busy} onClick={() => void turnOff()}>Turn off</button>
       </>
     )}
+    {!on && <p className="continue-note">Watches 24 hours. The conversation comes along.</p>}
   </ChatSheet>;
 }
