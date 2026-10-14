@@ -175,14 +175,15 @@ test("Windows set up with your account: a keyed private route and a foreground F
   // 3. A phone through Serve: account sign-in. The internet through Funnel:
   // the start page, while the pairing window is open.
   const method = await viaProxy(fake, 8443, "/api/auth/method");
-  assert.deepEqual(method.json, { method: "tailscale", eligible: true, login: "owner@example.test" });
+  // With how this Windows PC runs Reach, for the phone's hints.
+  assert.deepEqual(method.json, { method: "tailscale", eligible: true, login: "owner@example.test", command: ".\\reach.cmd" });
   const start = await viaProxy(fake, 443, "/reach-start.json");
   assert.equal(start.status, 200);
   assert.equal(start.json.product, "Reach");
   // 4. This PC's own browser (tailscaled's own-machine listener): allowed,
   // and its request says so where you approve it (owner, Oct 12).
   const self = await viaProxy(fake, 8443, "/api/auth/method", { headers: { "x-fake-from": SELF_IP } });
-  assert.deepEqual(self.json, { method: "tailscale", eligible: true, login: "owner@example.test" });
+  assert.deepEqual(self.json, { method: "tailscale", eligible: true, login: "owner@example.test", command: ".\\reach.cmd" });
   const asking = await viaProxy(fake, 8443, "/api/auth/requests", { method: "POST", headers: { "x-fake-from": SELF_IP }, body: { name: "This PC's Edge" } });
   assert.equal(asking.status, 202, asking.text);
   await until(() => /New device request:\n.*This PC's Edge[\s\S]*From this PC itself: anyone signed in to Windows here could have asked\. Approve only if you just asked from this PC's browser\./.test(reach.output()), "the request, marked");
