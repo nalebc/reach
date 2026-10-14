@@ -262,6 +262,8 @@ test("when several come back at once, the order decides; this chat's own provide
   await h.relays.check();
   assert.equal(h.moves.length, 0);
   assert.deepEqual(h.sends.map(s => [s.agent, s.id]), [["codex", "original"]]);
+  h.pages.codex.items.push({ id: "go-on", role: "user", kind: "text", text: "Your usage is back. Continue where you left off." }, { id: "done", role: "assistant", kind: "text", text: "Finished." });
+  await h.relays.check();
   assert.equal(h.relays.list()[0].state, "done");
 });
 
@@ -287,7 +289,72 @@ test("this chat alone waits for its own usage and continues here, never moving t
   await h.relays.check();
   assert.equal(h.moves.length, 0);
   assert.deepEqual(h.sends.map(s => [s.agent, s.id, s.body.text]), [["codex", "original", "Your usage is back. Continue where you left off."]]);
+  // On until that turn ends: then done.
+  assert.equal(h.relays.list()[0].state, "waiting");
+  h.pages.codex.items.push({ id: "go-on", role: "user", kind: "text", text: "Your usage is back. Continue where you left off." }, { id: "done", role: "assistant", kind: "text", text: "Finished." });
+  await h.relays.check();
   assert.equal(h.relays.list()[0].state, "done");
+});
+
+// Oct 14: Claude's sign-in lapses while Claude Code isn't running, so its
+// meters can't be read after the reset; the reset time it gave says back.
+test("continuing here goes by the limit's own reset time when meters can't be read, and holds again if still out", async t => {
+  const h = priorityStage(t, { priority: ["claude"], source: "claude" });
+  const claude = h.health.find(x => x.agent === "claude");
+  Object.assign(claude, { usable: false, resetsAt: 5000, usage: { available: true, windows: [{ usedPercent: 100, resetsAt: 5000 }] } });
+  await h.relays.start(h.body);
+  h.limit("claude");
+  await h.settle();
+  assert.equal(h.relays.list()[0].holding, true);
+  // Reset passed, sign-in lapsed: usage unknown, meters unavailable.
+  Object.assign(claude, { usable: undefined, resetsAt: undefined, usage: { available: false, windows: [] } });
+  // Another provider with unknown usage is never moved into.
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.deepEqual([h.moves.length, h.sends.length], [0, 1]);
+  assert.equal(h.sends[0].agent, "claude");
+  assert.equal(h.relays.list()[0].state, "waiting");
+  // That turn hit the limit again: held again, not dropped.
+  h.pages.claude.items.push({ id: "go-on", role: "user", kind: "text", text: "Your usage is back. Continue where you left off." }, { id: "limit-2", kind: "error", role: "system", text: "You've hit your usage limit." });
+  Object.assign(claude, { usable: false, resetsAt: 9e9, usage: { available: true, windows: [{ usedPercent: 100, resetsAt: 9e9 }] } });
+  await h.settle();
+  assert.equal(h.relays.list()[0].holding, true);
+  assert.equal(h.sends.length, 1);
+});
+
+test("continued here and left on a question for a day, it ends quietly", async t => {
+  const notes = [];
+  const h = priorityStage(t, { priority: ["codex"], notify: (n) => notes.push(n) });
+  for (const x of h.health) x.usable = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  h.health.find(x => x.agent === "codex").usable = true;
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.equal(h.sends.length, 1);
+  h.pages.codex.items.push({ id: "go-on", role: "user", kind: "text", text: "Your usage is back. Continue where you left off." }, { id: "ask", role: "assistant", kind: "text", text: "Which one?", questions: [{ question: "Which one?" }] });
+  await h.relays.check();
+  assert.equal(h.relays.list()[0].state, "waiting");
+  h.advance(WAIT_MS + 1);
+  await h.relays.check();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.relays.list()[0].state, "done");
+  assert.equal(notes.filter((n) => n.title === "Relay stopped").length, 0);
+});
+
+test("unknown usage never continues here before its reset time", async t => {
+  const h = priorityStage(t, { priority: ["claude"], source: "claude" });
+  const claude = h.health.find(x => x.agent === "claude");
+  Object.assign(claude, { usable: false, resetsAt: 1e12, usage: { available: true, windows: [{ usedPercent: 100, resetsAt: 1e12 }] } });
+  await h.relays.start(h.body);
+  h.limit("claude");
+  await h.settle();
+  Object.assign(claude, { usable: undefined, resetsAt: undefined, usage: { available: false, windows: [] } });
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.equal(h.sends.length, 0);
+  assert.equal(h.relays.list()[0].holding, true);
 });
 
 test("a held watch expires after a day and lets go when continued by hand", async t => {
