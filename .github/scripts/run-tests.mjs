@@ -56,6 +56,15 @@ export const suites = {
     "windows-helper-launch", "agent-desktop-windows-policy", "windows-agent-desktop-native",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Proof below the phone, workstream U (audit #18-#20, #22, #24): the
+    // stand-in Tailscale's own tailscale.exe and the Tailscale-mode launches
+    // on it; the first run, Ctrl+C and crash relaunch in a real console;
+    // Files' ways out, icons and drives; reach-agent's join, MCP, pipe, keep
+    // and restore, with the PowerShell commands agents are given.
+    "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
+    "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
+    // Background mode out of sight: no window from its task's programs.
+    "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the
     // choice and its reasons, the phone's Video row, and the real helper
     // (Desktop Duplication into Media Foundation) streaming this runner's
