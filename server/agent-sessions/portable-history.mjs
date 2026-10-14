@@ -1,6 +1,8 @@
-// A durable, visible transcript. Context-window compaction belongs to the
-// destination agent; transferring a conversation must not shorten its archive.
+// A durable, visible transcript. Large transfers keep the whole archive and
+// carry a separate, bounded context in the destination's compaction format.
 import { randomUUID } from 'node:crypto';
+import { codexHistoryItems } from './move.mjs';
+import { transferContext } from './transfer-context.mjs';
 export function portableMessages(items) {
   return items.map(i => {
     const role = i.role === 'user' ? 'user' : 'assistant';
@@ -20,7 +22,7 @@ export function forkNotes(items, from, max = 50_000) {
   }
   return notes;
 }
-export function codexArchive({ id = randomUUID(), cwd, items, from, name, now = Date.now() }) {
+export function codexArchive({ id = randomUUID(), cwd, items, from, name, context, archivePath, now = Date.now() }) {
   const messages = portableMessages(items);
   messages.push({ role: 'assistant', text: `Continued with Codex · earlier messages are from ${from}`, at: now, images: [] });
   const e = (type, payload, at = now) => ({ timestamp: new Date(at).toISOString(), type, payload });
@@ -40,9 +42,11 @@ export function codexArchive({ id = randomUUID(), cwd, items, from, name, now = 
     }
   }
   finish(now);
+  const working = transferContext({ items, messages, from, title: name, cwd, context, archivePath });
+  if (working) lines.push(e('compacted', { message: '', replacement_history: codexHistoryItems(working) }));
   return { id, lines };
 }
-export function claudeArchive({ id, cwd, title, items, from, version, model, gitBranch, now = Date.now() }) {
+export function claudeArchive({ id, cwd, title, items, from, version, model, gitBranch, context, archivePath, now = Date.now() }) {
   const messages = portableMessages(items);
   messages.push({ role: 'assistant', text: `Continued with Claude Code · earlier messages are from ${from}`, at: now, images: [] });
   let parentUuid = null;
@@ -56,6 +60,13 @@ export function claudeArchive({ id, cwd, title, items, from, version, model, git
     })];
     rows.push({ type: m.role, uuid, parentUuid, sessionId: id, cwd, version, gitBranch, timestamp: new Date(m.at || now).toISOString(), entrypoint: 'sdk-cli', isSidechain: false, userType: 'external', message: { role: m.role, content, ...(m.role === 'assistant' ? { id: `msg_${uuid}`, type: 'message', model: model || 'imported', stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 0 } } : {}) } });
     parentUuid = uuid;
+  }
+  const working = transferContext({ items, messages, from, title, cwd, context, archivePath });
+  if (working) {
+    const boundary = randomUUID();
+    const base = { sessionId: id, cwd, version, gitBranch, timestamp: new Date(now).toISOString(), entrypoint: 'sdk-cli', isSidechain: false, userType: 'external' };
+    rows.push({ ...base, type: 'system', subtype: 'compact_boundary', uuid: boundary, parentUuid: null, logicalParentUuid: parentUuid, content: 'Context shortened for transfer', level: 'info', compactMetadata: { trigger: 'auto' } });
+    rows.push({ ...base, type: 'user', uuid: randomUUID(), parentUuid: boundary, isCompactSummary: true, message: { role: 'user', content: working.map(t => `**${t.role === 'user' ? 'You' : from}:**\n${t.text}`).join('\n\n') } });
   }
   return rows;
 }
