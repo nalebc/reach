@@ -168,8 +168,9 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
 });
 
 // Windows refuses invited people its screen until it can leave password
-// managers out of their picture (parity audit #12): nothing offers it there.
-test("on a Windows PC nobody is invited to watch or control the screen", async () => {
+// managers out of their picture (parity audit #12): nothing offers it there,
+// and the sheet says why (found by the user journeys on Windows, Oct 14).
+test("on a Windows PC nobody is invited to watch or control the screen, and the sheet says why", async () => {
   computers();
   const pc = { ...device("Mac A", "mac-a"), platform: "win32" };
   pc.capabilities = { ...pc.capabilities, guestScreen: false };
@@ -179,7 +180,17 @@ test("on a Windows PC nobody is invited to watch or control the screen", async (
   assert.equal(access(c, "Can control"), undefined);
   assert.ok(access(c, "Can use files"), "the other roles stay");
   assert.notEqual(chosen(c), "Can watch");
+  assert.equal(
+    c.querySelector(".ivt-no-screen")?.textContent,
+    "Watching or controlling the screen isn't offered on this Windows PC yet: Reach can't hide password managers and its own windows from invited people there.",
+  );
   await view.unmount();
+  // A Mac offers both, with nothing to explain.
+  computers();
+  const mac = await render({});
+  assert.ok(access(mac.container, "Can watch") && access(mac.container, "Can control"));
+  assert.equal(mac.container.querySelector(".ivt-no-screen"), null);
+  await mac.unmount();
 });
 
 test("Custom on two computers: control, folders on each, terminal, editable, 1 day", async () => {
