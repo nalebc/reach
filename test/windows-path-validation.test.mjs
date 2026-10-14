@@ -53,3 +53,29 @@ test("validateBrowserRoot refuses drive roots, Home, its ancestors and Windows' 
   assert.equal(validateBrowserRoot("C:\\", { ...base, policy: { browser: true, preset: "full" } }), "c:\\");
   assert.equal(validateBrowserRoot("C:\\Users\\me", { ...base, policy: { browser: true, preset: "readonly" } }), "c:\\users\\me");
 });
+
+import { relative } from "../server/browser-file-boundary.mjs";
+
+test("the file broker's relative() refuses Windows escapes and awkward component names (§7.2)", () => {
+  const ok = (v) => assert.equal(relative(v, { platform: "win32" }), true, v);
+  const no = (v) => assert.equal(relative(v, { platform: "win32" }), false, v);
+  for (const v of ["notes.txt", "sub\\a.txt", "sub/a.txt", "deep\\deeper\\x"]) ok(v);
+  for (const v of [
+    "C:\\Users\\me\\x",       // drive-absolute
+    "C:x",                     // drive-relative
+    "\\\\host\\share",        // UNC
+    "..\\x",                   // parent escape
+    "sub\\..\\..\\x",         // normalises out
+    "a:stream",                // alternate data stream
+    "file.txt:$DATA",         // stream on a component
+    "CON",                     // reserved device
+    "nul.txt",                 // reserved device with extension
+    "LPT1",                    // reserved device
+    "name.",                   // trailing dot (Windows trims it)
+    "name ",                   // trailing space
+    "a\\b.\\c",               // trailing dot on an inner component
+  ]) no(v);
+  // The Mac keeps its own rule: a backslash is an ordinary (refused) character.
+  assert.equal(relative("sub\\a.txt", { platform: "darwin" }), false);
+  assert.equal(relative("sub/a.txt", { platform: "darwin" }), true);
+});

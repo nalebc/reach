@@ -2757,7 +2757,7 @@ export async function createReach(overrides = {}) {
     // Keep the original root and relative path; resolving a symbolic link here
     // would conceal it from the helper's descriptor-relative traversal.
     return browserFileOperation({ op: operation, root, path: relative,
-      ...limits, privatePaths: browserPaths() }, check, { config });
+      ...limits, privatePaths: browserPaths() }, check, { config, windowsSandbox });
   };
   agentShortcutRoutes(app, { shortcuts: agentShortcuts });
   // The Mac's own Shortcuts an agent may run: the owner's list (server/mac-shortcuts.mjs).
