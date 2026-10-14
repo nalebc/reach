@@ -745,6 +745,13 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
     const others = withoutHandover(await othersRunning(), state);
     if (others.length)
       throw Error(alreadyRunning(others, { command, started: startedOf(others) }));
+    // Windows: a Reach still starting here (its folder's lock) is said here,
+    // not in a window opened only to say it.
+    if (process.platform === "win32") {
+      await lock();
+      fs.rmSync(lockFile, { force: true });
+      locked = false;
+    }
     const app = await foreignApp();
     const { startInWindow } = await import("./stop.mjs");
     startInWindow(root, { state });

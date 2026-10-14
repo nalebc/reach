@@ -134,8 +134,10 @@ setInterval(() => {
   assert.equal(started.openedBy, "restart");
   // In the folder start gave it, never Reach's own (an update replaces that).
   assert.equal(started.cwd.toLowerCase(), state.toLowerCase());
-  // cmd may add the command it runs after the title; Reach sets its own (launch.mjs).
-  assert.match(started.title, /^Reach\b/);
+  // cmd may add the command it runs after the title, and an administrator's
+  // console puts "Administrator:" before it; Reach sets its own (launch.mjs).
+  // Agents' presets find Reach's window by the word (agent-guard.mjs mentionsReach).
+  assert.match(started.title, /^(Administrator: +)?Reach\b/);
   // Its parents, while it runs: never this process (the Reach that asked).
   const list = await windowsProcesses({ nativeDir });
   const byPid = new Map(list.map((p) => [p.pid, p]));

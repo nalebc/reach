@@ -167,13 +167,13 @@ test("the background service stops through launchd (it would come back otherwise
   assert.deepEqual(elsewhere.calls.at(-1), ["bootout", "gui/501/com.reach.companion"]);
   // Installed but stopped: started again.
   const stoppedService = launchd(false);
-  startService(ROOT, { launchctl: stoppedService.launchctl, home, uid: 501 });
+  startService(ROOT, { launchctl: stoppedService.launchctl, home, uid: 501, platform: "darwin" });
   assert.deepEqual(stoppedService.calls.at(-1), ["bootstrap", "gui/501", path.join(home, "Library/LaunchAgents/com.reach.companion.plist")]);
   fs.rmSync(home, { recursive: true, force: true });
   // An older plist that named the folder is still this folder's.
   const legacy = serviceHome(ROOT, { legacy: true });
   const again = launchd(false);
-  startService(ROOT, { launchctl: again.launchctl, home: legacy, uid: 501 });
+  startService(ROOT, { launchctl: again.launchctl, home: legacy, uid: 501, platform: "darwin" });
   assert.deepEqual(again.calls.at(-1)[0], "bootstrap");
   fs.rmSync(legacy, { recursive: true, force: true });
 });
