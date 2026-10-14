@@ -23,6 +23,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -1104,13 +1106,238 @@ static class Text {
 }
 // END PURE DESKTOP TEXT
 
+// BEGIN LINE FRAMING
+// stdin as bytes, cut at each newline (a CR before it dropped), each line
+// decoded as strict UTF-8. A line over the limit is skipped to its newline
+// and, like one that isn't UTF-8, given as `invalid`: the next one is read.
+sealed class LineFramer {
+  readonly int max;
+  readonly string invalid;
+  readonly MemoryStream line = new MemoryStream();
+  readonly UTF8Encoding utf8 = new UTF8Encoding(false, true);
+  bool skipping;
+  public LineFramer(int max, string invalid) { this.max = max; this.invalid = invalid; }
+  public void Feed(byte[] buffer, int count, Action<string> emit) {
+    int start = 0;
+    while (start < count) {
+      int end = System.Array.IndexOf(buffer, (byte)10, start, count - start);
+      int stop = end < 0 ? count : end;
+      if (!skipping) {
+        if (line.Length + (stop - start) > max) { skipping = true; line.SetLength(0); }
+        else line.Write(buffer, start, stop - start);
+      }
+      if (end < 0) return;
+      if (skipping) emit(invalid);
+      else {
+        byte[] bytes = line.ToArray();
+        int length = bytes.Length;
+        if (length > 0 && bytes[length - 1] == 13) length--;
+        string text;
+        try { text = utf8.GetString(bytes, 0, length); } catch (ArgumentException) { text = invalid; }
+        emit(text);
+      }
+      line.SetLength(0);
+      skipping = false;
+      start = end + 1;
+    }
+  }
+}
+// END LINE FRAMING
+
+// BEGIN DESKTOP MASKS
+// What a screenshot shows, decided from the windows Windows listed (§4.3):
+// no Windows call here, so tests decide it from windows they describe.
+// A process as the rules judge it (§7.1).
+sealed class Ident {
+  public int Pid;
+  public long Created;
+  public string Bundle = "", Path = "", Image = "", Name = "";
+  public bool Known, Packaged;
+  public int Integrity = -1;
+}
+// A rectangle of physical pixels of the virtual screen: [Left, Right) by [Top, Bottom).
+struct Box {
+  public int Left, Top, Right, Bottom;
+  public Box(int left, int top, int right, int bottom) { Left = left; Top = top; Right = right; Bottom = bottom; }
+  public int Width { get { return Math.Max(0, Right - Left); } }
+  public int Height { get { return Math.Max(0, Bottom - Top); } }
+  public bool Empty { get { return Right <= Left || Bottom <= Top; } }
+  public Box Intersect(Box other) { return new Box(Math.Max(Left, other.Left), Math.Max(Top, other.Top), Math.Min(Right, other.Right), Math.Min(Bottom, other.Bottom)); }
+  public bool Contains(int x, int y) { return x >= Left && x < Right && y >= Top && y < Bottom; }
+  public Box Inset(int by) { return new Box(Left + by, Top + by, Right - by, Bottom - by); }
+}
+// A set of pixels, as rectangles that don't overlap.
+sealed class PixelSet {
+  public List<Box> Boxes = new List<Box>();
+  public static PixelSet Of(Box box) { var set = new PixelSet(); set.Add(box); return set; }
+  public void Add(Box box) {
+    if (box.Empty) return;
+    var parts = new List<Box> { box };
+    foreach (var have in Boxes) {
+      var next = new List<Box>();
+      foreach (var part in parts) Cut(part, have, next);
+      parts = next;
+      if (parts.Count == 0) return;
+    }
+    Boxes.AddRange(parts);
+  }
+  public void Add(PixelSet other) { foreach (var box in other.Boxes) Add(box); }
+  public void Subtract(Box hole) {
+    if (hole.Empty) return;
+    var next = new List<Box>();
+    foreach (var box in Boxes) Cut(box, hole, next);
+    Boxes = next;
+  }
+  public PixelSet Intersect(PixelSet other) {
+    var result = new PixelSet();
+    foreach (var a in Boxes) foreach (var b in other.Boxes) { var both = a.Intersect(b); if (!both.Empty) result.Boxes.Add(both); }
+    return result;
+  }
+  public bool Contains(int x, int y) { foreach (var box in Boxes) if (box.Contains(x, y)) return true; return false; }
+  public long Area { get { long area = 0; foreach (var box in Boxes) area += (long)box.Width * box.Height; return area; } }
+  // The parts of box outside hole.
+  static void Cut(Box box, Box hole, List<Box> into) {
+    var overlap = box.Intersect(hole);
+    if (overlap.Empty) { into.Add(box); return; }
+    if (box.Top < overlap.Top) into.Add(new Box(box.Left, box.Top, box.Right, overlap.Top));
+    if (overlap.Bottom < box.Bottom) into.Add(new Box(box.Left, overlap.Bottom, box.Right, box.Bottom));
+    if (box.Left < overlap.Left) into.Add(new Box(box.Left, overlap.Top, overlap.Left, overlap.Bottom));
+    if (overlap.Right < box.Right) into.Add(new Box(overlap.Right, overlap.Top, box.Right, overlap.Bottom));
+  }
+}
+// One top-level window as it was read, and what was decided about it.
+sealed class Win {
+  public long Handle, Owner;
+  public string Class = "";
+  public int Pid;
+  public Ident Id;
+  public bool Visible, Iconic, Cloaked, HasRegion, InL1, InL2, FrameRead, LayeredRead, TitleRead = true;
+  public int L1Index = int.MaxValue;
+  public Box Frame;
+  public uint ExStyle, LayeredFlags;
+  public byte Alpha = 255;
+  public int Backdrop = -1;   // DWMWA_SYSTEMBACKDROP_TYPE; -1 when Windows doesn't have it
+  public double Scale = 1;    // its DPI over 96
+  public string Title = "";
+  // Top: above every desktop window (topmost, the shell, immersive, or found
+  // only by the second walk). Shell: a system surface. Overlay: draws other
+  // windows' content (Task View, Alt+Tab, Snap Assist, thumbnails).
+  public bool Top, Shell, Overlay, Explorer, Terminal, Reach, Excluded, Allowed;
+  public string Reason;
+  // Draws pixels: visible, not cloaked, not minimized, not fully transparent.
+  public bool Shows { get { return Visible && !Cloaked && !Iconic && !(LayeredRead && (LayeredFlags & Native.LWA_ALPHA) != 0 && Alpha == 0); } }
+  public string Key {
+    get {
+      return string.Join("|", new object[] { Handle, Frame.Left, Frame.Top, Frame.Right, Frame.Bottom, Visible, Cloaked, Iconic, ExStyle, Title, Pid });
+    }
+  }
+  // Drawn solid: nothing behind it shows through (§4.3 step 5). A window made
+  // see-through in a way Windows doesn't report (blur behind with per-pixel
+  // alpha, an undocumented accent) can't be told apart: the residual §15 notes.
+  public bool Opaque {
+    get {
+      if (!Shows || Id == null || !Id.Known) return false;
+      if ((ExStyle & (Native.WS_EX_TRANSPARENT | Native.WS_EX_NOREDIRECTIONBITMAP)) != 0) return false;
+      if ((ExStyle & Native.WS_EX_LAYERED) != 0 && !(LayeredRead && (LayeredFlags & Native.LWA_COLORKEY) == 0 && Alpha == 255)) return false;
+      if (!(Backdrop < 0 || Backdrop == 0 || Backdrop == 1 || Backdrop == 2 || Backdrop == 4)) return false;
+      return !HasRegion && !Shell;
+    }
+  }
+  // Its place in the stack: found only by the second walk, above everything;
+  // then the top band, then the desktop's windows, each in Windows' order.
+  public int Rank { get { return !InL1 ? 0 : Top ? 1 : 2; } }
+  public bool Above(Win other) { return Rank != other.Rank ? Rank < other.Rank : L1Index < other.L1Index; }
+}
+sealed class Inventory {
+  public List<Win> Windows = new List<Win>();
+  public bool Complete = true;
+  public static bool Same(Inventory a, Inventory b) {
+    if (a.Windows.Count != b.Windows.Count) return false;
+    for (int i = 0; i < a.Windows.Count; i++) if (a.Windows[i].Key != b.Windows[i].Key) return false;
+    return true;
+  }
+}
+static class Masks {
+  // What is painted black on the screen; every look's windows count (a window
+  // in any of them is handled). No looks (they never agreed, or Windows
+  // wouldn't list every window): the whole screen.
+  public static PixelSet Black(string mode, Box screen, List<Inventory> looks, bool strict, out int hidden) {
+    hidden = 0;
+    if (looks == null || looks.Count == 0 || mode == "full") return mode == "full" ? new PixelSet() : PixelSet.Of(screen);
+    var counted = new HashSet<long>();
+    if (mode == "view") {
+      var black = new PixelSet();
+      foreach (var look in looks) {
+        black.Add(View(look.Windows, screen, strict));
+        foreach (var w in look.Windows) if (w.Excluded && On(w, screen) && counted.Add(w.Handle)) hidden++;
+      }
+      return Bounded(black, screen);
+    }
+    PixelSet paint = null;
+    foreach (var look in looks) {
+      var painted = Apps(look.Windows, screen, strict);
+      paint = paint == null ? painted : paint.Intersect(painted);
+      foreach (var w in look.Windows) if (!w.Allowed && On(w, screen) && counted.Add(w.Handle)) hidden++;
+    }
+    var rest = PixelSet.Of(screen);
+    foreach (var box in paint.Boxes) rest.Subtract(box);
+    return Bounded(rest, screen);
+  }
+  // Too fragmented to trust: all of it.
+  static PixelSet Bounded(PixelSet set, Box screen) { return set.Boxes.Count > 20000 ? PixelSet.Of(screen) : set; }
+  public static bool On(Win w, Box screen) { return w.Shows && w.FrameRead && !w.Frame.Intersect(screen).Empty; }
+  // View: every closed window's whole frame, less what a solid window
+  // definitely above it covers (not while a thumbnail overlay is up, and not
+  // in strict mode). Windows 11's rounded corners keep 8 px per side black.
+  public static PixelSet View(List<Win> windows, Box screen, bool strict) {
+    var mask = new PixelSet();
+    bool overlay = windows.Exists(w => w.Overlay && On(w, screen));
+    foreach (var e in windows) {
+      if (!e.Excluded || !On(e, screen)) continue;
+      var part = PixelSet.Of(e.Frame.Intersect(screen));
+      if (!strict && !overlay)
+        foreach (var o in windows)
+          if (!ReferenceEquals(o, e) && On(o, screen) && o.Opaque && DefinitelyAbove(o, e)) part.Subtract(o.Frame.Inset((int)Math.Ceiling(8 * o.Scale)));
+      mask.Add(part);
+    }
+    return mask;
+  }
+  // Windows keeps one order only among desktop windows; a topmost window is
+  // also over every one of them.
+  static bool DefinitelyAbove(Win o, Win e) {
+    bool eDesktop = e.InL1 && !e.Top, oDesktop = o.InL1 && !o.Top;
+    if (oDesktop && eDesktop) return o.L1Index < e.L1Index;
+    return o.InL1 && (o.ExStyle & Native.WS_EX_TOPMOST) != 0 && !o.Shell && eDesktop;
+  }
+  // Apps: only the chosen apps' windows, less every window above each, every
+  // top-band window not chosen (a toast, Start, a topmost tool) wherever it
+  // is, and any closed window below one that isn't solid. While Task View,
+  // Alt+Tab or a thumbnail is up, nothing.
+  public static PixelSet Apps(List<Win> windows, Box screen, bool strict) {
+    var paint = new PixelSet();
+    if (windows.Exists(w => w.Overlay && On(w, screen))) return paint;
+    foreach (var a in windows) {
+      if (!a.Allowed || !On(a, screen)) continue;
+      var part = PixelSet.Of(a.Frame.Intersect(screen));
+      bool solid = a.Opaque && !strict;
+      foreach (var w in windows) {
+        if (ReferenceEquals(w, a) || !On(w, screen)) continue;
+        if (w.Above(a) || (w.Top && !w.Allowed) || (w.Excluded && a.Above(w) && !solid)) part.Subtract(w.Frame);
+      }
+      paint.Add(part);
+    }
+    return paint;
+  }
+}
+// END DESKTOP MASKS
+
 static partial class Desk {
   // --- The protocol -------------------------------------------------------
   // One line at a time from stdin, as raw bytes: a line over 256 KiB, or one
   // that isn't strict UTF-8, is answered "Invalid request." and the next one
   // read. Console.In is never used (it decodes with the console's code page).
   const int MaxLine = 262144;
-  static readonly string InvalidLine = new string('\0', 1);
+  public static readonly string InvalidLine = new string('\0', 1);
   static readonly BlockingCollection<string> lines = new BlockingCollection<string>(4);
   static readonly object outLock = new object();
   static Stream input;
@@ -1148,35 +1375,12 @@ static partial class Desk {
 
   static void ReadInput() {
     var buffer = new byte[65536];
-    var line = new MemoryStream();
-    var utf8 = new UTF8Encoding(false, true);
-    bool skipping = false;
+    var framer = new LineFramer(MaxLine, InvalidLine);
     try {
       while (true) {
         int count = input.Read(buffer, 0, buffer.Length);
         if (count <= 0) break;
-        int start = 0;
-        while (start < count) {
-          int end = System.Array.IndexOf(buffer, (byte)10, start, count - start);
-          int stop = end < 0 ? count : end;
-          if (!skipping) {
-            if (line.Length + (stop - start) > MaxLine) { skipping = true; line.SetLength(0); }
-            else line.Write(buffer, start, stop - start);
-          }
-          if (end < 0) break;
-          if (skipping) lines.Add(InvalidLine);
-          else {
-            byte[] bytes = line.ToArray();
-            int length = bytes.Length;
-            if (length > 0 && bytes[length - 1] == 13) length--;
-            string text;
-            try { text = utf8.GetString(bytes, 0, length); } catch (ArgumentException) { text = InvalidLine; }
-            lines.Add(text);
-          }
-          line.SetLength(0);
-          skipping = false;
-          start = end + 1;
-        }
+        framer.Feed(buffer, count, lines.Add);
       }
     } catch (Exception) {
       // The pipe broke: the same as its end.
@@ -1242,6 +1446,8 @@ static partial class Desk {
     ChooseDisplay(Json.Get(request, "displayId") ?? Json.Get(action, "displayId") ?? RememberedDisplay(action));
     switch (op) {
       case "displays": return Displays();
+      case "shot": return Shot(current, Math.Max(320, Math.Min(3840, Json.Int(request, "maxWidth") ?? 2560)));
+      case "front": return Front(current, Json.True(request, "detail"));
       default: throw new Refusal("Unknown request.", "invalid");
     }
   }
@@ -1548,6 +1754,567 @@ static partial class Desk {
     return null;
   }
 
+  // --- Who a window belongs to (§7.1) ---------------------------------------
+  // A process as the rules judge it, read fresh each time: never remembered
+  // by its id, which Windows gives to another process once it ends. A Store
+  // app (a package) by its id, only when its program lies in its package's
+  // own folder; any other program by its path, exe:<file> its bundle.
+  const string UnknownReason = "That window belongs to a program Reach can't identify. The agent leaves it alone.";
+  const string UnreadableTitleReason = "Reach can't read that window's title, so the agent leaves it alone.";
+  const string SecureDesktopReason = "An administrator prompt, the lock screen or the sign-in screen is up on the PC. The agent waits; the owner answers it at the PC.";
+
+  static Ident Identify(int pid) {
+    var id = new Ident { Pid = pid };
+    if (pid <= 0) return id;
+    IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+    if (process == IntPtr.Zero) return id;
+    try {
+      long created, ignored;
+      if (!Native.GetProcessTimes(process, out created, out ignored, out ignored, out ignored)) return id;
+      id.Created = created;
+      string image = ImagePath(process);
+      if (image == null) return id;
+      id.Image = image;
+      id.Integrity = IntegrityOf(process);
+      var package = new StringBuilder(1024);
+      uint length = (uint)package.Capacity;
+      int packaged = Native.GetPackageFullName(process, ref length, package);
+      if (packaged == 0) {
+        // In a package's context: its program must be the package's own.
+        if (!InPackage(package.ToString(), image)) return id;
+        var app = new StringBuilder(1024);
+        uint appLength = (uint)app.Capacity;
+        string aumid = Native.GetApplicationUserModelId(process, ref appLength, app) == 0 ? app.ToString() : "";
+        id.Packaged = true;
+        id.Bundle = aumid;
+        id.Path = aumid.Length > 0 ? aumid : image;
+      } else if (packaged == Native.APPMODEL_ERROR_NO_PACKAGE) {
+        id.Bundle = "exe:" + FileOf(image).ToLowerInvariant();
+        id.Path = image;
+      } else return id;
+      id.Name = Description(image);
+      id.Known = true;
+      return id;
+    } catch (Exception) {
+      return new Ident { Pid = pid };
+    } finally {
+      Native.CloseHandle(process);
+    }
+  }
+  static string ImagePath(IntPtr process) {
+    var name = new StringBuilder(32768);
+    int size = name.Capacity;
+    if (!Native.QueryFullProcessImageNameW(process, 0, name, ref size) || size <= 0) return null;
+    string path = name.ToString(0, size);
+    var full = new StringBuilder(32768);
+    int got = Native.GetLongPathNameW(path, full, full.Capacity);
+    return got > 0 && got < full.Capacity ? full.ToString(0, got) : path;
+  }
+  public static string FileOf(string path) {
+    string[] names = (path ?? "").Split('\\', '/');
+    return names[names.Length - 1];
+  }
+  // Inside a folder, by whole names, whatever their letters' case.
+  public static bool Within(string path, string folder) {
+    if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(folder)) return false;
+    string root = folder.TrimEnd('\\') + "\\";
+    return path.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+  }
+  static bool InPackage(string fullName, string image) {
+    var folder = new StringBuilder(32768);
+    uint length = (uint)folder.Capacity;
+    if (Native.GetPackagePathByFullName(fullName, ref length, folder) == 0 && Within(image, folder.ToString())) return true;
+    try {
+      // The effective folder of a package that has one (Windows 10 1903 and later).
+      folder.Length = 0;
+      length = (uint)folder.Capacity;
+      if (Native.GetPackagePathByFullName2(fullName, Native.PackagePathType_Effective, ref length, folder) == 0 && Within(image, folder.ToString())) return true;
+    } catch (EntryPointNotFoundException) { }
+    return false;
+  }
+  // A program's own name (its version resource's description), else its file's.
+  static readonly Dictionary<string, string> descriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+  static string Description(string image) {
+    string key;
+    try { key = image + "|" + File.GetLastWriteTimeUtc(image).Ticks.ToString(CultureInfo.InvariantCulture); } catch (Exception) { key = image; }
+    lock (descriptions) {
+      string known;
+      if (descriptions.TryGetValue(key, out known)) return known;
+    }
+    string name = "";
+    try { name = (System.Diagnostics.FileVersionInfo.GetVersionInfo(image).FileDescription ?? "").Trim(); } catch (Exception) { }
+    if (name.Length == 0) { name = FileOf(image); if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name.Substring(0, name.Length - 4); }
+    lock (descriptions) {
+      if (descriptions.Count > 512) descriptions.Clear();
+      descriptions[key] = name;
+    }
+    return name;
+  }
+  // The program's signer, verified by Windows from its cache only (nothing
+  // fetched), within half a second; unknown otherwise. Only asked for when the
+  // rules name publishers.
+  static readonly Dictionary<string, string> publishers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+  static string PublisherOf(string image, out bool known) {
+    known = false;
+    string key;
+    try {
+      var file = new FileInfo(image);
+      key = image + "|" + file.Length.ToString(CultureInfo.InvariantCulture) + "|" + file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+    } catch (Exception) {
+      return "";
+    }
+    lock (publishers) {
+      string cached;
+      if (publishers.TryGetValue(key, out cached)) { known = true; return cached; }
+    }
+    var check = System.Threading.Tasks.Task.Factory.StartNew(() => Signer(image));
+    if (!check.Wait(500) || check.Result == null) return "";
+    known = true;
+    lock (publishers) {
+      if (publishers.Count > 512) publishers.Clear();
+      publishers[key] = check.Result;
+    }
+    return check.Result;
+  }
+  // "" for an unsigned program; null when Windows wouldn't say.
+  static string Signer(string image) {
+    var path = Marshal.StringToHGlobalUni(image);
+    var fileInfo = new Native.WINTRUST_FILE_INFO { cbStruct = (uint)Marshal.SizeOf(typeof(Native.WINTRUST_FILE_INFO)), pcwszFilePath = path };
+    IntPtr filePointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Native.WINTRUST_FILE_INFO)));
+    try {
+      Marshal.StructureToPtr(fileInfo, filePointer, false);
+      var data = new Native.WINTRUST_DATA {
+        cbStruct = (uint)Marshal.SizeOf(typeof(Native.WINTRUST_DATA)), dwUIChoice = Native.WTD_UI_NONE, fdwRevocationChecks = Native.WTD_REVOKE_NONE,
+        dwUnionChoice = Native.WTD_CHOICE_FILE, pFile = filePointer, dwStateAction = Native.WTD_STATEACTION_VERIFY,
+        dwProvFlags = Native.WTD_CACHE_ONLY_URL_RETRIEVAL | Native.WTD_REVOCATION_CHECK_NONE,
+      };
+      Guid action = Native.WINTRUST_ACTION_GENERIC_VERIFY_V2;
+      int result = Native.WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+      data.dwStateAction = Native.WTD_STATEACTION_CLOSE;
+      Native.WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+      if (result == Native.TRUST_E_NOSIGNATURE || result == Native.TRUST_E_SUBJECT_FORM_UNKNOWN || result == Native.TRUST_E_PROVIDER_UNKNOWN) return "";
+      if (result != 0) return null;
+      var certificate = new System.Security.Cryptography.X509Certificates.X509Certificate2(System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(image));
+      return certificate.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false) ?? "";
+    } catch (Exception) {
+      return null;
+    } finally {
+      Marshal.FreeHGlobal(filePointer);
+      Marshal.FreeHGlobal(path);
+    }
+  }
+
+  // What an app may be to the agent (appReason), with Windows' checks: an
+  // identity that couldn't be verified, a publisher the rules name, and a
+  // Store app's own program by its file name.
+  static string AppVerdict(Ident id, Rules rules) {
+    if (rules.Mode == "full") return null;
+    if (id == null || !id.Known) return UnknownReason;
+    string publisher = "";
+    if (rules.ProtectedPublishers.Count > 0) {
+      bool known;
+      publisher = PublisherOf(id.Image, out known);
+      if (!known) return Policy.ProtectedReason;
+    }
+    string reason = Policy.AppReason(id.Bundle, id.Name, id.Path, rules, publisher);
+    if (reason == null && id.Packaged) reason = Policy.ProtectedApp("", "", id.Image, rules);
+    return reason;
+  }
+  static readonly string[] BrowserFiles = { "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe" };
+  static readonly string[] BrowserPackages = { "thebrowsercompany.arc_", "mozilla.firefox_", "duckduckgo.desktopbrowser_" };
+  public static bool IsBrowser(Ident id) {
+    if (id == null) return false;
+    string file = FileOf(id.Image).ToLowerInvariant(), bundle = (id.Bundle ?? "").ToLowerInvariant();
+    if (System.Array.IndexOf(BrowserFiles, file) >= 0 || System.Array.IndexOf(BrowserFiles, bundle.StartsWith("exe:", StringComparison.Ordinal) ? bundle.Substring(4) : "") >= 0) return true;
+    foreach (string package in BrowserPackages) if (bundle.StartsWith(package, StringComparison.Ordinal)) return true;
+    return false;
+  }
+
+  // --- Windows, as Windows lists them (§4.3) ----------------------------------
+  static readonly string[] TerminalClasses = { "ConsoleWindowClass", "PseudoConsoleWindow", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty" };
+  static readonly string[] OverlayClasses = { "MultitaskingViewFrame", "XamlExplorerHostIslandWindow", "TaskListThumbnailWnd", "ForegroundStaging" };
+  static readonly string[] ShellHosts = { "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "shellhost.exe", "widgets.exe",
+    "textinputhost.exe", "lockapp.exe" };
+  static string windowsFolder;
+  static string WindowsFolder() {
+    if (windowsFolder == null) windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+    return windowsFolder;
+  }
+  static bool SystemProgram(string image) {
+    return Within(image, WindowsFolder()) || Within(image, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps"));
+  }
+
+  // A window's title, read from the window itself (a captionless one too).
+  // Unreadable: the window went away while it was read.
+  static string TitleOf(IntPtr window, out bool readable) {
+    var text = new StringBuilder(1024);
+    int length = Native.InternalGetWindowText(window, text, text.Capacity);
+    readable = length > 0 || Native.IsWindow(window);
+    return length > 0 ? text.ToString(0, Math.Min(length, text.Length)) : "";
+  }
+
+  static uint ExStyleOf(IntPtr window) {
+    return IntPtr.Size == 8 ? (uint)Native.GetWindowLongPtrW(window, Native.GWL_EXSTYLE).ToInt64() : (uint)Native.GetWindowLongW(window, Native.GWL_EXSTYLE);
+  }
+
+  // One window, read: who it belongs to (an ApplicationFrameHost frame by
+  // the app inside it), where it is, how it's drawn, its title.
+  static Win Read(IntPtr handle, Dictionary<long, Ident> identities) {
+    var w = new Win { Handle = handle.ToInt64(), Class = ClassOf(handle) };
+    uint pid;
+    Native.GetWindowThreadProcessId(handle, out pid);
+    if (w.Class == "ApplicationFrameWindow") {
+      IntPtr core = Native.FindWindowExW(handle, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null);
+      uint inner = 0;
+      if (core != IntPtr.Zero) Native.GetWindowThreadProcessId(core, out inner);
+      pid = inner;
+    }
+    w.Pid = (int)pid;
+    w.Visible = Native.IsWindowVisible(handle);
+    w.Iconic = Native.IsIconic(handle);
+    int cloaked;
+    w.Cloaked = Native.DwmGetWindowAttribute(handle, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0;
+    Native.RECT frame;
+    if (Native.DwmGetWindowAttribute(handle, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out frame, Marshal.SizeOf(typeof(Native.RECT))) == 0 || Native.GetWindowRect(handle, out frame)) {
+      w.Frame = new Box(frame.Left, frame.Top, frame.Right, frame.Bottom);
+      w.FrameRead = true;
+    }
+    Native.RECT region;
+    w.HasRegion = Native.GetWindowRgnBox(handle, out region) != 0;
+    w.ExStyle = ExStyleOf(handle);
+    if ((w.ExStyle & Native.WS_EX_LAYERED) != 0) {
+      uint key, flags;
+      byte alpha;
+      w.LayeredRead = Native.GetLayeredWindowAttributes(handle, out key, out alpha, out flags);
+      if (w.LayeredRead) { w.LayeredFlags = flags; w.Alpha = (flags & Native.LWA_ALPHA) != 0 ? alpha : (byte)255; }
+    }
+    int backdrop;
+    w.Backdrop = Native.DwmGetWindowAttribute(handle, Native.DWMWA_SYSTEMBACKDROP_TYPE, out backdrop, 4) == 0 ? backdrop : -1;
+    w.Owner = Native.GetWindow(handle, Native.GW_OWNER).ToInt64();
+    try { w.Scale = Math.Max(1.0, Native.GetDpiForWindow(handle) / 96.0); } catch (EntryPointNotFoundException) { w.Scale = 1; }
+    bool readable;
+    w.Title = TitleOf(handle, out readable);
+    w.TitleRead = readable;
+    if (w.Visible && !w.Cloaked && !w.Iconic) {
+      Ident id;
+      long key = ((long)w.Pid << 32) ^ ProcessCreated(w.Pid);
+      if (!identities.TryGetValue(key, out id)) { id = Identify(w.Pid); identities[key] = id; }
+      w.Id = id;
+    } else w.Id = new Ident { Pid = w.Pid };
+    return w;
+  }
+  static long ProcessCreated(int pid) {
+    IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+    if (process == IntPtr.Zero) return 0;
+    try {
+      long created, ignored;
+      return Native.GetProcessTimes(process, out created, out ignored, out ignored, out ignored) ? created : 0;
+    } finally {
+      Native.CloseHandle(process);
+    }
+  }
+
+  // Both walks Windows offers, top to bottom; a walk that revisits a window
+  // (they moved while it ran) or passes 4096 is taken again once, then the
+  // inventory is incomplete and the picture black.
+  static bool WalkEnum(List<IntPtr> found) {
+    var seen = new HashSet<long>();
+    bool ok = true;
+    Native.EnumWindowsProc each = (window, data) => {
+      if (!seen.Add(window.ToInt64()) || found.Count >= 4096) { ok = false; return false; }
+      found.Add(window);
+      return true;
+    };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    return ok;
+  }
+  static bool WalkFind(List<IntPtr> found) {
+    var seen = new HashSet<long>();
+    IntPtr window = IntPtr.Zero;
+    while ((window = Native.FindWindowExW(IntPtr.Zero, window, null, null)) != IntPtr.Zero) {
+      if (!seen.Add(window.ToInt64()) || found.Count >= 4096) return false;
+      found.Add(window);
+    }
+    return true;
+  }
+  static Inventory TakeInventory(Rules rules, Dictionary<long, Ident> identities) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+      var first = new List<IntPtr>();
+      var second = new List<IntPtr>();
+      if (!WalkEnum(first) || !WalkFind(second)) continue;
+      var inventory = new Inventory();
+      var index = new Dictionary<long, Win>();
+      for (int i = 0; i < first.Count; i++) {
+        var w = Read(first[i], identities);
+        w.InL1 = true;
+        w.L1Index = i;
+        if (!index.ContainsKey(w.Handle)) { index[w.Handle] = w; inventory.Windows.Add(w); }
+      }
+      foreach (IntPtr handle in second) {
+        Win known;
+        if (index.TryGetValue(handle.ToInt64(), out known)) { known.InL2 = true; continue; }
+        var w = Read(handle, identities);
+        w.InL2 = true;
+        index[w.Handle] = w;
+        inventory.Windows.Add(w);
+      }
+      foreach (var w in inventory.Windows) {
+        if (w.Shows && !w.FrameRead) inventory.Complete = false;
+        Decide(w, rules, index);
+      }
+      if (inventory.Complete) return inventory;
+    }
+    return new Inventory { Complete = false };
+  }
+
+  // Explorer the app is its folder windows and what they own; every other
+  // Explorer window (the taskbar, the desktop, Start's parts) is the shell.
+  static bool ExplorerFolder(Win w, Dictionary<long, Win> index) {
+    for (int depth = 0; w != null && depth < 8; depth++) {
+      if (w.Class == "CabinetWClass") return true;
+      Win owner;
+      if (w.Owner == 0 || !index.TryGetValue(w.Owner, out owner)) return false;
+      w = owner;
+    }
+    return false;
+  }
+  static bool IsReachConsole(long handle) { return reachConsole == "classic" && reachConsoleWindow.ToInt64() == handle; }
+
+  // Every decision about one window, from what was read (§4.3 step 2, §7).
+  static void Decide(Win w, Rules rules, Dictionary<long, Win> index) {
+    var id = w.Id ?? new Ident();
+    string file = FileOf(id.Image).ToLowerInvariant();
+    bool explorer = file == "explorer.exe" && SystemProgram(id.Image);
+    w.Explorer = explorer && ExplorerFolder(w, index);
+    w.Shell = id.Known && ((explorer && !w.Explorer) || (System.Array.IndexOf(ShellHosts, file) >= 0 && SystemProgram(id.Image)));
+    w.Overlay = (explorer || w.Shell) && System.Array.IndexOf(OverlayClasses, w.Class) >= 0;
+    bool immersive = w.Class.StartsWith("Windows.UI.", StringComparison.Ordinal) || w.Class.IndexOf("Xaml", StringComparison.Ordinal) >= 0 || w.Class.IndexOf("Island", StringComparison.Ordinal) >= 0;
+    // The desktop itself (Progman, WorkerW) is the shell too, but always at
+    // the bottom: in the top band it would black out every chosen window.
+    bool desktop = explorer && (w.Class == "Progman" || w.Class == "WorkerW");
+    w.Top = !w.InL1 || (w.ExStyle & Native.WS_EX_TOPMOST) != 0 || (w.Shell && !desktop) || immersive;
+    w.Terminal = System.Array.IndexOf(TerminalClasses, w.Class) >= 0 || (id.Known && Policy.TerminalLikeApp(id.Bundle, id.Name, id.Path, rules));
+    if (rules.Mode == "full") { w.Allowed = true; return; }
+    w.Reach = IsReachConsole(w.Handle) || Policy.TitleReason(w.Title, id.Bundle, rules) == Policy.ReachReason;
+    w.Reason = Verdict(w, rules, true);
+    w.Excluded = w.Reason != null || w.Overlay;
+    w.Allowed = rules.Mode == "apps" && !w.Excluded && !w.Shell && Policy.AppReason(id.Bundle, id.Name, id.Path, rules) == null;
+  }
+  // Why a window is closed to the agent, or null. look: as a screenshot sees
+  // it (Apps' not-chosen apps aren't "closed", only left out).
+  static Rules viewRules;
+  static string Verdict(Win w, Rules rules, bool look) {
+    if (rules.Mode == "full") return null;
+    var id = w.Id ?? new Ident();
+    Rules judged = rules;
+    if (look && rules.Mode == "apps") {
+      if (viewRules == null || viewRules.HiddenApps != rules.HiddenApps) { viewRules = rules.Copy(); viewRules.Mode = "view"; }
+      judged = viewRules;
+    }
+    string reason = AppVerdict(id, judged);
+    if (reason != null) return reason;
+    if (w.Reach) return Policy.ReachReason;
+    reason = TitleVerdict(w, rules);
+    if (reason != null) return reason;
+    if ((IsBrowser(id) || w.Terminal) && (!w.TitleRead || w.Title.Length == 0)) return UnreadableTitleReason;
+    return null;
+  }
+  // A title as the rules judge it (§7.4): Settings' window is titled only
+  // "Settings", so the page it shows is part of its title (closed when that
+  // can't be read); a File Explorer window is also judged as Control Panel
+  // when it shows Control Panel or its place can't be read.
+  static string TitleVerdict(Win w, Rules rules) {
+    var id = w.Id ?? new Ident();
+    if (Policy.SettingsApp(id.Bundle)) {
+      string page = SettingsPage(new IntPtr(w.Handle));
+      if (page == null) return Policy.ProtectedReason;
+      return Policy.TitleReason(w.Title + " " + EmDash + " " + page, id.Bundle, rules);
+    }
+    string reason = Policy.TitleReason(w.Title, id.Bundle, rules);
+    if (reason != null) return reason;
+    if (w.Explorer) {
+      string place = ExplorerPlace(new IntPtr(w.Handle));
+      if (place == null || ControlPanelPlace(place)) return Policy.TitleReason(w.Title, "windows.controlpanel", rules);
+    }
+    return null;
+  }
+  static readonly string EmDash = ((char)0x2014).ToString();
+  static bool ControlPanelPlace(string place) {
+    return place.StartsWith("::{26EE0668-A00A-44D7-9371-BEB064C98683}", StringComparison.OrdinalIgnoreCase) ||
+      place.StartsWith("::{21EC2020-3AEA-1069-A2DD-08002B30309D}", StringComparison.OrdinalIgnoreCase);
+  }
+  // The page Settings shows (UI Automation): null until it can be read.
+  static string SettingsPage(IntPtr window) { return null; }
+  // Where a File Explorer window is (the shell): null until it can be read.
+  static string ExplorerPlace(IntPtr window) { return null; }
+
+  // --- A screenshot (§4.3) ------------------------------------------------------
+  // Full control: the screen as it is. View: every window closed to the agent
+  // painted black. Apps: black, with only the chosen apps' windows painted
+  // back. The windows are listed before and after the picture is taken; if
+  // anything changed meanwhile it's taken again, and after three tries, or
+  // when Windows wouldn't list them all, the whole display is black.
+  public static bool StrictMasks = false;
+  static Dictionary<string, object> Shot(Rules rules, int maxWidth) {
+    if (InputDesktopName() != "Default") throw new Refusal(SecureDesktopReason, "paused");
+    var monitor = Display();
+    var screen = new Box(monitor.Rect.Left, monitor.Rect.Top, monitor.Rect.Right, monitor.Rect.Bottom);
+    if (screen.Empty) throw new Refusal("No screen to show.", "unavailable");
+    var identities = new Dictionary<long, Ident>();
+    var looks = new List<Inventory>();
+    var frame = Settle(() => CaptureScreen(screen), () => TakeInventory(rules, identities), () => Thread.VolatileRead(ref windowRevision), rules.Mode != "full", looks, (old) => old.Dispose());
+    int hidden = 0;
+    try {
+      using (var graphics = Graphics.FromImage(frame.Picture)) {
+        if (rules.Mode != "full") {
+          var black = Masks.Black(rules.Mode, screen, frame.Settled ? looks : null, StrictMasks, out hidden);
+          foreach (var box in black.Boxes) graphics.FillRectangle(Brushes.Black, box.Left - screen.Left, box.Top - screen.Top, box.Width, box.Height);
+        }
+        DrawCursor(graphics, screen);
+      }
+      int width, height;
+      string jpeg = Jpeg(frame.Picture, maxWidth, out width, out height);
+      var result = Ok();
+      result["jpeg"] = jpeg;
+      result["width"] = width;
+      result["height"] = height;
+      result["hidden"] = hidden;
+      result["displayId"] = monitor.Id;
+      result["displayWidth"] = screen.Width;
+      result["displayHeight"] = screen.Height;
+      return result;
+    } finally {
+      frame.Picture.Dispose();
+    }
+  }
+  // The picture and the lists around it, until they agree (at most three
+  // pictures). Settled false: they never did, or a list was incomplete.
+  public sealed class Taken<T> { public T Picture; public bool Settled; }
+  public static Taken<T> Settle<T>(Func<T> capture, Func<Inventory> inventory, Func<int> revision, bool looking, List<Inventory> looks, Action<T> discard) {
+    var result = new Taken<T>();
+    if (!looking) { result.Picture = capture(); result.Settled = true; return result; }
+    for (int attempt = 0; attempt < 3; attempt++) {
+      var before = inventory();
+      int moved = revision();
+      if (attempt > 0) discard(result.Picture);
+      result.Picture = capture();
+      var after = inventory();
+      looks.Add(before);
+      looks.Add(after);
+      if (!before.Complete || !after.Complete) return result;
+      if (moved == revision() && Inventory.Same(before, after)) { result.Settled = true; return result; }
+    }
+    return result;
+  }
+  static Bitmap CaptureScreen(Box screen) {
+    var bitmap = new Bitmap(screen.Width, screen.Height, PixelFormat.Format32bppRgb);
+    try {
+      using (var graphics = Graphics.FromImage(bitmap))
+        graphics.CopyFromScreen(screen.Left, screen.Top, 0, 0, new Size(screen.Width, screen.Height), CopyPixelOperation.SourceCopy | CopyPixelOperation.CaptureBlt);
+      return bitmap;
+    } catch (Exception) {
+      bitmap.Dispose();
+      throw new Refusal("Windows won't let Reach see the screen right now. Keep the PC signed in and unlocked.", "unavailable");
+    }
+  }
+  static void DrawCursor(Graphics graphics, Box screen) {
+    var info = new Native.CURSORINFO();
+    info.cbSize = Marshal.SizeOf(typeof(Native.CURSORINFO));
+    if (!Native.GetCursorInfo(ref info) || (info.flags & Native.CURSOR_SHOWING) == 0 || info.hCursor == IntPtr.Zero) return;
+    int hotX = 0, hotY = 0;
+    Native.ICONINFO icon;
+    if (Native.GetIconInfo(info.hCursor, out icon)) {
+      hotX = (int)icon.xHotspot;
+      hotY = (int)icon.yHotspot;
+      if (icon.hbmMask != IntPtr.Zero) Native.DeleteObject(icon.hbmMask);
+      if (icon.hbmColor != IntPtr.Zero) Native.DeleteObject(icon.hbmColor);
+    }
+    IntPtr dc = graphics.GetHdc();
+    try {
+      Native.DrawIconEx(dc, info.ptScreenPos.X - screen.Left - hotX, info.ptScreenPos.Y - screen.Top - hotY, info.hCursor, 0, 0, 0, IntPtr.Zero, Native.DI_NORMAL);
+    } finally {
+      graphics.ReleaseHdc(dc);
+    }
+  }
+  // The display's own pixels, up to maxWidth wide, as a JPEG at quality 70
+  // (the Mac's compression factor 0.7), under 6 MiB.
+  static string Jpeg(Bitmap frame, int maxWidth, out int width, out int height) {
+    double scale = Math.Min(1.0, (double)maxWidth / frame.Width);
+    width = Math.Max(1, (int)Math.Round(frame.Width * scale));
+    height = Math.Max(1, (int)Math.Round(frame.Height * scale));
+    Bitmap scaled = frame;
+    if (width != frame.Width || height != frame.Height) {
+      scaled = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+      using (var graphics = Graphics.FromImage(scaled)) {
+        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+        graphics.DrawImage(frame, 0, 0, width, height);
+      }
+    }
+    try {
+      ImageCodecInfo codec = null;
+      foreach (var candidate in ImageCodecInfo.GetImageEncoders()) if (candidate.MimeType == "image/jpeg") codec = candidate;
+      if (codec == null) throw new Refusal("The screen couldn't be encoded.", "unavailable");
+      var parameters = new EncoderParameters(1);
+      parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+      using (var stream = new MemoryStream()) {
+        scaled.Save(stream, codec, parameters);
+        if (stream.Length >= 6 * 1024 * 1024) throw new Refusal("The screen couldn't be encoded.", "unavailable");
+        return Convert.ToBase64String(stream.GetBuffer(), 0, (int)stream.Length);
+      }
+    } finally {
+      if (!ReferenceEquals(scaled, frame)) scaled.Dispose();
+    }
+  }
+
+  // --- What is in front (§8.4) ---------------------------------------------------
+  // For the owner's "using X" line and for the server's check of typed text
+  // (a terminal takes commands). An app the owner hid: not even its name.
+  static Dictionary<string, object> Front(Rules rules, bool detail) {
+    IntPtr root = Native.GetAncestor(Native.GetForegroundWindow(), Native.GA_ROOT);
+    var result = Ok();
+    if (root == IntPtr.Zero) { result["app"] = ""; result["bundle"] = ""; return result; }
+    var w = Read(root, new Dictionary<long, Ident>());
+    if (w.Id == null || w.Id.Created == 0) w.Id = Identify(w.Pid);
+    var index = new Dictionary<long, Win>();
+    index[w.Handle] = w;
+    for (IntPtr owner = new IntPtr(w.Owner); owner != IntPtr.Zero && index.Count < 8; owner = Native.GetWindow(owner, Native.GW_OWNER)) {
+      var held = new Win { Handle = owner.ToInt64(), Class = ClassOf(owner), Owner = Native.GetWindow(owner, Native.GW_OWNER).ToInt64() };
+      if (index.ContainsKey(held.Handle)) break;
+      index[held.Handle] = held;
+    }
+    Decide(w, rules, index);
+    string blocked = Verdict(w, rules, false);
+    if (blocked == Policy.HiddenReason) {
+      result["app"] = ""; result["bundle"] = ""; result["title"] = ""; result["terminalLike"] = false; result["secure"] = false;
+      result["blocked"] = Policy.HiddenReason; result["path"] = ""; result["layout"] = "";
+      return result;
+    }
+    var monitor = Display();
+    var screen = monitor.Rect;
+    string layout = (screen.Right - screen.Left).ToString(CultureInfo.InvariantCulture) + "," + (screen.Bottom - screen.Top).ToString(CultureInfo.InvariantCulture);
+    if (w.FrameRead) layout += "|" + w.Frame.Left.ToString(CultureInfo.InvariantCulture) + "," + w.Frame.Top.ToString(CultureInfo.InvariantCulture) + "," +
+      w.Frame.Width.ToString(CultureInfo.InvariantCulture) + "," + w.Frame.Height.ToString(CultureInfo.InvariantCulture);
+    var id = w.Id ?? new Ident();
+    result["app"] = id.Name;
+    result["bundle"] = id.Bundle;
+    result["title"] = blocked == null ? Limit(w.Title, 200) : "";
+    result["terminalLike"] = w.Terminal;
+    result["secure"] = false;
+    result["blocked"] = blocked ?? "";
+    result["path"] = id.Path;
+    result["layout"] = Limit(layout, 2000);
+    return result;
+  }
+  public static string Limit(string text, int length) {
+    if (text == null) return "";
+    if (text.Length <= length) return text;
+    // Never half of a surrogate pair.
+    int cut = char.IsHighSurrogate(text[length - 1]) ? length - 1 : length;
+    return text.Substring(0, cut);
+  }
+
   // --- Held input (§5.4) ----------------------------------------------------
   // What this helper holds down between a press and its release: buttons (at
   // the last point it sent for them) and keys. Stopped mid-click or mid-drag,
@@ -1679,5 +2446,63 @@ static class Native {
   [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFOEX info);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplayDevicesW(string device, uint index, ref DISPLAY_DEVICE info, uint flags);
+  public const uint WS_EX_TOPMOST = 0x8, WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80, WS_EX_APPWINDOW = 0x40000, WS_EX_LAYERED = 0x80000, WS_EX_NOREDIRECTIONBITMAP = 0x200000;
+  public const int GWL_EXSTYLE = -20;
+  public const uint LWA_COLORKEY = 0x1, LWA_ALPHA = 0x2;
+  public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_SYSTEMBACKDROP_TYPE = 38;
+  public const uint GW_OWNER = 4;
+  public const int APPMODEL_ERROR_NO_PACKAGE = 15700;
+  public const int PackagePathType_Effective = 2;
+  public const uint CURSOR_SHOWING = 1, DI_NORMAL = 3;
+  public const uint WTD_UI_NONE = 2, WTD_REVOKE_NONE = 0, WTD_CHOICE_FILE = 1, WTD_STATEACTION_VERIFY = 1, WTD_STATEACTION_CLOSE = 2,
+    WTD_REVOCATION_CHECK_NONE = 0x10, WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000;
+  public const int TRUST_E_NOSIGNATURE = unchecked((int)0x800B0100), TRUST_E_SUBJECT_FORM_UNKNOWN = unchecked((int)0x800B0003), TRUST_E_PROVIDER_UNKNOWN = unchecked((int)0x800B0001);
+  public static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct CURSORINFO { public int cbSize; public uint flags; public IntPtr hCursor; public POINT ptScreenPos; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct ICONINFO { public int fIcon; public uint xHotspot, yHotspot; public IntPtr hbmMask, hbmColor; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct WINTRUST_FILE_INFO { public uint cbStruct; public IntPtr pcwszFilePath; public IntPtr hFile; public IntPtr pgKnownSubject; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct WINTRUST_DATA {
+    public uint cbStruct;
+    public IntPtr pPolicyCallbackData, pSIPClientData;
+    public uint dwUIChoice, fdwRevocationChecks, dwUnionChoice;
+    public IntPtr pFile;
+    public uint dwStateAction;
+    public IntPtr hWVTStateData, pwszURLReference;
+    public uint dwProvFlags, dwUIContext;
+    public IntPtr pSignatureSettings;
+  }
+  public delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
+
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref int size);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern int GetLongPathNameW(string shortPath, StringBuilder longPath, int size);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetApplicationUserModelId(IntPtr process, ref uint length, StringBuilder id);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetPackagePathByFullName(string fullName, ref uint length, StringBuilder path);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetPackagePathByFullName2(string fullName, int type, ref uint length, StringBuilder path);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr data);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string title);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out RECT value, int size);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+  [DllImport("user32.dll")] public static extern int GetWindowRgnBox(IntPtr window, out RECT rect);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtrW(IntPtr window, int index);
+  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr window, int index);
+  [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr window, out uint key, out byte alpha, out uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO info);
+  [DllImport("user32.dll")] public static extern bool GetIconInfo(IntPtr icon, out ICONINFO info);
+  [DllImport("user32.dll")] public static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int width, int height, int step, IntPtr brush, uint flags);
+  [DllImport("wintrust.dll", CharSet = CharSet.Unicode)] public static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref WINTRUST_DATA data);
 }
 // END NATIVE WIN32
