@@ -89,6 +89,7 @@ import { installLock, installPlan, installTerminalCommand } from "./agent-instal
 import { createAgentUpdates } from "./agent-updates.mjs";
 import { agentSource, codexServiceSource, createKeepInSync, openClawSource } from "./keep-in-sync.mjs";
 import { DesktopTerminals } from "./desktop-terminals.mjs";
+import { createWindowsTray } from "./windows-tray.mjs";
 import {
   MacTerminalWatch,
   terminalWatchHelper,
@@ -577,7 +578,10 @@ export async function createReach(overrides = {}) {
     },
   });
   // Messages from the phone waiting for their Claude app chat: listed in
-  // Reach's menu bar item, where a click opens the chat.
+  // Reach's menu bar item, where a click opens the chat (on Windows, its
+  // icon in the notification area: windowsTray below).
+  let windowsTray = null;
+  let waitingChats = [];
   if (agentSessions.onOutbox && agentSessions.waitingOnMac) {
     let listed = "[]";
     const showWaiting = () => {
@@ -585,7 +589,9 @@ export async function createReach(overrides = {}) {
       const next = JSON.stringify(chats);
       if (next === listed) return;
       listed = next;
+      waitingChats = chats;
       appThreads.waiting(chats);
+      windowsTray?.update({ waiting: chats });
     };
     agentSessions.onOutbox(showWaiting);
     showWaiting();
@@ -879,6 +885,7 @@ export async function createReach(overrides = {}) {
       if (!value) auth.restartQuietClock();
       settings.paused = value;
       atomicJson(settingsFile, settings);
+      windowsTray?.update({ paused: value });
       if (value) {
         desktopAutomation.interrupt();
         browserApprovals.cancelPending();
@@ -920,6 +927,17 @@ export async function createReach(overrides = {}) {
     void setPaused(value).catch((e) =>
       console.warn(`Reach: ${e.message}`),
     );
+  // Reach's icon in the Windows notification area, with Pause and Resume, as
+  // a Mac has its menu bar item (windows-tray.mjs). Tests never start the
+  // real helper.
+  if (overrides.windowsTray || (process.platform === "win32" && !process.env.NODE_TEST_CONTEXT))
+    server.once("listening", () => {
+      windowsTray = (overrides.windowsTray || createWindowsTray)({
+        dataDir: config.dataDir,
+        onMenu: (value) => appThreads.onMenu(value),
+      });
+      windowsTray.update({ paused, waiting: waitingChats });
+    });
   // The app in front on the Mac, from the menu bar's helper: a message
   // waiting because you're in the Claude app goes in once you leave it.
   appThreads.onFrontmost = (bundle) => {
@@ -5788,6 +5806,7 @@ export async function createReach(overrides = {}) {
       desktopAutomation.close();
       stopInterfaceWatch();
       restarts.close();
+      windowsTray?.stop();
       reachUpdates.close?.();
       notifications.close();
       openClawWatch.close();
