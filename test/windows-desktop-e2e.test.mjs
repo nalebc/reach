@@ -166,7 +166,14 @@ test("Windows: the live screen streams, a click and typing reach a window, and P
     y: (boxY - primary.y) / Math.max(1, primary.height - 1),
   };
   note({ click: at });
-  const probed = await send({ type: "probe", ...at });
+  // UI Automation starts asynchronously and each probe is deliberately
+  // bounded so it cannot hold up an owner's click. Wait for this fixture's
+  // provider to answer; every attempt remains a read, with no click or typing.
+  let probed;
+  await until(async () => {
+    probed = await send({ type: "probe", ...at });
+    return probed.field === true;
+  }, "the text field's UI Automation provider", 15000);
   note({ probe: probed });
   assert.equal(probed.field, true, `the Windows field is detected before a click: ${JSON.stringify(probed)}`);
   assert.equal(probed.secure, false);
