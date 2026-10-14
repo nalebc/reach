@@ -257,6 +257,12 @@ test("a PC that won't run the helper Reach built is told why, from Smart App Con
   assert.equal(swapped.spawned.length, 0, "a changed helper is never spawned");
 });
 
+test("the Windows invitation picker starts its real utility helper with view rules", async t => {
+  const world = windowsHelperWorld(t, { replies: { catalog: () => ({ ok: true, apps: [] }) } });
+  assert.deepEqual(await world.desktop.catalog(), []);
+  assert.equal(world.spawned.length, 1);
+});
+
 test("a Windows helper's first answer may take a cold start; it then answers within the usual time, and is given 1.5 s to let go when stopped", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const child = new EventEmitter(), writes = [], kills = [];

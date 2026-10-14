@@ -120,7 +120,8 @@ test("Windows agents join with each preset, use real screen and file helpers, an
     const joined = admitAgent(reach.auth, created.body.invitation, { nodeId: "agent", userId: "", tagged: true, validUntil: Date.now() + 600000 });
     const api = async (route, method = "GET", body) => {
       const result = await request(route, { token: joined.token, node: "agent", method, body });
-      if (result.status >= 400) throw Object.assign(Error(result.body?.error || `HTTP ${result.status}`), { status: result.status });
+      if (result.status >= 400) throw Object.assign(Error(result.body?.error || `HTTP ${result.status}`), { status: result.status,
+        kind: result.body?.kind, retryInMs: result.body?.retryInMs });
       return result.body;
     };
     const access = await api("/api/browser");
@@ -143,7 +144,10 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   await tool("full", "reach_act", { type: "type", text: "café 日本", describe: false });
   await until(() => log().includes("café 日本"), "the typed text in the fixture");
   await tool("apps", "reach_screenshot");
-  await assert.rejects(tool("apps", "reach_act", { type: "click", ...at(target.password), describe: false }), e => e.status === 403);
+  await assert.rejects(until(async () => {
+    try { await tool("apps", "reach_act", { type: "click", ...at(target.password), describe: false }); return true; }
+    catch (error) { if (error.kind === "busy") return false; throw error; }
+  }, "the full agent to release its input lease"), e => e.status === 403);
   const file = await tool("files", "reach_read_file", { root: 0, path: "brief.txt" });
   assert.equal(file.text, "A synthetic project brief");
   await assert.rejects(tool("files", "reach_read_file", { root: 0, path: ".ssh/key" }), e => e.status === 403);

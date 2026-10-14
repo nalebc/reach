@@ -1483,7 +1483,7 @@ static class NtFiles {
     // only the checked handle and explicitly walk existing descendants.
     // https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
     return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE,
-      FILE_OPEN, 0x02000000, 0);
+      FILE_OPEN, 0x02000000 | SYNCHRONIZE, 0);
   }
 
   // Open `name` relative to `parent`, following no reparse point. A reparse in

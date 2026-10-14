@@ -442,6 +442,10 @@ export function createAgentDesktop(config, {
   // whose security won't run it is told why, from Windows' own logs.
   let rebuilt = false;
   const startWindows = async (rules) => {
+    // The owner's app picker starts a utility helper without a client policy.
+    // Windows still needs a valid initial rules handshake; view rules let it
+    // enumerate apps without enabling input or dereferencing a missing mode.
+    rules ||= nativeRules({ preset: "readonly" }, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
     if (!windowsHelper) throw Object.assign(fail(503, helpersOff || "Reach couldn't prepare its agent helper on this Windows PC."), { permanent: true });
     if ((await launch.smartAppControl()) === 1) throw Object.assign(fail(503, SMART_APP_CONTROL_REFUSAL), { permanent: true });
     for (;;) {
