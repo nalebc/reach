@@ -29,6 +29,12 @@ export const suites = {
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
+    // The user journeys, workstream J: the built phone interface in headless
+    // Chrome against a real first install of Reach, page by page, ending in
+    // the same visible result as on a Mac. What needs the PC's desktop (its
+    // screen, input, windows) runs with REACH_TEST_WINDOWS_DESKTOP only.
+    "journeys/home", "journeys/terminals", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
+    "journeys/access", "journeys/pause",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
@@ -56,6 +62,15 @@ export const suites = {
     "windows-helper-launch", "agent-desktop-windows-policy", "windows-agent-desktop-native",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // Proof below the phone, workstream U (audit #18-#20, #22, #24): the
+    // stand-in Tailscale's own tailscale.exe and the Tailscale-mode launches
+    // on it; the first run, Ctrl+C and crash relaunch in a real console;
+    // Files' ways out, icons and drives; reach-agent's join, MCP, pipe, keep
+    // and restore, with the PowerShell commands agents are given.
+    "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
+    "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
+    // Background mode out of sight: no window from its task's programs.
+    "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the
     // choice and its reasons, the phone's Video row, and the real helper
     // (Desktop Duplication into Media Foundation) streaming this runner's
@@ -65,6 +80,13 @@ export const suites = {
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
+    // Claude Code's permission prompts and mode switches answered from the
+    // phone on Windows, workstream H: the named pipe, the exec-form hook, the
+    // Node mode hook and the strict pipe-owner check (the mocked parts run
+    // here; the real pipe-owner check and the end-to-end run with Claude Code
+    // itself are gated on REACH_TEST_WINDOWS_DESKTOP, so they skip in this
+    // lane and run in windows-validation).
+    "windows-claude-hooks", "windows-claude-hooks-e2e",
     // Windows conveniences, workstream W: the owner's own shell in Reach's
     // terminals, drives attached later, the launcher's name on the phone.
     "windows-shell", "file-roots", "connect-states-ui",
@@ -98,6 +120,8 @@ export const suites = {
     // (REACH_TEST_WINDOWS_DESKTOP=1, CI=true) and skip in this lane, running in
     // ci.yml's real-Windows step and windows-validation.yml. A skip is not a pass.
     "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e",
+    // Auto-continue: here when usage is back, or the first provider free (Oct 14).
+    "auto-continue",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

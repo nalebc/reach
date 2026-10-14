@@ -90,8 +90,9 @@ test("auto-continue validates its destination and trigger", async t => {
     await assert.rejects(h.relays.start({ ...h.body, ...extra }), { status: 400 });
 });
 
-function priorityStage(t, { priority = ["codex", "claude", "gemini", "openclaw"], source = "codex", health: offered } = {}) {
+function priorityStage(t, { priority = ["codex", "claude", "gemini", "openclaw"], source = "codex", health: offered, notify } = {}) {
   const h = setup(t);
+  if (notify) h.options.notify = notify;
   const pages = Object.fromEntries(["codex", "claude", "openclaw"].map(agent => [agent, {
     session: { title: "Work", cwd: "/work", status: "idle" },
     items: [{ id: `${agent}-u`, role: "user", kind: "text", text: "Finish" }],
@@ -194,7 +195,9 @@ for (const action of ["cancel", "revoke"]) test(`${action} while checking availa
 
 test("malformed, duplicate, unsupported, or ambiguous priorities are rejected", async t => {
   const h = priorityStage(t);
-  for (const priority of [[], ["codex"], ["codex", "codex"], ["codex", "unknown"], ["claude", "gemini"], ["codex", "gemini"]])
+  // Without this chat's own provider, or not an order at all. This chat
+  // alone is an order (it continues here): see the test below.
+  for (const priority of [[], ["claude"], ["codex", "codex"], ["codex", "unknown"], ["claude", "gemini"], "codex"])
     await assert.rejects(h.relays.start({ ...h.body, priority }), { status: 400 });
   await assert.rejects(h.relays.start({ ...h.body, steps: [{ kind: "build", agent: "claude" }] }), { status: 400 });
 });
@@ -259,6 +262,31 @@ test("when several come back at once, the order decides; this chat's own provide
   await h.relays.check();
   assert.equal(h.moves.length, 0);
   assert.deepEqual(h.sends.map(s => [s.agent, s.id]), [["codex", "original"]]);
+  assert.equal(h.relays.list()[0].state, "done");
+});
+
+// Oct 14: "what if I want to continue in same chat when back".
+test("this chat alone waits for its own usage and continues here, never moving the chat", async t => {
+  const notes = [];
+  const h = priorityStage(t, { priority: ["codex"], notify: (n) => notes.push(n) });
+  for (const x of h.health) x.usable = false;
+  await h.relays.start(h.body);
+  h.limit("codex");
+  await h.settle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.relays.list()[0].state, "waiting");
+  assert.equal(h.relays.list()[0].holding, true);
+  assert.deepEqual(notes.map((n) => n.body), ["Codex ran out of usage. Continues here when it's back."]);
+  // Another provider with usage changes nothing: only this chat was chosen.
+  h.health.find(x => x.agent === "claude").usable = true;
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.deepEqual([h.moves.length, h.sends.length], [0, 0]);
+  h.health.find(x => x.agent === "codex").usable = true;
+  h.advance(60 * 1000);
+  await h.relays.check();
+  assert.equal(h.moves.length, 0);
+  assert.deepEqual(h.sends.map(s => [s.agent, s.id, s.body.text]), [["codex", "original", "Your usage is back. Continue where you left off."]]);
   assert.equal(h.relays.list()[0].state, "done");
 });
 

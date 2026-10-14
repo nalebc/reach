@@ -1366,6 +1366,8 @@ interface IInput {
   bool KeyDown(int vk);                     // GetAsyncKeyState: down right now
   uint Send(Native.INPUT[] batch);          // SendInput: one atomic batch
   void Pause(int ms);
+  int DoubleClickMs();                      // GetDoubleClickTime
+  int DoubleClickSize();                    // the double-click rectangle's larger side, in pixels
 }
 interface IClip {
   string Read();                            // the clipboard's text; null when it holds none
@@ -2709,6 +2711,28 @@ static partial class Desk {
     }
     if (pauseMs > 0) Input.Pause(pauseMs);
   }
+  // Windows makes a press within its double-click time and rectangle of the
+  // last one a double click; a Mac's helper says each click's count itself.
+  // So a click or a drag that would join the helper's last press waits until
+  // it can't (at most Windows' double-click time), before its point is
+  // checked: a click is the count the agent asked for, as on a Mac.
+  internal static DateTime lastPressAt = DateTime.MinValue;
+  internal static Native.POINT lastPressPoint, pressPoint;
+  internal static bool lastPressRight, pressRight;
+  internal static void SeparateFromLastPress(Native.POINT p, bool right) {
+    pressPoint = p;
+    pressRight = right;
+    if (right != lastPressRight) return;
+    int size = Math.Max(4, Input.DoubleClickSize());
+    if (Math.Abs(p.X - lastPressPoint.X) > size || Math.Abs(p.Y - lastPressPoint.Y) > size) return;
+    double left = Input.DoubleClickMs() + 25 - (DateTime.UtcNow - lastPressAt).TotalMilliseconds;
+    if (left > 0) Input.Pause((int)Math.Ceiling(left));
+  }
+  static void Pressed(bool right) {
+    lastPressAt = DateTime.UtcNow;
+    lastPressPoint = pressPoint;
+    lastPressRight = right;
+  }
   static bool HeldByUs(int vk) {
     if (vk == Native.VK_LBUTTON) return heldButtons.ContainsKey(0);
     if (vk == Native.VK_RBUTTON) return heldButtons.ContainsKey(1);
@@ -2721,9 +2745,9 @@ static partial class Desk {
         lastPoint = new Native.POINT { X = input.u.mi.dx, Y = input.u.mi.dy };
         foreach (int button in new List<int>(heldButtons.Keys)) heldButtons[button] = lastPoint;
       }
-      if ((flags & Native.MOUSEEVENTF_LEFTDOWN) != 0) heldButtons[0] = lastPoint;
+      if ((flags & Native.MOUSEEVENTF_LEFTDOWN) != 0) { heldButtons[0] = lastPoint; Pressed(false); }
       if ((flags & Native.MOUSEEVENTF_LEFTUP) != 0) heldButtons.Remove(0);
-      if ((flags & Native.MOUSEEVENTF_RIGHTDOWN) != 0) heldButtons[1] = lastPoint;
+      if ((flags & Native.MOUSEEVENTF_RIGHTDOWN) != 0) { heldButtons[1] = lastPoint; Pressed(true); }
       if ((flags & Native.MOUSEEVENTF_RIGHTUP) != 0) heldButtons.Remove(1);
     } else if (input.type == Native.INPUT_KEYBOARD && (input.u.ki.dwFlags & Native.KEYEVENTF_UNICODE) == 0) {
       if ((input.u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0) heldKeys.Remove(input.u.ki.wVk);
@@ -2775,8 +2799,9 @@ static partial class Desk {
       }
       case "click": {
         var p = point("x", "y");
-        var target = CheckPoint(p.X, p.Y, rules, expected, true);
         bool right = Json.Str(action, "button") == "right";
+        SeparateFromLastPress(p, right);
+        var target = CheckPoint(p.X, p.Y, rules, expected, true);
         int count = Math.Max(1, Math.Min(3, Json.Int(action, "count") ?? 1));
         // A long press: one press, the button down holdMs before it lets go. A
         // stop meanwhile lets go at once (LetGo).
@@ -2804,6 +2829,7 @@ static partial class Desk {
       }
       case "drag": {
         Native.POINT from = point("x", "y"), to = point("toX", "toY");
+        SeparateFromLastPress(from, false);
         Seen start = CheckPoint(from.X, from.Y, rules, expected, false), end = CheckPoint(to.X, to.Y, rules, expected, false);
         if (start.Bank || end.Bank) throw new Refusal(Policy.MoneyPasteReason, "blocked");
         // holdMs: down that long before moving (a long press picks it up);
@@ -4811,6 +4837,8 @@ sealed class WindowsInput : IInput {
   public bool KeyDown(int vk) { return (Native.GetAsyncKeyState(vk) & 0x8000) != 0; }
   public uint Send(Native.INPUT[] batch) { return Native.SendInput((uint)batch.Length, batch, Marshal.SizeOf(typeof(Native.INPUT))); }
   public void Pause(int ms) { Thread.Sleep(ms); }
+  public int DoubleClickMs() { return (int)Math.Min(5000, Native.GetDoubleClickTime()); }
+  public int DoubleClickSize() { return Math.Max(Native.GetSystemMetrics(Native.SM_CXDOUBLECLK), Native.GetSystemMetrics(Native.SM_CYDOUBLECLK)); }
 }
 
 // The clipboard, from a thread of its own that owns a message-only window (a
@@ -5493,6 +5521,8 @@ static class Native {
   [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
+  public const int SM_CXDOUBLECLK = 36, SM_CYDOUBLECLK = 37;
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern short VkKeyScanExW(char c, IntPtr layout);
   [DllImport("user32.dll")] public static extern uint MapVirtualKeyExW(uint code, uint mapType, IntPtr layout);

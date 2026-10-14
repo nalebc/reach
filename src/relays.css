@@ -391,36 +391,223 @@
   font-size: 13px;
 }
 
-.continue-priority {
-  margin: 16px 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: provider;
+/* If usage runs out (AutoContinueSheet), as the ChatGPT app lays a choice
+   out (Oct 14): two icon rows in one rounded group, then the order as logo
+   rows with a check, one white pill. Plain greys, not the relay's green. */
+.continue-sheet {
+  --cs-ink: #ececec;
+  --cs-muted: #a1a1a1;
+  --cs-line: #ffffff14;
+  --cs-group: #ffffff0b;
+  --cs-field: #ffffff10;
+  --cs-press: #ffffff12;
+  --cs-white: #f3f3f3;
+  --cs-white-ink: #0d0d0d;
+  color: var(--cs-ink);
 }
-.continue-priority li {
+.continue-choices,
+.continue-priority {
+  margin: 4px 0 14px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--cs-line);
+  border-radius: 18px;
+  background: var(--cs-group);
+  list-style: none;
+}
+.continue-choice {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 0;
-  counter-increment: provider;
+  gap: 12px;
+  width: 100%;
+  min-height: 62px;
+  padding: 10px 16px 10px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.continue-priority li::before {
-  content: counter(provider) ".";
-  min-width: 18px;
-  opacity: .6;
+.continue-choice + .continue-choice::before,
+.continue-priority li + li::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 58px;
+  border-top: 1px solid var(--cs-line);
 }
-.continue-priority label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.continue-priority strong, .continue-priority small { display: block; }
-.continue-priority small { opacity: .65; margin-top: 3px; }
-.continue-priority button { display: grid; place-items: center; min-width: 40px; min-height: 40px; }
-.continue-priority button:disabled { opacity: .3; }
-/* Auto-continue on: where it goes, in one row. */
-.continue-on { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
-.continue-on > svg { flex: none; color: var(--reach-mint); }
-.continue-on strong, .continue-on small { display: block; }
-.continue-on small { opacity: .65; margin-top: 3px; }
-.relay-off { width: 100%; min-height: 44px; margin-top: 8px; border: 0; border-radius: 14px; background: none; color: var(--reach-ink); font: inherit; font-weight: 600; }
+.continue-choice:active:not(:disabled) {
+  background: var(--cs-press);
+}
+.continue-choice:focus-visible {
+  outline: 2px solid var(--lime, #b9efd4);
+  outline-offset: -2px;
+}
+.continue-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--cs-field);
+}
+.continue-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.continue-text strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+.continue-text small {
+  color: var(--cs-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.continue-tick {
+  flex: none;
+  opacity: 0;
+}
+.continue-choice.on .continue-tick {
+  opacity: 1;
+}
+.continue-label {
+  margin: 6px 4px 8px;
+  color: var(--cs-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.continue-priority li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 58px;
+  padding: 6px 6px 6px 12px;
+}
+.continue-priority li.skipped {
+  opacity: 0.55;
+}
+.continue-priority label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.continue-priority input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.continue-priority label:has(input:focus-visible) {
+  outline: 2px solid var(--lime, #b9efd4);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+.continue-box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid #ffffff45;
+  border-radius: 50%;
+  color: transparent;
+}
+.continue-priority li.picked .continue-box {
+  border-color: var(--cs-white);
+  background: var(--cs-white);
+  color: var(--cs-white-ink);
+}
+.continue-priority label:has(input:disabled) {
+  cursor: default;
+}
+.continue-priority button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--cs-muted);
+}
+.continue-priority button:active:not(:disabled) {
+  background: var(--cs-press);
+}
+.continue-priority button:disabled {
+  opacity: 0.25;
+}
+/* On: a green dot and until when, in one quiet line. */
+.continue-on {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 4px 14px;
+}
+.continue-on > span:last-child {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.continue-on strong {
+  font-weight: 600;
+}
+.continue-on small {
+  color: var(--cs-muted);
+  font-size: 13px;
+}
+.continue-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34c759;
+  box-shadow: 0 0 0 4px #34c75926;
+}
+.continue-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 50px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--cs-white);
+  color: var(--cs-white-ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+}
+.continue-go:disabled {
+  opacity: 0.4;
+}
+.relay-off { width: 100%; min-height: 46px; margin-top: 8px; border: 0; border-radius: 999px; background: var(--cs-field, none); color: var(--cs-ink, inherit); font: inherit; font-weight: 600; }
 .relay-off:disabled { opacity: .45; }
+.continue-note {
+  margin: 10px 4px 0;
+  color: var(--cs-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: center;
+}
+.continue-sheet .relay-problem {
+  margin: 0 4px 10px;
+}
 
 /* Plain, always-visible choices for a handoff; extra steps are optional. */
 .handoff-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 13px; color: var(--reach-ink); }

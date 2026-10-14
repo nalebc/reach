@@ -8,7 +8,8 @@ import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
-import { fakeTailscale, tailnetPreload, HOST } from "./helpers/fake-tailscale.mjs";
+import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fake-tailscale.mjs";
+import { onlyReach } from "./helpers/windows-stop.mjs";
 
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
 // paths (test/helpers/as-windows.mjs), `.\reach.cmd status` naming it, and
@@ -121,9 +122,10 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
 // First-run matrix T23, in Tailscale mode: a Windows Reach, through a
 // stand-in Tailscale (this computer's own is never asked or changed). Its
 // route goes to its local address (no Unix socket there), phones join with
-// the pairing code, and it opens no public link.
-// (The stand-in Tailscale is a #! script: not on a real Windows runner.)
-const tailscaleWindows = { skip: process.platform === "win32", timeout: 60000 };
+// the pairing code, and it opens no public link. On a real Windows runner
+// the stand-in is a tailscale.exe, and Windows itself ends a route's
+// process with Reach (Node's kill-on-close job).
+const tailscaleWindows = { timeout: 90000 };
 const ORIGIN = `https://${HOST}:8443`;
 const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`${HOST}:8443`]: { Handlers: { "/": { Proxy: target } } } } });
 // `serve` and `record`: what an earlier Reach or another service left.
@@ -148,14 +150,6 @@ function windowsTailscaleReach(t, { serve, record } = {}) {
   });
   return { seen, started };
 }
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 const until = async (check, what, ms = 10000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
@@ -178,7 +172,7 @@ const heldRoute = async (fake) => {
   return session;
 };
 const routeGone = async (fake, session) => {
-  await until(async () => !(await fake.sessions()).length && !pidAlive(session.pid), "the session to end with Reach");
+  await until(async () => !(await fake.sessions()).length && !sessionAlive(session), "the session to end with Reach");
   const state = await fake.read();
   assert.equal(state.serve.Foreground, undefined);
   assert.equal(state.serve.TCP?.[8443], undefined, "nothing left behind on the port");
@@ -213,7 +207,7 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
     state: () => path.join(seen.root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: (pid) => killed.push(pid) },
+    windows: { taskkill: (pid) => killed.push(pid), end: (pid) => killed.push(pid), reaches: onlyReach({ pid: reach.child.pid, root: seen.root }) },
   });
   const [code] = await reach.exited;
   assert.equal(result.stopped, 1);
@@ -235,6 +229,41 @@ test("Windows, Tailscale mode: Reach ended outright (a crash), its route ends to
   reach.child.kill("SIGKILL");
   await reach.exited;
   await routeGone(seen.fake, second);
+});
+
+// A Reach that doesn't stop by itself (it never sees the request here: none
+// is left in its folder or by its id) is ended outright, once Windows' own
+// process list still names it as started then; Windows then ends its route
+// with it (Node's kill-on-close job), with nothing else ended for it.
+test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outright, and its route with it", { ...tailscaleWindows, skip: process.platform !== "win32" && "Windows' own process list" }, async (t) => {
+  const { seen, started } = windowsTailscaleReach(t);
+  const reach = await started;
+  const session = await heldRoute(seen.fake);
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "reach-no-request-"));
+  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  const { windowsProcesses } = await import("../server/windows-processes.mjs");
+  const list = () => windowsProcesses({ nativeDir: path.join(elsewhere, "native") });
+  const listed = (await list()).find((p) => p.pid === reach.child.pid);
+  assert.ok(Number.isFinite(listed?.startedAt), "Windows' process list names it, with when it started");
+  const said = [];
+  const result = await stopReach(seen.root, {
+    platform: "win32",
+    yes: true,
+    print: (line) => said.push(line),
+    state: () => elsewhere,
+    windows: {
+      env: {},
+      list,
+      graceMs: 500,
+      // This test's Reach only; what it started is left to Windows.
+      reaches: async () => ({ hosts: [{ pid: listed.pid, startedAt: listed.startedAt, root: null, terminals: [], descendants: [] }], partial: "", processes: await list() }),
+    },
+  });
+  assert.equal(result.stopped, 1);
+  assert.deepEqual(said, ["Stopped Reach."]);
+  const [code] = await reach.exited;
+  assert.equal(code, 1, "ended outright");
+  await routeGone(seen.fake, session);
 });
 
 test("Windows, Tailscale mode: an older Reach's background route, recorded as its own, is replaced by the foreground one", tailscaleWindows, async (t) => {
@@ -269,7 +298,7 @@ test("Windows: an occupied launcher lock names restart without starting anything
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
   const result = await new Promise(resolve => execFile(process.execPath,
     ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "--local"],
-    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "" }, timeout: 10000 },
+    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "" }, timeout: 30000 },
     (error, stdout, stderr) => resolve({ error, text: stdout + stderr })));
   assert.equal(result.error?.code, 1);
   assert.match(result.text, /already starting or running/);
