@@ -478,11 +478,18 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
 test("Settings: its private pages are closed to the agent and black in a screenshot; an ordinary page stays usable", { skip, timeout: 300000 }, async (t) => {
   const settings = "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel";
   const open = (page) => exec(path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe"), [page], { windowsHide: true }).catch(() => {});
-  const h = helper(t, { medium: true });
+  // GitHub's runners have no unelevated token of their own (their shell runs
+  // elevated), and the Basic User token the medium launcher gives can't reach
+  // a packaged app's UI Automation (recorded below). So Settings is judged by
+  // helpers started as this runner's programs are: elevated, they may look
+  // and read, not act (Rule S), which is all this needs.
+  const h = helper(t);
   assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: settings, bundleId: settings, name: "Settings" }] }) })).ok, true);
-  // What Settings shows, as Full control reads it: where its page names come from.
-  const full = helper(t, { medium: true });
+  const full = helper(t);
   assert.equal((await full.send({ op: "rules", ...rulesFor("full") })).ok, true);
+  const medium = helper(t, { medium: true });
+  assert.equal((await medium.send({ op: "rules", ...rulesFor("full") })).ok, true);
+  const { displays } = await h.send({ op: "displays" });
   const seen = {};
   for (const page of ["ms-settings:privacy", "ms-settings:network", "ms-settings:display"]) {
     await open(page);
@@ -492,29 +499,23 @@ test("Settings: its private pages are closed to the agent and black in a screens
     for (let i = 0; i < 10; i++) {
       const front = await h.send({ op: "front" });
       answers.push(front.blocked || "open");
-      if (page === "ms-settings:display" ? front.blocked === "" : false) break;
+      if (page === "ms-settings:display" ? front.blocked === "" : i >= 2) break;
       await sleep(1000);
     }
+    const [, x, y, width, height] = (await exec(fixtureConsole, ["find", "Settings"], { windowsHide: true })).stdout.trim().split(",").map(Number);
+    const picture = await shot(h, displays);
+    const [inside] = await picture.pixels([[x + Math.round(width / 2), y + Math.round(height / 2)]]);
     const read = await full.send({ op: "read" });
-    const elements = await full.send({ op: "elements" });
-    // And elevated, as this runner's own programs run: whether it's the token.
-    const elevated = helper(t);
-    await elevated.send({ op: "rules", ...rulesFor("full") });
-    const elevatedRead = await elevated.send({ op: "read" });
-    await elevated.close();
-    seen[page] = { answers, front: await full.send({ op: "front" }), read: read.text ?? read, elements: elements.items?.slice(0, 40).map((item) => `${item.role}:${item.name}`) ?? elements,
-      elevatedRead: elevatedRead.text ?? elevatedRead };
+    const mediumRead = await medium.send({ op: "read" });
+    seen[page] = { answers, inside, read: (read.text ?? JSON.stringify(read)).slice(0, 600), mediumRead: (mediumRead.text ?? JSON.stringify(mediumRead)).slice(0, 200) };
   }
   note({ settings: seen });
-  assert.ok(seen["ms-settings:privacy"].answers.every((answer) => answer !== "open"), "the privacy pages stay closed");
-  assert.ok(seen["ms-settings:network"].answers.every((answer) => answer !== "open"), "the network pages stay closed");
-  // An ordinary page opens once Settings can be read at all; a Settings
-  // window UI Automation can't read stays closed (fail closed), which is
-  // said here, not passed over.
-  if (seen["ms-settings:display"].read) assert.equal(seen["ms-settings:display"].answers.at(-1), "open", `the display page opens: ${seen["ms-settings:display"].answers.join(" | ")}`);
-  else t.diagnostic("Settings showed UI Automation nothing on this PC: its ordinary pages stay closed here too.");
-  await full.close();
-  await h.close();
+  for (const page of ["ms-settings:privacy", "ms-settings:network"]) {
+    assert.ok(seen[page].answers.every((answer) => answer !== "open"), `${page} stays closed: ${seen[page].answers.join(" | ")}`);
+    assert.ok(black(seen[page].inside), `${page} is black in a screenshot: ${seen[page].inside}`);
+  }
+  assert.equal(seen["ms-settings:display"].answers.at(-1), "open", `the display page opens: ${seen["ms-settings:display"].answers.join(" | ")}`);
+  for (const helper of [medium, full, h]) await helper.close();
 });
 
 // Launching (§13.4 items 4 and 7): copies of the fixture write how they were

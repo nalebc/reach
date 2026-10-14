@@ -4087,8 +4087,9 @@ static partial class Desk {
       while (stack.Count > 0 && visited < 400) {
         var node = stack.Pop();
         visited++;
+        // The title bar holds the window's System menu, not the app's.
+        if (node.ControlType == Uia.TitleBar || node.ControlType == Uia.Document) continue;
         if (node.ControlType == Uia.MenuBar) return node;
-        if (node.ControlType == Uia.Document) continue;
         foreach (var child in Children(node)) stack.Push(child);
       }
     } catch (Exception) { }
