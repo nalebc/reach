@@ -345,27 +345,30 @@ test("a step down keeps the picture crisp while the smaller stream starts, and i
 // tells the computer why the old one ended.
 test("a dropped stream keeps the last picture, retries soon and says why", async () => {
   const { view, state } = await watch();
-  const socket = FakeSocket.all[0];
-  socket.says({ type: "ready", format: "h264", display: "1" });
-  socket.frame(1, keyframe);
-  FakeDecoder.all[0].shows();
-  await dom.waitFor(() => state().ready);
-  socket.close();
-  await settle(20);
-  assert.equal(state().ready, true, "the picture stays");
-  assert.equal(state().connecting, true);
-  assert.equal(state().width, 1320);
-  await dom.waitFor(() => FakeSocket.all[1]?.sent.length >= 2, 1500);
-  const told = FakeSocket.all[1].sent.find((m) => m.type === "diagnostic");
-  assert.match(told.text, /^screen reconnecting \(1× since the last frame\) after: Screen connection ended\. Reconnecting… · closed 1000 · /);
-  assert.match(told.text, /last frame \d+\.\d s ago/);
-  // Back: the next frame takes over with no loading scene in between.
-  FakeSocket.all[1].says({ type: "ready", format: "h264", display: "1" });
-  FakeSocket.all[1].frame(1, keyframe);
-  FakeDecoder.all.at(-1).shows();
-  await dom.waitFor(() => !state().connecting);
-  assert.equal(state().ready, true);
-  await view.unmount();
+  try {
+    const socket = FakeSocket.all[0];
+    socket.says({ type: "ready", format: "h264", display: "1" });
+    socket.frame(1, keyframe);
+    FakeDecoder.all[0].shows();
+    await dom.waitFor(() => state().ready);
+    socket.close();
+    // A slow runner can take longer than a fixed pause to re-render.
+    await dom.waitFor(() => state().connecting, 1500);
+    assert.equal(state().ready, true, "the picture stays");
+    assert.equal(state().width, 1320);
+    await dom.waitFor(() => FakeSocket.all[1]?.sent.length >= 2, 1500);
+    const told = FakeSocket.all[1].sent.find((m) => m.type === "diagnostic");
+    assert.match(told.text, /^screen reconnecting \(1× since the last frame\) after: Screen connection ended\. Reconnecting… · closed 1000 · /);
+    assert.match(told.text, /last frame \d+\.\d s ago/);
+    // Back: the next frame takes over with no loading scene in between.
+    FakeSocket.all[1].says({ type: "ready", format: "h264", display: "1" });
+    FakeSocket.all[1].frame(1, keyframe);
+    FakeDecoder.all.at(-1).shows();
+    await dom.waitFor(() => !state().connecting);
+    assert.equal(state().ready, true);
+  } finally {
+    await view.unmount();
+  }
 });
 
 test("the computer's quality reports say when the link is slow, without flickering", async () => {
@@ -525,6 +528,32 @@ test("a locked Windows PC is said as one", async () => {
     socket.says({ type: "status", idle: "locked" });
     await settle(5);
     assert.equal(state().cause, "Windows PC locked");
+  } finally {
+    await view.unmount();
+  }
+});
+
+// A Windows PC without an H.264 encoder sends still images (audit #26):
+// the phone hears which video the computer sends and why not a better one,
+// in the computer's own words, as plain text.
+test("the computer's word for its video, and why it isn't better, reach the Screen page as plain text", async () => {
+  const { view, state } = await watch("win32");
+  const socket = FakeSocket.all[0];
+  try {
+    const why = "This N edition of Windows has no H.264 video encoder: it comes with the Media Feature Pack (Settings, Apps, Optional features). Until then, the screen comes as still images.";
+    socket.says({ type: "ready", format: "jpeg", fps: 20, display: "DISPLAY1", video: "Still images", videoWhy: why });
+    await dom.waitFor(() => state().video === "Still images");
+    assert.equal(state().videoWhy, why);
+    assert.equal(state().format, "jpeg");
+    // A newer stream says it's H.264 from Windows itself; no why.
+    socket.says({ type: "ready", format: "h264", fps: 60, display: "DISPLAY1", video: "H.264, hardware" });
+    await dom.waitFor(() => state().video === "H.264, hardware");
+    assert.equal(state().videoWhy, "");
+    // Never markup or control characters, never a page of text.
+    socket.says({ type: "ready", format: "h264", fps: 60, display: "DISPLAY1", video: { html: "<b>" }, videoWhy: `\u001b[2J${"x".repeat(1000)}` });
+    await dom.waitFor(() => state().video === "");
+    assert.equal(state().videoWhy.length, 400);
+    assert.doesNotMatch(state().videoWhy, /\u001b/);
   } finally {
     await view.unmount();
   }

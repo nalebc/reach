@@ -192,12 +192,12 @@ test("CI execution uses the guarded npm entrypoint and publishing cannot run pac
 
 
 test("every Batch 1 platform-gated regression has a CI lane that enables its gate", () => {
-  for (const name of ["agent-input", "browser-terminal-routes", "money-sites"])
+  for (const name of ["agent-input", "browser-terminal-routes", "money-sites", "screen-sound-chrome-e2e"])
     assert.ok(suites.native.includes(name), `${name} needs the native lane`);
   for (const name of ["agent-install", "browser-mutations", "private-ingress-platform"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   const runner = fs.readFileSync(new URL('../.github/scripts/run-tests.mjs', import.meta.url), 'utf8');
-  for (const flag of ['REACH_TEST_APP_NATIVE', 'REACH_TEST_SCRIPT_SANDBOX'])
+  for (const flag of ['REACH_TEST_APP_NATIVE', 'REACH_TEST_SCRIPT_SANDBOX', 'REACH_TEST_SOUND_CHROME'])
     assert.ok(runner.includes(`${flag}: "1"`), `${flag} must be enabled`);
 });
 
@@ -216,6 +216,12 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /test\/windows-native-build\.test\.mjs/);
   for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
+  // real-Windows step as a standard user (docs/parity/C-sandbox.md §9.3).
+  for (const name of ["windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e"])
+    assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  assert.match(ci, /test\/windows-sandbox-e2e\.test\.mjs/);
+  assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
 });
 
 test("Windows CI covers shared phone gesture accuracy, accelerated scrolling and native input sequences", () => {
