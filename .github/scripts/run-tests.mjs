@@ -44,6 +44,8 @@ export const suites = {
     "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
+    // Auto-continue: here when usage is back, or the first provider free (Oct 14).
+    "auto-continue",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

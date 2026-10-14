@@ -117,6 +117,8 @@ const click = async (element) => {
   element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle();
 };
+// If usage runs out: its two choices, by their titles.
+const choice = (title) => $$(".continue-choice").find((b) => b.querySelector("strong")?.textContent === title);
 const open = async (session, health, extra = {}) =>
   mount(
     React.createElement(AgentSessionView, {
@@ -176,13 +178,47 @@ test("an agent that is also out of usage isn't offered, and an old limit with us
   assert.deepEqual(dom.errors, []);
 });
 
-test("out of usage, the line opens Auto-continue's provider order", async () => {
+test("out of usage, the line opens Auto-continue: continue here first, or the provider order", async () => {
   mac.pages[`codex:${CODEX}`].items = [limitError()];
   await open(codexSession(), both({ usable: false }));
   await click(await dom.waitFor(() => $(".usage-auto-continue")));
+  await dom.waitFor(() => choice("Continue here"));
+  assert.equal(choice("Continue here").getAttribute("aria-checked"), "true");
+  assert.match(choice("Continue here").textContent, /When Codex is back/);
+  assert.equal($(".continue-priority"), null, "the order shows only for switching");
+  await click(choice("Switch provider"));
   await dom.waitFor(() => $(".continue-priority"));
   assert.deepEqual($$(".continue-priority strong").map((n) => n.textContent), ["Codex", "Claude Code", "Gemini CLI", "OpenClaw"]);
   assert.deepEqual(mac.sent, []);
+  assert.deepEqual(dom.errors, []);
+});
+
+// Oct 14: "what if i want to continue in same chat when back".
+test("Continue here turns auto-continue on for this chat alone, and says so", async t => {
+  routes["/api/sessions/relays"] = record("/api/sessions/relays");
+  t.after(() => delete routes["/api/sessions/relays"]);
+  mac.answers["/api/sessions/relays"] = { relay: relayOf({ trigger: "usage", priority: ["codex"], steps: [] }) };
+  dom.window.localStorage.setItem("reach-continue-priority:mac", JSON.stringify(["claude", "codex"]));
+  dom.window.localStorage.setItem("reach-continue-mode:mac", "here");
+  await open(codexSession(), both());
+  await click(await dom.waitFor(() => button("More")));
+  await click(button("Automation"));
+  await click($$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out")));
+  await dom.waitFor(() => choice("Continue here"));
+  assert.equal(choice("Continue here").getAttribute("aria-checked"), "true");
+  await click(button("Turn on"));
+  await dom.waitFor(() => $(".as-auto-on"));
+  assert.deepEqual(mac.sent[0], { route: "/api/sessions/relays", body: { from: { agent: "codex", id: CODEX }, priority: ["codex"], trigger: "usage" } });
+  // The order to switch in stays as it was for next time.
+  assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex"]);
+  assert.equal(dom.window.localStorage.getItem("reach-continue-mode:mac"), "here");
+  assert.deepEqual(dom.errors, []);
+});
+
+test("continuing here, out of usage, the chat says it waits to continue here", async () => {
+  await open(codexSession(), both(), { relays: [relayOf({ trigger: "usage", priority: ["codex"], steps: [], holding: true })] });
+  const row = await dom.waitFor(() => $(".relay-row"));
+  assert.match(row.textContent, /Out of usage. Continues here when Codex is back./);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -1044,7 +1080,10 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
   await click($$(".relay-menu-item").find(b => b.textContent.includes("If usage runs out")));
   const sheet = await dom.waitFor(() => $(".relay-sheet"));
   assert.equal(sheet.querySelector("h2").textContent, "If usage runs out");
-  assert.match(sheet.textContent, /If none is free, it waits: the first one back takes the work/);
+  // Two choices; switching shows the order (this chat included, it waits).
+  assert.deepEqual($$(".continue-choice strong").map(n => n.textContent), ["Continue here", "Switch provider"]);
+  await click(choice("Switch provider"));
+  assert.match(sheet.textContent, /This chat · when it's back/);
   assert.match(sheet.textContent, /Read-only in Reach · skipped/);
   assert.equal(mac.sent.length, 0);
   await click(button("Move Claude Code up"));
@@ -1056,6 +1095,7 @@ test("auto-continue can be enabled from the chat menu and cancelled", async t =>
     from: { agent: "codex", id: CODEX }, priority: ["claude", "codex", "gemini", "openclaw"], trigger: "usage",
   } });
   assert.deepEqual(JSON.parse(dom.window.localStorage.getItem("reach-continue-priority:mac")), ["claude", "codex", "gemini", "openclaw"]);
+  assert.equal(dom.window.localStorage.getItem("reach-continue-mode:mac"), "switch");
   // The menu says On; its sheet says where it goes and turns it off.
   await click(button("More"));
   await click(button("Automation"));
