@@ -189,3 +189,54 @@ test("the jobs descriptor carries grants, the mirror denies, internet and a fork
   // A client whose only root is Home is refused here (the §10 parity break).
   assert.throws(() => windowsJobSandbox(config, { agentRoots: ["C:\\Users\\me"] }, WIN), { status: 403 });
 });
+
+import os from "node:os";
+import path from "node:path";
+import { Jobs } from "../server/jobs.mjs";
+
+const until = async (check, ms = 4000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw Error("timed out"); await new Promise((r) => setTimeout(r, 20)); } };
+
+test("a Windows job runs through the helper: the framed request carries the grant, and frames drive output and exit", async (t) => {
+  const realPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-jobs-win-"));
+  const jobs = new Jobs({ dataDir: dir });
+  t.after(() => { jobs.dispose(); fs.rmSync(dir, { recursive: true, force: true }); Object.defineProperty(process, "platform", { value: realPlatform, configurable: true }); });
+
+  let child;
+  const written = [];
+  const spawnHelper = () => {
+    child = new EventEmitter();
+    child.pid = 4242;
+    child.stdin = { write: (b) => { written.push(b); return true; }, end() {}, writable: true };
+    child.stdout = new EventEmitter();
+    child.kill = () => {};
+    return child;
+  };
+  const sandbox = { mode: "jobs", client: "agent", grants: [{ root: "C:\\Users\\me\\Projects\\acme", access: "rw" }], denies: ["C:\\Users\\me\\.reach"], network: "internet", capabilities: ["internetClient"], limits: { activeProcesses: 512 } };
+  const job = jobs.start({ command: "echo hi", cwd: "C:\\Users\\me\\Projects\\acme", timeoutMs: 60000 }, "agent",
+    { sandbox, helper: { file: "C:\\state\\native\\reach-sandbox.exe", sha256: "abc" }, spawnHelper });
+
+  // The framed request the helper receives carries the mode, the grant, the
+  // deny and the command verbatim.
+  const { entries } = decodeRequest(Buffer.concat(written));
+  assert.ok(entries.some(([k, v]) => k === "mode" && v === "jobs"));
+  assert.ok(entries.some(([k, v]) => k === "grant" && /acme/i.test(v)));
+  assert.ok(entries.some(([k, v]) => k === "deny" && /\.reach/i.test(v)));
+  assert.ok(entries.some(([k, v]) => k === "command" && v === "echo hi"));
+  assert.ok(entries.some(([k, v]) => k === "interpreter" && v === "cmd.exe"));
+
+  // Frames drive the job: started, output, then the main process's exit code.
+  child.stdout.emit("data", frame("S", beInt(4242)));
+  child.stdout.emit("data", frame("O", Buffer.from("hi\n")));
+  const exit = Buffer.alloc(4); exit.writeInt32BE(0, 0);
+  child.stdout.emit("data", frame("X", exit));
+  child.emit("close", 0);
+  await until(() => job.status !== "running");
+  assert.equal(job.status, "completed");
+  assert.equal(job.exitCode, 0);
+  assert.match(job.output, /hi/);
+
+  // Without a helper, a Windows sandboxed job refuses rather than running.
+  assert.throws(() => jobs.start({ command: "echo hi", cwd: "C:\\x", timeoutMs: 1000 }, "agent", { sandbox }), { status: 503 });
+});

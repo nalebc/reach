@@ -1,9 +1,13 @@
 import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { spawnVerified } from "./desktop-native.mjs";
 import { computerWord } from "./computer-word.mjs";
 import { fail } from "./core.mjs";
 import { browserPrivatePaths } from "./browser-private-paths.mjs";
 import { windowsCanonicalPath, windowsWithin } from "./app-identity.mjs";
+
+const execFileAsync = promisify(execFile);
 
 // The Node end of Reach's Windows sandbox (scripts/native/sandbox.cs,
 // docs/parity/C-sandbox.md). It frames requests to the helper, reads its
@@ -103,7 +107,7 @@ const refusedToStart = (error) =>
 
 // Reads SAC's state for wording only (B §3.4): REG_DWORD 1 = On. Anything else,
 // or an unreadable value, is not treated as On.
-export async function smartAppControlOn({ run, env = process.env } = {}) {
+export async function smartAppControlOn({ run = execFileAsync, env = process.env } = {}) {
   const root = env.SystemRoot || env.SYSTEMROOT || env.windir || "C:\\Windows";
   try {
     const { stdout } = await run(`${root}\\System32\\reg.exe`,
@@ -120,7 +124,7 @@ export async function smartAppControlOn({ run, env = process.env } = {}) {
 // A spawn error or an exit with no Started frame is classified (SAC first, for
 // wording), and the surface is refused. `start` and `reg` are injected in tests.
 export async function sandboxSelfTest({
-  helper, start = spawnVerified, run, platform = process.platform, env = process.env,
+  helper, start = spawnVerified, run = execFileAsync, platform = process.platform, env = process.env,
   timeoutMs = 60000, sac = smartAppControlOn,
 } = {}) {
   let built;
@@ -213,12 +217,80 @@ export function windowsJobSandbox(config, client, { sockets = [], home = os.home
   const grants = windowsGrantRoots(roots, { home, platform }).map((root) => ({ root, access: "rw" }));
   return {
     mode: "jobs",
+    // A stable per-client AppContainer package SID (§4.1); the per-root
+    // capabilities handed to each launch decide what it can touch.
+    client: client?.id || "jobs",
     grants,
-    denies: windowsJobDenies(config, { home, platform, env }),
+    denies: [...windowsJobDenies(config, { home, platform, env }), ...sockets],
     network: "internet",
     capabilities: ["internetClient"],
     // A fork-bomb guard only, and a runaway-memory cap; no JOB_TIME, so a
     // parallel build isn't cut off before its wall-clock timeout (finding 10).
     limits: { activeProcesses: 512, memoryBytes: 0 },
   };
+}
+
+// ---------------------------------------------------------------------------
+// §5 Network, and the self-test gate. The jobs AppContainer gets internet
+// (internetClient) but Reach's own listener must be unreachable from it; the
+// helper proves that inside the container before each launch (§5), so no claim
+// rests on a firewall rule an unelevated Reach can't install (finding 9). The
+// local addresses the probe must find refused: loopback v4/v6, the LAN IP, and
+// the tailnet IP and MagicDNS name (Tailscale Serve would otherwise present the
+// owner node's identity).
+export function windowsLoopbackTargets({ port, lanIps = [], tailnetIps = [], magicDns = "" } = {}) {
+  const addresses = ["127.0.0.1", "::1", ...lanIps, ...tailnetIps, ...(magicDns ? [magicDns] : [])];
+  return [...new Set(addresses.filter(Boolean))].map((address) => ({ address, port }));
+}
+
+export const SANDBOX_UNPREPARED = (platform = process.platform) =>
+  `Reach couldn't prepare its command sandbox on this ${computerWord(platform)} (its private folder isn't ready), so agents' commands can't run here yet.`;
+
+// The server's handle to the Windows sandbox: it builds the helper once (A's
+// windowsBinary/spawnVerified, into a folder D made private this launch) and
+// runs the launch self-test once at start, caching the outcome. A permanent
+// policy block stays cached; a transient "won't start" is re-tried on the next
+// request, never retried in a loop and never falling back to an interpreter.
+export function createWindowsSandbox({ helper = null, start = spawnVerified, run = execFileAsync, platform = process.platform, env = process.env } = {}) {
+  let pending = null;
+  const ready = () => {
+    if (!helper) return Promise.resolve({ ok: false, permanent: true, reason: SANDBOX_UNPREPARED(platform) });
+    if (pending) return pending;
+    pending = (async () => {
+      let built;
+      try { built = await helper(); }
+      catch (error) { return { ok: false, permanent: false, reason: HELPER_WONT_START(platform) + (error?.message ? " (" + String(error.message).slice(0, 160) + ")" : "") }; }
+      const result = await sandboxSelfTest({ helper: async () => built, start, run, platform, env });
+      return { ...result, built: result.ok ? built : null };
+    })();
+    pending = pending.then((result) => {
+      // Let a non-permanent failure (a crash, a transient block) be re-tried on
+      // the next job; a success or a permanent policy block stays cached.
+      if (!result.ok && !result.permanent) pending = null;
+      return result;
+    });
+    return pending;
+  };
+  return { ready, reset: () => { pending = null; } };
+}
+
+// The request entries for one job, in the order the helper reads them. cmd.exe
+// /d /s /c is the interpreter for jobs (D-C-1); the command string is carried
+// verbatim as one field, never concatenated into a shell line.
+export function jobRequestEntries(descriptor, { command, cwd, timeoutMs, interpreter = "cmd.exe", loopback = [] }) {
+  const entries = [
+    ["mode", "jobs"],
+    ["client", descriptor.client || "jobs"],
+    ["interpreter", interpreter],
+    ["command", command],
+    ["cwd", cwd],
+    ["timeoutMs", String(timeoutMs)],
+    ["network", descriptor.network || "internet"],
+    ["activeProcesses", String(descriptor.limits?.activeProcesses ?? 512)],
+  ];
+  for (const { root, access } of descriptor.grants || []) entries.push(["grant", root], ["grantAccess", access || "rw"]);
+  for (const deny of descriptor.denies || []) entries.push(["deny", deny]);
+  for (const capability of descriptor.capabilities || []) entries.push(["capability", capability]);
+  for (const { address, port } of loopback) entries.push(["loopback", address + ":" + port]);
+  return entries;
 }

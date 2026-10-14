@@ -13,6 +13,7 @@ import {
 } from "../server/tailscale-auth.mjs";
 import { createTailscaledPeerCheck } from "../server/tailscaled-peer.mjs";
 import { ensurePrivateFolders } from "../server/windows-private-folder.mjs";
+import { windowsHelper } from "../server/desktop-native.mjs";
 import {
   describeApproval,
   decideApproval,
@@ -111,6 +112,7 @@ export async function launch(options, root) {
   };
   const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
   let peerCheck = null,
+    windowsSandboxHelper = null,
     ingressKey = "",
     keyedState = null,
     signInOff = "";
@@ -131,6 +133,14 @@ export async function launch(options, root) {
       });
       if (folders.ok) {
         keyedState = await readKeyedState().catch(() => ({ status }));
+        // The command sandbox builds its helper (scripts/native/sandbox.cs) in
+        // the same folder this check just confirmed private, on first use and
+        // cached by hash (server/windows-sandbox.mjs). Only with a confirmed
+        // private folder, so the owner-token helper can't be swapped by another
+        // user of the PC; a build failure refuses jobs, never sign-in.
+        windowsSandboxHelper =
+          options.windowsSandboxHelper ||
+          (() => windowsHelper("sandbox", { dir: path.join(privateDir, "native") }));
         peerCheck =
           options.peerCheck ||
           createTailscaledPeerCheck({
@@ -206,6 +216,9 @@ export async function launch(options, root) {
     // Set up for browser sign-in, on pairing codes for now: why, for the
     // phone's answers about invite links.
     ...(signInOff && { signInOff }),
+    // Windows: the command sandbox helper, built in the folder confirmed
+    // private this launch (server/windows-sandbox.mjs). Absent it, jobs refuse.
+    ...(windowsSandboxHelper ? { windowsSandboxHelper } : {}),
     privatePaths: [privateDir],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
     tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },

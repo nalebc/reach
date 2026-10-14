@@ -39,11 +39,13 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 
 static class Sandbox {
   // Frame types on the wire to Node. One byte each.
@@ -81,6 +83,15 @@ static class Sandbox {
         Request request = ReadRequest(Console.OpenStandardInput());
         return Run(request);
       }
+      if (args.Length >= 2 && args[0] == "netprobe") {
+        // The §5 self-test, run inside the jobs AppContainer: for each local
+        // address it reports whether Reach's listener answered. Any "open" line
+        // refuses the launch (fail closed). No framing: this child's stdout goes
+        // to a pipe the jobs launcher reads, not to Node.
+        for (int i = 1; i < args.Length; i++) Console.Out.WriteLine(Jobs.Probe(args[i]));
+        Console.Out.Flush();
+        return 0;
+      }
       // Unknown invocation: say so in the same framed channel and stop. Never
       // fall back to running anything (plan rule 2, fail closed).
       Refuse(new Refused(400, "Unknown sandbox request."));
@@ -97,7 +108,7 @@ static class Sandbox {
   // The request the Node side framed on stdin, parsed into single values and
   // lists. Keeping both lets a value appear once (mode, command) or many times
   // (grants, denies, argv) with no ambiguity.
-  class Request {
+  public class Request {
     readonly Dictionary<string, List<string>> fields = new Dictionary<string, List<string>>(StringComparer.Ordinal);
     public void Add(string key, string value) {
       List<string> list;
@@ -131,10 +142,23 @@ static class Sandbox {
     // Each mode is built in its own slice (docs/parity/C-sandbox.md §3). Until a
     // mode is wired on both sides it refuses rather than running anything.
     switch (mode) {
+      case "jobs":
+        return Jobs.Run(request, Emit);
       default:
         throw new Refused(400, "This sandbox mode is not available on this computer.");
     }
   }
+
+  // Relay one frame to Node. Exposed to the mode handlers so child output and
+  // the started/exit/result frames all go through the one locked writer.
+  public static void Emit(byte type, byte[] payload) { WriteControl(type, payload); }
+  public static byte TypeStarted { get { return FrameStarted; } }
+  public static byte TypeStdout { get { return FrameStdout; } }
+  public static byte TypeStderr { get { return FrameStderr; } }
+  public static byte TypeExit { get { return FrameExit; } }
+  public static byte TypeResult { get { return FrameResult; } }
+  // A refusal raised from a mode handler: same framed channel as Main's.
+  public static Exception Refusal(int status, string message) { return new Refused(status, message); }
 
   // Read exactly `count` bytes or throw: a short read means the pipe closed
   // mid-frame, which is never a valid request.
@@ -441,5 +465,424 @@ static class NativeSec {
       if (!GetFileInformationByHandle(handle, out info)) return false;
       return info.NumberOfLinks > 1;
     } finally { CloseHandle(handle); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §3.1, §5, §6 Jobs. An agent's or invited person's command runs as
+// cmd.exe /d /s /c inside a regular AppContainer (per-root capability grant,
+// internet) and a Job Object (kill-on-close, die-on-exception, UI restrictions,
+// a fork-bomb process cap, no CPU-time cap). Before the command runs, the launch
+// token is AccessChecked against every deny path (§4.5) and a probe inside the
+// same AppContainer confirms Reach's own listener is unreachable (§5); either
+// failing refuses the launch.
+static class Jobs {
+  public static string Probe(string target) {
+    int idx = target.LastIndexOf(':');
+    if (idx <= 0) return "shut " + target;
+    string host = target.Substring(0, idx);
+    int port;
+    if (!int.TryParse(target.Substring(idx + 1), out port)) return "shut " + target;
+    try {
+      using (TcpClient client = new TcpClient()) {
+        IAsyncResult pending = client.BeginConnect(host, port, null, null);
+        if (pending.AsyncWaitHandle.WaitOne(1500) && client.Connected) { client.EndConnect(pending); return "open " + target; }
+      }
+    } catch (Exception) { }
+    return "shut " + target;
+  }
+
+  public static int Run(Sandbox.Request request, Action<byte, byte[]> emit) {
+    string interpreter = request.Get("interpreter", "cmd.exe");
+    if (interpreter != "cmd.exe") throw Sandbox.Refusal(400, "Jobs run through cmd.exe on Windows.");
+    string command = request.Get("command", "");
+    string cwd = request.Get("cwd", null);
+    int timeoutMs = request.Int("timeoutMs", 60000);
+    int activeProcesses = request.Int("activeProcesses", 512);
+    List<string> grants = request.List("grant");
+    List<string> grantAccess = request.List("grantAccess");
+    List<string> denies = request.List("deny");
+    List<string> capabilityNames = request.List("capability");
+    List<string> loopback = request.List("loopback");
+    string containerName = "reach.jobs." + Hash(request.Get("client", "jobs"));
+
+    // The grant walk (§4.4), once, before the launch. Jobs never deny the in-root
+    // private names, so git and npm work (finding 5): denyNames is empty here.
+    var noNames = new List<string>();
+    for (int i = 0; i < grants.Count; i++) {
+      bool writable = i >= grantAccess.Count || grantAccess[i] != "ro";
+      Grants.ApplyGrant(grants[i], writable, noNames, denies);
+    }
+
+    // The AppContainer and its capabilities: the package SID is stable per
+    // client; the launch carries only this client's per-root capabilities, the
+    // Reach-wide deny capability, and internetClient (§4.1, §5).
+    IntPtr containerSid = NativeProc.EnsureAppContainer(containerName);
+    var caps = new List<SecurityIdentifier>();
+    foreach (string root in grants) caps.Add(Grants.RootCapability(root));
+    caps.Add(Grants.DenyCapability());
+    foreach (string name in capabilityNames) if (name == "internetClient") caps.Add(new SecurityIdentifier("S-1-15-3-1"));
+
+    using (var container = new NativeProc.Container(containerSid, caps)) {
+      using (var job = NativeProc.JobObject.CreateForJobs(activeProcesses)) {
+        // §5 self-test: inside this AppContainer, Reach's listener must be
+        // unreachable on every local address. Any "open" refuses the launch.
+        if (loopback.Count > 0) {
+          string probeLine = "\"" + NativeProc.SelfPath() + "\" netprobe";
+          foreach (string target in loopback) probeLine += " " + target;
+          string probeOut = NativeProc.RunContainedCaptured(probeLine, cwd, container, job, timeoutMs < 10000 ? timeoutMs : 10000);
+          if (probeOut.IndexOf("open ", StringComparison.Ordinal) >= 0)
+            throw Sandbox.Refusal(403, "This PC let a sandboxed command reach Reach itself, so the command was refused.");
+        }
+
+        string commandLine = "\"" + NativeProc.ComSpec() + "\" /d /s /c " + command;
+        NativeProc.Launched launched = NativeProc.LaunchContained(commandLine, cwd, container, job, true);
+        try {
+          // §4.5 preflight: the real launch token, AccessChecked against every
+          // deny path under the ACL lock, immediately after creation and before
+          // the suspended process runs. Any reachable secret refuses the launch.
+          lock (NativeProc.AclLock) {
+            string reachable = NativeProc.FirstReachableSecret(launched.Process, denies);
+            if (reachable != null) { launched.Kill(); throw Sandbox.Refusal(403, "A command grant would have exposed Reach's own files, so it was refused."); }
+          }
+          emit(Sandbox.TypeStarted, BeBytes(launched.ProcessId));
+          launched.Resume();
+          return Relay(launched, job, emit, timeoutMs);
+        } finally {
+          launched.Dispose();
+        }
+      }
+    }
+  }
+
+  // Relay the child's output as frames, report its exit, then stay only long
+  // enough to reap survivors — until the job drains or the deadline (finding 13).
+  static int Relay(NativeProc.Launched launched, NativeProc.JobObject job, Action<byte, byte[]> emit, int timeoutMs) {
+    var pump = new List<Thread>();
+    pump.Add(NativeProc.Pump(launched.StdoutRead, Sandbox.TypeStdout, emit));
+    pump.Add(NativeProc.Pump(launched.StderrRead, Sandbox.TypeStderr, emit));
+    // The lifeline: Node's EOF on our own stdin aborts the whole job.
+    Thread lifeline = new Thread(delegate () {
+      try { Stream stdin = Console.OpenStandardInput(); byte[] one = new byte[1]; while (stdin.Read(one, 0, 1) > 0) { } } catch (Exception) { }
+      try { job.Terminate(); } catch (Exception) { }
+    });
+    lifeline.IsBackground = true;
+    lifeline.Start();
+
+    int code = launched.WaitForExit(timeoutMs);
+    emit(Sandbox.TypeExit, BeBytes(code));
+    // Drain: wait for any backgrounded survivors to finish, up to the deadline,
+    // then close the job (kill-on-close reaps whatever is left).
+    long deadline = Environment.TickCount + Math.Max(0, timeoutMs);
+    while (Environment.TickCount < deadline && job.ActiveProcesses() > 0) Thread.Sleep(200);
+    job.Terminate();
+    foreach (Thread t in pump) { try { t.Join(1000); } catch (Exception) { } }
+    return 0;
+  }
+
+  static byte[] BeBytes(int value) {
+    return new byte[] { (byte)((value >> 24) & 0xff), (byte)((value >> 16) & 0xff), (byte)((value >> 8) & 0xff), (byte)(value & 0xff) };
+  }
+
+  static string Hash(string value) {
+    using (SHA256 sha = SHA256.Create()) {
+      byte[] digest = sha.ComputeHash(Encoding.Unicode.GetBytes(value));
+      StringBuilder hex = new StringBuilder(24);
+      for (int i = 0; i < 12; i++) hex.Append(digest[i].ToString("x2"));
+      return hex.ToString();
+    }
+  }
+}
+
+// P/Invoke for the AppContainer + Job Object launch, the preflight AccessCheck,
+// and the framed relay. Kept together so the mode handlers stay readable.
+static class NativeProc {
+  public static readonly object AclLock = new object();
+  static readonly IntPtr Invalid = new IntPtr(-1);
+
+  // ---- constants ----
+  const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000;
+  const uint FILE_SHARE_ALL = 0x7, OPEN_EXISTING = 3;
+  const uint HANDLE_FLAG_INHERIT = 0x1;
+  const uint STARTF_USESTDHANDLES = 0x100;
+  const uint CREATE_SUSPENDED = 0x4, CREATE_UNICODE_ENVIRONMENT = 0x400, CREATE_NO_WINDOW = 0x08000000, EXTENDED_STARTUPINFO_PRESENT = 0x80000;
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = new IntPtr(0x00020009);
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = new IntPtr(0x0002000D);
+  const uint SE_GROUP_ENABLED = 0x4;
+  const uint TOKEN_QUERY = 0x8, TOKEN_DUPLICATE = 0x2;
+  const int JobObjectBasicUIRestrictions = 4, JobObjectBasicAccountingInformation = 1, JobObjectExtendedLimitInformation = 9;
+  const uint JOB_LIMIT_ACTIVE_PROCESS = 0x8, JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x400;
+  const uint UILIMIT_ALL = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40; // handles, readclipboard, writeclipboard, systemparameters, displaysettings, globalatoms, desktop, exitwindows
+  const uint FILE_GENERIC_READ = 0x120089;
+
+  // ---- structs ----
+  [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
+  [StructLayout(LayoutKind.Sequential)] struct SECURITY_CAPABILITIES { public IntPtr AppContainerSid; public IntPtr Capabilities; public int CapabilityCount; public int Reserved; }
+  [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+  [StructLayout(LayoutKind.Sequential)] internal struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle; public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute; public uint dwFlags; public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO StartupInfo; public IntPtr lpAttributeList; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass, SchedulingClass; }
+  [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_UI_RESTRICTIONS { public uint UIRestrictionsClass; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION { public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime; public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses; }
+  [StructLayout(LayoutKind.Sequential)] struct GENERIC_MAPPING { public uint GenericRead, GenericWrite, GenericExecute, GenericAll; }
+  [StructLayout(LayoutKind.Sequential)] struct PRIVILEGE_SET { public uint PrivilegeCount, Control; public long Luid; public uint Attributes; }
+
+  // ---- P/Invoke ----
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SECURITY_ATTRIBUTES sa, int size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr sa, string name);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int length);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref JOBOBJECT_BASIC_UI_RESTRICTIONS info, int length);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, ref JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info, int length, IntPtr returned);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr prev, IntPtr returnSize);
+  [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string app, string commandLine, IntPtr processAttrs, IntPtr threadAttrs, bool inherit, uint flags, IntPtr environment, string cwd, ref STARTUPINFOEX startup, out PROCESS_INFORMATION info);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateToken(IntPtr token, int level, out IntPtr duplicate);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool GetFileSecurityW(string file, int information, byte[] descriptor, int length, out int needed);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool AccessCheck(byte[] descriptor, IntPtr token, uint desired, ref GENERIC_MAPPING mapping, ref PRIVILEGE_SET privileges, ref int privilegeLength, out uint granted, out bool status);
+  [DllImport("advapi32.dll")] static extern void MapGenericMask(ref uint access, ref GENERIC_MAPPING mapping);
+  [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr str);
+  [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int CreateAppContainerProfile(string name, string displayName, string description, SID_AND_ATTRIBUTES[] capabilities, int capabilityCount, out IntPtr sid);
+  [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
+  [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int GetAppContainerFolderPath(string sid, out IntPtr path);
+  [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr ptr);
+
+  public static string ComSpec() {
+    string root = Environment.GetEnvironmentVariable("SystemRoot");
+    if (string.IsNullOrEmpty(root)) root = "C:\\Windows";
+    return root + "\\System32\\cmd.exe";
+  }
+  public static string SelfPath() { return System.Reflection.Assembly.GetExecutingAssembly().Location; }
+
+  // Create the per-client AppContainer profile if it isn't there, and return its
+  // SID (freed with the Container). The profile makes GetAppContainerFolderPath
+  // resolvable so TEMP/TMP can point at the container's own folder (finding 10).
+  public static IntPtr EnsureAppContainer(string name) {
+    IntPtr sid;
+    int created = CreateAppContainerProfile(name, name, "Reach sandboxed job", null, 0, out sid);
+    if (created == 0) return sid;
+    int derived = DeriveAppContainerSidFromAppContainerName(name, out sid);
+    if (derived != 0) throw Sandbox.Refusal(503, "Windows wouldn't create a sandbox container for this command.");
+    return sid;
+  }
+
+  // Holds the SECURITY_CAPABILITIES (AppContainer SID + capability SIDs) in
+  // unmanaged memory for the lifetime of a launch, and the container's own TEMP
+  // folder. Frees everything on dispose.
+  public class Container : IDisposable {
+    public IntPtr CapabilitiesPtr;
+    public string TempFolder;
+    IntPtr sid; readonly List<IntPtr> allocations = new List<IntPtr>();
+    public Container(IntPtr appContainerSid, List<SecurityIdentifier> capabilities) {
+      sid = appContainerSid;
+      TempFolder = FolderFor(appContainerSid);
+      IntPtr array = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)) * Math.Max(1, capabilities.Count));
+      allocations.Add(array);
+      for (int i = 0; i < capabilities.Count; i++) {
+        byte[] raw = new byte[capabilities[i].BinaryLength];
+        capabilities[i].GetBinaryForm(raw, 0);
+        IntPtr sidMem = Marshal.AllocHGlobal(raw.Length);
+        allocations.Add(sidMem);
+        Marshal.Copy(raw, 0, sidMem, raw.Length);
+        var entry = new SID_AND_ATTRIBUTES(); entry.Sid = sidMem; entry.Attributes = SE_GROUP_ENABLED;
+        Marshal.StructureToPtr(entry, new IntPtr(array.ToInt64() + i * Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES))), false);
+      }
+      var caps = new SECURITY_CAPABILITIES(); caps.AppContainerSid = appContainerSid; caps.Capabilities = array; caps.CapabilityCount = capabilities.Count; caps.Reserved = 0;
+      CapabilitiesPtr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)));
+      allocations.Add(CapabilitiesPtr);
+      Marshal.StructureToPtr(caps, CapabilitiesPtr, false);
+    }
+    static string FolderFor(IntPtr appContainerSid) {
+      IntPtr str; if (!ConvertSidToStringSidW(appContainerSid, out str)) return null;
+      try {
+        string s = Marshal.PtrToStringUni(str);
+        IntPtr folder; if (GetAppContainerFolderPath(s, out folder) != 0) return null;
+        try { return Marshal.PtrToStringUni(folder); } finally { CoTaskMemFree(folder); }
+      } finally { NativeSec.LocalFree(str); }
+    }
+    public void Dispose() {
+      foreach (IntPtr p in allocations) { try { Marshal.FreeHGlobal(p); } catch (Exception) { } }
+      if (sid != IntPtr.Zero) { FreeSid(sid); sid = IntPtr.Zero; }
+    }
+  }
+
+  public class JobObject : IDisposable {
+    public IntPtr Handle;
+    JobObject(IntPtr handle) { Handle = handle; }
+    public static JobObject CreateForJobs(int activeProcesses) {
+      IntPtr handle = CreateJobObjectW(IntPtr.Zero, null);
+      if (handle == IntPtr.Zero) throw Sandbox.Refusal(503, "Windows wouldn't create the sandbox's job object.");
+      var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      ext.BasicLimitInformation.LimitFlags = JOB_LIMIT_KILL_ON_JOB_CLOSE | JOB_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | (activeProcesses > 0 ? JOB_LIMIT_ACTIVE_PROCESS : 0);
+      ext.BasicLimitInformation.ActiveProcessLimit = (uint)(activeProcesses > 0 ? activeProcesses : 0);
+      SetInformationJobObject(handle, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
+      var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS(); ui.UIRestrictionsClass = UILIMIT_ALL;
+      SetInformationJobObject(handle, JobObjectBasicUIRestrictions, ref ui, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS)));
+      return new JobObject(handle);
+    }
+    public int ActiveProcesses() {
+      var acct = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
+      if (!QueryInformationJobObject(Handle, JobObjectBasicAccountingInformation, ref acct, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero)) return 0;
+      return (int)acct.ActiveProcesses;
+    }
+    public void Terminate() { try { TerminateJobObject(Handle, 1); } catch (Exception) { } }
+    public void Dispose() { if (Handle != IntPtr.Zero) { CloseHandle(Handle); Handle = IntPtr.Zero; } }
+  }
+
+  // A launched, Job-assigned, AppContainer process, with the parent ends of its
+  // output pipes. Its only inherited handles are the three std pipes (HANDLE_LIST).
+  public class Launched : IDisposable {
+    public IntPtr Process, Thread; public int ProcessId;
+    public Stream StdoutRead, StderrRead;
+    IntPtr stdinNul, stdoutWrite, stderrWrite, stdoutReadH, stderrReadH, attributeList;
+    public void Resume() { ResumeThread(Thread); }
+    public void Kill() { try { TerminateProcess(Process, 1); } catch (Exception) { } }
+    public int WaitForExit(int ms) {
+      WaitForSingleObject(Process, ms < 0 ? 0xFFFFFFFF : (uint)ms);
+      uint code; if (!GetExitCodeProcess(Process, out code)) return -1;
+      if (code == 259) { Kill(); return -1; } // STILL_ACTIVE at the deadline
+      return unchecked((int)code);
+    }
+    internal void Adopt(PROCESS_INFORMATION pi, IntPtr nul, IntPtr outW, IntPtr errW, IntPtr outR, IntPtr errR, IntPtr attrs) {
+      Process = pi.hProcess; Thread = pi.hThread; ProcessId = pi.dwProcessId;
+      stdinNul = nul; stdoutWrite = outW; stderrWrite = errW; stdoutReadH = outR; stderrReadH = errR; attributeList = attrs;
+      StdoutRead = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(outR, false), FileAccess.Read);
+      StderrRead = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(errR, false), FileAccess.Read);
+    }
+    public void Dispose() {
+      // The child owns its ends; close ours so the reads see EOF.
+      foreach (IntPtr h in new IntPtr[] { stdinNul, stdoutWrite, stderrWrite }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
+      if (attributeList != IntPtr.Zero) { DeleteProcThreadAttributeList(attributeList); Marshal.FreeHGlobal(attributeList); }
+      if (Thread != IntPtr.Zero) CloseHandle(Thread);
+      if (Process != IntPtr.Zero) CloseHandle(Process);
+    }
+  }
+
+  public static Launched LaunchContained(string commandLine, string cwd, Container container, JobObject job, bool suspended) {
+    var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = 1; sa.lpSecurityDescriptor = IntPtr.Zero;
+    IntPtr outRead, outWrite, errRead, errWrite;
+    if (!CreatePipe(out outRead, out outWrite, ref sa, 0) || !CreatePipe(out errRead, out errWrite, ref sa, 0))
+      throw Sandbox.Refusal(503, "Windows wouldn't open the sandbox's pipes.");
+    SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
+    IntPtr nul = CreateFileW("NUL", GENERIC_READ, FILE_SHARE_ALL, ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
+
+    // The attribute list: the child is in the job and the AppContainer at
+    // creation (no unassigned window), and inherits only these three handles.
+    IntPtr size = IntPtr.Zero;
+    InitializeProcThreadAttributeList(IntPtr.Zero, 3, 0, ref size);
+    IntPtr attrs = Marshal.AllocHGlobal(size.ToInt32());
+    if (!InitializeProcThreadAttributeList(attrs, 3, 0, ref size)) throw Sandbox.Refusal(503, "Windows wouldn't prepare the sandbox launch.");
+    IntPtr handleArray = Marshal.AllocHGlobal(IntPtr.Size * 3);
+    Marshal.WriteIntPtr(handleArray, 0, nul); Marshal.WriteIntPtr(handleArray, IntPtr.Size, outWrite); Marshal.WriteIntPtr(handleArray, IntPtr.Size * 2, errWrite);
+    IntPtr jobHandlePtr = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobHandlePtr, job.Handle);
+    UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, container.CapabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SECURITY_CAPABILITIES)), IntPtr.Zero, IntPtr.Zero);
+    UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobHandlePtr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero);
+    UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handleArray, (IntPtr)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero);
+
+    var startup = new STARTUPINFOEX();
+    startup.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nul; startup.StartupInfo.hStdOutput = outWrite; startup.StartupInfo.hStdError = errWrite;
+    startup.lpAttributeList = attrs;
+    IntPtr env = BuildEnvironment(container.TempFolder);
+    uint flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | (suspended ? CREATE_SUSPENDED : 0);
+    PROCESS_INFORMATION pi;
+    bool ok = CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags, env, cwd, ref startup, out pi);
+    int error = Marshal.GetLastWin32Error();
+    Marshal.FreeHGlobal(env); Marshal.FreeHGlobal(handleArray); Marshal.FreeHGlobal(jobHandlePtr);
+    if (!ok) {
+      DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs);
+      foreach (IntPtr h in new IntPtr[] { nul, outWrite, errWrite, outRead, errRead }) if (h != IntPtr.Zero && h != Invalid) CloseHandle(h);
+      throw Sandbox.Refusal(503, "Windows wouldn't start the sandboxed command (" + error + ").");
+    }
+    var launched = new Launched();
+    launched.Adopt(pi, nul, outWrite, errWrite, outRead, errRead, attrs);
+    return launched;
+  }
+
+  public static string RunContainedCaptured(string commandLine, string cwd, Container container, JobObject job, int timeoutMs) {
+    Launched launched = LaunchContained(commandLine, cwd, container, job, false);
+    try {
+      var sb = new StringBuilder();
+      Thread reader = new Thread(delegate () { try { using (StreamReader r = new StreamReader(launched.StdoutRead)) sb.Append(r.ReadToEnd()); } catch (Exception) { } });
+      reader.IsBackground = true; reader.Start();
+      launched.WaitForExit(timeoutMs);
+      reader.Join(1000);
+      return sb.ToString();
+    } finally { launched.Dispose(); }
+  }
+
+  // §4.5 preflight: the first deny path the launch token can still read, or null.
+  public static string FirstReachableSecret(IntPtr process, List<string> denies) {
+    IntPtr primary, impersonation;
+    if (!OpenProcessToken(process, TOKEN_QUERY | TOKEN_DUPLICATE, out primary)) return null;
+    try {
+      if (!DuplicateToken(primary, 2, out impersonation)) return null;
+      try {
+        var mapping = new GENERIC_MAPPING(); mapping.GenericRead = 0x120089; mapping.GenericWrite = 0x120116; mapping.GenericExecute = 0x1200a0; mapping.GenericAll = 0x1f01ff;
+        foreach (string path in denies) {
+          byte[] sd = ReadSecurity(path);
+          if (sd == null) continue;
+          uint desired = FILE_GENERIC_READ; MapGenericMask(ref desired, ref mapping);
+          var priv = new PRIVILEGE_SET(); int privLen = Marshal.SizeOf(typeof(PRIVILEGE_SET)); uint granted; bool status;
+          if (AccessCheck(sd, impersonation, desired, ref mapping, ref priv, ref privLen, out granted, out status) && status && granted != 0) return path;
+        }
+        return null;
+      } finally { CloseHandle(impersonation); }
+    } finally { CloseHandle(primary); }
+  }
+
+  static byte[] ReadSecurity(string path) {
+    int needed;
+    const int OWNER_GROUP_DACL = 0x7;
+    if (GetFileSecurityW(path, OWNER_GROUP_DACL, null, 0, out needed) || needed <= 0) {
+      if (needed <= 0) return null;
+    }
+    byte[] buffer = new byte[needed];
+    return GetFileSecurityW(path, OWNER_GROUP_DACL, buffer, buffer.Length, out needed) ? buffer : null;
+  }
+
+  // One reader thread per output pipe, wrapping each read into a data frame.
+  public static Thread Pump(Stream stream, byte type, Action<byte, byte[]> emit) {
+    Thread thread = new Thread(delegate () {
+      byte[] buffer = new byte[16384];
+      try {
+        int got;
+        while ((got = stream.Read(buffer, 0, buffer.Length)) > 0) {
+          byte[] chunk = new byte[got]; Array.Copy(buffer, chunk, got); emit(type, chunk);
+        }
+      } catch (Exception) { }
+    });
+    thread.IsBackground = true; thread.Start();
+    return thread;
+  }
+
+  static IntPtr BuildEnvironment(string tempFolder) {
+    var sb = new StringBuilder();
+    foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
+      string key = (string)entry.Key;
+      if (key.StartsWith("REACH_", StringComparison.OrdinalIgnoreCase)) continue;
+      if (string.Equals(key, "TEMP", StringComparison.OrdinalIgnoreCase) || string.Equals(key, "TMP", StringComparison.OrdinalIgnoreCase)) continue;
+      sb.Append(key).Append('=').Append((string)entry.Value).Append('\0');
+    }
+    if (!string.IsNullOrEmpty(tempFolder)) { sb.Append("TEMP=").Append(tempFolder).Append('\0'); sb.Append("TMP=").Append(tempFolder).Append('\0'); }
+    sb.Append("REACH_AGENT=1\0\0");
+    byte[] bytes = Encoding.Unicode.GetBytes(sb.ToString());
+    IntPtr ptr = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, ptr, bytes.Length); return ptr;
   }
 }
