@@ -118,8 +118,10 @@ function run() {
       }
       app.activate();
     } else if (payload.action === "close") {
-      if (payload.provider === "terminal") app.close(found.pane);
-      else found.pane.close();
+      if (payload.provider === "terminal") {
+        var left = closeTerminalTab(app, found);
+        if (left) return JSON.stringify(left);
+      } else found.pane.close();
     } else throw Error("Unknown terminal operation.");
     return JSON.stringify({ ok: true });
   } catch (e) {
@@ -133,4 +135,42 @@ function run() {
       status: denied ? 403 : 502,
     });
   }
+}
+
+// Terminal closes windows, not tabs (a tab doesn't understand close), and
+// asks on the Mac before it ends what runs in one. The phone has asked
+// already ("Anything running in it will stop"), so what runs in the tab ends
+// first, as Terminal's own Terminate ends it: a hangup to each of the
+// owner's programs on the tab's terminal. With nothing left running in it,
+// its window then closes if the tab was its only one; one tab among others
+// stays, ended, and leaves the list. Nothing is ever left asking on the Mac:
+// if something keeps running, the tab stays as it is and the phone is told.
+function closeTerminalTab(app, found) {
+  var tty = String(found.pane.tty());
+  if (!/^\/dev\/ttys\d+$/.test(tty))
+    return { error: "This terminal could not be closed. Refresh the list.", status: 502 };
+  var running = function () {
+    try {
+      return found.pane.processes().length > 0;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (running()) {
+    var shell = Application.currentApplication();
+    shell.includeStandardAdditions = true;
+    shell.doShellScript(
+      "/bin/ps -t " + tty.slice(5) + " -o pid= -o uid= | /usr/bin/awk -v me=\"$(/usr/bin/id -u)\" '$2 == me { print $1 }' | /usr/bin/xargs /bin/kill -HUP 2>/dev/null; exit 0",
+    );
+    for (var i = 0; i < 50 && running(); i++) delay(0.1);
+  }
+  if (running())
+    return { error: "Something in this terminal is still running. Close it on the Mac.", status: 409 };
+  // Its window may have closed with it already (as the owner's profile says).
+  var alone = false;
+  try {
+    alone = found.win.tabs().length === 1;
+  } catch (e) {}
+  if (alone) app.close(found.win);
+  return null;
 }

@@ -187,7 +187,7 @@ function presetTools(access) {
   );
   if (access.terminals?.length) tools.push(definition("reach_read_terminal", "Read terminal output", "Read output from a terminal the owner chose to share. Output only.", object({ id: string(256) }, ["id"]), { id: access.terminals[0].id }));
   if (access.shell) tools.push(
-    definition("reach_shell", "Run a command", "Run one shell command as the owner's OS account, with no Reach command deny list or sandbox. Uses a clean environment, a 60-second limit and 256 KiB of output. Choose a root from reach_access and a working folder within it. macOS permissions still apply. Commands and outcomes are logged; pause and revoked access stop execution.", object({ command: string(4000), root, cwd: relativePath }, ["command", "root"]), { command: "ls -la", root: firstRoot, cwd: "" }),
+    definition("reach_shell", "Run a command", `Run one shell command as the owner's OS account, with no Reach command deny list or sandbox. Uses a clean environment, a 60-second limit and 256 KiB of output. Choose a root from reach_access and a working folder within it. ${process.platform === "win32" ? "Runs inside a Job Object as the owner's Windows account." : "macOS permissions still apply."} Commands and outcomes are logged; pause and revoked access stop execution.`, object({ command: string(4000), root, cwd: relativePath }, ["command", "root"]), { command: "ls -la", root: firstRoot, cwd: "" }),
     definition("reach_shell_history", "Command history", "This session's commands and their outcomes.", object(), {}),
   );
   tools.push(

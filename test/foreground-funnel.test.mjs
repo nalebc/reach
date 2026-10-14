@@ -9,8 +9,8 @@ import { CONFLICT } from "../scripts/ephemeral-funnel.mjs";
 import { exactForegroundFunnel } from "../scripts/public-link.mjs";
 import { keyRedactor } from "../server/tailscale-auth.mjs";
 
-// Windows' public route with browser sign-in (REACH_WINDOWS_ACCOUNT=1;
-// docs/parity/D-public-door.md §4.9): a foreground `tailscale funnel` held as
+// Windows' public route with browser sign-in
+// (docs/parity/D-public-door.md §4.9): a foreground `tailscale funnel` held as
 // Reach's own child, never --bg, never a janitor or a record file. Its three
 // ways of saying Funnel isn't allowed yet (Tailscale 1.104's cli/funnel.go).
 const KEY = "Zyxwvutsrqponmlkjihgfedcba9876543210-_ZYXWV";
