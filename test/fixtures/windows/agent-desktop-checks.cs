@@ -276,6 +276,9 @@ static class DesktopChecks {
     public bool KeyDown(int vk) { return Down.Contains(vk); }
     public uint Send(Native.INPUT[] batch) { Sent.Add(batch); return (uint)batch.Length; }
     public void Pause(int ms) { Pauses.Add(ms); if (OnPause != null) OnPause(); }
+    public int DoubleMs = 500, DoubleSize = 4;
+    public int DoubleClickMs() { return DoubleMs; }
+    public int DoubleClickSize() { return DoubleSize; }
   }
   sealed class FakeClip : IClip {
     public string Text;
@@ -304,6 +307,7 @@ static class DesktopChecks {
     Desk.stopping = false;
     Desk.heldButtons.Clear();
     Desk.heldKeys.Clear();
+    Desk.lastPressAt = DateTime.MinValue;
     Desk.typedSecrets.Clear();
     target = Window(1, 0, 0, 0, 1000, 800);
     target.Pid = 100;
@@ -409,6 +413,30 @@ static class DesktopChecks {
       view.FrontIntegrity = 0x3000;
       Check(Starts(Run(action, "apps"), "paused: A window running as administrator is in front"), "Rule F: " + action);
     }
+    // Two clicks at once at the same point are two clicks, as on a Mac: the
+    // second waits out Windows' double-click time before its point is checked.
+    // Elsewhere, or with the other button, or a double click's own second
+    // press: no wait.
+    Fresh();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25}", "apps") == "ok" && input.Pauses.TrueForAll(ms => ms < 100), "a first click: no wait");
+    input.Pauses.Clear();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25}", "apps") == "ok" && input.Pauses.Count > 0 && input.Pauses[0] >= 400 && input.Pauses[0] <= 530, "the same point at once: Windows' double-click time first");
+    input.Pauses.Clear();
+    Check(Run("{\"type\":\"drag\",\"x\":0.5,\"y\":0.25,\"toX\":0.6,\"toY\":0.3}", "apps") == "ok" && input.Pauses.Count > 0 && input.Pauses[0] >= 400, "a drag from there too");
+    input.Pauses.Clear();
+    Check(Run("{\"type\":\"click\",\"x\":0.2,\"y\":0.25}", "apps") == "ok" && input.Pauses.TrueForAll(ms => ms < 100), "another point: no wait");
+    input.Pauses.Clear();
+    Check(Run("{\"type\":\"click\",\"x\":0.2,\"y\":0.25,\"button\":\"right\"}", "apps") == "ok" && input.Pauses.TrueForAll(ms => ms < 100), "the other button: no wait");
+    Fresh();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25,\"count\":2}", "apps") == "ok" && input.Sent.Count == 1 &&
+      input.Sent[0].Length >= 5 && input.Pauses.TrueForAll(ms => ms < 100), "a double click: both presses in one batch");
+    Desk.lastPressAt = DateTime.UtcNow.AddSeconds(-2);
+    input.Pauses.Clear();
+    Check(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25}", "apps") == "ok" && input.Pauses.TrueForAll(ms => ms < 100), "long after: no wait");
+    Fresh();
+    view.Desktop = "Winlogon";
+    Desk.lastPressAt = DateTime.UtcNow;
+    Check(Starts(Run("{\"type\":\"click\",\"x\":0.5,\"y\":0.25}", "apps"), "paused:") && input.Pauses.Count == 0, "a refused click doesn't wait first");
     // Scrolls as on a Mac: positive dy down, positive dx right.
     Fresh();
     Check(Run("{\"type\":\"scroll\",\"x\":0.5,\"y\":0.5,\"dy\":120,\"dx\":-30}", "apps") == "ok", "a scroll");

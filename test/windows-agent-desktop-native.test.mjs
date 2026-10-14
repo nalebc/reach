@@ -322,6 +322,11 @@ test("input reaches a window at the helper's own integrity: clicks, typing in an
   };
   await act({ type: "click", ...at(target.notes) }, "a click");
   await until(() => /^click /m.test(target.log()), "the click arrives");
+  // Another at once, at the same point: a click, not Windows' double click
+  // (the helper waits out the double-click time, as a Mac's says the count).
+  await act({ type: "click", ...at(target.notes) }, "a second click");
+  await until(() => (target.log().match(/^click /gm) || []).length >= 2, "the second click arrives as a click");
+  assert.ok(!/^double /m.test(target.log()), `two clicks, no double click: ${target.log()}`);
   await act({ type: "click", ...at(target.notes), count: 2 }, "a double click");
   await until(() => /^double /m.test(target.log()), "the double click arrives");
   await act({ type: "type", text: "café 🙂 日本\nnext" }, "typing");
@@ -355,11 +360,17 @@ test("paste: the agent's text and then the owner's own, both kept out of Clipboa
   assert.equal((await h.send({ op: "act", action: { type: "click", ...at(target.notes) } })).ok, true);
   assert.equal((await h.send({ op: "act", action: { type: "type", text: "pasted text", paste: true } })).ok, true);
   await until(() => target.log().includes("text pasted text"), "the paste arrives");
-  await until(() => /\| text owner's text$/m.test(watched()), "the owner's text back");
+  // The watcher logs in its own time: the owner's text back is the first
+  // line with it after the agent's (the test's own setting came before).
+  const restored = () => {
+    const lines = watched().split("\n").filter(Boolean), at = lines.findIndex((line) => line.endsWith("| text pasted text"));
+    return at >= 0 && lines.slice(at + 1).find((line) => line.endsWith("| text owner's text"));
+  };
+  const owner = await until(restored, "the owner's text back after the paste");
   const formats = ["ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
   const lines = watched().split("\n").filter(Boolean);
   note({ paste: lines });
-  const agent = lines.find((line) => line.endsWith("| text pasted text")), owner = lines.filter((line) => line.endsWith("| text owner's text")).at(-1);
+  const agent = lines.find((line) => line.endsWith("| text pasted text"));
   for (const format of formats) {
     assert.ok(agent.includes(format), `the agent's text carries ${format}`);
     assert.ok(owner.includes(format), `the owner's restored text carries ${format}`);
@@ -416,24 +427,31 @@ test("a held button is let go when the helper's input ends, and when Reach's pro
   await clickAt(target.x + 80, target.y + 12);
   const from = at([target.x + 300, target.y + 250]), to = at([target.x + 420, target.y + 300]);
   const drag = { type: "drag", x: from.x, y: from.y, toX: to.x, toY: to.y, holdMs: 5000 };
+  // A press is a press here, whatever Windows makes of its timing (a second
+  // one soon after at the same point is its double click).
+  const presses = () => (target.log().match(/^(click|double) /gm) || []).length;
   const ups = (target.log().match(/^up /gm) || []).length;
   h.send({ op: "act", action: drag }).catch(() => {});
-  await until(() => /^click /m.test(target.log()), "the button is down");
+  await until(() => presses() >= 1, "the button is down");
   const ended = Date.now();
   h.child.stdin.end();
   await until(() => (target.log().match(/^up /gm) || []).length > ups, "let go at the end of input", 1500);
   assert.equal((await exec(fixtureConsole, ["buttons"], { windowsHide: true })).stdout.trim(), "left up");
   await Promise.race([h.exited, sleep(1500)]);
   note({ release: { endedToUpMs: Date.now() - ended } });
-  // Reach killed outright: its helper's watchdog lets go.
-  const parent = spawn(process.execPath, [path.resolve("test/fixtures/windows/parent-node.mjs"), fixtureConsole, helperFile, JSON.stringify({ op: "rules", ...rulesFor("full") }), JSON.stringify(drag)],
+  // Reach killed outright: its helper's watchdog lets go. A new helper, so
+  // its press starts elsewhere: Windows would make one at the same point
+  // within its double-click time a double click.
+  const again = at([target.x + 340, target.y + 280]);
+  const parent = spawn(process.execPath, [path.resolve("test/fixtures/windows/parent-node.mjs"), fixtureConsole, helperFile, JSON.stringify({ op: "rules", ...rulesFor("full") }),
+    JSON.stringify({ ...drag, x: again.x, y: again.y })],
     { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
   children.add(parent);
   let said = "";
   parent.stdout.on("data", (chunk) => { said += chunk; });
   await until(() => said.includes('"ok":true'), "the stand-in's helper is ready");
   const before = (target.log().match(/^up /gm) || []).length;
-  await until(() => (target.log().match(/^click /gm) || []).length >= 2, "the button is down again");
+  await until(() => presses() >= 2, "the button is down again");
   await exec(path.join(SYSTEM32, "taskkill.exe"), ["/F", "/PID", String(parent.pid)], { windowsHide: true });
   await until(() => (target.log().match(/^up /gm) || []).length > before, "let go when Reach was killed", 1500);
   assert.equal((await exec(fixtureConsole, ["buttons"], { windowsHide: true })).stdout.trim(), "left up");
