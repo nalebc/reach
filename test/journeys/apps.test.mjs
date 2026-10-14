@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { startComputer, phone, skip, word, windows, needsDesktop, macInUse } from "../helpers/journey.mjs";
+import { startComputer, phone, skip, word, windows, needsDesktop, macInUse, desktopTurn } from "../helpers/journey.mjs";
 
 // Apps: the computer's apps listed on the phone with their own icons, and
 // one opened on the computer from it (on a Mac with its screen on, a tap
@@ -29,6 +29,7 @@ test(
   `Apps: this ${word}'s apps are listed on the phone with their own icons, and one opens on the ${word} from it`,
   { skip: skip || needsDesktop || macInUse() || (running() && `${app.name} is already open on this ${word}`), timeout: 240000 },
   async (t) => {
+    if (!(await desktopTurn(t))) return;
     const computer = await startComputer(t);
     const page = await phone(t, computer);
     await page.skipIntro();

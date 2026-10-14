@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startComputer, phone, skip, word, needsDesktop, macInUse, marker, lines, computerTerminal } from "../helpers/journey.mjs";
+import { startComputer, phone, skip, word, needsDesktop, macInUse, desktopTurn, marker, lines, computerTerminal } from "../helpers/journey.mjs";
 
 // Terminals: a terminal opened from the phone runs on the computer in its
 // owner's own shell and answers what's typed; and the computer's own
@@ -36,6 +36,7 @@ test(
   `Terminals: a terminal window opened on this ${word} itself is listed on the phone, read, typed into and closed from it`,
   { skip: skip || needsDesktop || macInUse(), timeout: 240000 },
   async (t) => {
+    if (!(await desktopTurn(t))) return;
     const computer = await startComputer(t);
     const page = await phone(t, computer);
     await page.skipIntro();

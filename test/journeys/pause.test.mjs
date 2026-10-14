@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { startComputer, phone, skip, word, needsDesktop, macInUse, clickTarget } from "../helpers/journey.mjs";
+import { startComputer, phone, skip, word, needsDesktop, macInUse, markInput, desktopTurn, clickTarget } from "../helpers/journey.mjs";
 
 // Updates and Pause. Settings says whether this Reach is up to date (asked
 // of npm, as an installed Reach asks). Pause on Home stops Reach using the
@@ -51,6 +51,7 @@ test(
   `Pause: Pause on Home stops Reach using this ${word}, and Resume brings its screen and control back`,
   { skip: skip || needsDesktop || macInUse(), timeout: 300000 },
   async (t) => {
+    if (!(await desktopTurn(t))) return;
     const computer = await startComputer(t);
     const target = await clickTarget(t, fs.mkdtempSync(path.join(computer.reach.temp, "target-")));
     const page = await phone(t, computer);
@@ -76,6 +77,7 @@ test(
     await showing(page, target.aside, orange, "the window, still there", 10000);
     const where = await page.evaluate(place(target.at));
     await page.touch(where.x, where.y);
+    markInput();
     await showing(page, target.aside, green, "the window turned green on the phone's picture", 30000);
     assert.equal(target.clicks(), 1, "one click reached the window once resumed, read on the computer");
     await page.shot("resumed");

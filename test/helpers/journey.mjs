@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import https from "node:https";
@@ -34,15 +35,53 @@ export const desktop = !windows || process.env.REACH_TEST_WINDOWS_DESKTOP === "1
 export const needsDesktop = desktop ? false : "needs the PC's desktop (REACH_TEST_WINDOWS_DESKTOP=1)";
 // On a Mac the desktop is its owner's: a step that brings a window up (and
 // so takes the focus) runs only while nobody has used it for two minutes.
+// A click a journey made itself (markInput) isn't someone using it.
+const inputMark = path.join(os.tmpdir(), "reach-journeys-input.json");
 export function macInUse() {
   if (process.platform !== "darwin") return false;
   try {
     const out = execFileSync("/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4"], { encoding: "utf8", timeout: 5000 });
     const idle = Number(/"HIDIdleTime" = (\d+)/.exec(out)?.[1]) / 1e9;
-    return Number.isFinite(idle) && idle < 120 ? `someone is using this Mac (input ${Math.round(idle)} s ago)` : false;
+    if (!Number.isFinite(idle)) return "this Mac's idle time couldn't be read";
+    if (idle >= 120) return false;
+    let mine = 0;
+    try {
+      mine = JSON.parse(fs.readFileSync(inputMark, "utf8")).at;
+    } catch {}
+    // The last input was a journey's own click, nothing since.
+    if (mine && Math.abs((Date.now() - mine) / 1000 - idle) < 5) return false;
+    return `someone is using this Mac (input ${Math.round(idle)} s ago)`;
   } catch {
     return "this Mac's idle time couldn't be read";
   }
+}
+export const markInput = () => fs.writeFileSync(inputMark, JSON.stringify({ at: Date.now() }));
+
+// One journey at a time on the desktop (a window of its own, clicks through
+// Reach): another test file waits its turn, so no two put windows in the
+// same place. Taken for the test, given back when it ends. On a Mac someone
+// came back to meanwhile, the test is skipped, saying so: false.
+const turnLock = path.join(os.tmpdir(), "reach-journeys-desktop.lock");
+export async function desktopTurn(t) {
+  for (const end = Date.now() + 600000; ; await sleep(500)) {
+    try {
+      fs.mkdirSync(turnLock);
+      fs.writeFileSync(path.join(turnLock, "pid"), String(process.pid));
+      break;
+    } catch {
+      // Its holder gone (a test ended outright): the turn is free.
+      try {
+        process.kill(Number(fs.readFileSync(path.join(turnLock, "pid"), "utf8")), 0);
+      } catch (error) {
+        if (error.code === "ESRCH") fs.rmSync(turnLock, { recursive: true, force: true });
+      }
+      if (Date.now() > end) throw Error("Another journey kept the desktop for ten minutes.");
+    }
+  }
+  t.after(() => fs.rmSync(turnLock, { recursive: true, force: true }));
+  const busy = macInUse();
+  if (busy) t.skip(busy);
+  return !busy;
 }
 const chrome = findChrome();
 export const skip = !chrome
