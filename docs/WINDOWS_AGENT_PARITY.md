@@ -43,6 +43,7 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Files hides what the OS hides | Finder's rule on a Mac; hidden and system attributes on Windows |
 | OpenClaw from the phone | Installed, set up and given keys from the phone on both, natively, as on the Mac; written down as a gap only if OpenClaw won't run natively on Windows |
 | Reach's terminals | The owner's own shell on both: `$SHELL` on a Mac; Windows Terminal's default profile, else PowerShell 7, else Windows PowerShell |
+| How an agent signs in (Oct 13) | The same on both, told by the shared guide and tool descriptions, and the owner never steps in: "Sign in with Google", Apple or Microsoft on the owner's account where a site offers it, otherwise the agent's own vault. The browser's saved passwords and passkeys are skipped, and anything asking for the owner (Touch ID or the Mac's password; Windows Hello or the PIN) is cancelled. No setting is changed on the owner's behalf |
 
 Only what Windows itself makes impossible differs (table above): UAC prompts, hidden per-app displays, administrator windows.
 
