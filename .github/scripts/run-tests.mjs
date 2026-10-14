@@ -98,6 +98,8 @@ export const suites = {
     // (REACH_TEST_WINDOWS_DESKTOP=1, CI=true) and skip in this lane, running in
     // ci.yml's real-Windows step and windows-validation.yml. A skip is not a pass.
     "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e",
+    // Auto-continue: here when usage is back, or the first provider free (Oct 14).
+    "auto-continue",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
