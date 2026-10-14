@@ -1448,7 +1448,7 @@ static class Files {
         string[] target = SplitRel(to);
         if (target.Length == 0) throw Sandbox.Refusal(400, "Choose a destination file inside the shared folder.");
         if (!full) foreach (string part in target) if (privateNames.Contains(part)) throw Sandbox.Refusal(403, "That name is not shared.");
-        IntPtr source = NtFiles.OpenChild(parent, leaf, false);
+        IntPtr source = NtFiles.OpenCopySource(parent, leaf);
         try {
           VerifyPrivate(source, root, privateNames, privatePaths, full);
           long size = RegularSize(source);
@@ -1526,12 +1526,13 @@ static class NtFiles {
   public static void Close(IntPtr handle) { if (handle != IntPtr.Zero && handle != Invalid) NativeSec.CloseHandle(handle); }
 
   public static IntPtr OpenByPath(string path, bool directory, bool write) {
-    // The root is a directory opened with traverse/list so it can be the parent
-    // of relative opens; FILE_FLAG_BACKUP_SEMANTICS only enables a dir handle.
-    uint access = directory ? DIR_ACCESS : (write ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ);
-    IntPtr handle = CreateFileW(path, access, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
-    if (handle == Invalid) throw Sandbox.Refusal(403, "The shared folder isn't available.");
-    return handle;
+    string full = Path.GetFullPath(path);
+    if (full.Length < 3 || full[1] != ':' || full[2] != '\\') throw Sandbox.Refusal(403, "Choose a local folder on this PC.");
+    // Reject reparses in the entire root path, and keep it pinned against
+    // deletion/rename until its relative operations finish.
+    uint access = directory ? DIR_ACCESS : FILE_GENERIC_READ | SYNCHRONIZE;
+    if (write && !directory) access |= FILE_GENERIC_WRITE;
+    return OpenRelative(IntPtr.Zero, "\\??\\" + full, directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE, FILE_OPEN, access, 0);
   }
 
   public static IntPtr OpenAclPath(string path, bool directory) {
@@ -1552,13 +1553,16 @@ static class NtFiles {
     return OpenRelative(parent, name, (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE), FILE_OPEN, directory ? DIR_ACCESS : (FILE_GENERIC_READ | SYNCHRONIZE), 0);
   }
   public static IntPtr CreateChildFile(IntPtr parent, string name, bool overwrite) {
-    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0);
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, overwrite ? FILE_OVERWRITE_IF : FILE_OPEN_IF, FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE, 0, 0);
+  }
+  public static IntPtr OpenCopySource(IntPtr parent, string name) {
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_GENERIC_READ | SYNCHRONIZE, 0, 0);
   }
   public static IntPtr CreateNewChildFile(IntPtr parent, string name) {
-    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE, 0);
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_CREATE, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE, 0, 0);
   }
   public static IntPtr OpenDeleteChild(IntPtr parent, string name) {
-    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0);
+    return OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0, 0);
   }
   public static void Truncate(IntPtr file) {
     IntPtr data = Marshal.AllocHGlobal(8);
@@ -1577,7 +1581,7 @@ static class NtFiles {
     Close(OpenRelative(parent, name, FILE_NON_DIRECTORY_FILE, FILE_OPEN, DELETE | SYNCHRONIZE, FILE_DELETE_ON_CLOSE));
   }
 
-  static IntPtr OpenRelative(IntPtr parent, string name, uint typeOption, uint disposition, uint access, uint extraOptions) {
+  static IntPtr OpenRelative(IntPtr parent, string name, uint typeOption, uint disposition, uint access, uint extraOptions, uint sharing = 3) {
     IntPtr namePtr = Marshal.StringToHGlobalUni(name);
     try {
       var us = new UNICODE_STRING();
@@ -1593,7 +1597,7 @@ static class NtFiles {
         oa.ObjectName = usPtr;
         oa.Attributes = OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE;
         IntPtr handle; IO_STATUS_BLOCK iosb;
-        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, FILE_SHARE_ALL, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | extraOptions, IntPtr.Zero, 0);
+        int status = NtCreateFile(out handle, access, ref oa, out iosb, IntPtr.Zero, 0, sharing, disposition, typeOption | FILE_SYNCHRONOUS_IO_NONALERT | extraOptions, IntPtr.Zero, 0);
         if (status != 0) {
           int code = RtlNtStatusToDosError(status);
           if (code == 2 || code == 3) throw Sandbox.Refusal(404, "That file or folder is not there.");

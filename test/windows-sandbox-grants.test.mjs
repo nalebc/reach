@@ -26,7 +26,15 @@ test("real Windows grants and revocation never change a junction target or a har
   fs.writeFileSync(secret, "outside secret"); fs.writeFileSync(safe, "shared file");
   const before = { folder: await run("acl", outside), file: await run("acl", secret) };
   const junction = path.join(shared, "escape");
+  fs.mkdirSync(path.join(outside, "inside"));
   fs.symlinkSync(outside, junction, "junction");
+  await assert.rejects(run("root", junction), "the broker refuses a reparse root itself");
+  await assert.rejects(run("root", path.join(junction, "inside")), "the broker refuses a reparse ancestor of its root");
+  const nested = path.join(shared, "nested");
+  fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(nested, "safe.txt"), "original");
+  assert.equal(await run("pin", shared), "pinned", "live handles prevent root/parent/file rename and concurrent writes");
+  assert.equal(fs.readFileSync(path.join(nested, "safe.txt"), "utf8"), "original");
   fs.linkSync(secret, path.join(shared, "hard-link.txt"));
   await run("read", shared);
   assert.equal(await run("allowed", safe, shared), "yes", "the ordinary shared file gets its read grant");
