@@ -149,15 +149,25 @@ function fileRequestEntries(request) {
   for (const n of request.privateNames || []) entries.push(['privateName', n]);
   return entries;
 }
-async function runWindowsFileOperation(request, check, windowsSandbox) {
+export async function runWindowsFileOperation(request, check, windowsSandbox, { start = spawnVerified } = {}) {
   if (!windowsSandbox) throw fail(503, 'Protected agent file access is unavailable on this computer.');
   const ready = await windowsSandbox.ready();
   if (!ready.ok) throw fail(503, ready.reason);
   check();
   return await new Promise((resolve, reject) => {
-    let result, settled = false, size = 0;
-    const child = spawnVerified(ready.built.file, ready.built.sha256, ['run'], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
-    const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); clearInterval(watch); if (error) { try { child.kill(); } catch {} reject(error); } else resolve(value); };
+    let result, settled = false, closed = false, size = 0;
+    const child = start(ready.built.file, ready.built.sha256, ['run'], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); clearInterval(watch);
+      if (!error) return resolve(value);
+      // Keep the file-operation slot until the broker has actually stopped.
+      // A kill request alone must not let a revoked mutation overlap its next
+      // operation, or let callers delete a folder the helper still holds.
+      if (closed || !child.pid) return reject(error);
+      child.once('close', () => reject(error));
+      try { child.kill(); } catch {}
+    };
     const read = createSandboxFrameReader({
       onResult: (buffer) => { size += buffer.length; if (size > Math.ceil(request.maxBytes * 4 / 3) + 2 * 1024 * 1024) return finish(fail(503, 'The file response was too large.')); try { result = JSON.parse(buffer.toString('utf8')); } catch { finish(fail(503, 'The protected file helper returned an invalid response.')); } },
       onRefused: ({ status, message }) => finish(fail([400, 403, 409, 413].includes(status) ? status : 403, String(message).slice(0, 300))),
@@ -167,7 +177,8 @@ async function runWindowsFileOperation(request, check, windowsSandbox) {
     const watch = setInterval(() => { try { check(); } catch (error) { finish(error); } }, 25);
     child.stdout.on('data', read);
     child.on('error', () => finish(fail(503, 'The protected file helper could not start.')));
-    child.on('close', () => { if (result) { try { check(); } catch (error) { return finish(error); } finish(null, result); } else finish(fail(503, 'The protected file helper returned an invalid response.')); });
+    child.on('close', () => { closed = true; if (settled) return; if (result) { try { check(); } catch (error) { return finish(error); } finish(null, result); } else finish(fail(503, 'The protected file helper returned an invalid response.')); });
+    child.stdin.on('error', () => finish(fail(503, 'The protected file helper disconnected.')));
     try { child.stdin.write(encodeSandboxRequest(fileRequestEntries(request))); } catch { finish(fail(503, 'The protected file helper disconnected.')); }
   });
 }
