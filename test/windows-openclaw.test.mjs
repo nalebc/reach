@@ -382,6 +382,13 @@ test("real Windows: the install terminal's verdict is the script block's, not it
   }
 });
 
+// This PC's environment with the stand-in's folder first on PATH. Windows
+// spells it Path: any spelling goes first, so there's one PATH (and no
+// OpenRouter key or Reach setting of this runner's).
+const withFirst = (dir) => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path|openrouter_api_key|reach_.*)$/i.test(key))),
+  PATH: `${dir};${process.env.PATH}`,
+});
 // A stand-in OpenClaw where npm puts it, run as Reach runs it.
 const STAND_IN = `import fs from "node:fs";
 const input = await new Promise((resolve) => { let text = ""; if (!process.argv.includes("--stdin")) return resolve(""); process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => (text += c)); process.stdin.on("end", () => resolve(text)); });
@@ -389,7 +396,7 @@ fs.appendFileSync(new URL("./log.jsonl", import.meta.url), JSON.stringify({ argv
 `;
 test("real Windows: Reach runs npm's OpenClaw with each argument whole, the key in its variable, stdin as given", { skip: windows, timeout: 60000 }, async (t) => {
   const at = layout(t, { "npm/openclaw.cmd": progShim(ENTRY), "npm/node_modules/openclaw/openclaw.mjs": STAND_IN });
-  const env = { ...process.env, PATH: `${at("npm")};${process.env.PATH}` };
+  const env = withFirst(at("npm"));
   const given = ["channels", "add", "--token", 'a&b|c%PATH%^"d e', "--name", "two words"];
   const [file, argv, childEnv] = await openClawShell(given, { env, platform: "win32", runtime: process.execPath });
   await runOpenClaw(file, argv, { env: secretEnv(childEnv, { platform: "win32", secret: "OPENROUTER_API_KEY", value: KEY }), timeout: 30000 });
@@ -407,7 +414,7 @@ test("real Windows: Reach runs npm's OpenClaw with each argument whole, the key 
 
 test("real Windows: Telegram's token file is closed to everyone but this account, SYSTEM and Administrators", { skip: windows, timeout: 90000 }, async (t) => {
   const at = layout(t, { "npm/openclaw.cmd": progShim(ENTRY), "npm/node_modules/openclaw/openclaw.mjs": STAND_IN });
-  const env = { ...process.env, PATH: `${at("npm")};${process.env.PATH}` };
+  const env = withFirst(at("npm"));
   await addOpenClawChannel({ channel: "telegram", token: "123:ABCDEFGHIJ" }, { env, platform: "win32", runtime: process.execPath, stateDir: at("state") });
   const token = at("state/credentials/reach-telegram.token");
   assert.equal(fs.readFileSync(token, "utf8"), "123:ABCDEFGHIJ\n");
@@ -430,7 +437,8 @@ const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { s
 fs.writeFileSync(process.argv[2], String(child.pid)); setInterval(() => {}, 1000);`,
   });
   const pidFile = at("child.pid");
-  await assert.rejects(runTree(process.execPath, [at("hang.mjs"), pidFile], { timeout: 3000 }), (e) => e.killed === true);
+  // Long enough for a cold Node on a busy runner to have started its child.
+  await assert.rejects(runTree(process.execPath, [at("hang.mjs"), pidFile], { timeout: 6000 }), (e) => e.killed === true);
   const pid = Number(fs.readFileSync(pidFile, "utf8"));
   let alive = true;
   for (let i = 0; i < 50 && alive; i++) {
