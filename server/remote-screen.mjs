@@ -2,7 +2,7 @@ import { NativeScreenSource, privateWindows } from "./screen-stream.mjs";
 import { desktopBinary, desktopDisplays } from "./desktop-native.mjs";
 import { streamOptions } from "./desktop-protocol.mjs";
 import { fileURLToPath } from "node:url";
-import { windowsVideoAvailable, WindowsVideoSource } from "./windows-video.mjs";
+import { windowsNativeSource, windowsVideoChoice, WindowsVideoSource } from "./windows-video.mjs";
 import { powershellFile } from "./powershell.mjs";
 import { fail } from "./core.mjs";
 export { privateWindows };
@@ -28,12 +28,50 @@ export const PRIVATE_VIEW_UNAVAILABLE =
 export const privateViewRefused = (privateView, platform = process.platform) =>
   Boolean(privateView) && platform === "win32";
 
+// The video a viewer gets, and why not a better one, for the phone's Screen
+// page (the ready message's video and videoWhy). A Mac encodes H.264 itself;
+// Windows has its own encoder, or FFmpeg, or still images
+// (server/windows-video.mjs). A phone that asked for still images (its
+// decoder failed, or compatibility video) gets them and knows why itself.
+export async function videoFor(format, { platform = process.platform, config, choose = windowsVideoChoice } = {}) {
+  if (format === "h264" && platform === "darwin") return { format, source: "mac", label: "H.264", why: "" };
+  if (format === "h264" && platform === "win32") {
+    const chosen = await choose(config);
+    return { ...chosen, format: chosen.source === "jpeg" ? "jpeg" : "h264" };
+  }
+  return { format: "jpeg", source: "jpeg", label: "Still images", why: "" };
+}
+
+// Windows' three sources: its own H.264 helper, FFmpeg's, still images.
+const stillImages = (options) =>
+  new NativeScreenSource(
+    "powershell.exe",
+    powershellFile(
+      fileURLToPath(new URL("../scripts/native/screen-stream.ps1", import.meta.url)),
+      [options.display, String(options.width)],
+    ),
+  );
+
 export class RemoteScreenHub {
-  constructor(config, prepare) {
+  // Off a test, every dependency is the real one: this computer's platform,
+  // its displays, its video choice and Windows' sources.
+  constructor(
+    config,
+    prepare,
+    {
+      platform = process.platform,
+      displays = desktopDisplays,
+      chooseVideo = windowsVideoChoice,
+      nativeSource = windowsNativeSource,
+      ffmpegSource = (display, options) => new WindowsVideoSource(display, options),
+      stillSource = stillImages,
+    } = {},
+  ) {
     this.config = config;
     this.prepare = prepare;
     this.groups = new Map();
     this.viewers = new Map();
+    Object.assign(this, { platform, displays, chooseVideo, nativeSource, ffmpegSource, stillSource });
   }
   // mayViewDisplay(id): whether this viewer may watch that display. The
   // hidden displays Reach makes for apps on phones (server/app-threads.mjs)
@@ -45,7 +83,7 @@ export class RemoteScreenHub {
     ws,
     authorize,
     value,
-    { mayViewDisplay = () => true, privateView = false, platform = process.platform } = {},
+    { mayViewDisplay = () => true, privateView = false, platform = this.platform } = {},
   ) {
     if (privateViewRefused(privateView, platform))
       throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
@@ -58,13 +96,13 @@ export class RemoteScreenHub {
     if (Number.isInteger(cap) && cap >= 640 && cap <= 3840)
       options.width =
         options.quality === "auto" ? cap : Math.min(options.width, cap);
-    let selectedDisplay;
+    let selectedDisplay, video = null;
     // Reserve before asynchronous native preparation to enforce the global limit.
     const reservation = {};
     this.viewers.set(ws, reservation);
     try {
       if (!this.prepare) {
-        const displays = await desktopDisplays(this.config);
+        const displays = await this.displays(this.config);
         const display =
           options.display === "primary"
             ? displays.find((d) => d.primary)
@@ -76,11 +114,8 @@ export class RemoteScreenHub {
           );
         options.display = display.id;
         selectedDisplay = display;
-        if (
-          process.platform !== "darwin" &&
-          !(process.platform === "win32" && (await windowsVideoAvailable()))
-        )
-          options.format = "jpeg";
+        video = await videoFor(options.format, { platform: this.platform, config: this.config, choose: this.chooseVideo });
+        options.format = video.format;
       }
       if (options.format === "jpeg") options.fps = Math.min(options.fps, 20);
       if (!mayViewDisplay(options.display))
@@ -93,13 +128,15 @@ export class RemoteScreenHub {
         this.remove(ws);
         return;
       }
-      const key = JSON.stringify(privateView ? [options, "private"] : options);
+      // One group per stream, and per source: a viewer after FFmpeg was
+      // installed, or after Windows' own encoder gave out, gets a new one.
+      const key = JSON.stringify([options, video?.source || "", privateView ? "private" : ""]);
       let group = this.groups.get(key);
       if (!group) {
         const prepare = this.prepare
           ? () => this.prepare(options, { privateView })
           : async () => {
-              if (process.platform === "darwin") {
+              if (this.platform === "darwin") {
                 const binary = await desktopBinary(
                   this.config,
                   "screen-stream",
@@ -115,21 +152,11 @@ export class RemoteScreenHub {
                     ...(privateView ? ["", privateWindows()] : []),
                   ]);
               }
+              if (video?.source === "windows")
+                return () => this.nativeSource(video.file, options);
               if (options.format === "h264")
-                return () => new WindowsVideoSource(selectedDisplay, options);
-              return () =>
-                new NativeScreenSource(
-                  "powershell.exe",
-                  powershellFile(
-                    fileURLToPath(
-                      new URL(
-                        "../scripts/native/screen-stream.ps1",
-                        import.meta.url,
-                      ),
-                    ),
-                    [options.display, String(options.width)],
-                  ),
-                );
+                return () => this.ffmpegSource(selectedDisplay, options);
+              return () => this.stillSource(options);
             };
         // A group that emptied out frees its key only if it still holds it:
         // a newer group for the same stream may have taken its place.
@@ -140,7 +167,10 @@ export class RemoteScreenHub {
         this.groups.set(key, group);
       }
       this.viewers.set(ws, group);
-      ws.send(JSON.stringify({ type: "ready", protocol: 2, ...options }));
+      // Which video, in a word for the Screen page's Video row, and why
+      // not a better one when there is a better one.
+      const label = video?.label || (options.format === "h264" ? "H.264" : "Still images");
+      ws.send(JSON.stringify({ type: "ready", protocol: 2, ...options, video: label, ...(video?.why && { videoWhy: video.why }) }));
       // The display could become an app's hidden display later (ids are
       // reused): checked again with every frame, refused with a reason.
       const display = options.display;
