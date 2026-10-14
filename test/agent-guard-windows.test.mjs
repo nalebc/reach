@@ -170,6 +170,13 @@ test("on Windows, typed commands meet Windows' deny list as well as the shared o
     String.raw`type "C:\Users\me\AppData\Local\Google\Chrome\User Data\Default\Login Data"`, String.raw`type C:\Users\me\AppData\Local\Google\Chrome\User Data\Default\Login Data`,
     String.raw`copy %APPDATA%\Microsoft\Credentials\example C:\temp`, String.raw`Get-Content $env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`,
     String.raw`type C:\Users\me\.reach\clients.json`, String.raw`type c:\USERS\ME\.REACH\clients.json`,
+    // The Windows twins the agents left for the owner to decide (E): shutting
+    // down, restarting or signing out (shutdown/reboot/halt, killing
+    // loginwindow); stopping Reach by name (kill/pkill); net stop/user (launchctl, dscl).
+    "shutdown /s /t 0", "Restart-Computer -Force", "Stop-Computer", "logoff",
+    "taskkill /im node.exe /f", "tskill node", "spps -Name tailscale-ipn", "Stop-Process -Name node",
+    String.raw`Invoke-CimMethod -Query "SELECT * FROM Win32_Process WHERE Name='node.exe'" -MethodName Terminate`,
+    "net stop Tailscale", "net start W32Time", "net user Administrator /active:yes", "net localgroup Administrators me /add",
     // The shared list holds on Windows too.
     "sudo ls", "rm -rf ~", "cat ~/.ssh/id_rsa", "tailscale down", "history",
   ];
@@ -178,6 +185,12 @@ test("on Windows, typed commands meet Windows' deny list as well as the shared o
     "dir", String.raw`dir C:\Windows`, "git status", "npm test", "node index.mjs", "python script.py", String.raw`Get-ChildItem C:\Users\me\Documents`,
     String.raw`Remove-Item .\build -Recurse`, "del notes.txt", "rd /s /q build", "start https://example.com", "notepad notes.txt", "ipconfig", "Get-Process",
     "echo hello & dir", "cmd /c dir", "ping example.com", String.raw`type C:\Users\me\AppData\Local\Temp\log.txt`, "echo reg",
+    // Killing a process not named Reach/Node/Tailscale is allowed, as on the
+    // Mac (killing by pid). net use and net view aren't service/user changes.
+    "taskkill /im chrome.exe /f", "Stop-Process -Name chrome", "net use Z: \\\\server\\share", "net view", "logoffuser.ps1",
+    // Self-decoding text is a shared gap: the Mac refuses no eval/base64, so
+    // Windows refuses no iex/-EncodedCommand either (owner's rule; recorded).
+    "powershell -EncodedCommand ZABpAHIA", "iex (Get-Content build.ps1 -Raw)", "node -e \"console.log(1)\"",
   ];
   for (const command of allowed) assert.equal(commandRefusal(command, options), null, `allow: ${command}`);
   // Windows' list is Windows': a Mac doesn't read these as commands it refuses.

@@ -14,11 +14,13 @@ import {
   parseAgentLink,
   keptAddresses,
   shareNode,
+  socketOf,
   tailnetApi,
   viaShared,
 } from "../scripts/agent-remote.mjs";
 import { readTailnetManifest } from "../server/public-start.mjs";
 import { tskey } from "./helpers/fake-keys.mjs";
+import { windowsAcl, othersAllowed, ADMINISTRATORS, WRITES } from "./helpers/windows-acl.mjs";
 
 // The agent's side of an invitation: one command joins, MCP serves the tools,
 // and stdout carries nothing but results and JSON-RPC.
@@ -143,7 +145,7 @@ test(
 
 test(
   "join once, then MCP: the agent's folder and access, and nothing else on stdout",
-  { skip: process.platform === "win32", timeout: 60000 },
+  { timeout: 90000 },
   async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-remote-"));
     const files = path.join(dir, "files");
@@ -211,6 +213,13 @@ test(
     const credentialFile = path.join(conn, "credential.json");
     if (process.platform !== "win32") assert.equal(fs.statSync(env.REACH_AGENT_HOME).mode & 0o777, 0o700);
     if (process.platform !== "win32") assert.equal(fs.statSync(credentialFile).mode & 0o777, 0o600);
+    // Windows: nobody but this user (and SYSTEM and Administrators, who
+    // can read anything) may open either, as Windows itself keeps them.
+    if (process.platform === "win32")
+      for (const file of [env.REACH_AGENT_HOME, conn, credentialFile]) {
+        const acl = await windowsAcl("file", file);
+        assert.deepEqual(othersAllowed(acl), [], `${file}: ${JSON.stringify(acl)}`);
+      }
     const credential = JSON.parse(fs.readFileSync(credentialFile, "utf8"));
     assert.equal(credential.via, "direct");
     assert.equal(credential.clientId, grant.clientId);
@@ -359,8 +368,7 @@ test("a denied CLI invitation never saves an active credential or connection", {
 
 test(
   "one connection per computer, shared: a second agent session uses it, and takes over when it's gone",
-  { skip: process.platform === "win32" },
-  async () => {
+  async (t) => {
     const conn = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-share-"));
     try {
       // Held by a live process (not us): not ours to take.
@@ -389,6 +397,17 @@ test(
         fs.statSync(path.join(conn, "agent.sock")).mode & 0o777,
         0o600,
       );
+      // Windows: a named pipe, as Windows itself keeps it. Only this user
+      // (its owner), SYSTEM and Administrators may write to it, so only they
+      // can ask anything through it (it answers only what's asked on the
+      // same connection). Anyone may open it to read: Windows' default for
+      // a pipe made with no security of its own, as Node makes them.
+      if (process.platform === "win32") {
+        const acl = await windowsAcl("pipe", socketOf(conn).slice("\\\\.\\pipe\\".length));
+        t.diagnostic(`the pipe's ACL: ${JSON.stringify(acl)}`);
+        assert.deepEqual(othersAllowed(acl, WRITES), [], JSON.stringify(acl));
+        assert.ok([acl.me, ADMINISTRATORS].includes(acl.owner), JSON.stringify(acl));
+      }
       const api = viaShared(conn);
       const [a, b] = await Promise.all([
         api("/api/device"),
@@ -548,7 +567,7 @@ test("the gateway client: the private address first, the public one when it does
 
 // For an agent's vault: its access to a computer as one line (keep), put
 // back on another machine (restore), where it reconnects by itself.
-test("keep and restore: the access as one line for the vault, back on another machine", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+test("keep and restore: the access as one line for the vault, back on another machine", { timeout: 30000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-keep-"));
   const home = path.join(dir, "home-a"), other = path.join(dir, "home-b");
   const conn = path.join(home, "mac");
@@ -563,13 +582,22 @@ test("keep and restore: the access as one line for the vault, back on another ma
   const line = kept.stdout.trim();
   assert.match(line, /^[A-Za-z0-9_-]+$/, "one line, nothing else on stdout");
   assert.match(kept.stderr, /keep it in your vault/);
-  assert.match(kept.stderr, new RegExp(`curl -fsSL --create-dirs -H 'Reach-Key: ${key.thumbprint}' -o ~/.reach-agent/agent.mjs https://mac.t.ts.net/agent.mjs && node ~/.reach-agent/agent.mjs restore`));
+  // How to get it back, in this machine's own shell.
+  if (process.platform === "win32")
+    assert.ok(kept.stderr.includes(`in PowerShell with your line in place of <YOUR LINE>:\n  $L = '<YOUR LINE>'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Headers @{ 'Reach-Key' = '${key.thumbprint}' } -Uri https://mac.t.ts.net/agent.mjs -OutFile "$d\\agent.mjs"; $L | node "$d\\agent.mjs" restore\n`), kept.stderr);
+  else assert.match(kept.stderr, new RegExp(`curl -fsSL --create-dirs -H 'Reach-Key: ${key.thumbprint}' -o ~/.reach-agent/agent.mjs https://mac.t.ts.net/agent.mjs && node ~/.reach-agent/agent.mjs restore`));
   const restored = await run(["restore"], { env: { REACH_AGENT_HOME: other }, input: line + "\n" });
   assert.equal(restored.code, 0, restored.stderr);
   assert.match(restored.stdout, /Restored Fixture Mac\. It reconnects by itself/);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(other, "mac", "credential.json"), "utf8")), credential);
   assert.equal(fs.readFileSync(path.join(other, "mac", "key.pem"), "utf8"), fs.readFileSync(path.join(conn, "key.pem"), "utf8"), "the same key: the computer knows it");
-  assert.equal(fs.statSync(path.join(other, "mac", "key.pem")).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(path.join(other, "mac", "key.pem")).mode & 0o777, 0o600);
+  // Windows: the restored key and credential are this user's alone too.
+  else
+    for (const file of ["key.pem", "credential.json"]) {
+      const acl = await windowsAcl("file", path.join(other, "mac", file));
+      assert.deepEqual(othersAllowed(acl), [], `${file}: ${JSON.stringify(acl)}`);
+    }
   const junk = await run(["restore"], { env: { REACH_AGENT_HOME: path.join(dir, "home-c") }, input: "not a line\n" });
   assert.notEqual(junk.code, 0);
   assert.match(junk.stderr, /isn't a line from `keep`/);

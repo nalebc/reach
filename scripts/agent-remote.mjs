@@ -15,6 +15,7 @@
 // JSON-RPC and results go to stdout; everything else to stderr.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
 import os from "node:os";
 import path from "node:path";
@@ -106,7 +107,19 @@ const keptRuntime = () => {
     return "";
   }
 };
-export function restoreCommand(start, thumbprint = "", runtime = "") {
+// Windows has no curl, mv or ~ to count on, and a line can't be piped into a
+// series of PowerShell commands: there (PowerShell 5.1 and later, as the
+// join's steps, server/agent-steps.mjs), the line goes in place of this.
+export const YOUR_LINE = "<YOUR LINE>";
+export function restoreCommand(start, thumbprint = "", runtime = "", platform = process.platform) {
+  if (platform === "win32") {
+    const header = thumbprint ? ` -Headers @{ 'Reach-Key' = '${thumbprint}' }` : "";
+    const head = `$L = '${YOUR_LINE}'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; `;
+    const restore = `$L | node "$d\\agent.mjs" restore`;
+    if (!/^[0-9a-f]{64}$/.test(runtime))
+      return `${head}Invoke-WebRequest -UseBasicParsing${header} -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs"; ${restore}`;
+    return `${head}Invoke-WebRequest -UseBasicParsing${header} -Uri ${start}/agent-runtimes/${runtime}.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${runtime}') { throw 'This is not the runtime your line was kept with.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; ${restore}`;
+  }
   const key = thumbprint ? ` -H 'Reach-Key: ${thumbprint}'` : "";
   if (!/^[0-9a-f]{64}$/.test(runtime))
     return `curl -fsSL --create-dirs${key} -o ~/.reach-agent/agent.mjs ${start}/agent.mjs && node ~/.reach-agent/agent.mjs restore`;
@@ -134,17 +147,88 @@ export function agentHome() {
   const dir = path.resolve(
     process.env.REACH_AGENT_HOME || path.join(os.homedir(), ".reach-agent"),
   );
+  if (process.platform === "win32") {
+    const home = path.win32.resolve(os.homedir()).toLowerCase();
+    const chosen = path.win32.resolve(dir).toLowerCase();
+    const relative = path.win32.relative(chosen, home);
+    if (chosen === path.win32.parse(chosen).root.toLowerCase() || !relative ||
+        (!path.win32.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\")))
+      throw Error("Choose a separate folder for Reach's agent credentials, not your home or a whole drive.");
+    for (const system of [process.env.SystemRoot, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean)) {
+      const base = path.win32.resolve(system).toLowerCase();
+      if (chosen === base || chosen.startsWith(base + "\\"))
+        throw Error("Keep Reach's agent credentials outside Windows and installed-program folders.");
+    }
+    if (process.env.ProgramData && chosen === path.win32.resolve(process.env.ProgramData).toLowerCase())
+      throw Error("Choose a separate folder for Reach's agent credentials, not the shared system-data folder.");
+  }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);
   if (
-    !stat.isDirectory() ||
+    !stat.isDirectory() || stat.isSymbolicLink() ||
     (process.platform !== "win32" && stat.uid !== process.getuid())
   )
     throw Error(`${dir} must be a folder that belongs to you.`);
   if (process.platform !== "win32") fs.chmodSync(dir, 0o700);
+  else protectWindowsAgentDirectory(dir);
   return dir;
 }
+function protectWindowsAgentDirectory(dir) {
+    // The standalone agent is one bundled JS file, so this fixed system API
+    // call needs no downloaded helper. Make the home private before creating
+    // any connection/key: files and child folders inherit only these grants.
+    const script = `& {
+try {
+$ErrorActionPreference='Stop'
+$dir=$env:REACH_PRIVATE_AGENT_DIR
+$me=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$trusted=@($me.Value,'S-1-5-18','S-1-5-32-544')
+function Validate($item) {
+if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink'){throw 'Private state cannot contain a link'}
+$where=$item.FullName
+$folder=($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0
+$acl=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
+if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value){throw 'The folder belongs to another account'}
+}
+function Protect($item) {
+Validate $item
+$where=$item.FullName
+$folder=($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0
+$acl=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
+$acl.SetAccessRuleProtection($true,$false)
+foreach($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]))){[void]$acl.RemoveAccessRuleSpecific($rule)}
+foreach($sid in $trusted){$who=New-Object Security.Principal.SecurityIdentifier($sid);$flags=if($folder){'ContainerInherit,ObjectInherit'}else{'None'};$rule=New-Object Security.AccessControl.FileSystemAccessRule($who,'FullControl',$flags,'None','Allow');$acl.AddAccessRule($rule)}
+if($folder){[IO.Directory]::SetAccessControl($where,$acl)}else{[IO.File]::SetAccessControl($where,$acl)}
+$check=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
+if(!$check.AreAccessRulesProtected){throw 'Inheritance was not removed'}
+foreach($rule in $check.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $trusted -notcontains $rule.IdentityReference.Value){throw 'Another account can access the folder'}}
+}
+$root=Get-Item -LiteralPath $dir -Force
+Validate $root
+$items=New-Object 'Collections.Generic.List[object]'
+$items.Add($root)
+$pending=New-Object 'Collections.Generic.Stack[string]'
+$pending.Push($dir)
+$seen=0
+while($pending.Count){$parent=$pending.Pop();foreach($item in Get-ChildItem -LiteralPath $parent -Force){if(++$seen -gt 10000){throw 'Too many entries in the private state folder'};Validate $item;$items.Add($item);if($item.Attributes -band [IO.FileAttributes]::Directory){$pending.Push($item.FullName)}}}
+foreach($item in $items){Protect $item}
+} catch { exit 1 }
+[Console]::WriteLine('reach-agent-private')
+exit 0
+}
+
+`;
+    const system = process.env.SystemRoot || process.env.SYSTEMROOT;
+    if (!system) throw Error("Reach couldn't locate Windows to protect the agent's credentials.");
+    try {
+      const answer = execFileSync(path.win32.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-Command", "-"],
+        { input: script, env: { ...process.env, REACH_PRIVATE_AGENT_DIR: dir }, windowsHide: true, timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+      if (!answer.toString("utf8").split(/\r?\n/).includes("reach-agent-private")) throw Error("Private-folder confirmation missing");
+    } catch { throw Error("Reach couldn't make its agent folder private to your Windows account. No credentials were saved."); }
+}
 const writePrivate = (file, text) => {
+  if (process.platform === "win32") protectWindowsAgentDirectory(path.dirname(file));
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, text, { mode: 0o600 });
   fs.renameSync(temp, file);
@@ -604,11 +688,13 @@ export function lock(conn) {
 }
 // Processes share one connection through a local socket: a file next to the
 // credential on macOS and Linux, a named pipe on Windows (it has no socket
-// files; the pipe's default access lets only this user write to it).
+// files). The pipe's default access, read on a real PC: only its owner,
+// SYSTEM and Administrators may write to it, so only they can ask anything;
+// anyone may open it to read, which gets no answer.
 export const socketOf = (conn, platform = process.platform) =>
   platform === "win32"
     ? `\\\\.\\pipe\\reach-agent-${crypto.createHash("sha256").update(path.resolve(conn)).digest("hex").slice(0, 24)}`
-    : path.join(conn, "agent.sock");
+    : path.posix.join(conn, "agent.sock");
 const pipes = process.platform === "win32";
 // Whether a process already shares this connection.
 const listening = (file) => pipes
@@ -1198,7 +1284,9 @@ export async function main(argv = process.argv.slice(2)) {
     const thumbprint = credential.via === "funnel" ? agentKey(conn).thumbprint : "";
     process.stderr.write([
       `This line is your whole access to ${credential.computer}: keep it in your vault, nowhere else.`,
-      "On another machine, get Reach for agents, then paste the line on standard input:",
+      process.platform === "win32"
+        ? `On another machine, get Reach for agents and restore it, in PowerShell with your line in place of ${YOUR_LINE}:`
+        : "On another machine, get Reach for agents, then paste the line on standard input:",
       `  ${restoreCommand(credential.start, thumbprint, keptRuntime())}`,
       "",
     ].join("\n"));
@@ -1241,8 +1329,13 @@ export async function main(argv = process.argv.slice(2)) {
 // What an older runtime loads from this one when the computer serves it.
 export { callTool, toContent, toolsFor };
 
-const entry = process.argv[1] && fs.realpathSync.native(process.argv[1]);
-if (entry === fileURLToPath(import.meta.url))
+// Run, not imported: the same file however its path was written. Windows'
+// own spelling of it (fs.realpathSync.native: its 8.3 short names written
+// long, its case as on disk) on both sides; Node names this module as it was
+// given, so a run through C:\Users\RUNNER~1\… did nothing at all.
+const realFile = (file) => { try { return fs.realpathSync.native(file); } catch { return ""; } };
+const entry = process.argv[1] && realFile(process.argv[1]);
+if (entry && entry === realFile(fileURLToPath(import.meta.url)))
   // Exit once everything written has gone out: the tailnet client would
   // otherwise keep the process running, and a pipe may still be draining.
   main()
