@@ -39,7 +39,7 @@ export function createLock() {
 // when that process ends, and Windows ends it with Reach (Node keeps its
 // children in a kill-on-close job object), crash and reboot included.
 //
-// With browser sign-in (REACH_WINDOWS_ACCOUNT=1) the route's target carries
+// With browser sign-in the route's target carries
 // its key: everything Tailscale says is redacted line by line before it's
 // shown or kept, and the public route (scripts/foreground-funnel.mjs) is held
 // the same way, its command and checks passed in.
