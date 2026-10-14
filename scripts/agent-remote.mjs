@@ -154,6 +154,13 @@ export function agentHome() {
     if (chosen === path.win32.parse(chosen).root.toLowerCase() || !relative ||
         (!path.win32.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\")))
       throw Error("Choose a separate folder for Reach's agent credentials, not your home or a whole drive.");
+    for (const system of [process.env.SystemRoot, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean)) {
+      const base = path.win32.resolve(system).toLowerCase();
+      if (chosen === base || chosen.startsWith(base + "\\"))
+        throw Error("Keep Reach's agent credentials outside Windows and installed-program folders.");
+    }
+    if (process.env.ProgramData && chosen === path.win32.resolve(process.env.ProgramData).toLowerCase())
+      throw Error("Choose a separate folder for Reach's agent credentials, not the shared system-data folder.");
   }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);
