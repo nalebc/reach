@@ -274,6 +274,40 @@ test("Windows: an occupied launcher lock names restart without starting anything
   assert.equal(JSON.parse(fs.readFileSync(lock)).pid, process.pid);
 });
 
+// One Reach per computer, through the real launcher (audit #10): the PC's
+// process list here is written out (REACH_TEST_WINDOWS_PROCESSES, tests
+// only), naming a Reach from another folder; this test process stands in for
+// it. status names it, a second start is refused, and an agent's restart (no
+// terminal) asks on the phone. Nothing is stopped: stop would end this process.
+test("Windows, from the process list: status names a Reach from another folder, a second is refused, an agent's restart asks", { timeout: 60000 }, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-list-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const state = path.join(home, "state");
+  const dataDir = path.join(state, "quick");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const other = "C:\\Users\\Me\\other reach";
+  const startedAt = Date.now() - 60000;
+  fs.writeFileSync(path.join(state, "host-status.json"), JSON.stringify({ pid: process.pid, startedAt, dataDir, origin: "http://127.0.0.1:1", window: true, awake: { mode: "always", active: true } }));
+  const list = path.join(home, "processes.json");
+  fs.writeFileSync(list, JSON.stringify({ processes: [
+    { pid: 4, ppid: 0, image: "System", path: null, commandLine: null, startedAt: null },
+    { pid: process.pid, ppid: 4, image: "node.exe", path: "C:\\node\\node.exe", commandLine: `"C:\\node\\node.exe" "${other}\\scripts\\bootstrap.mjs"`, startedAt },
+  ] }));
+  const env = { ...process.env, REACH_HOME: state, REACH_DATA: dataDir, REACH_COMMAND: "", REACH_TEST_WINDOWS_PROCESSES: list };
+  const reach = (args) => new Promise((resolve) => execFile(process.execPath, ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", ...args], { env, timeout: 30000 },
+    (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })));
+  const status = await reach(["status"]);
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, new RegExp(`^Reach: running in a terminal window \\(process ${process.pid}\\), since [^\\n]+, from C:\\\\Users\\\\Me\\\\other reach\\nLink: http://127\\.0\\.0\\.1:1\\nSleep prevention: always · active\\n$`));
+  const second = await reach(["--local"]);
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, new RegExp(`Reach: already running in a terminal window \\(process ${process.pid}\\), since [^\\n]+, from C:\\\\Users\\\\Me\\\\other reach\\.\\nUse that window, or:\\n {2}\\.\\\\reach\\.cmd restart`));
+  const restart = await reach(["restart"]);
+  assert.equal(restart.code, 0, restart.stderr);
+  assert.match(restart.stdout, /^Asked on the phone \(Needs you\): Reach restarts when the user taps Restart\. Nothing restarted yet; don't run this again\./);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dataDir, "restart-request.json"), "utf8")).id, "the request the phone shows");
+});
+
 test("Windows: service guidance uses the active command, and related hints have no hard-coded launcher", async () => {
   const result = await new Promise((resolve, reject) => execFile(process.execPath,
     ["--import", AS_WINDOWS, "--input-type=module", "-e", `

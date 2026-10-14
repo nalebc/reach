@@ -386,9 +386,9 @@ test("Windows: a second start says where Reach runs and what that costs there; s
 
 test("Windows: the app a command runs inside, from its parents: a terminal is none, an editor or an agent is one", async () => {
   const { windowsHostApp } = await import("../scripts/instances.mjs");
-  const chain = (...images) => images.map((image, i) => ({ pid: i + 1, ppid: i + 2, image, commandLine: image, startedAt: 1000 + (images.length - i) }));
+  const chain = (...images) => images.map((image, i) => ({ pid: 1000 + i, ppid: 1001 + i, image, commandLine: image, startedAt: 1000 + (images.length - i) }));
   // Nearest first: this node, then its parents.
-  const appOf = (...images) => windowsHostApp(chain(...images), 1);
+  const appOf = (...images) => windowsHostApp(chain(...images), 1000);
   assert.equal(appOf("node.exe", "powershell.exe", "cmd.exe", "WindowsTerminal.exe", "explorer.exe"), "");
   assert.equal(appOf("node.exe", "powershell.exe", "explorer.exe"), "", "a console window");
   assert.equal(appOf("node.exe", "powershell.exe", "bash.exe", "claude.exe", "pwsh.exe", "WindowsTerminal.exe"), "Claude", "Claude Code's shell");
@@ -397,10 +397,12 @@ test("Windows: the app a command runs inside, from its parents: a terminal is no
   assert.equal(appOf("node.exe", "reach-background-0123456789ab.exe", "svchost.exe"), "", "the background task");
   assert.equal(appOf("node.exe", "powershell.exe", "TOTALCMD64.exe"), "TOTALCMD64");
   assert.equal(appOf("node.exe", "cmd.exe"), "", "a parent that's gone: no app");
+  assert.equal(appOf("node.exe", "cmd.exe", "System"), "", "Windows itself is nobody's app");
+  assert.equal(appOf("node.exe", "cmd.exe", "smss.exe", "csrss.exe"), "");
   // A parent that started after its child is another program with an old id.
   const reused = chain("node.exe", "Code.exe");
   reused[1].startedAt = 999999;
-  assert.equal(windowsHostApp(reused, 1), "");
+  assert.equal(windowsHostApp(reused, 1000), "");
 });
 
 test("Windows: the process list unreadable: the Reach this folder runs, with why", async () => {

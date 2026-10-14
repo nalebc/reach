@@ -351,6 +351,7 @@ const PLUMBING = new Set(["node", "cmd", "powershell", "pwsh", "conhost", "openc
 const HOSTS = new Set([
   "windowsterminal", "wt", "explorer", "mintty", "git-bash", "alacritty", "wezterm", "wezterm-gui", "conemu", "conemu64", "conemuc", "conemuc64",
   "cmder", "tabby", "hyper", "fluentterminal", "terminus", "kitty", "taskhostw", "taskeng", "svchost", "services", "wininit", "winlogon", "userinit", "sihost", "runtimebroker",
+  "smss", "csrss", "lsass", "dwm",
 ]);
 const STARTER = /^reach-background-[0-9a-f]{12}$/;
 const NAMES = { code: "VS Code", "code - insiders": "VS Code", cursor: "Cursor", windsurf: "Windsurf", claude: "Claude", codex: "Codex", chatgpt: "ChatGPT" };
@@ -367,6 +368,8 @@ export function windowsHostApp(processes, pid) {
   const seen = new Set();
   for (let p = processes.find((x) => x.pid === pid); p && !seen.has(p.pid) && seen.size < 64; p = parentOf(p)) {
     seen.add(p.pid);
+    // Windows itself (System, Registry…: no program file) is nobody's app.
+    if (p.pid <= 4 || !/\.exe$/i.test(p.image || "")) return "";
     const name = stem(p.image);
     if (PLUMBING.has(name)) continue;
     if (HOSTS.has(name) || STARTER.test(name)) return "";
