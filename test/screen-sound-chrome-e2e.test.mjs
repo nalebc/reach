@@ -41,9 +41,14 @@ async function buildPage(dir) {
     `import React from ${abs("node_modules/react/index.js")};
 import { createRoot } from ${abs("node_modules/react-dom/client.js")};
 import { useScreenSound } from ${abs("src/useScreenSound.ts")};
-// An analyser after the worklet: what the phone's speaker would get.
+// An analyser after the worklet: what the phone's speaker would get; and
+// each time the worklet's queue ran dry on a late link ("late").
+window.__late = 0;
 const connect = AudioWorkletNode.prototype.connect;
 AudioWorkletNode.prototype.connect = function (destination, ...rest) {
+  this.port.onmessage = (event) => {
+    if (event.data?.type === "late") window.__late++;
+  };
   const analyser = this.context.createAnalyser();
   analyser.fftSize = 2048;
   connect.call(this, analyser);
@@ -168,21 +173,27 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   const level = await until(`window.__level() > 0.1 && window.__level()`, 5000);
   const heardIn = Date.now() - tapped;
   assert.ok(level < 0.25, `level ${level}`);
-  // Then steady: the tone's full level at every look for a second, no
-  // dropouts (a queue that ran dry would show as a dip).
-  await new Promise((r) => setTimeout(r, 800));
+  // Then steady for four seconds, after two to settle: the tone's level at
+  // every look, but for one blip at most. A shared CI machine can stall the
+  // page once (Oct 14, a macOS runner: one 40 ms gap); a queue that runs dry
+  // again and again (a source slower than the clock, as the Oct 13 stand-in
+  // was) still fails.
+  await new Promise((r) => setTimeout(r, 2000));
+  const lateBefore = await tab.evaluate("window.__late");
   const steady = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 40; i++) {
     steady.push(await tab.evaluate("window.__level()"));
     await new Promise((r) => setTimeout(r, 100));
   }
-  assert.ok(Math.min(...steady) > 0.165 && Math.max(...steady) < 0.2, `levels ${steady.map((v) => v.toFixed(3))}`);
+  const late = (await tab.evaluate("window.__late")) - lateBefore;
+  const off = steady.filter((v) => v < 0.165 || v > 0.2);
+  assert.ok(off.length <= 1 && late <= 1, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
   await tap();
   await until(`window.__sound?.state === "off"`);
   await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
   await fs.promises.writeFile(
     path.join(repo, "reports", "sound-chrome-e2e.json"),
-    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
+    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), ranDry: late, phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
   );
 });
