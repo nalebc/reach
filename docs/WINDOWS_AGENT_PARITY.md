@@ -1,12 +1,14 @@
 # Agent access on Windows: parity plan
 
-Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on a Mac, proven end to end on real Windows. Inventory: every Mac capability, its gate and its Windows route, re-checked on `ac2ec2cc`.
+Goal (owner, Oct 12 2026): an agent gets on a Windows PC exactly what it gets on a Mac, proven end to end on real Windows. Oct 13, widened to everything: "i want full parity with mac, what works in mac should work in windows", and "No flag should exist. We should detect platform and support." Inventory: every Mac capability, its gate and its Windows route, re-checked on `ac2ec2cc`.
 
-## Today on Windows
+## Today on Windows (Oct 13)
 
-- Refused: all four browser presets (Full control, Apps, Files, Read only), invite links, the start page, the agent gateway and hosted MCP (no trusted private ingress), agents' and invited people's commands (no sandbox; refused since `aa09b7da` instead of running unsandboxed).
+- On by detection, with no switch, not yet run on a real PC: phone sign-in from the browser, invite links, the start page, the agent gateway, hosted MCP, Face ID join and linked computers (D). A PC that can't hold the keyed route (Tailscale older than 1.104 or without its adapter, Reach's folders not private, Tailscale's connections unrecognised) uses pairing codes and says why.
+- Refused: all four browser presets (Full control, Apps, Files, Read only) until B, C and E.
+- Built by detection, not yet run on a real PC (C): agents' and invited people's commands (`/api/jobs`) run in a regular AppContainer + Job Object with a per-root capability grant (the `aa09b7da` refusal is lifted on Windows once its private folder is ready). The Full-control shell (Job Object on the owner's token), approved scripts (LPAC) and the Files helper (owner-token NT-handle broker) are built and wired too, but stay behind the preset refusals until E.
 - Works: command-line agents over the tailnet for files.
-- Broken quietly: pausing one agent does nothing off a Mac (the pause store lives in the Mac-only desktop service).
+- Missing: background mode and start at sign-in, sleep prevention (K); one Reach per PC, restarts and updates in a visible window (L); the rest of P, T, G, H and N.
 
 ## What parity means
 
@@ -27,7 +29,8 @@ Same tools, same answers, same refusals. Where Windows can't do what the Mac doe
 | Reach running inside a terminal app | Only the window whose title names Reach is closed to narrower presets (the Mac's title rule); Reach titles its own console window "Reach" on both |
 | Browser developer-tools keys (Firefox Ctrl/Cmd+Shift/Opt+K, E, Z) | Refused on both: the Mac gains the refusal it lacked |
 | A browser on the computer itself asking to be approved | Allowed on both; the approval prompt says it came from this computer itself, on both |
-| Where account approval is turned on | Saved setup preferences (`./reach setup`), on both; no Windows-only environment variable once it is accepted |
+| Where account approval is turned on | Saved setup preferences (`./reach setup`), on both; no switch, environment variable or flag anywhere (owner, Oct 13: "No flag should exist") |
+| A feature this computer can't support yet | Detected, said with the reason wherever it's asked, and picked up by itself once the computer can (an older Tailscale: pairing codes until it's updated). Never a switch, on either platform (owner, Oct 13) |
 | Reach's own files writable by other users of the computer | Same check on both: refused with the reason |
 | This computer as a Tailscale exit node | Allowed on both; Windows adds a CI test proving the keyed route stays closed |
 | Reach's folders | Owner-only on both (0700 / owner, SYSTEM, Administrators ACL) |
@@ -74,7 +77,7 @@ Built on Oct 12, with unit tests. None is proven on real Windows yet (rule 5): G
 
 Workstream D (public door) and the first part of M (coding agents) were merged on Oct 12. Neither has been compiled or run on Windows yet.
 
-- **D:** everything is behind `REACH_WINDOWS_ACCOUNT=1`, which is off. A security review is pending.
+- **D:** on by detection since Oct 13, with no switch, Face ID join and linked computers included (owner: "No flag should exist"). A security review of the switch-free door runs with that change.
 - **M:**
   - #2: Codex's session service is reached over a named pipe.
   - #17: Codex and Team pipes are checked. Only one known to be another account's is refused; one that couldn't be checked is used, as on a Mac.
@@ -90,6 +93,24 @@ Follow-ups the reviews left, both for a real PC:
 
 The rest are in workstreams K to W below.
 
+## Workstream C (Windows sandbox) built — the parity ledger
+
+Built by detection with unit tests; **built, not yet run on a real PC** (rule 5). The design is `docs/parity/C-sandbox.md`; the helper is `scripts/native/sandbox.cs` (compiled with the PC's own csc, hash-verified before each spawn), driven from `server/windows-sandbox.mjs`. Jobs (`/api/jobs`) are live by detection; the shell, scripts and Files helper are wired but stay behind the preset refusals until E.
+
+| Mac behaviour | Windows | Note |
+| --- | --- | --- |
+| Full-control shell unsandboxed, OS user | Job Object only (kill timing on abort/timeout, UI restrictions), owner token, no AppContainer, no caps | **Byte-for-byte parity.** |
+| Jobs: allow-default deny-list, network on | Regular AppContainer, per-root capability ALLOW + DENY carve-outs + a loopback/tailnet self-test | **Stronger** on reads; same deny guarantees. Parity gain. |
+| Jobs read everything but secrets | The AppContainer can't read `%TEMP%`, the npm cache, user-scope Node managers (nvm-windows, fnm, Volta), `.gitconfig` or Git Bash unless named | **Parity break (D-C-5):** the profile-read loss is recorded; a named tool/profile directory list could be switched on in one place later. |
+| Non-admin device / full guest jobs over Home + drives | Refused: a jobs grant can't be a drive root, Home, or an ancestor of Home | **Parity break (finding 2):** such clients can't run jobs on Windows. |
+| Scripts: deny-default, no net, one process | AppContainer (LPAC intended) + one-process Job with `CHILD_PROCESS_RESTRICTED`, no network, grant walk skips links | Parity; LPAC marking and the probe-minimal capability set are real-PC items. |
+| Scripts deny `.git`/`.npmrc`… created during the run | A post-run scan reports and fails; a same-run create-and-use isn't blocked mid-run | **Residual (finding 5):** stated. |
+| Files helper: kernel-confined, descriptor-relative | Owner-token broker: NT handle-relative, no-reparse, final-path verify, private-name/path, one link | Parity; the kernel belt is replaced by broker code. Lowbox impersonation is D-C-2. |
+| Nothing left behind (per-process sandbox) | Per-root capability ACEs + a ledger; kill-then-revoke, startup + hourly sweeps | **Residual (D-C-7):** a file moved out of a root stays reachable to a live token holding that capability until revoke. |
+| — | SAC-On / App Control / AppLocker / ASR / CFA blocking the helper | **Fail closed** by the launch self-test with the policy wording; never a fallback (finding 15). Signed-helper path is D-C-6. |
+
+Not yet proven on a real PC (the escape e2e run as a standard user in CI, `test/windows-sandbox-e2e.test.mjs` and `test/windows-file-boundary-e2e.test.mjs`): that the AppContainer + capability grant actually denies Reach's data and non-granted folders; the loopback/tailnet self-test; the owner-token broker's no-reparse traversal and identity match; the Job Object's UI restrictions and brokered-launch refusals; and the full real-PC checklist (OneDrive KFM, a pnpm store, a Dev Drive/ReFS, SAC in Evaluation, Controlled Folder Access).
+
 ## Rules
 
 0. Parity is measured against what the Mac code and its tests do, not against the docs (they had drifted: `docs/SECURITY.md` promised an owner-presence check the helper no longer runs).
@@ -97,7 +118,7 @@ The rest are in workstreams K to W below.
 2. Fail closed: a helper that can't start, a target it can't identify, a policy it can't read → refuse, with the reason.
 3. Windows helpers are C# (C# 5, .NET Framework 4.8). Owner decision, Oct 12: they are **signed through SignPath Foundation**, product name *Reach* (the certificate names SignPath Foundation as publisher), built by GitHub Actions from this repository, each signing approved by hand, shipped in the npm package and release archives, and run only after Reach checks the SignPath Foundation signature and the release's pinned SHA-256 (`docs/CODE_SIGNING.md`). Without a signed helper (a source checkout, or before SignPath approves Reach), Reach compiles them on first use with the PC's `csc.exe`, cached by source hash as Swift helpers are on a Mac; PCs that only run signed programs then refuse with the reason. No PowerShell in agent paths, nothing downloaded at run time.
 4. One shared policy corpus: the Windows helper runs the same decisions test the Swift helper and the JS policy run (`test/agent-desktop-policy-native.test.mjs`).
-5. Nothing is described as working on Windows until its real-Windows test passes. The public door stays behind `REACH_WINDOWS_ACCOUNT=1` until the owner's real-PC acceptance (`docs/WINDOWS_SIGN_IN_DESIGN.md`).
+5. Nothing is described as working on Windows until its real-Windows test passes. Nothing waits behind a switch either: Reach detects what the PC can do, and says why when it can't (owner, Oct 13). The owner's real-PC acceptance (`docs/FIRST_RUN_MATRIX.md` M8) is what lets the docs say "works".
 6. Each phase ends with an adversarial security review of its diff.
 
 ## Workstreams and order
@@ -107,7 +128,7 @@ The rest are in workstreams K to W below.
 | A | Foundation: per-agent pause store out of the desktop service; platform-neutral app ids and paths (`.exe`, AUMIDs), modifiers (cmd→Ctrl, option→Alt); Windows guard data (password managers, Credential Manager, consent.exe, CredentialUIBroker, LogonUI, Task Manager, regedit, mmc, ms-settings privacy/sign-in/network pages; runas, reg, bcdedit, netsh, sc, schtasks, icacls, takeown, Set-MpPreference); the C# helper build (`windowsBinary`) | — | `agent-desktop.mjs`, `agent-guard.mjs`, `agent-presets.mjs`, `desktop-native.mjs`, `agent-pauses.mjs`, `index.mjs` |
 | B | Windows agent desktop helper: filtered screenshot (protected windows masked), SendInput (Unicode text), held buttons released on exit, per-event target check (WindowFromPoint → process image → WinVerifyTrust), UI Automation for describe / find / press / fill / read_page / menus / windows / focus, open app / URL / file, app catalog, secret fills (IsPassword, never echoed), bank-site URL read-only. No guessing the owner's presence from input timing: the Mac stopped doing that on Oct 8 (the owner pauses agents) | A | new `scripts/native/agent-desktop.cs`, Windows adapter in `agent-desktop.mjs` |
 | C | Windows sandbox: AppContainer/LPAC + Job Object runner for agents' commands, scripts and the Full-control shell (pwsh); Files helper with handle-relative I/O (no reparse points or hard links) | A | new `scripts/native/sandbox.cs`, `jobs.mjs`, `browser-scripts.mjs`, `browser-file-boundary.mjs`, `agent-shell.mjs` |
-| D | Public door on Windows: keyed Serve route + tailscaled peer check (design: `docs/WINDOWS_SIGN_IN_DESIGN.md`), behind `REACH_WINDOWS_ACCOUNT=1`: invite links, start page, agent gateway, hosted MCP, invite keys | A | `tailscale-auth.mjs`, `launch.mjs`, `configure.mjs`, `index.mjs` refusals |
+| D | Public door on Windows: keyed Serve route + tailscaled peer check (design: `docs/WINDOWS_SIGN_IN_DESIGN.md`), on by detection (Oct 13): invite links, start page, agent gateway, hosted MCP, invite keys, Face ID join, linked computers | A | `tailscale-auth.mjs`, `launch.mjs`, `configure.mjs`, `index.mjs` refusals |
 | E | Presets on Windows: lift the refusals once B/C/D pass; invite UI wording | B, C, D | `browser-access.mjs`, `BrowserInvite.tsx` |
 | F | End to end on real Windows CI: invite → admission → MCP tool calls (screenshot, click and type into a test window, guardrail refusals on a password field and a protected window), sandboxed command, Files boundary, per-agent pause, phone control and Reach's pause stopping agent input | B, C, E | `test/windows-agent-e2e.test.mjs`, `ci.yml` |
 | G | Saved browser tools: Chrome/Edge extension + native messaging host (replaces JXA) | B | new |
@@ -123,7 +144,7 @@ The rest are in workstreams K to W below.
 | U | Proof below the phone (audit #18–#24, #50): stand-in `tailscale.exe`, `reach.cmd` through ConPTY, jobs, Files escapes, `reach-agent`, a Windows `test:ci`, a standard-user run, windows-2022 | — | `.github/scripts/run-tests.mjs`, `.github/workflows/ci.yml`, `test/windows-*.test.mjs` |
 | H | Mac-dialog equivalents via UI Automation (SmartScreen, file security), window-only streaming (one HWND), Claude consent on Claude Desktop, permission hooks over a named pipe restricted to the user's SID | B | various |
 
-Phases: 1) A built, B/C/D designed in detail and reviewed; 2) B, C, D built in parallel worktrees; 3) E + F, iterate on real Windows until green; 4) G, H; 5) the owner's real-PC acceptance (public door, physical phone), then defaults on.
+Phases: 1) A built, B/C/D designed in detail and reviewed; 2) B, C, D built in parallel worktrees; 3) E + F, iterate on real Windows until green; 4) G, H; 5) the owner's real-PC acceptance (public door, physical phone), which lets the docs say "works".
 
 ## Owner acceptance on a real Windows PC (end of phase 5)
 
