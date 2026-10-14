@@ -56,7 +56,8 @@ release notes, so date the heading before tagging.
 - 2026-10-14: On a Windows PC, Reach tells when the Claude app is open, from
   the PC's process list (the app's own program, never Claude Code's
   claude.exe): a chat the open app lists isn't deleted under it, and chats
-  started from the phone join its list once nobody is at the PC. Unlike a
+  started from the phone join its list once nobody is at the PC, through the
+  import link the Mac's app takes (not yet tried with the Windows app). Unlike a
   Mac, the app's window isn't reloaded after Reach replies yet: it shows
   them once the app is opened again. A Claude Code record whose process id
   Windows has since given to another program no longer makes its chat read
