@@ -100,6 +100,14 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
     buffered = Buffer.alloc(0);
   const waiting = new Map(),
     listeners = new Map();
+  const failPending = (error) => {
+    for (const call of waiting.values()) call.reject(error);
+    waiting.clear();
+  };
+  child.on("error", failPending);
+  exited.then(() => failPending(Error(`Chrome exited: ${stderr.slice(-400)}`)));
+  toChrome.on("error", failPending);
+  fromChrome.on("error", failPending);
   fromChrome.on("data", (chunk) => {
     buffered = Buffer.concat([buffered, chunk]);
     let end;
@@ -123,7 +131,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       const id = next++;
       const timer = setTimeout(() => {
         waiting.delete(id);
-        reject(Error(`${method}: no answer from Chrome in 20 s`));
+        reject(Error(`${method}: no answer from Chrome in 20 s${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
       }, 20000);
       waiting.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v)),
@@ -133,7 +141,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       toChrome.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
     });
   const close = async () => {
-    if (child.exitCode === null && child.signalCode === null) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
       await exited;
     }
