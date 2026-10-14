@@ -75,6 +75,7 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+  [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int max);
@@ -441,7 +442,33 @@ static class DesktopFixture {
     };
     EnumWindows(each, IntPtr.Zero);
     GC.KeepAlive(each);
-    Console.WriteLine("{\"minimized\":[" + string.Join(",", owners.ToArray()) + "]}");
+    // A shell surface in front (Start, Search, a first-run panel on Windows
+    // 11 client images) covers the screen; Escape dismisses it, as an owner would.
+    var shell = new System.Collections.Generic.List<string>();
+    for (int i = 0; i < 5; i++) {
+      IntPtr front = GetAncestor(GetForegroundWindow(), 2);
+      var kind = new StringBuilder(256);
+      GetClassNameW(front, kind, kind.Capacity);
+      if (kind.ToString() != "Windows.UI.Core.CoreWindow") break;
+      uint pid;
+      GetWindowThreadProcessId(front, out pid);
+      string name = "?";
+      IntPtr process = OpenProcess(0x1000, false, (int)pid);
+      if (process != IntPtr.Zero) {
+        var image = new StringBuilder(32768); int size = image.Capacity;
+        if (QueryFullProcessImageNameW(process, 0, image, ref size)) name = Path.GetFileName(image.ToString());
+        CloseHandle(process);
+      }
+      shell.Add("\"" + name.Replace("\\", "").Replace("\"", "") + "\"");
+      keybd_event(0x1B, 0, 0, UIntPtr.Zero);
+      keybd_event(0x1B, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
+      Thread.Sleep(400);
+    }
+    IntPtr after = GetAncestor(GetForegroundWindow(), 2);
+    var afterKind = new StringBuilder(256);
+    GetClassNameW(after, afterKind, afterKind.Capacity);
+    Console.WriteLine("{\"minimized\":[" + string.Join(",", owners.ToArray()) + "],\"dismissed\":[" + string.Join(",", shell.ToArray()) +
+      "],\"frontClass\":\"" + afterKind.ToString().Replace("\"", "") + "\"}");
     return 0;
   }
 

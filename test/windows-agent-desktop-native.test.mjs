@@ -58,8 +58,9 @@ test.before(async () => {
       { windowsHide: true, timeout: 120000 });
   fixtureGui = path.join(work, "fixture.exe");
   fixtureConsole = path.join(work, "fixture-console.exe");
-  // A runner's own console (open on Windows Server 2022 runners) would cover
-  // the test windows. Minimized, with only its program's name recorded.
+  // A runner's own console (open on Windows Server 2022 runners) or a shell
+  // surface in front (Windows 11 on Arm) would cover the test windows. The
+  // consoles are minimized and the surface dismissed; only names are recorded.
   const { stdout } = await exec(fixtureConsole, ["minimize-consoles"], { windowsHide: true });
   note({ runnerConsoles: JSON.parse(stdout.trim()) });
 });
