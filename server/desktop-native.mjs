@@ -24,6 +24,9 @@ const FRAMEWORKS = ["Framework64", "Framework"];
 const REFERENCES = ["System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll",
   "WPF\\UIAutomationClient.dll", "WPF\\UIAutomationTypes.dll", "WPF\\WindowsBase.dll"];
 const CSC_FLAGS = ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", "/debug-", "/codepage:65001", "/utf8output"];
+// What one helper uses beyond those, so the rest aren't rebuilt for it:
+// Windows' own speech recognizer for voice memos (agent-sessions/voice.mjs).
+const EXTRA_REFERENCES = { transcribe: ["System.Speech.dll"] };
 /** Where csc.exe can be on this PC, in the order tried: [] when the Windows folder isn't known. */
 export function cscCandidates({ env = process.env } = {}) {
   const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR;
@@ -42,7 +45,8 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
   const sourceFile = path.join(native, `${kind}.cs`);
   // Its source and how it's built name it: any change to either rebuilds it.
   const source = await fs.readFile(sourceFile);
-  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, REFERENCES])).digest("hex").slice(0, 12);
+  const references = [...REFERENCES, ...(EXTRA_REFERENCES[kind] || [])];
+  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, EXTRA_REFERENCES[kind] ? references : REFERENCES])).digest("hex").slice(0, 12);
   // `fresh`: built now under a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
   const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
@@ -57,7 +61,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
         framework = found ? path.win32.dirname(found) : null;
         return found || null;
       },
-      args: (tmp) => [...CSC_FLAGS, `/out:${tmp}`, ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`), sourceFile],
+      args: (tmp) => [...CSC_FLAGS, `/out:${tmp}`, ...references.map((name) => `/reference:${path.win32.join(framework, name)}`), sourceFile],
     });
     signal?.throwIfAborted();
   } catch (error) {
