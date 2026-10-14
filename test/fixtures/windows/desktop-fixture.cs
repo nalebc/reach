@@ -62,6 +62,10 @@ static class DesktopFixture {
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
   [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
   [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+  [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint kind);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, int data, UIntPtr extra);
   [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr window);
   delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
@@ -342,10 +346,19 @@ static class DesktopFixture {
   }
 
   static int Click(int x, int y) {
+    IntPtr target = GetAncestor(WindowFromPoint(new POINT { X = x, Y = y }), 2);
     SetCursorPos(x, y);
     mouse_event(0x2, 0, 0, 0, UIntPtr.Zero);
     mouse_event(0x4, 0, 0, 0, UIntPtr.Zero);
-    return 0;
+    // Injection is asynchronous. Do not tell the test its owner click has
+    // taken the foreground until Windows confirms that exact root window.
+    for (int i = 0; i < 80; i++) {
+      if (target != IntPtr.Zero && GetForegroundWindow() == target) return 0;
+      Thread.Sleep(25);
+    }
+    Console.Error.WriteLine("The fixture click did not activate its root window (target " + target.ToInt64() +
+      ", foreground " + GetForegroundWindow().ToInt64() + ").");
+    return 1;
   }
 
   sealed class Watcher : Form {

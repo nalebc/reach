@@ -63,6 +63,10 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   target = JSON.parse(await until(() => {
     try { return fs.readFileSync(path.join(dir, "document.json"), "utf8"); } catch { return false; }
   }, "the fixture window"));
+  // The elevated runner's window may retain the foreground after a medium
+  // fixture starts. Establish the owner's real click before agent input;
+  // Reach's elevated-foreground refusal remains part of the native tests.
+  await exec(consoleFixture, ["click", String(target.x + 80), String(target.y + 12)], { windowsHide: true });
   const log = () => { try { return fs.readFileSync(path.join(dir, "document.log"), "utf8"); } catch { return ""; } };
   const login = "owner@example.test", ownerAccount = { userId: "42", login };
   const ips = { phone: "100.64.0.1", agent: "100.64.0.5" };
