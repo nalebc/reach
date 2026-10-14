@@ -92,7 +92,15 @@ Built on Oct 13, each with unit tests and its real-Windows test passing on GitHu
 | #37 | Word, RTF and OpenDocument text read in JS off a Mac; .doc stays a download | [38510232232](https://github.com/nalebc/reach/actions/runs/38510232232) |
 | #35 | Voice memos through System.Speech (scripts/native/transcribe.cs) | [38511383861](https://github.com/nalebc/reach/actions/runs/38511383861) |
 
-Built on Oct 14 (workstream N, second part), with unit tests on this Mac and its real-Windows tests passing on GitHub's windows-2025 runner ([38583448433](https://github.com/nalebc/reach/actions/runs/38583448433)), not yet on a physical PC. The runner has no Claude app, so its test runs stand-ins named and placed as the app, Claude Code and an Electron helper are:
+Built on Oct 14 (workstream N, second part), with unit tests on this Mac and its real-Windows tests passing on GitHub's windows-2025 runner, not yet on a physical PC.
+- Stand-ins named and placed as the app, Claude Code and an Electron helper are: [38583448433](https://github.com/nalebc/reach/actions/runs/38583448433).
+- The Claude app itself (`test/windows-claude-app-real.test.mjs`, run only when asked: it downloads the app) passes in [38585021392](https://github.com/nalebc/reach/actions/runs/38585021392):
+  - Anthropic's MSIX, Claude 2.37337.1, was installed with Add-AppxPackage as its deployment guide says, then opened from the Start menu's apps folder.
+  - Its program is `C:\Program Files\WindowsApps\Claude_2.37337.1.0_x64__pzs8sxrjxfjjc\app\claude.exe`, with family name `Claude_pzs8sxrjxfjjc`.
+  - Its data is in the package's own copy, `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`.
+  - It reads as installed before it's first opened.
+  - Reach found its running process and its start through the server's own readers.
+  - Its installer build (ClaudeSetup.exe, `%LOCALAPPDATA%\AnthropicClaude`) hasn't been run there.
 
 - #9 (rest): whether the Claude app runs, and since when, from the PC's process list (`server/windows-processes.mjs`). The app is its own program by its path: its installer's `%LOCALAPPDATA%\AnthropicClaude\…\claude.exe` or its package's `WindowsApps\Claude_<version>_<arch>__<publisher id>\…`, never one of Electron's `--type=` helpers. Claude Code's own `claude.exe` (its installer's, the app's copy in its data folder, the ones Reach starts) never counts. This makes three things work as on a Mac: a chat the open app lists isn't deleted under it ("delete it there"), chats Reach starts join an open app's list by its import link once nobody is at the PC (the link the Mac's app takes; not yet tried with the Windows app, which no runner has), and the phone knows the app is open. The app's window isn't reloaded after Reach replies yet (H): it shows them once the app is opened again.
 
