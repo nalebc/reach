@@ -289,9 +289,8 @@ export async function createReach(overrides = {}) {
   approvalCleanup?.unref();
   // Your other Reach computers: linked in their terminals, they share
   // device approvals, and their pages may call this one (server/fleet.mjs).
-  // Not on Windows yet, even with browser sign-in: its own acceptance first.
   const fleet =
-    config.tailscaleOwner && config.publicOrigin && hostPlatform !== "win32"
+    config.tailscaleOwner && config.publicOrigin
       ? createFleet({
           dataDir: config.dataDir,
           owner: config.tailscaleOwner,
@@ -312,13 +311,12 @@ export async function createReach(overrides = {}) {
   originSync?.unref();
   // One-time Tailscale keys in invitations (server/guest-keys.mjs), and
   // removing guests' devices once their invitation ends.
-  // Invite keys need phones approved by your Tailscale account: not on a
-  // Windows Reach (pairing code, scripts/configure.mjs accountApproval), nor
-  // before this computer is set up. Said the same way wherever it's asked.
-  const noInviteKeys =
-    hostPlatform === "win32" && !config.tailscaleOwner
-      ? "Invite links for people and agents without Tailscale aren't available on Windows yet."
-      : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
+  // Invite keys need phones approved by your Tailscale account: not before
+  // this computer is set up, nor while a PC set up for it is on pairing codes
+  // (scripts/launch.mjs signInOff). Said the same way wherever it's asked.
+  const noInviteKeys = config.signInOff
+    ? `Invite links are off on this ${computerWord(hostPlatform)} for now: ${config.signInOff}`
+    : `Invite links need this computer set up with your Tailscale account: run ${command} configure on it.`;
   const guestKeys = config.tailscaleOwner
     ? createGuestKeys({
         dataDir: config.dataDir,
@@ -328,10 +326,9 @@ export async function createReach(overrides = {}) {
       })
     : null;
   // Face ID sign-in for a new browser of yours, without the Tailscale app or
-  // login (server/face-join.mjs): a passkey here and invite keys set up. Not
-  // on Windows yet, even with browser sign-in: its own acceptance first.
+  // login (server/face-join.mjs): a passkey here and invite keys set up.
   const faceJoin =
-    passkeys && guestKeys && hostPlatform !== "win32"
+    passkeys && guestKeys
       ? createFaceJoin({
           passkeys,
           guestKeys,
@@ -2777,8 +2774,8 @@ export async function createReach(overrides = {}) {
     // Screen text an agent didn't read again (savings.mjs, "screen-diff").
     savings: { record: (entry) => savings.record(entry) },
     prepareFunnel: async () => {
-      // A Windows Reach has no public link without browser sign-in.
-      if (!prepareFunnel && hostPlatform === "win32" && !config.tailscaleOwner)
+      // No public link without phones approved by your Tailscale account.
+      if (!prepareFunnel && !config.tailscaleOwner)
         throw fail(503, noInviteKeys);
       if (!prepareFunnel || paused || !transportAvailable)
         throw fail(503, "Temporary browser access is not available. Start Reach with its Tailscale connection and try again.");
@@ -5760,9 +5757,8 @@ export async function createReach(overrides = {}) {
         publicApp: publicDoor(publicApp),
       });
     },
-    // Windows with browser sign-in (REACH_WINDOWS_ACCOUNT=1): the same, on a
-    // keyed loopback route only Tailscale's own process may use
-    // (server/tailscale-auth.mjs listenKeyedIngress). Its port.
+    // Windows: the same, on a keyed loopback route only Tailscale's own
+    // process may use (server/tailscale-auth.mjs listenKeyedIngress). Its port.
     async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");

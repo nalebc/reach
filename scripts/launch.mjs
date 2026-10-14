@@ -3,8 +3,6 @@ import {
   assertSocketSupport,
   assertOwnerAccount,
   preferencesFile,
-  accountApproval,
-  flagMissing,
   keyedSupportProblem,
 } from "./configure.mjs";
 import {
@@ -61,6 +59,10 @@ import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 import { ForegroundServe, createLock } from "./foreground-serve.mjs";
 import { ForegroundFunnel } from "./foreground-funnel.mjs";
 
+// Windows' keyed route refused every connection Tailscale made to it.
+const UNRECOGNISED =
+  "Reach couldn't confirm that its private route's connections come from Tailscale's own service on this PC.";
+
 export async function launch(options, root) {
   // Started for you (a restart from the phone, at sign-in): read once, and
   // not handed on to the terminals and agents Reach starts.
@@ -92,14 +94,21 @@ export async function launch(options, root) {
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
-  let preferences =
-    !options.local && accountApproval() ? readPreferences(root) : null;
-  // Set up for browser sign-in, started without the flag: said, never silently.
-  if (!preferences && process.platform === "win32" && !options.local && flagMissing(root))
-    console.log("Reach: browser sign-in is off: REACH_WINDOWS_ACCOUNT=1 isn't set in this terminal. Phones join with a pairing code and need the Tailscale app.");
-  // Windows has no Unix socket: with REACH_WINDOWS_ACCOUNT=1 a keyed loopback
-  // route only Tailscale's own process may use (docs/parity/D-public-door.md).
+  let preferences = !options.local ? readPreferences(root) : null;
+  // Windows has no Unix socket: a keyed loopback route only Tailscale's own
+  // process may use (docs/parity/D-public-door.md).
   const keyedDoor = !!preferences && process.platform === "win32";
+  // That route found Tailscale's own connections unrecognised: pairing codes
+  // until Tailscale changes or a day has passed, then it's tried again.
+  const unrecognisedFile = path.join(privateDir, "sign-in-unrecognised.json");
+  const unrecognised = (state) => {
+    const seen = keyedDoor ? loadJson(unrecognisedFile, null) : null;
+    if (!seen) return "";
+    const version = String(state?.status?.Version || "");
+    if (seen.tailscale === version && Date.now() - seen.at < 86400000) return UNRECOGNISED;
+    fs.rmSync(unrecognisedFile, { force: true });
+    return "";
+  };
   const socketPath = preferences && !keyedDoor ? serveSocketPath(root) : null;
   let peerCheck = null,
     ingressKey = "",
@@ -141,7 +150,12 @@ export async function launch(options, root) {
             },
           });
       }
-      const problem = folders.reason || keyedSupportProblem(keyedState) || (await peerCheck.ready()).reason || "";
+      const problem =
+        folders.reason ||
+        keyedSupportProblem(keyedState) ||
+        unrecognised(keyedState) ||
+        (await peerCheck.ready()).reason ||
+        "";
       if (problem) {
         signInOff = problem;
         console.log(`Reach: browser sign-in is off on this PC for now: ${problem} Phones join with a pairing code and need the Tailscale app.`);
@@ -189,6 +203,9 @@ export async function launch(options, root) {
         }
       : {}),
     tailscaleOwner: preferences?.owner,
+    // Set up for browser sign-in, on pairing codes for now: why, for the
+    // phone's answers about invite links.
+    ...(signInOff && { signInOff }),
     privatePaths: [privateDir],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
     tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },
@@ -563,7 +580,8 @@ export async function launch(options, root) {
       reach.setTransportAvailable(false);
       await startTunnel();
       recovery.nextRestart = Date.now() + 15000;
-      const deadline = Date.now() + 90000;
+      // `healthWaitMs`: a code-only option (tests), never read from argv.
+      const deadline = Date.now() + (options.healthWaitMs || 90000);
       let healthy = false;
       while (!stopped && Date.now() < deadline) {
         await recovery.check();
@@ -584,11 +602,12 @@ export async function launch(options, root) {
       }
       if (stopped) return;
       // Windows' keyed route answered nothing it was asked: Tailscale's
-      // connections weren't recognised as its own, so it stays closed.
-      if (!healthy && ingressKey && refusals.peer > 0)
-        throw Error(
-          "Reach couldn't confirm that its private route comes from Tailscale's own service on this PC, so it stays closed. Start without REACH_WINDOWS_ACCOUNT=1 to use pairing codes.",
-        );
+      // connections weren't recognised as its own, so it stays closed, and
+      // Reach starts again at once with pairing codes (noted for a day).
+      if (!healthy && ingressKey && refusals.peer > 0) {
+        atomicJson(unrecognisedFile, { tailscale: String(keyedState?.status?.Version || ""), at: Date.now() });
+        throw Object.assign(Error(`${UNRECOGNISED} It stays closed; Reach starts again with pairing codes.`), { relaunch: true });
+      }
       if (!healthy)
         throw Error(
           "The private phone link could not connect. Check Tailscale and HTTPS setup, then rerun Reach. No public tunnel was opened.",
@@ -686,7 +705,7 @@ export async function launch(options, root) {
       console.log(
         `\n${heading(renew)}\n\n  ${options.local ? "Open on this computer" : "Open on your phone"}: ${origin}\n  Pairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\n`,
       );
-      if (phoneNeedsApp) console.log(`${phoneAppFirst({ account: phoneAccount })}\n`);
+      if (phoneNeedsApp) console.log(`${phoneAppFirst({ account: phoneAccount, why: signInOff })}\n`);
       if (!options.local && process.stdout.isTTY) {
         const fragment = new URLSearchParams({
           pair: pairing.code,
