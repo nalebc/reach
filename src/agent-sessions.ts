@@ -910,6 +910,10 @@ export async function phoneJpeg(
   }
 }
 
+// A picture's preview while it's sent: only the object URL made for it on
+// this phone (blob:), never another address as an image's source.
+export const previewUrl = (url: string) => (url.startsWith("blob:") ? url : undefined);
+
 export async function uploadImage(peer: Peer, picked: Blob, given = "image") {
   const { file, name } = await phoneJpeg(picked, given);
   const form = new FormData();

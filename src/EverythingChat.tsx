@@ -69,6 +69,7 @@ import {
   startSession,
   startTeam,
   uploadImage,
+  previewUrl,
   usageLink,
   useAgentSessions,
   useChatAgent,
@@ -615,7 +616,7 @@ export function NewChat({
                   className={`as-thumb ${i.error ? "bad" : ""}`}
                   title={i.error}
                 >
-                  <img src={i.url} alt="" />
+                  <img src={previewUrl(i.url)} alt="" />
                   {!i.id && !i.error && <LoaderCircle size={16} className="spin" />}
                   <button
                     aria-label="Remove image"

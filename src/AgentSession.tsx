@@ -106,6 +106,7 @@ import {
   stopSession,
   tooOldLine,
   uploadImage,
+  previewUrl,
   uploadFile,
   usageLink,
   useSessionLive,
@@ -3735,7 +3736,7 @@ export default function AgentSessionView({
                         <FileText size={14} aria-hidden="true" /> {a.file}
                       </span>
                     ) : a.url ? (
-                      <img src={a.url} alt="" />
+                      <img src={previewUrl(a.url)} alt="" />
                     ) : (
                       <ImageIcon size={16} aria-label="Attached image" />
                     )}

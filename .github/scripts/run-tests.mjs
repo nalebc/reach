@@ -179,16 +179,23 @@ export async function run(suite) {
       Object.assign(nativeEnv, { REACH_TEST_APP_NATIVE: "1", REACH_TEST_FILE_BOUNDARY: "1", REACH_TEST_SCRIPT_SANDBOX: "1" });
     }
     // One folder of native helper builds for the whole suite (named by source
-    // hash, built whole or not at all), not one per test's data folder.
-    builds = process.platform === "darwin" ? fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-builds-")) : null;
-    if (builds) {
-      nativeEnv.REACH_TEST_NATIVE_DIR = builds;
+    // hash, built whole or not at all), not one per test's data folder. A run
+    // inside a suite (ci-policy's own) uses the suite's folder, already
+    // built, and leaves it for the suite: a new one compiled the helper again,
+    // past that test's 20 s on a loaded Intel runner (run 38451431163), where
+    // this compile alone takes 17 to 44 s.
+    const suiteBuilds = process.platform === "darwin" && process.env.REACH_TEST_NATIVE_DIR;
+    const shared = suiteBuilds && fs.existsSync(suiteBuilds) ? suiteBuilds : null;
+    builds = process.platform === "darwin" && !shared ? fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-builds-")) : null;
+    const nativeBuilds = shared || builds;
+    if (nativeBuilds) {
+      nativeEnv.REACH_TEST_NATIVE_DIR = nativeBuilds;
       // Compiled before any test, as Reach compiles it at start: an agent's
       // file request has 30 seconds, and a cold Intel runner took longer to
       // compile it inside the first one (Oct 12, PR 21).
-      process.env.REACH_TEST_NATIVE_DIR = builds;
+      process.env.REACH_TEST_NATIVE_DIR = nativeBuilds;
       const { desktopBinary } = await import("../../server/desktop-native.mjs");
-      await desktopBinary({ dataDir: builds }, "browser-files");
+      await desktopBinary({ dataDir: nativeBuilds }, "browser-files");
     }
     const child = spawn(process.execPath, args, { stdio: "inherit", env: { ...process.env, ...nativeEnv } });
     child.on("error", error => { console.error(error.message); process.exitCode = 1; });
