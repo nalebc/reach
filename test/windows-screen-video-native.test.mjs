@@ -592,6 +592,54 @@ test("a locked session answers the Mac's one-byte locked status, and keeps answe
   for (const command of ["key", "frame", "frame"]) assert.deepEqual([...(await video.ask(command))], [2], "locked, for as long as it is");
 });
 
+test("where Desktop Duplication isn't available, GDI's capture streams the same video: unchanged when still, decoded with its colours", { skip: !run, timeout: 300000 }, async (t) => {
+  if (!probed) return t.skip(`no H.264 encoder on this runner: ${report.noEncoder}`);
+  const out = path.join(scratch, "gdi");
+  const target = spawn("powershell.exe", ["-NoProfile", "-STA", "-EncodedCommand", encoded(TARGET)], { env: { ...process.env, REACH_TARGET_OUT: out }, stdio: "ignore" });
+  t.after(() => target.kill());
+  await until(() => fs.existsSync(`${out}.ready`), "the target window");
+  const [x, y, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
+  // As a VM or a Remote Desktop session without duplication would have it.
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_GDI: "1" });
+  t.after(() => video.child.kill());
+  const first = parse(await video.ask("key"));
+  assert.ok(first.meta?.key, `a picture first: ${video.stderr()}`);
+  assert.deepEqual(nalTypes(first.annexb).slice(0, 3), [9, 7, 8]);
+  const packets = [first],
+    took = [];
+  for (const end = Date.now() + 1500; Date.now() < end; ) {
+    const asked = Date.now();
+    const answer = parse(await video.ask("frame"));
+    const ms = Date.now() - asked;
+    if (answer.meta) {
+      packets.push(answer);
+      took.push(ms);
+    }
+    await sleep(Math.max(0, 33 - ms));
+  }
+  fs.writeFileSync(`${out}.still`, "");
+  await sleep(500);
+  const still = [];
+  for (const end = Date.now() + 1500; Date.now() < end; ) {
+    still.push(parse(await video.ask("frame")));
+    await sleep(33);
+  }
+  note({ gdi: { frames: packets.length, frameMs: timing(took), stillAnswers: still.length, stillFrames: still.filter((a) => a.meta).length, stderr: video.stderr().trim() } });
+  assert.ok(packets.length >= 5, `the changing window made frames: ${packets.length}`);
+  for (const p of packets) assert.equal(nalTypes(p.annexb)[0], 9, "an AUD first");
+  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, "mostly unchanged on a still screen");
+  video.child.stdin.end();
+  assert.equal(await Promise.race([video.exited, sleep(10000).then(() => "still running")]), 0, video.stderr());
+  const { width, height } = first.meta;
+  const at = [Math.round(((x + w * 0.7 - screen.x) * width) / screen.width), Math.round(((y + h * 0.7 - screen.y) * height) / screen.height)];
+  const decoded = await decodeInBrowser(t, packets, [at]);
+  note({ gdiDecoded: { ...decoded, frames: undefined } });
+  if (decoded.skipped) return t.skip(decoded.skipped);
+  assert.deepEqual(decoded.errors, []);
+  assert.equal(decoded.decoded, packets.length, "every frame decoded");
+  assert.ok(decoded.samples[0][0] >= 250 && near(decoded.samples[0], ORANGE, 14), `orange, not ${decoded.samples[0]}`);
+});
+
 test("Reach serves it to a phone: the socket says H.264 from Windows itself, the frames are video, and Pause leaves no helper running", { skip: !run, timeout: 300000 }, async (t) => {
   if (!probed) return t.skip(`no H.264 encoder on this runner: ${report.noEncoder}`);
   forgetWindowsVideo();

@@ -609,6 +609,9 @@ sealed class ScreenCapture : IDisposable {
     Width = display.Bounds.Right - display.Bounds.Left;
     Height = display.Bounds.Bottom - display.Bounds.Top;
     Pixels = new int[Width * Height];
+    // Reach's tests take the GDI path on a PC where duplication works (as
+    // a VM or a Remote Desktop session without it would).
+    duplicationGone = Environment.GetEnvironmentVariable("REACH_TEST_SCREEN_GDI") == "1";
   }
 
   public int Update(bool firstPicture) {
