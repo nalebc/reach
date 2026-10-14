@@ -183,7 +183,9 @@ test("channels from the phone on Windows: tokens as arguments to Node (no shell)
   await addOpenClawChannel({ channel: "telegram", token: " 123:ABC&calc|%PATH% " }, { run, env, platform: "win32", runtime: "C:\\n\\node.exe", ...files });
   assert.deepEqual(steps, [
     ["mkdir", at("state/credentials")],
-    ["write", token, "", undefined],
+    // Made anew: a file left there may be someone else's.
+    ["rm", token],
+    ["write", token, "", { flag: "wx" }],
     ["owner-only", token],
     ["write", token, "123:ABC&calc|%PATH%\n", { flag: "r+" }],
   ]);
@@ -199,8 +201,8 @@ test("channels from the phone on Windows: tokens as arguments to Node (no shell)
     addOpenClawChannel({ channel: "telegram", token: "123:ABCDEFGH" }, { run, env, platform: "win32", runtime: "C:\\n\\node.exe", ...files, ownerOnly: async () => { throw new Error("icacls"); } }),
     (e) => e.status === 409,
   );
-  assert.deepEqual(steps.map((s) => s[0]), ["mkdir", "write", "rm"]);
-  assert.equal(steps[1][2], "", "the token was never written");
+  assert.deepEqual(steps.map((s) => s[0]), ["mkdir", "rm", "write", "rm"]);
+  assert.equal(steps[2][2], "", "the token was never written");
   assert.equal(ran.length, 2);
 });
 

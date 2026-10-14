@@ -2279,9 +2279,11 @@ export async function addOpenClawChannel(
     if (tokenFile) {
       await mkdir(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
       if (platform === "win32") {
-        // Windows ignores modes: the file is made empty, closed to all but
+        // Windows ignores modes: the file is made anew (one left there may
+        // be someone else's, with their access), empty, closed to all but
         // this account (openclaw-windows.mjs), and only then given the token.
-        await writeFile(tokenFile, "");
+        await rm(tokenFile, { force: true });
+        await writeFile(tokenFile, "", { flag: "wx" });
         await ownerOnly(tokenFile, { env });
         await writeFile(tokenFile, `${values.token.trim()}\n`, { flag: "r+" });
       } else {
