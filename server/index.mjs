@@ -6013,6 +6013,9 @@ if (
   // Reach's Terminal window carries its name, so the agents' checker always
   // recognises it.
   if (process.stdout.isTTY && process.platform === "darwin") process.stdout.write("\u001b]0;Reach\u0007");
+  // On Windows its console window (or terminal tab) is titled Reach the same
+  // way, and the agents' checker closes the window that carries the name.
+  if (process.stdout.isTTY && process.platform === "win32") process.title = "Reach";
   reach.server.listen(reach.config.port, reach.config.host, () => {
     console.log(
       `\n  Reach is ready · http://localhost:${reach.config.port}\n  Pairing code: ${reach.auth.pairing.code.slice(0, 4)} ${reach.auth.pairing.code.slice(4)} (one use, expires in 10 minutes)\n  Shared folders: ${reach.config.roots.join(", ")}\n  Run npm run share to connect through Tailscale.\n`,

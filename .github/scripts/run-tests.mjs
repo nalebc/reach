@@ -50,6 +50,10 @@ export const suites = {
     "first-start", "prompts",
     // Setup, status and stop on Windows' own Node: first run there Oct 14.
     "setup", "instances", "stop",
+    // Workstream B, the agent desktop helper (docs/parity/B-desktop-helper.md):
+    // its build, start and launch checks; its policy against the shared corpus;
+    // on a real screen only with REACH_TEST_WINDOWS_DESKTOP (ci.yml's step).
+    "windows-helper-launch", "agent-desktop-windows-policy", "windows-agent-desktop-native",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // Windows' live screen as H.264 with nothing installed (audit #26): the

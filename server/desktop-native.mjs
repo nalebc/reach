@@ -52,7 +52,7 @@ const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCE
 /** A Windows helper built from scripts/native/<kind>.cs into the data folder (or `dir`), named by its source's hash: its path. */
 // `target: "winexe"`: a Windows program with no console window of its own
 // (the background task's starter); every other helper is a console program.
-export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe" } = {}) {
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe", rename } = {}) {
   signal?.throwIfAborted();
   if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
   if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
@@ -62,7 +62,14 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
   // Its source and how it's built name it: any change to either rebuilds it.
   const source = await fs.readFile(sourceFile);
   const extras = EXTRA_REFERENCES[kind] || [];
-  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES])).digest("hex").slice(0, 12);
+  // A helper may have a manifest beside it (scripts/native/<kind>.manifest:
+  // its DPI awareness, never administrator rights), built into it and part
+  // of its name. A helper without one is built and named exactly as before.
+  const manifestFile = path.join(native, `${kind}.manifest`);
+  const manifest = await fs.readFile(manifestFile).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+  const digest = crypto.createHash("sha256").update(source).update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES]));
+  if (manifest) digest.update(manifest);
+  const hash = digest.digest("hex").slice(0, 12);
   // `fresh`: built now under a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
   const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
@@ -71,7 +78,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
   let framework = null;
   try {
     await buildWindowsNative(file, {
-      signal, run,
+      signal, run, ...(rename ? { rename } : {}),
       compiler: () => {
         const found = cscCandidates({ env }).find((candidate) => exists(candidate));
         framework = found ? path.win32.dirname(found) : null;
@@ -79,6 +86,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
       },
       args: (tmp) => [
         ...flags,
+        ...(manifest ? [`/win32manifest:${manifestFile}`] : []),
         `/out:${tmp}`,
         ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`),
         ...extras.map((name) => `/reference:${extraCandidates(framework, name, env).find((file) => exists(file)) || path.win32.join(framework, name)}`),
