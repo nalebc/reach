@@ -117,7 +117,6 @@ test("an allowed restart on Windows opens Reach's own window running restart --y
     'set "PATH=C:\\Program Files\\nodejs;%PATH%"',
     'set "REACH_HOME=C:\\Users\\Me Too\\reach-state"',
     'set "REACH_OPENED_BY=restart"',
-    'cd /d "C:\\Users\\Me Too\\reach"',
     '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\Me Too\\reach\\bin\\reach.mjs" restart --yes',
     "if errorlevel 1 if not errorlevel 130 pause",
     "",
@@ -148,7 +147,8 @@ test("Windows: a path cmd would read as a variable or a quote end is refused, ne
   const odd = path.join(state, "a;b");
   startInConsole("C:\\reach", { state: odd, env: WIN, node: "C:\\node\\node.exe", run: (f, argv) => ran.push(argv), exists: () => true });
   assert.ok(ran[0][4].includes(`-d "${odd.replace(";", "\\;")}"`), ran[0][4]);
-  assert.match(consoleScript("C:\\reach", "C:\\node\\node.exe", { env: {} }), /\r\ncd \/d "C:\\reach"\r\n/);
+  // Never working in Reach's own folder: an update replaces it (Windows won't while a program works there).
+  assert.doesNotMatch(consoleScript("C:\\reach", "C:\\node\\node.exe", { env: {} }), /\bcd\b/);
 });
 
 test("a window of its own is Terminal on a Mac and Reach's console on Windows", (t) => {

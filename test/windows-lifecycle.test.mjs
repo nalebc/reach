@@ -134,7 +134,8 @@ setTimeout(() => process.exit(0), 15000);
   const started = JSON.parse(fs.readFileSync(marker, "utf8"));
   assert.deepEqual(started.args, ["restart", "--yes"]);
   assert.equal(started.openedBy, "restart");
-  assert.equal(started.cwd.toLowerCase(), root.toLowerCase());
+  // In the folder start gave it, never Reach's own (an update replaces that).
+  assert.equal(started.cwd.toLowerCase(), state.toLowerCase());
   // cmd may add the command it runs after the title; Reach sets its own (launch.mjs).
   assert.match(started.title, /^Reach\b/);
   // Its parents, while it runs: never this process (the Reach that asked).

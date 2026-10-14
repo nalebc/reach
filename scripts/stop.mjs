@@ -392,7 +392,8 @@ export function consoleScript(root, node, { args = "", env = process.env } = {})
     // Started for you (a restart from the phone): nobody is reading this
     // window's QR, so no pairing window opens by itself.
     'set "REACH_OPENED_BY=restart"',
-    `cd /d "${root}"`,
+    // It works in the folder start gave it, never Reach's own: an update
+    // replaces Reach's folder, and Windows won't while a program works in it.
     `"${node}" "${path.win32.join(root, "bin", "reach.mjs")}"${args ? ` ${args}` : ""}`,
     // What went wrong stays on screen; Ctrl+C (130) closes it.
     "if errorlevel 1 if not errorlevel 130 pause",
