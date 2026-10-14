@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fail } from "./core.mjs";
+import { computerWord } from "./computer-word.mjs";
+import { windowsLaunch, windowsTerminalProviders, windowsTerminalRunner } from "./windows-terminals.mjs";
 
 const helper = fileURLToPath(
   new URL("../scripts/native/mac-terminals.js", import.meta.url),
@@ -40,9 +43,18 @@ export function runMacTerminal(payload) {
 }
 
 export class DesktopTerminals {
-  constructor({ platform = process.platform, run = runMacTerminal } = {}) {
+  // A Windows PC's terminals come from a helper built into Reach's data
+  // folder (windows-terminals.mjs); `reach` is Reach's own process, whose
+  // terminals are listed as Reach's already.
+  constructor({ platform = process.platform, run, dataDir, reach = process.pid, launch = windowsLaunch, home = os.homedir } = {}) {
     this.platform = platform;
-    this.run = run;
+    this.run = run || (platform === "win32" ? windowsTerminalRunner({ dataDir }) : runMacTerminal);
+    this.reach = reach;
+    this.launch = launch;
+    this.home = home;
+  }
+  get providers() {
+    return this.platform === "win32" ? windowsTerminalProviders : terminalProviders;
   }
   targets = new Map();
   // false, "user" (a person's action) or "background" (Reach keeping its
@@ -51,8 +63,8 @@ export class DesktopTerminals {
   current = Promise.resolve();
   async exclusive(authorize, fn, background = false) {
     authorize();
-    if (this.platform !== "darwin")
-      throw fail(409, "Desktop terminal discovery currently supports macOS.");
+    if (this.platform !== "darwin" && this.platform !== "win32")
+      throw fail(409, "Desktop terminal discovery currently supports macOS and Windows.");
     // Background work queues; a person's action waits for it rather than
     // failing, but two of a person's actions still never overlap.
     while (this.busy === "background" || (background && this.busy))
@@ -75,6 +87,8 @@ export class DesktopTerminals {
     }
   }
   async list(authorize, { background = false } = {}) {
+    if (this.platform === "win32")
+      return this.exclusive(authorize, () => this.listWindows(authorize), background);
     return this.exclusive(authorize, async () => {
       const sessions = [],
         providers = [],
@@ -113,6 +127,43 @@ export class DesktopTerminals {
       return { sessions, providers };
     }, background);
   }
+  // One look at every console on the PC; each answer names its app. A
+  // helper that can't run says why, rather than showing no terminals.
+  async listWindows(authorize) {
+    authorize();
+    const result = await this.run({ action: "list", exclude: this.reach });
+    authorize();
+    const sessions = [],
+      next = new Map();
+    for (const session of Array.isArray(result?.sessions) ? result.sessions : []) {
+      if (session.ended || !this.providers.some((p) => p.id === session.provider)) continue;
+      const id = crypto
+        .createHash("sha256")
+        .update(JSON.stringify([session.provider, session.target]))
+        .digest("hex");
+      next.set(id, { provider: session.provider, target: session.target });
+      sessions.push({
+        id,
+        provider: session.provider,
+        name: session.name,
+        tty: session.tty,
+      });
+    }
+    // Consoles running as administrator, which Windows keeps Reach out of:
+    // counted, so the phone can say they aren't shown.
+    const administrator = (id) => {
+      const count = Number(result?.administrator?.[id]);
+      return Number.isSafeInteger(count) && count > 0 ? { administrator: count } : {};
+    };
+    const providers = this.providers.map((provider) => ({
+      ...provider,
+      running: !!result?.running?.[provider.id],
+      installed: result?.installed?.[provider.id] !== false,
+      ...administrator(provider.id),
+    }));
+    this.targets = next;
+    return { sessions, providers };
+  }
   async action(id, action, body, authorize, { background = false, beforeDispatch } = {}) {
     let dispatchStarted = false;
     try {
@@ -139,7 +190,7 @@ export class DesktopTerminals {
       return await this.exclusive(authorize, async () => {
         const target = this.targets.get(id);
         if (!target)
-          throw fail(404, "Terminal not found. Refresh the Mac terminal list.");
+          throw fail(404, `Terminal not found. Refresh the ${computerWord(this.platform)} terminal list.`);
         authorize();
         // Ownership is checked before input starts. Keep authority checks after
         // the result separate so a completed action retains its acknowledgement.
@@ -165,9 +216,16 @@ export class DesktopTerminals {
       throw error;
     }
   }
-  async create(provider, authorize, command) {
-    if (!terminalProviders.some((p) => p.id === provider))
-      throw fail(400, "Choose Apple Terminal or iTerm2.");
+  // `cwd`: a Windows PC opens its terminal in this folder (a Mac's command
+  // starts with its own cd); the owner's home folder without one.
+  async create(provider, authorize, command, { cwd } = {}) {
+    if (!this.providers.some((p) => p.id === provider))
+      throw fail(
+        400,
+        this.platform === "win32"
+          ? "Choose Windows Terminal or a console window."
+          : "Choose Apple Terminal or iTerm2.",
+      );
     if (
       command !== undefined &&
       (typeof command !== "string" ||
@@ -176,13 +234,26 @@ export class DesktopTerminals {
         /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(command))
     )
       throw fail(400, "Enter a command without control characters.");
+    const windows = this.platform === "win32";
+    const folder = windows ? (cwd ?? this.home()) : null;
+    if (windows) {
+      // One line: a shell's argument there, never more lines of a script.
+      if (command !== undefined && /[\t\n\r]/.test(command))
+        throw fail(400, "Enter a command without control characters.");
+      if (typeof folder !== "string" || !/^[A-Za-z]:[\\/]/.test(folder) || /[\x00-\x1f"]/.test(folder))
+        throw fail(400, "Choose a folder on this PC.");
+    }
     return this.exclusive(authorize, async () => {
       authorize();
-      const result = await this.run({
-        provider,
-        action: "create",
-        ...(command ? { command } : {}),
-      });
+      const result = await this.run(
+        windows
+          ? { provider, action: "create", ...this.launch({ cwd: folder, command }) }
+          : {
+              provider,
+              action: "create",
+              ...(command ? { command } : {}),
+            },
+      );
       authorize();
       return result;
     });
