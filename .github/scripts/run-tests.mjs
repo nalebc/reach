@@ -37,6 +37,9 @@ export const suites = {
     "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    // The Claude desktop app on Windows, workstream N: its data in either
+    // install's folder, the PC's idle and lock readings.
+    "claude-app-paths", "claude-locate", "windows-presence",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
