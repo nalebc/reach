@@ -24,6 +24,21 @@ const FRAMEWORKS = ["Framework64", "Framework"];
 const REFERENCES = ["System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll",
   "WPF\\UIAutomationClient.dll", "WPF\\UIAutomationTypes.dll", "WPF\\WindowsBase.dll"];
 const CSC_FLAGS = ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", "/debug-", "/codepage:65001", "/utf8output"];
+// What one helper uses beyond those, so the rest aren't rebuilt for it:
+// Windows' own speech recognizer for voice memos (agent-sessions/voice.mjs).
+// Each is looked for beside WPF's assemblies, then in the assembly cache
+// every .NET Framework 4 has (the runner had it in neither the framework's
+// own folder, Oct 13).
+const EXTRA_REFERENCES = { transcribe: ["System.Speech.dll"] };
+const extraCandidates = (framework, name, env) => {
+  const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR ?? "C:\\Windows";
+  const assembly = name.replace(/\.dll$/i, "");
+  return [
+    path.win32.join(framework, "WPF", name),
+    path.win32.join(framework, name),
+    path.win32.join(root, "Microsoft.NET", "assembly", "GAC_MSIL", assembly, "v4.0_4.0.0.0__31bf3856ad364e35", name),
+  ];
+};
 /** Where csc.exe can be on this PC, in the order tried: [] when the Windows folder isn't known. */
 export function cscCandidates({ env = process.env } = {}) {
   const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR;
@@ -35,14 +50,19 @@ export function cscCandidates({ env = process.env } = {}) {
 // antivirus. Node reports those as access errors or UNKNOWN.
 const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCES", "EPERM", "UNKNOWN"].includes(error?.code);
 /** A Windows helper built from scripts/native/<kind>.cs into the data folder (or `dir`), named by its source's hash: its path. */
-export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false } = {}) {
+// `target: "winexe"`: a Windows program with no console window of its own
+// (the background task's starter); every other helper is a console program.
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe" } = {}) {
   signal?.throwIfAborted();
   if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
   if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
+  if (!["exe", "winexe"].includes(target)) throw fail(400, "Unknown helper.");
+  const flags = CSC_FLAGS.map((flag) => (flag === "/target:exe" ? `/target:${target}` : flag));
   const sourceFile = path.join(native, `${kind}.cs`);
   // Its source and how it's built name it: any change to either rebuilds it.
   const source = await fs.readFile(sourceFile);
-  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([CSC_FLAGS, REFERENCES])).digest("hex").slice(0, 12);
+  const extras = EXTRA_REFERENCES[kind] || [];
+  const hash = crypto.createHash("sha256").update(source).update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES])).digest("hex").slice(0, 12);
   // `fresh`: built now under a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
   const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
@@ -57,7 +77,13 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
         framework = found ? path.win32.dirname(found) : null;
         return found || null;
       },
-      args: (tmp) => [...CSC_FLAGS, `/out:${tmp}`, ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`), sourceFile],
+      args: (tmp) => [
+        ...flags,
+        `/out:${tmp}`,
+        ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`),
+        ...extras.map((name) => `/reference:${extraCandidates(framework, name, env).find((file) => exists(file)) || path.win32.join(framework, name)}`),
+        sourceFile,
+      ],
     });
     signal?.throwIfAborted();
   } catch (error) {
