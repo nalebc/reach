@@ -826,6 +826,34 @@ test("typing acknowledgement preserves a newer edit even if it matches the origi
   assert.equal(inputs(calls).length, 1);
 });
 
+test("Edit tapped the moment a file opens opens its editor", async () => {
+  const { c } = await open(full, undefined, "Files");
+  const read = await dom.waitFor(() =>
+    [...c.querySelectorAll("button")].find(
+      (b) => b.getAttribute("aria-label") === "Read file notes.md",
+    ),
+  );
+  // A quick thumb, or a phone busy as the file drew: the tap lands the
+  // moment Edit is there, before anything else on the page has run.
+  const tapped = new Promise((resolve) => {
+    const watch = new dom.window.MutationObserver(() => {
+      const edit = button(c, "Edit notes.md");
+      if (!edit) return;
+      watch.disconnect();
+      edit.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      resolve();
+    });
+    watch.observe(c, { childList: true, subtree: true });
+  });
+  await click(read);
+  await tapped;
+  await settle(50);
+  assert.ok(
+    c.querySelector('textarea[aria-label="Edit notes.md"]'),
+    "the editor is open",
+  );
+});
+
 test("commands and file changes live on the same page with their results", async () => {
   const { c, calls } = await open(full);
   await click(
