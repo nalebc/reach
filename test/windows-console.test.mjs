@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -84,6 +84,8 @@ function windowsConsole(t, env, args = []) {
         term.kill();
       } catch {}
     await Promise.race([exited, sleep(10000)]);
+    // Whatever it ended on, its console's pipes go (they'd keep this test running).
+    releaseExitedPty(term);
   });
   const waitFor = async (pattern, what, { from = 0, ms = 120000 } = {}) => {
     for (const end = Date.now() + ms; ; await sleep(100)) {
@@ -101,6 +103,13 @@ function windowsConsole(t, env, args = []) {
   };
   return { write: (keys) => term.write(keys), waitFor, ended, at: () => raw.length, raw: () => raw, text: () => plain(raw) };
 }
+
+// What's still open once every console has ended, said if anything keeps
+// this file from ending.
+after(() => {
+  const open = process.getActiveResourcesInfo().filter((kind) => kind !== "TTYWrap");
+  if (open.length) console.log(`windows-console: still open after its tests: ${open.join(", ")}`);
+});
 
 // A PC Reach has never run on, without Tailscale yet: the stand-in Tailscale
 // (installed when `install()` says), Program Files where its app appears, the
@@ -185,9 +194,9 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   await pc.until(() => pc.opened().includes("explorer.exe\thttps://login.tailscale.com/a/fixture-login"), "the sign-in page");
   await reach.waitFor("If it doesn't open, visit: https://login.tailscale.com/a/fixture-login", "the sign-in link");
   // 4. Switched off: an arrow-key menu, moved down and back up.
-  await pc.fake.setStatus({ BackendState: "Stopped" });
-  await reach.waitFor("Tailscale is switched off on this computer.", "switched off");
   const menu = reach.at();
+  await pc.fake.setStatus({ BackendState: "Stopped" });
+  await reach.waitFor("Tailscale is switched off on this computer.", "switched off", { from: menu });
   await reach.waitFor("Turn Tailscale on?", "the switch-on menu", { from: menu });
   await reach.waitFor("↑/↓ to move · Enter to select · Esc to cancel", "an arrow-key menu, not a numbered one", { from: menu });
   const down = reach.at();
