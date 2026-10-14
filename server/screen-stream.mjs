@@ -180,7 +180,8 @@ export function sweepScreenHelpers({
   platform = process.platform,
 } = {}) {
   if (platform !== "darwin" || !dataDir) return [];
-  const prefixes = ["reach-screen-stream-", "reach-screen-sound-"].map((name) => path.join(dataDir, name));
+  // A Mac's paths, whichever computer runs this (its tests run on Windows).
+  const prefixes = ["reach-screen-stream-", "reach-screen-sound-"].map((name) => path.posix.join(dataDir, name));
   let rows;
   try {
     rows = table();
