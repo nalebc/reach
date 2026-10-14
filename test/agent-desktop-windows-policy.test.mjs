@@ -206,3 +206,28 @@ test("the UI Automation interfaces match the Windows SDK's IDL, member by member
   }
   assert.ok(checked >= 15, `${checked} interfaces checked`);
 });
+
+test("every program is started with the user's own environment, after its manifest is checked, never through the shell's handlers", () => {
+  const text = code(source).join("\n");
+  assert.equal((text.match(/Native\.CreateProcessW\(/g) || []).length, 1, "one place starts programs");
+  const start = text.split("static int Start(string exe, string arguments) {")[1].split("\n  }\n")[0];
+  const order = ["AsksForAdministrator(exe)", "CreateEnvironmentBlock(out environment, token, false)", "Native.CreateProcessW("].map((part) => start.indexOf(part));
+  assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), `checked, then its environment, then started: ${order}`);
+  assert.match(start, /CreateProcessW\(exe, command, IntPtr\.Zero, IntPtr\.Zero, false, Native\.CREATE_UNICODE_ENVIRONMENT, environment,/);
+  assert.match(start, /ERROR_ELEVATION_REQUIRED\) throw new Refusal\(AdminAppReason, "blocked"\)/);
+  assert.match(text, /level\\\\s\*=\\\\s\*\[\\"'\]\(requireAdministrator\|highestAvailable\)/);
+  // Store apps through the activation manager; never ShellExecute or IAssocHandler (banned above).
+  assert.match(text, /ActivationManager\(\)\.ActivateApplication\(/);
+  assert.match(text, /ActivationManager\(\)\.ActivateForFile\(appId, ItemsOf\(canonical\), "open"\)/);
+  assert.match(text, /ActivationManager\(\)\.ActivateForProtocol\(app\.Bundle, ItemsOf\(text\)\)/);
+  // A file by its handle: reparse points and hard links refused, protected
+  // folders and programs judged on its real name; the handle held until opened.
+  const open = text.split("static Dictionary<string, object> OpenFile(string path, bool reveal, Rules rules) {")[1].split("\n  }\n")[0];
+  assert.match(open, /FILE_ATTRIBUTE_REPARSE_POINT\) != 0 \|\| \(!directory && info\.nNumberOfLinks > 1\)/);
+  assert.match(open, /Within\(canonical, root\)/);
+  assert.match(open, /Policy\.ProgramFile\(canonical, rules\)/);
+  assert.match(open, /ASSOCSTR_DELEGATEEXECUTE[\s\S]*ASSOCSTR_DDECOMMAND[\s\S]*No app on this Windows PC opens that file/);
+  assert.match(open, /\} finally \{\n\s+Native\.CloseHandle\(handle\);\n\s+\}$/);
+  // Saved browser tools wait for Reach's browser extension.
+  assert.match(text, /case "browser-check": throw new Refusal\("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet\.", "setup_required"\);/);
+});

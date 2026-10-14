@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import { desktopBinary, windowsBinary } from "./desktop-native.mjs";
 import { COLD_START_MS } from "./powershell.mjs";
@@ -404,6 +404,9 @@ export function createAgentDesktop(config, {
   // control until Windows' command deny list is complete (§1.3 item 4,
   // §12 item 9): the shell list above is a Mac's.
   windowsCommandChecks = false,
+  // A Windows file's one true name (junctions and aliases followed), checked
+  // as well as the name the agent gave.
+  realpath = (file) => realpathSync.native(file),
 } = {}) {
   if (pauses ? !["has", "set", "list", "add", "prune"].every((name) => typeof pauses[name] === "function") : !pausesFile)
     throw Error("The agent desktop needs Reach's pause store (pauses), or a file for its own (pausesFile).");
@@ -801,9 +804,14 @@ export function createAgentDesktop(config, {
       if (windows ? !windowsPath(filePath) : typeof filePath !== "string" || !filePath.startsWith("/") || filePath.length > 4096 || /[\u0000-\u001f\u007f]/.test(filePath)) throw fail(400, `Give the file's full path on this ${word}.`);
       if (reveal !== true && reveal !== false) throw fail(400, "Set reveal to true, or leave it out.");
       // On Windows a program or script is refused here first, before the
-      // helper's own check (as the Mac's helper refuses them itself).
-      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, { protectedPaths: protectedPaths(), home, platform }) ||
-        (windows && windowsProgramFile(filePath) ? PROGRAM_REASON : null);
+      // helper's own check (as the Mac's helper refuses them itself), by the
+      // name given and by the file's real one (a junction, an alias).
+      let real = filePath;
+      if (windows && latest.policy.preset !== "full") try { real = realpath(filePath); } catch { real = filePath; }
+      const guard = { protectedPaths: protectedPaths(), home, platform };
+      const reason = latest.policy.preset === "full" ? null : protectedPathReason(filePath, guard) ||
+        (real !== filePath ? protectedPathReason(real, guard) : null) ||
+        (windows && (windowsProgramFile(filePath) || windowsProgramFile(real)) ? PROGRAM_REASON : null);
       if (reason) {
         actions(latest, { kind: "open-file", text: actionWords("open-file", { path: filePath, reveal }), ok: false, reason });
         throw Object.assign(fail(403, reason), { kind: "blocked" });

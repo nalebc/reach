@@ -30,6 +30,7 @@ static class DesktopChecks {
     Keys();
     Typing();
     Automation();
+    Launching();
     if (failures == 0) Console.WriteLine("OK");
     return failures == 0 ? 0 : 1;
   }
@@ -263,6 +264,8 @@ static class DesktopChecks {
     public ushort ScanFor(ushort vk) { return (ushort)(vk + 1000); }
     public bool HostsReach(int pid, Rules rules) { return Hosts; }
     public string InputDesktop() { return Desktop; }
+    public string Place;
+    public string ExplorerPlace(long window) { return Place; }
   }
   sealed class FakeInput : IInput {
     public HashSet<int> Down = new HashSet<int>();
@@ -566,5 +569,18 @@ static class DesktopChecks {
     Check(Desk.FindControl(screen, "Google", "Button", false, null).Name == "Sign in with Google", "containing it, with its role");
     try { Desk.FindControl(screen, "Email", "Button", false, null); Check(false, "a role that doesn't match"); }
     catch (Refusal refusal) { Check(refusal.Kind == "retry" && refusal.Message.StartsWith("No control named \"Email\"", StringComparison.Ordinal), "a role that doesn't match"); }
+  }
+
+  // How a file is handed to the program its association names: only that
+  // program, only the file as its argument.
+  static void Launching() {
+    string arguments;
+    string file = "C:\\Users\\me\\Documents\\notes.txt";
+    Check(Desk.HandlerProgram("\"C:\\Program Files\\Editor\\editor.exe\" \"%1\"", "C:\\Program Files\\Editor\\editor.exe", file, out arguments) == "C:\\Program Files\\Editor\\editor.exe" &&
+      arguments == "\"" + file + "\"", "a quoted program and %1");
+    Check(Desk.HandlerProgram("C:\\Tools\\view.exe %L %*", "c:\\tools\\VIEW.EXE", file, out arguments) == "C:\\Tools\\view.exe" && arguments == "\"" + file + "\"", "%L and %*, any case");
+    foreach (string command in new[] { "\"C:\\Tools\\view.exe\" /run \"%1\"", "\"C:\\Tools\\view.exe\" \"%1\" & calc", "\"C:\\Tools\\other.exe\" \"%1\"", "view.exe \"%1\"",
+      "\"C:\\Tools\\view.exe\" %2", "\"C:\\Tools\\view.exe", "", "\"\\\\server\\share\\view.exe\" \"%1\"" })
+      Check(Desk.HandlerProgram(command, "C:\\Tools\\view.exe", file, out arguments) == null, "refused: " + command);
   }
 }

@@ -325,3 +325,23 @@ test("on Windows, typed text into a terminal is refused outside Full control unt
   assert.equal((await run("darwin", "apps")).ok, true);
   assert.match((await run("darwin", "apps", { text: "sudo rm -rf /" })).error.message, /password/);
 });
+
+test("on Windows, a file is checked by its real name too: a junction or alias into a protected folder is refused before the helper", async (t) => {
+  const home = String.raw`C:\Users\me`;
+  const policy = { invite: true, browser: true, preset: "apps", roots: [], apps: [{ id: chromeExe, name: "Google Chrome", bundleId: "" }] };
+  const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
+  const sent = [];
+  const real = new Map([[String.raw`C:\Users\me\Documents\link\notes.txt`, String.raw`C:\Users\me\.reach\clients.json`], [String.raw`C:\Users\me\Documents\report.pdf`, String.raw`C:\Users\me\Documents\report.pdf`],
+    [String.raw`C:\Users\me\Documents\setup.pdf`, String.raw`C:\Users\me\Downloads\setup.exe`]]);
+  const desktop = createAgentDesktop({ screen: true }, {
+    platform: "win32", available: () => true, home, verifyClient: () => client, pauses: createAgentPauses(), protectedPaths: () => [String.raw`C:\Users\me\.reach`],
+    realpath: (file) => { if (!real.has(file)) throw Object.assign(Error("ENOENT"), { code: "ENOENT" }); return real.get(file); },
+    spawnHelper: async () => ({ async send(request, beforeSend) { beforeSend?.(); sent.push(request); return { ok: true, app: "Reader", bundle: "" }; }, stop() {} }),
+  });
+  t.after(() => desktop.close());
+  await rejects(desktop.openFile(client, String.raw`C:\Users\me\Documents\link\notes.txt`, {}, () => client), 403, /passwords, keys or Reach/);
+  await rejects(desktop.openFile(client, String.raw`C:\Users\me\Documents\setup.pdf`, {}, () => client), 403, /run as a program/);
+  await desktop.openFile(client, String.raw`C:\Users\me\Documents\report.pdf`, {}, () => client);
+  await desktop.openFile(client, String.raw`C:\Users\me\Documents\missing.pdf`, {}, () => client);
+  assert.deepEqual(sent.filter((request) => request.op === "open-file").map((request) => request.path), [String.raw`C:\Users\me\Documents\report.pdf`, String.raw`C:\Users\me\Documents\missing.pdf`]);
+});

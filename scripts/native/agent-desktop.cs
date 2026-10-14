@@ -515,6 +515,8 @@ sealed class Rules {
   public List<string> ProgramExtensions = new List<string>();
   public List<string> RunnerApps = new List<string>();
   public List<string> ProtectedPublishers = new List<string>();
+  public List<string> ProtectedPaths = new List<string>();  // folders no file is opened from, as given
+  public string Home = "";
   public Rules Copy() { return (Rules)MemberwiseClone(); }
 
   // The rules from the server, as agent-desktop.swift reads them: lists
@@ -550,6 +552,8 @@ sealed class Rules {
     r.ProgramExtensions = strings("programExtensions");
     r.RunnerApps = strings("runnerApps");
     r.ProtectedPublishers = strings("protectedPublishers");
+    r.ProtectedPaths = Json.Strings(request, "protectedPaths");
+    r.Home = Json.Str(request, "home") ?? "";
     return r;
   }
 }
@@ -1353,6 +1357,7 @@ interface IDesktopView {
   ushort ScanFor(ushort vk);                // MapVirtualKeyExW in the front window's layout
   bool HostsReach(int pid, Rules rules);    // one of this process's windows (or its tabs) is Reach's
   string InputDesktop();                    // "Default" for the owner's desktop
+  string ExplorerPlace(long window);        // a File Explorer window's folder, by its parsing name; null: unknown
 }
 interface IInput {
   bool KeyDown(int vk);                     // GetAsyncKeyState: down right now
@@ -1510,6 +1515,12 @@ static partial class Desk {
         double? revision = Json.Double(request, "revision");
         return WaitChange(revision.HasValue ? (long)revision.Value : Interlocked.Read(ref screenRevision), Json.Int(request, "ms") ?? 400);
       }
+      case "open": RuleS(); return Open(Json.Str(request, "app") ?? "", current);
+      case "open-url": RuleS(); return OpenUrl(Json.Str(request, "url"), Json.Str(request, "app") ?? "", current);
+      case "open-file": RuleS(); return OpenFile(Json.Str(request, "path") ?? "", Json.True(request, "reveal"), current);
+      // Saved browser tools reach the browser through Apple Events on a Mac;
+      // on Windows they come with Reach's browser extension (workstream G).
+      case "browser-check": throw new Refusal("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet.", "setup_required");
       case "act": {
         RuleS();
         var act = Json.Map(request, "action");
@@ -2219,7 +2230,16 @@ static partial class Desk {
   // The page Settings shows (UI Automation): null until it can be read.
   static string SettingsPage(IntPtr window) { return SettingsPageNow(window); }
   // Where a File Explorer window is (the shell): null until it can be read.
-  static string ExplorerPlace(IntPtr window) { return null; }
+  static readonly Dictionary<long, KeyValuePair<DateTime, string>> places = new Dictionary<long, KeyValuePair<DateTime, string>>();
+  static string ExplorerPlace(IntPtr window) { return View.ExplorerPlace(window.ToInt64()); }
+  internal static string ExplorerPlaceCached(IntPtr window) {
+    KeyValuePair<DateTime, string> known;
+    if (places.TryGetValue(window.ToInt64(), out known) && (DateTime.UtcNow - known.Key).TotalSeconds < 1) return known.Value;
+    string place = ExplorerPlaceNow(window);
+    if (places.Count > 256) places.Clear();
+    places[window.ToInt64()] = new KeyValuePair<DateTime, string>(DateTime.UtcNow, place);
+    return place;
+  }
 
   // --- A screenshot (§4.3) ------------------------------------------------------
   // Full control: the screen as it is. View: every window closed to the agent
@@ -4234,9 +4254,451 @@ static partial class Desk {
     }
   }
 
+  // --- Opening apps, websites and files (§9) ------------------------------------
+  // The shell's work runs on a thread of its own (an STA, as the shell wants)
+  // with eight seconds for each: a hung shell call answers "retry", and this
+  // helper then ends so the next request starts afresh.
+  static Thread shellThread;
+  static readonly BlockingCollection<Action> shellWork = new BlockingCollection<Action>();
+  static T OnShell<T>(Func<T> job, string late) {
+    lock (shellWork) {
+      if (shellThread == null) {
+        shellThread = new Thread(() => {
+          try {
+            Native.CoInitializeEx(IntPtr.Zero, Native.COINIT_APARTMENTTHREADED | Native.COINIT_DISABLE_OLE1DDE);
+            foreach (var work in shellWork.GetConsumingEnumerable()) work();
+          } catch (Exception) {
+            // Its callers time out and are answered.
+          }
+        }) { IsBackground = true, Name = "shell" };
+        shellThread.Start();
+      }
+    }
+    T result = default(T);
+    Exception failure = null;
+    var done = new ManualResetEvent(false);
+    shellWork.Add(() => { try { result = job(); } catch (Exception error) { failure = error; } done.Set(); });
+    if (!done.WaitOne(8000)) throw new Wedged(late, "retry");
+    if (failure is Refusal) throw (Refusal)failure;
+    if (failure != null) throw new Refusal("The app couldn't be opened.", "unavailable");
+    return result;
+  }
+  const string AdminAppReason = "That app asks for administrator rights. The owner opens it at the PC.";
+  static readonly Regex StoreId = new Regex("^[A-Za-z0-9.-]{3,50}_[0-9a-hjkmnp-tv-z]{13}![A-Za-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9]*)*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+  static bool IsStoreId(string id) { try { return id != null && id.Length <= 130 && StoreId.IsMatch(id); } catch (RegexMatchTimeoutException) { return false; } }
+  // An absolute program path, as Windows keeps it: X:\..., no share or device
+  // path, no stream, no name ending in a dot or a space, no control character.
+  static bool PlainPath(string path) {
+    if (string.IsNullOrEmpty(path) || path.Length > 4096 || path.Length < 4 || !char.IsLetter(path[0]) || path[1] != ':' || path[2] != '\\') return false;
+    if (path.IndexOf(':', 2) >= 0) return false;
+    foreach (char c in path) if (c < 0x20 || c == '/' || c == '"' || c == '<' || c == '>' || c == '|' || c == '?' || c == '*') return false;
+    foreach (string name in path.Substring(3).Split('\\')) if (name.Length == 0 || name.EndsWith(".", StringComparison.Ordinal) || name.EndsWith(" ", StringComparison.Ordinal)) return false;
+    return true;
+  }
+  // An app by its catalog id: a Store app's id, or a program's path.
+  static Ident AppIdentity(string id) {
+    if (IsStoreId(id)) return new Ident { Bundle = id, Path = id, Name = id.Substring(0, id.IndexOf('_')), Known = true, Packaged = true, Integrity = ownIntegrity };
+    if (PlainPath(id) && id.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(id)) {
+      string canonical = CanonicalFile(id);
+      if (canonical == null) return null;
+      return new Ident { Bundle = "exe:" + FileOf(canonical).ToLowerInvariant(), Path = canonical, Image = canonical, Name = Description(canonical), Known = true, Integrity = ownIntegrity };
+    }
+    return null;
+  }
+  // A file's one true name, from a handle to it (long names, real letters'
+  // case, links followed); null when it can't be opened.
+  static string CanonicalFile(string path) {
+    IntPtr handle = Native.CreateFileW(path, Native.FILE_READ_ATTRIBUTES, Native.FILE_SHARE_READ | Native.FILE_SHARE_WRITE, IntPtr.Zero, Native.OPEN_EXISTING, Native.FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+    if (handle == new IntPtr(-1)) return null;
+    try { return FinalPath(handle); } finally { Native.CloseHandle(handle); }
+  }
+  static string FinalPath(IntPtr handle) {
+    var name = new StringBuilder(32768);
+    int length = Native.GetFinalPathNameByHandleW(handle, name, name.Capacity, 0);
+    if (length <= 0 || length >= name.Capacity) return null;
+    string path = name.ToString(0, length);
+    if (path.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase)) return null;
+    if (path.StartsWith("\\\\?\\", StringComparison.Ordinal)) path = path.Substring(4);
+    return PlainPath(path) || (path.Length == 3 && path[1] == ':') ? path : null;
+  }
+
+  // A program that would ask for administrator rights is never started: its
+  // manifest, or Windows' compatibility settings for it, say so. The check
+  // works whether User Account Control is on or off.
+  static readonly Regex Elevating = new Regex("level\\s*=\\s*[\"'](requireAdministrator|highestAvailable)[\"']", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+  static bool AsksForAdministrator(string exe) {
+    IntPtr module = Native.LoadLibraryExW(exe, IntPtr.Zero, Native.LOAD_LIBRARY_AS_DATAFILE | Native.LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (module == IntPtr.Zero) return true;
+    try {
+      IntPtr found = Native.FindResourceW(module, new IntPtr(1), new IntPtr(24));
+      if (found != IntPtr.Zero) {
+        IntPtr loaded = Native.LoadResource(module, found);
+        IntPtr bytes = loaded == IntPtr.Zero ? IntPtr.Zero : Native.LockResource(loaded);
+        int size = Native.SizeofResource(module, found);
+        if (bytes != IntPtr.Zero && size > 0 && size < (1 << 20)) {
+          var manifest = new byte[size];
+          Marshal.Copy(bytes, manifest, 0, size);
+          try { if (Elevating.IsMatch(Encoding.UTF8.GetString(manifest))) return true; } catch (RegexMatchTimeoutException) { return true; }
+        }
+      }
+    } finally {
+      Native.FreeLibrary(module);
+    }
+    foreach (var hive in new[] { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine }) {
+      try {
+        using (var layers = hive.OpenSubKey("Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers")) {
+          if (layers == null) continue;
+          foreach (string name in layers.GetValueNames())
+            if (string.Equals(name, exe, StringComparison.OrdinalIgnoreCase) && (layers.GetValue(name) as string ?? "").IndexOf("RUNASADMIN", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        }
+      } catch (Exception) { }
+    }
+    return false;
+  }
+  // A program started as the owner would start it: the user's own
+  // environment (never this helper's), its own folder, no shell, never
+  // elevated. Returns its process id.
+  static int Start(string exe, string arguments) {
+    if (AsksForAdministrator(exe)) throw new Refusal(AdminAppReason, "blocked");
+    IntPtr token;
+    if (!Native.OpenProcessToken(Native.GetCurrentProcess(), Native.TOKEN_QUERY | Native.TOKEN_DUPLICATE, out token)) throw new Refusal("The PC couldn't prepare that app's settings.", "unavailable");
+    IntPtr environment = IntPtr.Zero;
+    try {
+      if (!Native.CreateEnvironmentBlock(out environment, token, false)) throw new Refusal("The PC couldn't prepare that app's settings.", "unavailable");
+      var startup = new Native.STARTUPINFO { cb = Marshal.SizeOf(typeof(Native.STARTUPINFO)) };
+      Native.PROCESS_INFORMATION started;
+      var command = new StringBuilder("\"" + exe + "\"" + (string.IsNullOrEmpty(arguments) ? "" : " " + arguments));
+      if (!Native.CreateProcessW(exe, command, IntPtr.Zero, IntPtr.Zero, false, Native.CREATE_UNICODE_ENVIRONMENT, environment, Path.GetDirectoryName(exe), ref startup, out started)) {
+        if (Marshal.GetLastWin32Error() == Native.ERROR_ELEVATION_REQUIRED) throw new Refusal(AdminAppReason, "blocked");
+        throw new Refusal("The app couldn't be opened.", "unavailable");
+      }
+      Native.CloseHandle(started.hThread);
+      Native.CloseHandle(started.hProcess);
+      return started.dwProcessId;
+    } finally {
+      if (environment != IntPtr.Zero) Native.DestroyEnvironmentBlock(environment);
+      Native.CloseHandle(token);
+    }
+  }
+  static readonly Guid ApplicationActivationManager = new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C");
+  static readonly Guid ShellItemId = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), ShellItemArrayId = new Guid("b63ea76d-1f85-456f-a19c-48159efa858b");
+  static IApplicationActivationManager ActivationManager() { return (IApplicationActivationManager)System.Activator.CreateInstance(System.Type.GetTypeFromCLSID(ApplicationActivationManager)); }
+  static IShellItemArray ItemsOf(string parsingName) {
+    Guid item = ShellItemId, array = ShellItemArrayId;
+    var shellItem = (IShellItem)Native.SHCreateItemFromParsingName(parsingName, IntPtr.Zero, ref item);
+    return (IShellItemArray)Native.SHCreateShellItemArrayFromShellItem(shellItem, ref array);
+  }
+  // A window of this app's, the first Windows lists.
+  static IntPtr WindowOf(Ident app) {
+    IntPtr found = IntPtr.Zero;
+    var identities = new Dictionary<int, Ident>();
+    Native.EnumWindowsProc each = (window, data) => {
+      if (!Native.IsWindowVisible(window) || Native.GetWindow(window, Native.GW_OWNER) != IntPtr.Zero) return true;
+      uint pid;
+      Native.GetWindowThreadProcessId(window, out pid);
+      Ident id;
+      if (!identities.TryGetValue((int)pid, out id)) { id = Identify((int)pid); identities[(int)pid] = id; }
+      if (id.Known && string.Equals(id.Path, app.Path, StringComparison.OrdinalIgnoreCase)) { found = window; return false; }
+      return true;
+    };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    return found;
+  }
+  static bool Raise(IntPtr window) {
+    if (Native.IsIconic(window)) Native.ShowWindowAsync(window, Native.SW_RESTORE);
+    Native.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, Native.SWP_NOACTIVATE | Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_ASYNCWINDOWPOS);
+    Native.SetForegroundWindow(window);
+    return WaitFront(window);
+  }
+  // "Opened" means in front: the agent's next click or key goes there.
+  static bool WaitFrontApp(Ident app, int pid) {
+    var deadline = DateTime.UtcNow.AddMilliseconds(1500);
+    while (true) {
+      uint front;
+      Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out front);
+      if (front != 0 && (front == pid || string.Equals(Identify((int)front).Path, app.Path, StringComparison.OrdinalIgnoreCase))) return true;
+      if (DateTime.UtcNow >= deadline) return false;
+      Thread.Sleep(50);
+    }
+  }
+
+  // open: one app, within the rules; its window brought forward if it has
+  // one (as macOS activates a running app), else started.
+  static Dictionary<string, object> Open(string id, Rules rules) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    var app = AppIdentity(id);
+    if (app == null) throw new Refusal("Choose an app on this Windows PC.", "invalid");
+    string reason = AppVerdict(app, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    var result = Ok();
+    result["app"] = app.Name;
+    result["bundle"] = app.Bundle;
+    IntPtr window = WindowOf(app);
+    if (window != IntPtr.Zero) {
+      var w = ReadDecided(window, rules);
+      reason = Verdict(w, rules, false);
+      if (reason != null) throw new Refusal(reason, "blocked");
+      RuleT(w.Id);
+      result["front"] = Raise(window);
+      return result;
+    }
+    int pid = app.Packaged
+      ? OnShell(() => (int)ActivationManager().ActivateApplication(app.Bundle, null, 0), "The app is taking too long to open.")
+      : Start(app.Path, null);
+    result["front"] = WaitFrontApp(app, pid);
+    return result;
+  }
+
+  // open-url: a website in the owner's own browser (the default for web
+  // links, or one chosen), a browser checked as any app; the address goes to
+  // that browser alone, as one quoted argument.
+  static readonly string[] BrowserPrograms = { "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe" };
+  static Dictionary<string, object> OpenUrl(string text, string browser, Rules rules) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    var url = text == null || Encoding.UTF8.GetByteCount(text) > 2048 ? null : Url.Parse(text);
+    if (url == null || (Policy.Lower(url.Scheme ?? "") != "http" && Policy.Lower(url.Scheme ?? "") != "https") || string.IsNullOrEmpty(url.Host) || text.IndexOfAny(new[] { ' ', '"', '\t', '\r', '\n' }) >= 0)
+      throw new Refusal("Give a web address that starts with https://.", "invalid");
+    string reason = Policy.UrlReason(text, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    Ident app = string.IsNullOrEmpty(browser) ? DefaultBrowser() : AppIdentity(browser);
+    if (app == null) throw new Refusal("There is no browser to open it in.", "unavailable");
+    if (!IsBrowserApp(app)) throw new Refusal("Open websites in a web browser.", "invalid");
+    reason = AppVerdict(app, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    int pid = app.Packaged
+      ? OnShell(() => (int)ActivationManager().ActivateForProtocol(app.Bundle, ItemsOf(text)), "The browser is taking too long to open.")
+      : Start(app.Path, "\"" + text + "\"");
+    var result = Ok();
+    result["app"] = app.Name;
+    result["bundle"] = app.Bundle;
+    result["front"] = WaitFrontApp(app, pid);
+    return result;
+  }
+  static bool IsBrowserApp(Ident app) {
+    if (app.Packaged) {
+      string id = app.Bundle.ToLowerInvariant();
+      return id.StartsWith("thebrowsercompany.arc_", StringComparison.Ordinal) || id.StartsWith("mozilla.firefox_", StringComparison.Ordinal) || id.StartsWith("duckduckgo.desktopbrowser_", StringComparison.Ordinal);
+    }
+    return System.Array.IndexOf(BrowserPrograms, FileOf(app.Path).ToLowerInvariant()) >= 0;
+  }
+  static string Association(uint flags, int kind, string what) {
+    var text = new StringBuilder(4096);
+    uint length = (uint)text.Capacity;
+    return Native.AssocQueryStringW(flags, kind, what, null, text, ref length) == 0 ? text.ToString() : "";
+  }
+  static Ident DefaultBrowser() {
+    string appId = Association(Native.ASSOCF_IS_PROTOCOL, Native.ASSOCSTR_APPID, "https");
+    if (IsStoreId(appId) && PackageInstalled(appId)) return AppIdentity(appId);
+    string exe = Association(Native.ASSOCF_IS_PROTOCOL, Native.ASSOCSTR_EXECUTABLE, "https");
+    return exe.Length > 0 ? AppIdentity(exe) : null;
+  }
+  // Whether a Store app's package is installed for this user.
+  static bool PackageInstalled(string aumid) {
+    string family = aumid.Substring(0, aumid.IndexOf('!'));
+    uint count = 0, length = 0;
+    int error = Native.GetPackagesByPackageFamily(family, ref count, IntPtr.Zero, ref length, IntPtr.Zero);
+    return (error == 0 || error == 122) && count > 0;
+  }
+
+  // open-file: a file opened in the app that owns it, or shown in File
+  // Explorer: never a program or a script, never a protected file, never with
+  // an app the agent may not use or one that runs what it opens.
+  const string ProgramReason = "That file would run as a program. Open documents, not programs or scripts.";
+  const string ProtectedPathReason = "That path holds your passwords, keys or Reach's own files.";
+  static readonly string[] Runners = { "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "msiexec", "regedit", "rundll32", "control", "mmc", "wt", "windowsterminal",
+    "python", "pythonw", "node", "java", "javaw" };
+  static Dictionary<string, object> OpenFile(string path, bool reveal, Rules rules) {
+    if (rules.Mode == "view") throw new Refusal("This agent can only look.", "blocked");
+    bool full = rules.Mode == "full";
+    if (!PlainPath(path)) throw new Refusal("That file isn't there.", "invalid");
+    IntPtr handle = Native.CreateFileW(path, Native.FILE_READ_ATTRIBUTES, Native.FILE_SHARE_READ | Native.FILE_SHARE_WRITE, IntPtr.Zero, Native.OPEN_EXISTING, Native.FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+    if (handle == new IntPtr(-1)) throw new Refusal("That file isn't there.", "invalid");
+    // Held until it's opened: without shared delete, nobody renames or
+    // removes it meanwhile.
+    try {
+      string canonical = FinalPath(handle);
+      Native.BY_HANDLE_FILE_INFORMATION info;
+      if (canonical == null || !Native.GetFileInformationByHandle(handle, out info)) throw new Refusal("That file isn't there.", "invalid");
+      bool directory = (info.dwFileAttributes & Native.FILE_ATTRIBUTE_DIRECTORY) != 0;
+      if (!full) {
+        if ((info.dwFileAttributes & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0 || (!directory && info.nNumberOfLinks > 1))
+          throw new Refusal("That file has another name elsewhere on the PC, so the agent leaves it alone.", "blocked");
+        foreach (string root in ProtectedRoots(rules)) if (string.Equals(canonical, root, StringComparison.OrdinalIgnoreCase) || Within(canonical, root))
+          throw new Refusal(ProtectedPathReason, "blocked");
+        if (Policy.ProgramFile(canonical, rules) || (directory && Policy.Extension(canonical).Length > 0)) throw new Refusal(ProgramReason, "blocked");
+      }
+      var result = Ok();
+      if (reveal || directory) {
+        var explorer = new Ident { Bundle = "exe:explorer.exe", Path = Path.Combine(WindowsFolder(), "explorer.exe"), Image = Path.Combine(WindowsFolder(), "explorer.exe"), Name = "File Explorer", Known = true, Integrity = ownIntegrity };
+        string reason = AppVerdict(explorer, rules);
+        if (reason != null) throw new Refusal(reason, "blocked");
+        OnShell(() => {
+          IntPtr pidl;
+          uint attributes;
+          if (Native.SHParseDisplayName(canonical, IntPtr.Zero, out pidl, 0, out attributes) != 0) throw new Refusal("That file isn't there.", "invalid");
+          try { return Native.SHOpenFolderAndSelectItems(pidl, 0, null, 0); } finally { Native.CoTaskMemFree(pidl); }
+        }, "File Explorer is taking too long to open.");
+        result["app"] = "File Explorer";
+        result["bundle"] = "exe:explorer.exe";
+        result["front"] = WaitFrontApp(explorer, 0);
+        return result;
+      }
+      string extension = "." + Policy.Extension(canonical);
+      // A Store app (Notepad, Photos, Media Player) opens it for its file contract.
+      string appId = Association(0, Native.ASSOCSTR_APPID, extension);
+      if (IsStoreId(appId) && PackageInstalled(appId)) {
+        var store = AppIdentity(appId);
+        string reason = AppVerdict(store, rules);
+        if (reason != null) throw new Refusal(reason, "blocked");
+        if (!full && Policy.TerminalLikeApp(store.Bundle, store.Name, store.Path, rules)) throw new Refusal(ProgramReason, "blocked");
+        int pid = OnShell(() => (int)ActivationManager().ActivateForFile(appId, ItemsOf(canonical), "open"), "The app is taking too long to open the file.");
+        result["app"] = store.Name;
+        result["bundle"] = store.Bundle;
+        result["front"] = WaitFrontApp(store, pid);
+        return result;
+      }
+      // Handlers that run inside the shell can't be checked: refused.
+      if (Association(0, Native.ASSOCSTR_DELEGATEEXECUTE, extension).Length > 0 || Association(0, Native.ASSOCSTR_DDECOMMAND, extension).Length > 0)
+        throw new Refusal("No app on this Windows PC opens that file.", "unavailable");
+      string command = Association(0, Native.ASSOCSTR_COMMAND, extension), executable = Association(0, Native.ASSOCSTR_EXECUTABLE, extension);
+      string arguments;
+      string program = HandlerProgram(command, executable, canonical, out arguments);
+      if (program == null) throw new Refusal("No app on this Windows PC opens that file.", "unavailable");
+      var handler = AppIdentity(program);
+      if (handler == null) throw new Refusal("No app on this Windows PC opens that file.", "unavailable");
+      string verdict = AppVerdict(handler, rules);
+      if (verdict != null) throw new Refusal(verdict, "blocked");
+      string name = FileOf(program).ToLowerInvariant();
+      if (name.EndsWith(".exe", StringComparison.Ordinal)) name = name.Substring(0, name.Length - 4);
+      if (!full && (System.Array.IndexOf(Runners, name) >= 0 || rules.RunnerApps.Contains(name) || Policy.TerminalLikeApp(handler.Bundle, handler.Name, handler.Path, rules)))
+        throw new Refusal(ProgramReason, "blocked");
+      int started = Start(handler.Path, arguments);
+      result["app"] = handler.Name;
+      result["bundle"] = handler.Bundle;
+      result["front"] = WaitFrontApp(handler, started);
+      return result;
+    } finally {
+      Native.CloseHandle(handle);
+    }
+  }
+  // Each protected folder as it was given and as Windows names it (its long
+  // name, links followed): a folder's alias is the folder.
+  static List<string> ProtectedRoots(Rules rules) {
+    var roots = new List<string>();
+    foreach (string given in rules.ProtectedPaths) {
+      string root = (given ?? "").TrimEnd('\\');
+      if (root.Length == 0) continue;
+      roots.Add(root);
+      string named = PlainPath(root) ? CanonicalFile(root) : null;
+      if (named != null && !string.Equals(named, root, StringComparison.OrdinalIgnoreCase)) roots.Add(named.TrimEnd('\\'));
+    }
+    return roots;
+  }
+  // The program an association's command runs, and its arguments with the
+  // file in place: the program must be the association's own executable, and
+  // the arguments only the file (%1, %L, quoted or not) and %*. Anything else
+  // in it, and the file isn't opened.
+  internal static string HandlerProgram(string command, string executable, string file, out string arguments) {
+    arguments = null;
+    if (string.IsNullOrEmpty(command) || string.IsNullOrEmpty(executable)) return null;
+    string rest;
+    string program;
+    command = Environment.ExpandEnvironmentVariables(command.Trim());
+    if (command.StartsWith("\"", StringComparison.Ordinal)) {
+      int close = command.IndexOf('"', 1);
+      if (close < 0) return null;
+      program = command.Substring(1, close - 1);
+      rest = command.Substring(close + 1);
+    } else {
+      int space = command.IndexOf(' ');
+      program = space < 0 ? command : command.Substring(0, space);
+      rest = space < 0 ? "" : command.Substring(space);
+    }
+    if (!PlainPath(program) || !program.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || !string.Equals(program, Environment.ExpandEnvironmentVariables(executable), StringComparison.OrdinalIgnoreCase)) return null;
+    var parts = new List<string>();
+    foreach (string token in rest.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)) {
+      if (token == "%1" || token == "\"%1\"" || token == "%L" || token == "\"%L\"" || token == "%l" || token == "\"%l\"") parts.Add("\"" + file + "\"");
+      else if (token == "%*") continue;
+      else return null;
+    }
+    arguments = string.Join(" ", parts);
+    return program;
+  }
+
+  // Where a File Explorer window is (the shell's own list of its windows):
+  // its folder's parsing name; null when the shell won't say.
+  static string ExplorerPlaceNow(IntPtr window) {
+    try {
+      return OnShell(() => {
+        var shellWindows = System.Activator.CreateInstance(System.Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39")));
+        Func<object, string, object> get = (target, name) => target.GetType().InvokeMember(name, System.Reflection.BindingFlags.GetProperty, null, target, null);
+        int count = Convert.ToInt32(get(shellWindows, "Count"), CultureInfo.InvariantCulture);
+        for (int i = 0; i < count && i < 64; i++) {
+          object item = shellWindows.GetType().InvokeMember("Item", System.Reflection.BindingFlags.InvokeMethod, null, shellWindows, new object[] { i });
+          if (item == null || Convert.ToInt64(get(item, "HWND"), CultureInfo.InvariantCulture) != window.ToInt64()) continue;
+          object folder = get(get(item, "Document"), "Folder");
+          return get(get(folder, "Self"), "Path") as string;
+        }
+        return null;
+      }, "File Explorer is taking too long to answer.");
+    } catch (Wedged) {
+      throw;
+    } catch (Exception) {
+      return null;
+    }
+  }
+
   // --- The app catalog (§9) -------------------------------------------------
+  // Every app in Start's list: a Store app by its id, a program by its path.
+  static readonly Guid AppsFolder = new Guid("1e87508d-89c2-42f0-8a7e-645a0f50ca58"), EnumItems = new Guid("94f60519-2850-4924-aa5a-d15e84868039"),
+    EnumShellItemsId = new Guid("70629033-e363-4a28-a567-0db78006e6d7");
+  static Native.PROPERTYKEY Key(string format, uint id) { return new Native.PROPERTYKEY { fmtid = new Guid(format), pid = id }; }
   static Dictionary<string, object> Catalog() {
-    throw new Refusal("The Windows PC couldn't do that.", "unavailable");
+    var apps = OnShell(() => {
+      var found = new SortedDictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+      Guid folderId = AppsFolder, itemId = ShellItemId, enumId = EnumShellItemsId, handler = EnumItems;
+      var folder = (IShellItem)Native.SHGetKnownFolderItem(ref folderId, 0, IntPtr.Zero, ref itemId);
+      var items = (IEnumShellItems)folder.BindToHandler(IntPtr.Zero, ref handler, ref enumId);
+      Native.PROPERTYKEY aumid = Key("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3", 5), family = Key("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3", 17), target = Key("B9B4B3FC-2B51-4A42-B5D8-324146AFCF25", 2);
+      IShellItem item;
+      uint fetched;
+      while (found.Count < 1024 && items.Next(1, out item, out fetched) == 0 && fetched == 1) {
+        var full = item as IShellItem2;
+        if (full == null) continue;
+        string name = Limit(full.GetDisplayName(0) ?? "", 100), id, packageFamily, link;
+        if (full.GetString(ref aumid, out id) != 0) id = "";
+        if (full.GetString(ref family, out packageFamily) != 0) packageFamily = "";
+        if (full.GetString(ref target, out link) != 0) link = "";
+        var entry = new Dictionary<string, object>();
+        if (IsStoreId(id) && (packageFamily ?? "").Length > 0) { entry["id"] = id; entry["bundleId"] = id; }
+        else if (!string.IsNullOrEmpty(link) && link.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && PlainPath(link) && File.Exists(link)) {
+          string canonical = CanonicalFile(link);
+          if (canonical == null) continue;
+          entry["id"] = canonical;
+          entry["bundleId"] = "exe:" + FileOf(canonical).ToLowerInvariant();
+        } else continue;
+        entry["name"] = name;
+        if (name.Length > 0 && !found.ContainsKey(name + "|" + entry["id"])) found[name + "|" + entry["id"]] = entry;
+      }
+      return new List<Dictionary<string, object>>(found.Values);
+    }, "The app list is taking too long.");
+    // Running: some process's own path is the app's.
+    var running = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var seen = new HashSet<uint>();
+    Native.EnumWindowsProc each = (window, data) => {
+      uint pid;
+      Native.GetWindowThreadProcessId(window, out pid);
+      if (Native.IsWindowVisible(window) && seen.Add(pid)) { var id = Identify((int)pid); if (id.Known) running.Add(id.Path); }
+      return true;
+    };
+    Native.EnumWindows(each, IntPtr.Zero);
+    GC.KeepAlive(each);
+    var list = new List<object>();
+    foreach (var app in apps) { app["running"] = running.Contains((string)app["id"]); list.Add(app); }
+    var result = Ok();
+    result["apps"] = list;
+    return result;
   }
 }
 
@@ -4280,6 +4742,7 @@ sealed class WindowsView : IDesktopView {
   public ushort ScanFor(ushort vk) { return (ushort)Native.MapVirtualKeyExW(vk, Native.MAPVK_VK_TO_VSC, Layout()); }
   public bool HostsReach(int pid, Rules rules) { return Desk.HostsReach(pid, rules); }
   public string InputDesktop() { return Desk.InputDesktopName(); }
+  public string ExplorerPlace(long window) { return Desk.ExplorerPlaceCached(new IntPtr(window)); }
 }
 
 sealed class WindowsInput : IInput {
@@ -4319,6 +4782,9 @@ sealed class WindowsClip : IClip {
     return result;
   }
   static void Loop() {
+    try { Pump(); } catch (Exception) { ready.Set(); }
+  }
+  static void Pump() {
     window = Native.CreateWindowExW(0, "STATIC", "", 0, 0, 0, 0, 0, Native.HWND_MESSAGE, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
     ready.Set();
     Native.MSG message;
@@ -4746,6 +5212,48 @@ sealed class Changes : IUIAutomationFocusChangedEventHandler, IUIAutomationStruc
 }
 // END NATIVE UIA
 
+// BEGIN NATIVE SHELL
+// The shell's own interfaces, declared as Windows' SDK lists them (each up to
+// the last member the helper calls).
+[ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IShellItem {
+  [return: MarshalAs(UnmanagedType.Interface)] object BindToHandler(IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid);
+  [PreserveSig] int GetParent();
+  [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(uint sigdnName);
+}
+[ComImport, Guid("7e9fb0d3-919f-4307-ab2e-9b1860310c93"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IShellItem2 {
+  [PreserveSig] int BindToHandler();
+  [PreserveSig] int GetParent();
+  [return: MarshalAs(UnmanagedType.LPWStr)] string GetDisplayName(uint sigdnName);
+  [PreserveSig] int GetAttributes();
+  [PreserveSig] int Compare();
+  [PreserveSig] int GetPropertyStore();
+  [PreserveSig] int GetPropertyStoreWithCreateObject();
+  [PreserveSig] int GetPropertyStoreForKeys();
+  [PreserveSig] int GetPropertyDescriptionList();
+  [PreserveSig] int Update();
+  [PreserveSig] int GetProperty();
+  [PreserveSig] int GetCLSID();
+  [PreserveSig] int GetFileTime();
+  [PreserveSig] int GetInt32();
+  [PreserveSig] int GetString([In] ref Native.PROPERTYKEY key, [MarshalAs(UnmanagedType.LPWStr)] out string value);
+}
+[ComImport, Guid("70629033-e363-4a28-a567-0db78006e6d7"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IEnumShellItems {
+  [PreserveSig] int Next(uint celt, out IShellItem item, out uint fetched);
+}
+[ComImport, Guid("b63ea76d-1f85-456f-a19c-48159efa858b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IShellItemArray {
+}
+[ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IApplicationActivationManager {
+  uint ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options);
+  uint ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IShellItemArray itemArray, [MarshalAs(UnmanagedType.LPWStr)] string verb);
+  uint ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IShellItemArray itemArray);
+}
+// END NATIVE SHELL
+
 // BEGIN NATIVE WIN32
 // Windows' own functions, declared as Microsoft documents them.
 static class Native {
@@ -4957,5 +5465,58 @@ static class Native {
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+  public const uint COINIT_APARTMENTTHREADED = 0x2, COINIT_DISABLE_OLE1DDE = 0x4;
+  public const uint FILE_READ_ATTRIBUTES = 0x80, FILE_SHARE_READ = 0x1, FILE_SHARE_WRITE = 0x2, OPEN_EXISTING = 3, FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+  public const uint FILE_ATTRIBUTE_DIRECTORY = 0x10, FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+  public const uint LOAD_LIBRARY_AS_DATAFILE = 0x2, LOAD_LIBRARY_AS_IMAGE_RESOURCE = 0x20;
+  public const uint TOKEN_DUPLICATE = 0x0002, CREATE_UNICODE_ENVIRONMENT = 0x400;
+  public const int ERROR_ELEVATION_REQUIRED = 740;
+  public const uint ASSOCF_IS_PROTOCOL = 0x1000;
+  public const int ASSOCSTR_COMMAND = 1, ASSOCSTR_EXECUTABLE = 2, ASSOCSTR_DDECOMMAND = 7, ASSOCSTR_DELEGATEEXECUTE = 18, ASSOCSTR_APPID = 21;
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROPERTYKEY { public Guid fmtid; public uint pid; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct BY_HANDLE_FILE_INFORMATION {
+    public uint dwFileAttributes;
+    public long ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    public uint dwVolumeSerialNumber, nFileSizeHigh, nFileSizeLow, nNumberOfLinks, nFileIndexHigh, nFileIndexLow;
+  }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct STARTUPINFO {
+    public int cb;
+    public string lpReserved, lpDesktop, lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2;
+    public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [DllImport("ole32.dll")] public static extern int CoInitializeEx(IntPtr reserved, uint flags);
+  [DllImport("ole32.dll")] public static extern void CoTaskMemFree(IntPtr memory);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern int GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, int length, uint flags);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetFileInformationByHandle(IntPtr file, out BY_HANDLE_FILE_INFORMATION info);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr LoadLibraryExW(string file, IntPtr reserved, uint flags);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr FindResourceW(IntPtr module, IntPtr name, IntPtr type);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr LoadResource(IntPtr module, IntPtr resource);
+  [DllImport("kernel32.dll")] public static extern IntPtr LockResource(IntPtr data);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern int SizeofResource(IntPtr module, IntPtr resource);
+  [DllImport("kernel32.dll")] public static extern bool FreeLibrary(IntPtr module);
+  [DllImport("userenv.dll", SetLastError = true)] public static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+  [DllImport("userenv.dll")] public static extern bool DestroyEnvironmentBlock(IntPtr environment);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern bool CreateProcessW(string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags,
+    IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION information);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetPackagesByPackageFamily(string family, ref uint count, IntPtr names, ref uint length, IntPtr buffer);
+  [DllImport("shell32.dll", PreserveSig = false)]
+  [return: MarshalAs(UnmanagedType.Interface)] public static extern object SHGetKnownFolderItem([In] ref Guid folder, uint flags, IntPtr token, [In] ref Guid riid);
+  [DllImport("shell32.dll", PreserveSig = false)]
+  [return: MarshalAs(UnmanagedType.Interface)] public static extern object SHCreateItemFromParsingName([MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr bindContext, [In] ref Guid riid);
+  [DllImport("shell32.dll", PreserveSig = false)]
+  [return: MarshalAs(UnmanagedType.Interface)] public static extern object SHCreateShellItemArrayFromShellItem(IShellItem item, [In] ref Guid riid);
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributesIn, out uint attributesOut);
+  [DllImport("shell32.dll")] public static extern int SHOpenFolderAndSelectItems(IntPtr folder, uint count, IntPtr[] items, uint flags);
+  [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int AssocQueryStringW(uint flags, int kind, string association, string extra, StringBuilder output, ref uint length);
 }
 // END NATIVE WIN32
