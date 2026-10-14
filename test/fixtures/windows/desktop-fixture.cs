@@ -73,7 +73,10 @@ static class DesktopFixture {
   delegate bool EnumWindowsProc(IntPtr window, IntPtr data);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc each, IntPtr data);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+  [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int max);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern int GetShortPathNameW(string path, StringBuilder shortPath, int size);
   [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint format);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
@@ -133,7 +136,9 @@ static class DesktopFixture {
       return 0;
     }
     if (args.Length >= 2 && (args[0] == "medium" || args[0] == "medium-shown")) return Medium(args);
-    if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]));
+    if (args.Length == 2 && args[0] == "close") return Close(new IntPtr(long.Parse(args[1])));
+    if (args.Length == 3 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), 0);
+    if (args.Length == 4 && args[0] == "click") return Click(int.Parse(args[1]), int.Parse(args[2]), uint.Parse(args[3]));
     if (args.Length == 1 && args[0] == "buttons") { Console.WriteLine((GetAsyncKeyState(1) & 0x8000) != 0 ? "left down" : "left up"); return 0; }
     if (args.Length == 3 && args[0] == "clipboard-watch") return Watch(args[1], args[2]);
     if (args.Length == 2 && args[0] == "clipboard-set") { Clipboard.SetText(args[1]); return 0; }
@@ -156,7 +161,7 @@ static class DesktopFixture {
     return 2;
   }
   static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "medium-shown", "click", "buttons",
-    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe" };
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block", "find", "short", "integrity", "process-probe", "helper-probe", "close" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -401,8 +406,29 @@ static class DesktopFixture {
     return 0;
   }
 
-  static int Click(int x, int y) {
+  // A test's own window, closed and gone before the next test: a classic
+  // console outlives its killed program while anything else is attached.
+  static int Close(IntPtr window) {
+    for (int i = 0; i < 200 && IsWindow(window); i++) {
+      if (i % 40 == 0) PostMessageW(window, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+      Thread.Sleep(25);
+    }
+    return IsWindow(window) ? 1 : 0;
+  }
+
+  static int Click(int x, int y, uint expectedPid) {
     IntPtr target = GetAncestor(WindowFromPoint(new POINT { X = x, Y = y }), 2);
+    // A window left over on the desktop can cover the point; the click would
+    // then raise it and still "succeed". Name its owner and class instead.
+    uint owner;
+    GetWindowThreadProcessId(target, out owner);
+    if (expectedPid != 0 && owner != expectedPid) {
+      var kind = new StringBuilder(256);
+      GetClassNameW(target, kind, kind.Capacity);
+      Console.Error.WriteLine("The fixture click point is covered by another window (pid " + owner + ", class " + kind +
+        ", expected pid " + expectedPid + ").");
+      return 2;
+    }
     SetCursorPos(x, y);
     mouse_event(0x2, 0, 0, 0, UIntPtr.Zero);
     mouse_event(0x4, 0, 0, 0, UIntPtr.Zero);

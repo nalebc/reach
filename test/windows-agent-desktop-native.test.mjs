@@ -132,7 +132,11 @@ const fractions = (displays) => {
   return ([x, y]) => ({ x: (x - main.x) / main.width, y: (y - main.y) / main.height });
 };
 // The test's own real click (it runs elevated: its input reaches every window).
-const clickAt = (x, y) => exec(fixtureConsole, ["click", String(x), String(y)], { windowsHide: true });
+// A test's console window, closed so it can't cover a later test's windows.
+const closeWindow = (handle) => exec(fixtureConsole, ["close", String(handle)], { windowsHide: true })
+  .catch(() => { throw Error(`window ${handle} stayed open after its test`); });
+// Given a pid, the click refuses a point some other window covers.
+const clickAt = (x, y, pid) => exec(fixtureConsole, ["click", String(x), String(y), ...(pid ? [String(pid)] : [])], { windowsHide: true });
 // A screenshot, saved; its pixels at screen points.
 async function shot(h, displays, maxWidth = 3840) {
   const answer = await h.send({ op: "shot", maxWidth });
@@ -243,7 +247,8 @@ test("Reach in this PC's default terminal (a pseudo console on GitHub's runners)
   const file = path.join(work, "reach-pseudo.json");
   const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in"));
   t.after(() => { try { process.kill(reach.pid); } catch {} });
-  const [, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", "Reach"], { windowsHide: true })).stdout.trim(); } catch { return null; } }, "a window titled Reach")).split(",").map(Number);
+  const [pseudo, x, y, width, height] = (await until(async () => { try { return (await exec(fixtureConsole, ["find", "Reach"], { windowsHide: true })).stdout.trim(); } catch { return null; } }, "a window titled Reach")).split(",").map(Number);
+  t.after(() => closeWindow(pseudo));
   const h = helper(t, { reachPid: reach.pid, console: true, medium: true });
   const ready = await h.send({ op: "rules", ...rulesFor("readonly") });
   assert.equal(ready.ok, true, JSON.stringify(ready));
@@ -280,6 +285,7 @@ test("Reach's own console window is closed to the agent whatever its title, and 
   const file = path.join(work, "reach.json");
   const reach = JSON.parse(await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8"), "Reach's stand-in").catch((error) => { throw Error(`${error.message}: the launcher said ${launcher || "nothing"}`); }));
   t.after(() => { try { process.kill(reach.pid); } catch {} });
+  t.after(() => closeWindow(reach.console));
   const [x, y, width, height] = (await exec(fixtureConsole, ["frame", String(reach.console)], { windowsHide: true })).stdout.trim().split(",").map(Number);
   await sleep(500);
   const h = helper(t, { reachPid: reach.pid, console: true, medium: true });
@@ -319,7 +325,7 @@ test("input reaches a window at the helper's own integrity: clicks, typing in an
   note({ input: { ready } });
   assert.equal(ready.elevated, false, "medium integrity, as on a PC");
   const at = fractions((await h.send({ op: "displays" })).displays);
-  await clickAt(target.x + 80, target.y + 12);
+  await clickAt(target.x + 80, target.y + 12, target.pid);
   const act = async (action, what) => {
     const answer = await h.send({ op: "act", action });
     if (!answer.ok) {
@@ -364,7 +370,7 @@ test("paste: the agent's text and then the owner's own, both kept out of Clipboa
   const h = helper(t, { medium: true });
   assert.equal((await h.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const at = fractions((await h.send({ op: "displays" })).displays);
-  await clickAt(target.x + 80, target.y + 12);
+  await clickAt(target.x + 80, target.y + 12, target.pid);
   assert.equal((await h.send({ op: "act", action: { type: "click", ...at(target.notes) } })).ok, true);
   assert.equal((await h.send({ op: "act", action: { type: "type", text: "pasted text", paste: true } })).ok, true);
   await until(() => target.log().includes("text pasted text"), "the paste arrives");
@@ -400,7 +406,7 @@ test("refused: a protected window, a password box, an elevated window (Rule T), 
   const rules = rulesFor("apps", { apps: [{ id: target.exe, bundleId: "exe:chosen.exe", name: "chosen" }, { id: admin.exe, bundleId: "", name: "admin" }] });
   assert.equal((await h.send({ op: "rules", ...rules })).ok, true);
   const at = fractions((await h.send({ op: "displays" })).displays);
-  await clickAt(target.x + 80, target.y + 12);
+  await clickAt(target.x + 80, target.y + 12, target.pid);
   const protectedClick = await h.send({ op: "act", action: { type: "click", ...at([vault.x + 150, vault.y + 150]) } });
   assert.equal(protectedClick.kind, "blocked", JSON.stringify(protectedClick));
   assert.equal(vault.log(), "", "nothing reached it");
@@ -412,7 +418,7 @@ test("refused: a protected window, a password box, an elevated window (Rule T), 
   assert.equal(ruleT.kind, "blocked");
   assert.match(ruleT.error, /runs as administrator/);
   assert.equal(admin.log(), "");
-  await clickAt(admin.x + 80, admin.y + 12);
+  await clickAt(admin.x + 80, admin.y + 12, admin.pid);
   const ruleF = await h.send({ op: "act", action: { type: "click", ...at(target.notes) } });
   assert.equal(ruleF.kind, "paused", JSON.stringify(ruleF));
   assert.match(ruleF.error, /A window running as administrator is in front/);
@@ -432,7 +438,7 @@ test("a held button is let go when the helper's input ends, and when Reach's pro
   const h = helper(t, { medium: true });
   assert.equal((await h.send({ op: "rules", ...rulesFor("full") })).ok, true);
   const at = fractions((await h.send({ op: "displays" })).displays);
-  await clickAt(target.x + 80, target.y + 12);
+  await clickAt(target.x + 80, target.y + 12, target.pid);
   const from = at([target.x + 300, target.y + 250]), to = at([target.x + 420, target.y + 300]);
   const drag = { type: "drag", x: from.x, y: from.y, toX: to.x, toY: to.y, holdMs: 5000 };
   // A press is a press here, whatever Windows makes of its timing (a second
@@ -472,7 +478,7 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   const h = helper(t, { medium: true });
   const ready = await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: target.exe, bundleId: "", name: "controls" }] }) });
   assert.equal(ready.accessibility, true, "UI Automation answered its known questions");
-  await clickAt(target.x + 80, target.y + 12);
+  await clickAt(target.x + 80, target.y + 12, target.pid);
   // Shown is the WinForms window's event, before its accessibility provider
   // and the helper's stable-window snapshots necessarily expose its controls.
   // Require every expected control; an empty initial tree is not acceptance.
@@ -528,11 +534,11 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   note({ changedMenu: { kind: changedMenu.kind, dispatched: menuCount() - beforeMenuChange } });
   // wait-change: the window changed its own text
   const before = (await h.send({ op: "elements" })).revision;
-  await clickAt(target.button[0], target.button[1]);
+  await clickAt(target.button[0], target.button[1], target.pid);
   const change = await h.send({ op: "wait-change", revision: before, ms: 400 });
   assert.equal(change.changed, true, JSON.stringify(change));
   // focus: the window by its ref; whether Windows let it come forward is recorded
-  await clickAt(vault.x + 80, vault.y + 12);
+  await clickAt(vault.x + 80, vault.y + 12, vault.pid);
   const ref = windows.windows.find((item) => item.title === "Sample controls target").id;
   const focused = await h.send({ op: "focus", id: ref, title: "Sample controls target" });
   note({ focus: focused });
