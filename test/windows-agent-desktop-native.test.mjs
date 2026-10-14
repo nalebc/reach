@@ -360,11 +360,17 @@ test("paste: the agent's text and then the owner's own, both kept out of Clipboa
   assert.equal((await h.send({ op: "act", action: { type: "click", ...at(target.notes) } })).ok, true);
   assert.equal((await h.send({ op: "act", action: { type: "type", text: "pasted text", paste: true } })).ok, true);
   await until(() => target.log().includes("text pasted text"), "the paste arrives");
-  await until(() => /\| text owner's text$/m.test(watched()), "the owner's text back");
+  // The watcher logs in its own time: the owner's text back is the first
+  // line with it after the agent's (the test's own setting came before).
+  const restored = () => {
+    const lines = watched().split("\n").filter(Boolean), at = lines.findIndex((line) => line.endsWith("| text pasted text"));
+    return at >= 0 && lines.slice(at + 1).find((line) => line.endsWith("| text owner's text"));
+  };
+  const owner = await until(restored, "the owner's text back after the paste");
   const formats = ["ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
   const lines = watched().split("\n").filter(Boolean);
   note({ paste: lines });
-  const agent = lines.find((line) => line.endsWith("| text pasted text")), owner = lines.filter((line) => line.endsWith("| text owner's text")).at(-1);
+  const agent = lines.find((line) => line.endsWith("| text pasted text"));
   for (const format of formats) {
     assert.ok(agent.includes(format), `the agent's text carries ${format}`);
     assert.ok(owner.includes(format), `the owner's restored text carries ${format}`);
