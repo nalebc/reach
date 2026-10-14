@@ -780,6 +780,8 @@ export type InstallPlan = {
   agent: string;
   name: string;
   command: string;
+  // What runs before it, in words (OpenClaw on a PC whose Node it can't use).
+  note?: string;
   terminal?: { id: string; status: string; exitCode?: number; preview?: string };
 };
 export const installAgent = (peer: Peer, agent: string, confirm = false) =>
