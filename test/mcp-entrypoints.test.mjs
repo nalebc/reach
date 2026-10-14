@@ -248,7 +248,7 @@ test("CLI execution and MCP jobs report real output and enforce per-agent owners
   if (process.platform !== "darwin") {
     const refused = await exec(process.execPath, [cli, "exec", "--credential", one.file, "--allow-local", "--command-file", command]).then(() => null, (error) => error);
     assert.ok(refused, "an agent's command doesn't run without a sandbox");
-    assert.match(refused.stderr, /run only in a sandbox, which this .+ doesn't have yet/);
+    assert.match(refused.stderr, process.platform === "win32" ? /Reach couldn't prepare its command sandbox.*private folder isn't ready/ : /run only in a sandbox, which this .+ doesn't have yet/);
     const viaMcp = await one.request("tools/call", { name: "reach_run_command", arguments: { command: "echo hi", timeoutMs: 5000 } });
     assert.equal(viaMcp.result.isError, true);
     return;
