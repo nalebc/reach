@@ -316,6 +316,35 @@ static class Terminals {
     StringBuilder title = new StringBuilder(4096);
     return GetConsoleTitleW(title, (uint)title.Capacity) > 0 ? title.ToString() : "";
   }
+  // A handed-over window can be owned by OpenConsole.exe rather than the
+  // shell. AttachConsole needs a console client, not its rendering host.
+  // Only inspect clients of a window already verified as a PC terminal.
+  static uint ConsoleRoot(IntPtr window, uint owner, Dictionary<uint, Proc> all) {
+    FreeConsole();
+    if (AttachConsole(owner)) {
+      try { if (GetConsoleWindow() == window && Clients().Contains(owner)) return owner; }
+      finally { FreeConsole(); }
+    }
+    foreach (uint candidate in all.Keys) {
+      if (candidate == self || candidate == owner) continue;
+      FreeConsole();
+      if (!AttachConsole(candidate)) continue;
+      try {
+        if (GetConsoleWindow() != window) continue;
+        List<uint> clients = Clients();
+        uint root = 0;
+        long earliest = long.MaxValue;
+        foreach (uint client in clients) {
+          Proc process;
+          if (!all.TryGetValue(client, out process) || clients.Contains(process.Parent)) continue;
+          long start = Started(client);
+          if (start > 0 && start < earliest) { root = client; earliest = start; }
+        }
+        if (root != 0) return root;
+      } finally { FreeConsole(); }
+    }
+    return 0;
+  }
   // Attached to the console `window` belongs to, through its root; null when
   // it worked.
   static string Attach(uint pid, IntPtr window) {
@@ -345,19 +374,29 @@ static class Terminals {
     int[] administrator = new int[2];
     foreach (IntPtr window in ConsoleWindows()) {
       string kind = ClassOf(window);
-      uint root = OwnerOf(window);
-      if (root == 0 || root == self) continue;
+      uint owner = OwnerOf(window);
+      if (owner == 0 || owner == self) continue;
       string provider;
       if (kind == CONSOLE) {
         // Hidden ones are programs' own (started hidden), not the owner's.
         if (!IsWindowVisible(window)) continue;
         provider = "console";
       } else {
-        if (TerminalWindow(window, root, all) == IntPtr.Zero) continue;
+        if (TerminalWindow(window, owner, all) == IntPtr.Zero) continue;
         provider = "windows-terminal";
       }
+      long ownerStarted = Started(owner);
+      if (ownerStarted == 0) continue;
+      uint root = ConsoleRoot(window, owner, all);
+      if (root == 0) {
+        FreeConsole();
+        if (!AttachConsole(owner) && Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED)
+          administrator[provider == "console" ? 1 : 0]++;
+        FreeConsole();
+        continue;
+      }
       long started = Started(root);
-      if (started == 0) continue;
+      if (started == 0 || OwnerOf(window) != owner || Started(owner) != ownerStarted) continue;
       if (StartedBy(root, exclude, all)) continue;
       string title;
       FreeConsole();
@@ -374,7 +413,9 @@ static class Terminals {
       if (title.Length > 160) title = title.Substring(0, 160);
       string key = window.ToInt64().ToString(CultureInfo.InvariantCulture);
       sessions.Add("{\"provider\":" + Json.Quote(provider) + ",\"target\":{\"window\":" + Json.Quote(key) + ",\"pid\":" + root
-        + ",\"start\":" + Json.Quote(started.ToString(CultureInfo.InvariantCulture)) + "},\"name\":" + Json.Quote(title) + ",\"tty\":" + Json.Quote(key) + "}");
+        + ",\"start\":" + Json.Quote(started.ToString(CultureInfo.InvariantCulture))
+        + ",\"ownerPid\":" + owner + ",\"ownerStart\":" + Json.Quote(ownerStarted.ToString(CultureInfo.InvariantCulture))
+        + "},\"name\":" + Json.Quote(title) + ",\"tty\":" + Json.Quote(key) + "}");
     }
     return "{\"sessions\":[" + string.Join(",", sessions.ToArray()) + "],\"running\":{\"windows-terminal\":" + (terminalRunning ? "true" : "false")
       + ",\"console\":true},\"installed\":{\"windows-terminal\":" + (TerminalPath() != null ? "true" : "false") + ",\"console\":true}"
@@ -396,7 +437,21 @@ static class Terminals {
     window = new IntPtr(handle);
     pid = (uint)number;
     if (!IsWindow(window) || ClassOf(window) != (provider == "console" ? CONSOLE : PSEUDO)) return false;
-    return OwnerOf(window) == pid && Started(pid) == started;
+    if (started <= 0 || Started(pid) != started) return false;
+    uint owner = pid;
+    long ownerStart = started;
+    if (target.ContainsKey("ownerPid") || target.ContainsKey("ownerStart")) {
+      double ownerNumber = Json.Number(target, "ownerPid");
+      string ownerTime = target.ContainsKey("ownerStart") ? target["ownerStart"] as string : null;
+      if (ownerNumber <= 0 || ownerNumber > uint.MaxValue || ownerNumber != Math.Floor(ownerNumber) ||
+          ownerTime == null || ownerTime.Length > 20 || !long.TryParse(ownerTime, NumberStyles.None, CultureInfo.InvariantCulture, out ownerStart) || ownerStart <= 0) return false;
+      owner = (uint)ownerNumber;
+    }
+    if (OwnerOf(window) != owner || Started(owner) != ownerStart) return false;
+    FreeConsole();
+    if (!AttachConsole(pid)) return false;
+    try { return GetConsoleWindow() == window; }
+    finally { FreeConsole(); }
   }
 
   // ---- Reading, typing, focusing, closing ----
@@ -671,6 +726,7 @@ static class Terminals {
     static readonly Dictionary<long, int> lastOutput = new Dictionary<long, int>();
     static readonly HashSet<long> pending = new HashSet<long>();
     static readonly Dictionary<long, string> screens = new Dictionary<long, string>();
+    static readonly Dictionary<long, KeyValuePair<uint, long>> clients = new Dictionary<long, KeyValuePair<uint, long>>();
     static WinEventProc callback;
     static Timer flushing, looking;
     static int busy;
@@ -737,6 +793,8 @@ static class Terminals {
         }
         foreach (long key in new List<long>(screens.Keys))
           if (!watched.Contains(key)) screens.Remove(key);
+        foreach (long key in new List<long>(clients.Keys))
+          if (!watched.Contains(key)) clients.Remove(key);
         count = watched.Count;
       }
       Emit("{\"type\":\"watching\",\"ttys\":" + count + "}");
@@ -803,10 +861,11 @@ static class Terminals {
       try {
         List<long> tabs = new List<long>();
         lock (gate) tabs.AddRange(watched);
+        Dictionary<uint, Proc> all = tabs.Count > 0 ? Processes() : null;
         foreach (long key in tabs) {
           IntPtr window = new IntPtr(key);
           if (ClassOf(window) != PSEUDO) continue;
-          string seen = Screen(window);
+          string seen = Screen(window, all);
           if (seen == null) continue;
           bool changed;
           lock (gate) {
@@ -820,11 +879,20 @@ static class Terminals {
         Interlocked.Exchange(ref busy, 0);
       }
     }
-    static string Screen(IntPtr window) {
-      uint pid = OwnerOf(window);
-      if (pid == 0 || pid == self) return null;
+    static string Screen(IntPtr window, Dictionary<uint, Proc> all) {
+      uint owner = OwnerOf(window);
+      if (owner == 0 || owner == self || TerminalWindow(window, owner, all) == IntPtr.Zero) return null;
+      KeyValuePair<uint, long> cached;
+      lock (gate) clients.TryGetValue(window.ToInt64(), out cached);
+      uint pid = cached.Key;
       FreeConsole();
-      if (!AttachConsole(pid)) return null;
+      bool attached = pid != 0 && Started(pid) == cached.Value && AttachConsole(pid);
+      if (!attached || GetConsoleWindow() != window) {
+        FreeConsole();
+        pid = ConsoleRoot(window, owner, all);
+        if (pid == 0 || !AttachConsole(pid)) return null;
+        lock (gate) if (watched.Contains(window.ToInt64())) clients[window.ToInt64()] = new KeyValuePair<uint, long>(pid, Started(pid));
+      }
       try {
         if (GetConsoleWindow() != window) return null;
         using (SafeFileHandle screen = Open("CONOUT$")) {
