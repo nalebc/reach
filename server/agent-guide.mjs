@@ -10,8 +10,8 @@ import { GO_FAST } from "./browser-tools.mjs";
 //
 // `word`: "Mac", "Windows PC" or "computer" (computer-word.mjs).
 // `folders`: the names of the folders it has now, in order.
-// `page`: asked from its browser page, where passwords go in with Sign in;
-// a program (its MCP server, `join`, a hosted connector) types them.
+// `page`: asked from its browser page, where vault passwords go in with Sign
+// in; a program (its MCP server, `join`, a hosted connector) types them.
 
 // A name the owner chose, quoted, short, with no characters that reorder or
 // hide text (the phone quotes them the same way).
@@ -44,10 +44,14 @@ const RULES = [
   "Ask me before paying, sending or deleting anything.",
   "Don't share your Reach credentials.",
 ];
-const secrets = (page) =>
-  page
-    ? "Fill passwords from your vault with Sign in, and stay out of password apps, Reach and Tailscale."
-    : 'Type passwords from your vault with "secret":true, and stay out of password apps, Reach and Tailscale.';
+// How it signs in (Oct 13: "I don't need to connect every connector… they can
+// log in to my accounts"): with what the owner's browser already has, its
+// Google (Apple, Microsoft) sign-in and the passwords it saved, before any
+// vault. A browser that asks for a fingerprint or password to fill one is
+// the owner's to answer.
+const signIn = (page) =>
+  `Sign in with what my browser already has: "Sign in with Google" (or Apple, Microsoft) on my account, or the saved password it offers when you click the field. Your vault only when it has none, ${page ? "with Sign in" : 'typed with "secret":true'}. If the browser asks for my fingerprint or password first, tell me and wait.`;
+const STAY_OUT = "Stay out of password apps, Reach and Tailscale.";
 
 export function agentGuide(client, { word = "computer", folders = [], page = false } = {}) {
   if (client?.kind !== "agent") return "";
@@ -99,7 +103,8 @@ export function agentGuide(client, { word = "computer", folders = [], page = fal
     if (closed.length) lines.push(`${closed.join(", ").replace(/^n/, "N")}.`);
     if (run) lines.push("Commands run as my user account: keep them to those folders.");
   }
-  if (hands) lines.push(secrets(page));
+  if (acts || hands) lines.push(signIn(page));
+  if (hands) lines.push(STAY_OUT);
   // How to go fast on the screen, said as every tool that acts says it.
   if (acts) lines.push(GO_FAST);
   lines.push(...RULES);

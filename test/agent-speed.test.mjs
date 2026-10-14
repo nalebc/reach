@@ -418,7 +418,7 @@ test("every control not listed keeps its number in the new snapshot; secrets sta
   const listed = new Set([...text.matchAll(/^[+~] \[(\d+)\]/gm)].map((match) => Number(match[1])));
   const old = new Map(before.items.map((item) => [item.ref, item.n]));
   for (const item of after.items) if (!listed.has(item.n)) assert.equal(old.get(item.ref), item.n, `${item.name} kept its number`);
-  assert.match(text, /\(password field: sign in from your vault\)/);
+  assert.match(text, /\(password field: click it for the browser's saved password, else your vault\)/);
   assert.doesNotMatch(text, /hunter2/);
   assert.match(text, /^- \[\d+\] \{e-button-add-to-cart-9\} Button "Add to cart" in "Result 9"$/m);
 });

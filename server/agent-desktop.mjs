@@ -62,7 +62,7 @@ const FIELD_ROLES = new Set(["TextField", "TextArea", "SearchField", "ComboBox",
 // One control as the screen text shows it (and its changes, desktop-observation.mjs).
 export const controlLine = (item) => `[${item.n}]${item.ref ? ` {${item.ref}}` : ""} ${item.role}${item.name ? ` "${item.name}"` : ""}` +
   (item.context ? ` in ${JSON.stringify(item.context)}` : "") +
-  (item.secure ? " (password field: sign in from your vault)" : item.value ? ` = "${item.value}"` : "");
+  (item.secure ? " (password field: click it for the browser's saved password, else your vault)" : item.value ? ` = "${item.value}"` : "");
 export function screenActionHint({ snapshot = "", items = [] } = {}) {
   const refs = items.some(item => item.ref);
   return [refs ? 'Click a {ref} with reach_act {"action":{"type":"element","ref":"REF"}}.' : "",
@@ -87,7 +87,7 @@ export function describeScreen({ app = "", title = "", snapshot = "", windowRef 
   const body = rows.map((row) => row.parts.join("   ")).join("\n");
   const fields = items.filter((item) => FIELD_ROLES.has(item.role) || item.secure);
   const form = fields.length
-    ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}; a value from your vault with "secret":true.`
+    ? `\nFields: ${fields.map((item) => `"${item.name || `#${item.n}`}"${item.secure ? " (password)" : ""}`).join(", ")}. Fill them in one call: reach_fill {"fields":[{"label":"…","text":"…"}], "submit":true}. To sign in, the browser's own first: "Sign in with Google", or the saved password it lists when you click the field (reach_screenshot shows the list); else a value from your vault with "secret":true.`
     : "";
   const text = head.join("\n") + body + form + (truncated ? "\n… more is on screen than listed: scroll, then describe again." : "");
   return truncate ? text.slice(0, 30000) : text;
