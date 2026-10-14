@@ -98,6 +98,7 @@ const etagTokens = async (dir, count) => {
 };
 export async function fakeTailscale(dir, scenario = {}) {
   const state = path.join(dir, "fake-tailscale.json");
+  const calls = state + ".calls";
   const setup = path.join(dir, "fake-tailscale-setup.json");
   const script = path.join(dir, "tailscale");
   // Windows runs programs, not scripts: its stand-in tailscale.exe runs this one.
@@ -112,6 +113,7 @@ export async function fakeTailscale(dir, scenario = {}) {
     JSON.stringify({ host: HOST, login: "owner@example.test", version: "1.90.0", funnelDenied: false, serve: {}, calls: [], ...scenario }),
   );
   await etagTokens(dir, scenario.etagConflicts || 0);
+  await fs.writeFile(calls, "");
   await fs.writeFile(
     script,
     `#!${process.execPath}
@@ -125,7 +127,9 @@ const sessions = ${liveSessions};
 const state = JSON.parse(fs.readFileSync(file, "utf8"));
 const setup = JSON.parse(fs.readFileSync(setupFile, "utf8"));
 const args = process.argv.slice(2);
-state.calls.push(args);
+// A status/version read must never replace a route the test just changed.
+// Each small append records its call without rewriting the shared config.
+fs.appendFileSync(file + ".calls", JSON.stringify(args) + "\\n");
 // Replaced whole; Windows may refuse a moment while another reads it.
 const replace = (to, text) => {
   const temp = to + "." + process.pid;
@@ -166,7 +170,6 @@ const takeEtag = () => {
   return false;
 };
 const ALLOW = "Funnel is not enabled on your tailnet.\\nTo enable, visit:\\n\\n         https://login.tailscale.com/f/funnel?node=nMac\\n";
-save();
 if (command === "version") out((state.cliVersion || state.version) + "\\n  tailscale commit: fake\\n");
 else if (command === "status") {
   if (setup.closed) { process.stderr.write("failed to connect to local tailscaled\\n"); process.exit(1); }
@@ -344,7 +347,9 @@ else { process.stderr.write("fake tailscale: unsupported " + args.join(" ") + "\
     // As `serve status` would show it now (live sessions under Foreground).
     read: async () => {
       const value = JSON.parse(await fs.readFile(state, "utf8"));
-      return { ...value, serve: withSessions(value.serve, sessionsIn(dir)) };
+      const journal = await fs.readFile(calls, "utf8");
+      const recorded = journal.slice(0, journal.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      return { ...value, calls: [...value.calls, ...recorded], serve: withSessions(value.serve, sessionsIn(dir)) };
     },
     // The foreground sessions held now: { id, pid, args, config, proxy, from }.
     sessions: async () => sessionsIn(dir),

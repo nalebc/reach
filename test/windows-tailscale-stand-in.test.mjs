@@ -43,6 +43,21 @@ test("the stand-in Tailscale: arguments exactly as given, its output and exit co
   assert.equal(status.Self.DNSName, `${HOST}.`);
 });
 
+test("stand-in status reads preserve concurrent route edits and record every call", { timeout: 60000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-stand-in-routes-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  const fake = await fakeTailscale(dir);
+  const readers = Array.from({ length: 24 }, (_, i) => run(fake.cli, i % 2 ? ["version"] : ["serve", "status", "--json"]));
+  for (let port = 9990; port < 10000; port++) {
+    await fake.update((s) => ({ serve: { ...s.serve, TCP: { ...s.serve.TCP, [port]: { TCPForward: "127.1:12345" } } } }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  for (const result of await Promise.all(readers)) assert.equal(result.code, 0, result.stderr);
+  const state = await fake.read();
+  assert.equal(state.calls.length, 24);
+  assert.equal(Object.keys(state.serve.TCP).length, 10, "reads cannot erase any route edit");
+});
+
 test("the stand-in Tailscale: a foreground session lives while its process does, and ends with it", { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-stand-in-"));
   const fake = await fakeTailscale(dir);

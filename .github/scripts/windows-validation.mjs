@@ -15,10 +15,13 @@ const files = names.map((name) => {
   return file;
 });
 fs.mkdirSync("reports", { recursive: true });
+// Console installation cases have their own 600 s bounds; the containing
+// file also includes first-start, Ctrl+C and crash/relaunch cases.
+const fileTimeout = names.includes("windows-console") ? 900000 : 300000;
 const result = spawnSync(process.execPath, [
   process.env.npm_execpath || require_npm(),
   "run", "test:file", "--",
-  "--test-timeout=300000", "--test-concurrency=1",
+  `--test-timeout=${fileTimeout}`, "--test-concurrency=1",
   "--test-reporter=spec", "--test-reporter-destination=stdout",
   "--test-reporter=junit", "--test-reporter-destination=reports/windows-validation.xml",
   ...files,
