@@ -30,8 +30,11 @@ export const suites = {
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-account-flag",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
+    // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
+    // computers over the keyed route.
+    "face-join", "fleet",
     // Coding agents, workstream M.
     "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
   ],
