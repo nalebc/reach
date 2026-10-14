@@ -751,9 +751,10 @@ export function createAgentSessions({
   // through the Mac's helper (claude-compose.mjs). A Windows PC has none yet:
   // there Stop and the model go through Claude Code, as for a chat the app
   // doesn't show, and drafts stay on the phone.
-  // An explicitly supplied native backend declares its own support (and lets
-  // the mocked Mac contract run on Linux). The default helper is Mac-only.
-  const appWindow = !!claudeCompose && (!!givenCompose || process.platform === "darwin");
+  // Supplied Mac-compatible backends let the mocked contract run on Linux.
+  // Windows keeps its Claude Code fallback until its native window helper exists.
+  const appWindow = !!claudeCompose && (process.platform === "darwin" ||
+    (!!givenCompose && process.platform !== "win32"));
   // Messages waiting for the Claude app to finish its turn, in order, kept in
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.

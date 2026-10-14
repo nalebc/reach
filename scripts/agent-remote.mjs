@@ -170,7 +170,10 @@ export function agentHome() {
   )
     throw Error(`${dir} must be a folder that belongs to you.`);
   if (process.platform !== "win32") fs.chmodSync(dir, 0o700);
-  else {
+  else protectWindowsAgentDirectory(dir);
+  return dir;
+}
+function protectWindowsAgentDirectory(dir) {
     // The standalone agent is one bundled JS file, so this fixed system API
     // call needs no downloaded helper. Make the home private before creating
     // any connection/key: files and child folders inherit only these grants.
@@ -178,19 +181,37 @@ export function agentHome() {
 try {
 $ErrorActionPreference='Stop'
 $dir=$env:REACH_PRIVATE_AGENT_DIR
-$info=Get-Item -LiteralPath $dir -Force
-if($info.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'A private folder cannot be a link'}
 $me=[Security.Principal.WindowsIdentity]::GetCurrent().User
 $trusted=@($me.Value,'S-1-5-18','S-1-5-32-544')
-$acl=[IO.Directory]::GetAccessControl($dir)
+function Validate($item) {
+if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink'){throw 'Private state cannot contain a link'}
+$where=$item.FullName
+$folder=($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0
+$acl=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
 if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value){throw 'The folder belongs to another account'}
+}
+function Protect($item) {
+Validate $item
+$where=$item.FullName
+$folder=($item.Attributes -band [IO.FileAttributes]::Directory) -ne 0
+$acl=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
 $acl.SetAccessRuleProtection($true,$false)
 foreach($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]))){[void]$acl.RemoveAccessRuleSpecific($rule)}
-foreach($sid in $trusted){$who=New-Object Security.Principal.SecurityIdentifier($sid);$rule=New-Object Security.AccessControl.FileSystemAccessRule($who,'FullControl','ContainerInherit,ObjectInherit','None','Allow');$acl.AddAccessRule($rule)}
-[IO.Directory]::SetAccessControl($dir,$acl)
-$check=[IO.Directory]::GetAccessControl($dir)
+foreach($sid in $trusted){$who=New-Object Security.Principal.SecurityIdentifier($sid);$flags=if($folder){'ContainerInherit,ObjectInherit'}else{'None'};$rule=New-Object Security.AccessControl.FileSystemAccessRule($who,'FullControl',$flags,'None','Allow');$acl.AddAccessRule($rule)}
+if($folder){[IO.Directory]::SetAccessControl($where,$acl)}else{[IO.File]::SetAccessControl($where,$acl)}
+$check=if($folder){[IO.Directory]::GetAccessControl($where)}else{[IO.File]::GetAccessControl($where)}
 if(!$check.AreAccessRulesProtected){throw 'Inheritance was not removed'}
 foreach($rule in $check.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $trusted -notcontains $rule.IdentityReference.Value){throw 'Another account can access the folder'}}
+}
+$root=Get-Item -LiteralPath $dir -Force
+Validate $root
+$items=New-Object 'Collections.Generic.List[object]'
+$items.Add($root)
+$pending=New-Object 'Collections.Generic.Stack[string]'
+$pending.Push($dir)
+$seen=0
+while($pending.Count){$parent=$pending.Pop();foreach($item in Get-ChildItem -LiteralPath $parent -Force){if(++$seen -gt 10000){throw 'Too many entries in the private state folder'};Validate $item;$items.Add($item);if($item.Attributes -band [IO.FileAttributes]::Directory){$pending.Push($item.FullName)}}}
+foreach($item in $items){Protect $item}
 } catch { exit 1 }
 [Console]::WriteLine('reach-agent-private')
 exit 0
@@ -205,10 +226,9 @@ exit 0
         { input: script, env: { ...process.env, REACH_PRIVATE_AGENT_DIR: dir }, windowsHide: true, timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
       if (!answer.toString("utf8").split(/\r?\n/).includes("reach-agent-private")) throw Error("Private-folder confirmation missing");
     } catch { throw Error("Reach couldn't make its agent folder private to your Windows account. No credentials were saved."); }
-  }
-  return dir;
 }
 const writePrivate = (file, text) => {
+  if (process.platform === "win32") protectWindowsAgentDirectory(path.dirname(file));
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, text, { mode: 0o600 });
   fs.renameSync(temp, file);

@@ -25,8 +25,13 @@ const exec = promisify(execFile);
 // screen/app input is forbidden; those adapters have separate boundary tests.
 async function fixture(t) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "reach-mcp-e2e-")));
-  const shared = path.join(dir, "project"), dataDir = path.join(dir, "private");
-  await fs.mkdir(shared);
+  // Windows' normal TEMP may be inside AppData, which is deliberately private
+  // to browser agents. Use an actual project folder outside that protected tree.
+  const shared = process.platform === "win32"
+    ? await fs.mkdtemp(path.join(os.homedir(), "reach-mcp-project-"))
+    : path.join(dir, "project");
+  const dataDir = path.join(dir, "private");
+  await fs.mkdir(shared, { recursive: true });
   await fs.writeFile(path.join(shared, "task.txt"), "The answer is ORCHID-42.\n");
   const reach = await createReach({ roots: [shared], dataDir, screen: false,
     desktopTerminals: { platform: "linux", run: async () => assert.fail("No desktop terminal access") },
@@ -49,7 +54,8 @@ async function fixture(t) {
         timer = setTimeout(() => reject(Error("Fixture child processes did not exit")), 10000);
       })]);
     } finally { clearTimeout(timer); }
-    await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await fs.rm(shared, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const call = async (route, { token = owner.token, method = "GET", body } = {}) => {
     const response = await fetch(url + route, { method, headers: {
