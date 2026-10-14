@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { startDom } from "./dom/harness.mjs";
+import { agentPowerShell, UNUSABLE } from "./helpers/windows-powershell.mjs";
 
 // Security audit M8: an agent's join command carries the SHA-256 of the
 // runtime the inviting computer serves. A download that isn't exactly it
@@ -55,6 +56,34 @@ test("the join command installs only the runtime its invitation names", { skip: 
     assert.throws(() => toolsCommand(start, link, missing), /Update Reach on that computer/);
   // The link is never an argument of a process (security audit L5).
   assert.doesNotMatch(toolsCommand(start, link, sha(served)), /agent\.mjs join '/);
+});
+
+// The same on a real Windows PC, in Windows PowerShell under its own script
+// policy (Restricted, as a new PC's).
+test("Windows: the join command in PowerShell installs only the runtime its invitation names", { skip: process.platform !== "win32", timeout: 120000 }, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-pin-"));
+  let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
+  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
+  const start = `http://127.0.0.1:${server.address().port}`;
+  const link = "https://mac.t.ts.net/agent#i=x";
+  const runtime = path.join(home, ".reach-agent", "agent.mjs");
+  const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+
+  const ok = await agentPowerShell(windowsToolsCommand(start, link, sha(served)), home);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.match(ok.stdout, /runtime v2: join https:\/\/mac\.t\.ts\.net\/agent#i=x/, "the link arrives on standard input");
+  assert.doesNotMatch(ok.stderr, UNUSABLE, "every command it uses works here");
+  assert.equal(fs.readFileSync(runtime, "utf8"), served);
+
+  const before = fs.readFileSync(runtime, "utf8");
+  served = 'console.log("swapped");\n';
+  const refused = await agentPowerShell(windowsToolsCommand(start, link, sha("what the invitation named")), home);
+  assert.doesNotMatch(refused.stdout, /swapped/, `never run: ${refused.stderr}`);
+  assert.equal(fs.readFileSync(runtime, "utf8"), before, "the runtime it had stays");
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /not the runtime your invitation names/);
 });
 
 test("an agent invitation carries the SHA-256 of the runtime this computer serves", { timeout: 30000 }, async (t) => {
@@ -194,6 +223,52 @@ test("a kept line restores with exactly the runtime it was kept with", { skip: p
   assert.equal(restoreCommand("https://mac.t.ts.net", "AbCd", ""), "curl -fsSL --create-dirs -H 'Reach-Key: AbCd' -o ~/.reach-agent/agent.mjs https://mac.t.ts.net/agent.mjs && node ~/.reach-agent/agent.mjs restore");
 });
 
+// The same line on a real Windows PC: the PowerShell command `keep` prints
+// there, under the PC's own script policy (Restricted, as a new PC's).
+test("Windows: a kept line restores in PowerShell with exactly the runtime it was kept with", { skip: process.platform !== "win32", timeout: 120000 }, async (t) => {
+  const { restoreCommand, YOUR_LINE } = await import("../scripts/agent-remote.mjs");
+  const { keepRuntime } = await import("../server/runtime-archive.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-restore-pin-"));
+  const home = path.join(dir, "home");
+  fs.mkdirSync(home);
+  const dist = path.join(dir, "dist");
+  fs.mkdirSync(dist);
+  const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+  const v1 = 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log("v1", process.argv.slice(2).join(" "), s.trim()));\n';
+  fs.writeFileSync(path.join(dist, "agent.mjs"), v1);
+  keepRuntime(path.join(dist, "agent.mjs"));
+  fs.writeFileSync(path.join(dist, "agent.mjs"), 'console.log("v2");\n');
+  keepRuntime(path.join(dist, "agent.mjs"));
+  const keys = [];
+  const server = http.createServer((req, res) => {
+    keys.push(req.headers["reach-key"]);
+    const file = path.join(dist, decodeURIComponent(req.url.slice(1)));
+    if (!file.startsWith(dist + path.sep) || !fs.existsSync(file)) { res.writeHead(404); return res.end(); }
+    res.end(fs.readFileSync(file));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const start = `http://127.0.0.1:${server.address().port}`;
+  const withLine = (command) => command.replace(YOUR_LINE, "the line");
+  const ok = await agentPowerShell(withLine(restoreCommand(start, "AbCd", sha(v1), "win32")), home);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.match(ok.stdout, /^v1 restore the line/, "the line on standard input");
+  assert.doesNotMatch(ok.stderr, UNUSABLE, "every command it uses works here");
+  assert.deepEqual(keys, ["AbCd"], "its key, for a public-link computer");
+  const runtime = path.join(home, ".reach-agent", "agent.mjs");
+  const before = fs.readFileSync(runtime, "utf8");
+  assert.equal(before, v1);
+  fs.writeFileSync(path.join(dist, "agent-runtimes", `${sha(v1)}.mjs`), 'console.log("swapped");\n');
+  const swapped = await agentPowerShell(withLine(restoreCommand(start, "", sha(v1), "win32")), home);
+  assert.doesNotMatch(swapped.stdout, /swapped/, swapped.stderr);
+  assert.notEqual(swapped.code, 0);
+  assert.match(swapped.stderr, /not the runtime your line was kept with/);
+  assert.equal(fs.readFileSync(runtime, "utf8"), before);
+  const unknown = await agentPowerShell(withLine(restoreCommand(start, "", "ef".repeat(32), "win32")), home);
+  assert.notEqual(unknown.code, 0);
+  assert.equal(fs.readFileSync(runtime, "utf8"), before);
+});
+
 test("kept runtimes: the current one always, the newest 50 from the last 90 days", async () => {
   const { keepRuntime } = await import("../server/runtime-archive.mjs");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-kept-"));
@@ -216,7 +291,7 @@ test("kept runtimes: the current one always, the newest 50 from the last 90 days
   }
 });
 
-test("the built runtime carries the tailnet client's hashes, keeps itself by hash, and `keep` names it", { skip: process.platform === "win32", timeout: 120000 }, async () => {
+test("the built runtime carries the tailnet client's hashes, keeps itself by hash, and `keep` names it", { timeout: 120000 }, async () => {
   const { buildAgent, tailnetPins } = await import("../scripts/build-agent.mjs");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-built-pin-"));
   try {
@@ -236,7 +311,9 @@ test("the built runtime carries the tailnet client's hashes, keeps itself by has
       (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, stdout, stderr })));
     assert.equal(kept.code, 0, kept.stderr);
     assert.ok(kept.stderr.includes(`https://mac.t.ts.net/agent-runtimes/${sha}.mjs`), kept.stderr);
-    assert.ok(kept.stderr.includes(`~/.reach-agent/agent.mjs.new ${sha} && mv`), "checked before it replaces anything");
+    if (process.platform === "win32")
+      assert.ok(kept.stderr.includes(`(Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your line was kept with.' }; Move-Item`), "checked before it replaces anything");
+    else assert.ok(kept.stderr.includes(`~/.reach-agent/agent.mjs.new ${sha} && mv`), "checked before it replaces anything");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
