@@ -57,8 +57,11 @@ test("Windows background mode: the task's Reach and the console programs it star
   const watch = path.join(base, "windows.jsonl");
   const stop = path.join(base, "stop-watching");
   const watcher = spawn(await windowsFixture("window-watch"), [watch, stop], { stdio: "ignore", windowsHide: true });
+  let watching = true;
   t.after(async () => {
+    watching = false;
     fs.writeFileSync(stop, "");
+    watcher.kill();
     try {
       await backgroundService({ command: "uninstall" }, repo, { platform: "win32", env, task, print: () => {} });
     } catch {}
@@ -74,7 +77,6 @@ test("Windows background mode: the task's Reach and the console programs it star
   await windowsProcesses({ nativeDir });
   // Every process the task's starter and its Reach start, as they come.
   const seen = new Map();
-  let watching = true;
   const tree = (async () => {
     while (watching) {
       try {
@@ -84,7 +86,7 @@ test("Windows background mode: the task's Reach and the console programs it star
     }
   })();
 
-  await backgroundService({ command: "install", local: true, folders: [share] }, repo, {
+  await backgroundService({ command: "install", local: true, folders: [share], httpsPort: 8443 }, repo, {
     platform: "win32",
     env,
     task,
@@ -93,13 +95,22 @@ test("Windows background mode: the task's Reach and the console programs it star
     print: () => {},
   });
   const origin = `http://127.0.0.1:${port}`;
+  const logs = () => ["companion.log", "companion-error.log"].map((name) => {
+    try {
+      return `${name}: ${fs.readFileSync(path.join(state, "logs", name), "utf8").slice(-3000)}`;
+    } catch {
+      return `${name}: (none)`;
+    }
+  }).join("\n");
   await until(async () => {
     try {
       return (await fetch(`${origin}/api/health`)).ok;
     } catch {
       return false;
     }
-  }, "the task's Reach answering");
+  }, "the task's Reach answering").catch((error) => {
+    throw Error(`${error.message}\n${logs()}`);
+  });
   const host = JSON.parse(fs.readFileSync(path.join(state, "host-status.json"), "utf8"));
   assert.equal(host.service, true, "it runs as the background task's");
   // The watcher sees this desktop's windows: the task's Reach must be on it.
