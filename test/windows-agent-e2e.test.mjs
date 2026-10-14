@@ -49,10 +49,12 @@ test("Windows agents join with each preset, use real screen and file helpers, an
       ...["System.dll", "System.Drawing.dll", "System.Windows.Forms.dll"].map(name => `/reference:${path.join(path.dirname(csc), name)}`),
       path.resolve("test/fixtures/windows/desktop-fixture.cs")], { windowsHide: true, timeout: 60000 });
   const launcher = spawn(consoleFixture, ["medium", app, "window", dir, "document", "Synthetic document", "ff8800", "180", "180", "700", "420", "topmost"], { stdio: "ignore", windowsHide: true });
+  const extra = [];
   let target, reach;
   t.after(async () => {
     await reach?.close();
     if (target?.pid) await exec("taskkill.exe", ["/F", "/PID", String(target.pid)], { windowsHide: true }).catch(() => {});
+    for (const item of extra) { await exec("taskkill.exe", ["/F", "/PID", String(item.pid)], { windowsHide: true }).catch(() => {}); item.child.kill(); }
     launcher.kill();
     await sleep(200);
     fs.rmSync(shared, { recursive: true, force: true });
@@ -144,10 +146,21 @@ test("Windows agents join with each preset, use real screen and file helpers, an
   await tool("full", "reach_act", { type: "type", text: "café 日本", describe: false });
   await until(() => log().includes("café 日本"), "the typed text in the fixture");
   await tool("apps", "reach_screenshot");
-  await assert.rejects(until(async () => {
+  await until(async () => {
     try { await tool("apps", "reach_act", { type: "click", ...at(target.password), describe: false }); return true; }
     catch (error) { if (error.kind === "busy") return false; throw error; }
-  }, "the full agent to release its input lease"), e => e.status === 403);
+  }, "the full agent to release its input lease");
+  // As on the Mac: the password box can be focused, but ordinary text is
+  // refused there; a credential must use the vault's explicit secret path.
+  await assert.rejects(tool("apps", "reach_act", { type: "type", text: "not a secret", describe: false }), e => e.status === 403);
+  assert.ok(!log().includes("secret "), "no text reached the password field");
+  const vault = path.join(dir, "bitwarden.exe");
+  fs.copyFileSync(app, vault);
+  const child = spawn(consoleFixture, ["medium", vault, "window", dir, "vault", "Password Manager", "2255ff", "720", "220", "300", "280", "topmost"], { stdio: "ignore", windowsHide: true });
+  const protectedWindow = JSON.parse(await until(() => { try { return fs.readFileSync(path.join(dir, "vault.json"), "utf8"); } catch { return false; } }, "the protected fixture"));
+  extra.push({ child, pid: protectedWindow.pid });
+  await tool("apps", "reach_screenshot");
+  await assert.rejects(tool("apps", "reach_act", { type: "click", ...at([protectedWindow.x+30, protectedWindow.y+protectedWindow.height-25]), describe: false }), e => e.status === 403);
   const file = await tool("files", "reach_read_file", { root: 0, path: "brief.txt" });
   assert.equal(file.text, "A synthetic project brief");
   await assert.rejects(tool("files", "reach_read_file", { root: 0, path: ".ssh/key" }), e => e.status === 403);
