@@ -40,7 +40,9 @@ let work, helperFile, fixtureGui, fixtureConsole;
 const children = new Set();
 test.before(async () => {
   if (!run) return;
-  work = fs.mkdtempSync(path.join(os.tmpdir(), "reach agent desktop-"));
+  // By its long name: a runner's TEMP can be an 8.3 alias (RUNNER~1), and
+  // the helper names programs as Windows does.
+  work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach agent desktop-")));
   const started = Date.now();
   helperFile = await windowsBinary({ dataDir: work }, "agent-desktop");
   note({ helperBuildMs: Date.now() - started, csc: cscCandidates().find((candidate) => fs.existsSync(candidate)) });

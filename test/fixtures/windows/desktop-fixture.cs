@@ -30,6 +30,13 @@
 //       (or "| empty") to <dir>\<name>.log.
 //   clipboard-set <text> | clipboard-get | clipboard-clear
 //       Sets the clipboard's text, prints it (or "(none)"), or empties it.
+//   env-report [anything...], or no kind at all (a file or an address first)
+//       Writes its own PATH, ProgramFiles and ComSpec, and its arguments, to
+//       <its own file>.env.json (a copy named chrome.exe writes chrome.exe.env.json):
+//       how the agent's open, an association or a browser launch started it.
+//   env-block
+//       Prints PATH, ProgramFiles and ComSpec as Windows builds them for the
+//       user (CreateEnvironmentBlock, not inheriting this process's).
 using System;
 using System.Drawing;
 using System.IO;
@@ -93,9 +100,15 @@ static class DesktopFixture {
     if (args.Length == 2 && args[0] == "clipboard-set") { Clipboard.SetText(args[1]); return 0; }
     if (args.Length == 1 && args[0] == "clipboard-get") { Console.WriteLine(Clipboard.ContainsText() ? Clipboard.GetText() : "(none)"); return 0; }
     if (args.Length == 1 && args[0] == "clipboard-clear") { Clipboard.Clear(); return 0; }
-    Console.Error.WriteLine("usage: window|sleeper|pixels|frame|medium|click|buttons|clipboard-watch|clipboard-set|clipboard-get|clipboard-clear");
+    if (args.Length == 1 && args[0] == "env-block") return EnvironmentBlock();
+    // Started by name, with nothing (the agent's open) or with a file or an
+    // address (an association's or a browser's launch): it reports.
+    if (args.Length == 0 || args[0] == "env-report" || Array.IndexOf(Kinds, args[0]) < 0) return Report(args);
+    Console.Error.WriteLine("usage: " + string.Join("|", Kinds) + "|env-report");
     return 2;
   }
+  static readonly string[] Kinds = { "window", "sleeper", "pixels", "frame", "medium", "click", "buttons",
+    "clipboard-watch", "clipboard-set", "clipboard-get", "clipboard-clear", "env-block" };
 
   static string Quote(string text) {
     var b = new StringBuilder("\"");
@@ -243,6 +256,40 @@ static class DesktopFixture {
       File.WriteAllText(Path.Combine(dir, name + ".json"), "{\"pid\":" + System.Diagnostics.Process.GetCurrentProcess().Id + "}");
     };
     Application.Run(watcher);
+    return 0;
+  }
+
+
+  // What this program was started with (any arguments: a file or an address
+  // its association or a browser launch passes).
+  static int Report(string[] args) {
+    string self = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+    var b = new StringBuilder("{");
+    foreach (string name in new[] { "PATH", "ProgramFiles", "ComSpec" }) b.Append(Quote(name)).Append(':').Append(Quote(Environment.GetEnvironmentVariable(name) ?? "")).Append(',');
+    b.Append("\"args\":[");
+    for (int i = 0; i < args.Length; i++) b.Append(i > 0 ? "," : "").Append(Quote(args[i]));
+    b.Append("]}");
+    File.WriteAllText(self + ".env.json", b.ToString());
+    return 0;
+  }
+  [DllImport("userenv.dll", SetLastError = true)] static extern bool CreateEnvironmentBlock(out IntPtr block, IntPtr token, bool inherit);
+  static int EnvironmentBlock() {
+    IntPtr token, block;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x0008 | 0x0002, out token) || !CreateEnvironmentBlock(out block, token, false)) return Fail("block");
+    var values = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    for (IntPtr at = block; ; ) {
+      string entry = Marshal.PtrToStringUni(at);
+      if (string.IsNullOrEmpty(entry)) break;
+      int equals = entry.IndexOf('=', 1);
+      if (equals > 0) values[entry.Substring(0, equals)] = entry.Substring(equals + 1);
+      at = new IntPtr(at.ToInt64() + (entry.Length + 1) * 2);
+    }
+    var b = new StringBuilder("{");
+    foreach (string name in new[] { "PATH", "ProgramFiles", "ComSpec" }) {
+      string value;
+      b.Append(Quote(name)).Append(':').Append(Quote(values.TryGetValue(name, out value) ? value : "")).Append(name == "ComSpec" ? "" : ",");
+    }
+    Console.WriteLine(b.Append('}').ToString());
     return 0;
   }
 
