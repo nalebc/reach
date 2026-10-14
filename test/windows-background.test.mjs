@@ -307,3 +307,77 @@ fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ args: process.argv.
   await backgroundService({ command: "uninstall" }, root, { platform: "win32", env, task, stop: async () => {}, print: () => {} });
   await assert.rejects(exec(path.join(process.env.SystemRoot, "System32", "schtasks.exe"), ["/Query", "/TN", name], { windowsHide: true }), "the task is gone");
 });
+
+// The round trip a phone's Restart makes on a PC in background mode: the
+// task's Reach opens a window (as the Restart card does), then a restart
+// goes through the task (held, its Reach asked to stop, started again). The
+// window must outlive it: Task Scheduler may end what a task started.
+test("on real Windows, a restart through the task brings its Reach back, and a window that Reach opened lives on", { skip: !windows, timeout: 300000 }, async (t) => {
+  const { stopReach } = await import("../scripts/stop.mjs");
+  const { windowsReaches } = await import("../scripts/instances.mjs");
+  const { windowsProcesses } = await import("../server/windows-processes.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach roundtrip-"));
+  const name = `Reach-test-${crypto.randomBytes(4).toString("hex")}`;
+  const task = windowsTask({ name });
+  const state = path.join(dir, "state");
+  const env = { ...process.env, REACH_HOME: state };
+  const root = path.join(dir, "reach");
+  const windowRoot = path.join(dir, "window");
+  const windowState = path.join(dir, "window-state");
+  const repo = new URL("..", import.meta.url);
+  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.mkdirSync(path.join(windowRoot, "bin"), { recursive: true });
+  fs.mkdirSync(windowState, { recursive: true });
+  fs.mkdirSync(state, { recursive: true });
+  // A stand-in background Reach: stops when asked, as Reach does; the first
+  // one opens a window of its own, as the phone's Restart card does.
+  fs.writeFileSync(path.join(root, "scripts", "bootstrap.mjs"), `import fs from "node:fs";
+import path from "node:path";
+import { watchStopRequest } from ${JSON.stringify(new URL("scripts/instances.mjs", repo).href)};
+import { startInConsole } from ${JSON.stringify(new URL("scripts/stop.mjs", repo).href)};
+const state = process.env.REACH_HOME;
+fs.appendFileSync(path.join(state, "starts.txt"), process.pid + "\\n");
+if (!fs.existsSync(path.join(state, "window-asked"))) {
+  fs.writeFileSync(path.join(state, "window-asked"), "1");
+  startInConsole(${JSON.stringify(windowRoot)}, { state: ${JSON.stringify(windowState)}, env: { ...process.env, REACH_HOME: ${JSON.stringify(windowState)} } });
+}
+watchStopRequest(state, { every: 100, stop: () => process.exit(0) });
+setInterval(() => {}, 1000);
+`);
+  // What that window runs: a heartbeat for half a minute.
+  fs.writeFileSync(path.join(windowRoot, "bin", "reach.mjs"), `import fs from "node:fs";
+let beats = 0;
+setInterval(() => { fs.appendFileSync(process.env.REACH_HOME + "\\\\beats.txt", Date.now() + "\\n"); if (++beats >= 60) process.exit(0); }, 500);
+`);
+  const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\s+/).filter(Boolean) : []);
+  const starts = () => lines(path.join(state, "starts.txt"));
+  const beats = () => lines(path.join(windowState, "beats.txt")).length;
+  const until = async (check, ms, what) => {
+    for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 250))) if (Date.now() > end) assert.fail(`Never: ${what}.`);
+  };
+  // This test's Reach only, never another on the runner.
+  const reaches = async () => {
+    const found = await windowsReaches({ root, state, list: () => windowsProcesses({ nativeDir: path.join(state, "native") }) });
+    return { ...found, hosts: found.hosts.filter((h) => h.root && h.root.toLowerCase() === root.toLowerCase()) };
+  };
+  const stopping = { platform: "win32", yes: true, state: () => state, windows: { task, reaches, env } };
+  t.after(async () => {
+    try {
+      await backgroundService({ command: "uninstall" }, root, { platform: "win32", env, task, stop: () => stopReach(root, { ...stopping, print: () => {} }), print: () => {} });
+    } catch {}
+    try { task.remove(); } catch {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await backgroundService({ command: "install", local: true, folders: [], httpsPort: 8443 }, root, { platform: "win32", env, task, privateNode: () => process.execPath, allocatePort: async () => 4320, print: () => {} });
+  await until(() => starts().length >= 1 && beats() >= 2, 90000, "the task ran its Reach, and that Reach's window beat");
+  const [first] = starts();
+  const said = [];
+  const result = await stopReach(root, { ...stopping, restarting: true, print: (line) => said.push(line) });
+  assert.equal(result.service, true);
+  await until(() => starts().length >= 2, 60000, "the task started its Reach again");
+  assert.notEqual(starts()[1], first);
+  assert.ok(!said.some((line) => /didn't start again/.test(line)), said.join("\n"));
+  const at = beats();
+  await new Promise((r) => setTimeout(r, 2000));
+  assert.ok(beats() > at, "the window the first Reach opened lives on through the restart");
+});

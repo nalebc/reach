@@ -208,6 +208,9 @@ async function stopWindows(
     end = (pid) => process.kill(pid),
     graceMs = 15000,
     task = backgroundTask({ env }),
+    // How long a held starter gets to end by itself, and a started task to show.
+    starterMs = 3000,
+    startMs = 10000,
     ...thisFolder
   },
 ) {
@@ -257,6 +260,18 @@ async function stopWindows(
     const now = await list().catch(() => null);
     for (const p of left) if (same(now, p)) try { end(p.pid); } catch {}
   };
+  // Polled from the process list: whether a starter of yours is left, and
+  // whether the task started one (or its Reach) again.
+  const poll = async (ms, done) => {
+    for (const until = Date.now() + ms; ; await wait(200)) {
+      const now = await list().catch(() => null);
+      if (now && done(now)) return true;
+      if (Date.now() >= until) return false;
+    }
+  };
+  const startersGone = (ms) => poll(ms, (now) => !windowsStarters(now).length);
+  const before = new Set(windowsStarters(processes).map((p) => p.pid));
+  const started = (ms) => poll(ms, (now) => windowsStarters(now).some((p) => !before.has(p.pid)));
   let left;
   try {
     left = await waitGone(hosts, graceMs);
@@ -264,7 +279,10 @@ async function stopWindows(
       await endAll(left);
       left = await waitGone(left, 3000);
     }
-    if (serviceRunning) task.end(root);
+    // Held, the starter ends by itself once its Reach has. Task Scheduler's
+    // End, which may end everything the task started (a window it opened for
+    // this very restart included), only for one that doesn't.
+    if (serviceRunning && !(await startersGone(starterMs))) task.end(root);
     // Helpers a stopped Reach left running (its tunnel, stay-awake, …).
     await endAll(hosts.filter((h) => !left.includes(h)).flatMap((h) => h.descendants));
   } finally {
@@ -272,8 +290,14 @@ async function stopWindows(
     if (serviceRunning) task.release(root);
   }
   if (left.length) throw Error(`Reach (process ${left[0].pid}) did not stop by itself. Close its window, or end it in Task Manager.`);
-  // A restart starts the background task again once every Reach is gone.
-  if (serviceRunning && restarting) task.run(root);
+  // A restart starts the background task again once every Reach and its
+  // starter are gone (a task still running would ignore the start), and
+  // checks it did start.
+  if (serviceRunning && restarting) {
+    await startersGone(starterMs);
+    task.run(root);
+    if (!(await started(startMs))) print(`Reach's background task didn't start again. Run ${command} restart once more, or sign out and back in.`);
+  }
   const stopped = hosts.filter((h) => !(serviceRunning && h.service)).length;
   if (serviceRunning && !restarting)
     print(`The background service stopped; it starts again at your next sign-in, or with ${command} restart.`);
@@ -421,7 +445,7 @@ export function startInConsole(root, {
   const cmd = path.win32.join(system, "System32", "cmd.exe");
   const local = env.LOCALAPPDATA ?? env.localappdata;
   const terminal = windowsPath(local) ? path.win32.join(local, "Microsoft", "WindowsApps", "wt.exe") : "";
-  const tab = `"${cmd}" /d /c start-in-console.cmd`;
+  const tab = `"${cmd}" /d /v:off /c start-in-console.cmd`;
   // Windows Terminal reads ; as "and then"; \; is a plain one.
   const line = terminal && exists(terminal)
     ? `start "Reach" /D "${state}" "${terminal}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state.replace(/;/g, "\\;")}" ${tab}`

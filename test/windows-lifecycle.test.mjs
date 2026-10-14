@@ -8,7 +8,6 @@ import { once } from "node:events";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startInConsole } from "../scripts/stop.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
-import { windowsReachHosts } from "../scripts/instances.mjs";
 
 // One Reach per computer, restarts and updates on a real Windows PC (audit
 // #10, #11), on GitHub's Windows runner: the real launcher reads the PC's
@@ -68,20 +67,19 @@ const reach = (args, env) =>
       resolve({ code: error ? error.code : 0, stdout: String(stdout), stderr: String(stderr) }),
     ),
   );
-// Another Reach really running on this PC: these tests leave it alone.
-const othersHere = async (dir, except) =>
-  windowsReachHosts(await windowsProcesses({ nativeDir: path.join(dir, "native") }), { runtime: () => ({}) }).filter((h) => h.pid !== except);
 
 test("on real Windows, status names a Reach from another folder, and a second Reach is refused with where the first runs", real, async (t) => {
   const other = standIn(t);
   await other.ready();
+  // The Windows lane runs two test files at once: another test's Reach may
+  // be running too, so its own lines are looked for among them.
   const status = await reach(["status"], other.env);
   assert.equal(status.code, 0, status.stderr);
   assert.match(status.stdout, new RegExp(`Reach: running in the background, with no window, since [^\\n]+, from ${other.root.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}\\r?\\nLink: http://127\\.0\\.0\\.1:1\\r?\\n`));
   // A second one, from this folder: refused, saying where the first runs.
   const second = await reach(["--local"], other.env);
   assert.equal(second.code, 1, second.stdout);
-  assert.match(second.stderr, /already running in the background, with no window, since [^\n]+, from .*other reach\./);
+  assert.match(second.stderr, /(already running|copies are running:[\s\S]*·) in the background, with no window, since [^\n]+, from .*other reach(\.|\r?\n)/);
   assert.equal(other.child.exitCode, null, "the first one still runs");
 });
 
@@ -94,19 +92,6 @@ test("on real Windows, an agent's restart asks on the phone and stops nothing", 
   const request = JSON.parse(fs.readFileSync(path.join(other.state, "quick", "restart-request.json"), "utf8"));
   assert.ok(request.id && request.app, JSON.stringify(request));
   assert.equal(other.child.exitCode, null, "nothing stopped");
-});
-
-test("on real Windows, stop asks every Reach through its file, and it stops itself", real, async (t) => {
-  const other = standIn(t);
-  await other.ready();
-  if ((await othersHere(other.dir, other.child.pid)).length) return t.skip("Another Reach runs on this PC; stop would end it.");
-  const stopped = await reach(["stop", "--yes"], other.env);
-  assert.equal(stopped.code, 0, stopped.stderr);
-  assert.match(stopped.stdout, /Stopped Reach\./);
-  const [code] = await other.exited;
-  assert.equal(code, 0, "stopped as asked, not ended");
-  assert.match(other.output(), /STOPPED AS ASKED/);
-  assert.equal(fs.existsSync(path.join(other.state, "stop-request.json")), false);
 });
 
 test("on real Windows, Reach's own window opens from cmd's start, titled Reach, never a child of the Reach that asked", real, async (t) => {

@@ -315,7 +315,7 @@ test("Windows stop: an id that now names another program is never ended", async 
 const A = String.raw`C:\Users\Me\reach`;
 const B = String.raw`C:\Other\reach`;
 const NODE_EXE = String.raw`"C:\Program Files\nodejs\node.exe"`;
-function windowsPC(t, { hung = [], service = false } = {}) {
+function windowsPC(t, { hung = [], service = false, starterHangs = false, startsAgain = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-win-pc-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const states = { [A]: path.join(dir, "a"), [B]: path.join(dir, "b") };
@@ -360,7 +360,8 @@ function windowsPC(t, { hung = [], service = false } = {}) {
       for (const pid of [330, 420, 510]) if (!gone.has(pid) && processes.some((p) => p.pid === pid) && !hung.includes(pid) && requested(pid)) {
         gone.add(pid);
         if (pid === 330) for (const shell of [341, 342]) gone.add(shell);
-        if (pid === 510) gone.add(500);
+        // Held, the starter ends once its Reach has (unless it hangs).
+        if (pid === 510 && !starterHangs) gone.add(500);
       }
     },
     windows: {
@@ -372,10 +373,16 @@ function windowsPC(t, { hung = [], service = false } = {}) {
       task: {
         state: () => ({ installed: service, ours: service }),
         hold: () => task.push("hold"),
-        end: () => task.push("end"),
+        end: () => (task.push("end"), gone.add(500)),
         release: () => task.push("release"),
-        run: () => task.push("run"),
+        // Task Scheduler starts the starter again, and it its Reach.
+        run: () => {
+          task.push("run");
+          if (startsAgain) processes = [...processes, { pid: 520, ppid: 600, image: "reach-background-0123456789ab.exe", commandLine: "reach-background-0123456789ab.exe", startedAt: 9000 }];
+        },
       },
+      starterMs: 50,
+      startMs: 50,
     },
   };
   return { dir, states, env, deps, asked, said, ended, task, gone, set processes(value) { processes = value; }, get processes() { return processes; } };
@@ -419,17 +426,26 @@ test("Windows stop: a Reach that doesn't stop is ended only while it's the very 
   assert.ok(!unknown.ended.includes(420));
 });
 
-test("Windows: the background task is held before its Reach is asked to stop, ended, and started again only by a restart", async (t) => {
+test("Windows: the background task is held before its Reach is asked to stop, and started again only by a restart", async (t) => {
   const stopping = windowsPC(t, { service: true });
   const stopped = await stopReach(A, { ...stopping.deps, yes: true });
-  assert.deepEqual(stopping.task, ["hold", "end", "release"]);
+  // Its starter ended by itself: Task Scheduler's End (which may end what the task started) isn't needed.
+  assert.deepEqual(stopping.task, ["hold", "release"]);
   assert.deepEqual(stopped, { stopped: 2, service: true, terminals: 1, serviceInstalled: true });
   assert.ok(stopping.said.includes("The background service stopped; it starts again at your next sign-in, or with .\\reach.cmd restart.") || stopping.said.some((l) => /^The background service stopped; it starts again at your next sign-in, or with \S+ restart\.$/.test(l)));
   const restarting = windowsPC(t, { service: true });
   const restarted = await stopReach(A, { ...restarting.deps, yes: true, restarting: true });
-  assert.deepEqual(restarting.task, ["hold", "end", "release", "run"]);
+  assert.deepEqual(restarting.task, ["hold", "release", "run"]);
   assert.equal(restarted.service, true);
-  assert.ok(!restarting.said.some((l) => /background service stopped/.test(l)));
+  assert.ok(!restarting.said.some((l) => /background service stopped|didn't start again/.test(l)));
+  // A starter that doesn't end by itself is ended through Task Scheduler.
+  const hanging = windowsPC(t, { service: true, starterHangs: true });
+  await stopReach(A, { ...hanging.deps, yes: true });
+  assert.deepEqual(hanging.task, ["hold", "end", "release"]);
+  // A start Task Scheduler took but never ran: said.
+  const silent = windowsPC(t, { service: true, startsAgain: false });
+  await stopReach(A, { ...silent.deps, yes: true, restarting: true });
+  assert.match(silent.said.find((l) => /didn't start again/.test(l)) || "", /^Reach's background task didn't start again\. Run \S+ restart once more, or sign out and back in\.$/);
   // Nothing running, the task installed: said, and a restart can start it.
   const idle = windowsPC(t, { service: true });
   idle.processes = [];

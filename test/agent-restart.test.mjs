@@ -127,11 +127,11 @@ test("an allowed restart on Windows opens Reach's own window running restart --y
   assert.equal(cmd, "C:\\Windows\\System32\\cmd.exe");
   assert.deepEqual(argv.slice(0, 4), ["/d", "/v:off", "/s", "/c"]);
   assert.equal(options.windowsVerbatimArguments, true);
-  assert.equal(argv[4], `"start "Reach" /D "${state}" "${WT}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state}" "C:\\Windows\\System32\\cmd.exe" /d /c start-in-console.cmd"`);
+  assert.equal(argv[4], `"start "Reach" /D "${state}" "${WT}" -w new new-tab --title Reach --suppressApplicationTitle -d "${state}" "C:\\Windows\\System32\\cmd.exe" /d /v:off /c start-in-console.cmd"`);
   // No Windows Terminal: a console window, titled Reach by start and by the script.
   ran.length = 0;
   startInConsole(root, { state, env: WIN, node, run, exists: () => false });
-  assert.equal(ran[0].argv[4], `"start "Reach" /D "${state}" "C:\\Windows\\System32\\cmd.exe" /d /c start-in-console.cmd"`);
+  assert.equal(ran[0].argv[4], `"start "Reach" /D "${state}" "C:\\Windows\\System32\\cmd.exe" /d /v:off /c start-in-console.cmd"`);
   assert.match(fs.readFileSync(file, "utf8"), /\r\n"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Me Too\\reach\\bin\\reach\.mjs"\r\n/, "a plain start runs Reach itself");
 });
 

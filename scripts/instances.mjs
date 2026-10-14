@@ -464,8 +464,9 @@ export async function windowsReaches({ root, state, self = process.pid, list, ho
   }
   return { hosts: windowsReachHosts(processes, { self }), partial: "", processes };
 }
-// A Windows Reach's helper processes, and Reach's background starter.
-export const windowsStarters = (processes) => (processes || []).filter((p) => STARTER.test(stem(p.image)));
+// Reach's background starters that are yours: Windows names every
+// account's programs, but only shows you your own command lines.
+export const windowsStarters = (processes) => (processes || []).filter((p) => STARTER.test(stem(p.image)) && p.commandLine != null);
 
 // Windows has no signals to ask with (Node ends a process there outright):
 // `stop` leaves this file, and the running Reach stops as Ctrl+C stops it.
