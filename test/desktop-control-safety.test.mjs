@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { desktopConnection } from "../server/desktop-connection.mjs";
+import { guestRefusal } from "../server/windows-guest-screen.mjs";
 import { ScreenControl } from "../server/screen.mjs";
 
 // Fake helpers only: nothing here launches the native helper or posts input.
@@ -13,7 +14,7 @@ const until = async (check, ms = 3000) => {
 const owner = { id: "owner", kind: "device", name: "Owner", scopes: ["admin", "screen"] };
 const guest = { id: "guest", kind: "guest", name: "Guest", scopes: ["screen", "screen:control"] };
 
-function connect({ client = owner, display = "primary", allowDisplay, slow = {}, platform = "darwin" } = {}) {
+function connect({ client = owner, display = "primary", allowDisplay, slow = {}, platform = "darwin", guestScreen = null } = {}) {
   const control = new ScreenControl();
   control.acquire(client, true);
   const sent = [];
@@ -43,6 +44,7 @@ function connect({ client = owner, display = "primary", allowDisplay, slow = {},
     scanner: null,
     create: async () => helper,
     platform,
+    guestScreen,
     ...(allowDisplay && { allowDisplay }),
   });
   const message = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
@@ -125,16 +127,27 @@ test("only the owner reads a concealed clipboard: the helper is told who asks", 
   }
 });
 
-// Windows can't yet hide password managers from a guest's picture or a
-// concealed copy from their clipboard reads (parity audit #12, #13): a
-// guest's control is refused with the reason, before any helper starts.
-test("on Windows only the owner controls: a guest is refused with the reason; the owner reads the clipboard", async () => {
-  const c = connect({ client: guest, platform: "win32" });
-  await until(() => c.ws.readyState !== 1);
-  assert.equal(c.ws.closedWith, 4001);
-  assert.ok(c.ws.sent.some((m) => /owner can watch or control/.test(m.error || "")), JSON.stringify(c.ws.sent));
-  assert.deepEqual(c.sent, [], "no helper was asked anything");
-  c.end();
+// A Windows PC that can paint password managers black in a guest's picture
+// (parity audit #12) lets them control, as a Mac does, and its helper is told
+// who reads the clipboard (a concealed copy stays the owner's, #13). One
+// that can't (its check failed, or none) refuses a guest's control with the
+// reason, before any helper starts: never blind control.
+test("on Windows a guest controls once Reach can hide private windows there, the helper told it isn't the owner; refused with the reason when it can't; the owner reads the clipboard", async () => {
+  const ready = { refusal: () => "" };
+  const allowed = connect({ client: guest, platform: "win32", guestScreen: ready });
+  await until(allowed.ready);
+  allowed.input({ type: "clipboard-read", owner: true });
+  await until(() => allowed.ack(1));
+  assert.deepEqual(allowed.sent.at(-1), { type: "clipboard-read", owner: false });
+  allowed.end();
+  for (const guestScreen of [null, { refusal: () => guestRefusal("Screen capture could not hide private windows.") }]) {
+    const c = connect({ client: guest, platform: "win32", guestScreen });
+    await until(() => c.ws.readyState !== 1);
+    assert.equal(c.ws.closedWith, 4001);
+    assert.ok(c.ws.sent.some((m) => /owner can watch or control/.test(m.error || "")), JSON.stringify(c.ws.sent));
+    assert.deepEqual(c.sent, [], "no helper was asked anything");
+    c.end();
+  }
   const mine = connect({ client: owner, platform: "win32" });
   await until(mine.ready);
   mine.input({ type: "clipboard-read" });
