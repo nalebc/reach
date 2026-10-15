@@ -239,13 +239,25 @@ test("browser/WASM tailnet nodes on the host cannot create invitations or use ow
 
 test("unknown, expired, tagged or mismatched peer enrollment cannot approve", async () => {
   for (const patch of [{ OS: "" }, { OS: "browser" }, { OS: "wasm" }, { OS: undefined },
-    { UserID: 9 }, { Expired: true }, { Online: false }, { Tags: ["tag:agent"] },
+    { UserID: 9 }, { Expired: true }, { Tags: ["tag:agent"] },
     { KeyExpiry: new Date(500).toISOString() }]) {
     const f = fixture(); const value = status(); Object.assign(value.Peer.one, patch); f.setReply(value);
     await assert.rejects(f.guard.beginInvitation(f.request(), f.owner()), { status: 403 });
   }
   const f = fixture(); const value = status(); delete value.Peer; f.setReply(value);
   await assert.rejects(f.guard.beginInvitation(f.request(), f.owner()), { status: 403 });
+});
+
+// Oct 14: Tailscale kept the owner's iPhone "offline" while it had a direct
+// connection and a fresh handshake; the guard locked out the very phone that
+// created the agent's invitation.
+test("the approving phone gets in while Tailscale marks it offline", async () => {
+  const f = fixture(); f.setActive(true);
+  const value = status(); value.Peer.one.Online = false; f.setReply(value);
+  await f.guard.refresh();
+  assert.equal(f.guard.allows(f.request("nPhone", { url: "/api/device", method: "GET" }), f.owner()), true);
+  assert.equal(f.guard.allowsConnection(f.request("nPhone", { url: "/ws/presence", method: "GET" })), true);
+  assert.equal(f.guard.allows(f.request("nHost"), f.owner("nHost")), false, "this Mac stays locked");
 });
 
 test("persisted pins survive guard recreation, but expired invitations and revoked issuers do not grant privileges", async () => {

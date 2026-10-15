@@ -150,8 +150,12 @@ export function createBrowserHostGuard({
     const matches = peers.filter((peer) => peer?.ID === identity.nodeId);
     if (matches.length !== 1) return false;
     const peer = matches[0], keyExpiry = Date.parse(peer.KeyExpiry);
+    // Peer.Online is not checked, as Self.Online isn't (browserHostNode): the
+    // request itself just came from that node. Tailscale 1.102 kept the
+    // owner's iPhone "offline" while it had a direct connection and a fresh
+    // handshake, which locked their own approving phone out (Oct 14).
     return typeof peer.OS === "string" && nativeSystems.has(peer.OS.toLowerCase()) &&
-      String(peer.UserID) === identity.userId && peer.Online !== false && peer.Expired !== true &&
+      String(peer.UserID) === identity.userId && peer.Expired !== true &&
       !(Array.isArray(peer.Tags) && peer.Tags.length) && !(keyExpiry > 0 && keyExpiry <= now());
   };
   const pinnedRemote = (req, current) => nativeRemote(req) && current.approvers.some((approver) =>
