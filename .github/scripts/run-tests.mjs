@@ -128,6 +128,11 @@ export const suites = {
     "auto-continue", "across-agents-ui", "claude-usage-ui",
     // Usage back on time when Claude's sign-in lapsed while unused (Oct 14).
     "usage-watch", "account-usage",
+    // Workstream G, saved browser tools through Reach's Chrome/Edge extension
+    // (docs/parity/G-browser-tools.md): the bridge, the extension, the shared
+    // tool runner and its safety. Real Chrome and Edge run in ci.yml's
+    // real-Windows step (windows-browser-tools-native).
+    "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

@@ -155,6 +155,8 @@ import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
 import { createHostedMcp } from "./hosted-mcp.mjs";
 import { createToolSetup } from "./tool-setup.mjs";
+import { createBrowserExtensionBridge } from "./browser-extension.mjs";
+import { registerExtensionHost } from "./browser-extension-host.mjs";
 import { createBrowserApprovals, browserRequestActions } from "./browser-approvals.mjs";
 import { runTerminalCommand } from "./restricted-terminal.mjs";
 import { runBrowserMutation } from "./browser-mutations.mjs";
@@ -1100,8 +1102,25 @@ export async function createReach(overrides = {}) {
   // Saved tools on this Mac: where macOS Automation and the browser's own
   // setting stand, macOS's prompt on request, the settings page opened.
   // Shown to the owner only once a tool needed it (routes below).
-  const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
-  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, actions: logAction, hosts: () => reachAddresses(config),
+  // On a Windows PC, saved tools reach Chrome and Edge through Reach's
+  // extension (docs/parity/G-browser-tools.md): its native host's pipe, here;
+  // a browser asking to connect waits for the owner's tap in Agents → Browser tools.
+  const browserExtension = overrides.browserExtension !== undefined ? overrides.browserExtension
+    : process.platform === "win32" ? createBrowserExtensionBridge({
+      dataDir: config.dataDir,
+      onPairingRequest: (browser) => {
+        record("agent", `${browser}'s Reach extension asks to connect`);
+        notify({ category: "access", title: `${browser}'s Reach extension asks to connect`, body: "Allow it once: Agents → Browser tools → Allow.", icon: "agent", tag: `tool-setup-${browser}`, actions: [{ action: "open", title: "Allow" }] });
+      },
+    }) : null;
+  if (browserExtension && !overrides.browserExtension)
+    browserExtension.start().catch((error) => console.warn(`Reach: the browser extension's pipe couldn't open: ${String(error?.message || error).slice(0, 200)}`));
+  const toolSetup = createToolSetup({ config, extension: browserExtension,
+    register: () => registerExtensionHost({ dataDir: config.dataDir, pipe: browserExtension.pipe }), ...overrides.toolSetup });
+  // The host registered at start, so an extension added from the store connects at once.
+  if (browserExtension && process.platform === "win32" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void toolSetup.prepare?.().catch(() => {}));
+  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, actions: logAction, hosts: () => reachAddresses(config), extension: browserExtension,
     // Batches record the round trips they spared (savings.mjs, "tab-batch").
     savings: { record: (entry) => savings.record(entry) },
     // The owner hears once that an agent's tool needs a browser; one tap in
@@ -1114,7 +1133,7 @@ export async function createReach(overrides = {}) {
     ...(overrides.browserToolOptions || {}) });
   // An agent's ask for a Mac permission it lacks: the owner's one tap on the
   // phone (permission-requests.mjs).
-  const permissionRequests = createPermissionRequests({ toolSetup, access: macAccess(config), notify, record, ...overrides.permissionRequests });
+  const permissionRequests = createPermissionRequests({ toolSetup, access: macAccess(config), notify, record, platform: process.platform, ...overrides.permissionRequests });
   const agentServices = createAgentServices({ record, notify,
     connectors: createServiceConnectors(agentTools),
     verifyClient: (id) => {
@@ -2531,7 +2550,9 @@ export async function createReach(overrides = {}) {
         typeof body.browser !== "string" || !["enable", "ask", "settings"].includes(body.action))
       throw fail(400, "Choose a browser, and enable, ask or settings.");
     const result = await toolSetup[body.action](body.browser);
-    record("agent", { enable: `Allowed saved tools in ${result.id}: its switch flipped, macOS asked`, ask: `Asked macOS to let saved tools use ${result.id}`, settings: `Opened Automation settings for ${result.id}` }[body.action]);
+    record("agent", result.extension !== undefined
+      ? { connected: `Allowed saved tools in ${result.id}`, added: `Opened ${result.id} for saved tools`, missing: `Opened Reach's extension's store page in ${result.id}`, asking: `Allowed saved tools in ${result.id}`, unpublished: `Reach's extension isn't in ${result.id}'s store yet` }[result.extension] || `Checked saved tools in ${result.id}`
+      : { enable: `Allowed saved tools in ${result.id}: its switch flipped, macOS asked`, ask: `Asked macOS to let saved tools use ${result.id}`, settings: `Opened Automation settings for ${result.id}` }[body.action]);
     res.json(result);
   });
   app.post("/api/agents/invitations", (req, res) => {
@@ -6028,6 +6049,7 @@ export async function createReach(overrides = {}) {
       agentDesktop?.close?.();
       agentShortcuts.close();
       agentTools.close();
+      browserExtension?.close?.();
       agentServices.close();
       await browserCommandLog.close();
       browserSnapshots.clear();
