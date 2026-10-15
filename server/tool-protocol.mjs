@@ -7,6 +7,20 @@ export const TOOL_BROWSERS = {
   Chrome: "com.google.Chrome",
   Safari: "com.apple.Safari",
 };
+// On Windows, the browsers Reach's extension runs in (docs/parity/G-browser-tools.md),
+// by their identity in the agent's app catalog (Start's list: the program).
+export const TOOL_BROWSERS_WINDOWS = {
+  Chrome: "exe:chrome.exe",
+  Edge: "exe:msedge.exe",
+};
+export const toolBrowsersFor = (platform = process.platform) =>
+  platform === "win32" ? TOOL_BROWSERS_WINDOWS : TOOL_BROWSERS;
+export const toolBrowserWords = (platform = process.platform) =>
+  platform === "win32" ? "Chrome or Edge" : "Chrome or Safari";
+// Browsers that name a tab by a stable id, where batches open tabs behind:
+// Safari names one by its position, which opening tabs shifts.
+export const batchBrowsers = (platform = process.platform) =>
+  Object.keys(toolBrowsersFor(platform)).filter((name) => name !== "Safari");
 export const TOOL_LIMITS = {
   steps: 24,
   inputs: 12,

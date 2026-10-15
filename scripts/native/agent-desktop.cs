@@ -1523,9 +1523,10 @@ static partial class Desk {
       case "open": RuleS(); OnOwnersDesktop(); return Open(Json.Str(request, "app") ?? "", current);
       case "open-url": RuleS(); OnOwnersDesktop(); return OpenUrl(Json.Str(request, "url"), Json.Str(request, "app") ?? "", current);
       case "open-file": RuleS(); OnOwnersDesktop(); return OpenFile(Json.Str(request, "path") ?? "", Json.True(request, "reveal"), current);
-      // Saved browser tools reach the browser through Apple Events on a Mac;
-      // on Windows they come with Reach's browser extension (workstream G).
-      case "browser-check": throw new Refusal("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet.", "setup_required");
+      // Saved browser tools reach the browser through Apple Events on a Mac
+      // and through Reach's extension here (docs/parity/G-browser-tools.md):
+      // this checks the browser is Chrome or Edge, within the agent's access.
+      case "browser-check": RuleS(); return BrowserCheck(Json.Str(request, "app") ?? "", current);
       case "act": {
         RuleS();
         var act = Json.Map(request, "action");
@@ -4607,6 +4608,21 @@ static partial class Desk {
     result["app"] = app.Name;
     result["bundle"] = app.Bundle;
     result["front"] = WaitFrontApp(app, pid);
+    return result;
+  }
+  // browser-check: the program a saved tool runs in is Chrome or Edge, by its
+  // canonical path, and the agent may use it (as the Mac checks a bundle).
+  static readonly string[] ToolBrowserPrograms = { "chrome.exe", "msedge.exe" };
+  static Dictionary<string, object> BrowserCheck(string id, Rules rules) {
+    const string choose = "Choose Chrome or Edge within this agent's app access.";
+    if (rules.Mode == "view") throw new Refusal(choose, "blocked");
+    var app = AppIdentity(id);
+    if (app == null || app.Packaged || System.Array.IndexOf(ToolBrowserPrograms, FileOf(app.Path).ToLowerInvariant()) < 0) throw new Refusal(choose, "blocked");
+    string reason = AppVerdict(app, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    var result = Ok();
+    result["app"] = app.Name;
+    result["bundle"] = app.Bundle;
     return result;
   }
   static bool IsBrowserApp(Ident app) {

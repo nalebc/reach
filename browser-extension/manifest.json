@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Reach",
+  "short_name": "Reach",
+  "version": "0.2.0",
+  "description": "Runs the saved browser tools your Reach agents use, in your own browser, for the Reach app on this computer only.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0qXorZmRdsc0G1bPyjbvwBt+lsTEkJO6dhQYk4h1LsVlc/Bj//nC4U/fGNnroLVzd5afrmFpYEoGdv8YIzxV5NxpgjRkITeveyGXmT8KP8LH5zXBmJAcLNWzS1kC1yGY+CTi+ftNFnld8bsLr6jVytGkUfsyNTuncd6u7fmaV+UHhmhnFU2L0oLWGacLDjzTlFtZxHyK6nmzyVknkddlgrT1q5ym0huNZUVTUbTGFP+hcMZ+BL3l4R3N23qFkdptejd+Tovy9qsJsGQClbJoGCW4VfwWbwv+xYHdaGCQvLd84KQMdOfZ/xcwlZGqxuNAVQ9VFXcFByJHC/7t/HEupwIDAQAB",
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "permissions": ["nativeMessaging", "scripting", "storage", "alarms"],
+  "host_permissions": ["https://*/*"],
+  "incognito": "not_allowed",
+  "icons": {
+    "16": "icons/reach-16.png",
+    "32": "icons/reach-32.png",
+    "48": "icons/reach-48.png",
+    "128": "icons/reach-128.png"
+  }
+}

@@ -93,7 +93,7 @@ function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends. Your user's request is your permission: act without asking at each step, but ask your user before paying, sending a message or deleting something. Sign in with reach_act type + secret from your vault; read emailed codes in Gmail or Mail on the Mac. The Mac refuses for a missing permission: ask the owner with reach_request_permission. Bank, card and brokerage sites (reach_open_bank) are read-only: sign in, read balances and transactions, search, filter by date, download statements, then sign out; anything that moves money or changes the account is refused.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
   // Any preset: a permission the Mac lacks goes to the owner as one tap.
-  tools.push(definition("reach_request_permission", "Ask the owner for a Mac permission", "When the Mac refuses for a missing permission (\"setup_required\", \"Allow JavaScript from Apple Events\", Automation, Screen Recording, Accessibility), ask the owner here instead of telling them where to click: they get a notification and one tap on their phone. need: browser-tools (with browser: Chrome or Safari), screen-recording or accessibility; reason: one sentence for the owner. Answers ready (already allowed), pending (asked; call again in a minute), allowed or denied. Ask once per need; repeats return the same request.", object({ need: { ...string(20), enum: ["browser-tools", "screen-recording", "accessibility"] }, browser: { ...string(10), enum: ["Chrome", "Safari"] }, reason: string(300) }, ["need", "reason"]), { need: "browser-tools", browser: "Chrome", reason: "To check your Uber Eats cart with the saved tool, many items at once." }));
+  tools.push(definition("reach_request_permission", "Ask the owner for a Mac permission", "When the Mac refuses for a missing permission (\"setup_required\", \"Allow JavaScript from Apple Events\", Automation, Screen Recording, Accessibility), ask the owner here instead of telling them where to click: they get a notification and one tap on their phone. need: browser-tools (with browser: Chrome or Safari on a Mac, Chrome or Edge on Windows), screen-recording or accessibility; reason: one sentence for the owner. Answers ready (already allowed), pending (asked; call again in a minute), allowed or denied. Ask once per need; repeats return the same request.", object({ need: { ...string(20), enum: ["browser-tools", "screen-recording", "accessibility"] }, browser: { ...string(10), enum: ["Chrome", "Safari", "Edge"] }, reason: string(300) }, ["need", "reason"]), { need: "browser-tools", browser: "Chrome", reason: "To check your Uber Eats cart with the saved tool, many items at once." }));
   if (access.services) {
     tools.push(
       definition("reach_services", "Services", "Discover available service tools and this agent's service access. Service consent is separate from laptop permissions.", object(), {}),
@@ -134,11 +134,13 @@ function presetTools(access) {
   if (access.open && access.roots?.length) tools.push(
     definition("reach_open_file", "Open a file", "Open a file from a shared folder in the app that owns it (a PDF in Preview, a spreadsheet in Numbers), or reveal: true to show it selected in the Finder. Answers once the app is in front and settled. Programs, scripts and installers never open this way.", object({ root, path: relativePath, reveal: { type: "boolean", enum: [true] } }, ["root", "path"]), { root: firstRoot, path: "Invoices/march.pdf" }),
   );
-  // The same saved tool for a list of items, each in a Chrome tab of its own
+  // The same saved tool for a list of items, each in a Chrome (or, on
+  // Windows, Edge) tab of its own
   // (agent-tools.mjs batch): offered with the tools it runs, and named in
   // their descriptions so an agent repeating one finds it.
   const batchable = (access.browserTools?.tools || []).filter(item => item.protocol === "reach.tool.v1" && /^[a-z][a-z0-9_]{0,47}$/.test(item.id));
-  const batchOffered = !!(access.control && access.open && access.screen && batchable.length && access.browserTools.browsers?.includes("Chrome"));
+  const batchBrowsers = (access.browserTools?.browsers || []).filter(name => name === "Chrome" || name === "Edge");
+  const batchOffered = !!(access.control && access.open && access.screen && batchable.length && batchBrowsers.length);
   if (access.control && access.open && access.screen) tools.push(
     definition("reach_tools", "Find deterministic tools", `Check here before browser tasks. Returns brief built-in and agent-created tool matches and allowed browsers. Give id or detail:true for full definitions. Search by task name.${batchOffered ? " For the same tool over a list of items, use reach_tool_batch." : ""}`, object({ query: string(160) }), { query: "Gmail" }),
     definition("reach_tool_protocol", "Tool creation protocol", "Read reach.tool.v1: declared inputs, HTTPS origins, fixed DOM operations and checked results. The built-in tools use this same format. No JavaScript, shell or guessed steps.", object(), {}),
@@ -151,13 +153,13 @@ function presetTools(access) {
     definition("reach_run_shortcut", "Run saved shortcut", "Run one enabled shortcut by ID in a single call, with your current permissions checked before every step. Text inputs are never stored. Stops at changed windows, password fields, owner activity, pause or revoked access. Inspect status and completedSteps; stopped steps are not rolled back. Never blindly retry a partially completed task. Take a screenshot after completion to verify the result.", object({ id: string(128), values: { type: "object", maxProperties: 60, additionalProperties: string(2000) } }, ["id"]), { id: "shortcut-id-from-reach_shortcuts" }),
   );
   if (batchOffered) tools.push(
-    definition("reach_tool_batch", "Run a tool on many tabs at once", "Run one saved tool for a list of up to 10 items at once, each in its own Chrome tab: a grocery list, several searches, prices to compare. The tabs open behind and their pages load in parallel; the steps then run tab by tab, so cart clicks never collide. Returns one result per item. More than 10: call again with the next 10 and a new requestId. Lost or partial response: call again with the SAME requestId and items; finished items are never repeated. Shopping: first batch a search tool with keepTabs: true, pick each item's handle, then batch a handle tool (add to cart) on those handles; read the cart once at the end.", object({
+    definition("reach_tool_batch", "Run a tool on many tabs at once", "Run one saved tool for a list of up to 10 items at once, each in its own " + batchBrowsers.join(" or ") + " tab: a grocery list, several searches, prices to compare. The tabs open behind and their pages load in parallel; the steps then run tab by tab, so cart clicks never collide. Returns one result per item. More than 10: call again with the next 10 and a new requestId. Lost or partial response: call again with the SAME requestId and items; finished items are never repeated. Shopping: first batch a search tool with keepTabs: true, pick each item's handle, then batch a handle tool (add to cart) on those handles; read the cart once at the end.", object({
       id: { ...kinds(batchable.map(item => item.id)), description: "The tool to run for every item (reach_tools)." },
-      browser: kinds(["Chrome"]),
+      browser: kinds(batchBrowsers),
       requestId,
       items: { type: "array", minItems: 1, maxItems: 10, description: "One object of the tool's declared inputs per tab.", items: object(Object.fromEntries(batchable.flatMap(item => Object.keys(item.inputs || {})).filter(key => !["browser", "requestId"].includes(key)).map(key => [key, string(2000, 0)]))) },
       keepTabs: { type: "boolean", description: "Keep the tabs open for the item handles they returned. Otherwise the tabs Reach opened close at the end." },
-    }, ["id", "browser", "requestId", "items"]), { id: batchable[0].id, browser: "Chrome", requestId: "00000000-0000-4000-8000-000000000001", items: [{}] }),
+    }, ["id", "browser", "requestId", "items"]), { id: batchable[0].id, browser: batchBrowsers[0], requestId: "00000000-0000-4000-8000-000000000001", items: [{}] }),
   );
   if (access.control && access.open && access.screen) for (const item of access.browserTools?.tools || []) {
     if (item.protocol !== "reach.tool.v1" || !/^[a-z][a-z0-9_]{0,47}$/.test(item.id) || !plain(item.inputs) || !Array.isArray(item.steps)) continue;
@@ -412,7 +414,7 @@ export function browserToolRequest(name, args, access) {
     case "reach_elements": return get(`/api/browser/desktop/elements${readQuery(input)}`);
     case "reach_describe_screen": return get(`/api/browser/desktop/describe${readQuery(input)}`);
     case "reach_request_permission":
-      if ((input.need === "browser-tools") !== (input.browser !== undefined)) invalid(input.need === "browser-tools" ? "Name the browser: Chrome or Safari." : "Only browser-tools names a browser.");
+      if ((input.need === "browser-tools") !== (input.browser !== undefined)) invalid(input.need === "browser-tools" ? "Name the browser: Chrome, Safari or Edge." : "Only browser-tools names a browser.");
       return { route: "/api/browser/permissions/request", method: "POST", body: input, response: "json" };
     case "reach_open_bank": return { route: "/api/browser/desktop/open-url", method: "POST", body: { url: MONEY_BANKS.find((bank) => bank.name === input.bank).url, ...(input.browser ? { browser: input.browser } : {}), ...after(input) }, response: "json" };
     case "reach_open_url": return { route: "/api/browser/desktop/open-url", method: "POST", body: { url: input.url, ...(input.browser ? { browser: input.browser } : {}), ...after(input) }, response: "json" };

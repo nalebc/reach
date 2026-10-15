@@ -852,7 +852,7 @@ Each handler increments `screenRevision`. When the foreground root changes, the 
       - Then run the manifest pre-check, and `CreateProcessW` with the substituted command line.
 7. The file handle from step 2 is held until the launch returns.
 
-**`browser-check`** (`:2055-2073`) relies on Apple Events; the Windows equivalent is workstream G. Until then it answers `{"error":"Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet.","kind":"setup_required"}`.
+**`browser-check`** (`:2055-2073`) checks a Mac browser's bundle and its Automation permission. On Windows (workstream G, docs/parity/G-browser-tools.md, Oct 15) it checks the program: its canonical path is `chrome.exe` or `msedge.exe` (not a packaged app), and `AppVerdict` admits it for this agent; view mode, any other program, and a hidden or unchosen browser are refused with `Choose Chrome or Edge within this agent's app access.` (`blocked`). Whether Reach's extension is connected is the server's to know (`server/browser-extension.mjs`).
 
 ## 10. Secrets and bank sites
 
@@ -900,7 +900,7 @@ Reply fields are exactly the Swift ones unless noted. "Same" means the same bran
 | `open` | `1177-1192`, `waitFront 1196-1208`; `2026-2028` | Focus the existing window, or `ActivateApplication` / `CreateProcessW` (§9) |
 | `elements` | `1434`, `readScreen 1341-1433`, `snapshotPayload 1766-1789`; `2052-2054` | §8.4 |
 | `open-url` | `1212-1234`; `2049-2051` | Association plus browser identity, then `CreateProcessW` of the checked exe or `ActivateForProtocol` |
-| `browser-check` | `2055-2073` | `setup_required` until workstream G |
+| `browser-check` | `2055-2073` | Chrome or Edge by program within the agent's access (G) |
 | `windows` | `1578-1608` (+ `windowTabs 1549`, `windowPage 1571`); `2031-2033` | §8.4 |
 | `focus` | `1612-1657`; `2034-2036` | §6 (raise, then one `SetForegroundWindow`) |
 | `menus` | `1711-1725` (+ `1660-1708`); `2037-2039` | `HMENU` read, UIA MenuBar fallback |
@@ -1223,7 +1223,7 @@ CI wiring: the Windows lane in `ci.yml` adds `REACH_TEST_WINDOWS_NATIVE=1` and t
 | Pasting loses the owner's non-text clipboard contents (images, files) | Only text is saved and restored, as on the Mac | — |
 | A helper killed outright mid-drag (Task Manager, antivirus) can leave a button held | Nothing runs after `TerminateProcess` | The next real click releases it. Reach's own exit and crashes are handled (§5.4) |
 | PCs with SAC On, or locked down by AppLocker (with default rules, every owner running Reach unelevated) or WDAC, are refused until a signed helper ships | Unsigned local builds are blocked, and Rule S refuses an elevated helper | §16 D1, D2 |
-| Saved browser tools (`browser-check`) answer `setup_required` | No Apple Events | Workstream G |
+| Saved browser tools need Reach's extension (`browser-check` admits Chrome or Edge) | No Apple Events | Workstream G: the extension and its native host |
 
 ## 16. Decisions for the owner
 

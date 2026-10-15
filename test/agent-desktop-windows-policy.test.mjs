@@ -229,8 +229,13 @@ test("every program is started with the user's own environment, after its manife
   assert.match(open, /Policy\.ProgramFile\(canonical, rules\)/);
   assert.match(open, /ASSOCSTR_DELEGATEEXECUTE[\s\S]*ASSOCSTR_DDECOMMAND[\s\S]*No app on this Windows PC opens that file/);
   assert.match(open, /\} finally \{\n\s+Native\.CloseHandle\(handle\);\n\s+\}$/);
-  // Saved browser tools wait for Reach's browser extension.
-  assert.match(text, /case "browser-check": throw new Refusal\("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet\.", "setup_required"\);/);
+  // Saved browser tools: Chrome or Edge by its program, within the agent's access.
+  assert.match(text, /case "browser-check": RuleS\(\); return BrowserCheck\(/);
+  const check = text.split("static Dictionary<string, object> BrowserCheck(string id, Rules rules) {")[1].split("\n  }\n")[0];
+  assert.match(check, /rules\.Mode == "view"\) throw new Refusal\(choose, "blocked"\)/);
+  assert.match(check, /app\.Packaged \|\| System\.Array\.IndexOf\(ToolBrowserPrograms, FileOf\(app\.Path\)\.ToLowerInvariant\(\)\) < 0\) throw new Refusal\(choose, "blocked"\)/);
+  assert.match(check, /AppVerdict\(app, rules\)/);
+  assert.match(text, /ToolBrowserPrograms = \{ "chrome\.exe", "msedge\.exe" \}/);
 });
 
 test("a classic menu's item keeps its identity after preparation and is pressed only while enabled; nothing else sends a command", () => {

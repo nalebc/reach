@@ -11,9 +11,11 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { fail, hasReviewControls } from "./core.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
+import { toolBrowsersFor, toolBrowserWords } from "./tool-protocol.mjs";
 
 export const PERMISSION_NEEDS = ["browser-tools", "screen-recording", "accessibility"];
-export const PERMISSION_BROWSERS = ["Chrome", "Safari"];
+// Chrome or Safari on a Mac; Chrome or Edge on Windows (Reach's extension).
+export const PERMISSION_BROWSERS = ["Chrome", "Safari", "Edge"];
 const PANES = {
   "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
@@ -23,8 +25,10 @@ const QUIET_MS = 10 * 60_000; // an answer stands this long: no new ping for the
 const words = (need, browser) =>
   need === "browser-tools" ? `browser tools in ${browser}` : need === "screen-recording" ? "Screen Recording" : "Accessibility";
 // What the owner's Allow will do, said on the card before they tap.
-const allowDoes = (need, browser) =>
-  need === "browser-tools"
+const allowDoes = (need, browser, platform) =>
+  need === "browser-tools" && platform === "win32"
+    ? `Allow lets Reach's extension in ${browser} connect, or opens its store page in ${browser} on the PC if it isn't added yet: click Add to ${browser} there.`
+    : need === "browser-tools"
     ? `Allow turns on ${browser}'s "Allow JavaScript from Apple Events" and asks macOS to let Reach control ${browser}: answer that prompt on the Mac or here.`
     : `Allow opens ${words(need)} in System Settings on the Mac: switch on Terminal (the app Reach runs in) there${need === "screen-recording" ? ", then restart Reach" : ""}.`;
 const told = {
@@ -61,8 +65,9 @@ const openSettings = (url) => new Promise((resolve) => {
 });
 
 export function createPermissionRequests({
-  toolSetup, access = async () => ({}), open = openSettings, notify = () => {}, record = () => {}, now = Date.now,
+  toolSetup, access = async () => ({}), open = openSettings, notify = () => {}, record = () => {}, now = Date.now, platform = process.platform,
 } = {}) {
+  const browsersHere = Object.keys(toolBrowsersFor(platform));
   const entries = new Map();
   const agent = (authorize) => {
     const client = authorize();
@@ -97,7 +102,7 @@ export function createPermissionRequests({
   });
   const forOwner = (entry) => ({
     id: entry.id, agentName: entry.agentName, need: entry.need, ...(entry.browser ? { browser: entry.browser } : {}),
-    title: `${entry.agentName} asks for ${words(entry.need, entry.browser)}`, allowDoes: allowDoes(entry.need, entry.browser),
+    title: `${entry.agentName} asks for ${words(entry.need, entry.browser)}`, allowDoes: allowDoes(entry.need, entry.browser, platform),
     reason: entry.reason, status: entry.status, createdAt: entry.createdAt, expiresAt: entry.expiresAt,
     ...(entry.answeredAt ? { answeredAt: entry.answeredAt } : {}), ...(entry.next ? { next: entry.next } : {}),
   });
@@ -108,8 +113,8 @@ export function createPermissionRequests({
         throw fail(400, "Send need, reason and, for browser tools, browser.");
       const { need, browser, reason } = input;
       if (!PERMISSION_NEEDS.includes(need)) throw fail(400, `Ask for one of: ${PERMISSION_NEEDS.join(", ")}.`);
-      if (need === "browser-tools" ? !PERMISSION_BROWSERS.includes(browser) : browser !== undefined)
-        throw fail(400, need === "browser-tools" ? "Name the browser: Chrome or Safari." : "Only browser tools name a browser.");
+      if (need === "browser-tools" ? !browsersHere.includes(browser) : browser !== undefined)
+        throw fail(400, need === "browser-tools" ? `Name the browser: ${toolBrowserWords(platform)}.` : "Only browser tools name a browser.");
       if (typeof reason !== "string" || !reason.trim() || reason.length > 300 || hasReviewControls(reason))
         throw fail(400, "Say in a sentence why you need it (up to 300 characters).");
       prune();
@@ -157,9 +162,20 @@ export function createPermissionRequests({
         return forOwner(entry);
       }
       entry.status = "allowed";
-      const by_hand = `Open System Settings → Privacy & Security → ${entry.need === "browser-tools" ? "Automation" : words(entry.need)} on the Mac and switch on Terminal${entry.need === "browser-tools" ? ` for ${entry.browser}` : ""}.`;
+      const by_hand = platform === "win32" && entry.need === "browser-tools"
+        ? `In Reach on the phone: Agents → Browser tools: add Reach's extension to ${entry.browser} and allow it.`
+        : `Open System Settings → Privacy & Security → ${entry.need === "browser-tools" ? "Automation" : words(entry.need)} on the Mac and switch on Terminal${entry.need === "browser-tools" ? ` for ${entry.browser}` : ""}.`;
       try {
-        if (entry.need === "browser-tools") {
+        if (entry.need === "browser-tools" && platform === "win32") {
+          const result = await toolSetup.enable(entry.browser);
+          entry.next = {
+            connected: `${entry.browser} is ready for browser tools.`,
+            asking: `${entry.browser} is connecting to Reach.`,
+            added: `${entry.browser} is opening on the PC; its extension connects once it's open.`,
+            missing: `Reach's extension's store page is open in ${entry.browser} on the PC: click Add to ${entry.browser} there.`,
+            unpublished: `Reach's extension isn't in ${entry.browser}'s store yet.`,
+          }[result.extension] || by_hand;
+        } else if (entry.need === "browser-tools") {
           const result = await toolSetup.enable(entry.browser);
           entry.next = result.automation === "allowed" && result.javascript === "on"
             ? `${entry.browser} is ready for browser tools.`
