@@ -8,8 +8,23 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-15
+
+Agents and phones on a Windows PC as on a Mac, faster agents, an
+owner-first screen with gestures you can feel, modern sheets, one-tap updates
+for what Reach drives, and fixes across Face ID, Windows and chats.
+
 ### Added
 
+- 2026-10-14: Agents on a Windows PC work as on a Mac. Each preset (Full
+  control, Apps, Files, Read-only) sees and controls only what it may;
+  protected windows, password boxes and windows running as administrator stay
+  closed; the owner's own input pauses them. Full control's commands reach the
+  clipboard and desktop as on a Mac; the other presets keep Windows' limits.
+  Proven on GitHub's Windows 2025, 2022 and 11 on Arm runners; not yet on a
+  physical PC.
+- 2026-10-14: The PC's own terminals (Windows Terminal tabs and classic
+  consoles) are listed on the phone's Terminals page and Home, as a Mac's are.
 - 2026-10-13: On a Windows PC, as on a Mac (passing on GitHub's Windows
   runner, not yet on a physical PC):
   - Reach's icon in the notification area: on or paused, messages from the
@@ -102,8 +117,36 @@ release notes, so date the heading before tagging.
   by Chrome's WebCodecs with its colours); not yet run on a physical PC,
   with a graphics card's encoder, several displays or Remote Desktop.
 
+- 2026-10-13: Reach keeps what it drives in sync. When Codex's service runs
+  behind the Codex CLI (0.158 against 0.162, so GPT-6.1 Sol stayed greyed
+  out), Needs you, Settings → Updates and Codex's model list say "Update
+  Codex's service to use … and newer models" with Update. One tap runs
+  `codex app-server daemon update` with the Codex Reach uses, after saying
+  which working Codex chats it may stop, then reconnects and reads the
+  models again. Claude Code, Codex and OpenClaw updates show in the same
+  list, once per version pair. Nothing updates without the owner's tap.
+- 2026-10-13: Fork a chat from any message into another app ("Fork chat…" in
+  a chat's menu, or from an earlier message). Claude forks natively, keeping
+  compaction, thinking and complete tool records; Codex forks through the
+  chosen completed turn; OpenClaw takes long tool output split, never
+  clipped. Later messages stay out, and the source chat is never rewritten.
+- 2026-10-13: The owner comes first on the screen. Input through Reach's screen from the
+  owner (or a full-access person) holds every agent off it, its looks
+  included (screenshots, describe, read, its live picture), with kind
+  `paused`, who is using it and `retryInMs`; agents get it back 2 minutes
+  after the last input through Reach, or at once from "Let them back" on the
+  quiet "Agents wait · 2 min after you stop" pill. Chats' Claude app messages
+  never wait on it. The agent's live picture shows a calm "The owner is using
+  the Mac".
+- 2026-10-13: Two fingers scroll the computer, up, down and sideways, in every touch mode
+  (pinch still zooms), and the bar has a desktop switcher while controlling:
+  previous desktop, all windows, next desktop.
+
 ### Changed
 
+- 2026-10-14: Reaching Claude's usage limit shows one notice. "Usage is back"
+  arrives at the limit's reset time even when Claude's sign-in lapsed, and
+  continuing in the same chat waits for the current turn to end.
 - 2026-10-14: A Mac installs OpenClaw with OpenClaw's own installer
   (install.sh), as a Windows PC uses install.ps1, so npm 12's script policy
   and Node are handled by OpenClaw. On a Mac or PC whose Node is older than
@@ -131,41 +174,6 @@ release notes, so date the heading before tagging.
   from the computer itself (a browser on it): only the code typed there
   does, on a Mac as on a Windows PC. A ticket vouches for a device, never for
   whoever is signed in to it.
-
-## [0.2.0] — 2026-10-13
-
-Faster agents, an owner-first screen with gestures you can feel, modern
-sheets, one-tap updates for what Reach drives, and fixes across Face ID,
-Windows and chats.
-
-### Added
-
-- 2026-10-13: Reach keeps what it drives in sync. When Codex's service runs
-  behind the Codex CLI (0.158 against 0.162, so GPT-6.1 Sol stayed greyed
-  out), Needs you, Settings → Updates and Codex's model list say "Update
-  Codex's service to use … and newer models" with Update. One tap runs
-  `codex app-server daemon update` with the Codex Reach uses, after saying
-  which working Codex chats it may stop, then reconnects and reads the
-  models again. Claude Code, Codex and OpenClaw updates show in the same
-  list, once per version pair. Nothing updates without the owner's tap.
-- 2026-10-13: Fork a chat from any message into another app ("Fork chat…" in
-  a chat's menu, or from an earlier message). Claude forks natively, keeping
-  compaction, thinking and complete tool records; Codex forks through the
-  chosen completed turn; OpenClaw takes long tool output split, never
-  clipped. Later messages stay out, and the source chat is never rewritten.
-- 2026-10-13: The owner comes first on the screen. Input through Reach's screen from the
-  owner (or a full-access person) holds every agent off it, its looks
-  included (screenshots, describe, read, its live picture), with kind
-  `paused`, who is using it and `retryInMs`; agents get it back 2 minutes
-  after the last input through Reach, or at once from "Let them back" on the
-  quiet "Agents wait · 2 min after you stop" pill. Chats' Claude app messages
-  never wait on it. The agent's live picture shows a calm "The owner is using
-  the Mac".
-- 2026-10-13: Two fingers scroll the computer, up, down and sideways, in every touch mode
-  (pinch still zooms), and the bar has a desktop switcher while controlling:
-  previous desktop, all windows, next desktop.
-
-### Changed
 
 - 2026-10-13: An invitation nobody ever joined clears itself a day after its
   chance to join ended: an unopened link a day after its join window (a
@@ -223,6 +231,13 @@ Windows and chats.
 
 ### Fixed
 
+- 2026-10-15: An agent or device can start at most 120 commands a minute;
+  each command starts a process.
+- 2026-10-14: On a slow Windows PC the app list no longer runs out of time on
+  every retry: a list that finishes late is kept for the retry.
+- 2026-10-14: One Codex chat whose history can't be paged no longer stops
+  history for every Codex chat; a failed read shows its error, not
+  "Opening…".
 - 2026-10-13: Swiping back in a chat on the phone could show a blank page and reload Reach instead of going back to the chat list. The entry behind the chat belonged to the page from before a reload, such as an interface rebuild or the phone reloading Reach. Back is now one step of Reach's own stack, in the same page, in every browser. A chat goes back to its list, a page opened from More, Settings or a card goes back to where it was opened, and any tab goes back to Home. Switching tabs adds no step. A chat opened from a notification or link, or reopened after a reload, has its list under it. A rebuild reload first steps back to Home's entry, so no entry of the old page is left behind. A sideways swipe inside the page no longer turns into the browser's back or forward.
 - 2026-10-13: Adding Face ID in Settings never worked. The page asked for a new challenge while Face ID was still up, so every answer was refused "for an earlier attempt". After ten tries the button stopped responding, with no message. Turning off "Face ID confirms approvals" failed the same way, and showed "Access expired or was revoked." Now every tap either opens Face ID or says why it can't. Each passkey you add shows a green check with "Added today". The setting uses your device's own name for it: Face ID, Touch ID, fingerprint or face unlock on Android, or Windows Hello. Reach's terminal shows "Reach: Face ID not added: <reason>" for each refused add.
 - 2026-10-13: Fullscreen Screen covered the Mac's menu bar and Dock with Reach's own bars.
