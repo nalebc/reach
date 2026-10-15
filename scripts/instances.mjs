@@ -337,7 +337,7 @@ export function windowsEntry(argv) {
     const found = ENTRY.exec(script);
     if (!found) continue;
     const full = path.win32.isAbsolute(script) && /^[A-Za-z]:\\/.test(script) ? path.win32.normalize(script) : "";
-    return { root: full ? path.win32.dirname(path.win32.dirname(full)) : null, entry: found[1].toLowerCase().replace("\\", "/"), rest: argv.slice(i + 1) };
+    return { root: full ? path.win32.dirname(path.win32.dirname(full)) : null, entry: found[1].toLowerCase().replace(/\\/g, "/"), rest: argv.slice(i + 1) };
   }
   return null;
 }

@@ -19,6 +19,16 @@ import { NODE_VERSION } from "./runtime.mjs";
 import { holdFile, removeLegacyStartup, taskXml, windowsTask } from "./windows-task.mjs";
 import { windowsBinary } from "../server/desktop-native.mjs";
 
+// A file's bytes, or null when there is none (read once, no check before).
+function readIfThere(file) {
+  try {
+    return fs.readFileSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 export const serviceLabel = "com.reach.companion";
 const xml = (value) =>
   String(value)
@@ -290,7 +300,7 @@ export async function backgroundService(options, root, deps = {}) {
     fs.closeSync(fd);
     fs.chmodSync(path.join(logDir, name), 0o600);
   }
-  const previous = fs.existsSync(stateFile) ? fs.readFileSync(stateFile) : null;
+  const previous = readIfThere(stateFile);
   atomicJson(stateFile, {
     version: 1,
     root,
@@ -398,7 +408,7 @@ async function windowsBackgroundService(options, root, deps) {
   const file = path.join(serviceDir, "task.xml");
   // Task Scheduler reads its files in UTF-16.
   fs.writeFileSync(file, Buffer.from(`\ufeff${taskXml({ sid: task.sid(), starter, args, root, profile: env.USERPROFILE || "" })}`, "utf16le"), { mode: 0o600 });
-  const previous = fs.existsSync(stateFile) ? fs.readFileSync(stateFile) : null;
+  const previous = readIfThere(stateFile);
   atomicJson(stateFile, { version: 1, root, node, dataDir, origin, logDir, options: resolved, installed: true, task: found.name, starter });
   try {
     task.create(file);
