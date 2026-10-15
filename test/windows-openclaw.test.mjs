@@ -58,7 +58,8 @@ test("on Windows openclaw runs as npm's openclaw.cmd runs it: Node, openclaw.mjs
   const [file, argv, childEnv] = await openClawShell(["channels", "add", "--token", 'a&b|c%PATH%^"d'], { env, platform: "win32", home: at("home"), findRuntime: async () => null, pick: async () => node });
   assert.equal(file, node);
   assert.deepEqual(argv, [at("npm/node_modules/openclaw/openclaw.mjs"), "channels", "add", "--token", 'a&b|c%PATH%^"d']);
-  assert.ok(!/cmd\.exe|powershell|-lc/i.test([file, ...argv].join(" ")), "no shell between");
+  // Each part on its own: the test's random folder name can hold "-lc".
+  assert.ok(![file, ...argv].some((part) => /^(?:-lc|\/[cks])$/i.test(part) || /(?:^|[\\/])(?:cmd|powershell|pwsh)(?:\.exe)?$/i.test(part)), "no shell between");
   // The child's PATH leads with its Node's folder (what it starts, npm or
   // the Gateway, runs on the same Node); the rest as it was.
   assert.equal(childEnv.PATH, `${path.dirname(node)};${at("npm")}`);
