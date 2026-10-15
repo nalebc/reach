@@ -28,7 +28,9 @@ static class RunnerDesktop {
     EnumWindowsProc each = (window, data) => {
       var kind = new StringBuilder(256);
       GetClassNameW(window, kind, kind.Capacity);
-      if (!IsWindowVisible(window) || kind.ToString() != "ConsoleWindowClass") return true;
+      // Classic consoles, and Windows Terminal's windows (the default terminal
+      // on Windows 11): minimized, never closed (the runner may live in one).
+      if (!IsWindowVisible(window) || (kind.ToString() != "ConsoleWindowClass" && kind.ToString() != "CASCADIA_HOSTING_WINDOW_CLASS")) return true;
       uint pid;
       GetWindowThreadProcessId(window, out pid);
       string name = "?";
