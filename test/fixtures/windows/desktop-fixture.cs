@@ -412,7 +412,10 @@ static class DesktopFixture {
     if (expectedPid != 0 && owner != expectedPid) {
       var kind = new StringBuilder(256);
       GetClassNameW(target, kind, kind.Capacity);
-      Console.Error.WriteLine("The fixture click point is covered by another window (pid " + owner + ", class " + kind +
+      // Its program by name only (never a title or a path).
+      string program = "?";
+      try { program = System.Diagnostics.Process.GetProcessById((int)owner).ProcessName; } catch (Exception) { }
+      Console.Error.WriteLine("The fixture click point is covered by another window (pid " + owner + ", " + program + ", class " + kind +
         ", expected pid " + expectedPid + ").");
       return 2;
     }

@@ -14,7 +14,7 @@ import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
-import { clearRunnerDesktop } from "./helpers/windows-fixtures.mjs";
+import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // Windows' live screen as H.264 with nothing installed (parity audit #26):
 // scripts/native/screen-video.cs, Desktop Duplication into Media
@@ -401,7 +401,9 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   windowAt = { x, y, width, height };
   note({ window: windowAt });
 
-  const video = helper(built, ["primary", "30", "1280", "4000000"]);
+  // Its trace says what made each frame a change (REACH_TEST_SCREEN_TRACE),
+  // for a still screen that isn't still.
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_TRACE: "1" });
   t.after(() => video.child.kill());
   let started = Date.now();
   const first = parse(await video.ask("key"));
@@ -447,7 +449,7 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
     size: [first.meta.width, first.meta.height],
     codec: first.meta.codec,
     bytes: { key: first.annexb.length, deltaMedian: timing(packets.slice(1).map((p) => p.annexb.length)).median },
-    stderr: video.stderr().trim(),
+    stderr: video.stderr().replace(/^note: trace: .*\r?\n/gm, "").trim(),
   });
   assert.ok(unchanged.every((b) => b === 0), `only "unchanged" bytes: ${unchanged}`);
   assert.ok(packets.length >= 10, `the changing window made frames: ${packets.length}`);
@@ -500,13 +502,30 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   fs.writeFileSync(`${out}.still`, "");
   await sleep(500);
   const still = [];
+  const traced = video.stderr().length;
   for (const end = Date.now() + 2500; Date.now() < end; ) {
     still.push(parse(await video.ask("frame")));
     await sleep(33);
   }
   const stillFrames = still.filter((a) => a.meta).length;
-  note({ stillAnswers: still.length, stillFrames });
-  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, `mostly unchanged on a still screen: ${stillFrames} of ${still.length}`);
+  // What changed meanwhile, by kind and where; and what shows there on the
+  // desktop (class and program only, never a title).
+  const changes = {};
+  let where;
+  for (const line of video.stderr().slice(traced).split(/\r?\n/)) {
+    const m = /^note: trace: changed \((.*)\)$/.exec(line);
+    if (!m) continue;
+    const kind = m[1].replace(/ in -?\d+,-?\d+ \d+x\d+/, "");
+    changes[kind] = (changes[kind] || 0) + 1;
+    const at = / in (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(m[1]);
+    if (at) where = { x: +at[1] + +at[3] / 2, y: +at[2] + +at[4] / 2, area: m[1].slice(m[1].indexOf(" in ") + 4) };
+  }
+  const desktop = await lookAtRunnerDesktop(where?.x, where?.y).catch((error) => ({ error: error.message }));
+  note({ stillAnswers: still.length, stillFrames, stillChanges: changes, stillLastArea: where?.area, stillDesktop: desktop });
+  assert.ok(
+    still.filter((a) => a.byte === 0).length >= still.length * 0.8,
+    `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; changes ${JSON.stringify(changes)}, last at ${where?.area}: ${JSON.stringify(desktop?.at)}; in front ${JSON.stringify(desktop?.front)}`,
+  );
   assert.ok(stillFrames >= 2, `a real frame every second: ${stillFrames}`);
 
   // Reach gone (stdin closed): the helper ends by itself, cleanly.

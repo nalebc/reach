@@ -20,6 +20,15 @@ export async function clearRunnerDesktop() {
   return JSON.parse(stdout.trim());
 }
 
+// What shows on the runner's desktop, touching nothing: each window by class,
+// program file name and place (never a title), the one in front, and the
+// one at a point when asked: { front, at, shown }.
+export async function lookAtRunnerDesktop(x, y) {
+  const args = ["look", ...(Number.isFinite(x) && Number.isFinite(y) ? [String(Math.round(x)), String(Math.round(y))] : [])];
+  const { stdout } = await exec(await windowsFixture("runner-desktop"), args, { windowsHide: true, timeout: 30000 });
+  return JSON.parse(stdout.trim());
+}
+
 export function windowsFixture(name, references = []) {
   if (process.platform !== "win32") throw Error("Windows fixtures are built on Windows.");
   if (!built.has(name))

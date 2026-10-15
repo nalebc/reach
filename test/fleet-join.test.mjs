@@ -12,7 +12,8 @@ const vite = await createServer({
   configFile: false,
   logLevel: "silent",
   appType: "custom",
-  server: { middlewareMode: true, hmr: false, watch: null },
+  // No WebSocket listener (test/dom/harness.mjs says why).
+  server: { middlewareMode: true, hmr: false, ws: false, watch: null },
   optimizeDeps: { noDiscovery: true, include: [] },
 });
 globalThis.localStorage ??= {
