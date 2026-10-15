@@ -7,6 +7,7 @@ let dom,
   AgentSession,
   mobile = true,
   current,
+  readError = "",
   replies = [],
   sent = [];
 const views = [];
@@ -33,10 +34,12 @@ before(async () => {
     },
   };
   for (const agent of ["codex", "claude"]) {
-    routes[`/api/sessions/${agent}/recovery`] = () => ({
-      session: current,
-      items: [],
-    });
+    routes[`/api/sessions/${agent}/recovery`] = () => readError
+      ? Response.json({ error: readError }, { status: 409 })
+      : {
+        session: current,
+        items: [],
+      };
     routes[`/api/sessions/${agent}/recovery/live`] = async () => {
       await settle(60);
       return {
@@ -67,6 +70,7 @@ afterEach(async () => {
   for (const reply of replies.splice(0)) reply({ turnId: "cleanup" });
   for (const view of views.splice(0)) await view.unmount();
   sent = [];
+  readError = "";
   dom.window.sessionStorage.clear();
   assert.deepEqual(dom.errors, []);
 });
@@ -113,6 +117,18 @@ const click = async (element) => {
 };
 const refuse = () =>
   replies.shift()(Response.json({ error: "Send refused" }, { status: 409 }));
+
+for (const platform of ["darwin", "win32"])
+  test(`${platform}: a history error replaces Opening and clears when history recovers (mocked host)`, async () => {
+    readError = "Codex's thread/items/list interface is incompatible with Reach. Update Reach or use the screen or terminal.";
+    const view = await open("codex", platform);
+    await dom.waitFor(() => view.container.textContent.includes(readError), 5000);
+    assert.ok(!view.container.textContent.includes("Opening…"), "a failed read must not look like it is still opening");
+    readError = "";
+    await dom.waitFor(() => !view.container.textContent.includes("incompatible with Reach"), 5000);
+    assert.ok(!view.container.textContent.includes("Opening…"), "the recovered empty transcript is loaded");
+  });
+
 async function attach(view, name) {
   const input = view.container.querySelector('input[type="file"]');
   Object.defineProperty(input, "files", {

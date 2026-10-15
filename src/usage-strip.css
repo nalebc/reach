@@ -1,72 +1,182 @@
-/* Out of usage (UsageStrip.tsx): one slim line above the message box. */
-.usage-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 6px 8px;
-  padding: 2px 4px 2px 10px;
+/* A compact notice: one message block and one shared action row. */
+.usage-panel {
+  margin: 0 0 2px;
   color: var(--as-muted);
-  font-size: 12.5px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.usage-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--as-card);
+  background: color-mix(in srgb, var(--as-text) 3%, var(--as-bg));
+}
+.usage-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 44px;
+}
+.usage-limit-title {
+  color: var(--as-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
 }
 .usage-strip-text {
-  flex: 1 1 auto;
   min-width: 0;
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 .usage-strip-actions {
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 .usage-strip-actions > a,
 .usage-strip-actions > button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 9px;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 4px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   background: none;
   color: var(--as-text);
   font: inherit;
-  font-weight: 600;
+  font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
 }
 .usage-strip-actions > .primary {
+  padding: 0 12px;
+  border-radius: 999px;
   background: var(--as-text);
-  color: var(--as-float, #000);
+  color: var(--as-bg);
 }
-/* Under it: continue in an agent that has usage (two taps, as a move). */
-.usage-continue {
+.usage-tools {
   display: flex;
-  flex-wrap: wrap;
+  grid-column: 1 / -1;
   align-items: center;
-  gap: 6px 10px;
-  margin: -4px 6px 8px;
-  padding: 0 4px 0 10px;
-  color: var(--as-muted);
-  font-size: 12.5px;
-  line-height: 1.35;
-}
-.usage-continue-text {
-  flex: 1 1 12em;
   min-width: 0;
 }
-.usage-continue-offer {
+.usage-tools:empty {
+  display: none;
+}
+.usage-continue {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.usage-continue.confirming {
+  gap: 4px 8px;
+}
+.usage-continue-text {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.usage-continue-offer,
+.usage-notify {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 0 12px 0 8px;
-  border: 1px solid color-mix(in srgb, var(--as-text) 18%, transparent);
-  border-radius: 999px;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
   background: none;
   color: var(--as-text);
   font: inherit;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.usage-continue-offer > svg,
+.usage-continue-offer > .agent-logo,
+.usage-notify > svg {
+  flex-shrink: 0;
+}
+.usage-continue-offer > span {
+  min-width: 0;
+}
+.usage-auto-continue {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--as-muted);
+}
+.usage-auto-continue,
+.usage-notify {
+  margin-left: auto;
+  padding-inline: 0;
+}
+.usage-notify {
+  position: relative;
+  white-space: nowrap;
+  color: var(--as-muted);
+}
+.usage-notify + .usage-auto-continue {
+  margin-left: 0;
+}
+.usage-auto-continue.on,
+.usage-notify.on {
+  color: #6fd89b;
+}
+@media (max-width: 360px) {
+  .usage-continue {
+    gap: 0 8px;
+  }
+  .usage-continue-offer:not(.usage-auto-continue) > .agent-logo,
+  .usage-continue-offer:not(.usage-auto-continue) > svg,
+  .usage-auto-refresh,
+  .usage-notify > svg:not(.usage-notify-spinner) {
+    display: none;
+  }
+  .usage-continue-offer {
+    padding-inline: 0;
+  }
+  .usage-notify-spinner {
+    position: absolute;
+    top: 0;
+    left: calc(50% - 6px);
+    width: 12px;
+    height: 12px;
+  }
+}
+.usage-panel button:focus-visible,
+.usage-panel a:focus-visible {
+  outline: 2px solid var(--as-text);
+  outline-offset: -2px;
+}
+.usage-panel button:disabled {
+  opacity: 0.5;
+}
+.usage-panel button:not(:disabled):active,
+.usage-panel a:active {
+  background: color-mix(in srgb, var(--as-text) 8%, transparent);
+}
+@media (hover: hover) {
+  .usage-panel button:not(:disabled):hover,
+  .usage-panel a:hover {
+    background: color-mix(in srgb, var(--as-text) 7%, transparent);
+  }
 }
 
 /* "Your Mac needs you" (AgentSession.tsx): a small sign in the chat's header. */
@@ -86,8 +196,4 @@
   font-size: 10px;
   font-weight: 700;
   line-height: 15px;
-}
-/* Notify me when it's back (notify-back.ts): asked, it keeps a ringing bell. */
-.usage-notify.on {
-  color: var(--as-muted);
 }

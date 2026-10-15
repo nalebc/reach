@@ -27,6 +27,7 @@ export const suites = {
     "tap-clicks", "screen-double-click-ui",
     // Bug bash recovery: shared chat/file UI and native input refusals.
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
+    "agent-compatibility",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // The user journeys, workstream J: the built phone interface in headless
@@ -124,7 +125,9 @@ export const suites = {
     // ci.yml's real-Windows step and windows-validation.yml. A skip is not a pass.
     "windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e", "windows-agent-e2e",
     // Auto-continue: here when usage is back, or the first provider free (Oct 14).
-    "auto-continue",
+    "auto-continue", "across-agents-ui", "claude-usage-ui",
+    // Usage back on time when Claude's sign-in lapsed while unused (Oct 14).
+    "usage-watch", "account-usage",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

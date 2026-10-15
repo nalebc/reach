@@ -151,7 +151,7 @@ test("out of Codex usage, the chat continues in Claude Code in two taps and keep
   const opened = [];
   await open(codexSession(), both({ usable: false, resetsAt: Date.UTC(2026, 9, 16, 21, 25) }), { onSelect: (s) => opened.push(s) });
   const offer = await dom.waitFor(() => $(".usage-continue-offer"));
-  assert.equal(offer.textContent.trim(), "Continue in Claude Code");
+  assert.equal(offer.getAttribute("aria-label"), "Continue in Claude Code");
   // The first tap says what happens; nothing is sent yet.
   await click(offer);
   assert.match($(".usage-continue-text").textContent, /Claude Code picks up where Codex stopped and keeps working/);
@@ -168,7 +168,7 @@ test("an agent that is also out of usage isn't offered, and an old limit with us
   mac.pages[`codex:${CODEX}`].items = [limitError()];
   await open(codexSession(), both({ usable: false }, { usable: false }));
   await dom.waitFor(() => $(".usage-strip"));
-  assert.deepEqual($$(".usage-continue-offer").map((b) => b.textContent.trim()), ["Auto-continue"], "Claude Code is out too");
+  assert.deepEqual($$(".usage-continue-offer").map((b) => b.getAttribute("aria-label")), ["Auto-continue, off. Opens settings"], "Claude Code is out too");
   await views.splice(0)[0].unmount();
   // A day-old limit, Codex usable again: no strip at all.
   mac.pages[`codex:${CODEX}`].items = [limitError(Date.now() - 86400000)];
@@ -215,10 +215,15 @@ test("Continue here turns auto-continue on for this chat alone, and says so", as
   assert.deepEqual(dom.errors, []);
 });
 
-test("continuing here, out of usage, the chat says it waits to continue here", async () => {
+test("continuing here, out of usage, the enabled button replaces the waiting row", async () => {
   await open(codexSession(), both(), { relays: [relayOf({ trigger: "usage", priority: ["codex"], steps: [], holding: true })] });
-  const row = await dom.waitFor(() => $(".relay-row"));
-  assert.match(row.textContent, /Out of usage. Continues here when Codex is back./);
+  const auto = await dom.waitFor(() => $(".usage-auto-continue.on"));
+  assert.equal(auto.getAttribute("aria-pressed"), "true");
+  assert.equal(auto.getAttribute("aria-label"), "Auto-continue, on. Opens settings");
+  assert.equal($(".relay-row"), null);
+  await click(auto);
+  await dom.waitFor(() => $(".continue-on"));
+  assert.equal(choice("Continue here").getAttribute("aria-checked"), "true");
   assert.deepEqual(dom.errors, []);
 });
 
@@ -233,6 +238,48 @@ test("a move whose continue message couldn't go opens the new chat with it in th
   assert.equal(dom.window.sessionStorage.getItem(`reach-chat-draft:mac:claude:${NEW}`), "Continue where you left off.");
   assert.deepEqual(dom.errors, []);
 });
+
+for (const platform of ["darwin", "win32"]) {
+  for (const agent of ["claude", "codex"]) {
+    test(`already continued work opens the existing chat instead of offering another move (${agent}, ${platform}, mocked host)`, async () => {
+      const to = agent === "claude" ? "codex" : "claude";
+      const source = agent === "claude" ? claudeSession : codexSession;
+      const at = Date.now();
+      const session = source({ movedTo: [{ agent: to, id: NEW, at }] });
+      mac.pages[`${agent}:${session.id}`] = { session, items: [limitError(at - 1000)] };
+      const opened = [];
+      await open(session, both(agent === "codex" ? { usable: false } : {}, agent === "claude" ? { usable: false } : {}), {
+        peer: { ...peer, platform }, onSelect: (s) => opened.push(s),
+      });
+      const existing = await dom.waitFor(() => $(".usage-open-continuation"));
+      assert.equal($$(".as-error").length, 0, "the active native limit is merged into the recovery card");
+      assert.ok($(".usage-strip").contains(existing), "the existing continuation opens from that same card");
+      assert.equal(existing.getAttribute("aria-label"), `Open in ${to === "codex" ? "Codex" : "Claude Code"}`);
+      assert.equal($(".usage-auto-continue"), null);
+      assert.equal($$(".usage-continue-offer").length, 1);
+      await click(existing);
+      assert.deepEqual(opened.map(s => [s.agent, s.id]), [[to, NEW]]);
+      assert.deepEqual(mac.sent, [], "opening existing work never starts another move");
+      assert.deepEqual(dom.errors, []);
+    });
+  }
+}
+
+for (const fork of [false, true]) {
+  test(`${fork ? "a fork" : "an earlier continuation followed by new work"} keeps the current chat's continue controls`, async () => {
+    const at = Date.now();
+    const session = claudeSession({ movedTo: [{ agent: "codex", id: NEW, at: at - 2000, fork }] });
+    mac.pages[`claude:${CLAUDE}`] = { session, items: [
+      { id: "u1", role: "user", kind: "text", text: "Continue the work here", at: fork ? at - 3000 : at - 1000 },
+      limitError(fork ? at - 2500 : at - 500),
+    ] };
+    await open(session, both({}, { usable: false }));
+    await dom.waitFor(() => $(".usage-auto-continue"));
+    assert.equal($(".usage-open-continuation"), null);
+    assert.match($(".usage-continue-offer").getAttribute("aria-label"), /Continue in Codex/);
+    assert.deepEqual(dom.errors, []);
+  });
+}
 
 
 const relayOf = (extra = {}) => ({
@@ -1178,13 +1225,59 @@ test("a new order that can't start says auto-continue is off and offers to enabl
   assert.equal($(".as-auto-on"), null);
 });
 
-test("auto-continue shows as a row only once it acts: out of usage and waiting for a provider", async () => {
+test("waiting for a provider keeps auto-continue enabled in the usage panel", async () => {
   await open(codexSession(), both(), { relays: [relayOf({ trigger: "usage", priority: ["codex", "claude"], holding: true })] });
-  const row = await dom.waitFor(() => $(".relay-row"));
-  assert.match(row.textContent, /Out of usage. Waiting for the first free provider: Codex, Claude Code./);
+  await dom.waitFor(() => $(".usage-auto-continue.on"));
+  assert.equal($(".relay-row"), null);
   assert.equal($(".as-auto-on"), null);
+  await click($(".usage-auto-continue"));
+  await dom.waitFor(() => $(".continue-on"));
+  assert.equal(choice("Switch provider").getAttribute("aria-checked"), "true");
   assert.deepEqual(dom.errors, []);
 });
+
+for (const platform of ["darwin", "win32"]) {
+  test(`Claude usage controls keep their layout and enabled state through on/off (${platform}, mocked host)`, async t => {
+    routes["/api/sessions/relays"] = record("/api/sessions/relays");
+    routes["/api/sessions/relays/r1/cancel"] = record("/api/sessions/relays/r1/cancel");
+    t.after(() => {
+      delete routes["/api/sessions/relays"];
+      delete routes["/api/sessions/relays/r1/cancel"];
+    });
+    const waiting = relayOf({ trigger: "usage", priority: ["claude"], steps: [], holding: true,
+      chain: [{ agent: "claude", id: CLAUDE, title: "Refactor auth" }] });
+    mac.answers["/api/sessions/relays"] = { relay: waiting };
+    mac.answers["/api/sessions/relays/r1/cancel"] = { cancelled: true };
+    await open(claudeSession(), both({}, { usable: false, resetsAt: Date.now() + 3600000 }), { peer: { ...peer, platform } });
+    const auto = await dom.waitFor(() => $(".usage-auto-continue"));
+    assert.equal(auto.getAttribute("aria-pressed"), "false");
+    assert.equal(auto.textContent, "Auto-continue", "the control explains itself before it is enabled");
+    assert.equal(auto.getAttribute("aria-label"), "Auto-continue, off. Opens settings");
+    assert.ok($(".usage-panel").contains($(".usage-strip")));
+    assert.ok($(".usage-panel").contains($(".usage-continue")));
+    await click(auto);
+    await click(await dom.waitFor(() => button("Turn on")));
+    await dom.waitFor(() => $(".usage-auto-continue.on"));
+    assert.equal($(".usage-auto-continue"), auto, "the same button stays in place");
+    assert.equal(auto.getAttribute("aria-label"), "Auto-continue, on. Opens settings");
+    assert.equal(auto.textContent, "Auto-continue", "the visible label stays in place when enabled");
+    assert.ok(auto.querySelector(".usage-auto-check"), "a check communicates enabled state along with color");
+    assert.equal(auto.getAttribute("aria-pressed"), "true");
+    assert.equal($(".relay-row"), null, "no extra provider route or waiting copy");
+    assert.deepEqual(mac.sent[0].body, { from: { agent: "claude", id: CLAUDE }, priority: ["claude"], trigger: "usage" });
+    await click(auto);
+    await dom.waitFor(() => $(".continue-on"));
+    await click(button("Turn off"));
+    await dom.waitFor(() => !$(".relay-sheet"));
+    assert.equal(auto.getAttribute("aria-pressed"), "false");
+    assert.equal(auto.textContent, "Auto-continue");
+    assert.equal(auto.querySelector(".usage-auto-check"), null);
+    assert.equal(auto.classList.contains("on"), false);
+    assert.equal($(".relay-row"), null);
+    assert.equal(mac.sent.at(-1).route, "/api/sessions/relays/r1/cancel");
+    assert.deepEqual(dom.errors, []);
+  });
+}
 
 test("a chat that is already a continuation offers no auto-continue", async () => {
   await open(codexSession({ movedFrom: { agent: "claude", id: CLAUDE, title: "Refactor auth" } }), both());
