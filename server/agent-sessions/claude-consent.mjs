@@ -14,13 +14,20 @@ const exec = promisify(execFile);
 const bad = (message, status) => Object.assign(new Error(message), { status });
 // The card's buttons, worded as the app words them.
 export const CONSENT_CHOICES = { deny: "Deny", allow: "Allow for this session" };
+// A Windows PC has no helper that presses the card yet (the Mac's is Swift,
+// built with Apple's tools: asked for there, it told the PC's owner to install
+// them on a Mac). Said plainly instead, before anything is built, switched or
+// pressed; the card stays for the owner to answer at the PC.
+export const consentOnWindows = () =>
+  Object.assign(bad("Answer this in the Claude app on your Windows PC: Reach can't press its buttons from your phone there yet.", 409), { notDispatched: true, retry: false });
 
 // expect: texts the card must show (its question and apps), so only that
 // request's card is pressed.
 export async function pressClaudeConsent(
   choice,
-  { dataDir, expect = [], run = exec, binary = () => desktopBinary({ dataDir }, "claude-consent"), beforeDispatch = () => {} } = {},
+  { dataDir, expect = [], run = exec, binary = () => desktopBinary({ dataDir }, "claude-consent"), beforeDispatch = () => {}, platform = process.platform } = {},
 ) {
+  if (platform === "win32") throw consentOnWindows();
   let file;
   try {
     file = await binary();
@@ -70,6 +77,8 @@ export function createClaudeConsent({
     async answer(id, promptId, { decision } = {}) {
       const choice = CONSENT_CHOICES[decision];
       if (!choice) throw bad("Choose Deny or Allow for this session.", 400);
+      // Never a chat switched on the PC for a card nothing can press there.
+      if (platform === "win32") throw consentOnWindows();
       if (attempted.size >= 2048) throw bad(`Too many approval attempts. Answer on your ${computerWord(platform)}.`, 409);
       if (busy) throw bad("An answer is already being sent to the Claude app.", 409);
       const before = attempted.get(`${id}:${promptId}`);
