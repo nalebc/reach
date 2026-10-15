@@ -10,17 +10,27 @@ import "./tool-setup.css";
 // row once an agent's tool needed a browser that isn't set up, nothing
 // otherwise. Allow flips the browser's switch for you and asks macOS; its
 // prompt comes to Needs you, where you answer it.
+// On a Windows PC the same row and sheet: the tools run in Chrome or Edge
+// through Reach's extension. One button per browser: Add (its store page
+// opens there on the PC), Open (added, closed), Allow (it asks to connect).
+type Extension = "connected" | "asking" | "added" | "missing" | "unpublished";
 type Automation = "allowed" | "ask" | "off" | "closed" | "asking" | "unknown";
 type Browser = {
   id: string;
-  automation: Automation;
-  javascript: "on" | "off" | "unknown";
+  automation?: Automation;
+  javascript?: "on" | "off" | "unknown";
+  extension?: Extension;
   ready: boolean;
   // An agent's tool asked for this browser lately.
   needed: boolean;
   where: string;
 };
-type Setup = { available: boolean; browsers: Browser[]; problem?: string };
+type Setup = { available: boolean; platform?: string; browsers: Browser[]; problem?: string };
+const EXTENSION_ACTION: Partial<Record<Extension, [string, string]>> = {
+  asking: ["Allow", "Allowing…"],
+  missing: ["Add", "Opening…"],
+  added: ["Open", "Opening…"],
+};
 const AUTOMATION: Record<Automation, string> = {
   allowed: "On",
   ask: "Not asked yet",
@@ -71,14 +81,20 @@ export default function ToolBrowserSetup({
     const timer = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(timer);
   }, [open, load]);
+  // What the owner's tap did on the PC, said until the next look.
+  const [opened, setOpened] = useState<Record<string, string>>({});
   const act = async (browser: string, action: "enable" | "settings") => {
     setBusy(browser);
     try {
-      const result = await request<{ automation: Automation }>(peer, "/api/agents/tool-setup", {
+      const result = await request<{ automation?: Automation; extension?: Extension; opened?: boolean }>(peer, "/api/agents/tool-setup", {
         method: "POST",
         body: JSON.stringify({ browser, action }),
       });
       setAsking(result.automation === "asking" ? browser : "");
+      if (result.extension === "missing" && result.opened)
+        setOpened((was) => ({ ...was, [browser]: `The store page is open in ${browser} on the PC: click Add to ${browser} there.` }));
+      else if (result.extension === "added" && result.opened)
+        setOpened((was) => ({ ...was, [browser]: `${browser} is opening on the PC. Its extension connects once it's open.` }));
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -90,6 +106,7 @@ export default function ToolBrowserSetup({
   const needed = browsers.filter((browser) => browser.needed && !browser.ready);
   if (!needed.length) return null;
   const summary = `An agent's tool needs ${needed.map((browser) => browser.id).join(" and ")}`;
+  const windows = setup?.platform === "win32";
   return (
     <>
       <button
@@ -112,15 +129,52 @@ export default function ToolBrowserSetup({
       {open && (
         <ScreenPopup title="Browser tools" onClose={() => setOpen(false)}>
           <p className="ag-quiet">
-            Agents' ready-made tasks run in your own browser on the Mac. Allow
-            flips the browser's switch for you; macOS then asks you once.
+            {windows
+              ? "Agents' ready-made tasks run in your own browser on the PC, through Reach's extension. Add it once, then allow it here."
+              : "Agents' ready-made tasks run in your own browser on the Mac. Allow flips the browser's switch for you; macOS then asks you once."}
           </p>
           {(error || setup?.problem) && (
             <p role="alert" className="error">
               {error || setup?.problem}
             </p>
           )}
-          {browsers.map((browser) => (
+          {windows && browsers.map((browser) => {
+            const action = browser.extension ? EXTENSION_ACTION[browser.extension] : undefined;
+            return (
+              <section key={browser.id} className="ts-browser" aria-label={browser.id}>
+                <h4>
+                  {browser.id}
+                  {browser.ready ? (
+                    <span className="ts-ready">Ready</span>
+                  ) : action ? (
+                    <button
+                      type="button"
+                      className="ag-primary ag-small ts-allow"
+                      disabled={!!busy}
+                      onClick={() => void act(browser.id, "enable")}
+                    >
+                      {busy === browser.id ? action[1] : action[0]}
+                    </button>
+                  ) : null}
+                </h4>
+                {opened[browser.id] && !browser.ready && (
+                  <p className="ts-asking" role="status">
+                    {opened[browser.id]}
+                  </p>
+                )}
+                <div className="ts-step">
+                  <span className={`ts-mark${browser.ready ? " is-on" : ""}`} aria-hidden="true">
+                    {browser.ready ? <Check size={14} /> : "1"}
+                  </span>
+                  <span className="ts-words">
+                    <strong>Reach's extension in {browser.id}</strong>
+                    <small>{browser.where}</small>
+                  </span>
+                </div>
+              </section>
+            );
+          })}
+          {!windows && browsers.map((browser) => (
             <section key={browser.id} className="ts-browser" aria-label={browser.id}>
               <h4>
                 {browser.id}
@@ -148,7 +202,7 @@ export default function ToolBrowserSetup({
                 </span>
                 <span className="ts-words">
                   <strong>macOS lets Reach control {browser.id}</strong>
-                  <small>{AUTOMATION[browser.automation]}</small>
+                  <small>{AUTOMATION[browser.automation ?? "unknown"]}</small>
                 </span>
                 {browser.automation === "off" && (
                   <button
@@ -183,8 +237,9 @@ export default function ToolBrowserSetup({
             </section>
           ))}
           <p className="ag-quiet">
-            Once on, any app macOS lets control a browser can run scripts in
-            its tabs, signed-in ones included.
+            {windows
+              ? "The extension acts only for this PC's Reach, on the websites a saved tool names, and only after you allow it here."
+              : "Once on, any app macOS lets control a browser can run scripts in its tabs, signed-in ones included."}
           </p>
         </ScreenPopup>
       )}

@@ -225,3 +225,116 @@ test("one row while a browser needs you, a sheet with both switches, nothing onc
   await settle(20);
   await view.unmount();
 });
+
+// Windows (docs/parity/G-browser-tools.md): the same row and sheet, for
+// Chrome and Edge through Reach's extension. Mocked: the PC's folders, the
+// bridge and the browser start; real Chrome and Edge are in
+// windows-browser-tools-native.
+const windowsSetup = ({ live = {}, profiles = {}, stores, registerError } = {}) => {
+  const started = [], registered = [], approved = [];
+  const env = { ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", LOCALAPPDATA: "C:\\Users\\o\\AppData\\Local" };
+  const files = new Set(["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"]);
+  const state = { Chrome: { connected: false, asking: false, paired: false, ...live.Chrome }, Edge: { connected: false, asking: false, paired: false, ...live.Edge } };
+  const setup = createToolSetup({
+    platform: "win32", env,
+    exists: (file) => files.has(file) || Object.values(profiles).some((list) => list.some((entry) => file.endsWith(entry))),
+    list: (dir) => (dir.includes("Google") ? (profiles.Chrome ? ["Default"] : []) : (profiles.Edge ? ["Default"] : [])),
+    read: () => { throw Object.assign(Error("missing"), { code: "ENOENT" }); },
+    start: async (exe, url) => { started.push([exe, url]); return true; },
+    register: async () => { registered.push(true); if (registerError) throw registerError; return {}; },
+    extension: {
+      status: () => state,
+      approve: (browser) => { approved.push(browser); state[browser] = { connected: true, asking: false, paired: true }; return 1; },
+    },
+    wait: async () => {},
+    ...(stores ? { stores, ids: Object.values(stores).map((entry) => entry.id) } : {}),
+  });
+  return { setup, started, registered, approved, state };
+};
+
+test("Windows: Chrome and Edge as the PC has them; Reach registers its host; one tap allows, opens or adds", async () => {
+  const unpublished = windowsSetup();
+  const status = await unpublished.setup.status();
+  assert.equal(status.platform, "win32");
+  assert.deepEqual(status.browsers.map((b) => [b.id, b.extension, b.ready]), [["Chrome", "unpublished", false], ["Edge", "unpublished", false]]);
+  assert.match(status.browsers[1].where, /isn't in the Edge Add-ons yet/);
+  assert.equal(unpublished.registered.length, 1, "the host registered once, by Reach");
+  await unpublished.setup.status();
+  assert.equal(unpublished.registered.length, 1);
+  // Nothing to open while the store has no listing.
+  assert.deepEqual(await unpublished.setup.enable("Edge"), { id: "Edge", extension: "unpublished" });
+  assert.deepEqual(unpublished.started, []);
+  await assert.rejects(unpublished.setup.enable("Safari"), /Chrome or Edge, installed on this PC/);
+
+  // Published: Add opens the store page in that browser on the PC.
+  const stores = { Chrome: { id: "c".repeat(32), url: "https://chromewebstore.google.com/detail/reach/" + "c".repeat(32) }, Edge: { id: "e".repeat(32), url: "https://microsoftedge.microsoft.com/addons/detail/reach/" + "e".repeat(32) } };
+  const store = windowsSetup({ stores });
+  const edge = (await store.setup.status()).browsers.find((b) => b.id === "Edge");
+  assert.deepEqual([edge.extension, edge.store], ["missing", stores.Edge.url]);
+  assert.match(edge.where, /Add opens its store page there, then click Add to Edge/);
+  assert.deepEqual(await store.setup.enable("Edge"), { id: "Edge", extension: "missing", opened: true });
+  assert.deepEqual(store.started, [["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", stores.Edge.url]]);
+
+  // Added (on disk) but closed: Open starts the browser, nothing else.
+  const added = windowsSetup({ stores, profiles: { Chrome: [`Extensions\\${"c".repeat(32)}`] } });
+  assert.equal((await added.setup.status()).browsers[0].extension, "added");
+  assert.deepEqual(await added.setup.enable("Chrome"), { id: "Chrome", extension: "added", opened: true });
+  assert.deepEqual(added.started, [["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", undefined]]);
+
+  // Asking: the owner's tap pairs it, and it's ready.
+  const asking = windowsSetup({ live: { Edge: { asking: true } } });
+  assert.match((await asking.setup.status()).browsers[1].where, /Edge asks to connect/);
+  assert.deepEqual(await asking.setup.enable("Edge"), { id: "Edge", extension: "connected" });
+  assert.deepEqual(asking.approved, ["Edge"]);
+  assert.deepEqual(asking.started, []);
+  const ready = (await asking.setup.status()).browsers[1];
+  assert.deepEqual([ready.extension, ready.ready, ready.where], ["connected", true, "Ready"]);
+
+  // An agent's tool needed Edge: the owner hears once an hour.
+  assert.equal(asking.setup.needed("Edge"), true);
+  assert.equal(asking.setup.needed("Edge"), false);
+  assert.equal(asking.setup.needed("Safari"), false);
+  assert.equal((await asking.setup.status()).browsers[1].needed, true);
+});
+
+test("Windows: a host that can't be registered is said, the browsers still listed, and tried again", async () => {
+  const broken = windowsSetup({ registerError: Object.assign(Error("Windows refused to run its C# compiler."), { status: 503 }) });
+  const status = await broken.setup.status();
+  assert.equal(status.problem, "Windows refused to run its C# compiler.");
+  assert.equal(status.browsers.length, 2);
+  await broken.setup.status();
+  assert.equal(broken.registered.length, 2, "tried again, not kept as failed");
+  await assert.rejects(broken.setup.enable("Edge"), (e) => e.status === 503);
+});
+
+test("Windows sheet: one button per browser, the store page opened on the PC, Ready once connected", async () => {
+  const posts = [];
+  let edge = { extension: "missing", ready: false, where: "Add Reach's extension to Edge: Add opens its store page there, then click Add to Edge." };
+  globalThis.fetch = dom.window.fetch = async (url, init = {}) => {
+    const reply = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (init.method === "POST") { posts.push(JSON.parse(init.body)); return reply({ id: "Edge", extension: "missing", opened: true }); }
+    return reply({ available: true, platform: "win32", browsers: [
+      { id: "Chrome", extension: "asking", ready: false, needed: true, where: "Chrome asks to connect: Allow, and agents' tools run there." },
+      { id: "Edge", ...edge, needed: true },
+    ] });
+  };
+  const peer = { id: "pc", name: "My PC", url: "https://pc.tail.ts.net:8443", token: "owner", platform: "win32" };
+  const view = await dom.render(React.createElement(ToolBrowserSetup, { peer }));
+  const c = view.container;
+  await dom.waitFor(() => c.textContent.includes("Browser tools"));
+  assert.match(c.querySelector(".ts-row").textContent, /An agent's tool needs Chrome and Edge/);
+  c.querySelector(".ts-row").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  const body = c.ownerDocument.body;
+  await dom.waitFor(() => body.textContent.includes("Reach's extension in Edge"));
+  assert.ok(!body.textContent.includes("macOS"), "no Mac words on a PC");
+  const button = (section, label) => [...body.querySelectorAll(`section[aria-label="${section}"] button`)].find((b) => b.textContent.trim() === label);
+  assert.ok(button("Chrome", "Allow"));
+  assert.ok(button("Edge", "Add"));
+  button("Edge", "Add").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await dom.waitFor(() => body.textContent.includes("The store page is open in Edge on the PC"));
+  assert.deepEqual(posts, [{ browser: "Edge", action: "enable" }]);
+  edge = { extension: "connected", ready: true, where: "Ready" };
+  await dom.waitFor(() => body.querySelector('section[aria-label="Edge"] .ts-ready'));
+  await settle(20);
+  await view.unmount();
+});

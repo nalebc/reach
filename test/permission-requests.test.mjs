@@ -114,3 +114,27 @@ test("a runtime that named itself lately isn't told it's out of date on a call t
   const stranger = { id: "rt-2", kind: "agent" };
   assert.ok(updateNotice({ client: stranger, req: { headers: {}, query: {} }, served: sha, host: "mac.example" }).update, "a copy that never named itself still hears it");
 });
+
+test("Windows: an agent asks for browser tools in Edge; Allow lets the extension connect or opens its store page, in the PC's words", async () => {
+  const enabled = [];
+  let answer = { id: "Edge", extension: "missing", opened: true };
+  const permissions = createPermissionRequests({
+    platform: "win32",
+    toolSetup: {
+      status: async () => ({ browsers: [{ id: "Chrome", ready: false }, { id: "Edge", ready: false }] }),
+      enable: async (id) => { enabled.push(id); return answer; },
+    },
+    notify: () => {},
+  });
+  await assert.rejects(permissions.request(asAgent, { need: "browser-tools", browser: "Safari", reason: "x" }), /Name the browser: Chrome or Edge/);
+  const asked = await permissions.request(asAgent, { need: "browser-tools", browser: "Edge", reason: "Compare prices with the saved tool." });
+  const [card] = permissions.list(asOwner).permissions;
+  assert.match(card.allowDoes, /Reach's extension in Edge connect, or opens its store page in Edge on the PC/);
+  assert.doesNotMatch(card.allowDoes, /macOS|Apple Events/);
+  const allowed = await permissions.decide(asOwner, asked.id, { decision: "allow" });
+  assert.deepEqual(enabled, ["Edge"]);
+  assert.match(allowed.next, /store page is open in Edge on the PC: click Add to Edge/);
+  answer = { id: "Chrome", extension: "connected" };
+  const chrome = await permissions.request(() => ({ ...agent, id: "a2" }), { need: "browser-tools", browser: "Chrome", reason: "Same tool in Chrome." });
+  assert.equal((await permissions.decide(asOwner, chrome.id, { decision: "allow" })).next, "Chrome is ready for browser tools.");
+});

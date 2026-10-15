@@ -307,8 +307,14 @@
         /* already closed */
       }
     }
-    async function connect() {
-      if (port) return;
+    // One port at a time, however many events ask for it at once.
+    let connecting = null;
+    function connect() {
+      if (port) return Promise.resolve();
+      if (!connecting) connecting = open().finally(() => { connecting = null; });
+      return connecting;
+    }
+    async function open() {
       await load();
       try {
         port = chrome.runtime.connectNative(HOST);
