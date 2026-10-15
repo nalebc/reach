@@ -95,7 +95,8 @@ import {
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
-import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { RemoteScreenHub, screenTrouble } from "./remote-screen.mjs";
+import { createWindowsGuestScreen, guestRules, refuseGuest } from "./windows-guest-screen.mjs";
 import { SoundHub, soundPreparer } from "./screen-sound.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
@@ -563,12 +564,44 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.macTerminalWatch,
   });
+  // A Windows PC's guests watch with the private windows painted black, by
+  // Windows' video helper built in the folder Reach made private this start
+  // (scripts/launch.mjs), once a check says this PC can
+  // (server/windows-guest-screen.mjs). Tests inject a stand-in.
+  const windowsGuestScreen =
+    overrides.windowsGuestScreen !== undefined
+      ? overrides.windowsGuestScreen
+      : process.platform === "win32"
+        ? createWindowsGuestScreen({
+            helper: overrides.windowsGuestScreenHelper || null,
+            off: overrides.windowsHelpersOff
+              ? "Reach couldn't make its folders private on this PC, so it can't prepare the helper that hides private windows from guests."
+              : "",
+            rules: () => guestRules({ hosts: reachAddresses(config), titles: ["reach"] }),
+          })
+        : null;
+  // Whether guests' pictures can be made here (capabilities' guestScreen):
+  // the check's answer, waited for a few seconds at most (a cold build
+  // mustn't hold the page); not known yet is no.
+  const guestViewReady = async () => {
+    if (!windowsGuestScreen) return false;
+    const known = await Promise.race([
+      windowsGuestScreen.probe(),
+      new Promise((resolve) => setTimeout(resolve, 3000, null).unref?.()),
+    ]);
+    return known?.ok === true;
+  };
+  // A viewer who isn't the owner, where they can't watch or control: refused
+  // with why.
+  const refuseGuestScreen = (client) =>
+    refuseGuest(!actsAsOwner(client), overrides.platform || process.platform, windowsGuestScreen);
   const screenStreams = new ScreenBroadcast(
-    overrides.screenStreamFactory || (() => createScreenSource(config)),
+    overrides.screenStreamFactory || (() => createScreenSource(config, { guestScreen: windowsGuestScreen })),
   );
   const remoteScreens = new RemoteScreenHub(
     config,
     overrides.remoteScreenFactory,
+    { guestScreen: windowsGuestScreen },
   );
   // The computer's sound, for the phones listening beside its live screen
   // (server/screen-sound.mjs): one capture for all of them.
@@ -1143,7 +1176,7 @@ export async function createReach(overrides = {}) {
   // bounded to 1600 pixels wide. Approval evidence and execution checks keep
   // using browserCapture's independent, full-resolution fresh captures.
   const browserScreenSnapshots = new BrowserScreenSnapshots(
-    overrides.browserScreenFactory || (() => createScreenSource(config)),
+    overrides.browserScreenFactory || (() => createScreenSource(config, { guestScreen: windowsGuestScreen })),
     { fallback: () => (overrides.browserCapture || screenCapture)(config) },
   );
   const browserViewCapture = async (authorize) => {
@@ -2149,6 +2182,7 @@ export async function createReach(overrides = {}) {
         scopes: req.client.scopes,
         screen: config.screen,
         codexInstalled: tools?.codex.installed,
+        ...((overrides.platform || process.platform) === "win32" && { guestView: await guestViewReady() }),
       }),
       ...(tools && { tools }),
       host: loadJson(hostFile, null),
@@ -4853,8 +4887,9 @@ export async function createReach(overrides = {}) {
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body?.enabled)
       throw fail(403, "Turn on screen viewing first.");
-    if (req.body?.enabled && privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
-      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    // Control only where they could watch: never blind (Windows: once Reach
+    // can hide private windows there).
+    if (req.body?.enabled) refuseGuestScreen(req.client);
     let lease;
     try {
       lease = screenControl.acquire(req.client, req.body?.enabled, {
@@ -4884,8 +4919,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/screen/input", async (req, res) => {
     if (!config.screen) throw fail(403, "Screen viewing is off.");
-    if (privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
-      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    refuseGuestScreen(req.client);
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
@@ -5320,6 +5354,7 @@ export async function createReach(overrides = {}) {
         control: screenControl,
         create: overrides.desktopInputFactory,
         platform: overrides.platform || process.platform,
+        guestScreen: windowsGuestScreen,
         // Each input that reached the Mac: agents wait while you use it.
         used: ownerUsed,
         // A phone app's hidden display: only for those that app is shared with.
@@ -5447,10 +5482,10 @@ export async function createReach(overrides = {}) {
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
             notPaused();
-            // Every protocol, the old one too: guests' pictures can't be
-            // filtered off a Mac yet (remote-screen.mjs).
-            if (privateViewRefused(!actsAsOwner(client), overrides.platform || process.platform))
-              throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+            // Every protocol, the old one too: a Windows PC that can't
+            // hide private windows from guests yet says why
+            // (server/windows-guest-screen.mjs).
+            refuseGuestScreen(client);
             credential = message.token;
             ws.clientId = client.id;
             if (appWindow) ws.appThread = message.thread;
