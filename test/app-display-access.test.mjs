@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { guestRefusal } from "../server/windows-guest-screen.mjs";
 
 // The hidden displays Reach makes for apps on phones are not the Screen tab's:
 // watched whole over /ws/screen, only by someone who may use that app. The
@@ -128,21 +129,34 @@ test("an app's hidden display streams only to its owner and to guests allowed th
   ]);
 });
 
-// Windows' capture can't leave password managers and Reach's windows out of
-// a guest's picture yet (docs/parity/AUDIT.md #12): a guest is refused with
-// the reason, on the old protocol too, and nothing is captured for them.
-test("on a Windows Reach a screen guest is refused the live screen; the owner still watches", async (t) => {
+// A Windows PC paints password managers and Reach's windows black in a
+// guest's picture (docs/parity/AUDIT.md #12, server/windows-guest-screen.mjs).
+// Its check is a stand-in here (no real screen is captured): while it says
+// this PC can, a screen guest watches in a stream of their own and takes
+// control, as on a Mac; while it says it can't, the guest is refused with the
+// reason, on the old protocol too, nothing is captured for them, and their
+// phone shows no Screen. The owner watches either way.
+test("on a Windows Reach a screen guest watches and controls once Reach can hide private windows there, and is refused with why when it can't; the owner always watches", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-guest-screen-win-"));
   const prepared = [];
+  let check = { ok: true };
   const reach = await createReach({
     roots: [dir],
     dataDir: path.join(dir, "private"),
     screen: true,
     platform: "win32",
+    windowsGuestScreen: {
+      probe: async () => check,
+      refusal: () => (check.ok ? "" : guestRefusal(check.why)),
+      source: async () => {
+        throw Error("Streams here come from remoteScreenFactory.");
+      },
+    },
     remoteScreenFactory: async (options, { privateView }) => {
       prepared.push(privateView);
       return () => ({ next: async () => Buffer.from("frame"), stop() {} });
     },
+    screenStreamFactory: async () => () => ({ next: async () => Buffer.from("legacy"), stop() {} }),
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}`;
@@ -168,21 +182,40 @@ test("on a Windows Reach a screen guest is refused the live screen; the owner st
     ws.send(JSON.stringify({ type: "auth", token, ...(protocol && { protocol, display: "1", format: "h264" }) }));
     await until(() => closed || messages.some((m) => Buffer.isBuffer(m) || m.type === "error" || m.type === "ready"));
     const error = messages.find((m) => !Buffer.isBuffer(m) && m.type === "error");
+    if (!error) ws.terminate();
     return error?.error || closed?.reason || "streamed";
   };
+  const control = (enabled) =>
+    fetch(url + "/api/screen/control", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${guest}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+  const device = (token) => fetch(url + "/api/device", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+
+  // It can: as on a Mac.
   assert.equal(await watch(owner.token, 2), "streamed");
-  assert.match(await watch(guest, 2), /owner can watch or control its screen/);
+  assert.equal(await watch(guest, 2), "streamed");
+  assert.equal(await watch(guest), "streamed", "the old protocol's one picture is always the hidden one");
+  assert.deepEqual(prepared, [false, true], "the guest's picture is a stream of its own, with the private windows hidden");
+  const took = await control(true);
+  assert.equal(took.status, 200, await took.clone().text());
+  assert.equal((await control(false)).status, 200);
+  const seen = await device(guest);
+  assert.deepEqual([seen.capabilities.screen, seen.capabilities.screenSupported], [true, true]);
+  assert.equal((await device(owner.token)).capabilities.guestScreen, true, "the owner's invite sheet offers screen roles");
+
+  // It can't (the check failed, or the helper gave up): refused, with why.
+  check = { ok: false, why: "Screen capture could not hide private windows. Windows wouldn't list every window." };
+  prepared.length = 0;
+  assert.equal(await watch(owner.token, 2), "streamed");
+  assert.match(await watch(guest, 2), /owner can watch or control its screen right now: Screen capture could not hide private windows\. Windows wouldn't list every window\./);
   assert.match(await watch(guest), /owner can watch or control its screen/);
-  assert.deepEqual(prepared, [false], "nothing is prepared for the guest");
-  // Nor control: taking it, or a single action, is refused the same way.
-  const take = await fetch(url + "/api/screen/control", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${guest}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled: true }),
-  });
-  assert.equal(take.status, 403);
-  assert.match((await take.json()).error, /owner can watch or control/);
-  // Their phone shows no Screen at all.
-  const device = await fetch(url + "/api/device", { headers: { Authorization: `Bearer ${guest}` } }).then((r) => r.json());
-  assert.deepEqual([device.capabilities.screen, device.capabilities.screenSupported], [false, false]);
+  assert.equal(prepared.includes(true), false, "nothing is prepared for the guest");
+  const refused = await control(true);
+  assert.equal(refused.status, 403);
+  assert.match((await refused.json()).error, /owner can watch or control/);
+  const off = await device(guest);
+  assert.deepEqual([off.capabilities.screen, off.capabilities.screenSupported], [false, false]);
+  assert.equal((await device(owner.token)).capabilities.guestScreen, false);
 });

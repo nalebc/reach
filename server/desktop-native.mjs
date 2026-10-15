@@ -30,6 +30,11 @@ const CSC_FLAGS = ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/
 // every .NET Framework 4 has (the runner had it in neither the framework's
 // own folder, Oct 13).
 const EXTRA_REFERENCES = { transcribe: ["System.Speech.dll"] };
+// What one helper is built from beyond its own file, and which Main it runs:
+// Windows' video helper paints a guest's private windows black with the
+// agent desktop's own reading of them (scripts/native/screen-video.cs
+// GuestView), so both decide alike from one copy of that code.
+const EXTRA_SOURCES = { "screen-video": { sources: ["agent-desktop.cs"], main: "ReachVideo.ReachScreenVideo" } };
 const extraCandidates = (framework, name, env) => {
   const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR ?? "C:\\Windows";
   const assembly = name.replace(/\.dll$/i, "");
@@ -54,9 +59,9 @@ const refusedToStart = (error) => /^spawn/.test(error?.syscall || "") && ["EACCE
 // builds) and builtWindowsHelper (which only looks). Any change to the source
 // or the build names a new file, so a stale one is never run.
 function helperPlan(kind, { dir, target = "exe", fresh = false } = {}) {
-  const flags = CSC_FLAGS.map((flag) => (flag === "/target:exe" ? `/target:${target}` : flag));
-  const sourceFile = path.join(native, `${kind}.cs`);
-  const source = readFileSync(sourceFile);
+  const built = EXTRA_SOURCES[kind];
+  const flags = [...CSC_FLAGS.map((flag) => (flag === "/target:exe" ? `/target:${target}` : flag)), ...(built ? [`/main:${built.main}`] : [])];
+  const sourceFiles = [path.join(native, `${kind}.cs`), ...(built?.sources || []).map((name) => path.join(native, name))];
   const extras = EXTRA_REFERENCES[kind] || [];
   // A helper may have a manifest beside it (scripts/native/<kind>.manifest:
   // its DPI awareness, never administrator rights), built into it and part
@@ -68,11 +73,13 @@ function helperPlan(kind, { dir, target = "exe", fresh = false } = {}) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const digest = crypto.createHash("sha256").update(source).update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES]));
+  const digest = crypto.createHash("sha256");
+  for (const file of sourceFiles) digest.update(readFileSync(file));
+  digest.update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES]));
   if (manifest) digest.update(manifest);
   const hash = digest.digest("hex").slice(0, 12);
   const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
-  return { flags, sourceFile, extras, manifest, manifestFile, file };
+  return { flags, sourceFiles, extras, manifest, manifestFile, file };
 }
 // A helper for a security check (windowsHelper), resolved without ever
 // compiling: its path and noted SHA-256 when it's already built in `dir` and
@@ -110,7 +117,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
   // Its source and how it's built name it (helperPlan): any change to either
   // rebuilds it. `fresh` gives it a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
-  const { flags, sourceFile, extras, manifest, manifestFile, file } = helperPlan(kind, { dir, target, fresh });
+  const { flags, sourceFiles, extras, manifest, manifestFile, file } = helperPlan(kind, { dir, target, fresh });
   // A cached build its caller no longer trusts (windowsHelper): built again.
   if (existsSync(file) && rebuild(file)) await fs.rm(file, { force: true });
   let framework = null;
@@ -128,7 +135,7 @@ export async function windowsBinary(config, kind, { signal, run = exec, exists =
         `/out:${tmp}`,
         ...REFERENCES.map((name) => `/reference:${path.win32.join(framework, name)}`),
         ...extras.map((name) => `/reference:${extraCandidates(framework, name, env).find((file) => exists(file)) || path.win32.join(framework, name)}`),
-        sourceFile,
+        ...sourceFiles,
       ],
     });
     signal?.throwIfAborted();

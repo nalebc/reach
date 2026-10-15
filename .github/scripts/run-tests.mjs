@@ -81,6 +81,12 @@ export const suites = {
     // screen, decoded by Chrome's WebCodecs, when REACH_TEST_WINDOWS_DESKTOP is set.
     "windows-video", "screen-video-kind-ui", "remote-screen-client", "remote-screen-hub",
     "windows-screen-video-native",
+    // Guests' live screen, workstream P (audit #12, #13): private windows
+    // painted black in a guest's picture, guests let in once this PC's check
+    // passes, and the invite sheet offering screen roles then (the real
+    // pictures in windows-screen-video-native, the concealed clipboard in
+    // windows-desktop-input-native, with REACH_TEST_WINDOWS_DESKTOP).
+    "app-display-access", "invite-ui",
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
