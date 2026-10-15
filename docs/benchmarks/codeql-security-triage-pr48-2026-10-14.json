@@ -1,0 +1,408 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-14",
+  "pullRequest": 48,
+  "scope": "CodeQL alerts open on PR #48 (Windows parity + usage recovery); dismissals approved by the owner on 2026-10-14",
+  "countsByDecision": {
+    "code-changed": 4,
+    "dismiss": 36
+  },
+  "alerts": [
+    {
+      "number": 267,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/267",
+      "rule": "js/xss-through-dom",
+      "severity": "high",
+      "at": "src/EverythingChat.tsx:619",
+      "decision": "dismiss",
+      "dismissedReason": "false positive",
+      "reason": "As #14: the image src is previewUrl(), which only passes blob: URLs made on the phone by URL.createObjectURL from the person's own picked file."
+    },
+    {
+      "number": 268,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/268",
+      "rule": "js/double-escaping",
+      "severity": "high",
+      "at": "test/windows-background.test.mjs:120",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: decodes the two XML entities the task XML writer produces, to compare the argument list; not an escaping step."
+    },
+    {
+      "number": 269,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/269",
+      "rule": "js/incomplete-sanitization",
+      "severity": "high",
+      "at": "scripts/instances.mjs:340",
+      "decision": "code-changed",
+      "reason": "Every backslash in the entry path is turned (/\\\\/g), not just the first."
+    },
+    {
+      "number": 270,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/270",
+      "rule": "js/incomplete-sanitization",
+      "severity": "high",
+      "at": "scripts/stop.mjs:454",
+      "decision": "dismiss",
+      "dismissedReason": "false positive",
+      "reason": "Same Windows Terminal rule as #271: every \";\" in Reach's own state folder is escaped as \"\\;\", always literal to wt; the path is Reach's, checked for % and quotes."
+    },
+    {
+      "number": 271,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/271",
+      "rule": "js/incomplete-sanitization",
+      "severity": "high",
+      "at": "server/windows-terminals.mjs:37",
+      "decision": "dismiss",
+      "dismissedReason": "false positive",
+      "reason": "wtEscape turns every \";\" into \"\\;\", which Windows Terminal always reads as a literal \";\"; a backslash has no other meaning to wt, so no input can split the tab's command."
+    },
+    {
+      "number": 272,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/272",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/helpers/fake-tailscale.mjs:70",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 273,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/273",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/helpers/journey.mjs:504",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 274,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/274",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/helpers/journey.mjs:504",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 275,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/275",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/helpers/journey.mjs:622",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 276,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/276",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/apps.test.mjs:55",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 277,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/277",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/apps.test.mjs:59",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 278,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/278",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/files.test.mjs:78",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 279,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/279",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/terminals.test.mjs:28",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 280,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/280",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/terminals.test.mjs:49",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 281,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/281",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/terminals.test.mjs:62",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 282,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/282",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/journeys/terminals.test.mjs:71",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 283,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/283",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:56",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 284,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/284",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:57",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 285,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/285",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:63",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 286,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/286",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:63",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 287,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/287",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:63",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 288,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/288",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:63",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 289,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/289",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:63",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 290,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/290",
+      "rule": "js/bad-code-sanitization",
+      "severity": "medium",
+      "at": "test/windows-sign-in-launch.test.mjs:64",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: builds a page or module script for the test's own browser or fake; every value is the test's own, inserted with JSON.stringify. Nothing reaches Reach."
+    },
+    {
+      "number": 291,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/291",
+      "rule": "js/missing-rate-limiting",
+      "severity": "high",
+      "at": "server/index.mjs:3269",
+      "decision": "code-changed",
+      "reason": "POST /api/jobs now has a per-device/agent limit (120 a minute); each job starts a process."
+    },
+    {
+      "number": 292,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/292",
+      "rule": "js/insecure-temporary-file",
+      "severity": "high",
+      "at": "test/helpers/journey.mjs:58",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a lock and an input mark that journey test processes on the same CI machine share on purpose, in the OS temp folder."
+    },
+    {
+      "number": 293,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/293",
+      "rule": "js/insecure-temporary-file",
+      "severity": "high",
+      "at": "test/helpers/journey.mjs:69",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a lock and an input mark that journey test processes on the same CI machine share on purpose, in the OS temp folder."
+    },
+    {
+      "number": 294,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/294",
+      "rule": "js/file-system-race",
+      "severity": "high",
+      "at": "scripts/background-service.mjs:410",
+      "decision": "code-changed",
+      "reason": "The previous state file is read once (readIfThere), never checked first."
+    },
+    {
+      "number": 295,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/295",
+      "rule": "js/file-system-race",
+      "severity": "high",
+      "at": "scripts/setup-stamp.mjs:19",
+      "decision": "code-changed",
+      "reason": "digest() reads each path with one statSync({throwIfNoEntry:false}); no exists-then-stat."
+    },
+    {
+      "number": 296,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/296",
+      "rule": "js/file-system-race",
+      "severity": "high",
+      "at": "test/instances.test.mjs:452",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: the test arranges files in its own temporary folder; no other process races it."
+    },
+    {
+      "number": 297,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/297",
+      "rule": "js/file-system-race",
+      "severity": "high",
+      "at": "test/windows-background.test.mjs:230",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: the test arranges files in its own temporary folder; no other process races it."
+    },
+    {
+      "number": 298,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/298",
+      "rule": "js/file-system-race",
+      "severity": "high",
+      "at": "test/windows-native-build.test.mjs:205",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: the test arranges files in its own temporary folder; no other process races it."
+    },
+    {
+      "number": 299,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/299",
+      "rule": "js/file-access-to-http",
+      "severity": "medium",
+      "at": "test/windows-quiet-background.test.mjs:122",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: the test reads the pairing code its own Reach wrote and pairs with that same local Reach."
+    },
+    {
+      "number": 300,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/300",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "scripts/runtime.mjs:70",
+      "decision": "dismiss",
+      "dismissedReason": "false positive",
+      "reason": "As #209: the Node.js archive comes from the fixed nodejs.org URL with redirects refused and is written only after its SHA-256 equals the pinned one."
+    },
+    {
+      "number": 301,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/301",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "server/openclaw.mjs:2326",
+      "decision": "dismiss",
+      "dismissedReason": "won't fix",
+      "reason": "Intended, as #216: same token file as #302, the Windows path that recreates it and sets the owner-only ACL first."
+    },
+    {
+      "number": 302,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/302",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "server/openclaw.mjs:2329",
+      "decision": "dismiss",
+      "dismissedReason": "won't fix",
+      "reason": "Intended, as #216: the owner sets up an OpenClaw channel from the phone and its bot token is written to OpenClaw's own token file, made new, empty, owner-only (ACL on Windows, 0600 elsewhere) before the token is written."
+    },
+    {
+      "number": 303,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/303",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "test/helpers/windows-terminal-portable.mjs:66",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a CI test downloads a fixed vendor artifact (checked for signature/size afterwards) or writes its own report into reports/."
+    },
+    {
+      "number": 304,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/304",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "test/windows-claude-app-real.test.mjs:41",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a CI test downloads a fixed vendor artifact (checked for signature/size afterwards) or writes its own report into reports/."
+    },
+    {
+      "number": 305,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/305",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "test/windows-claude-app-real.test.mjs:46",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a CI test downloads a fixed vendor artifact (checked for signature/size afterwards) or writes its own report into reports/."
+    },
+    {
+      "number": 306,
+      "url": "https://github.com/nalebc/reach/security/code-scanning/306",
+      "rule": "js/http-to-file-access",
+      "severity": "medium",
+      "at": "test/windows-tailscaled-peer.test.mjs:595",
+      "decision": "dismiss",
+      "dismissedReason": "used in tests",
+      "reason": "Test-only: a CI test downloads a fixed vendor artifact (checked for signature/size afterwards) or writes its own report into reports/."
+    }
+  ]
+}
