@@ -12,6 +12,7 @@ import path from "node:path";
 import { fail } from "./core.mjs";
 import { desktopBinary } from "./desktop-native.mjs";
 import { TOOL_BROWSERS } from "./tool-protocol.mjs";
+import { EXTENSION_STORES, extensionIds } from "./browser-extension-ids.mjs";
 
 const APPS = { Chrome: "/Applications/Google Chrome.app", Safari: "/Applications/Safari.app" };
 // The browser's own switch, in its menus (reached through Accessibility).
@@ -75,7 +76,134 @@ const writeDefault = (domain, key) => new Promise((resolve) => {
 });
 
 const NEEDED_MS = 7 * 86400_000;
-export function createToolSetup({
+
+// On Windows, saved tools run in Chrome and Edge through Reach's extension
+// (docs/parity/G-browser-tools.md). Reach registers its native host by
+// itself; the owner adds the extension from the store (one tap opens the
+// store page in that browser on the PC) and allows it once, here.
+const WINDOWS_BROWSERS = {
+  Chrome: { program: ["Google", "Chrome", "Application", "chrome.exe"], profiles: ["Google", "Chrome", "User Data"], store: "Chrome Web Store" },
+  Edge: { program: ["Microsoft", "Edge", "Application", "msedge.exe"], profiles: ["Microsoft", "Edge", "User Data"], store: "Edge Add-ons" },
+};
+export const EXTENSION_WORDS = {
+  connected: "Ready",
+  asking: (id) => `${id} asks to connect: Allow, and agents' tools run there.`,
+  added: (id) => `Added. Open ${id} on the PC to connect it.`,
+  missing: (id) => `Add Reach's extension to ${id}: Add opens its store page there, then click Add to ${id}.`,
+  unpublished: (id) => `Reach's extension isn't in the ${WINDOWS_BROWSERS[id].store} yet.`,
+};
+// A browser started for the owner on the PC, with one address or none.
+const startBrowser = (exe, url) => new Promise((resolve) => {
+  const child = spawn(exe, url ? [url] : [], { stdio: "ignore", detached: true, windowsHide: false });
+  child.on("error", () => resolve(false));
+  child.on("spawn", () => {
+    child.unref();
+    resolve(true);
+  });
+});
+function createWindowsToolSetup({
+  config, extension, register, env = process.env, exists = fs.existsSync, read = (file) => fs.readFileSync(file, "utf8"),
+  list = (dir) => fs.readdirSync(dir), start = startBrowser, stores = EXTENSION_STORES, ids = extensionIds(stores), now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
+  const needs = new Map(), told = new Map();
+  let registered = null, problem = null;
+  const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
+  const program = (id) => roots.map((root) => path.win32.join(root, ...WINDOWS_BROWSERS[id].program)).find((file) => exists(file)) || null;
+  const browsers = () => Object.keys(WINDOWS_BROWSERS).filter((id) => program(id));
+  const browser = (id) => {
+    if (!Object.hasOwn(WINDOWS_BROWSERS, id) || !program(id)) throw fail(404, "Choose Chrome or Edge, installed on this PC.");
+    return id;
+  };
+  // The extension in one of the browser's profiles: from the store (its
+  // Extensions folder) or the repo build (named in the profile's preferences).
+  const added = (id) => {
+    if (!env.LOCALAPPDATA) return false;
+    const base = path.win32.join(env.LOCALAPPDATA, ...WINDOWS_BROWSERS[id].profiles);
+    let profiles = [];
+    try {
+      profiles = list(base).filter((name) => name === "Default" || /^Profile \d{1,3}$/.test(name)).slice(0, 32);
+    } catch {
+      return false;
+    }
+    return profiles.some((profile) => ids.some((extensionId) => {
+      if (exists(path.win32.join(base, profile, "Extensions", extensionId))) return true;
+      for (const file of ["Secure Preferences", "Preferences"])
+        try {
+          if (read(path.win32.join(base, profile, file)).includes(`"${extensionId}"`)) return true;
+        } catch { /* not there */ }
+      return false;
+    }));
+  };
+  const store = (id) => (stores[id]?.id && stores[id]?.url ? stores[id].url : null);
+  const state = (id) => {
+    const live = extension?.status()[id] || {};
+    if (live.connected) return "connected";
+    if (live.asking) return "asking";
+    if (added(id)) return "added";
+    return store(id) ? "missing" : "unpublished";
+  };
+  const entry = (id) => {
+    const extensionState = state(id);
+    const words = EXTENSION_WORDS[extensionState];
+    return { id, extension: extensionState, ready: extensionState === "connected", needed: now() - (needs.get(id) || 0) < NEEDED_MS,
+      where: typeof words === "function" ? words(id) : words, ...(store(id) ? { store: store(id) } : {}) };
+  };
+  // Reach's native host, built and registered for this user: once a start,
+  // again after a failure (csc blocked, an antivirus), never by the owner.
+  const prepare = async () => {
+    if (!registered) registered = Promise.resolve().then(() => register()).then((value) => { problem = null; return value; }, (error) => {
+      registered = null;
+      problem = error?.status === 503 ? error.message : "Reach couldn't register its browser extension's helper on this PC. Try again; Reach's log says why.";
+      if (error?.status !== 503) console.warn(`Reach: registering the browser extension's host failed: ${String(error?.message || error).slice(0, 300)}`);
+      throw fail(503, problem);
+    });
+    return registered;
+  };
+  return {
+    prepare,
+    needed(id) {
+      if (!Object.hasOwn(WINDOWS_BROWSERS, id)) return false;
+      needs.set(id, now());
+      if (now() - (told.get(id) || 0) < 3600_000) return false;
+      told.set(id, now());
+      return true;
+    },
+    async status() {
+      try {
+        await prepare();
+      } catch { /* said below, the browsers still listed */ }
+      return { available: true, platform: "win32", browsers: browsers().map(entry), ...(problem ? { problem } : {}) };
+    },
+    // The owner's one tap for a browser: allowed if it asks, opened if it's
+    // added but closed, its store page opened there if it isn't added.
+    async enable(id) {
+      const name = browser(id);
+      await prepare();
+      const before = state(name);
+      if (before === "asking") {
+        extension.approve(name);
+        for (let i = 0; i < 30 && state(name) !== "connected"; i++) await wait(100);
+        return { id: name, extension: state(name) };
+      }
+      if (before === "added") return { id: name, extension: before, opened: await start(program(name)) };
+      if (before === "missing") return { id: name, extension: before, opened: await start(program(name), store(name)) };
+      return { id: name, extension: before };
+    },
+    async ask(id) {
+      return this.enable(id);
+    },
+    async settings(id) {
+      browser(id);
+      throw fail(404, "On Windows, browser tools need nothing in Settings.");
+    },
+  };
+}
+
+export function createToolSetup(options = {}) {
+  if ((options.platform ?? process.platform) === "win32") return createWindowsToolSetup(options);
+  return createMacToolSetup(options);
+}
+function createMacToolSetup({
   config, run = helperRun(config), open = openPane, launch = launchHidden, defaults = readDefault, setDefault = writeDefault,
   exists = fs.existsSync, home = os.homedir(), platform = process.platform, now = Date.now,
 } = {}) {
