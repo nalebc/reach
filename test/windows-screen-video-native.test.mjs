@@ -14,6 +14,7 @@ import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
+import { clearRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // Windows' live screen as H.264 with nothing installed (parity audit #26):
 // scripts/native/screen-video.cs, Desktop Duplication into Media
@@ -33,6 +34,11 @@ const note = (values) => {
   fs.mkdirSync("reports", { recursive: true });
   fs.writeFileSync("reports/windows-screen-video.json", JSON.stringify(report, null, 2));
 };
+// Nothing of the runner's own may cover the test's window: its console
+// (Windows Server 2022) or a shell panel in front (Windows 11 on Arm).
+test.before(async () => {
+  if (run) note({ runnerDesktop: await clearRunnerDesktop() });
+});
 const until = async (check, what, ms = 60000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
