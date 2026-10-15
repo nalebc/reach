@@ -1523,9 +1523,10 @@ static partial class Desk {
       case "open": RuleS(); OnOwnersDesktop(); return Open(Json.Str(request, "app") ?? "", current);
       case "open-url": RuleS(); OnOwnersDesktop(); return OpenUrl(Json.Str(request, "url"), Json.Str(request, "app") ?? "", current);
       case "open-file": RuleS(); OnOwnersDesktop(); return OpenFile(Json.Str(request, "path") ?? "", Json.True(request, "reveal"), current);
-      // Saved browser tools reach the browser through Apple Events on a Mac;
-      // on Windows they come with Reach's browser extension (workstream G).
-      case "browser-check": throw new Refusal("Saved browser tools on Windows come with Reach's browser extension, which isn't installed yet.", "setup_required");
+      // Saved browser tools reach the browser through Apple Events on a Mac
+      // and through Reach's extension here (docs/parity/G-browser-tools.md):
+      // this checks the browser is Chrome or Edge, within the agent's access.
+      case "browser-check": RuleS(); return BrowserCheck(Json.Str(request, "app") ?? "", current);
       case "act": {
         RuleS();
         var act = Json.Map(request, "action");
@@ -1719,8 +1720,12 @@ static partial class Desk {
     if (kind != Native.EVENT_SYSTEM_FOREGROUND && kind != Native.EVENT_OBJECT_SHOW && kind != Native.EVENT_OBJECT_HIDE && kind != Native.EVENT_OBJECT_REORDER &&
         kind != Native.EVENT_OBJECT_LOCATIONCHANGE && kind != Native.EVENT_OBJECT_NAMECHANGE && kind != Native.EVENT_OBJECT_CLOAKED && kind != Native.EVENT_OBJECT_UNCLOAKED) return;
     if (Native.GetAncestor(window, Native.GA_ROOT) != window && window != Native.GetDesktopWindow()) return;
-    Interlocked.Increment(ref windowRevision);
+    // The window each change was about, the last 256 of them: a guest's live
+    // screen asks which windows changed while a frame was taken (GuestTouched).
+    lock (touchedLock) touched[Interlocked.Increment(ref windowRevision) & 255] = window.ToInt64();
   }
+  static readonly object touchedLock = new object();
+  static readonly long[] touched = new long[256];
 
   // --- Reach's own console window (§7.3) -----------------------------------
   // On a Mac, Reach's Terminal window is the one whose title names Reach; so
@@ -2376,6 +2381,36 @@ static partial class Desk {
       if (!ReferenceEquals(scaled, frame)) scaled.Dispose();
     }
   }
+
+  // --- A guest's live screen (scripts/native/screen-video.cs) -------------------
+  // Windows' video helper is built with this file beside its own code
+  // (server/desktop-native.mjs EXTRA_SOURCES), so a guest's picture leaves out
+  // exactly what a View agent's screenshot paints black: the same reading of
+  // the windows and the same rules (§4.3). Started once: the startup checks,
+  // UI Automation (Settings' page), Reach's console and the window events.
+  // Null when ready; otherwise why not.
+  internal static string StartGuestView(int reach) {
+    reachPid = reach;
+    Startup();
+    if (startupProblem != null) return startupProblem;
+    if (reachPid > 0) ProbeReachConsole();
+    Background("window-events", WindowEvents, ApartmentState.STA);
+    return null;
+  }
+  // Every top-level window, read and decided under these rules.
+  internal static Inventory GuestLook(Rules rules, Dictionary<long, Ident> identities) { return TakeInventory(rules, identities); }
+  internal static int GuestRevision() { return Thread.VolatileRead(ref windowRevision); }
+  // The windows changes were about after revision `from`, up to `to`; false
+  // when more happened than are kept.
+  internal static bool GuestTouched(int from, int to, List<long> into) {
+    if (to < from || to - from > 255) return false;
+    lock (touchedLock)
+      for (int at = from + 1; at <= to; at++) into.Add(touched[at & 255]);
+    return true;
+  }
+  // The desktop taking input is the owner's ("Default"): not UAC's, nor the
+  // lock or sign-in screen's.
+  internal static bool GuestDesktop() { return InputDesktopName() == "Default"; }
 
   // --- What is in front (§8.4) ---------------------------------------------------
   // For the owner's "using X" line and for the server's check of typed text
@@ -4573,6 +4608,21 @@ static partial class Desk {
     result["app"] = app.Name;
     result["bundle"] = app.Bundle;
     result["front"] = WaitFrontApp(app, pid);
+    return result;
+  }
+  // browser-check: the program a saved tool runs in is Chrome or Edge, by its
+  // canonical path, and the agent may use it (as the Mac checks a bundle).
+  static readonly string[] ToolBrowserPrograms = { "chrome.exe", "msedge.exe" };
+  static Dictionary<string, object> BrowserCheck(string id, Rules rules) {
+    const string choose = "Choose Chrome or Edge within this agent's app access.";
+    if (rules.Mode == "view") throw new Refusal(choose, "blocked");
+    var app = AppIdentity(id);
+    if (app == null || app.Packaged || System.Array.IndexOf(ToolBrowserPrograms, FileOf(app.Path).ToLowerInvariant()) < 0) throw new Refusal(choose, "blocked");
+    string reason = AppVerdict(app, rules);
+    if (reason != null) throw new Refusal(reason, "blocked");
+    var result = Ok();
+    result["app"] = app.Name;
+    result["bundle"] = app.Bundle;
     return result;
   }
   static bool IsBrowserApp(Ident app) {

@@ -315,7 +315,7 @@ export function createAgentSessions({
     ? async () => {
         throw Object.assign(new Error("Not in tests."), { status: 409 });
       }
-    : (choice, expect, guard) => pressClaudeConsent(choice, { dataDir, expect, beforeDispatch: guard }),
+    : (choice, expect, guard) => pressClaudeConsent(choice, { dataDir, expect, beforeDispatch: guard, platform }),
   claudeShown,
   // Messages waiting for a busy Claude app session, kept until handed over
   // The chats the Claude app lists, the one on screen first (claude-import.mjs).

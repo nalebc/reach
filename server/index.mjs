@@ -95,7 +95,8 @@ import {
   terminalWatchHelper,
 } from "./mac-terminal-watch.mjs";
 import { ScreenControl, OwnerHold, actsAsOwner, pausedMessage } from "./screen.mjs";
-import { RemoteScreenHub, screenTrouble, privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { RemoteScreenHub, screenTrouble } from "./remote-screen.mjs";
+import { createWindowsGuestScreen, guestRules, refuseGuest } from "./windows-guest-screen.mjs";
 import { SoundHub, soundPreparer } from "./screen-sound.mjs";
 import { computerWord } from "./computer-word.mjs";
 import {
@@ -155,6 +156,8 @@ import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
 import { createHostedMcp } from "./hosted-mcp.mjs";
 import { createToolSetup } from "./tool-setup.mjs";
+import { createBrowserExtensionBridge } from "./browser-extension.mjs";
+import { registerExtensionHost } from "./browser-extension-host.mjs";
 import { createBrowserApprovals, browserRequestActions } from "./browser-approvals.mjs";
 import { runTerminalCommand } from "./restricted-terminal.mjs";
 import { runBrowserMutation } from "./browser-mutations.mjs";
@@ -563,12 +566,44 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.macTerminalWatch,
   });
+  // A Windows PC's guests watch with the private windows painted black, by
+  // Windows' video helper built in the folder Reach made private this start
+  // (scripts/launch.mjs), once a check says this PC can
+  // (server/windows-guest-screen.mjs). Tests inject a stand-in.
+  const windowsGuestScreen =
+    overrides.windowsGuestScreen !== undefined
+      ? overrides.windowsGuestScreen
+      : process.platform === "win32"
+        ? createWindowsGuestScreen({
+            helper: overrides.windowsGuestScreenHelper || null,
+            off: overrides.windowsHelpersOff
+              ? "Reach couldn't make its folders private on this PC, so it can't prepare the helper that hides private windows from guests."
+              : "",
+            rules: () => guestRules({ hosts: reachAddresses(config), titles: ["reach"] }),
+          })
+        : null;
+  // Whether guests' pictures can be made here (capabilities' guestScreen):
+  // the check's answer, waited for a few seconds at most (a cold build
+  // mustn't hold the page); not known yet is no.
+  const guestViewReady = async () => {
+    if (!windowsGuestScreen) return false;
+    const known = await Promise.race([
+      windowsGuestScreen.probe(),
+      new Promise((resolve) => setTimeout(resolve, 3000, null).unref?.()),
+    ]);
+    return known?.ok === true;
+  };
+  // A viewer who isn't the owner, where they can't watch or control: refused
+  // with why.
+  const refuseGuestScreen = (client) =>
+    refuseGuest(!actsAsOwner(client), overrides.platform || process.platform, windowsGuestScreen);
   const screenStreams = new ScreenBroadcast(
-    overrides.screenStreamFactory || (() => createScreenSource(config)),
+    overrides.screenStreamFactory || (() => createScreenSource(config, { guestScreen: windowsGuestScreen })),
   );
   const remoteScreens = new RemoteScreenHub(
     config,
     overrides.remoteScreenFactory,
+    { guestScreen: windowsGuestScreen, platform: overrides.platform || process.platform },
   );
   // The computer's sound, for the phones listening beside its live screen
   // (server/screen-sound.mjs): one capture for all of them.
@@ -1100,8 +1135,25 @@ export async function createReach(overrides = {}) {
   // Saved tools on this Mac: where macOS Automation and the browser's own
   // setting stand, macOS's prompt on request, the settings page opened.
   // Shown to the owner only once a tool needed it (routes below).
-  const toolSetup = createToolSetup({ config, ...overrides.toolSetup });
-  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, actions: logAction, hosts: () => reachAddresses(config),
+  // On a Windows PC, saved tools reach Chrome and Edge through Reach's
+  // extension (docs/parity/G-browser-tools.md): its native host's pipe, here;
+  // a browser asking to connect waits for the owner's tap in Agents → Browser tools.
+  const browserExtension = overrides.browserExtension !== undefined ? overrides.browserExtension
+    : process.platform === "win32" ? createBrowserExtensionBridge({
+      dataDir: config.dataDir,
+      onPairingRequest: (browser) => {
+        record("agent", `${browser}'s Reach extension asks to connect`);
+        notify({ category: "access", title: `${browser}'s Reach extension asks to connect`, body: "Allow it once: Agents → Browser tools → Allow.", icon: "agent", tag: `tool-setup-${browser}`, actions: [{ action: "open", title: "Allow" }] });
+      },
+    }) : null;
+  if (browserExtension && !overrides.browserExtension)
+    browserExtension.start().catch((error) => console.warn(`Reach: the browser extension's pipe couldn't open: ${String(error?.message || error).slice(0, 200)}`));
+  const toolSetup = createToolSetup({ config, extension: browserExtension,
+    register: () => registerExtensionHost({ dataDir: config.dataDir, pipe: browserExtension.pipe }), ...overrides.toolSetup });
+  // The host registered at start, so an extension added from the store connects at once.
+  if (browserExtension && process.platform === "win32" && !process.env.NODE_TEST_CONTEXT)
+    server.once("listening", () => void toolSetup.prepare?.().catch(() => {}));
+  const agentTools = createAgentTools(config, { desktop: agentDesktop, record, actions: logAction, hosts: () => reachAddresses(config), extension: browserExtension,
     // Batches record the round trips they spared (savings.mjs, "tab-batch").
     savings: { record: (entry) => savings.record(entry) },
     // The owner hears once that an agent's tool needs a browser; one tap in
@@ -1114,7 +1166,7 @@ export async function createReach(overrides = {}) {
     ...(overrides.browserToolOptions || {}) });
   // An agent's ask for a Mac permission it lacks: the owner's one tap on the
   // phone (permission-requests.mjs).
-  const permissionRequests = createPermissionRequests({ toolSetup, access: macAccess(config), notify, record, ...overrides.permissionRequests });
+  const permissionRequests = createPermissionRequests({ toolSetup, access: macAccess(config), notify, record, platform: process.platform, ...overrides.permissionRequests });
   const agentServices = createAgentServices({ record, notify,
     connectors: createServiceConnectors(agentTools),
     verifyClient: (id) => {
@@ -1143,7 +1195,7 @@ export async function createReach(overrides = {}) {
   // bounded to 1600 pixels wide. Approval evidence and execution checks keep
   // using browserCapture's independent, full-resolution fresh captures.
   const browserScreenSnapshots = new BrowserScreenSnapshots(
-    overrides.browserScreenFactory || (() => createScreenSource(config)),
+    overrides.browserScreenFactory || (() => createScreenSource(config, { guestScreen: windowsGuestScreen })),
     { fallback: () => (overrides.browserCapture || screenCapture)(config) },
   );
   const browserViewCapture = async (authorize) => {
@@ -2149,6 +2201,7 @@ export async function createReach(overrides = {}) {
         scopes: req.client.scopes,
         screen: config.screen,
         codexInstalled: tools?.codex.installed,
+        ...((overrides.platform || process.platform) === "win32" && { guestView: await guestViewReady() }),
       }),
       ...(tools && { tools }),
       host: loadJson(hostFile, null),
@@ -2531,7 +2584,9 @@ export async function createReach(overrides = {}) {
         typeof body.browser !== "string" || !["enable", "ask", "settings"].includes(body.action))
       throw fail(400, "Choose a browser, and enable, ask or settings.");
     const result = await toolSetup[body.action](body.browser);
-    record("agent", { enable: `Allowed saved tools in ${result.id}: its switch flipped, macOS asked`, ask: `Asked macOS to let saved tools use ${result.id}`, settings: `Opened Automation settings for ${result.id}` }[body.action]);
+    record("agent", result.extension !== undefined
+      ? { connected: `Allowed saved tools in ${result.id}`, added: `Opened ${result.id} for saved tools`, missing: `Opened Reach's extension's store page in ${result.id}`, asking: `Allowed saved tools in ${result.id}`, unpublished: `Reach's extension isn't in ${result.id}'s store yet` }[result.extension] || `Checked saved tools in ${result.id}`
+      : { enable: `Allowed saved tools in ${result.id}: its switch flipped, macOS asked`, ask: `Asked macOS to let saved tools use ${result.id}`, settings: `Opened Automation settings for ${result.id}` }[body.action]);
     res.json(result);
   });
   app.post("/api/agents/invitations", (req, res) => {
@@ -4853,8 +4908,9 @@ export async function createReach(overrides = {}) {
   app.post("/api/screen/control", (req, res) => {
     if (!config.screen && req.body?.enabled)
       throw fail(403, "Turn on screen viewing first.");
-    if (req.body?.enabled && privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
-      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    // Control only where they could watch: never blind (Windows: once Reach
+    // can hide private windows there).
+    if (req.body?.enabled) refuseGuestScreen(req.client);
     let lease;
     try {
       lease = screenControl.acquire(req.client, req.body?.enabled, {
@@ -4884,8 +4940,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/screen/input", async (req, res) => {
     if (!config.screen) throw fail(403, "Screen viewing is off.");
-    if (privateViewRefused(!actsAsOwner(req.client), overrides.platform || process.platform))
-      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    refuseGuestScreen(req.client);
     screenControl.check(req.client);
     if (inputConnections.has(req.client.id))
       throw fail(409, "Use the active desktop input channel.");
@@ -5320,6 +5375,7 @@ export async function createReach(overrides = {}) {
         control: screenControl,
         create: overrides.desktopInputFactory,
         platform: overrides.platform || process.platform,
+        guestScreen: windowsGuestScreen,
         // Each input that reached the Mac: agents wait while you use it.
         used: ownerUsed,
         // A phone app's hidden display: only for those that app is shared with.
@@ -5447,10 +5503,10 @@ export async function createReach(overrides = {}) {
             if (!config.screen)
               throw fail(403, "Turn on screen viewing first.");
             notPaused();
-            // Every protocol, the old one too: guests' pictures can't be
-            // filtered off a Mac yet (remote-screen.mjs).
-            if (privateViewRefused(!actsAsOwner(client), overrides.platform || process.platform))
-              throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+            // Every protocol, the old one too: a Windows PC that can't
+            // hide private windows from guests yet says why
+            // (server/windows-guest-screen.mjs).
+            refuseGuestScreen(client);
             credential = message.token;
             ws.clientId = client.id;
             if (appWindow) ws.appThread = message.thread;
@@ -6028,6 +6084,7 @@ export async function createReach(overrides = {}) {
       agentDesktop?.close?.();
       agentShortcuts.close();
       agentTools.close();
+      browserExtension?.close?.();
       agentServices.close();
       await browserCommandLog.close();
       browserSnapshots.clear();

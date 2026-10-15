@@ -81,9 +81,18 @@ export const suites = {
     // screen, decoded by Chrome's WebCodecs, when REACH_TEST_WINDOWS_DESKTOP is set.
     "windows-video", "screen-video-kind-ui", "remote-screen-client", "remote-screen-hub",
     "windows-screen-video-native",
+    // Guests' live screen, workstream P (audit #12, #13): private windows
+    // painted black in a guest's picture, guests let in once this PC's check
+    // passes, and the invite sheet offering screen roles then (the real
+    // pictures in windows-screen-video-native, the concealed clipboard in
+    // windows-desktop-input-native, with REACH_TEST_WINDOWS_DESKTOP).
+    "app-display-access", "invite-ui",
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
+    // Its consent card answered from the phone: refused plainly on a PC
+    // (no helper presses it there yet), never the Mac's Swift build.
+    "agent-claude-consent",
     // Claude Code's permission prompts and mode switches answered from the
     // phone on Windows, workstream H: the named pipe, the exec-form hook, the
     // Node mode hook and the strict pipe-owner check (the mocked parts run
@@ -128,6 +137,11 @@ export const suites = {
     "auto-continue", "across-agents-ui", "claude-usage-ui",
     // Usage back on time when Claude's sign-in lapsed while unused (Oct 14).
     "usage-watch", "account-usage",
+    // Workstream G, saved browser tools through Reach's Chrome/Edge extension
+    // (docs/parity/G-browser-tools.md): the bridge, the extension, the shared
+    // tool runner and its safety. Real Chrome and Edge run in ci.yml's
+    // real-Windows step (windows-browser-tools-native).
+    "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",

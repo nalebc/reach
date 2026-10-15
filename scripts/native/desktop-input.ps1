@@ -210,6 +210,21 @@ function Assert-ReachTypingTarget($token) {
  $element=Get-ReachFocusedTextElement
  if(!$token -or $token -ne $script:typingToken -or !$element -or ($element.GetRuntimeId() -join '-') -ne $script:typingRuntime){throw 'Typing target changed. Tap the field again.'}
 }
+# Whether the clipboard holds a copy its app asked Windows to keep private:
+# ExcludeClipboardContentFromMonitorProcessing, or CanIncludeInClipboardHistory
+# set to 0 (what password managers set). One that can't be read counts as private.
+function Test-ReachConcealedClipboard {
+ $data=[System.Windows.Forms.Clipboard]::GetDataObject()
+ if(!$data){return $false}
+ $formats=@($data.GetFormats($false))
+ if($formats -contains 'ExcludeClipboardContentFromMonitorProcessing'){return $true}
+ if($formats -contains 'CanIncludeInClipboardHistory'){
+  $value=$data.GetData('CanIncludeInClipboardHistory',$false)
+  if($value -is [System.IO.MemoryStream]){$bytes=$value.ToArray();return !($bytes.Length -ge 4 -and [BitConverter]::ToInt32($bytes,0) -ne 0)}
+  return $true
+ }
+ return $false
+}
 function Send-ReachText($text) {
  foreach($c in $text.ToCharArray()){$s=[string]$c;if('+^%~()[]{}'.Contains($s)){$s='{'+$s+'}'};[System.Windows.Forms.SendKeys]::SendWait($s)}
 }
@@ -256,7 +271,14 @@ try {
      if(!$text -or [Text.Encoding]::UTF8.GetByteCount($text) -gt 16384){throw 'Select text up to 16 KiB'}
      $result.text=$text
     }
-    'clipboard-read' {$text=[System.Windows.Forms.Clipboard]::GetText();if([Text.Encoding]::UTF8.GetByteCount($text) -gt 16384){throw 'Clipboard text exceeds 16 KiB.'};$result.text=$text}
+    'clipboard-read' {
+     # A password manager marks what it copies to be kept out of clipboard
+     # history and monitors: only the owner takes that off the PC, as only
+     # the owner takes a Mac's concealed copy (desktop-input.swift; parity
+     # audit #13). The phone can't say who asks: Reach does ($p.owner).
+     if($p.owner -ne $true -and (Test-ReachConcealedClipboard)){$result=@{error="That's a hidden password; only the owner can copy it."}}
+     else {$text=[System.Windows.Forms.Clipboard]::GetText();if([Text.Encoding]::UTF8.GetByteCount($text) -gt 16384){throw 'Clipboard text exceeds 16 KiB.'};$result.text=$text}
+    }
     'clipboard-write' {if($p.text.Length){[System.Windows.Forms.Clipboard]::SetText($p.text)}else{[System.Windows.Forms.Clipboard]::Clear()}}
     'text' {Send-ReachText $p.text}
     'key' {
