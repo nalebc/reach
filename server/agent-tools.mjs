@@ -19,7 +19,9 @@ import {
 import { moneySite } from "./money-sites.mjs";
 import {
   TOOL_PROTOCOL,
-  TOOL_BROWSERS,
+  toolBrowsersFor,
+  toolBrowserWords,
+  batchBrowsers,
   TOOL_LIMITS,
   TOOL_UUID,
   toolOrigin,
@@ -122,6 +124,10 @@ export function createAgentTools(
     // A batch starts no new item after this; the agent calls it again.
     batchMs = 30000,
     savings = null,
+    // Windows: Reach's browser extension (browser-extension.mjs), the
+    // transport there as Apple Events are on a Mac.
+    platform = process.platform,
+    extension = null,
     pdf = async (value, options) =>
       nativeToolProcess(
         await desktopBinary(config, "tool-receipt", { signal: options.signal }),
@@ -132,7 +138,12 @@ export function createAgentTools(
   } = {},
 ) {
   const ownsDriver = driver === null;
-  driver ??= createToolBrowserDriver();
+  driver ??= createToolBrowserDriver({ platform, extension });
+  const TOOL_BROWSERS = toolBrowsersFor(platform),
+    browserWords = toolBrowserWords(platform),
+    batchable = batchBrowsers(platform);
+  // The browser a batch tab belongs to, from its program (Edge on Windows).
+  const tabBrowser = (appPath) => (/msedge\.exe$/i.test(appPath) ? "Edge" : "Chrome");
   const definitionsFile = path.join(config.dataDir, "agent-tools.json");
   const ledgerFile = path.join(config.dataDir, "agent-tool-runs.json");
   const artifactDir = path.join(config.dataDir, "agent-tool-files");
@@ -201,7 +212,7 @@ export function createAgentTools(
         Number.isInteger(entry.tab) &&
         typeof entry.clientId === "string" &&
         typeof entry.appPath === "string" &&
-        entry.appPath.endsWith(".app") &&
+        (entry.appPath.endsWith(".app") || /\.exe$/i.test(entry.appPath)) &&
         typeof entry.url === "string" &&
         Array.isArray(entry.origins) &&
         entry.origins.every((origin) => typeof origin === "string") &&
@@ -228,7 +239,7 @@ export function createAgentTools(
   const closeTabs = async (entries, appPath, { guard = async () => {}, signal } = {}) => {
     if (!entries.length) return 0;
     const native = (request) =>
-      driver.transport("Chrome", request, { appPath, signal, timeoutMs: 12000 });
+      driver.transport(tabBrowser(appPath), request, { appPath, signal, timeoutMs: 12000 });
     let count = 0;
     try {
       await guard();
@@ -551,7 +562,7 @@ export function createAgentTools(
               )
               .map((entry) => copy(entry.definition))
           : [],
-        hint: `Check reach_tools before using the screen. Pick a named tool and execute it once with a requestId.${browsers.some((app) => app.name === "Chrome") ? " For the same tool over a list of items, use reach_tool_batch: up to 10 items per call, each in its own Chrome tab." : ""} To create one, read reach_tool_protocol and register the same reach.tool.v1 definition with reach_define_tool.`,
+        hint: `Check reach_tools before using the screen. Pick a named tool and execute it once with a requestId.${browsers.some((app) => batchable.includes(app.name)) ? ` For the same tool over a list of items, use reach_tool_batch: up to 10 items per call, each in its own ${batchable.filter((name) => browsers.some((app) => app.name === name)).join(" or ")} tab.` : ""} To create one, read reach_tool_protocol and register the same reach.tool.v1 definition with reach_define_tool.`,
       };
     },
     protocol(authorize) {
@@ -565,7 +576,7 @@ export function createAgentTools(
       if (!(await browserApps(authorize)).length)
         throw fail(
           403,
-          "Choose an allowed Chrome or Safari app before defining tools.",
+          `Choose an allowed ${browserWords} app before defining tools.`,
         );
       check(authorize);
       // reach_tool_<id> must not shadow Reach's own reach_tool_* tools.
@@ -646,7 +657,7 @@ export function createAgentTools(
       )
         throw fail(
           400,
-          "Supply a tool ID, Chrome or Safari, a UUID requestId and declared values.",
+          `Supply a tool ID, ${browserWords}, a UUID requestId and declared values.`,
         );
       prune();
       const key = `${client.id}:${input.requestId}`;
@@ -1006,7 +1017,7 @@ export function createAgentTools(
                   );
                 const matches = tabs.filter((tab) => {
                   // A batch's tabs are Reach's, never the owner's choice of tab.
-                  if (input.browser === "Chrome" && batchTabs.has(tabKey(tab)))
+                  if (batchable.includes(input.browser) && batchTabs.has(tabKey(tab)))
                     return false;
                   try {
                     const here = new URL(tab.url);
@@ -1353,8 +1364,8 @@ export function createAgentTools(
           `Supply a tool ID, a UUID requestId and 1 to ${BATCH_ITEMS} items of its declared values.`,
         );
       // Safari names a tab by its position, which opening tabs shifts.
-      if (input.browser !== "Chrome")
-        throw fail(400, "Batches run in Chrome.");
+      if (!batchable.includes(input.browser))
+        throw fail(400, `Batches run in ${batchable.join(" or ")}.`);
       const definition = definitions().find(
         (entry) => entry.definition.id === input.id && entry.enabled,
       )?.definition;
