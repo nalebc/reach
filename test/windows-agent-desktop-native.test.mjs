@@ -66,6 +66,17 @@ test.before(async () => {
   // What still shows after that (class and program, never a title).
   note({ runnerDesktop: await lookAtRunnerDesktop() });
 });
+// The runner's own dialogs come at any time (clearRunnerDesktop names them):
+// cleared again before each test, and what was cleared is kept.
+const cleared = [];
+test.beforeEach(async (t) => {
+  if (skip || !work) return;
+  const done = await clearRunnerDesktop();
+  if (done.closed.length || done.dismissed.length) {
+    cleared.push({ before: t.name.slice(0, 40), ...done });
+    note({ cleared });
+  }
+});
 test.after(async () => {
   for (const child of children) try { child.kill(); } catch {}
   if (!work) return;

@@ -39,6 +39,17 @@ const note = (values) => {
 test.before(async () => {
   if (run) note({ runnerDesktop: await clearRunnerDesktop() });
 });
+// The runner's own dialogs come at any time (clearRunnerDesktop names them):
+// cleared again before each test, and what was cleared is kept.
+const cleared = [];
+test.beforeEach(async (t) => {
+  if (!run) return;
+  const done = await clearRunnerDesktop();
+  if (done.closed.length || done.dismissed.length) {
+    cleared.push({ before: t.name.slice(0, 40), ...done });
+    note({ cleared });
+  }
+});
 const until = async (check, what, ms = 60000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
@@ -94,6 +105,23 @@ const parse = (answer) => {
   const n = answer.readUInt32BE(0);
   return { raw: answer, meta: JSON.parse(answer.subarray(4, 4 + n).toString()), annexb: answer.subarray(4 + n) };
 };
+// What a traced helper (REACH_TEST_SCREEN_TRACE) said changed since its
+// stderr was `from` long: each kind of change counted, the last area, and
+// what shows on the desktop there (class and program only, never a title).
+async function whatChanged(video, from) {
+  const changes = {};
+  let where;
+  for (const line of video.stderr().slice(from).split(/\r?\n/)) {
+    const m = /^note: trace: changed \((.*)\)$/.exec(line);
+    if (!m) continue;
+    const kind = m[1].replace(/ in -?\d+,-?\d+ \d+x\d+/, "");
+    changes[kind] = (changes[kind] || 0) + 1;
+    const at = / in (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(m[1]);
+    if (at) where = { x: +at[1] + +at[3] / 2, y: +at[2] + +at[4] / 2, area: m[1].slice(m[1].indexOf(" in ") + 4) };
+  }
+  const desktop = await lookAtRunnerDesktop(where?.x, where?.y).catch((error) => ({ error: error.message }));
+  return { changes, lastArea: where?.area, desktop };
+}
 const nalTypes = (annexb) => {
   const types = [];
   for (let i = 0; i + 3 < annexb.length; i++)
@@ -508,23 +536,11 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
     await sleep(33);
   }
   const stillFrames = still.filter((a) => a.meta).length;
-  // What changed meanwhile, by kind and where; and what shows there on the
-  // desktop (class and program only, never a title).
-  const changes = {};
-  let where;
-  for (const line of video.stderr().slice(traced).split(/\r?\n/)) {
-    const m = /^note: trace: changed \((.*)\)$/.exec(line);
-    if (!m) continue;
-    const kind = m[1].replace(/ in -?\d+,-?\d+ \d+x\d+/, "");
-    changes[kind] = (changes[kind] || 0) + 1;
-    const at = / in (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(m[1]);
-    if (at) where = { x: +at[1] + +at[3] / 2, y: +at[2] + +at[4] / 2, area: m[1].slice(m[1].indexOf(" in ") + 4) };
-  }
-  const desktop = await lookAtRunnerDesktop(where?.x, where?.y).catch((error) => ({ error: error.message }));
-  note({ stillAnswers: still.length, stillFrames, stillChanges: changes, stillLastArea: where?.area, stillDesktop: desktop });
+  const why = await whatChanged(video, traced);
+  note({ stillAnswers: still.length, stillFrames, still: why });
   assert.ok(
     still.filter((a) => a.byte === 0).length >= still.length * 0.8,
-    `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; changes ${JSON.stringify(changes)}, last at ${where?.area}: ${JSON.stringify(desktop?.at)}; in front ${JSON.stringify(desktop?.front)}`,
+    `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; ${JSON.stringify(why)}`,
   );
   assert.ok(stillFrames >= 2, `a real frame every second: ${stillFrames}`);
 
@@ -625,7 +641,7 @@ test("where Desktop Duplication isn't available, GDI's capture streams the same 
   await until(() => fs.existsSync(`${out}.ready`), "the target window");
   const [x, y, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
   // As a VM or a Remote Desktop session without duplication would have it.
-  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_GDI: "1" });
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_GDI: "1", REACH_TEST_SCREEN_TRACE: "1" });
   t.after(() => video.child.kill());
   const first = parse(await video.ask("key"));
   assert.ok(first.meta?.key, `a picture first: ${video.stderr()}`);
@@ -645,14 +661,17 @@ test("where Desktop Duplication isn't available, GDI's capture streams the same 
   fs.writeFileSync(`${out}.still`, "");
   await sleep(500);
   const still = [];
+  const traced = video.stderr().length;
   for (const end = Date.now() + 1500; Date.now() < end; ) {
     still.push(parse(await video.ask("frame")));
     await sleep(33);
   }
-  note({ gdi: { frames: packets.length, frameMs: timing(took), stillAnswers: still.length, stillFrames: still.filter((a) => a.meta).length, stderr: video.stderr().trim() } });
+  const why = await whatChanged(video, traced);
+  const stillFrames = still.filter((a) => a.meta).length;
+  note({ gdi: { frames: packets.length, frameMs: timing(took), stillAnswers: still.length, stillFrames, still: why, stderr: video.stderr().replace(/^note: trace: .*\r?\n/gm, "").trim() } });
   assert.ok(packets.length >= 5, `the changing window made frames: ${packets.length}`);
   for (const p of packets) assert.equal(nalTypes(p.annexb)[0], 9, "an AUD first");
-  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, "mostly unchanged on a still screen");
+  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; ${JSON.stringify(why)}`);
   video.child.stdin.end();
   assert.equal(await Promise.race([video.exited, sleep(10000).then(() => "still running")]), 0, video.stderr());
   const { width, height } = first.meta;
@@ -929,6 +948,13 @@ test("through Reach: once its check passes guests are offered the screen, and an
   assert.equal(ready.format, "h264");
   const packets = frames().map((p) => parse(p.subarray(4)));
   assert.equal(packets[0].meta.key, true);
+  // The frames are in hand: the guest leaves, so the stream (the helper
+  // capturing and encoding, Reach passing each frame on and this test acking
+  // it) isn't still running while Chrome starts to decode them. Left running,
+  // it starved a cold Chrome on a 2025 runner: Page.navigate went unanswered
+  // for 20 s.
+  ws.terminate();
+  ws = null;
   const { width, height } = packets[0].meta;
   const at = ([px, py]) => [Math.round(((px - screen.x) * width) / screen.width), Math.round(((py - screen.y) * height) / screen.height)];
   const decoded = await decodeInBrowser(t, packets, points.map(at), true);

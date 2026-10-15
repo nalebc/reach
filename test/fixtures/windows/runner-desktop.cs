@@ -24,6 +24,17 @@ static class RunnerDesktop {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref int length);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+
+  // Dialogs a runner image opens by itself, at any time while tests run
+  // (seen on validation runs, Oct 15): Windows' Performance Options
+  // (SystemPropertiesPerformance.exe, Windows Server 2022 and Windows 11 on
+  // Arm) and its "select an app" picker over a dimmed screen (PickerHost.exe,
+  // Windows 11 on Arm). They came with and without any test before them, so
+  // no test opens them. Each is closed as its own Close button would, which
+  // changes no setting.
+  static readonly string[] Foreign = { "SystemPropertiesPerformance.exe", "PickerHost.exe" };
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
   [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
@@ -103,6 +114,24 @@ static class RunnerDesktop {
     };
     EnumWindows(each, IntPtr.Zero);
     GC.KeepAlive(each);
+    var closed = new System.Collections.Generic.List<string>();
+    var closing = new System.Collections.Generic.List<IntPtr>();
+    EnumWindowsProc foreign = (window, data) => {
+      if (!IsWindowVisible(window)) return true;
+      uint pid;
+      GetWindowThreadProcessId(window, out pid);
+      string name = Program(pid);
+      foreach (string known in Foreign)
+        if (string.Equals(name, known, StringComparison.OrdinalIgnoreCase)) {
+          PostMessageW(window, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+          closing.Add(window);
+          closed.Add("\"" + name + "\"");
+        }
+      return true;
+    };
+    EnumWindows(foreign, IntPtr.Zero);
+    GC.KeepAlive(foreign);
+    for (int i = 0; i < 40 && closing.Exists(w => IsWindow(w) && IsWindowVisible(w)); i++) Thread.Sleep(50);
     // A shell surface in front (Start, Search, a first-run panel on Windows
     // 11 client images) covers the screen; Escape dismisses it, as an owner would.
     var shell = new System.Collections.Generic.List<string>();
@@ -137,7 +166,7 @@ static class RunnerDesktop {
     IntPtr after = GetAncestor(GetForegroundWindow(), 2);
     var afterKind = new StringBuilder(256);
     GetClassNameW(after, afterKind, afterKind.Capacity);
-    Console.WriteLine("{\"minimized\":[" + string.Join(",", owners.ToArray()) + "],\"dismissed\":[" + string.Join(",", shell.ToArray()) +
+    Console.WriteLine("{\"minimized\":[" + string.Join(",", owners.ToArray()) + "],\"closed\":[" + string.Join(",", closed.ToArray()) + "],\"dismissed\":[" + string.Join(",", shell.ToArray()) +
       "],\"frontClass\":\"" + afterKind.ToString().Replace("\"", "") + "\"}");
     return 0;
   }
