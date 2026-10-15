@@ -67,10 +67,12 @@ test("back is the agent's own fresh word, never an old or failed reading", () =>
   assert.equal(usageBack({ ...back, usage: { available: true, windows: [{ usedPercent: 100 }] } }), false);
   // Meters that failed: `usable` is only its default then. Back once the
   // limit's reset time has passed, never before.
-  const failed = { ...back, usage: { available: false, windows: [{ usedPercent: 100 }] } };
+  // (Claude's health leaves `usable` unknown then, never true.)
+  const failed = { ...back, usable: undefined, usage: { available: false, windows: [{ usedPercent: 100 }] } };
   assert.equal(usageBack(failed), false);
   assert.equal(usageBack(failed, { resetsAt: 5000, now: 4000 }), false);
   assert.equal(usageBack(failed, { resetsAt: 5000, now: 6000 }), true);
+  assert.equal(usageBack({ ...failed, usable: false }, { resetsAt: 5000, now: 6000 }), false, "the agent's own no stays no");
   assert.equal(usageBack(undefined), false);
 });
 
@@ -91,6 +93,22 @@ test("one notification when the limit is back, opening the chat", async () => {
   assert.equal(h.watch.has("claude"), false);
   await h.watch.look();
   assert.equal(h.sentMessages.length, 1, "sent once");
+});
+
+test("Claude's sign-in lapsed while nobody used it: back at its reset time, not when you open it", async () => {
+  // What claude.mjs says once its limit has passed and its meters can't be
+  // read (the token renews only while Claude Code runs): usable unknown, the
+  // last meters kept and marked unavailable, no reset of its own.
+  const lapsed = { agent: "claude", signedIn: true, usable: undefined,
+    usage: { available: false, windows: [{ usedPercent: 100, resetsAt: 5000 }], error: "Claude’s sign-in renews the next time Claude Code runs." } };
+  const h = harness({ reply: [lapsed] });
+  h.watch.add("claude", { session: "s1", resetsAt: 5000 });
+  await h.watch.look();
+  assert.equal(h.sentMessages.length, 0, "not before its reset");
+  h.setTime(5000 + 30000);
+  await h.watch.look();
+  assert.equal(h.sentMessages.length, 1);
+  assert.equal(h.sentMessages[0].title, "Claude Code is back");
 });
 
 test("kept until a phone gets it, and across restarts", async () => {

@@ -8,26 +8,16 @@ import { atomicJson, loadJson } from "../server/core.mjs";
 import { defaultFileRoots } from "../server/file-roots.mjs";
 import { tailscaleJson, tailscaleCli, readKeyedState } from "./tailscale.mjs";
 import { stateDir, command } from "./home.mjs";
+import { computerWord } from "../server/computer-word.mjs";
 const exec = promisify(execFile);
 export const preferencesFile = (root) =>
   path.join(stateDir(root), "preferences.json");
-// Windows' browser sign-in, until a real PC's acceptance passes
-// (docs/parity/D-public-door.md): only "1" turns it on.
-export const windowsAccount = (env = process.env) =>
-  env.REACH_WINDOWS_ACCOUNT === "1";
-// Phones approved by your Tailscale account: Tailscale reaches Reach through
-// a private Unix socket only Reach can answer, which Windows doesn't have.
-// There Reach shows a pairing code instead, and keeps no account settings;
-// with the flag, a keyed route only Tailscale's own process may use
-// (server/tailscaled-peer.mjs).
-export const accountApproval = (platform = process.platform, env = process.env) =>
-  platform !== "win32" || windowsAccount(env);
-// Set up for browser sign-in on Windows, then started without the flag: said
-// wherever it matters, never silently off.
-export const FLAG_MISSING =
-  "Browser sign-in was set up here; it needs REACH_WINDOWS_ACCOUNT=1 in this terminal.";
-export const flagMissing = (root, platform = process.platform, env = process.env) =>
-  platform === "win32" && !windowsAccount(env) && fs.existsSync(preferencesFile(root));
+// Phones approved by your Tailscale account, on every computer. Tailscale
+// reaches Reach through a private Unix socket only Reach can answer; Windows
+// has none, so there it's a keyed route only Tailscale's own process may use
+// (server/tailscaled-peer.mjs). A PC that can't hold that route yet (an older
+// Tailscale, no network adapter) keeps the account and uses pairing codes
+// until it can, saying why (scripts/launch.mjs).
 const atLeast104 = (version) => {
   const [major, minor] = String(version || "").split(/[.-]/).map(Number);
   return major > 1 || (major === 1 && minor >= 104);
@@ -125,11 +115,6 @@ export function applyPreferences(options, preferences, args = []) {
 }
 export async function configure(root, deps = {}) {
   const platform = deps.platform || process.platform;
-  const env = deps.env || process.env;
-  if (!accountApproval(platform, env))
-    throw Error(
-      `On Windows, Reach has no account settings to configure: start it with ${command}. It shows a pairing code to enter on your phone, which needs the Tailscale app, signed in to the same account.${flagMissing(root, platform, env) ? ` ${FLAG_MISSING}` : ""}`,
-    );
   if (!deps.ask && !process.stdin.isTTY)
     throw Error(
       `Run ${command} configure in an interactive terminal to confirm your Tailscale account first.`,
@@ -143,7 +128,8 @@ export async function configure(root, deps = {}) {
   say(
     "\nReach setup · private access through Tailscale\nNo Reach account or hosted Reach backend. Tailscale provides identity and connectivity.",
   );
-  let owner;
+  let owner,
+    keyedProblem = "";
   while (true) {
     try {
       owner = setupOwner(
@@ -173,14 +159,16 @@ export async function configure(root, deps = {}) {
         );
       continue;
     }
-    // Windows has no Unix socket: what its keyed route needs instead.
-    await (deps.checkSupport ||
-      (platform === "win32"
-        ? async () => {
-            const problem = keyedSupportProblem(await (deps.keyedState || readKeyedState)());
-            if (problem) throw Error(`${problem} No settings changed.`);
-          }
-        : assertSocketSupport))();
+    // Windows has no Unix socket: what its keyed route needs instead. A PC
+    // without it yet keeps the account all the same; until it has it,
+    // phones join with a pairing code, as each start says.
+    if (deps.checkSupport) await deps.checkSupport();
+    else if (platform === "win32")
+      keyedProblem = await (deps.keyedState || readKeyedState)().then(
+        (state) => keyedSupportProblem(state),
+        () => "Reach couldn't read Tailscale's settings on this PC.",
+      );
+    else await assertSocketSupport();
     print(
       `\nTailscale account: ${promptLabel(owner.login)}\nNew browsers require approval on this computer. Approved browsers can run commands as your OS user; screen permissions stay separate.`,
     );
@@ -276,7 +264,7 @@ export async function configure(root, deps = {}) {
     "Your approved devices can browse all configured locations using your OS permissions. Guests and agent profiles only receive the access you grant them. Use --folder to restrict file browsing.",
   );
   say(
-    "Reach keeps the system and display awake while running, including on battery. Use --no-stay-awake to allow idle sleep. This does not unlock a locked Mac.",
+    `Reach keeps the system and display awake while running, including on battery. Use --no-stay-awake to allow idle sleep. This does not unlock a locked ${computerWord(platform)}.`,
   );
   const preferences = {
     version: 1,
@@ -286,6 +274,10 @@ export async function configure(root, deps = {}) {
     httpsPort: old.httpsPort || 8443,
   };
   atomicJson(preferencesFile(root), preferences);
+  if (keyedProblem)
+    print(
+      `Phones can't sign in from the browser on this PC yet: ${keyedProblem} Until then, they join with a pairing code and need the Tailscale app.`,
+    );
   say(
     `\nSaved. Run ${command}, open its link on your phone (the Tailscale app is optional: it's faster), then approve the request here.\nA Reach that's already running keeps its old settings until it restarts.`,
   );

@@ -1859,15 +1859,16 @@ test("out of usage, each agent's own way to more usage opens here, and nothing e
     $$(".as-error.codex span").map((e) => e.textContent),
     [
       "You’ve hit your usage limit. Upgrade your plan or add credits to continue, or try again at Oct 9, 2026, 9:25 PM.",
-      "You’ve hit your usage limit.",
     ],
   );
   assert.equal($(".as-error.codex a, .as-error.codex button"), null);
-  // One slim line, not a card: until when, Reset (asks first, spends nothing
-  // until confirmed) and Upgrade.
+  // One current card includes the native message, reset time and actions.
+  // Reset asks first and spends nothing until confirmed.
   assert.equal($(".as-banner"), null);
   const strip = $(".usage-strip");
-  assert.match(strip.querySelector(".usage-strip-text").textContent, /^Out of Codex usage until Oct 16/);
+  assert.equal(strip.querySelector(".usage-strip-text").getAttribute("aria-label"), "You’ve hit your usage limit.");
+  assert.equal($$(".usage-panel").length, 1, "the active native error and recovery controls share a card");
+  assert.match(strip.querySelector(".usage-strip-text").textContent, /^Resets at /);
   const upgrade = [...strip.querySelectorAll("a")].find(
     (a) => a.textContent.trim() === "Upgrade",
   );
@@ -1884,7 +1885,7 @@ test("out of usage, each agent's own way to more usage opens here, and nothing e
   await click(
     [...strip.querySelectorAll("button")].find((b) => b.textContent === "Cancel"),
   );
-  assert.match(strip.querySelector(".usage-strip-text").textContent, /^Out of Codex usage/);
+  assert.equal(strip.querySelector(".usage-strip-text").getAttribute("aria-label"), "You’ve hit your usage limit.");
   assert.deepEqual(mac.sent, [], "nothing spent");
   await view.unmount();
   views.length = 0;
@@ -1936,9 +1937,10 @@ test("out of usage, each agent's own way to more usage opens here, and nothing e
       "You've hit your weekly limit · ask your admin to raise it at claude.ai/admin-settings/usage",
   };
   await open(claudeSession({ live: undefined }));
-  await dom.waitFor(() => $(".as-error.claude a.as-usage"));
+  await dom.waitFor(() => $(".usage-panel a"));
+  assert.match($(".usage-strip-text").textContent, /ask your admin to raise it/, "specific recovery instructions remain visible");
   assert.equal(
-    $(".as-error.claude a.as-usage").getAttribute("href"),
+    $(".usage-panel a").getAttribute("href"),
     "https://claude.ai/admin-settings/usage",
   );
   assert.deepEqual(dom.errors, []);
@@ -1960,10 +1962,12 @@ test("an error the transcript already shows isn't shown a second time", async ()
   // The turn Reach ran ended on that error; its live state still holds it.
   mac.live = { ...idleLive(), error: limit };
   await open(claudeSession({ live: undefined }));
-  await dom.waitFor(() => $(".as-error"));
+  await dom.waitFor(() => $(".usage-panel"));
   await settle(120);
-  assert.equal($$(".as-error").length, 1);
-  assert.equal($$("a.as-usage").length, 1);
+  assert.equal($$(".as-error").length, 0);
+  assert.equal($$(".usage-panel").length, 1);
+  assert.equal($(".usage-strip-text").getAttribute("aria-label"), limit);
+  assert.equal($$(".usage-panel a").length, 1);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -4796,9 +4800,10 @@ test("a voice memo becomes words in the box; one the Mac can't hear is attached,
   assert.deepEqual(dom.errors, []);
 });
 
-// Only a Mac makes words of a memo; on a Windows PC the mic only attached a
-// recording coding agents can't read (parity audit #35): it isn't offered.
-test("a Windows PC's chat offers no voice memo", async (t) => {
+// A Mac and a Windows PC make words of a memo (parity audit #35: Windows'
+// own speech recognizer); elsewhere the mic would only attach a recording
+// coding agents can't read, so it isn't offered.
+test("a Windows PC's chat offers the voice memo, as a Mac's", async (t) => {
   globalThis.MediaRecorder = class { static isTypeSupported = () => true; };
   Object.defineProperty(dom.window.navigator, "mediaDevices", { value: { getUserMedia: async () => ({ getTracks: () => [] }) }, configurable: true });
   t.after(() => {
@@ -4807,7 +4812,7 @@ test("a Windows PC's chat offers no voice memo", async (t) => {
   });
   await open(codexSession(), signedIn, { ...peer, platform: "win32" });
   await dom.waitFor(() => $("textarea"));
-  assert.equal(button("Record a voice memo"), undefined);
+  assert.ok(button("Record a voice memo"));
 });
 
 test("without a microphone the memo says so and nothing breaks", async (t) => {

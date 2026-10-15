@@ -65,7 +65,11 @@ export function createClaudeAccountUsage({ run = exec, fetcher = fetch, read = f
         if (!response.ok) throw new Error('unavailable');
         cached = claudeUsage(await response.json(), now());
       } catch (e) {
-        cached = { ...(cached || { windows: [] }), available: false, error: e?.expired
+        // The last meters stay, but not a window whose reset has passed: it
+        // was used up and is no more, so it can't keep the phone saying out
+        // (Oct 14: Claude's sign-in lapses while Claude Code isn't running).
+        const kept = (cached?.windows || []).filter((w) => !w.resetsAt || w.resetsAt > now());
+        cached = { ...(cached || {}), windows: kept, available: false, error: e?.expired
           ? 'Claude’s sign-in renews the next time Claude Code runs. Start or continue a Claude chat to refresh usage.'
           : 'Claude usage could not be refreshed. Open Claude to check usage or refresh its sign-in.' };
       } finally { checked = now(); pending = null; }

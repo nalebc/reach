@@ -41,3 +41,16 @@ test('an expired Claude Code sign-in keeps the last reading and says Claude Code
   assert.match(stale.error, /renews the next time Claude Code runs/);
   assert.equal(stale.windows[0].usedPercent, 100);
 });
+
+// Oct 14: the phone kept saying out after the reset until Claude Code ran.
+test('an expired Claude Code sign-in drops a kept window whose reset has passed', async () => {
+  let time = 100000;
+  const token = { claudeAiOauth: { accessToken: 'private-test-token', expiresAt: 200000 } };
+  const read = createClaudeAccountUsage({ platform: 'linux', home: '/home/test', env: {}, now: () => time, read: async () => JSON.stringify(token),
+    fetcher: async () => ({ ok: true, json: async () => ({ limits: [{ kind: 'session', percent: 100, resets_at: 250 }, { kind: 'weekly_all', percent: 20, resets_at: 900 }] }) }) });
+  assert.equal((await read()).windows.length, 2);
+  time = 300000;
+  const stale = await read();
+  assert.equal(stale.available, false);
+  assert.deepEqual(stale.windows.map(w => w.usedPercent), [20]);
+});

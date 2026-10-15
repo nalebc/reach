@@ -161,7 +161,9 @@ export function createCodexDaemon({
   // else is refused with its version and the one to update to.
   let old = null;
   // Off until Codex changes version: a method Codex says it doesn't have
-  // (-32601). Everything else odd (a message Reach can't read, a reply in a
+  // (-32601), except item pagination: support also depends on the thread's
+  // store, so one unsupported store must never disable reading every chat.
+  // Everything else odd (a message Reach can't read, a reply in a
   // shape it doesn't know, a notification it couldn't take) fails that call
   // or message alone, shows Codex as degraded, and clears once it works
   // again: one odd reply used to switch a feature off for every chat until
@@ -254,7 +256,9 @@ export function createCodexDaemon({
             const error = compatibilityError("codex", p.method);
             // Invalid params can be one invalid user selection, not a removed API.
             // Do not permanently disable every conversation for that case.
-            if (message.error.code === -32601) issues.set(p.method, error);
+            // Item pagination can be unsupported by one thread's store while
+            // the same service supports it for other threads.
+            if (message.error.code === -32601 && p.method !== "thread/items/list") issues.set(p.method, error);
             p.reject(error);
           } else p.reject(Object.assign(new Error(message.error.message || "Codex request failed."), { data: message.error }));
         } else {

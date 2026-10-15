@@ -12,6 +12,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { agentName, resumeText } from "./move.mjs";
 import { canContinue, checkContinuePriority, continueUnavailable } from "./auto-continue.mjs";
+import { resetOf, usageBack } from "./usage-watch.mjs";
 
 const ONCE = "This chat was already continued from another agent. Auto-continue moves a chat once; continue it by hand if you need to.";
 import { turnOutcome, usageLimited } from "./turn-watch.mjs";
@@ -292,11 +293,23 @@ export function createRelays({
         // No provider free: held, and the first one back takes the work (in
         // the priority order when several are back at once), this chat's own
         // included. Looked at again at most once a minute.
-        const hold = () => {
+        const hold = (health) => {
           if (r.state !== "waiting") return;
           tried.set(r.id, now());
-          if (r.holding) return;
-          r.holding = { item: page?.items?.at(-1)?.id || "" };
+          // When this chat's own limit resets, as last read: what says it's
+          // back when its meters can't be read (below). Unread meters keep
+          // only windows still to reset (account-usage.mjs), so a reset still
+          // ahead is safe to keep from them too.
+          const reset = resetOf(health?.find((h) => h.agent === src.agent));
+          const resetsAt = reset > now() ? reset : null;
+          if (r.holding) {
+            if (resetsAt && resetsAt !== r.holding.resetsAt) {
+              r.holding.resetsAt = resetsAt;
+              save();
+            }
+            return;
+          }
+          r.holding = { item: page?.items?.at(-1)?.id || "", ...(resetsAt ? { resetsAt } : {}) };
           r.waitingSince = now();
           r.problem = "";
           r.updatedAt = now();
@@ -314,8 +327,17 @@ export function createRelays({
         // Cancellation or revocation may arrive while health is loading.
         if (r.state !== "waiting") return;
         const used = new Set(r.chain.map((c) => c.agent));
-        const target = r.priority.find((a) => (r.holding ? a === src.agent || !used.has(a) : !used.has(a)) && !continueUnavailable(a, health));
-        if (!target) return void hold();
+        const free = (a) => {
+          const why = continueUnavailable(a, health);
+          // This chat's own provider with meters unread (Claude's sign-in
+          // renews only while Claude Code runs): back once the reset it gave
+          // has passed, as "Notify me when it's back" goes by. Never a move
+          // into another provider on that (Oct 14).
+          return !why || (why === "Usage unknown" && a === src.agent && !!r.holding?.resetsAt &&
+            usageBack(health.find((h) => h.agent === a), { resetsAt: r.holding.resetsAt, now: now() }));
+        };
+        const target = r.priority.find((a) => (r.holding ? a === src.agent || !used.has(a) : !used.has(a)) && free(a));
+        if (!target) return void hold(health);
         if (target === src.agent) {
           // This chat's own provider came back first: it continues here.
           const denied = authorized(r.owner);
@@ -326,9 +348,14 @@ export function createRelays({
           try {
             await sessions.send(src.agent, src.id, {
               text: "Your usage is back. Continue where you left off.",
-              requestId: `continue-${r.id}-here`, authorize: allowed(r.owner),
+              requestId: `continue-${r.id}-here-${r.holding.item}`, authorize: allowed(r.owner),
             });
-            r.state = "done";
+            // Done once that turn ends; one that hits the limit again (its
+            // reset was only the time it gave) holds again, never drops.
+            r.state = "waiting";
+            r.since = r.holding.item;
+            r.waitingSince = now();
+            r.continuedHere = true;
             r.holding = null;
             r.problem = "";
             r.updatedAt = now();
@@ -530,6 +557,15 @@ export function createRelays({
               stop(r, "No provider was free within a day. Enable auto-continue again if you still want it.");
               continue;
             }
+            // Continued here and still open a day on (a question, an
+            // approval): it did continue, so nothing to report.
+            if (r.continuedHere) {
+              r.state = "done";
+              r.updatedAt = now();
+              candidates.delete(r.id);
+              save();
+              continue;
+            }
             stop(r, `Waited a day for ${agentName(r.chain.at(-1).agent)} to finish.${internal(r) ? "" : " Set it up again if you still want it."}`);
             continue;
           }
@@ -570,6 +606,14 @@ export function createRelays({
           const eligible = r.trigger === "usage"
             ? outcome.kind === "error" && usageLimited(src.agent, outcome.item)
             : outcome.kind === "reply";
+          // Continued here: that turn ended some other way than on its limit.
+          if (r.continuedHere && ours && !eligible && outcome.kind !== "open" && items.at(-1)?.id !== r.since) {
+            r.state = "done";
+            r.updatedAt = now();
+            candidates.delete(r.id);
+            save();
+            continue;
+          }
           if (eligible && ours && outcome.item.id !== r.since) {
             const seen = candidates.get(r.id);
             if (seen?.item === outcome.item.id && now() - seen.at >= settleMs) {

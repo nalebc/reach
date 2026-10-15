@@ -98,14 +98,15 @@ test("a guest gets no Take over from the owner; Control comes back when it's fre
   mac.holder = { name: "Owner", guest: false, canTakeOver: false };
   const { view, changed } = await screen();
   button("Control").click();
-  await settle(100);
+  // Each step waits for what the phone shows next: a fixed pause read the
+  // page before a busy runner had drawn it (the Intel Mac, Oct 14).
+  await dom.waitFor(() => /Owner is controlling the screen/.test(dom.document.body.textContent));
   assert.equal(button("Take over"), undefined);
   assert.ok(button("Control"));
-  assert.match(dom.document.body.textContent, /Owner is controlling the screen/);
   // The owner lets go: the live connection says control changed hands.
   mac.holder = null;
   await changed('{"control":"b"}');
-  assert.doesNotMatch(dom.document.body.textContent, /is controlling the screen/);
+  await dom.waitFor(() => !/is controlling the screen/.test(dom.document.body.textContent));
   button("Control").click();
   await dom.waitFor(() => button("Stop"));
   await view.unmount();

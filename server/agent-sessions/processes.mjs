@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { windowsProcesses } from "../windows-processes.mjs";
 
 const exec = promisify(execFile);
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -180,36 +181,69 @@ export function readSessionRegistry({
       // Stopped on you: "input needed" (a question) or "permission prompt".
       waiting: r.status === "waiting" ? String(r.waitingFor || "input needed") : null,
       ...(r.hostSessionId ? { appSessionId: r.hostSessionId } : {}),
+      // A Windows PC's Claude Code notes its process's start as Windows keeps
+      // it (GetProcessTimes, 100 ns since 1601), for liveClaudeSessions.
+      ...(typeof r.procStartFt === "string" ? { procStartFt: r.procStartFt } : {}),
     });
   }
   return found;
 }
 
-export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid, platform = process.platform, ours = () => false } = {}) {
+// A Windows start as Claude Code notes it, in ms since 1970 as the PC's
+// process list gives it (windows-processes.mjs); null when it isn't one.
+// Claude Code reads a value past 3e17 as another encoding and never as a
+// different process (2.1.299): Reach doesn't either, or a live chat would
+// read as let go and be written into.
+const FILETIME_1970 = 116444736000000000n;
+const OTHER_ENCODING = 300000000000000000n;
+export function windowsStart(procStartFt) {
+  if (typeof procStartFt !== "string" || !/^\d{1,20}$/.test(procStartFt)) return null;
+  const ticks = BigInt(procStartFt);
+  return ticks > FILETIME_1970 && ticks <= OTHER_ENCODING ? Number((ticks - FILETIME_1970) / 10000n) : null;
+}
+
+export async function liveClaudeSessions(starts, { run = exec, now = Date.now, registry = readSessionRegistry, self = process.pid, platform = process.platform, ours = () => false, processList = () => windowsProcesses() } = {}) {
   // Windows has no ps or lsof: Claude Code's own registry says which sessions
   // run and where, and Reach knows its own processes (ours). Failing there
   // read as "nobody holds it", and Reach wrote into chats a terminal or the
   // Claude app still had open (docs/parity/AUDIT.md #8).
   if (platform === "win32") {
     // Windows reuses pids: a record counts while its pid still runs Claude
-    // Code (claude.exe; node.exe for npm's). If tasklist can't say, it
-    // counts.
+    // Code (claude.exe; node.exe for npm's) and, when both say when, started
+    // when the process Claude Code noted did (a pid given since to another
+    // Claude Code or Node read as a held chat until its record went). The
+    // PC's process list says both; tasklist, only the program. If neither
+    // can say, it counts.
     let images = null;
+    let started = new Map();
     try {
-      const { stdout } = await run("tasklist", ["/FO", "CSV", "/NH"], { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
-      images = new Map();
-      for (const line of String(stdout).split(/\r?\n/)) {
-        const m = line.match(/^"([^"]*)","(\d+)"/);
-        if (m) images.set(Number(m[2]), m[1].toLowerCase());
-      }
+      const rows = await processList();
+      images = new Map(rows.map((p) => [p.pid, p.image.toLowerCase()]));
+      started = new Map(rows.map((p) => [p.pid, p.startedAt]));
       // A list without Reach itself isn't the whole list.
       if (!images.has(process.pid)) images = null;
     } catch {
-      /* unknown: every record stands */
+      /* tasklist, below */
     }
+    if (!images)
+      try {
+        started = new Map();
+        const { stdout } = await run("tasklist", ["/FO", "CSV", "/NH"], { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+        images = new Map();
+        for (const line of String(stdout).split(/\r?\n/)) {
+          const m = line.match(/^"([^"]*)","(\d+)"/);
+          if (m) images.set(Number(m[2]), m[1].toLowerCase());
+        }
+        if (!images.has(process.pid)) images = null;
+      } catch {
+        /* unknown: every record stands */
+      }
     const live = new Map();
     for (const [id, entry] of registry()) {
       if (images && !["claude.exe", "node.exe"].includes(images.get(entry.pid))) continue;
+      const noted = windowsStart(entry.procStartFt);
+      const since = started.get(entry.pid);
+      if (images && noted != null && Number.isFinite(since) && since !== noted) continue;
       live.set(id, ours(entry.pid) ? { ...entry, where: "reach" } : entry);
     }
     return live;

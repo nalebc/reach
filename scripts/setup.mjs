@@ -4,17 +4,16 @@ import crypto from "node:crypto";
 import { atomicJson, loadJson, openPairingWindow } from "../server/core.mjs";
 import { stateDir, command, packaged } from "./home.mjs";
 import { protectedFolder } from "./background-service.mjs";
-import { readPreferences, configure, preferencesFile, accountApproval } from "./configure.mjs";
+import { readPreferences, configure } from "./configure.mjs";
 
 // First-run setup for `./reach`: one guided flow that gets this computer ready,
 // then starts Reach. Every step saves as it finishes, so stopping (Ctrl+C) and
 // running `./reach` again picks up where it left off. Nothing here needs npm
 // packages, so it still works while Reach is installing them on first run.
 //
-// A first run is three steps: 1) Tailscale on this computer (on Mac and
-// Linux, your account and what to share too), 2) your private link (MagicDNS
-// and HTTPS certificates), 3) your phone, which the launcher connects with its
-// QR. Invite links and the background service wait for later (Oct 11: four
+// A first run is three steps: 1) Tailscale on this computer (your account
+// and what to share too), 2) your private link (MagicDNS and HTTPS
+// certificates), 3) your phone, which the launcher connects with its QR. Invite links and the background service wait for later (Oct 11: four
 // steps, five step lists and an invite question before any phone worked
 // confused a first user): `./reach setup invites` / `background`, or
 // `./reach setup` to pick one. `./reach setup <section>` jumps to one step.
@@ -143,9 +142,6 @@ function makeSteps(root, deps) {
     deps.dataDir ||
     process.env.REACH_DATA ||
     path.join(stateDir(root), "quick");
-  // Windows approves phones by pairing code (configure.mjs accountApproval):
-  // no account or folders to save, and no start page for invites.
-  const byAccount = accountApproval(platform);
   return [
     {
       id: "account",
@@ -155,11 +151,7 @@ function makeSteps(root, deps) {
         const ensureTailscale =
           deps.ensureTailscale ||
           (await import("./tailscale-connect.mjs")).ensureTailscale;
-        const status = await ensureTailscale(deps.tailscale || { select, print });
-        if (!byAccount)
-          return {
-            note: status?.User?.[status?.Self?.UserID]?.LoginName || "connected",
-          };
+        await ensureTailscale(deps.tailscale || { select, print });
         const prefs = await (deps.configure || configure)(root, {
           select,
           ask,
@@ -193,7 +185,7 @@ function makeSteps(root, deps) {
         // The private socket Tailscale reaches Reach through must fit macOS's
         // path limit: a long account name is said now, not after setup.
         // Windows' keyed route has no socket.
-        if (byAccount && platform !== "win32")
+        if (platform !== "win32")
           (deps.socketPath || (await import("../server/tailscale-auth.mjs")).serveSocketPath)(root);
         for (;;) {
           let connection;
@@ -237,7 +229,6 @@ function makeSteps(root, deps) {
       title: "Invite people & agents with a link",
       hint: "invite people and agents with a link",
       later: true,
-      skip: !byAccount,
       async run({ print, select, ask, explicit }) {
         const choice = explicit
           ? "now"
@@ -272,7 +263,7 @@ function makeSteps(root, deps) {
       title: "Keep Reach running after this window closes",
       hint: "keep Reach running after this window closes",
       later: true,
-      skip: platform !== "darwin",
+      skip: platform !== "darwin" && platform !== "win32",
       async run({ select }) {
         // In Documents (and the like) a background service never starts:
         // Reach opens in Terminal at sign-in instead.
@@ -291,11 +282,20 @@ function makeSteps(root, deps) {
                   label: "Yes, open it in Terminal each time I sign in",
                   description: `macOS keeps background services out of your ${folder} folder, where Reach is. Terminal can use it, and keeps Reach's live screen and control.`,
                 }
-              : {
-                  value: "background",
-                  label: "Yes, start it at login and keep it running",
-                  description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
-                },
+              : platform === "win32"
+                ? {
+                    // Windows has no Screen Recording or Accessibility to
+                    // grant: a Reach started at sign-in in your session keeps
+                    // the live screen and control while you're signed in.
+                    value: "background",
+                    label: "Yes, start it at sign-in and keep it running",
+                    description: `Installs a background task (you can remove it). It has no window: the live screen and control work while you're signed in, and new phones are approved with ${command} approve.`,
+                  }
+                : {
+                    value: "background",
+                    label: "Yes, start it at login and keep it running",
+                    description: "Installs a background service (you can remove it). Without a Terminal window it has no live screen or control, and can't approve new phones.",
+                  },
           ],
         });
         return { state: choice, note: labelFor("background", choice) };
@@ -390,26 +390,23 @@ export async function runSetup(root, { only, deps = {} } = {}) {
   if (only) {
     board(print, all, progress);
     print(`  Saved.\n`);
-  } else print(phoneStep({ first, all, progress, byAccount: accountApproval(deps.platform || process.platform), platform: deps.platform || process.platform }));
+  } else print(phoneStep({ first, all }));
   return { launch: launchOf(progress), progress, ran };
 }
 // The end of a first run: the phone, which the launcher's QR connects, and
-// what waits for later. A pairing-code computer (Windows) says first that the
-// phone needs the Tailscale app, signed in as the account step found.
-export function phoneStep({ first, all, progress, byAccount, platform }) {
+// what waits for later. A computer that falls back to pairing codes says so
+// itself, with the phone's Tailscale app first (scripts/launch.mjs).
+export function phoneStep({ first, all }) {
   const n = first.length + 1;
-  const account = progress.notes?.account;
   const lines = [`  ▸ ${n}. Your phone`];
-  if (!byAccount)
-    lines.push(
-      `     Install the Tailscale app on your phone, sign in ${account && account !== "connected" ? `as ${account}` : "with this computer's account"} and turn it on.${platform === "win32" ? " On Windows, phones can't sign in from the browser yet." : ""}`,
-    );
   lines.push("     Reach starts now: scan its QR code with your phone's camera, then tap Connect.");
   const later = all.filter((s) => s.later);
+  // As wide as the longest command too: .\reach.cmd's are longer than ./reach's.
+  const width = Math.max(28, ...later.map((s) => `${command} setup ${s.id}`.length + 2));
   if (later.length)
     lines.push(
       "\n  Later, when you want them:",
-      ...later.map((s) => `    ${`${command} setup ${s.id}`.padEnd(28)}${s.hint}`),
+      ...later.map((s) => `    ${`${command} setup ${s.id}`.padEnd(width)}${s.hint}`),
     );
   return lines.join("\n") + "\n";
 }

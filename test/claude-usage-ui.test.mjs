@@ -2,11 +2,8 @@ import test, { before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// Claude out of usage, inside a Claude chat on the phone: one slim line above
-// the composer (UsageStrip), until when, with where to get more (Codex's
-// chats had their banner; Claude's showed nothing until a message failed).
-// The way to more usage once only: a chat that hit the limit already ends on
-// Claude's own card, link included.
+// The native limit message and all recovery controls share one card above
+// the composer. The active error is not repeated in the transcript.
 const peer = { id: "mac", name: "Mac", url: "https://reach.test", token: "t", platform: "darwin" };
 const ID = "11111111-2222-4333-8444-555555555555";
 const LIMIT = "You've hit your session limit · resets 3:20pm (America/Vancouver)";
@@ -69,27 +66,33 @@ const cards = () => [...dom.document.querySelectorAll(".as-error.claude")];
 const strip = () => dom.document.querySelector(".as-composer .usage-strip");
 const moreUsage = () => [...dom.document.querySelectorAll("a")].filter((a) => a.getAttribute("href") === "https://claude.ai/settings/usage");
 
-test("Claude out of usage: a line above the composer, until when, with where to get more", async () => {
+test("Claude out of usage: one card with its native message and usage link", async () => {
   page.items = [{ id: "u1", role: "user", kind: "text", text: "Refactor the auth module", at: Date.now() - 60000 }];
   await open(outOfUsage);
   await dom.waitFor(() => strip());
-  assert.match(strip().querySelector(".usage-strip-text").textContent, /^Out of Claude usage until /);
+  assert.equal(strip().querySelector(".usage-strip-text").getAttribute("aria-label"), LIMIT);
+  assert.match(strip().querySelector(".usage-strip-text").textContent, /^Resets at 3:20 PM/);
   const more = strip().querySelector('a[href="https://claude.ai/settings/usage"]');
-  assert.equal(more.textContent, "More usage");
+  assert.equal(more.getAttribute("aria-label"), "Get more usage");
   assert.deepEqual(dom.errors, []);
 });
 
-test("the chat that hit the limit shows Claude's card once; the line above the composer doesn't repeat its link", async () => {
+test("the current native limit merges into one card with its usage link, notification and continuation actions", async () => {
   page.items = [
     { id: "u1", role: "user", kind: "text", text: "Try again", at: Date.now() - 60000 },
     { id: "e1", role: "system", kind: "error", text: LIMIT, detail: "rate_limit", at: Date.now() - 50000 },
   ];
   await open(outOfUsage);
-  await dom.waitFor(() => cards().length > 0 && strip());
+  await dom.waitFor(() => strip());
   await settle(100);
-  assert.equal(cards().length, 1);
+  assert.equal(cards().length, 0, "the current error is not a second transcript card");
   assert.equal(moreUsage().length, 1, "one way to more usage");
-  assert.ok(!strip().contains(moreUsage()[0]));
+  assert.ok(strip().contains(moreUsage()[0]));
+  assert.equal(strip().querySelector(".usage-strip-text").getAttribute("aria-label"), LIMIT);
+  assert.match(strip().querySelector(".usage-strip-text").textContent, /^Resets at 3:20 PM/);
+  assert.ok(strip().querySelector(".usage-notify"));
+  assert.ok(strip().querySelector(".usage-continue"));
+  assert.equal(dom.document.querySelectorAll(".usage-panel").length, 1);
   assert.deepEqual(dom.errors, []);
 });
 
@@ -103,5 +106,18 @@ test("with usage left, no card", async () => {
   await settle(100);
   assert.equal(cards().length, 0);
   assert.equal(strip(), null);
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a different earlier limit stays in history while the live limit owns the combined card", async t => {
+  const current = "You've hit your weekly limit · resets tomorrow at 3pm";
+  page.items = [{ id: "e1", role: "system", kind: "error", text: LIMIT, detail: "rate_limit", at: Date.now() - 50000 }];
+  live.error = current;
+  t.after(() => { live.error = null; });
+  await open(outOfUsage);
+  await dom.waitFor(() => strip()?.querySelector(".usage-strip-text")?.getAttribute("aria-label") === current);
+  assert.equal(cards().length, 1, "an earlier, different error remains in history");
+  assert.equal(cards()[0].querySelector("p").textContent, LIMIT);
+  assert.equal(dom.document.querySelectorAll(".usage-panel").length, 1);
   assert.deepEqual(dom.errors, []);
 });

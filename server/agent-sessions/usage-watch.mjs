@@ -12,16 +12,19 @@ const KEEP_MS = 8 * 24 * 60 * MINUTE;
 
 export function usageBack(health, { resetsAt = null, now = Date.now() } = {}) {
   // The agent's own word (what the message box goes by), then its meters.
-  if (!health?.signedIn || health.usable !== true) return false;
-  // Meters that couldn't be read leave `usable` at its default, so it says
-  // nothing then: only a reset time that has passed does.
+  if (!health?.signedIn || health.usable === false) return false;
+  // Meters that couldn't be read leave `usable` unknown, so it says nothing
+  // then: only a reset time that has passed does. (Claude's sign-in renews
+  // only while Claude Code runs, so its meters stay unread until you open it;
+  // the reset time is what lets "back" arrive on time, Oct 14.)
   if (health.usage?.available === false) return !!resetsAt && resetsAt <= now;
+  if (health.usable !== true) return false;
   return !(health.usage?.windows || []).some((w) => w.usedPercent >= 100);
 }
 
 // When a limit resets, as the Mac reads it: its own word first, else the
 // fullest window that is used up.
-const resetOf = (health) =>
+export const resetOf = (health) =>
   health?.resetsAt ??
   (health?.usage?.windows || []).filter((w) => w.usedPercent >= 100 && w.resetsAt).map((w) => w.resetsAt).sort((a, b) => b - a)[0] ??
   null;
