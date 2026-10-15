@@ -14,10 +14,26 @@
 //     stderr says why, then exit 1 (3: no H.264 encoder works here). Lines
 //     starting "note: " say what changed on the way (an encoder or a capture
 //     that gave out) and go to Reach's log.
+//   screen-video <display> <fps> <max width> <bitrate> --private <Reach's pid> [--stills]
+//     A guest's picture (parity audit #12): the first line on stdin is the
+//     rules (server/agent-guard.mjs nativeRules, View), and every window they
+//     close to a View agent is painted black in every frame, decided by
+//     scripts/native/agent-desktop.cs, built into this helper beside this
+//     file, exactly as an agent's screenshot paints it (Windows can't leave a
+//     window out of a captured frame, as a Mac's ScreenCaptureKit does). A
+//     frame whose windows can't be told for sure is black all over; nothing
+//     unmasked ever leaves. Trouble that lasts: "Screen capture could not hide
+//     private windows." and why (the Mac helper's words), exit 1. --stills:
+//     still images (JPEG, as scripts/native/screen-stream.ps1 sends them)
+//     instead of video, with no Media Foundation needed.
 //   screen-video --probe
 //     {"encoder":"…","hardware":true,"capture":"duplication",…} when this PC
 //     can stream video (an encoder made a real picture), exit 0; otherwise
 //     why on stderr, exit 3.
+//   screen-video --probe-private <Reach's pid>
+//     The rules on stdin, as above. {"windows":n,"hidden":n,"ms":n} when a
+//     guest's picture can be made on this PC, exit 0; otherwise why on
+//     stderr, exit 1.
 // Capture: DXGI Desktop Duplication (only changed frames, the pointer's shape
 // and position, per monitor); GDI's BitBlt, as scripts/native/screen-stream.ps1
 // captures, where that isn't available (some VMs and RDP sessions, a rotated
@@ -35,6 +51,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 
+// Its own namespace: agent-desktop.cs, built in beside it for guests'
+// pictures, has types of the same names (Native, Box) in the global one.
+namespace ReachVideo {
+
 static class ReachScreenVideo {
   // A crash inside a driver (an access violation) is said in a line too,
   // never as a stack; one inside an encoder says no encoder works here (3),
@@ -44,22 +64,31 @@ static class ReachScreenVideo {
     Desktop.Aware();
     try {
       if (args.Length == 1 && args[0] == "--probe") return Probe.Run();
+      if (args.Length == 2 && args[0] == "--probe-private") return GuestView.Probe(args[1]);
       return Run(Options.Parse(args));
     } catch (VideoException e) {
       Say(e.Message);
       return e.Code;
     } catch (Exception e) {
-      bool encoder = (e.StackTrace ?? "").Contains("at Encoder.");
+      bool encoder = (e.StackTrace ?? "").Contains("ReachVideo.Encoder.");
       Say((encoder ? "Windows' H.264 encoder stopped: " : "Windows' screen video stopped: ") + Plain(e) + ".");
       return encoder ? 3 : 1;
     }
   }
 
+  // Stdin's lines as UTF-8 (a guest's rules hold names in any language).
+  public static StreamReader Input() {
+    return new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
+  }
+
   static int Run(Options options) {
+    StreamReader input = Input();
+    // A guest's: the rules first, and nothing captured until they're in force.
+    GuestView guest = options.Private ? GuestView.Start(input.ReadLine(), options.ReachPid) : null;
+    if (options.Stills) return RunStills(options, guest, input);
     Mf.Start();
-    using (Session session = new Session(options)) {
+    using (Session session = new Session(options, guest)) {
       Stream output = Console.OpenStandardOutput();
-      StreamReader input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
       string line;
       while ((line = input.ReadLine()) != null) {
         if (line.StartsWith("bitrate ")) {
@@ -69,6 +98,24 @@ static class ReachScreenVideo {
         }
         if (line != "frame" && line != "key") continue;
         byte[] answer = session.Next(line == "key");
+        byte[] length = BigEndian(answer.Length);
+        output.Write(length, 0, 4);
+        output.Write(answer, 0, answer.Length);
+        output.Flush();
+      }
+    }
+    return 0;
+  }
+
+  // Still images, one a request, as screen-stream.ps1 answers ("bitrate"
+  // means nothing to them).
+  static int RunStills(Options options, GuestView guest, StreamReader input) {
+    using (Stills stills = new Stills(options, guest)) {
+      Stream output = Console.OpenStandardOutput();
+      string line;
+      while ((line = input.ReadLine()) != null) {
+        if (line != "frame" && line != "key") continue;
+        byte[] answer = stills.Next(line == "key");
         byte[] length = BigEndian(answer.Length);
         output.Write(length, 0, 4);
         output.Write(answer, 0, answer.Length);
@@ -118,9 +165,19 @@ sealed class EncoderException : Exception {
 sealed class Options {
   public string Display;
   public int Fps, MaxWidth, Bitrate;
+  // A guest's picture (GuestView), told Reach's process; still images.
+  public bool Private, Stills;
+  public int ReachPid;
   public static Options Parse(string[] args) {
     Options o = new Options();
-    if (args.Length != 4) throw new VideoException(1, "Usage: screen-video <display> <fps> <max width> <bitrate>, or --probe.");
+    if (args.Length < 4) throw new VideoException(1, "Usage: screen-video <display> <fps> <max width> <bitrate> [--private <pid>] [--stills], or --probe.");
+    for (int i = 4; i < args.Length; i++) {
+      if (args[i] == "--stills" && !o.Stills) o.Stills = true;
+      else if (args[i] == "--private" && !o.Private && i + 1 < args.Length && int.TryParse(args[i + 1], out o.ReachPid) && o.ReachPid >= 0) {
+        o.Private = true;
+        i++;
+      } else throw new VideoException(1, "Invalid display or video settings.");
+    }
     o.Display = args[0];
     bool display = o.Display == "primary";
     if (!display && o.Display.StartsWith("DISPLAY") && o.Display.Length > 7 && o.Display.Length <= 10) {
@@ -154,11 +211,16 @@ sealed class Session : IDisposable {
   long sentAt = -100000, keyAt = -100000, lockAt = -100000, lastTime = -1, waitingSince;
   bool locked;
   int bitrate;
+  // A guest's: the picture the stream is made from, the capture's with the
+  // private windows black (GuestView.Paint).
+  readonly GuestView guest;
+  readonly Masked masked = new Masked();
 
-  public Session(Options options) {
+  public Session(Options options, GuestView guest) {
     this.options = options;
+    this.guest = guest;
     bitrate = options.Bitrate;
-    capture = new ScreenCapture(Desktop.Find(options.Display));
+    capture = new ScreenCapture(Desktop.Find(options.Display), false);
     choices = Encoders.List();
     if (choices.Count == 0) throw new VideoException(3, Why.NoEncoder(null));
     Resize();
@@ -213,13 +275,17 @@ sealed class Session : IDisposable {
     // once a second (server/remote-screen.mjs); the first picture after it
     // starts afresh.
     if (Locked(false)) return new byte[] { 2 };
-    int state = capture.Update(!havePicture);
+    int state = guest == null ? capture.Update(!havePicture) : guest.Capture(capture, !havePicture);
     if (state == ScreenCapture.Lost && Locked(true)) return new byte[] { 2 };
     if (capture.Width != converter.SourceWidth || capture.Height != converter.SourceHeight) {
       Resize();
       key = true;
     }
-    if (state == ScreenCapture.Changed) Refresh();
+    // A guest's black changed with nothing else (a window renamed into the
+    // rules, or out): the whole picture is made again, and goes out.
+    bool remade = guest != null && masked.Update(capture, guest, state);
+    if (remade) state = ScreenCapture.Changed;
+    if (state == ScreenCapture.Changed) Refresh(remade);
     if (!havePicture) {
       // No picture at all, ten seconds on: said in words, and Reach tries again.
       if (state == ScreenCapture.Lost || clock.ElapsedMilliseconds - waitingSince > 10000)
@@ -257,9 +323,10 @@ sealed class Session : IDisposable {
   }
 
   // The stream's picture updated where the screen changed.
-  void Refresh() {
-    if (capture.Full || !havePicture) {
-      converter.Convert(capture.Pixels, capture.Width, 0, 0, clean, new Rect(0, 0, converter.Width, converter.Height));
+  void Refresh(bool whole) {
+    int[] pixels = Source;
+    if (whole || capture.Full || !havePicture) {
+      converter.Convert(pixels, capture.Width, 0, 0, clean, new Rect(0, 0, converter.Width, converter.Height));
       havePicture = true;
       return;
     }
@@ -269,8 +336,12 @@ sealed class Session : IDisposable {
       if (!o.Empty) areas.Add(o);
     }
     areas = Rect.Merge(areas, converter.Width, converter.Height);
-    foreach (Rect o in areas) converter.Convert(capture.Pixels, capture.Width, 0, 0, clean, o);
+    foreach (Rect o in areas) converter.Convert(pixels, capture.Width, 0, 0, clean, o);
   }
+
+  // What the stream is made from: the screen, or for a guest the screen with
+  // the private windows black. Never the bare screen for a guest.
+  int[] Source { get { return guest == null ? capture.Pixels : masked.Pixels; } }
 
   // The picture with the pointer Desktop Duplication reports drawn on it
   // (GDI's capture already has it), at the stream's scale.
@@ -285,7 +356,8 @@ sealed class Session : IDisposable {
     Rect s = converter.SourceRect(o);
     int w = s.Right - s.Left, h = s.Bottom - s.Top;
     if (patch.Length < w * h) patch = new int[w * h];
-    for (int y = 0; y < h; y++) Array.Copy(capture.Pixels, (s.Top + y) * capture.Width + s.Left, patch, y * w, w);
+    int[] pixels = Source;
+    for (int y = 0; y < h; y++) Array.Copy(pixels, (s.Top + y) * capture.Width + s.Left, patch, y * w, w);
     shape.Draw(patch, w, s, p.X, p.Y);
     Buffer.BlockCopy(clean, 0, composed, 0, clean.Length);
     converter.Convert(patch, w, s.Left, s.Top, composed, o);
@@ -604,14 +676,23 @@ sealed class ScreenCapture : IDisposable {
   long retryAt;
   readonly Stopwatch clock = Stopwatch.StartNew();
 
-  public ScreenCapture(Display display) {
+  // gdi: GDI only (still images, which carry the pointer in their pixels).
+  public ScreenCapture(Display display, bool gdi) {
     Display = display;
     Width = display.Bounds.Right - display.Bounds.Left;
     Height = display.Bounds.Bottom - display.Bounds.Top;
     Pixels = new int[Width * Height];
     // Reach's tests take the GDI path on a PC where duplication works (as
     // a VM or a Remote Desktop session without it would).
-    duplicationGone = Environment.GetEnvironmentVariable("REACH_TEST_SCREEN_GDI") == "1";
+    duplicationGone = gdi || Environment.GetEnvironmentVariable("REACH_TEST_SCREEN_GDI") == "1";
+  }
+
+  // A whole new picture from GDI now, whichever capture runs: a guest's frame
+  // taken again while the windows held still (GuestView.Capture).
+  public int Regrab() {
+    Dirty.Clear();
+    Full = false;
+    return Grab(true);
   }
 
   public int Update(bool firstPicture) {
@@ -2054,6 +2135,358 @@ static class Probe {
   }
 }
 
+// --- A guest's picture (parity audit #12) -------------------------------------
+// What a View agent's screenshot paints black, painted black in a guest's
+// frames: the windows read and decided by agent-desktop.cs's own code (Desk,
+// Masks) under the server's rules, so Windows hides what that helper hides.
+// The windows are read before and after each frame. A frame taken while a
+// private window, or one over it, changed is taken again with GDI; changed
+// again, the frame is black all over. DWM draws a moment behind what Windows
+// lists, so the black also covers where private windows were in the last
+// quarter second, and all of the display for half a second after one is
+// shown, hidden, minimized or closed (its animation draws outside its frame).
+sealed class GuestView {
+  public const string Refused = "Screen capture could not hide private windows.";
+  const int RecentMs = 250, SettleMs = 500, GiveUpMs = 10000;
+  readonly global::Rules rules;
+  readonly Dictionary<long, global::Ident> identities = new Dictionary<long, global::Ident>();
+  readonly List<KeyValuePair<long, global::Inventory>> recent = new List<KeyValuePair<long, global::Inventory>>();
+  // The private windows drawing in the last reading.
+  HashSet<long> drawing;
+  readonly Stopwatch clock = Stopwatch.StartNew();
+  // The last reading, and the window revision just after it.
+  global::Inventory last;
+  int lastRevision;
+  long blackUntil = -1, failingSince = -1;
+  // This frame's black, in the display's pixels; All: all of it.
+  public readonly List<Rect> Black = new List<Rect>();
+  public bool All = true;
+  public int Hidden;
+
+  GuestView(global::Rules rules) {
+    this.rules = rules;
+  }
+
+  // The rules (a JSON line), then agent-desktop's startup checks; refused
+  // with the reason when they don't pass.
+  public static GuestView Start(string line, int reach) {
+    Dictionary<string, object> request = null;
+    try {
+      request = global::Json.Parse(line ?? "") as Dictionary<string, object>;
+    } catch (Exception) {
+      request = null;
+    }
+    if (request == null) throw new VideoException(1, Refused + " Reach didn't say which windows to hide.");
+    global::Rules rules = global::Rules.From(request);
+    rules.Mode = "view";
+    string problem;
+    try {
+      problem = global::Desk.StartGuestView(reach);
+    } catch (Exception e) {
+      problem = ReachScreenVideo.Plain(e) + ".";
+    }
+    if (problem != null) throw new VideoException(1, Refused + " " + problem);
+    return new GuestView(rules);
+  }
+
+  // One reading of the windows on this PC, as a View agent's would be.
+  global::Inventory Read() {
+    if (identities.Count > 4096) identities.Clear();
+    return global::Desk.GuestLook(rules, identities);
+  }
+
+  // --probe-private: a guest's picture can be made here (Reach's detection).
+  public static int Probe(string pid) {
+    int reach;
+    if (!int.TryParse(pid, out reach) || reach < 0) throw new VideoException(1, "Invalid display or video settings.");
+    GuestView guest = Start(ReachScreenVideo.Input().ReadLine(), reach);
+    Display display = Desktop.Find("primary");
+    global::Box screen = new global::Box(display.Bounds.Left, display.Bounds.Top, display.Bounds.Right, display.Bounds.Bottom);
+    Stopwatch took = Stopwatch.StartNew();
+    global::Inventory look = guest.Read();
+    long ms = took.ElapsedMilliseconds;
+    if (!look.Complete) throw new VideoException(1, Refused + " Windows wouldn't list every window.");
+    int hidden;
+    global::Masks.Black("view", screen, new List<global::Inventory> { look }, false, out hidden);
+    Console.Out.Write("{\"windows\":" + look.Windows.Count + ",\"hidden\":" + hidden + ",\"ms\":" + ms + "}\n");
+    Console.Out.Flush();
+    return 0;
+  }
+
+  // The display captured between two readings of its windows, and this
+  // frame's black (Black, All). Lost: no new picture. Trouble that lasts
+  // ends the stream with the reason; until then the frame is black.
+  public int Capture(ScreenCapture capture, bool first) {
+    try {
+      return Take(capture, first);
+    } catch (VideoException) {
+      throw;
+    } catch (Exception e) {
+      Darken();
+      Failing(ReachScreenVideo.Plain(e) + ".");
+      return capture.HasPicture ? ScreenCapture.Changed : ScreenCapture.Lost;
+    }
+  }
+
+  int Take(ScreenCapture capture, bool first) {
+    Display display = Desktop.Lookup(capture.Display.Device);
+    global::Box screen = display == null ? new global::Box(0, 0, 0, 0)
+      : new global::Box(display.Bounds.Left, display.Bounds.Top, display.Bounds.Right, display.Bounds.Bottom);
+    for (int attempt = 0; attempt < 2; attempt++) {
+      // Before: the last frame's reading, when there is one (anything since
+      // shows in the revision, or in the reading after); again, a new one.
+      global::Inventory before = last;
+      int from = lastRevision;
+      if (attempt > 0 || before == null) {
+        from = global::Desk.GuestRevision();
+        before = Read();
+      }
+      int state = attempt == 0 ? capture.Update(first) : capture.Regrab();
+      if (attempt == 0 && (state == ScreenCapture.Lost || !capture.HasPicture)) return state;
+      // Nothing new on screen: the last frame's picture and black stand,
+      // unless some of that black was only for a moment (a blackout, where a
+      // private window was): then the windows are read again, so a still
+      // screen doesn't stay black.
+      if (attempt == 0 && state == ScreenCapture.Same && last != null && !All && recent.Count <= 1 && clock.ElapsedMilliseconds >= blackUntil) return state;
+      if (state == ScreenCapture.Lost) break;
+      global::Inventory after = Read();
+      int to = global::Desk.GuestRevision();
+      long now = clock.ElapsedMilliseconds;
+      Remember(after, to, now);
+      if (screen.Empty || screen.Width != capture.Width || screen.Height != capture.Height || !global::Desk.GuestDesktop()) break;
+      if (!before.Complete || !after.Complete) {
+        Failing("Windows wouldn't list every window.");
+        break;
+      }
+      if (Settled(before, after, from, to, screen)) {
+        Paint(screen, before, now);
+        failingSince = -1;
+        return attempt == 0 ? state : ScreenCapture.Changed;
+      }
+    }
+    Darken();
+    return ScreenCapture.Changed;
+  }
+
+  void Darken() {
+    All = true;
+    Black.Clear();
+  }
+
+  // The same trouble for ten seconds: the stream ends, saying why.
+  void Failing(string why) {
+    long now = clock.ElapsedMilliseconds;
+    if (failingSince < 0) failingSince = now;
+    else if (now - failingSince > GiveUpMs) throw new VideoException(1, Refused + " " + why);
+  }
+
+  // Kept for the black of the next quarter second; a private window that
+  // starts or stops drawing blacks the whole display for half a second.
+  void Remember(global::Inventory after, int revision, long now) {
+    last = after;
+    lastRevision = revision;
+    recent.Add(new KeyValuePair<long, global::Inventory>(now, after));
+    recent.RemoveAll(delegate (KeyValuePair<long, global::Inventory> look) { return now - look.Key > RecentMs; });
+    HashSet<long> drawingNow = new HashSet<long>();
+    foreach (global::Win w in after.Windows) if (w.Excluded && w.Shows && w.FrameRead) drawingNow.Add(w.Handle);
+    if (drawing != null && !drawing.SetEquals(drawingNow)) blackUntil = now + SettleMs;
+    drawing = drawingNow;
+  }
+
+  // Nothing private, nor anything over it, changed while the picture was taken.
+  static bool Settled(global::Inventory before, global::Inventory after, int from, int to, global::Box screen) {
+    Dictionary<long, string> a = Relevant(before, screen), b = Relevant(after, screen);
+    if (a.Count != b.Count) return false;
+    foreach (KeyValuePair<long, string> pair in a) {
+      string key;
+      if (!b.TryGetValue(pair.Key, out key) || key != pair.Value) return false;
+    }
+    // A change and back while the picture was taken (Windows said so).
+    List<long> touched = new List<long>();
+    if (!global::Desk.GuestTouched(from, to, touched)) return false;
+    HashSet<long> known = new HashSet<long>();
+    foreach (global::Win w in before.Windows) known.Add(w.Handle);
+    foreach (global::Win w in after.Windows) known.Add(w.Handle);
+    foreach (long handle in touched) if (a.ContainsKey(handle) || b.ContainsKey(handle) || !known.Contains(handle)) return false;
+    return true;
+  }
+
+  // The private windows on this display, and every window over one of them.
+  static Dictionary<long, string> Relevant(global::Inventory look, global::Box screen) {
+    List<global::Win> closed = new List<global::Win>();
+    foreach (global::Win w in look.Windows) if (w.Excluded && global::Masks.On(w, screen)) closed.Add(w);
+    Dictionary<long, string> found = new Dictionary<long, string>();
+    foreach (global::Win w in look.Windows) {
+      if (!global::Masks.On(w, screen)) continue;
+      bool relevant = w.Excluded;
+      for (int i = 0; !relevant && i < closed.Count; i++) relevant = !w.Frame.Intersect(closed[i].Frame).Empty;
+      if (relevant) found[w.Handle] = w.Key + "|" + (w.Excluded ? "closed" : "open");
+    }
+    return found;
+  }
+
+  // The black: every private window in this frame's readings and the last
+  // quarter second's, as agent-desktop paints a View screenshot.
+  void Paint(global::Box screen, global::Inventory before, long now) {
+    List<global::Inventory> looks = new List<global::Inventory>();
+    looks.Add(before);
+    foreach (KeyValuePair<long, global::Inventory> look in recent) looks.Add(look.Value);
+    int hidden;
+    global::PixelSet black = global::Masks.Black("view", screen, looks, false, out hidden);
+    Hidden = hidden;
+    Black.Clear();
+    All = now < blackUntil || black.Boxes.Count > 4096;
+    if (All) return;
+    foreach (global::Box box in black.Boxes) {
+      Rect r = new Rect(box.Left - screen.Left, box.Top - screen.Top, box.Right - screen.Left, box.Bottom - screen.Top).Intersect(new Rect(0, 0, screen.Width, screen.Height));
+      if (!r.Empty) Black.Add(r);
+    }
+  }
+}
+
+// A guest's picture: the capture's pixels with GuestView's black painted in.
+// Copied again where the screen changed, and all of it when the black changed.
+sealed class Masked {
+  public int[] Pixels = new int[0];
+  readonly List<Rect> painted = new List<Rect>();
+  bool paintedAll, fresh = true;
+
+  // True when the black changed: the whole picture must be made again.
+  public bool Update(ScreenCapture capture, GuestView guest, int state) {
+    if (!capture.HasPicture) return false;
+    int width = capture.Width, n = capture.Width * capture.Height;
+    if (Pixels.Length != n) {
+      Pixels = new int[n];
+      fresh = true;
+    }
+    bool changed = fresh || guest.All != paintedAll || !Same(guest.Black, painted);
+    if (!changed && state != ScreenCapture.Changed) return false;
+    if (guest.All) Array.Clear(Pixels, 0, n);
+    else {
+      if (changed || capture.Full) Array.Copy(capture.Pixels, Pixels, n);
+      else
+        foreach (Rect r in capture.Dirty)
+          for (int y = r.Top; y < r.Bottom; y++) Array.Copy(capture.Pixels, y * width + r.Left, Pixels, y * width + r.Left, r.Right - r.Left);
+      foreach (Rect r in guest.Black)
+        for (int y = Math.Max(0, r.Top); y < Math.Min(capture.Height, r.Bottom); y++) {
+          int left = Math.Max(0, r.Left), right = Math.Min(width, r.Right);
+          if (right > left) Array.Clear(Pixels, y * width + left, right - left);
+        }
+    }
+    painted.Clear();
+    painted.AddRange(guest.Black);
+    paintedAll = guest.All;
+    fresh = false;
+    return changed;
+  }
+
+  static bool Same(List<Rect> a, List<Rect> b) {
+    if (a.Count != b.Count) return false;
+    for (int i = 0; i < a.Count; i++)
+      if (a[i].Left != b[i].Left || a[i].Top != b[i].Top || a[i].Right != b[i].Right || a[i].Bottom != b[i].Bottom) return false;
+    return true;
+  }
+}
+
+// Still images, as scripts/native/screen-stream.ps1 sends them: a JPEG at
+// quality 65 no wider than asked, the pointer in it (GDI's capture), one
+// byte 0 when nothing changed and 2 when the PC is locked. A guest's are
+// made from the masked picture only.
+sealed class Stills : IDisposable {
+  readonly Options options;
+  readonly ScreenCapture capture;
+  readonly GuestView guest;
+  readonly Masked masked = new Masked();
+  readonly System.Drawing.Imaging.ImageCodecInfo codec;
+  readonly Stopwatch clock = Stopwatch.StartNew();
+  byte[] last = new byte[0];
+  long sentAt = -100000, lockAt = -100000;
+  bool locked;
+
+  public Stills(Options options, GuestView guest) {
+    this.options = options;
+    this.guest = guest;
+    foreach (System.Drawing.Imaging.ImageCodecInfo c in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders())
+      if (c.MimeType == "image/jpeg") codec = c;
+    if (codec == null) throw new VideoException(1, "Windows has no JPEG encoder on this PC.");
+    capture = new ScreenCapture(Desktop.Find(options.Display), true);
+  }
+
+  bool Locked(bool now) {
+    long at = clock.ElapsedMilliseconds;
+    if (now || at - lockAt >= 250) {
+      locked = Desktop.Locked();
+      lockAt = at;
+    }
+    return locked;
+  }
+
+  public byte[] Next(bool key) {
+    if (Locked(false)) return new byte[] { 2 };
+    int state = guest == null ? capture.Update(!capture.HasPicture) : guest.Capture(capture, !capture.HasPicture);
+    if (state == ScreenCapture.Lost && Locked(true)) return new byte[] { 2 };
+    if (!capture.HasPicture) {
+      if (state == ScreenCapture.Lost || clock.ElapsedMilliseconds > 10000)
+        throw new VideoException(1, "Windows could not stream the desktop. Keep the computer signed in and unlocked, and run Reach in your desktop session.");
+      return new byte[] { 0 };
+    }
+    bool remade = guest != null && masked.Update(capture, guest, state);
+    long now = clock.ElapsedMilliseconds;
+    bool changed = remade || state == ScreenCapture.Changed;
+    // A still screen costs one byte; a picture still goes every second (the
+    // phone's watchdog) and whenever one is asked for.
+    if (!key && !changed && now - sentAt < 900) return new byte[] { 0 };
+    byte[] jpeg = Jpeg(guest == null ? capture.Pixels : masked.Pixels, capture.Width, capture.Height);
+    if (!key && now - sentAt < 900 && Same(jpeg, last)) return new byte[] { 0 };
+    last = jpeg;
+    sentAt = now;
+    return jpeg;
+  }
+
+  byte[] Jpeg(int[] pixels, int width, int height) {
+    double scale = Math.Min(1.0, options.MaxWidth / (double)width);
+    int w = Math.Max(1, (int)(width * scale)), h = Math.Max(1, (int)(height * scale));
+    using (System.Drawing.Bitmap full = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppRgb)) {
+      System.Drawing.Imaging.BitmapData data = full.LockBits(new System.Drawing.Rectangle(0, 0, width, height),
+        System.Drawing.Imaging.ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+      try {
+        for (int y = 0; y < height; y++) Marshal.Copy(pixels, y * width, IntPtr.Add(data.Scan0, y * data.Stride), width);
+      } finally {
+        full.UnlockBits(data);
+      }
+      System.Drawing.Bitmap scaled = full;
+      try {
+        if (w != width || h != height) {
+          scaled = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+          using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(scaled)) {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.DrawImage(full, 0, 0, w, h);
+          }
+        }
+        using (MemoryStream memory = new MemoryStream())
+        using (System.Drawing.Imaging.EncoderParameters parameters = new System.Drawing.Imaging.EncoderParameters(1)) {
+          parameters.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 65L);
+          scaled.Save(memory, codec, parameters);
+          return memory.ToArray();
+        }
+      } finally {
+        if (!ReferenceEquals(scaled, full)) scaled.Dispose();
+      }
+    }
+  }
+
+  static bool Same(byte[] a, byte[] b) {
+    if (a.Length != b.Length) return false;
+    for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+    return true;
+  }
+
+  public void Dispose() {
+    capture.Dispose();
+  }
+}
+
 [StructLayout(LayoutKind.Sequential)]
 struct RECT { public int Left, Top, Right, Bottom; }
 [StructLayout(LayoutKind.Sequential)]
@@ -2358,3 +2791,5 @@ interface ICodecAPI {
   void _00(); void _01(); void _02(); void _03(); void _04(); void _05();
   [PreserveSig] int SetValue([In] ref Guid api, [In] ref object value);
 }
+
+} // namespace ReachVideo

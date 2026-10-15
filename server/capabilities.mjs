@@ -123,10 +123,13 @@ export function deviceCapabilities({
   codexInstalled,
   // You, or someone with full access: sees the whole screen.
   owner = true,
+  // Whether invited people's picture leaves the private windows out: a Mac
+  // always does; a Windows PC once its check passed (detected, never set:
+  // server/windows-guest-screen.mjs).
+  guestView = platform !== "win32",
 }) {
   const desktop = ["darwin", "win32"].includes(platform);
-  // Invited people don't watch a Windows PC yet (guestScreen below).
-  const watches = desktop && scopes.includes("screen") && (owner || platform !== "win32");
+  const watches = desktop && scopes.includes("screen") && (owner || guestView === true);
   return {
     terminal: scopes.includes("terminal"),
     files: scopes.some((s) => ["files", "files:read"].includes(s)),
@@ -137,10 +140,10 @@ export function deviceCapabilities({
     // Hearing it beside the screen (server/screen-sound.mjs): you and
     // people with full access only.
     sound: watches && owner && screen === true,
-    // Whether invited people may watch: Windows can't yet leave password
-    // managers and Reach's windows out of their picture, so it refuses them
-    // (remote-screen.mjs privateViewRefused); the invite sheet doesn't offer it.
-    guestScreen: desktop && platform !== "win32",
+    // Whether invited people may watch: only where their picture leaves
+    // password managers and Reach's windows out (Mac) or paints them black
+    // (Windows); otherwise the invite sheet doesn't offer it.
+    guestScreen: desktop && guestView === true,
     codex: scopes.includes("codex") && codexInstalled === true,
   };
 }

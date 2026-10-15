@@ -13,6 +13,13 @@ const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const built = new Map();
 let dir = null;
 
+// A runner's desktop cleared before a test puts windows on it (its console
+// minimized, a shell surface in front dismissed); what was touched, by name.
+export async function clearRunnerDesktop() {
+  const { stdout } = await exec(await windowsFixture("runner-desktop"), [], { windowsHide: true, timeout: 30000 });
+  return JSON.parse(stdout.trim());
+}
+
 export function windowsFixture(name, references = []) {
   if (process.platform !== "win32") throw Error("Windows fixtures are built on Windows.");
   if (!built.has(name))

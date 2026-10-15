@@ -174,9 +174,11 @@ test("the apps' own cards, answered from the phone, name the computer they're on
       session: { consent: { id: "consent:toolu_1", kind: "apps", apps: ["Calculator"] } },
       items: [{ role: "tool", id: "toolu_2", status: "running", kind: "command", text: "npm test" }],
     });
+    // A Windows PC has nothing that presses the card: it says so first.
+    const onPC = "Answer this in the Claude app on your Windows PC: Reach can't press its buttons from your phone there yet.";
     await assert.rejects(sessions.respond("claude", ID, "consent:toolu_1", { decision: "deny" }), {
       status: 409,
-      message: `The Claude app doesn't list this session. Answer it on your ${word}.`,
+      message: platform === "win32" ? onPC : `The Claude app doesn't list this session. Answer it on your ${word}.`,
     });
     sessions.close();
 
@@ -191,11 +193,14 @@ test("the apps' own cards, answered from the phone, name the computer they're on
       wait: async () => {},
       platform,
     });
-    await assert.rejects(consent.answer(ID, "consent:toolu_1", { decision: "allow" }), /helper stopped/);
-    await assert.rejects(consent.answer(ID, "consent:toolu_1", { decision: "allow" }), {
-      status: 409,
-      message: `Reach already pressed an answer in the Claude app but couldn't confirm it. Check the card on your ${word}.`,
-    });
+    if (platform === "win32") await assert.rejects(consent.answer(ID, "consent:toolu_1", { decision: "allow" }), { status: 409, message: onPC });
+    else {
+      await assert.rejects(consent.answer(ID, "consent:toolu_1", { decision: "allow" }), /helper stopped/);
+      await assert.rejects(consent.answer(ID, "consent:toolu_1", { decision: "allow" }), {
+        status: 409,
+        message: `Reach already pressed an answer in the Claude app but couldn't confirm it. Check the card on your ${word}.`,
+      });
+    }
 
     // A Codex app request Reach can't tell apart stays with the Codex app.
     const cards = createAppCards({
