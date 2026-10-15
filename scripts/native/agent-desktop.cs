@@ -4754,8 +4754,19 @@ static partial class Desk {
   static readonly Guid AppsFolder = new Guid("1e87508d-89c2-42f0-8a7e-645a0f50ca58"), EnumItems = new Guid("94f60519-2850-4924-aa5a-d15e84868039"),
     EnumShellItemsId = new Guid("70629033-e363-4a28-a567-0db78006e6d7");
   static Native.PROPERTYKEY Key(string format, uint id) { return new Native.PROPERTYKEY { fmtid = new Guid(format), pid = id }; }
+  // Start's list, as last read. A cold or slow PC can take longer than the
+  // shell's limit to list it; the read still finishes and is kept, so the
+  // agent's retry gets it at once instead of starting over.
+  static readonly object catalogLock = new object();
+  static List<Dictionary<string, object>> catalogApps;
+  static DateTime catalogAt;
+  static List<Dictionary<string, object>> FreshCatalog() {
+    lock (catalogLock) return catalogApps != null && DateTime.UtcNow - catalogAt < TimeSpan.FromSeconds(30) ? catalogApps : null;
+  }
   static Dictionary<string, object> Catalog() {
-    var apps = OnShell(() => {
+    var apps = FreshCatalog() ?? OnShell(() => {
+      var kept = FreshCatalog();
+      if (kept != null) return kept;
       var found = new SortedDictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
       Guid folderId = AppsFolder, itemId = ShellItemId, enumId = EnumShellItemsId, handler = EnumItems;
       var folder = (IShellItem)Native.SHGetKnownFolderItem(ref folderId, 0, IntPtr.Zero, ref itemId);
@@ -4788,7 +4799,9 @@ static partial class Desk {
       foreach (var entry in found.Values) if (explorer != null && string.Equals((string)entry["id"], explorer, StringComparison.OrdinalIgnoreCase)) listed = true;
       if (explorer != null && !listed)
         found["File Explorer|" + explorer] = new Dictionary<string, object> { { "id", explorer }, { "bundleId", "exe:explorer.exe" }, { "name", "File Explorer" } };
-      return new List<Dictionary<string, object>>(found.Values);
+      var read = new List<Dictionary<string, object>>(found.Values);
+      lock (catalogLock) { catalogApps = read; catalogAt = DateTime.UtcNow; }
+      return read;
     }, "The app list is taking too long.");
     // Running: some process's own path is the app's.
     var running = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -4802,7 +4815,7 @@ static partial class Desk {
     Native.EnumWindows(each, IntPtr.Zero);
     GC.KeepAlive(each);
     var list = new List<object>();
-    foreach (var app in apps) { app["running"] = running.Contains((string)app["id"]); list.Add(app); }
+    foreach (var app in apps) { var copy = new Dictionary<string, object>(app); copy["running"] = running.Contains((string)app["id"]); list.Add(copy); }
     var result = Ok();
     result["apps"] = list;
     return result;
