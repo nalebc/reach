@@ -884,20 +884,22 @@ test("through Reach: once its check passes guests are offered the screen, and an
   const origin = `127.0.0.1:${reach.server.address().port}`;
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   const guest = reach.auth.redeemGuest(reach.auth.inviteGuest({ name: "guest", roots: [], ttlSeconds: 600, screen: "view" }).invitation).token;
-  const ws = new WebSocket(`ws://${origin}/ws/screen`);
+  let ws = null;
   t.after(async () => {
-    ws.terminate();
+    ws?.terminate();
     await reach.close();
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
   const device = (token) => fetch(`http://${origin}/api/device`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
   // The check builds the helper cold, then asks it.
   const started = Date.now();
-  await until(async () => (await device(owner.token)).capabilities?.guestScreen === true, "guests offered the screen", 300000);
+  await until(async () => (await device(owner.token)).capabilities?.guestScreen === true, "guests offered the screen", 180000);
   const seen = (await device(guest)).capabilities;
   note({ reachGuestCheckMs: Date.now() - started, reachGuestCapabilities: { screen: seen.screen, screenSupported: seen.screenSupported } });
   assert.deepEqual([seen.screen, seen.screenSupported], [true, true]);
 
+  // Opened now, not before the check: Reach gives a socket 5 s to sign in.
+  ws = new WebSocket(`ws://${origin}/ws/screen`);
   const messages = [];
   ws.on("error", () => {});
   ws.on("message", (b, binary) => {
