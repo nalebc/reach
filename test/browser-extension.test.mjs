@@ -14,7 +14,8 @@ const read = (name) => fs.readFileSync(path.join(extensionDir, name), "utf8");
 const manifest = JSON.parse(read("manifest.json"));
 
 test("the page interpreter it ships is the server's own, generated, never edited by hand", () => {
-  assert.equal(read("page-runtime.js"), pageRuntimeSource(), "run: node scripts/build-browser-extension.mjs");
+  // A Windows checkout may turn its line ends into CRLF; the code is the same.
+  assert.equal(read("page-runtime.js").replace(/\r\n/g, "\n"), pageRuntimeSource(), "run: node scripts/build-browser-extension.mjs");
 });
 
 test("the manifest asks for the minimum: native messaging, scripting, storage, alarms, https sites", () => {

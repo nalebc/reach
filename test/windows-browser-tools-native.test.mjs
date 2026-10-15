@@ -124,11 +124,11 @@ const shopTool = () => ({
 });
 const leaveTool = () => ({
   protocol: "reach.tool.v1", id: "shop_leave", title: "Leave the test shop", description: "Follow the link to another website.", origins: [origin], inputs: {},
-  steps: [{ op: "navigate", url: `${origin}/shop` }, { op: "click", target: { css: "#away" } }],
+  steps: [{ op: "navigate", url: `${origin}/shop` }, { op: "click", target: { css: "#away" } }, { op: "assert", target: { css: "p" } }],
 });
 const passwordTool = () => ({
   protocol: "reach.tool.v1", id: "shop_password", title: "Type a password", description: "Fill the password box.", origins: [origin], inputs: {},
-  steps: [{ op: "navigate", url: `${origin}/shop` }, { op: "fill", target: { css: "input[type=password]" }, value: "hunter2" }],
+  steps: [{ op: "navigate", url: `${origin}/shop` }, { op: "fill", target: { css: "input[type=password]" }, value: "hunter2" }, { op: "assert", target: { css: "#result" } }],
 });
 
 for (const name of ["Chrome", "Edge"])
