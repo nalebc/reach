@@ -13,7 +13,7 @@ const exec = promisify(execFile);
 // its state where every signed-in user may change it. Browser sign-in keeps
 // an OAuth client there that can make keys and remove devices, and runs a
 // helper from there that decides what is Tailscale: so first, each launch
-// with REACH_WINDOWS_ACCOUNT=1 (and `invites`, before it saves that client)
+// with browser sign-in (and `invites`, before it saves that client)
 // tightens Reach's own folders, then a checker compiled just now confirms
 // nobody else can read or change them, nor change Reach's code. Anything it
 // can't confirm is refused, with the folder named.
@@ -24,9 +24,17 @@ const exec = promisify(execFile);
 // `helpers`: helpers built there (cached, by hash), checked with the rest.
 const ACCOUNT = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
 const SYSTEM = "S-1-5-18", ADMINISTRATORS = "S-1-5-32-544";
+// Windows can materialize its default broad grants as explicit ACEs on a
+// newly created folder. Removing inheritance alone then leaves them intact.
+const BROAD_READERS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-15-2-1", "S-1-15-2-2"];
 const CHECKER = "private-folder";
 const OFF = "so browser sign-in stays off.";
-const UNCHECKED = `Reach couldn't check who can use its folders on this PC, ${OFF}`;
+const UNCHECKED = "Reach couldn't check who can use its folders on this PC";
+// A refusal says what's wrong (`problem`) and, in `reason`, what that turns
+// off for sign-in. The same problem turns off agents' helpers too (the
+// sandbox, the agent desktop: scripts/launch.mjs), said in their own words
+// with `advice` kept.
+const refused = (problem, advice = "") => ({ ok: false, problem, ...(advice ? { advice } : {}), reason: `${problem}, ${OFF}${advice ? ` ${advice}` : ""}` });
 const PROBLEMS = {
   ace: "can be read or changed by other people on this PC",
   owner: "belongs to another account on this PC",
@@ -56,16 +64,16 @@ export async function ensurePrivateFolders({
   platform = process.platform,
   env = process.env,
 } = {}) {
-  if (platform !== "win32") return { ok: false, reason: "Windows only." };
+  if (platform !== "win32") return { ok: false, problem: "Windows only.", reason: "Windows only." };
   const system = systemFolder(env);
-  if (!system) return { ok: false, reason: `Reach couldn't find the Windows folder on this PC, ${OFF}` };
-  if (!protect.length || !nativeDir) return { ok: false, reason: UNCHECKED };
+  if (!system) return refused("Reach couldn't find the Windows folder on this PC");
+  if (!protect.length || !nativeDir) return refused(UNCHECKED);
   let sid = "";
   try {
     const { stdout } = await run(path.win32.join(system, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { timeout: 10000, windowsHide: true });
     sid = accountSid(stdout);
   } catch {}
-  if (!sid) return { ok: false, reason: `Reach couldn't tell which Windows account it runs as, ${OFF}` };
+  if (!sid) return refused("Reach couldn't tell which Windows account it runs as");
   // SIDs only, never names (localized): SYSTEM, Administrators and this
   // account, nothing inherited; what's inside takes the same. Only the exit
   // code is read.
@@ -74,11 +82,12 @@ export async function ensurePrivateFolders({
       mkdirSync(dir, { recursive: true });
       await run(
         path.win32.join(system, "icacls.exe"),
-        [dir, "/inheritance:r", "/grant:r", `*${SYSTEM}:(OI)(CI)F`, `*${ADMINISTRATORS}:(OI)(CI)F`, `*${sid}:(OI)(CI)F`, "/Q"],
+        [dir, "/inheritance:r", "/remove:g", ...BROAD_READERS.map(value => `*${value}`),
+          "/grant:r", `*${SYSTEM}:(OI)(CI)F`, `*${ADMINISTRATORS}:(OI)(CI)F`, `*${sid}:(OI)(CI)F`, "/Q"],
         { timeout: 60000, windowsHide: true },
       );
     } catch {
-      return { ok: false, reason: `Reach couldn't make its folder ${dir} private to your Windows account, ${OFF}` };
+      return refused(`Reach couldn't make its folder ${dir} private to your Windows account`);
     }
   }
   const built = {};
@@ -93,7 +102,7 @@ export async function ensurePrivateFolders({
       if (older.test(name) && name !== path.basename(checker.file))
         await fs.rm(path.join(nativeDir, name), { force: true }).catch(() => {});
   } catch (error) {
-    return { ok: false, reason: `Reach couldn't prepare its folder check (${error.message}), ${OFF}` };
+    return refused(`Reach couldn't prepare its folder check (${error.message})`);
   }
   const files = Object.values(built).map((helper) => helper.file);
   const listed = [...protect, ...check, ...files];
@@ -103,19 +112,16 @@ export async function ensurePrivateFolders({
     const { stdout } = await run(checker.file, [sid, "state", ...protect, "code", ...check, "file", ...files], { timeout: 120000, maxBuffer: 65536, windowsHide: true });
     said = String(stdout).split(/\r?\n/)[0].trim();
   } catch {
-    return { ok: false, reason: UNCHECKED };
+    return refused(UNCHECKED);
   }
   if (said === "ok") return { ok: true, sid, helper: (kind) => async () => built[kind] };
   const open = /^open (\d{1,5}) (ace|owner|reparse|limit|missing|error)$/.exec(said);
   const index = open ? Number(open[1]) : -1;
-  if (!(index >= 0 && index < listed.length)) return { ok: false, reason: UNCHECKED };
+  if (!(index >= 0 && index < listed.length)) return refused(UNCHECKED);
   const code = index >= protect.length && index < protect.length + check.length;
   const what = index >= protect.length + check.length ? "Reach's helper" : "Reach's folder";
   // Reach's code may be read by anyone (an installed program is); only a
   // change by someone else counts there.
   const problem = code && open[2] === "ace" ? "can be changed by other people on this PC" : PROBLEMS[open[2]];
-  return {
-    ok: false,
-    reason: `${what} ${listed[index]} ${problem}, ${OFF}${code ? " Move it into your user folder, or install Reach with npm." : ""}`,
-  };
+  return refused(`${what} ${listed[index]} ${problem}`, code ? "Move it into your user folder, or install Reach with npm." : "");
 }

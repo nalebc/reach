@@ -22,7 +22,6 @@ async function until(check, ms = 3000) {
 
 test("only you and people with full access hear the computer, from another device, while its screen may be watched", { timeout: 20000 }, async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-sound-"));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const sources = [];
   const reach = await createReach({
     roots: [dir],
@@ -37,7 +36,7 @@ test("only you and people with full access hear the computer, from another devic
       return source;
     },
   });
-  t.after(() => reach.close());
+  t.after(async () => { await reach.close(); await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}`;
   const owner = reach.auth.issue("owner", ALL_SCOPES);
