@@ -50,6 +50,7 @@
     "mcp": "node scripts/mcp.mjs",
     "format": "prettier --write src server scripts test docs README.md package.json vite.config.mjs",
     "test:claude-native": "REACH_TEST_CLAUDE_NATIVE=1 npm run test:file -- test/claude-permission-native.test.mjs",
+    "build:extension": "node scripts/build-browser-extension.mjs --package",
     "build:release": "npm run build && node scripts/prune-assets.mjs --release && node scripts/build-tailnet.mjs --required && node scripts/build-notices.mjs && node scripts/release-assets.mjs",
     "verify:package": "node scripts/smoke-package.mjs",
     "test:ci": "node .github/scripts/run-tests.mjs all",

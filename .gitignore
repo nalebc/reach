@@ -32,3 +32,4 @@ work/
 **/xcuserdata/
 ios/build/
 reports/
+dist-extension/
