@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClaudeConsent, pressClaudeConsent } from "../server/agent-sessions/claude-consent.mjs";
+import { createClaudeConsent as create, pressClaudeConsent as press } from "../server/agent-sessions/claude-consent.mjs";
+
+// The Mac's card, pressed through its helper, wherever these tests run (a
+// Windows PC refuses: the last test).
+const createClaudeConsent = (options) => create({ platform: "darwin", ...options });
+const pressClaudeConsent = (choice, options = {}) => press(choice, { platform: "darwin", ...options });
 
 const A = "1fa82f5d-07e5-459c-a5fd-61368b3423c5";
 const B = "8f3a3707-0000-4000-8000-000000000001";
