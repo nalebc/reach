@@ -3266,7 +3266,18 @@ export async function createReach(overrides = {}) {
     requireOwner(req.client, j);
     return j;
   };
-  app.post("/api/jobs", async (req, res) => {
+  // Each job starts a process: at most two a second per device or agent.
+  const jobLimit = rateLimit({
+    windowMs: 60_000, limit: 120, store: new MemoryStore(),
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this device first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "jobs",
+    message: { error: "Too many commands at once. Try again in a minute." },
+  });
+  app.post("/api/jobs", jobLimit, async (req, res) => {
     const cwd = resolve(req.body?.root, req.body?.path || "", req.client);
     if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a folder.");
     const timeoutMs =

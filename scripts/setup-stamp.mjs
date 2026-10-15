@@ -10,8 +10,10 @@ export function digest(files, root = process.cwd()) {
   const h = crypto.createHash("sha256");
   function visit(file) {
     const at = path.resolve(root, file);
-    if (!fs.existsSync(at)) return;
-    if (fs.statSync(at).isDirectory()) {
+    // One stat: a missing file counts as absent, not as an error.
+    const stat = fs.statSync(at, { throwIfNoEntry: false });
+    if (!stat) return;
+    if (stat.isDirectory()) {
       for (const name of fs.readdirSync(at).sort())
         visit(path.join(file, name));
     } else {
