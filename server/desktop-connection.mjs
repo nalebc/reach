@@ -2,7 +2,7 @@ import { DesktopInput, desktopDisplays } from "./desktop-native.mjs";
 import { streamOptions, inputAction } from "./desktop-protocol.mjs";
 import { fail } from "./core.mjs";
 import { actsAsOwner } from "./screen.mjs";
-import { privateViewRefused, PRIVATE_VIEW_UNAVAILABLE } from "./remote-screen.mjs";
+import { refuseGuest } from "./windows-guest-screen.mjs";
 export function desktopConnection(
   ws,
   {
@@ -32,6 +32,8 @@ export function desktopConnection(
     // Control again resumes at once instead of starting a new helper.
     parkFor = 60000,
     platform = process.platform,
+    // A Windows PC's guests' pictures (server/windows-guest-screen.mjs).
+    guestScreen = null,
   },
 ) {
   let token,
@@ -207,10 +209,10 @@ export function desktopConnection(
       !client.scopes.includes("screen")
     )
       throw fail(403, "Desktop control expired or was revoked.");
-    // Windows can't yet hide password managers from guests' pictures, or a
-    // concealed copy from their clipboard reads (parity audit #12, #13):
-    // there only the owner and full-access people control, as they watch.
-    if (privateViewRefused(!actsAsOwner(client), platform)) throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    // Guests control only where they watch without the private windows: a
+    // Windows PC that can't paint them black yet lets only the owner and
+    // full-access people control, as they watch (parity audit #12).
+    refuseGuest(!actsAsOwner(client), platform, guestScreen);
     // A phone app's hidden display is for whoever that app is shared with.
     if (ws.reachDisplay && !allowDisplay(client, ws.reachDisplay))
       throw fail(403, "That app isn't shared with you.");
@@ -263,9 +265,10 @@ export function desktopConnection(
               ws.send(JSON.stringify({ type: "ack", id: item.id, ok: false, error: late.message }));
             continue;
           }
-          // A password manager's copied secret stays on the Mac for guests:
-          // the helper turns it down unless the owner asked. (On Windows,
-          // guests don't control at all yet: authorize.)
+          // A password manager's copied secret stays on the computer for
+          // guests: the helper turns it down unless the owner asked (a Mac's
+          // concealed type; Windows' formats that keep it out of clipboard
+          // history and monitors, parity audit #13).
           result = await helper.send(
             item.action.type === "clipboard-read"
               ? { ...item.action, owner: client.scopes.includes("admin") }

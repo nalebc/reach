@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { cscCandidates, windowsBinary } from "../server/desktop-native.mjs";
 import { nativeRules } from "../server/agent-guard.mjs";
 import { smartAppControlState, windowsHelperEnv } from "../server/windows-helper-launch.mjs";
+import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // The Windows agent helper (scripts/native/agent-desktop.cs) on a real
 // Windows runner, driven as Reach drives it: one JSON line in, one out
@@ -61,8 +62,20 @@ test.before(async () => {
   // A runner's own console (open on Windows Server 2022 runners) or a shell
   // surface in front (Windows 11 on Arm) would cover the test windows. The
   // consoles are minimized and the surface dismissed; only names are recorded.
-  const { stdout } = await exec(fixtureConsole, ["minimize-consoles"], { windowsHide: true });
-  note({ runnerConsoles: JSON.parse(stdout.trim()) });
+  note({ runnerConsoles: await clearRunnerDesktop() });
+  // What still shows after that (class and program, never a title).
+  note({ runnerDesktop: await lookAtRunnerDesktop() });
+});
+// The runner's own dialogs come at any time (clearRunnerDesktop names them):
+// cleared again before each test, and what was cleared is kept.
+const cleared = [];
+test.beforeEach(async (t) => {
+  if (skip || !work) return;
+  const done = await clearRunnerDesktop();
+  if (done.closed.length || done.dismissed.length) {
+    cleared.push({ before: t.name.slice(0, 40), ...done });
+    note({ cleared });
+  }
 });
 test.after(async () => {
   for (const child of children) try { child.kill(); } catch {}

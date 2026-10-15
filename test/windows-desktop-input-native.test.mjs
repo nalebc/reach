@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { inputAction } from "../server/desktop-protocol.mjs";
+import { powershellFile } from "../server/powershell.mjs";
 const exec = promisify(execFile);
 const source = await fs.readFile(
   new URL("../scripts/native/desktop-input.ps1", import.meta.url),
@@ -358,5 +360,72 @@ Write-Output 'Windows pointer and scroll sequences passed'
       { timeout: 45000, windowsHide: true, maxBuffer: 65536 },
     );
     assert.match(stdout, /Windows pointer and scroll sequences passed/);
+  },
+);
+
+// A password manager's copy stays the owner's on Windows too (parity audit
+// #13): what an app asked Windows to keep out of clipboard history and
+// monitors (ExcludeClipboardContentFromMonitorProcessing, or
+// CanIncludeInClipboardHistory 0) is refused to anyone else, in the Mac's
+// words; ordinary text, or a copy allowed in history, still reads. The real
+// helper (desktop-input.ps1, -STA as Reach starts it) and the real clipboard
+// of a Windows runner's desktop, so only with REACH_TEST_WINDOWS_DESKTOP.
+test(
+  "on a real Windows desktop a concealed clipboard copy reads only for the owner; ordinary text reads for anyone",
+  { skip: process.platform !== "win32" || process.env.REACH_TEST_WINDOWS_DESKTOP !== "1", timeout: 180000 },
+  async () => {
+    const helper = spawn("powershell.exe", powershellFile(fileURLToPath(new URL("../scripts/native/desktop-input.ps1", import.meta.url)), ["primary"], { sta: true }), {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let out = "";
+    const answers = [];
+    helper.stdout.on("data", (b) => {
+      out += b;
+      let at;
+      while ((at = out.indexOf("\n")) >= 0) {
+        const line = out.slice(0, at).trim();
+        out = out.slice(at + 1);
+        if (line.startsWith("{")) answers.push(JSON.parse(line));
+      }
+    });
+    const ask = async (action) => {
+      const before = answers.length;
+      helper.stdin.write(`${JSON.stringify(action)}\n`);
+      for (const end = Date.now() + 60000; answers.length === before; ) {
+        if (Date.now() > end) throw Error(`no answer to ${action.type}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return answers[before];
+    };
+    // The clipboard set as a password manager sets it, by another process.
+    const copy = async (marks) => {
+      const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$data=New-Object System.Windows.Forms.DataObject
+$data.SetText('hunter2-secret')
+${marks}
+[System.Windows.Forms.Clipboard]::SetDataObject($data,$true)
+`;
+      await exec("powershell.exe", ["-NoProfile", "-STA", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { timeout: 60000, windowsHide: true });
+    };
+    const stream = (bytes) => `(New-Object System.IO.MemoryStream(,[byte[]](${bytes.join(",")})))`;
+    try {
+      await ask({ type: "heartbeat" });
+      const hidden = "That's a hidden password; only the owner can copy it.";
+      await copy(`$data.SetData('ExcludeClipboardContentFromMonitorProcessing',${stream([0, 0, 0, 0])})`);
+      assert.deepEqual(await ask({ type: "clipboard-read", owner: false }), { error: hidden });
+      assert.equal((await ask({ type: "clipboard-read" })).error, hidden, "no word from Reach is no owner");
+      assert.equal((await ask({ type: "clipboard-read", owner: true })).text, "hunter2-secret");
+      await copy(`$data.SetData('CanIncludeInClipboardHistory',${stream([0, 0, 0, 0])})`);
+      assert.deepEqual(await ask({ type: "clipboard-read", owner: false }), { error: hidden });
+      await copy(`$data.SetData('CanIncludeInClipboardHistory',${stream([1, 0, 0, 0])})`);
+      assert.equal((await ask({ type: "clipboard-read", owner: false })).text, "hunter2-secret", "allowed in history: not hidden");
+      await copy("");
+      assert.equal((await ask({ type: "clipboard-read", owner: false })).text, "hunter2-secret");
+    } finally {
+      helper.stdin.end();
+      helper.kill();
+    }
   },
 );
