@@ -156,6 +156,24 @@ test("a browser allowed before but closed now is browser_closed (the run opens i
   assert.deepEqual(await pending, []);
 });
 
+test("a browser Reach forgot asks the owner again, once, instead of proving a secret Reach no longer has", async (t) => {
+  const w = await world(t);
+  let hellos = 0;
+  w.bridge.forget("Edge");
+  assert.equal(w.bridge.status().Edge.paired, false);
+  // The host dials again; the extension's kept secret is unknown now.
+  await until(() => w.bridge.status().Edge.asking, "it asks again");
+  assert.equal(w.chrome.storage.store.has("secret"), false, "the extension forgot the old secret");
+  const before = w.asked.length;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(w.asked.length, before, "no loop of asks");
+  hellos = w.bridge.connections();
+  assert.equal(hellos, 1);
+  await assert.rejects(w.driver.transport("Edge", { op: "tabs" }), (e) => e.code === "setup_required");
+  assert.equal(w.bridge.approve("Edge"), 1);
+  await until(() => w.bridge.status().Edge.connected && w.extension.state().trusted);
+});
+
 test("a wrong proof, an unknown extension or a stray client is dropped and never trusted", async (t) => {
   const w = await world(t);
   // Another extension id: Chrome would never start the host for it, and Reach refuses it.

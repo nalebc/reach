@@ -150,8 +150,9 @@ export function createBrowserExtensionBridge({
         const pairing = pairings.find((entry) => entry.installId === message.installId);
         if (message.proof !== undefined) {
           if (!pairing || pairing.browser !== message.browser) {
-            // A secret Reach doesn't know (or for another browser): forgotten, asked again.
-            challenge();
+            // A secret Reach doesn't know (or for another browser): the
+            // extension forgets it and asks the owner again, on a new nonce.
+            conn.reachNonce = nonce();
             return send({ type: "unknown", nonce: conn.reachNonce });
           }
           const expected = proof(pairing.secret, "extension", conn.reachNonce, message.nonce, message.installId);
