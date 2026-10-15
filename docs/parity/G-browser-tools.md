@@ -69,8 +69,9 @@ agent ─MCP/HTTP─> Reach server (node.exe)
   store, the handshake, request ids, timeouts, cancellation, chunking and the
   routing of each request to the right connected profile.
 - **Registration** (`server/tool-setup.mjs`, Windows branch): the host's
-  manifest (`com.reach.browser_tools.json`, `allowed_origins` = the store ids
-  plus the repo build's fixed id) is written into Reach's data folder and
+  manifest (`com.reach.browser_tools.json`, `allowed_origins` = the store listings'
+  ids only; the repo build's fixed id is never in it, since anyone can load an
+  unpacked copy) is written into Reach's data folder and
   registered per user under
   `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.reach.browser_tools`
   and `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.reach.browser_tools`.
@@ -190,7 +191,8 @@ each step; nothing for the owner to switch on.
    with the listing and permission justifications in `browser-extension/STORE.md`.
 2. Once each listing exists, its id and page URL go into
    `server/browser-extension-ids.mjs` (`EXTENSION_STORES`). Until then setup
-   says the extension isn't in the store yet; the repo build's fixed id
-   (unpacked, developer mode) is the only one Reach accepts.
+   says the extension isn't in the store yet and no extension can connect.
+   The repo build's fixed id (`REPO_EXTENSION_ID`) is accepted only where a
+   caller names it on purpose: the tests' bridge and host registration.
 3. SignPath signing of `reach-browser-host-*.exe` with the other helpers.
 4. A run on a physical PC with the store builds.

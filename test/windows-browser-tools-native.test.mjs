@@ -22,6 +22,7 @@ import { createBrowserExtensionBridge } from "../server/browser-extension.mjs";
 import { registerExtensionHost, registeredManifest, HOST_KEYS } from "../server/browser-extension-host.mjs";
 import { createToolBrowserDriver } from "../server/tool-browser-driver.mjs";
 import { createAgentTools } from "../server/agent-tools.mjs";
+import { REPO_EXTENSION_ID } from "../server/browser-extension-ids.mjs";
 import { launchWithExtension } from "./helpers/extension-browser.mjs";
 
 const run = process.platform === "win32" && process.env.REACH_TEST_WINDOWS_DESKTOP === "1";
@@ -65,12 +66,13 @@ test.before(async () => {
   work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-browser-tools-")));
   dataDir = path.join(work, "data");
   fs.mkdirSync(dataDir);
-  bridge = createBrowserExtensionBridge({ dataDir, onPairingRequest: (browser) => asks.push(browser) });
+  // The repo build, named on purpose: production accepts only the stores' ids.
+  bridge = createBrowserExtensionBridge({ dataDir, ids: [REPO_EXTENSION_ID], onPairingRequest: (browser) => asks.push(browser) });
   await bridge.start();
   // The previous registration (none on a runner) comes back afterwards.
   registered = Object.fromEntries(await Promise.all(Object.keys(HOST_KEYS).map(async (browser) => [browser, await registeredManifest(browser)])));
   const started = Date.now();
-  const host = await registerExtensionHost({ dataDir, pipe: bridge.pipe });
+  const host = await registerExtensionHost({ dataDir, pipe: bridge.pipe, ids: [REPO_EXTENSION_ID] });
   report.host = { buildMs: Date.now() - started, file: host.file, manifest: JSON.parse(fs.readFileSync(host.manifest, "utf8")) };
   for (const browser of Object.keys(HOST_KEYS)) assert.equal(await registeredManifest(browser), host.manifest, `${browser}'s HKCU key names Reach's host`);
   // A certificate for the test page, made by Windows itself, nothing kept in the store.

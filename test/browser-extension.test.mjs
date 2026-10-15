@@ -76,7 +76,8 @@ test("the store package holds only the extension's files, without the repo build
 });
 
 test("the native host's manifest lets only Reach's extension ids start it", () => {
-  const host = hostManifest("C:\\Users\\o\\AppData\\reach\\browser-host\\reach-browser-host-abc.exe");
+  const host = hostManifest("C:\\Users\\o\\AppData\\reach\\browser-host\\reach-browser-host-abc.exe", [REPO_EXTENSION_ID]);
+  assert.deepEqual(hostManifest("C:\\x.exe").allowed_origins, [], "production: none until the stores' ids are filled in");
   assert.deepEqual(host, {
     name: NATIVE_HOST,
     description: "Reach: saved browser tools for this computer's Reach",

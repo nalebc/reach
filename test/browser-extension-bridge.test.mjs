@@ -28,7 +28,7 @@ async function world(t, { browser = "Edge", approve = true, dataDir, ...options 
   dataDir ??= fs.mkdtempSync(path.join(os.tmpdir(), "reach-extension-"));
   const pipe = pipeFor(dataDir);
   const asked = [];
-  const bridge = createBrowserExtensionBridge({ dataDir, pipe, onPairingRequest: (name) => asked.push(name), closedWaitMs: 50, reconnectMs: 3000, ...options });
+  const bridge = createBrowserExtensionBridge({ dataDir, pipe, onPairingRequest: (name) => asked.push(name), closedWaitMs: 50, reconnectMs: 3000, ids: [REPO_EXTENSION_ID], ...options });
   await bridge.start();
   const fixture = toolBrowserFixture();
   const host = fakeHost(pipe);
@@ -131,7 +131,7 @@ test("a later connection proves the kept secret without asking the owner again; 
   await until(() => !w.extension.state().trusted, "the extension stops trusting a gone Reach");
   await assert.rejects(w.driver.transport("Edge", { op: "tabs" }), (e) => e.code === "cancelled");
   let asked = 0;
-  const again = createBrowserExtensionBridge({ dataDir: w.dataDir, pipe: w.pipe, onPairingRequest: () => asked++ });
+  const again = createBrowserExtensionBridge({ dataDir: w.dataDir, pipe: w.pipe, ids: [REPO_EXTENSION_ID], onPairingRequest: () => asked++ });
   await again.start();
   t.after(() => again.close());
   // The host dials the pipe again on its own; the extension proves its secret.
@@ -292,8 +292,12 @@ test("a saved tool replays in Edge on Windows through createAgentTools, with the
   await assert.rejects(tools.batch(authorize, { id: "example_task", browser: "Safari", requestId: crypto.randomUUID(), items: [{}] }), /Batches run in Chrome or Edge/);
 });
 
-test("Reach accepts the repo build's id and, once published, the stores' ids", () => {
-  assert.deepEqual(extensionIds(), [REPO_EXTENSION_ID]);
-  assert.deepEqual(extensionIds({ Chrome: { id: "b".repeat(32) }, Edge: { id: "not-an-id" } }), ["b".repeat(32), REPO_EXTENSION_ID]);
+test("Reach accepts only the stores' ids, once published; the repo build connects nowhere by default", async (t) => {
+  // Production: the stores' ids only, none until published; never the repo build's.
+  assert.deepEqual(extensionIds(), []);
+  assert.deepEqual(extensionIds({ Chrome: { id: "b".repeat(32) }, Edge: { id: "not-an-id" } }), ["b".repeat(32)]);
   assert.deepEqual(Object.keys(EXTENSION_STORES), ["Chrome", "Edge"]);
+  // A bridge with Reach's default list drops the repo build before any hello.
+  const w = await world(t, { approve: false, ids: undefined }).catch((error) => error);
+  assert.match(String(w?.message), /timed out waiting: the extension says hello/);
 });
