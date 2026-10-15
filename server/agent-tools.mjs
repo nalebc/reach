@@ -10,6 +10,7 @@ import {
   nativeToolProcess,
 } from "./tool-browser-driver.mjs";
 import { PREBUILT_TOOLS } from "./prebuilt-tools.mjs";
+import { receiptPdf } from "./tool-receipt-pdf.mjs";
 import {
   protectedPage,
   protectedTitle,
@@ -128,8 +129,10 @@ export function createAgentTools(
     // transport there as Apple Events are on a Mac.
     platform = process.platform,
     extension = null,
-    pdf = async (value, options) =>
-      nativeToolProcess(
+    // A receipt snapshot: Core Text on a Mac, Reach's own writer on Windows.
+    pdf = async (value, options) => platform === "win32"
+      ? receiptPdf({ text: value.text, source: value.url })
+      : nativeToolProcess(
         await desktopBinary(config, "tool-receipt", { signal: options.signal }),
         [],
         JSON.stringify({ text: value.text, source: value.url }),

@@ -12,7 +12,8 @@ const owner = { id: "d1", kind: "device", scopes: ["admin"] };
 function world({ chromeReady = false, screen = false } = {}) {
   const pushes = [], opened = [], enabled = [];
   let clock = 1_000_000;
-  const permissions = createPermissionRequests({
+  // The Mac's requests, wherever the test runs (Windows' are below).
+  const permissions = createPermissionRequests({ platform: "darwin",
     toolSetup: {
       status: async () => ({ browsers: [{ id: "Chrome", ready: chromeReady }, { id: "Safari", ready: false }] }),
       enable: async (id) => { enabled.push(id); return { id, javascript: "on", automation: "ask" }; },

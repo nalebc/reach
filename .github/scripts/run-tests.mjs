@@ -132,7 +132,7 @@ export const suites = {
     // (docs/parity/G-browser-tools.md): the bridge, the extension, the shared
     // tool runner and its safety. Real Chrome and Edge run in ci.yml's
     // real-Windows step (windows-browser-tools-native).
-    "browser-extension", "browser-extension-bridge",
+    "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
   ],
   native: [
     "agent-input", "browser-terminal-routes", "money-sites",
