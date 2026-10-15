@@ -27,7 +27,8 @@ export function fakeChrome(fixture = toolBrowserFixture(), { connectNative } = {
     id: tab.tab, windowId: tab.window, index: tab.index - 1,
     // Without the "tabs" permission Chrome gives addresses only where the
     // extension has host access: https pages.
-    url: /^https:/.test(tab.url) ? tab.url : undefined,
+    url: tab.pending ? "" : /^https:/.test(tab.url) ? tab.url : undefined,
+    ...(tab.pending ? { pendingUrl: tab.url, status: "loading" } : {}),
     title: /^https:/.test(tab.url) ? tab.title : undefined,
     active: tab.tab === active,
   });

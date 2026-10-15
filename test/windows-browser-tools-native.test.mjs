@@ -214,8 +214,12 @@ for (const name of ["Chrome", "Edge"])
     // The owner's tab: brought forward, it stays open.
     const mine = await driver.transport(name, { op: "create", url: `${origin}/shop`, background: true });
     const shown = await until(async () => {
-      const info = await driver.transport(name, { op: "info", target: mine });
-      return info.url === `${origin}/shop` && info;
+      // Still opening: "loading", asked again.
+      const info = await driver.transport(name, { op: "info", target: mine }).catch((error) => {
+        if (error.code === "loading") return null;
+        throw error;
+      });
+      return info?.url === `${origin}/shop` && info;
     }, "the owner's tab loads", 30000);
     await driver.transport(name, { op: "focus", target: shown, expectedURL: shown.url });
     await assert.rejects(driver.transport(name, { op: "close", target: shown, expectedURL: shown.url, behind: true }), (e) => e.code === "owner_tab");

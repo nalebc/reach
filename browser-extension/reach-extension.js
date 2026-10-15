@@ -86,9 +86,10 @@
     }
 
     // --- The browser operations (the JXA worker's, by the same names) -----
-    // A tab still starting has only its pending address (Chrome gives either
-    // only for https tabs, where the extension has host access).
-    const record = (tab) => ({ window: tab.windowId, tab: tab.id, index: tab.index + 1, url: tab.url || tab.pendingUrl || "", title: tab.title || "" });
+    // A tab's committed address only (Chrome gives it for https tabs, where
+    // the extension has host access): the one every expectedURL is checked
+    // against. A pending address is never reported as the tab's.
+    const record = (tab) => ({ window: tab.windowId, tab: tab.id, index: tab.index + 1, url: tab.url || "", title: tab.title || "" });
     const normal = async () => (await chrome.windows.getAll({ windowTypes: ["normal"] })).filter((window) => !window.incognito);
     async function target(request) {
       const wanted = request.target || {};
@@ -165,8 +166,9 @@
       },
       async info(request) {
         const tab = await target(request);
-        // No address yet: still loading, asked again (the Mac's browsers name it at once).
-        if (!tab.url && !tab.pendingUrl && tab.status === "loading") throw refusal("The requested browser page is still loading.", "loading");
+        // A tab Chrome is still opening has no committed address yet: said as
+        // loading, so the run asks again (the Mac's browsers name it at once).
+        if (!tab.url && (tab.pendingUrl || tab.status === "loading")) throw refusal("The requested browser page is still loading.", "loading");
         return record(tab);
       },
       async navigate(request) {

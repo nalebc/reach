@@ -94,6 +94,19 @@ test("tabs, info, navigate and the page interpreter run through the extension li
   await assert.rejects(w.driver.transport("Edge", { op: "info", target: { ...info, window: 999 } }), (e) => e.code === "browser_changed");
 });
 
+test("a tab still opening is loading, never named by its pending address, so expectedURL checks stay exact", async (t) => {
+  const w = await world(t);
+  const tab = await w.driver.transport("Edge", { op: "create", url: "https://example.com/" });
+  const page = w.fixture.browsers.get("Chrome").find((item) => item.tab === tab.tab);
+  page.pending = true;
+  await assert.rejects(w.driver.transport("Edge", { op: "info", target: tab }), (e) => e.code === "loading");
+  await assert.rejects(w.driver.transport("Edge", { op: "focus", target: tab, expectedURL: "https://example.com/" }), (e) => e.code === "browser_changed");
+  page.pending = false;
+  const info = await w.driver.transport("Edge", { op: "info", target: tab });
+  assert.equal(info.url, "https://example.com/");
+  assert.equal((await w.driver.transport("Edge", { op: "focus", target: info, expectedURL: info.url })).url, info.url);
+});
+
 test("the owner's tab stays open and a batch tab closes", async (t) => {
   const w = await world(t);
   const mine = await w.driver.transport("Edge", { op: "create", url: "https://example.com/", background: true });
