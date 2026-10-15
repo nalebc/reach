@@ -84,6 +84,9 @@ export const suites = {
     // The Claude desktop app on Windows, workstream N: its data in either
     // install's folder, the PC's idle and lock readings.
     "claude-app-paths", "claude-locate", "windows-presence",
+    // Its consent card answered from the phone: refused plainly on a PC
+    // (no helper presses it there yet), never the Mac's Swift build.
+    "agent-claude-consent",
     // Claude Code's permission prompts and mode switches answered from the
     // phone on Windows, workstream H: the named pipe, the exec-form hook, the
     // Node mode hook and the strict pipe-owner check (the mocked parts run
