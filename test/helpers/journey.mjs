@@ -380,6 +380,7 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     screenHeight: device.height,
   });
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_TRACE });
   const page = phonePage(t, tab, { name, origin: computer.origin });
   // The page's own questions (confirm: "Close it?"), answered yes as a
   // person would, each kept for the step that asked it.
@@ -473,10 +474,40 @@ function middleOfPng(png) {
   return { r: row[x], g: row[x + 1], b: row[x + 2] };
 }
 
+// What the page did, for a failed step's message: each click it got (on
+// what, where), each history step and each load, oldest first, in
+// sessionStorage so a reload keeps it. Labels only: a button's own label or
+// its first words, never a field's value.
+const PAGE_TRACE = `(() => {
+  const KEY = "journey.trace";
+  const at = () => Math.round(performance.timeOrigin + performance.now()) % 1000000;
+  const read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || "[]"); } catch { return []; } };
+  const add = (entry) => { try { const all = read(); all.push(at() + " " + entry); sessionStorage.setItem(KEY, JSON.stringify(all.slice(-40))); } catch {} };
+  const label = (el) => {
+    const b = el && el.closest ? el.closest("button, a, [role=button], [role=tab], [role=menuitem], li, dialog, nav, header, main") || el : el;
+    if (!b || !b.tagName) return String(b);
+    const words = (b.getAttribute("aria-label") || (b.tagName === "INPUT" || b.tagName === "TEXTAREA" ? "" : b.innerText) || "").replace(/\\s+/g, " ").trim().slice(0, 40);
+    return b.tagName.toLowerCase() + (b.className && typeof b.className === "string" ? "." + b.className.trim().split(/\\s+/).slice(0, 2).join(".") : "") + (words ? " '" + words + "'" : "");
+  };
+  add("load " + location.pathname + location.search);
+  addEventListener("click", (e) => add("click " + (e.isTrusted ? "" : "(script) ") + label(e.target) + " at " + Math.round(e.clientX) + "," + Math.round(e.clientY)), true);
+  addEventListener("popstate", (e) => add("popstate " + JSON.stringify(e.state && (e.state.page || e.state)).slice(0, 60)), true);
+  for (const name of ["pushState", "replaceState"]) {
+    const original = history[name];
+    history[name] = function (state, ...rest) { add(name + " " + JSON.stringify(state && (state.page || state)).slice(0, 60)); return original.call(this, state, ...rest); };
+  }
+  const go = history.go;
+  history.go = function (n) { add("go " + n); return go.call(this, n); };
+})();`;
+
 // What a journey does with the page: open, look, tap, type, and keep a
 // screenshot of each step.
 function phonePage(t, tab, { name, origin }) {
   let shots = 0;
+  // Each tap: what was meant, where, what the page had there just before
+  // the finger came down, and the viewport then (for a tap that landed
+  // elsewhere).
+  const tapped = [];
   const label = `${process.platform}-${name}`.replace(/[^a-z0-9-]+/gi, "-").replace(/-+/g, "-").slice(0, 80);
   const shot = async (step) => {
     try {
@@ -516,8 +547,9 @@ function phonePage(t, tab, { name, origin }) {
         const shown = await text().catch(() => "");
         const found = await why().catch(() => "");
         const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
+        const did = await tab.evaluate(`(() => { try { return JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch { return []; } })()`).catch(() => []);
         assert.fail(
-          `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nScreenshot: ${file}`,
+          `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nIt did: ${JSON.stringify(did)}\nTapped: ${JSON.stringify(tapped.slice(-6))}\nScreenshot: ${file}`,
         );
       }
       await sleep(100);
@@ -568,6 +600,14 @@ function phonePage(t, tab, { name, origin }) {
   };
   const tap = async (target, description = target?.selector ? `${target.selector} (${target.text})` : String(target), ms = 20000) => {
     const at = await see({ js: find(target) }, `${description} to tap`, ms, () => tab.evaluate("JSON.stringify(window.__journeyFind || [])"));
+    const there = await tab.evaluate(`(() => {
+      const el = document.elementFromPoint(${at.x}, ${at.y});
+      const b = el && (el.closest("button, a, [role=button], [role=tab], li") || el);
+      const v = visualViewport;
+      return { hit: b ? (b.getAttribute("aria-label") || b.innerText || b.tagName).replace(/\\s+/g, " ").trim().slice(0, 40) : null,
+        viewport: [Math.round(v.offsetLeft), Math.round(v.offsetTop), v.scale, Math.round(scrollX), Math.round(scrollY), document.documentElement.scrollWidth, document.documentElement.clientWidth] };
+    })()`).catch((error) => ({ error: error.message }));
+    tapped.push({ meant: description, x: Math.round(at.x), y: Math.round(at.y), ...there });
     await touch(at.x, at.y);
     await sleep(150);
     return at;

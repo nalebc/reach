@@ -14,7 +14,7 @@ import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
-import { clearRunnerDesktop } from "./helpers/windows-fixtures.mjs";
+import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // Windows' live screen as H.264 with nothing installed (parity audit #26):
 // scripts/native/screen-video.cs, Desktop Duplication into Media
@@ -38,6 +38,17 @@ const note = (values) => {
 // (Windows Server 2022) or a shell panel in front (Windows 11 on Arm).
 test.before(async () => {
   if (run) note({ runnerDesktop: await clearRunnerDesktop() });
+});
+// The runner's own dialogs come at any time (clearRunnerDesktop names them):
+// cleared again before each test, and what was cleared is kept.
+const cleared = [];
+test.beforeEach(async (t) => {
+  if (!run) return;
+  const done = await clearRunnerDesktop();
+  if (done.closed.length || done.dismissed.length) {
+    cleared.push({ before: t.name.slice(0, 40), ...done });
+    note({ cleared });
+  }
 });
 const until = async (check, what, ms = 60000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
@@ -94,6 +105,23 @@ const parse = (answer) => {
   const n = answer.readUInt32BE(0);
   return { raw: answer, meta: JSON.parse(answer.subarray(4, 4 + n).toString()), annexb: answer.subarray(4 + n) };
 };
+// What a traced helper (REACH_TEST_SCREEN_TRACE) said changed since its
+// stderr was `from` long: each kind of change counted, the last area, and
+// what shows on the desktop there (class and program only, never a title).
+async function whatChanged(video, from) {
+  const changes = {};
+  let where;
+  for (const line of video.stderr().slice(from).split(/\r?\n/)) {
+    const m = /^note: trace: changed \((.*)\)$/.exec(line);
+    if (!m) continue;
+    const kind = m[1].replace(/ in -?\d+,-?\d+ \d+x\d+/, "");
+    changes[kind] = (changes[kind] || 0) + 1;
+    const at = / in (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(m[1]);
+    if (at) where = { x: +at[1] + +at[3] / 2, y: +at[2] + +at[4] / 2, area: m[1].slice(m[1].indexOf(" in ") + 4) };
+  }
+  const desktop = await lookAtRunnerDesktop(where?.x, where?.y).catch((error) => ({ error: error.message }));
+  return { changes, lastArea: where?.area, desktop };
+}
 const nalTypes = (annexb) => {
   const types = [];
   for (let i = 0; i + 3 < annexb.length; i++)
@@ -401,7 +429,9 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   windowAt = { x, y, width, height };
   note({ window: windowAt });
 
-  const video = helper(built, ["primary", "30", "1280", "4000000"]);
+  // Its trace says what made each frame a change (REACH_TEST_SCREEN_TRACE),
+  // for a still screen that isn't still.
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_TRACE: "1" });
   t.after(() => video.child.kill());
   let started = Date.now();
   const first = parse(await video.ask("key"));
@@ -447,7 +477,7 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
     size: [first.meta.width, first.meta.height],
     codec: first.meta.codec,
     bytes: { key: first.annexb.length, deltaMedian: timing(packets.slice(1).map((p) => p.annexb.length)).median },
-    stderr: video.stderr().trim(),
+    stderr: video.stderr().replace(/^note: trace: .*\r?\n/gm, "").trim(),
   });
   assert.ok(unchanged.every((b) => b === 0), `only "unchanged" bytes: ${unchanged}`);
   assert.ok(packets.length >= 10, `the changing window made frames: ${packets.length}`);
@@ -500,13 +530,18 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   fs.writeFileSync(`${out}.still`, "");
   await sleep(500);
   const still = [];
+  const traced = video.stderr().length;
   for (const end = Date.now() + 2500; Date.now() < end; ) {
     still.push(parse(await video.ask("frame")));
     await sleep(33);
   }
   const stillFrames = still.filter((a) => a.meta).length;
-  note({ stillAnswers: still.length, stillFrames });
-  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, `mostly unchanged on a still screen: ${stillFrames} of ${still.length}`);
+  const why = await whatChanged(video, traced);
+  note({ stillAnswers: still.length, stillFrames, still: why });
+  assert.ok(
+    still.filter((a) => a.byte === 0).length >= still.length * 0.8,
+    `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; ${JSON.stringify(why)}`,
+  );
   assert.ok(stillFrames >= 2, `a real frame every second: ${stillFrames}`);
 
   // Reach gone (stdin closed): the helper ends by itself, cleanly.
@@ -606,7 +641,7 @@ test("where Desktop Duplication isn't available, GDI's capture streams the same 
   await until(() => fs.existsSync(`${out}.ready`), "the target window");
   const [x, y, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
   // As a VM or a Remote Desktop session without duplication would have it.
-  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_GDI: "1" });
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_GDI: "1", REACH_TEST_SCREEN_TRACE: "1" });
   t.after(() => video.child.kill());
   const first = parse(await video.ask("key"));
   assert.ok(first.meta?.key, `a picture first: ${video.stderr()}`);
@@ -626,14 +661,17 @@ test("where Desktop Duplication isn't available, GDI's capture streams the same 
   fs.writeFileSync(`${out}.still`, "");
   await sleep(500);
   const still = [];
+  const traced = video.stderr().length;
   for (const end = Date.now() + 1500; Date.now() < end; ) {
     still.push(parse(await video.ask("frame")));
     await sleep(33);
   }
-  note({ gdi: { frames: packets.length, frameMs: timing(took), stillAnswers: still.length, stillFrames: still.filter((a) => a.meta).length, stderr: video.stderr().trim() } });
+  const why = await whatChanged(video, traced);
+  const stillFrames = still.filter((a) => a.meta).length;
+  note({ gdi: { frames: packets.length, frameMs: timing(took), stillAnswers: still.length, stillFrames, still: why, stderr: video.stderr().replace(/^note: trace: .*\r?\n/gm, "").trim() } });
   assert.ok(packets.length >= 5, `the changing window made frames: ${packets.length}`);
   for (const p of packets) assert.equal(nalTypes(p.annexb)[0], 9, "an AUD first");
-  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, "mostly unchanged on a still screen");
+  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; ${JSON.stringify(why)}`);
   video.child.stdin.end();
   assert.equal(await Promise.race([video.exited, sleep(10000).then(() => "still running")]), 0, video.stderr());
   const { width, height } = first.meta;
@@ -910,6 +948,13 @@ test("through Reach: once its check passes guests are offered the screen, and an
   assert.equal(ready.format, "h264");
   const packets = frames().map((p) => parse(p.subarray(4)));
   assert.equal(packets[0].meta.key, true);
+  // The frames are in hand: the guest leaves, so the stream (the helper
+  // capturing and encoding, Reach passing each frame on and this test acking
+  // it) isn't still running while Chrome starts to decode them. Left running,
+  // it starved a cold Chrome on a 2025 runner: Page.navigate went unanswered
+  // for 20 s.
+  ws.terminate();
+  ws = null;
   const { width, height } = packets[0].meta;
   const at = ([px, py]) => [Math.round(((px - screen.x) * width) / screen.width), Math.round(((py - screen.y) * height) / screen.height)];
   const decoded = await decodeInBrowser(t, packets, points.map(at), true);

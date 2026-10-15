@@ -667,6 +667,11 @@ sealed class ScreenCapture : IDisposable {
   // Desktop Duplication's pointer: GDI's capture draws it in its pixels.
   public readonly PointerState Pointer = new PointerState();
   public string Mode = "";
+  // What made the last Update a change (Desktop Duplication: a present with
+  // areas, one without, the pointer moving or a new pointer shape). Reach's
+  // tests read it through REACH_TEST_SCREEN_TRACE; nothing else does.
+  public string Why = "";
+  static readonly bool trace = Environment.GetEnvironmentVariable("REACH_TEST_SCREEN_TRACE") == "1";
   Duplication duplication;
   GdiCapture gdi;
   int[] scratch;
@@ -696,8 +701,24 @@ sealed class ScreenCapture : IDisposable {
   }
 
   public int Update(bool firstPicture) {
+    int state = Take(firstPicture);
+    if (trace && state == Changed) {
+      Rect bounds = new Rect(0, 0, 0, 0);
+      bool any = false;
+      foreach (Rect r in Dirty) {
+        bounds = any ? bounds.Union(r) : r;
+        any = true;
+      }
+      ReachScreenVideo.Note("trace: changed (" + Mode + "," + Why + (Full ? ", whole" : "") +
+        (any ? ", areas " + Dirty.Count + " in " + bounds.Left + "," + bounds.Top + " " + (bounds.Right - bounds.Left) + "x" + (bounds.Bottom - bounds.Top) : ", no areas") + ")");
+    }
+    return state;
+  }
+
+  int Take(bool firstPicture) {
     Dirty.Clear();
     Full = false;
+    Why = "";
     if (duplication == null && !duplicationGone && clock.ElapsedMilliseconds >= retryAt) Open();
     if (duplication != null) {
       int state = duplication.Next(this, firstPicture || !HasPicture ? 300 : 0);
@@ -909,13 +930,19 @@ sealed class Duplication : IDisposable {
       // A first frame that didn't bring the desktop (only the pointer
       // moved) is no picture yet: the next one is read whole.
       if (info.LastPresentTime != 0) {
+        int before = into.Dirty.Count;
+        bool whole = into.Full;
         if (!Read(into, resource, info)) return ScreenCapture.Lost;
         changed = true;
+        into.Why += into.Full != whole || into.Dirty.Count != before ? " present" : " present without areas";
       }
       if (info.LastMouseUpdateTime != 0) {
         PointerState p = into.Pointer;
         bool visible = info.PointerVisible != 0;
-        if (visible != p.Visible || info.PointerX != p.X || info.PointerY != p.Y) changed = true;
+        if (visible != p.Visible || info.PointerX != p.X || info.PointerY != p.Y) {
+          changed = true;
+          into.Why += " pointer moved";
+        }
         p.Visible = visible;
         p.X = info.PointerX;
         p.Y = info.PointerY;
@@ -934,6 +961,7 @@ sealed class Duplication : IDisposable {
             if (s.Data.Length >= s.Pitch * s.Height) {
               p.Shape = s;
               changed = true;
+              into.Why += " pointer shape";
             }
           }
         }
