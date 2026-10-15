@@ -39,8 +39,17 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   t.after(() => fs.rmSync(file, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files, in More");
+  // A tap while the page is still settling can land elsewhere (one Windows
+  // run's landed on Terminals); a person taps More again.
+  for (let attempt = 1; ; attempt++) {
+    await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
+    try {
+      await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files, in More", 5000);
+      break;
+    } catch (error) {
+      if (attempt === 3) throw error;
+    }
+  }
   // Home first, its files listed.
   await page.see(() => document.querySelector(".files-title")?.innerText?.trim() === "Home", "Home's files", 30000);
   await page.see({ js: `(${names})().includes("Journey notes.txt")` }, "the text file in Home", 30000);
