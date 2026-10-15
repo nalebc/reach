@@ -43,9 +43,12 @@ const FIXED_DETAILS = [
   "The new browser window has not acknowledged creation. Inspect it before continuing.",
   "The browser returned an unexpected result.",
 ];
-const browserError = (code, uncertain = false, fallback = "unsupported") => {
+// On Windows the same tools reach Chrome and Edge through Reach's extension
+// (browser-extension.mjs): only the setup differs, in words the owner acts on.
+const WINDOWS_SETUP = [503, "The owner needs to add Reach's extension to this browser and allow it in Reach. In Reach: Agents → Browser tools."];
+const browserError = (code, uncertain = false, fallback = "unsupported", platform = "darwin") => {
   const safeCode = typeof code === "string" && Object.hasOwn(ERRORS, code) ? code : fallback;
-  const [status, message] = ERRORS[safeCode];
+  const [status, message] = safeCode === "setup_required" && platform === "win32" ? WINDOWS_SETUP : ERRORS[safeCode];
   return Object.assign(fail(status, message), { code: safeCode, ...(uncertain ? { uncertain: true } : {}) });
 };
 export function nativeToolProcess(
@@ -157,14 +160,19 @@ export function createToolBrowserDriver({
   platform = globalThis.process.platform,
   persistent = process === nativeToolProcess,
   workerFactory = () => new BrowserWorker("/usr/bin/osascript", ["-l", "JavaScript", script, "--worker"]),
+  // Windows: Reach's browser extension (browser-extension.mjs), whose
+  // request() answers with the same JSON the JXA worker prints.
+  extension = null,
 } = {}) {
   const workers = new Map();
+  const windows = platform === "win32";
   let closed = false;
   return {
     close() { closed = true; for (const worker of workers.values()) worker.stop(); workers.clear(); },
     async transport(browser, request, options) {
       if (closed) throw browserError("cancelled", false);
-      if (platform !== "darwin" || !fs.existsSync(script))
+      if (windows && !extension) throw browserError("setup_required", false, undefined, platform);
+      if (!windows && (platform !== "darwin" || !fs.existsSync(script)))
         throw Object.assign(
           fail(503, "Deterministic browser tools require macOS."),
           { code: "setup_required" },
@@ -172,7 +180,10 @@ export function createToolBrowserDriver({
       let raw;
       const input = JSON.stringify({ browser, ...request, ...(options?.appPath ? { appPath: options.appPath } : {}) });
       try {
-        if (persistent) {
+        if (windows) {
+          if (options?.signal?.aborted) throw browserError("cancelled", true);
+          raw = await extension.request(browser, request, { timeoutMs: options?.timeoutMs ?? 12000, signal: options?.signal });
+        } else if (persistent) {
           const key = options?.appPath || browser;
           let worker = workers.get(key);
           if (worker?.stopped) {
@@ -190,7 +201,7 @@ export function createToolBrowserDriver({
         input,
         options,
       ); } catch (error) {
-        const mapped = browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain");
+        const mapped = browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain", platform);
         // Keep Reach's own fixed detail (e.g. "No action was taken"), never the browser's text.
         const detail = FIXED_DETAILS.find((text) => error?.message === text);
         if (detail) mapped.message = detail;
@@ -206,13 +217,17 @@ export function createToolBrowserDriver({
         );
       }
       if (result?.error)
-        throw browserError(result.code, result.uncertain === true);
+        throw browserError(result.code, result.uncertain === true, undefined, platform);
       // Download errors are nested status results, not ordinary page errors.
       // Their fetch/stream exception text is untrusted diagnostic data too.
       if (result?.state === "failed") throw browserError("download_failed");
       return result;
     },
     async page(browser, target, request, options) {
+      // Windows: the extension runs its own bundled copy of the same
+      // interpreter with this request as data; a Mac's browser gets its source.
+      if (windows)
+        return this.transport(browser, { op: "page", target, expectedURL: target.url, request }, options);
       return this.transport(
         browser,
         {
