@@ -253,7 +253,9 @@ function transport(t, respond = () => ({}), options = {}) {
   }
   const daemon = createCodexDaemon({
     locate: async () => "/fake/codex",
-    run: async () => ({ stdout: '{"socketPath":"/fake.sock"}' }),
+    // Where Codex says its service is: a named pipe on Windows (the only kind
+    // Reach opens there), a socket file elsewhere.
+    run: async () => ({ stdout: JSON.stringify({ socketPath: process.platform === "win32" ? "\\\\.\\pipe\\codex-fake" : "/fake.sock" }) }),
     Socket,
     requestTimeout: 25,
     protocolCooldown: 40,
