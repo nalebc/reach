@@ -104,10 +104,12 @@ export async function windowsVideoChoice(
   }
   if (await ffmpeg()) {
     sayOnce(`${own.why} FFmpeg makes the video instead.`, log);
-    return { source: "ffmpeg", label: "H.264 by FFmpeg", why: `${own.why} FFmpeg makes the video instead.` };
+    // reason: why not Windows' own, for a guest, who gets still images
+    // instead (FFmpeg's video can't hide a window: remote-screen.mjs videoFor).
+    return { source: "ffmpeg", label: "H.264 by FFmpeg", why: `${own.why} FFmpeg makes the video instead.`, reason: own.why };
   }
   sayOnce(`${own.why} The screen comes as still images instead.`, log);
-  return { source: "jpeg", label: "Still images", why: `${own.why} Until then, the screen comes as still images.` };
+  return { source: "jpeg", label: "Still images", why: `${own.why} Until then, the screen comes as still images.`, reason: own.why };
 }
 // The stream from Windows' own helper (the Mac helper's protocol, so
 // RemoteBroadcast reads "unchanged", "locked" and keyframes as on a Mac).

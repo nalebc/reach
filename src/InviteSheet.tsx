@@ -413,8 +413,9 @@ computers.includes(p.id) && !devices[p.id]
   }, [apps]);
 
   const chosen = peers.filter((p) => computers.includes(p.id));
-  // Somewhere they could watch: Windows refuses invited people its screen
-  // for now (server/capabilities.mjs guestScreen).
+  // Somewhere they could watch: a Windows PC that can't paint password
+  // managers and Reach's windows black in their picture yet refuses invited
+  // people its screen (server/capabilities.mjs guestScreen, detected).
   const watchable = (d?: Device | null) => !!d && workspaceCapabilities(d).screen && d.capabilities.guestScreen !== false;
   const screenOk = watchable(device) || chosen.some((p) => watchable(devices[p.id]));
   const roles = ROLES.filter((r) => screenOk || !r.screen);
@@ -424,7 +425,7 @@ computers.includes(p.id) && !devices[p.id]
   const refusing = [device, ...chosen.map((p) => devices[p.id])].find((d) => d?.capabilities?.guestScreen === false);
   const noScreenRoles =
     !screenOk && refusing
-      ? `Watching or controlling the screen isn't offered on this ${computerWord(refusing.platform)} yet: Reach can't hide password managers and its own windows from invited people there.`
+      ? `Watching or controlling the screen isn't offered on this ${computerWord(refusing.platform)} right now: Reach can't hide password managers and its own windows from invited people there.`
       : "";
   const current = roles.find((r) => r.value === role) || roles[0];
   // What the chosen access grants.
