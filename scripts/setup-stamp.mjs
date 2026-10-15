@@ -10,16 +10,20 @@ export function digest(files, root = process.cwd()) {
   const h = crypto.createHash("sha256");
   function visit(file) {
     const at = path.resolve(root, file);
-    // One stat: a missing file counts as absent, not as an error.
-    const stat = fs.statSync(at, { throwIfNoEntry: false });
-    if (!stat) return;
-    if (stat.isDirectory()) {
+    // Read once, nothing checked first: a missing file counts as absent, a
+    // folder is visited name by name.
+    let bytes;
+    try {
+      bytes = fs.readFileSync(at);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      if (error.code !== "EISDIR") throw error;
       for (const name of fs.readdirSync(at).sort())
         visit(path.join(file, name));
-    } else {
-      h.update(file);
-      h.update(fs.readFileSync(at));
+      return;
     }
+    h.update(file);
+    h.update(bytes);
   }
   files.forEach(visit);
   return h.digest("hex");
