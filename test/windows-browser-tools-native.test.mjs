@@ -209,7 +209,7 @@ for (const name of ["Chrome", "Edge"])
     seen.password = { status: secret.status, code: secret.code };
     assert.notEqual(secret.status, "completed");
     assert.equal(secret.code, "missing", JSON.stringify(secret));
-    await assert.rejects(tools.define(authorize, { ...shopTool(), id: "bank_tool", origins: ["https://www.chase.com"], steps: [{ op: "navigate", url: "https://www.chase.com/" }] }),
+    await assert.rejects(tools.define(authorize, { ...shopTool(), id: "bank_tool", origins: ["https://www.chase.com"], steps: [{ op: "navigate", url: "https://www.chase.com/" }, { op: "assert", target: { role: "main" } }] }),
       (e) => e.status === 403);
     // The owner's tab: brought forward, it stays open.
     const mine = await driver.transport(name, { op: "create", url: `${origin}/shop`, background: true });
