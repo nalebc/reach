@@ -30,6 +30,8 @@ test("an app's hidden display streams only to its owner and to guests allowed th
     roots: [dir],
     dataDir: path.join(dir, "private"),
     screen: true,
+    // A Mac's hidden app displays, whichever computer runs the test.
+    platform: "darwin",
     appPlatform: "darwin",
     appDisplays: async ({ onExit }) => {
       const helper = {

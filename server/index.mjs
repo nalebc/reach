@@ -601,7 +601,7 @@ export async function createReach(overrides = {}) {
   const remoteScreens = new RemoteScreenHub(
     config,
     overrides.remoteScreenFactory,
-    { guestScreen: windowsGuestScreen },
+    { guestScreen: windowsGuestScreen, platform: overrides.platform || process.platform },
   );
   // The computer's sound, for the phones listening beside its live screen
   // (server/screen-sound.mjs): one capture for all of them.

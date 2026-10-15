@@ -346,6 +346,17 @@ let built = null,
   timeline = null,
   flippedAt = 0;
 const scratch = run ? fs.mkdtempSync(path.join(os.tmpdir(), "reach screen video-")) : null;
+// Nothing of the runner's own may cover the tests' windows: its console
+// (Windows Server 2022) or a shell panel in front (Windows 11 on Arm), as the
+// agent desktop's tests clear it (desktop-fixture.cs minimize-consoles).
+test.before(async () => {
+  if (!run) return;
+  const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
+  const out = path.join(scratch, "runner-desktop.exe");
+  const references = ["System.dll", "System.Drawing.dll", "System.Windows.Forms.dll"].map((name) => `/reference:${path.win32.join(path.win32.dirname(csc), name)}`);
+  await exec(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", `/out:${out}`, ...references, path.resolve("test/fixtures/windows/desktop-fixture.cs")], { windowsHide: true, timeout: 120000 });
+  note({ runnerDesktop: await exec(out, ["minimize-consoles"], { windowsHide: true }).then((r) => r.stdout.trim(), (e) => `failed: ${e.message}`) });
+});
 
 test("Reach builds Windows' own video helper with the PC's csc.exe, and it says what this PC can do", { skip: !run, timeout: 240000 }, async () => {
   let started = Date.now();
@@ -713,8 +724,14 @@ async function guestFixtures(t) {
     await exec(csc, ["/nologo", "/noconfig", `/target:${target}`, "/platform:anycpu", `/out:${path.join(work, out)}`, ...references, path.resolve("test/fixtures/windows/desktop-fixture.cs")],
       { windowsHide: true, timeout: 120000 });
   const consoleFixture = path.join(work, "fixture-console.exe");
-  // A runner's own console would cover the windows: minimized first.
-  await exec(consoleFixture, ["minimize-consoles"], { windowsHide: true }).catch(() => {});
+  // A runner's own console, or a shell panel in front (Windows 11 on Arm),
+  // would cover the windows: minimized and dismissed first, and again once
+  // they're up; what was touched goes in the report, by name.
+  const clear = async (when) => {
+    const said = await exec(consoleFixture, ["minimize-consoles"], { windowsHide: true }).then((r) => r.stdout.trim(), (e) => `failed: ${e.message}`);
+    note({ [`guestRunnerDesktop${when}`]: said });
+  };
+  await clear("Before");
   const children = [];
   const open = async (name, title, color, [x, y, width, height]) => {
     const exe = path.join(work, `${name}.exe`);
@@ -734,6 +751,7 @@ async function guestFixtures(t) {
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
     fixtures = null;
   });
+  await clear("After");
   await sleep(1000);
   // Two points on each window's own background (its controls sit above).
   const points = (w) => [[w.x + 30, w.y + w.height - 25], [w.x + Math.round(w.width * 0.6), w.y + w.height - 25]];
