@@ -131,6 +131,7 @@ export async function launch(options, root) {
   let peerCheck = null,
     windowsSandboxHelper = null,
     windowsDesktopHelper = null,
+    windowsGuestScreenHelper = null,
     windowsHelpersOff = "",
     ingressKey = "",
     keyedState = null,
@@ -159,6 +160,10 @@ export async function launch(options, root) {
     if (folders.ok) {
       windowsSandboxHelper = options.windowsSandboxHelper || (() => windowsHelper("sandbox", { dir: nativeDir }));
       windowsDesktopHelper = options.windowsDesktopHelper || (() => windowsHelper("agent-desktop", { dir: nativeDir }));
+      // Guests' live screen: Windows' video helper with the agent desktop's
+      // window rules built in, there too, as it hides what agents never see
+      // (server/windows-guest-screen.mjs).
+      windowsGuestScreenHelper = options.windowsGuestScreenHelper || (() => windowsHelper("screen-video", { dir: nativeDir }));
     } else
       windowsHelpersOff = `${folders.problem || "Reach couldn't check who can use its folders on this PC"}, so agents can't use this PC's screen, files or commands yet.${folders.advice ? ` ${folders.advice}` : ""}`;
   }
@@ -259,6 +264,7 @@ export async function launch(options, root) {
     // Absent them, agents' screen, files and commands refuse with the reason.
     ...(windowsSandboxHelper ? { windowsSandboxHelper } : {}),
     ...(windowsDesktopHelper ? { windowsDesktopHelper } : {}),
+    ...(windowsGuestScreenHelper ? { windowsGuestScreenHelper } : {}),
     ...(windowsHelpersOff ? { windowsHelpersOff } : {}),
     privatePaths: [privateDir],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).

@@ -167,10 +167,19 @@ test("Can watch (the default): screen and the apps you open, one keyed link", as
   await view.unmount();
 });
 
-// Windows refuses invited people its screen until it can leave password
-// managers out of their picture (parity audit #12): nothing offers it there,
-// and the sheet says why (found by the user journeys on Windows, Oct 14).
-test("on a Windows PC nobody is invited to watch or control the screen, and the sheet says why", async () => {
+// A Windows PC paints password managers and Reach's windows black in an
+// invited person's picture (parity audit #12): once it says it can
+// (capabilities.guestScreen, detected), the sheet offers watching and
+// control as on a Mac; one that can't offers neither, and says why (found by
+// the user journeys on Windows, Oct 14).
+test("on a Windows PC that can hide private windows, people are invited to watch or control as on a Mac; one that can't says why", async () => {
+  computers();
+  const ready = { ...device("Mac A", "mac-a"), platform: "win32" };
+  ready.capabilities = { ...ready.capabilities, guestScreen: true };
+  const offered = await render({ peer: { ...macA, platform: "win32" }, device: ready });
+  assert.ok(access(offered.container, "Can watch") && access(offered.container, "Can control"));
+  assert.equal(offered.container.querySelector(".ivt-no-screen"), null);
+  await offered.unmount();
   computers();
   const pc = { ...device("Mac A", "mac-a"), platform: "win32" };
   pc.capabilities = { ...pc.capabilities, guestScreen: false };
@@ -182,7 +191,7 @@ test("on a Windows PC nobody is invited to watch or control the screen, and the 
   assert.notEqual(chosen(c), "Can watch");
   assert.equal(
     c.querySelector(".ivt-no-screen")?.textContent,
-    "Watching or controlling the screen isn't offered on this Windows PC yet: Reach can't hide password managers and its own windows from invited people there.",
+    "Watching or controlling the screen isn't offered on this Windows PC right now: Reach can't hide password managers and its own windows from invited people there.",
   );
   await view.unmount();
   // A Mac offers both, with nothing to explain.

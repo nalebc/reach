@@ -8,11 +8,13 @@ import { once } from "node:events";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WebSocket } from "ws";
-import { desktopDisplays, windowsBinary } from "../server/desktop-native.mjs";
+import { cscCandidates, desktopDisplays, windowsBinary, windowsHelper } from "../server/desktop-native.mjs";
+import { guestRules } from "../server/windows-guest-screen.mjs";
 import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/windows-video.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
+import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // Windows' live screen as H.264 with nothing installed (parity audit #26):
 // scripts/native/screen-video.cs, Desktop Duplication into Media
@@ -32,6 +34,11 @@ const note = (values) => {
   fs.mkdirSync("reports", { recursive: true });
   fs.writeFileSync("reports/windows-screen-video.json", JSON.stringify(report, null, 2));
 };
+// Nothing of the runner's own may cover the test's window: its console
+// (Windows Server 2022) or a shell panel in front (Windows 11 on Arm).
+test.before(async () => {
+  if (run) note({ runnerDesktop: await clearRunnerDesktop() });
+});
 const until = async (check, what, ms = 60000) => {
   for (const end = Date.now() + ms; !(await check()); ) {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
@@ -345,7 +352,6 @@ let built = null,
   timeline = null,
   flippedAt = 0;
 const scratch = run ? fs.mkdtempSync(path.join(os.tmpdir(), "reach screen video-")) : null;
-
 test("Reach builds Windows' own video helper with the PC's csc.exe, and it says what this PC can do", { skip: !run, timeout: 240000 }, async () => {
   let started = Date.now();
   built = await windowsBinary({ dataDir: scratch }, "screen-video");
@@ -395,7 +401,9 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   windowAt = { x, y, width, height };
   note({ window: windowAt });
 
-  const video = helper(built, ["primary", "30", "1280", "4000000"]);
+  // Its trace says what made each frame a change (REACH_TEST_SCREEN_TRACE),
+  // for a still screen that isn't still.
+  const video = helper(built, ["primary", "30", "1280", "4000000"], { REACH_TEST_SCREEN_TRACE: "1" });
   t.after(() => video.child.kill());
   let started = Date.now();
   const first = parse(await video.ask("key"));
@@ -441,7 +449,7 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
     size: [first.meta.width, first.meta.height],
     codec: first.meta.codec,
     bytes: { key: first.annexb.length, deltaMedian: timing(packets.slice(1).map((p) => p.annexb.length)).median },
-    stderr: video.stderr().trim(),
+    stderr: video.stderr().replace(/^note: trace: .*\r?\n/gm, "").trim(),
   });
   assert.ok(unchanged.every((b) => b === 0), `only "unchanged" bytes: ${unchanged}`);
   assert.ok(packets.length >= 10, `the changing window made frames: ${packets.length}`);
@@ -494,13 +502,30 @@ test("the real screen streams as H.264 as the phone and FFmpeg's parser read it:
   fs.writeFileSync(`${out}.still`, "");
   await sleep(500);
   const still = [];
+  const traced = video.stderr().length;
   for (const end = Date.now() + 2500; Date.now() < end; ) {
     still.push(parse(await video.ask("frame")));
     await sleep(33);
   }
   const stillFrames = still.filter((a) => a.meta).length;
-  note({ stillAnswers: still.length, stillFrames });
-  assert.ok(still.filter((a) => a.byte === 0).length >= still.length * 0.8, `mostly unchanged on a still screen: ${stillFrames} of ${still.length}`);
+  // What changed meanwhile, by kind and where; and what shows there on the
+  // desktop (class and program only, never a title).
+  const changes = {};
+  let where;
+  for (const line of video.stderr().slice(traced).split(/\r?\n/)) {
+    const m = /^note: trace: changed \((.*)\)$/.exec(line);
+    if (!m) continue;
+    const kind = m[1].replace(/ in -?\d+,-?\d+ \d+x\d+/, "");
+    changes[kind] = (changes[kind] || 0) + 1;
+    const at = / in (-?\d+),(-?\d+) (\d+)x(\d+)/.exec(m[1]);
+    if (at) where = { x: +at[1] + +at[3] / 2, y: +at[2] + +at[4] / 2, area: m[1].slice(m[1].indexOf(" in ") + 4) };
+  }
+  const desktop = await lookAtRunnerDesktop(where?.x, where?.y).catch((error) => ({ error: error.message }));
+  note({ stillAnswers: still.length, stillFrames, stillChanges: changes, stillLastArea: where?.area, stillDesktop: desktop });
+  assert.ok(
+    still.filter((a) => a.byte === 0).length >= still.length * 0.8,
+    `mostly unchanged on a still screen: ${stillFrames} of ${still.length}; changes ${JSON.stringify(changes)}, last at ${where?.area}: ${JSON.stringify(desktop?.at)}; in front ${JSON.stringify(desktop?.front)}`,
+  );
   assert.ok(stillFrames >= 2, `a real frame every second: ${stillFrames}`);
 
   // Reach gone (stdin closed): the helper ends by itself, cleanly.
@@ -689,4 +714,227 @@ test("Reach serves it to a phone: the socket says H.264 from Windows itself, the
   const running = async () => (await exec("tasklist.exe", ["/FI", `IMAGENAME eq ${name}`, "/NH"])).stdout.toLowerCase().includes(name);
   await until(async () => !(await running()), "no video helper left after Pause", 20000);
   note({ helpersAfterPause: 0 });
+});
+
+// A guest's picture (parity audit #12): Windows can't leave a window out of
+// a captured frame, so a guest's stream paints what a View agent never sees
+// black (screen-video.cs --private, with agent-desktop.cs's own reading of
+// the windows built in). Two windows of test/fixtures/windows/desktop-fixture.cs
+// on this runner's real screen: one titled like a password manager (blue),
+// one plain (orange). In every frame a guest gets, decoded by a real
+// browser's WebCodecs as the phone decodes it, the first is black and the
+// second orange; in the owner's, the first is blue. On Desktop Duplication,
+// on GDI (as a VM or a Remote Desktop session captures), and as still images.
+let fixtures = null;
+const guestLine = () => `${JSON.stringify(guestRules({ hosts: ["localhost:8443"], titles: ["reach"] }))}\n`;
+async function guestFixtures(t) {
+  if (fixtures) return fixtures;
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach guest screen-")));
+  const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
+  const framework = path.win32.dirname(csc);
+  const references = ["System.dll", "System.Drawing.dll", "System.Windows.Forms.dll"].map((name) => `/reference:${path.win32.join(framework, name)}`);
+  for (const [target, out] of [["winexe", "fixture.exe"], ["exe", "fixture-console.exe"]])
+    await exec(csc, ["/nologo", "/noconfig", `/target:${target}`, "/platform:anycpu", `/out:${path.join(work, out)}`, ...references, path.resolve("test/fixtures/windows/desktop-fixture.cs")],
+      { windowsHide: true, timeout: 120000 });
+  const consoleFixture = path.join(work, "fixture-console.exe");
+  // A runner's own console, or a shell panel in front (Windows 11 on Arm),
+  // would cover the windows: minimized and dismissed first, and again once
+  // they're up; what was touched goes in the report, by name.
+  const clear = async (when) => {
+    note({ [`guestRunnerDesktop${when}`]: await clearRunnerDesktop() });
+  };
+  await clear("Before");
+  const children = [];
+  const open = async (name, title, color, [x, y, width, height]) => {
+    const exe = path.join(work, `${name}.exe`);
+    fs.copyFileSync(path.join(work, "fixture.exe"), exe);
+    const child = spawn(exe, ["window", work, name, title, color, String(x), String(y), String(width), String(height), "topmost"], { stdio: "ignore" });
+    children.push(child);
+    const file = path.join(work, `${name}.json`);
+    await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8").length > 0, `${name} shown`);
+    return { ...JSON.parse(fs.readFileSync(file, "utf8")), exe };
+  };
+  const vault = await open("vault", "Password Manager", "1E50FF", [60, 120, 360, 300]);
+  const plain = await open("plain", "Colour sample", "FF8C00", [480, 120, 360, 300]);
+  t.after(async () => {
+    for (const child of children) try { child.kill(); } catch {}
+    for (const w of [vault, plain]) try { process.kill(w.pid); } catch {}
+    await sleep(500);
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+    fixtures = null;
+  });
+  await clear("After");
+  await sleep(1000);
+  // Two points on each window's own background (its controls sit above).
+  const points = (w) => [[w.x + 30, w.y + w.height - 25], [w.x + Math.round(w.width * 0.6), w.y + w.height - 25]];
+  fixtures = { work, consoleFixture, vault, plain, points: [...points(vault), ...points(plain)] };
+  note({ guestWindows: { vault: [vault.x, vault.y, vault.width, vault.height], plain: [plain.x, plain.y, plain.width, plain.height] } });
+  return fixtures;
+}
+const BLUE_VAULT = [0x1e, 0x50, 0xff];
+const dark = (rgb) => rgb.every((v) => v < 45);
+// One stream's answers for a couple of seconds: a keyframe first, then
+// frames as the phone asks, and a keyframe again at the end.
+async function streamFor(args, env, ms = 2000) {
+  const guest = args.includes("--private");
+  const h = helper(built, args, env);
+  if (guest) h.child.stdin.write(guestLine());
+  const answers = [];
+  const took = [];
+  try {
+    let asked = Date.now();
+    answers.push(await h.ask("key", 120000));
+    took.push(Date.now() - asked);
+    for (const end = Date.now() + ms; Date.now() < end; ) {
+      asked = Date.now();
+      answers.push(await h.ask("frame"));
+      took.push(Date.now() - asked);
+      await sleep(66);
+    }
+    answers.push(await h.ask("key"));
+  } finally {
+    h.child.stdin.end();
+    await Promise.race([h.exited, sleep(10000)]);
+    if (h.child.exitCode === null) h.child.kill();
+  }
+  return { answers, took, stderr: h.stderr() };
+}
+
+for (const [capture, env] of [["Desktop Duplication", {}], ["GDI", { REACH_TEST_SCREEN_GDI: "1" }]])
+  test(`a guest's H.264 (${capture}): a window titled like a password manager is black in every decoded frame, the rest as on screen; the owner's shows it`, { skip: !run, timeout: 600000 }, async (t) => {
+    if (!probed) return t.skip(`no H.264 encoder on this runner: ${report.noEncoder}`);
+    const { points } = await guestFixtures(t);
+    // The guest check Reach runs before letting anyone in.
+    const probe = await new Promise((resolve, reject) => {
+      const child = spawn(built, ["--probe-private", String(process.pid)], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (b) => (stdout += b));
+      child.stderr.on("data", (b) => (stderr += b));
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(guestLine());
+    });
+    note({ [`guestProbe${capture.replace(/\W/g, "")}`]: { ...probe, stdout: probe.stdout.trim() } });
+    assert.equal(probe.code, 0, probe.stderr);
+    const checked = JSON.parse(probe.stdout.trim());
+    assert.ok(checked.windows > 0 && checked.hidden >= 1, JSON.stringify(checked));
+
+    const results = {};
+    for (const who of ["owner", "guest"]) {
+      const args = ["primary", "15", "7680", "6000000", ...(who === "guest" ? ["--private", String(process.pid)] : [])];
+      const { answers, took, stderr } = await streamFor(args, env);
+      const packets = answers.filter((a) => a.length > 1).map(parse);
+      assert.ok(packets.length >= 2 && packets[0].meta?.key, `${who}: a keyframe first and frames: ${answers.map((a) => a.length)} ${stderr}`);
+      const { width, height } = packets[0].meta;
+      const at = ([px, py]) => [Math.round(((px - screen.x) * width) / screen.width), Math.round(((py - screen.y) * height) / screen.height)];
+      const decoded = await decodeInBrowser(t, packets, points.map(at), true);
+      if (decoded.skipped) return t.skip(decoded.skipped);
+      assert.deepEqual(decoded.errors, [], who);
+      assert.equal(decoded.frames.length, packets.length, `${who}: every frame decoded`);
+      results[who] = { frames: decoded.frames.length, last: decoded.frames.at(-1), frameMs: timing(took), stderr: stderr.trim() };
+      note({ [`guest${capture.replace(/\W/g, "")}`]: results });
+      const last = decoded.frames.at(-1);
+      if (who === "guest") {
+        // Never a frame with the vault showing: black in all of them.
+        decoded.frames.forEach((colours, i) => {
+          assert.ok(dark(colours[0]) && dark(colours[1]), `guest frame ${i}: the password manager is black, not ${JSON.stringify(colours.slice(0, 2))}`);
+        });
+        // Not all black: the plain window comes through (a frame taken while
+        // a private window opened or closed elsewhere may be black whole).
+        assert.ok(decoded.frames.some((c) => near(c[2], ORANGE, 30) && near(c[3], ORANGE, 30)), `guest: the plain window is orange: ${JSON.stringify(last.slice(2))}`);
+      } else {
+        assert.ok(near(last[0], BLUE_VAULT, 30) && near(last[1], BLUE_VAULT, 30), `owner: the password manager shows: ${JSON.stringify(last.slice(0, 2))}`);
+        assert.ok(near(last[2], ORANGE, 30), `owner: orange: ${JSON.stringify(last[2])}`);
+      }
+    }
+  });
+
+test("a guest's still images (GDI): the password manager is black, the rest as on screen; the owner's show it", { skip: !run, timeout: 600000 }, async (t) => {
+  if (!built) return t.skip("the helper wasn't built");
+  const { points, consoleFixture, work } = await guestFixtures(t);
+  const results = {};
+  for (const who of ["owner", "guest"]) {
+    const args = ["primary", "15", "7680", "6000000", ...(who === "guest" ? ["--private", String(process.pid)] : []), "--stills"];
+    const { answers, took, stderr } = await streamFor(args, {}, 1500);
+    const pictures = answers.filter((a) => a.length > 1);
+    assert.ok(pictures.length >= 2, `${who}: pictures: ${answers.map((a) => a.length)} ${stderr}`);
+    assert.ok(pictures.every((p) => p[0] === 0xff && p[1] === 0xd8), `${who}: JPEGs`);
+    const colours = [];
+    for (const [i, picture] of pictures.entries()) {
+      const file = path.join(work, `${who}-${i}.jpg`);
+      fs.writeFileSync(file, picture);
+      const args = points.map(([x, y]) => `${x - screen.x},${y - screen.y}`);
+      const { stdout } = await exec(consoleFixture, ["pixels", file, ...args], { windowsHide: true });
+      colours.push(stdout.trim().split(/\r?\n/).map((line) => line.split(",").map(Number)));
+    }
+    results[who] = { pictures: pictures.length, last: colours.at(-1), frameMs: timing(took), stderr: stderr.trim() };
+    note({ guestStills: results });
+    const last = colours.at(-1);
+    if (who === "guest") {
+      colours.forEach((c, i) => assert.ok(dark(c[0]) && dark(c[1]), `guest picture ${i}: the password manager is black, not ${JSON.stringify(c.slice(0, 2))}`));
+      assert.ok(colours.some((c) => near(c[2], ORANGE, 40) && near(c[3], ORANGE, 40)), `guest: the plain window is orange: ${JSON.stringify(last.slice(2))}`);
+    } else assert.ok(near(last[0], BLUE_VAULT, 40), `owner: the password manager shows: ${JSON.stringify(last[0])}`);
+  }
+});
+
+// The whole way, as on a PC: Reach builds the helper in a private folder of
+// its own (windowsHelper, as scripts/launch.mjs does), its check passes, the
+// owner's device then offers guests the screen, and an invited guest watching
+// through Reach's own socket gets the password manager black.
+test("through Reach: once its check passes guests are offered the screen, and an invited guest's frames have the password manager black", { skip: !run, timeout: 600000 }, async (t) => {
+  if (!probed) return t.skip(`no H.264 encoder on this runner: ${report.noEncoder}`);
+  const { points } = await guestFixtures(t);
+  forgetWindowsVideo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-guest-e2e-"));
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, "private"),
+    screen: true,
+    windowsGuestScreenHelper: () => windowsHelper("screen-video", { dir: path.join(dir, "native") }),
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const origin = `127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const guest = reach.auth.redeemGuest(reach.auth.inviteGuest({ name: "guest", roots: [], ttlSeconds: 600, screen: "view" }).invitation).token;
+  let ws = null;
+  t.after(async () => {
+    ws?.terminate();
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  });
+  const device = (token) => fetch(`http://${origin}/api/device`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  // The check builds the helper cold, then asks it.
+  const started = Date.now();
+  await until(async () => (await device(owner.token)).capabilities?.guestScreen === true, "guests offered the screen", 180000);
+  const seen = (await device(guest)).capabilities;
+  note({ reachGuestCheckMs: Date.now() - started, reachGuestCapabilities: { screen: seen.screen, screenSupported: seen.screenSupported } });
+  assert.deepEqual([seen.screen, seen.screenSupported], [true, true]);
+
+  // Opened now, not before the check: Reach gives a socket 5 s to sign in.
+  ws = new WebSocket(`ws://${origin}/ws/screen`);
+  const messages = [];
+  ws.on("error", () => {});
+  ws.on("message", (b, binary) => {
+    if (!binary) return messages.push(JSON.parse(b));
+    messages.push(b);
+    ws.send(JSON.stringify({ type: "ack", id: b.readUInt32BE(0) }));
+  });
+  await once(ws, "open");
+  ws.send(JSON.stringify({ type: "auth", token: guest, protocol: 2, display: "primary", quality: "balanced", format: "h264", maxWidth: 3840 }));
+  const frames = () => messages.filter((m) => Buffer.isBuffer(m));
+  await until(() => frames().length >= 3 || messages.some((m) => m.type === "error"), "a guest's frames", 120000);
+  const ready = messages.find((m) => m.type === "ready");
+  note({ reachGuestReady: ready });
+  assert.equal(messages.find((m) => m.type === "error"), undefined, JSON.stringify(messages.filter((m) => !Buffer.isBuffer(m))));
+  assert.equal(ready.format, "h264");
+  const packets = frames().map((p) => parse(p.subarray(4)));
+  assert.equal(packets[0].meta.key, true);
+  const { width, height } = packets[0].meta;
+  const at = ([px, py]) => [Math.round(((px - screen.x) * width) / screen.width), Math.round(((py - screen.y) * height) / screen.height)];
+  const decoded = await decodeInBrowser(t, packets, points.map(at), true);
+  if (decoded.skipped) return t.skip(decoded.skipped);
+  note({ reachGuestDecoded: { frames: decoded.frames.length, last: decoded.frames.at(-1) } });
+  assert.deepEqual(decoded.errors, []);
+  decoded.frames.forEach((c, i) => assert.ok(dark(c[0]) && dark(c[1]), `guest frame ${i} through Reach: the password manager is black, not ${JSON.stringify(c.slice(0, 2))}`));
+  assert.ok(decoded.frames.some((c) => near(c[2], ORANGE, 30) && near(c[3], ORANGE, 30)), `the plain window is orange: ${JSON.stringify(decoded.frames.at(-1))}`);
 });

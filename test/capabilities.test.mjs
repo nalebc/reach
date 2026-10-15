@@ -269,15 +269,22 @@ test("Codex discovery recovers a shortened PATH and validates login-shell result
   assert.equal(calls.length, 0, "an explicit override is never replaced by a different Codex");
 });
 
-// Windows refuses invited people its screen until it can leave password
-// managers out of their picture (parity audit #12): their phone shows no
-// Screen, and the owner's invite sheet offers no screen roles there.
-test("on Windows an invited person gets no Screen; you and full-access people keep it; a Mac is unchanged", () => {
+// A Windows PC paints password managers and Reach's windows black in an
+// invited person's picture (parity audit #12), once its check says it can
+// (guestView, detected: server/windows-guest-screen.mjs). Then invited people
+// get Screen as on a Mac; until then (unknown or failed) they don't, and the
+// owner's invite sheet offers no screen roles there.
+test("on Windows an invited person gets Screen as on a Mac once Reach can hide private windows there, and not before; you keep it either way", () => {
   const watch = ["device", "screen", "screen:control"];
-  const caps = (platform, owner) => deviceCapabilities({ platform, scopes: watch, screen: true, codexInstalled: false, owner });
-  assert.deepEqual([caps("win32", false).screen, caps("win32", false).screenSupported], [false, false]);
-  assert.deepEqual([caps("win32", true).screen, caps("win32", true).screenSupported], [true, true]);
+  const caps = (platform, owner, guestView) =>
+    deviceCapabilities({ platform, scopes: watch, screen: true, codexInstalled: false, owner, ...(guestView !== undefined && { guestView }) });
+  for (const unknown of [undefined, false]) {
+    assert.deepEqual([caps("win32", false, unknown).screen, caps("win32", false, unknown).screenSupported], [false, false]);
+    assert.deepEqual([caps("win32", true, unknown).screen, caps("win32", true, unknown).screenSupported], [true, true]);
+    assert.equal(caps("win32", true, unknown).guestScreen, false);
+  }
+  assert.deepEqual([caps("win32", false, true).screen, caps("win32", false, true).screenSupported], [true, true]);
+  assert.equal(caps("win32", true, true).guestScreen, true);
   assert.deepEqual([caps("darwin", false).screen, caps("darwin", false).screenSupported], [true, true]);
-  assert.equal(caps("win32", true).guestScreen, false);
   assert.equal(caps("darwin", true).guestScreen, true);
 });

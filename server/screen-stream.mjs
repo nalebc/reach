@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
-import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
+import { COLD_START_MS, SCRIPT_BLOCKED, scriptBlocked } from "./powershell.mjs";
 import { hostApp, outsideTerminal, processTable } from "../scripts/instances.mjs";
 import {
   PROTECTED_APP_IDS,
@@ -61,11 +61,14 @@ function appOf() {
 // it stopped. onExit(code, error), when set, hears a helper that ended by
 // itself.
 export class NativeScreenSource {
-  constructor(executable, args = [], { note = (text) => console.warn(`Reach: live screen: ${text}`) } = {}) {
+  // input: a first line for the helper before any request (a guest's rules,
+  // server/windows-guest-screen.mjs).
+  constructor(executable, args = [], { note = (text) => console.warn(`Reach: live screen: ${text}`), input = "" } = {}) {
     this.child = spawn(executable, args, {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (input) this.child.stdin.write(input);
     this.buffer = Buffer.alloc(0);
     this.pending = null;
     this.failure = null;
@@ -227,8 +230,9 @@ export function sweepScreenHelpers({
   return ended;
 }
 
-export async function createScreenSource(config) {
-  if (process.platform === "darwin") {
+// guestScreen: a Windows PC's (server/windows-guest-screen.mjs).
+export async function createScreenSource(config, { guestScreen = null, platform = process.platform } = {}) {
+  if (platform === "darwin") {
     // Name the cached build after its source, so upgrades never reuse a
     // stale helper.
     const source = await fs.readFile(path.join(native, "screen-stream.swift"));
@@ -260,12 +264,14 @@ export async function createScreenSource(config) {
         privateWindows(),
       ]);
   }
-  if (process.platform === "win32")
-    return () =>
-      new NativeScreenSource(
-        "powershell.exe",
-        powershellFile(path.join(native, "screen-stream.ps1")),
-      );
+  // A Windows PC's the same: still images with those windows painted black
+  // by Windows' own helper (screen-video.cs --private --stills), and none
+  // until this PC is known to make them.
+  if (platform === "win32") {
+    if (!guestScreen) throw fail(503, "Screen capture could not hide private windows.");
+    if (!(await guestScreen.probe()).ok) throw fail(503, guestScreen.refusal());
+    return guestScreen.source({ display: "primary", format: "jpeg", fps: 15, width: 1600, bitrate: 6000000 });
+  }
   throw fail(501, "Live screen currently supports macOS and Windows.");
 }
 

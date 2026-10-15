@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { windowsNativeSource, windowsVideoChoice, WindowsVideoSource } from "./windows-video.mjs";
 import { powershellFile } from "./powershell.mjs";
 import { fail } from "./core.mjs";
-export { privateWindows };
+import { privateViewRefusal, refuseGuest } from "./windows-guest-screen.mjs";
+export { privateWindows, privateViewRefusal };
 // Why the live screen failed, in Reach's window on the computer too: the
 // phone may only show "Connecting…", and a person at the computer can act on
 // the cause. Each cause once a minute, not once per retry or viewer.
@@ -19,24 +20,26 @@ export function screenTrouble(message, { now = Date.now, log = console.warn } = 
   return true;
 }
 
-// Guests see the screen without password managers and Reach's own windows.
-// Windows' capture can't leave them out yet (docs/parity/AUDIT.md #12): there
-// only the owner and full-access people watch or control (blind control
-// could still type into them), until it can. (Linux has no live screen.)
-export const PRIVATE_VIEW_UNAVAILABLE =
-  "Only this PC's owner can watch or control its screen for now: Reach can't yet hide password managers and its own windows from others on Windows.";
-export const privateViewRefused = (privateView, platform = process.platform) =>
-  Boolean(privateView) && platform === "win32";
+// Guests see the screen without password managers and Reach's own windows:
+// a Mac leaves them out of the picture, Windows paints them black
+// (server/windows-guest-screen.mjs). A Windows PC that can't (its check
+// failed, or hasn't finished) lets only the owner and full-access people
+// watch or control (blind control could still type into them), and says why.
+// (Linux has no live screen.)
 
 // The video a viewer gets, and why not a better one, for the phone's Screen
 // page (the ready message's video and videoWhy). A Mac encodes H.264 itself;
 // Windows has its own encoder, or FFmpeg, or still images
 // (server/windows-video.mjs). A phone that asked for still images (its
 // decoder failed, or compatibility video) gets them and knows why itself.
-export async function videoFor(format, { platform = process.platform, config, choose = windowsVideoChoice } = {}) {
+// A guest on Windows gets Windows' own video or still images, both painted:
+// never FFmpeg's, which can't hide a window.
+export async function videoFor(format, { platform = process.platform, config, choose = windowsVideoChoice, privateView = false } = {}) {
   if (format === "h264" && platform === "darwin") return { format, source: "mac", label: "H.264", why: "" };
   if (format === "h264" && platform === "win32") {
     const chosen = await choose(config);
+    if (privateView && chosen.source === "ffmpeg")
+      return { format: "jpeg", source: "jpeg", label: "Still images", why: `${chosen.reason} Until then, the screen comes as still images.` };
     return { ...chosen, format: chosen.source === "jpeg" ? "jpeg" : "h264" };
   }
   return { format: "jpeg", source: "jpeg", label: "Still images", why: "" };
@@ -65,28 +68,29 @@ export class RemoteScreenHub {
       nativeSource = windowsNativeSource,
       ffmpegSource = (display, options) => new WindowsVideoSource(display, options),
       stillSource = stillImages,
+      // A Windows PC's guests' pictures (server/windows-guest-screen.mjs).
+      guestScreen = null,
     } = {},
   ) {
     this.config = config;
     this.prepare = prepare;
     this.groups = new Map();
     this.viewers = new Map();
-    Object.assign(this, { platform, displays, chooseVideo, nativeSource, ffmpegSource, stillSource });
+    Object.assign(this, { platform, displays, chooseVideo, nativeSource, ffmpegSource, stillSource, guestScreen });
   }
   // mayViewDisplay(id): whether this viewer may watch that display. The
   // hidden displays Reach makes for apps on phones (server/app-threads.mjs)
   // are only for whoever may use that app.
   // privateView: a viewer who isn't the owner (a guest): password managers
-  // and Reach's own windows are left out of their picture (Mac), in a group
-  // of its own so the owner's view is unchanged.
+  // and Reach's own windows are left out of their picture (Mac) or painted
+  // black (Windows), in a group of its own so the owner's view is unchanged.
   async add(
     ws,
     authorize,
     value,
     { mayViewDisplay = () => true, privateView = false, platform = this.platform } = {},
   ) {
-    if (privateViewRefused(privateView, platform))
-      throw fail(403, PRIVATE_VIEW_UNAVAILABLE);
+    refuseGuest(privateView, platform, this.guestScreen);
     if (this.viewers.size >= 4)
       throw fail(429, "Four screen viewers are already connected.");
     const options = streamOptions(value);
@@ -114,7 +118,7 @@ export class RemoteScreenHub {
           );
         options.display = display.id;
         selectedDisplay = display;
-        video = await videoFor(options.format, { platform: this.platform, config: this.config, choose: this.chooseVideo });
+        video = await videoFor(options.format, { platform: this.platform, config: this.config, choose: this.chooseVideo, privateView });
         options.format = video.format;
       }
       if (options.format === "jpeg") options.fps = Math.min(options.fps, 20);
@@ -151,6 +155,12 @@ export class RemoteScreenHub {
                     "auto",
                     ...(privateView ? ["", privateWindows()] : []),
                   ]);
+              }
+              // A guest's: Windows' own helper, painting the private
+              // windows black, as video or still images. Never another.
+              if (privateView) {
+                if (!this.guestScreen) throw fail(403, privateViewRefusal(true, "win32"));
+                return this.guestScreen.source(options);
               }
               if (video?.source === "windows")
                 return () => this.nativeSource(video.file, options);
