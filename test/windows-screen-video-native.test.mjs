@@ -8,7 +8,7 @@ import { once } from "node:events";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WebSocket } from "ws";
-import { cscCandidates, desktopDisplays, windowsBinary } from "../server/desktop-native.mjs";
+import { cscCandidates, desktopDisplays, windowsBinary, windowsHelper } from "../server/desktop-native.mjs";
 import { guestRules } from "../server/windows-guest-screen.mjs";
 import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/windows-video.mjs";
 import { createReach } from "../server/index.mjs";
@@ -863,4 +863,64 @@ test("a guest's still images (GDI): the password manager is black, the rest as o
       assert.ok(colours.some((c) => near(c[2], ORANGE, 40) && near(c[3], ORANGE, 40)), `guest: the plain window is orange: ${JSON.stringify(last.slice(2))}`);
     } else assert.ok(near(last[0], BLUE_VAULT, 40), `owner: the password manager shows: ${JSON.stringify(last[0])}`);
   }
+});
+
+// The whole way, as on a PC: Reach builds the helper in a private folder of
+// its own (windowsHelper, as scripts/launch.mjs does), its check passes, the
+// owner's device then offers guests the screen, and an invited guest watching
+// through Reach's own socket gets the password manager black.
+test("through Reach: once its check passes guests are offered the screen, and an invited guest's frames have the password manager black", { skip: !run, timeout: 600000 }, async (t) => {
+  if (!probed) return t.skip(`no H.264 encoder on this runner: ${report.noEncoder}`);
+  const { points } = await guestFixtures(t);
+  forgetWindowsVideo();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-guest-e2e-"));
+  const reach = await createReach({
+    roots: [dir],
+    dataDir: path.join(dir, "private"),
+    screen: true,
+    windowsGuestScreenHelper: () => windowsHelper("screen-video", { dir: path.join(dir, "native") }),
+  });
+  await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
+  const origin = `127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owner", ALL_SCOPES);
+  const guest = reach.auth.redeemGuest(reach.auth.inviteGuest({ name: "guest", roots: [], ttlSeconds: 600, screen: "view" }).invitation).token;
+  const ws = new WebSocket(`ws://${origin}/ws/screen`);
+  t.after(async () => {
+    ws.terminate();
+    await reach.close();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  });
+  const device = (token) => fetch(`http://${origin}/api/device`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  // The check builds the helper cold, then asks it.
+  const started = Date.now();
+  await until(async () => (await device(owner.token)).capabilities?.guestScreen === true, "guests offered the screen", 300000);
+  const seen = (await device(guest)).capabilities;
+  note({ reachGuestCheckMs: Date.now() - started, reachGuestCapabilities: { screen: seen.screen, screenSupported: seen.screenSupported } });
+  assert.deepEqual([seen.screen, seen.screenSupported], [true, true]);
+
+  const messages = [];
+  ws.on("error", () => {});
+  ws.on("message", (b, binary) => {
+    if (!binary) return messages.push(JSON.parse(b));
+    messages.push(b);
+    ws.send(JSON.stringify({ type: "ack", id: b.readUInt32BE(0) }));
+  });
+  await once(ws, "open");
+  ws.send(JSON.stringify({ type: "auth", token: guest, protocol: 2, display: "primary", quality: "balanced", format: "h264", maxWidth: 3840 }));
+  const frames = () => messages.filter((m) => Buffer.isBuffer(m));
+  await until(() => frames().length >= 3 || messages.some((m) => m.type === "error"), "a guest's frames", 120000);
+  const ready = messages.find((m) => m.type === "ready");
+  note({ reachGuestReady: ready });
+  assert.equal(messages.find((m) => m.type === "error"), undefined, JSON.stringify(messages.filter((m) => !Buffer.isBuffer(m))));
+  assert.equal(ready.format, "h264");
+  const packets = frames().map((p) => parse(p.subarray(4)));
+  assert.equal(packets[0].meta.key, true);
+  const { width, height } = packets[0].meta;
+  const at = ([px, py]) => [Math.round(((px - screen.x) * width) / screen.width), Math.round(((py - screen.y) * height) / screen.height)];
+  const decoded = await decodeInBrowser(t, packets, points.map(at), true);
+  if (decoded.skipped) return t.skip(decoded.skipped);
+  note({ reachGuestDecoded: { frames: decoded.frames.length, last: decoded.frames.at(-1) } });
+  assert.deepEqual(decoded.errors, []);
+  decoded.frames.forEach((c, i) => assert.ok(dark(c[0]) && dark(c[1]), `guest frame ${i} through Reach: the password manager is black, not ${JSON.stringify(c.slice(0, 2))}`));
+  assert.ok(decoded.frames.some((c) => near(c[2], ORANGE, 30) && near(c[3], ORANGE, 30)), `the plain window is orange: ${JSON.stringify(decoded.frames.at(-1))}`);
 });

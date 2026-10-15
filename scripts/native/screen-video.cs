@@ -2243,8 +2243,11 @@ sealed class GuestView {
       }
       int state = attempt == 0 ? capture.Update(first) : capture.Regrab();
       if (attempt == 0 && (state == ScreenCapture.Lost || !capture.HasPicture)) return state;
-      // Nothing new on screen: the last frame's picture and black stand.
-      if (attempt == 0 && state == ScreenCapture.Same && last != null) return state;
+      // Nothing new on screen: the last frame's picture and black stand,
+      // unless some of that black was only for a moment (a blackout, where a
+      // private window was): then the windows are read again, so a still
+      // screen doesn't stay black.
+      if (attempt == 0 && state == ScreenCapture.Same && last != null && !All && recent.Count <= 1 && clock.ElapsedMilliseconds >= blackUntil) return state;
       if (state == ScreenCapture.Lost) break;
       global::Inventory after = Read();
       int to = global::Desk.GuestRevision();
