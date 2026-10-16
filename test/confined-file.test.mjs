@@ -51,15 +51,32 @@ test("a file swapped after it was opened, or a path that now leads elsewhere, is
   const dir = scratch(t);
   const file = path.join(dir, "notes.txt");
   fs.writeFileSync(file, "first");
+  const other = path.join(dir, "other.txt");
+  fs.writeFileSync(other, "other");
+  let opened, replaced = false, replacementError;
   // Replaced by another file between the open and the check.
   await assert.rejects(
     openConfined(file, fs.constants.O_RDWR, () => {
-      fs.writeFileSync(path.join(dir, "other.txt"), "other");
-      fs.renameSync(path.join(dir, "other.txt"), file);
+      try {
+        fs.renameSync(other, file);
+        replaced = true;
+      } catch (error) {
+        replacementError = error;
+        throw error;
+      }
       return file;
-    }),
-    (e) => e.status === 409,
+    }, { open: async (...args) => (opened = await fs.promises.open(...args)) }),
+    (error) => replaced ? error.status === 409 : process.platform === "win32" && error === replacementError && ["EPERM", "EACCES"].includes(error.code),
   );
+  assert.equal(opened.fd, -1, "the rejected handle is closed before the caller can use it");
+  const expected = replaced ? "other" : "first";
+  assert.equal(fs.readFileSync(file, "utf8"), expected, "nothing was written through the rejected handle");
+  if (!replaced) {
+    // Windows may deny replacement while the destination is open. That
+    // prevents the race at the OS boundary; Reach must still retire its fd.
+    assert.equal(fs.readFileSync(other, "utf8"), "other");
+    t.diagnostic("Windows prevented replacement of the open file; the rejection closed its handle and preserved both files.");
+  }
   // The checks, run again, put it somewhere else (or refuse it).
   await assert.rejects(openConfined(file, fs.constants.O_RDONLY, () => path.join(dir, "moved.txt")), (e) => e.status === 409);
   await assert.rejects(
@@ -68,5 +85,35 @@ test("a file swapped after it was opened, or a path that now leads elsewhere, is
     }),
     (e) => e.status === 403,
   );
-  assert.equal(fs.readFileSync(file, "utf8"), "other", "nothing was written");
+  assert.equal(fs.readFileSync(file, "utf8"), expected, "nothing was written");
+});
+
+test("a changed file identity is refused even on a host that prevents replacing an open file", async (t) => {
+  const dir = scratch(t), file = path.join(dir, "notes.txt");
+  fs.writeFileSync(file, "first");
+  let opened;
+  await assert.rejects(openConfined(file, fs.constants.O_RDWR, () => file, {
+    open: async (...args) => (opened = await fs.promises.open(...args)),
+    // Inject only the replacement's metadata, keeping the real file handle.
+    // This exercises the inode check on Windows without needing a rename
+    // Windows' sharing rules may prevent before Reach sees the replacement.
+    stat: async (...args) => {
+      const current = await fs.promises.stat(...args);
+      return { dev: current.dev, ino: current.ino + 1n };
+    },
+  }), error => error.status === 409);
+  assert.equal(opened.fd, -1);
+  assert.equal(fs.readFileSync(file, "utf8"), "first");
+});
+
+test("a sharing denial during confinement closes the handle and preserves the file", async (t) => {
+  const dir = scratch(t), file = path.join(dir, "notes.txt");
+  fs.writeFileSync(file, "first");
+  const denied = Object.assign(Error("Fixture sharing violation"), { code: "EPERM" });
+  let opened;
+  await assert.rejects(openConfined(file, fs.constants.O_RDWR, () => { throw denied; }, {
+    open: async (...args) => (opened = await fs.promises.open(...args)),
+  }), error => error === denied);
+  assert.equal(opened.fd, -1);
+  assert.equal(fs.readFileSync(file, "utf8"), "first");
 });

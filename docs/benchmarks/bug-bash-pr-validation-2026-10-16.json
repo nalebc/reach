@@ -93,5 +93,37 @@
     "test/uploads-recovery.test.mjs": "ede5e530bccf70febe6c2cfe0c727f77b5407a3a35e80d35551c40bbb258300e",
     "test/windows-commands.test.mjs": "87d44003aee3463b4dd383a56b7797ce5960ed8ec4901cf3b0593002dfe31791"
   },
-  "repository": "https://github.com/nalebc/reach"
+  "repository": "https://github.com/nalebc/reach",
+  "ci_follow_up": {
+    "parent": "1789924fa49e9da9c4a0e4a4d6e089a4ec8a4aa1",
+    "evidence": {
+      "windows_run": "https://github.com/nalebc/reach/actions/runs/38959407378/job/117170391151",
+      "codeql_check": "https://github.com/nalebc/reach/runs/117170641391"
+    },
+    "observed": [
+      "Four Windows fixture failures: replacing an open destination was denied by the OS; two queue tests omitted the Claude Code fallback; a SIGABRT fixture assumed POSIX signal numbering.",
+      "CodeQL reported two dynamic callback-call alerts at the new reorder/cancel wakeups. The private Map holds only internal timer callbacks; no arbitrary callback installation or exploit was reproduced."
+    ],
+    "changes": [
+      "Verify the exact Windows sharing denial, closed handle and unchanged file bytes; preserve actual replacement/409 checks and add injected inode-mismatch/cleanup checks.",
+      "Mock both Claude app and Claude Code delivery; exercise app-preferred and forced-Code queue recovery on all hosts.",
+      "Use documented crash exit codes in the restart fixture and independently check the host signal-number mapping.",
+      "Centralize queue wakeups behind an explicit function-type check, with no analysis suppressions."
+    ],
+    "local_validation": {
+      "command": "npm run test:file -- --test-concurrency=1 test/confined-file.test.mjs test/supervise.test.mjs test/outbox-mutation-recovery.test.mjs test/claude-queue.test.mjs test/queued-delivery.test.mjs test/codex-queue-actions.test.mjs",
+      "passed": 56,
+      "failed": 0,
+      "skipped": 0,
+      "host": "macOS",
+      "mocked": "Platform-sensitive paths and file identity/sharing failures as explicitly labeled in tests."
+    },
+    "remote_validation": "Windows and CodeQL must rescan this follow-up commit.",
+    "source_sha256": {
+      "server/agent-sessions/index.mjs": "ae52b5a3fd7e281d5eba0338f82d69700cb66b08040eb90c60d3c2d55ec5511a",
+      "test/confined-file.test.mjs": "42c67c5a4de5ba0f41355c9652d2e54a62c8fcd3efcf113e5c168619410852b4",
+      "test/outbox-mutation-recovery.test.mjs": "3103554aad6b2e5dbb55a52dd06f1bc61a3df508a49b7827e28a5b5997273277",
+      "test/supervise.test.mjs": "78fe743fed56c56f7e38f0d44d5f1365360b870be80b7fa15e62b59ea2ef19e9"
+    }
+  }
 }

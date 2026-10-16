@@ -35,7 +35,9 @@ test("which commands run Reach itself", () => {
 });
 
 test("a crash or running out of memory starts it again, waiting longer each time, without restart's stopping", async () => {
-  const { spawn, runs } = fakeSpawn([70, "SIGABRT", 0]);
+  // These are Reach's documented restart codes. SIGABRT is not the number
+  // 6 everywhere: Windows reports it as 22, which maps to exit code 150.
+  const { spawn, runs } = fakeSpawn([70, 134, 0]);
   const waits = [], said = [];
   const signals = new EventEmitter();
   const code = await superviseReach({ script: "/r/scripts/bootstrap.mjs", args: ["restart", "--yes", "--port", "4318"], spawn, signals,
@@ -46,6 +48,16 @@ test("a crash or running out of memory starts it again, waiting longer each time
   assert.deepEqual(waits, [1000, 5000]);
   assert.match(said.join("\n"), /starting again in 1s/);
   assert.equal(signals.listenerCount("SIGINT"), 0, "lets go of its signal handlers");
+});
+
+test("a signaled child's exit code follows the host's signal numbering", async () => {
+  const nativeCode = 128 + os.constants.signals.SIGABRT;
+  const { spawn, runs } = fakeSpawn(["SIGABRT", 0]);
+  const code = await superviseReach({ script: "fixture", spawn, signals: new EventEmitter(), ...quiet });
+  // POSIX SIGABRT maps to the configured 134 restart code. Windows' 150
+  // stays an ordinary exit; this fixture must not invent a Windows crash.
+  assert.equal(code, nativeCode === 134 ? 0 : nativeCode);
+  assert.equal(runs.length, nativeCode === 134 ? 2 : 1);
 });
 
 test("restart's short confirmation flag is consumed before a crash relaunch", async () => {

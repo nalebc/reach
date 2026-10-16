@@ -6,8 +6,8 @@ import path from "node:path";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import { createOutbox } from "../server/agent-sessions/outbox.mjs";
 
-// Disposable storage and a mocked Claude app: no provider requests, native
-// app control or real conversations. Shared queue behavior on both hosts.
+// Disposable storage and mocked Claude app/Code backends: no provider requests,
+// native app control or real conversations. Windows uses the Code fallback.
 const A = "11111111-2222-4333-8444-555555555555";
 const diskOutbox = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-outbox-mutations-"));
@@ -15,20 +15,21 @@ const diskOutbox = (t) => {
   const file = path.join(dir, "outbox.json");
   return { file, outbox: createOutbox({ file }) };
 };
-const sessionsWith = (t, outbox, deliver = async () => ({})) => {
+const sessionsWith = (t, outbox, deliver = async () => ({}), typeIntoApp = true) => {
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {} },
     codex: {},
     codexLive: { drives: () => false },
-    claude: {},
-    claudeHost: { onRelease() {} },
+    claude: { starts: async () => [], read: async () => ({ session: {} }) },
+    live: async () => new Map(),
+    claudeHost: { onRelease() {}, send: deliver },
     signIn: {},
     claudeImports: { add: async () => {}, close() {} },
     agentAsks: { close() {} },
     outbox,
     queueMs: 60000,
     appRetryMs: 60000,
-    typeIntoApp: true,
+    typeIntoApp,
     claudeCompose: { deliver },
   });
   t.after(() => sessions.close());
@@ -78,13 +79,15 @@ test("queue cancellation fails visibly when it cannot persist, preserving the me
   assert.deepEqual(sent, []);
 });
 
-test("removing a paused queue head resumes the messages waiting behind it", async (t) => {
+for (const typeIntoApp of [true, false]) {
+const backend = typeIntoApp ? "app-preferred delivery (Code fallback on Windows)" : "Claude Code delivery";
+test(`removing a paused queue head resumes the messages waiting behind it through ${backend}`, async (t) => {
   const outbox = createOutbox();
   const paused = outbox.add(A, { text: "Uncertain delivery", via: "app" });
   outbox.pause(A, paused.id, "Check delivery before continuing");
   outbox.add(A, { text: "Still needs to go", via: "app" });
   const sent = [];
-  const sessions = sessionsWith(t, outbox, async (_id, body) => sent.push(body.text));
+  const sessions = sessionsWith(t, outbox, async (_id, body) => sent.push(body.text), typeIntoApp);
   // Let the startup worker observe the paused head and stop.
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.deepEqual(sent, []);
@@ -94,7 +97,7 @@ test("removing a paused queue head resumes the messages waiting behind it", asyn
   assert.deepEqual(outbox.list(A), []);
 });
 
-test("reordering a blocked queue wakes delivery for the message moved to the front", async (t) => {
+test(`reordering a blocked queue wakes delivery for the message moved to the front through ${backend}`, async (t) => {
   const outbox = createOutbox();
   const blocked = outbox.add(A, { text: "Wait for its app chat", via: "app" });
   const ready = outbox.add(A, { text: "Ready now", via: "app" });
@@ -103,10 +106,11 @@ test("reordering a blocked queue wakes delivery for the message moved to the fro
     if (body.text === blocked.text)
       throw Object.assign(new Error("The first message cannot go yet"), { waiting: true });
     sent.push(body.text);
-  });
+  }, typeIntoApp);
   assert.ok(await waitFor(() => !!outbox.list(A)[0]?.error));
   await sessions.reorderQueued("claude", A, [ready.id, blocked.id]);
   assert.ok(await waitFor(() => sent.length === 1), "moving a ready message ahead should wake the sleeping queue worker");
   assert.deepEqual(sent, ["Ready now"]);
   assert.equal(outbox.list(A)[0]?.id, blocked.id);
 });
+}
