@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createAuth, hostedConnector } from "../server/core.mjs";
 import { rotateIfDue } from "../scripts/agent-remote.mjs";
+import { windowsAcl, othersAllowed } from "./helpers/windows-acl.mjs";
 
 // Security audit M6: an agent on its own tailnet device trades its credential
 // for a new one while it works. A copy of its folder then stops working, and
@@ -106,7 +107,9 @@ test("the agent's runtime saves the new credential before using it, one trade at
   const saved = JSON.parse(fs.readFileSync(path.join(conn, "credential.json"), "utf8"));
   assert.equal(saved.token, "b".repeat(43));
   assert.equal(saved.rotatedAt, now);
-  assert.equal(fs.statSync(path.join(conn, "credential.json")).mode & 0o777, 0o600);
+  // Windows keeps who may open it in its ACL, not mode bits: this user's alone.
+  if (process.platform !== "win32") assert.equal(fs.statSync(path.join(conn, "credential.json")).mode & 0o777, 0o600);
+  else assert.deepEqual(othersAllowed(await windowsAcl("file", path.join(conn, "credential.json"))), []);
   // Over a direct connection (several processes use it): never.
   const direct = { ...credential, via: "direct", rotatedAt: 0 };
   await rotateIfDue(conn, direct, call, { now: () => now });

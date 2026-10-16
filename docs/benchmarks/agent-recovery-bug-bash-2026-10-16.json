@@ -295,5 +295,34 @@
     "server/core.mjs": "a521369de79dd1af56f80e40c3e3f86d37ba3d9528382540631eb970327c1627",
     "src/funnel-agent.ts": "c59f99e5342c6bad47e8c0f57c55417cadd91d864d653aa48fdb97f63820e949",
     "src/ServiceAgentTools.tsx": "2b450f0e0de3596a3b425d37f0980fc28f21e2ed53479d405e7a5c55b19734ad"
+  },
+  "initialCiFollowUp": {
+    "head": "d3976000b81ddc3ae2de7fc57c2f6527d652039b",
+    "run": "https://github.com/nalebc/reach/actions/runs/38980815751",
+    "passed": [
+      "Linux Node 22 and 24 full suites",
+      "macOS arm64 and Intel full suites",
+      "security, CodeQL, secrets, dependency and compatibility gates"
+    ],
+    "windows": {
+      "job": "https://github.com/nalebc/reach/actions/runs/38980815751/job/117241007319",
+      "result": "1411 passed, 1 failed, 96 platform-gated checks skipped before the native Windows stage",
+      "failure": "The imported rotation test accidentally replaced the public baseline Windows ACL assertion with a POSIX mode assertion: 0666 !== 0600.",
+      "correction": "Restore the actual Windows ACL check while retaining the POSIX 0600 assertion and every new rotation regression. Credential permission enforcement is unchanged.",
+      "localVerification": {
+        "command": "npm run test:file -- --test-concurrency=1 test/agent-credential-rotation.test.mjs",
+        "passed": 15,
+        "failed": 0,
+        "skipped": 0,
+        "host": "macOS arm64"
+      }
+    },
+    "ios": {
+      "job": "https://github.com/nalebc/reach/actions/runs/38980815751/job/117241006922",
+      "failure": "All three simulator launch attempts timed out; the artifact recorded no requests to the unique smoke-test page.",
+      "comparison": "PR 53 passed the unchanged harness on the same runner image, Xcode/SDK, runtime and device type. No product regression or runtime incompatibility was established.",
+      "action": "Rerun the unchanged real simulator gate on the corrected PR head; do not skip checks or increase launch budgets."
+    },
+    "latestStatus": "Use the PR checks for validation of subsequent heads; this entry preserves the first CI failure and its correction."
   }
 }
