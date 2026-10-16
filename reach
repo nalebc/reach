@@ -77,6 +77,13 @@ run_reach() {
     echo "Reach: starting again in ${DELAY}s…"
     sleep "$DELAY"
     # It starts Reach again; what a restart stops is already stopped.
+    # Only consume an actual command: --folder restart names a directory.
+    case "${1:-}" in
+      restart) shift ;;
+      --yes | -y)
+        if [ "${2:-}" = restart ]; then shift 2; else continue; fi ;;
+      *) continue ;;
+    esac
     FIRST=1
     for ARG do
       if [ "$FIRST" = 1 ]; then
@@ -84,7 +91,7 @@ run_reach() {
         FIRST=0
       fi
       case "$ARG" in
-        restart | --yes) ;;
+        --yes | -y) ;;
         *) set -- "$@" "$ARG" ;;
       esac
     done

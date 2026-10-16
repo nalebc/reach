@@ -37,6 +37,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileRootName, hiddenByOs, refreshDriveRoots } from "./file-roots.mjs";
 import { openConfined, readUpTo } from "./confined-file.mjs";
+import { downloadConfined } from "./file-download.mjs";
 import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
@@ -75,6 +76,7 @@ import { createAgentPauses } from "./agent-pauses.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
 import { createAgentTimings } from "./agent-timings.mjs";
+import { AGENT_SCREEN_RESPONSE_BYTES, agentJsonResponseLimit } from "./agent-transport.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
 import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
@@ -1404,10 +1406,11 @@ export async function createReach(overrides = {}) {
     const req = http.request({ host: "127.0.0.1", port: address.port, method: context.method, path: context.path,
       headers: { host: new URL(config.publicOrigin).host, "x-reach-hosted": id, accept: "application/json, image/jpeg, image/png" }, timeout }, (res) => {
       const chunks = [];
+      const responseLimit = Math.max(AGENT_SCREEN_RESPONSE_BYTES, agentJsonResponseLimit(context.path, context.method, context.body, res.statusCode));
       let size = 0;
       res.on("data", (chunk) => {
         size += chunk.length;
-        if (size > 8 * 1024 * 1024) return req.destroy(Object.assign(Error("The response exceeds 8 MiB."), { status: 502 }));
+        if (size > responseLimit) return req.destroy(Object.assign(Error("The response exceeds its transport limit."), { status: 502 }));
         chunks.push(chunk);
       });
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
@@ -3021,7 +3024,8 @@ export async function createReach(overrides = {}) {
     );
     const sharedRoot = (current.agentRoots || config.roots)[Number(req.query.root ?? 0)];
     const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
-    res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
+    await downloadConfined(req, res, file, realRoot,
+      () => resolve(req.query.root, req.query.path || "", req.reauthorize()));
   });
   // A short-lived link to one file, for the browser's own download manager.
   app.get("/api/files/download-link", async (req, res) => {
@@ -3197,8 +3201,8 @@ export async function createReach(overrides = {}) {
   // Resumable uploads (server/uploads.mjs): create, send chunks at offsets,
   // ask where to resume, complete. The one-request route above stays for
   // older apps and computers.
-  const uploadFolder = (req, root, folder) => {
-    const dir = resolve(root, folder || "", req.client);
+  const uploadFolder = (req, root, folder, client = req.client) => {
+    const dir = resolve(root, folder || "", client);
     if (!fs.statSync(dir).isDirectory()) throw fail(400, "Choose a folder.");
     return dir;
   };
@@ -3249,11 +3253,16 @@ export async function createReach(overrides = {}) {
     resumable.status(req.params.id, req.client);
     const { root, path: folder } = resumable.get(req.params.id);
     try {
+      const destination = uploadFolder(req, root, folder);
       const result = await resumable.complete(
         req.params.id,
         req.client,
-        uploadFolder(req, root, folder),
-        () => req.reauthorize(),
+        destination,
+        () => {
+          const current = req.reauthorize();
+          if (uploadFolder(req, root, folder, current) !== destination)
+            throw fail(409, "The shared folder changed. Start this upload again.");
+        },
       );
       record("file", `Uploaded ${result.name}`);
       res.json(result);
@@ -5094,7 +5103,12 @@ export async function createReach(overrides = {}) {
     res.setHeader("Cache-Control", "no-store");
     const sharedRoot = (client.agentRoots || config.roots)[Number(link.root ?? 0)];
     const realRoot = (() => { try { return fs.realpathSync(sharedRoot); } catch { return sharedRoot; } })();
-    res.download(path.relative(realRoot, file), path.basename(file), { root: realRoot });
+    await downloadConfined(req, res, file, realRoot,
+      () => resolve(link.root, link.path, check()),
+      stat => {
+        if (stat.mtimeMs !== link.mtimeMs)
+          throw fail(410, "This file changed. Start the download again.");
+      });
   });
   serveBuild(app, express, dist, {
     // Its agent links' start page: the one address, without Reach's port.

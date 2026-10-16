@@ -28,7 +28,7 @@ import path from "node:path";
 import { atomicJson, loadJson, sameHash } from "./core.mjs";
 import { browserRouteAllowed } from "./browser-access.mjs";
 import { permittedPath, sourceKey } from "./funnel-agent.mjs";
-import { agentErrorDetails, agentRequestError, agentRequestTimeout } from "./agent-transport.mjs";
+import { agentErrorDetails, agentRequestError, agentRequestTimeout, agentJsonResponseLimit, validateAgentJsonResponse } from "./agent-transport.mjs";
 import { PROTOCOLS, serverInstructions, toContent, toolsFor, withGuide } from "../scripts/mcp-server.mjs";
 import { isScreenImageRoute } from "../scripts/agent-client.mjs";
 
@@ -432,13 +432,16 @@ export function createHostedMcp({
     catch (error) { throw agentRequestError(error?.status === 403 ? 403 : 400, { error: "This request isn't one an agent may make." }); }
     if (!browserRouteAllowed(client, method, inner)) throw agentRequestError(403, { error: "This agent's preset doesn't allow that." });
     const response = await dispatch(Object.freeze({ keyThumbprint: binding, token: secret, method, path: route, body: body ?? null }), { timeout: agentRequestTimeout(route, method) });
-    if (response.bytes.length > RESPONSE_LIMIT) throw agentRequestError(502, { error: "The response was too large." });
+    const responseLimit = Math.max(RESPONSE_LIMIT, agentJsonResponseLimit(route, method, body, response.status));
+    if (response.bytes.length > responseLimit) throw agentRequestError(502, { error: "The response was too large." });
     const type = String(response.headers["content-type"] || "").split(";")[0].trim();
     const text = response.bytes.toString("utf8");
     if (response.status >= 200 && response.status < 300) {
       if (isScreenImageRoute(route) && ["image/jpeg", "image/png"].includes(type))
         return { image: response.bytes.toString("base64"), mimeType: type };
-      try { return JSON.parse(text || "null"); } catch { return null; }
+      let parsed;
+      try { parsed = JSON.parse(text || "null"); } catch { return null; }
+      return validateAgentJsonResponse(route, method, body, parsed);
     }
     let error = null;
     try { error = JSON.parse(text); } catch { /* plain text */ }

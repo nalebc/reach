@@ -361,78 +361,95 @@ async function sendFile(
     void request(peer, `/api/files/uploads/${session.id}`, {
       method: "DELETE",
     }).catch(() => {});
+  const restart = async (error: unknown) => {
+    if (++restarts > 2) throw error;
+    session = await begin();
+    if (signal.aborted) cancel();
+    checkCanceled(signal);
+    offset = session.offset;
+    failures = 0;
+    progress(offset);
+  };
   signal.addEventListener("abort", cancel);
   try {
     if (signal.aborted) cancel();
     checkCanceled(signal);
-    while (offset < file.size) {
-      checkCanceled(signal);
-      const end = Math.min(file.size, offset + session.chunk);
-      try {
-        ({ offset } = await putChunk(
-          peer,
-          session.id,
-          offset,
-          file.slice(offset, end),
-          (loaded) => progress(offset + loaded),
-          signal,
-        ));
-        failures = 0;
-        progress(offset);
-      } catch (e) {
-        if (signal.aborted) throw e;
-        const failure = e as { status?: number; offset?: number };
-        // Out of step (a retry after a chunk that did arrive): continue there.
-        if (failure.status === 409 && typeof failure.offset === "number") {
-          offset = failure.offset;
-          continue;
-        }
-        if (!retryable(e) || ++failures > 8) throw e;
-        waiting();
-        await whenReachable(signal);
-        await pause(Math.min(15000, 1000 * 2 ** (failures - 1)), signal);
-        // Ask where to continue; the computer may have restarted.
-        try {
-          ({ offset } = await request<{ offset: number }>(
-            peer,
-            `/api/files/uploads/${session.id}`,
-            { signal },
-          ));
-        } catch (lost) {
-          checkCanceled(signal);
-          const status = (lost as { status?: number }).status;
-          // Still no network: try the chunk again from where it was (the
-          // computer answers with its own offset if that moved on). Each
-          // failed chunk counts toward the limit above.
-          if (status !== 404 && retryable(lost)) continue;
-          if (status !== 404 || ++restarts > 2) throw lost;
-          session = await begin();
-          if (signal.aborted) cancel();
-          checkCanceled(signal);
-          offset = 0;
-        }
-      }
-    }
-    // Every byte is there. A dropped answer here doesn't mean it failed: ask
-    // again, and the computer says it already landed.
-    for (let tries = 1; ; tries++) {
-      checkCanceled(signal);
-      try {
-        await request(peer, `/api/files/uploads/${session.id}/complete`, {
-          method: "POST", body: JSON.stringify({}), signal,
-        });
-        break;
-      } catch (e) {
+    uploading: for (;;) {
+      while (offset < file.size) {
         checkCanceled(signal);
-        if ((e as { status?: number }).status === 404)
-          throw Error(
-            `The folder you were uploading to no longer exists on ${peer.name}.`,
-          );
-        if (!retryable(e) || tries >= 6) throw e;
-        waiting();
-        await whenReachable(signal);
-        await pause(Math.min(15000, 1000 * 2 ** (tries - 1)), signal);
+        const end = Math.min(file.size, offset + session.chunk);
+        try {
+          ({ offset } = await putChunk(
+            peer,
+            session.id,
+            offset,
+            file.slice(offset, end),
+            (loaded) => progress(offset + loaded),
+            signal,
+          ));
+          failures = 0;
+          progress(offset);
+        } catch (e) {
+          if (signal.aborted) throw e;
+          const failure = e as { status?: number; offset?: number };
+          // A restart can happen between successful chunks, with no network
+          // error first. The new companion no longer knows this session.
+          if (failure.status === 404) {
+            await restart(e);
+            continue;
+          }
+          // Out of step (a retry after a chunk that did arrive): continue there.
+          if (failure.status === 409 && typeof failure.offset === "number") {
+            offset = failure.offset;
+            continue;
+          }
+          if (!retryable(e) || ++failures > 8) throw e;
+          waiting();
+          await whenReachable(signal);
+          await pause(Math.min(15000, 1000 * 2 ** (failures - 1)), signal);
+          // Ask where to continue; the computer may have restarted.
+          try {
+            ({ offset } = await request<{ offset: number }>(
+              peer,
+              `/api/files/uploads/${session.id}`,
+              { signal },
+            ));
+          } catch (lost) {
+            checkCanceled(signal);
+            const status = (lost as { status?: number }).status;
+            // Still no network: try the chunk again from where it was (the
+            // computer answers with its own offset if that moved on). Each
+            // failed chunk counts toward the limit above.
+            if (status !== 404 && retryable(lost)) continue;
+            if (status !== 404) throw lost;
+            await restart(lost);
+          }
+        }
       }
+      // Every byte is there. A dropped answer here doesn't mean it failed: ask
+      // again, and the computer says it already landed.
+      for (let tries = 1; ; tries++) {
+        checkCanceled(signal);
+        try {
+          await request(peer, `/api/files/uploads/${session.id}/complete`, {
+            method: "POST", body: JSON.stringify({}), signal,
+          });
+          break;
+        } catch (e) {
+          checkCanceled(signal);
+          if ((e as { status?: number }).status === 404) {
+            // Bytes can all arrive just before a restart too. Starting again
+            // checks that the destination still exists and never overwrites it.
+            await restart(e);
+            continue uploading;
+          }
+          if (!retryable(e) || tries >= 6) throw e;
+          waiting();
+          await whenReachable(signal);
+          await pause(Math.min(15000, 1000 * 2 ** (tries - 1)), signal);
+        }
+      }
+      break;
     }
   } catch (e) {
     // A failed upload frees its server session; leftovers count toward the limit.
@@ -626,12 +643,22 @@ export async function downloadInBackground(
   // Listen first: the native side answers `download` before any event.
   let id = "";
   const handles: { remove: () => Promise<void> }[] = [];
-  const stop = () => handles.splice(0).forEach((h) => void h.remove());
-  handles.push(
-    await native.addListener("progress", (e) => {
+  const stop = () => {
+    handles.splice(0).forEach((h) => void h.remove().catch(() => {}));
+    job.signal.removeEventListener("abort", cancel);
+  };
+  const cancel = () => {
+    stop();
+    if (id) void native.cancel({ id }).catch(() => {});
+  };
+  // Cancellation can arrive while the bridge is still allocating its task.
+  job.signal.addEventListener("abort", cancel);
+  try {
+    handles.push(await native.addListener("progress", (e) => {
       if (e.id === id && e.done !== undefined) job.progress(e.done);
-    }),
-    await native.addListener("done", (e) => {
+    }));
+    checkCanceled(job.signal);
+    handles.push(await native.addListener("done", (e) => {
       if (e.id !== id || !e.uri) return;
       stop();
       const action = saveAction({ id, name: entry.name, uri: e.uri });
@@ -639,11 +666,12 @@ export async function downloadInBackground(
       job.finish(false);
       // Still in front: open Save / Share straight away, as before.
       if (document.visibilityState === "visible") action.run();
-    }),
-    await native.addListener("failed", (e) => {
+    }));
+    checkCanceled(job.signal);
+    handles.push(await native.addListener("failed", (e) => {
       if (e.id !== id) return;
       stop();
-      if (e.canceled) return;
+      if (e.canceled) return job.transfer.cancel();
       if (e.status === 404) gone();
       job.fail(
         Error(
@@ -654,18 +682,17 @@ export async function downloadInBackground(
               : e.error || "The download stopped.",
         ),
       );
-    }),
-  );
-  try {
+    }));
+    checkCanceled(job.signal);
     ({ id } = await native.download({
       url: `${peer.url}/api/files/content?${new URLSearchParams({ path: entry.path, root: String(root) })}`,
       headers: { Authorization: `Bearer ${peer.token}` },
       name: entry.name,
     }));
+    if (job.signal.aborted) cancel();
   } catch (e) {
     stop();
     job.fail(e);
     return;
   }
-  job.signal.addEventListener("abort", () => void native.cancel({ id }));
 }

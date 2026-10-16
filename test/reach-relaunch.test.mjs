@@ -68,6 +68,23 @@ test("a crash starts Reach again, waiting longer each time, without restart's st
   assert.match(out, /starting again in 5s/);
 });
 
+test("restart's short confirmation flag is consumed before a crash relaunch", { skip }, () => {
+  for (const args of [["restart", "-y"], ["-y", "restart"]]) {
+    const { status, runs } = run([70, 0], [...args, "--https-port", "8443"]);
+    assert.equal(status, 0);
+    assert.deepEqual(runs[1].args, ["--https-port", "8443"]);
+  }
+});
+
+test("a crash preserves folder arguments named like restart options", { skip }, () => {
+  for (const folder of ["restart", "-y"]) {
+    const args = ["--folder", folder];
+    const { status, runs } = run([70, 0], args);
+    assert.equal(status, 0);
+    assert.deepEqual(runs[1].args, args);
+  }
+});
+
 test("Ctrl+C, a stop and an error Reach reported are not relaunched", { skip }, () => {
   for (const code of [0, 1, 130, 143]) {
     const { status, runs } = run([code]);

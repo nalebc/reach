@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-16",
+  "branch": "codex/bug-bash-2026-10-16",
+  "base": "f9d9e9f53e6dad0591af084ad55c36ea45ecabf7",
+  "scope": "Audited bug-bash fixes applied to current main in an isolated checkout. Pre-existing credential-recovery and concurrent service/access/UI changes from the original checkout are excluded.",
+  "validation": {
+    "targeted": {
+      "command": "npm run test:file -- --test-concurrency=2 test/abort-polyfill.test.mjs test/agent-extended-expiry.test.mjs test/agent-image-envelope-integration.test.mjs test/agent-image-envelope.test.mjs test/agent-screenshot-route.test.mjs test/agent-transport.test.mjs test/agent-funnel-tools.test.mjs test/agent-remote.test.mjs test/browser-tools.test.mjs test/background-transfer-ui.test.mjs test/file-download-cleanup.test.mjs test/file-download-race.test.mjs test/hidden-root-downloads.test.mjs test/confined-file.test.mjs test/native-helper-unicode.test.mjs test/outbox-mutation-recovery.test.mjs test/outbox.test.mjs test/reach-relaunch.test.mjs test/supervise.test.mjs test/screen-double-click-ui.test.mjs test/service-failure-guidance.test.mjs test/service-connectors.test.mjs test/upload-folder-race.test.mjs test/upload-restart-ui.test.mjs test/uploads-recovery.test.mjs test/uploads-concurrency.test.mjs test/transfer-integrity.test.mjs test/transfer-cancel-ui.test.mjs test/transfers-server.test.mjs test/windows-commands.test.mjs test/hosted-mcp.test.mjs test/mcp-entrypoints.test.mjs test/ci-policy.test.mjs",
+      "tests": 208,
+      "passed": 206,
+      "failed": 0,
+      "skipped": 2,
+      "skip_reasons": [
+        "Tailnet runtime not built yet; subsequently built and the exact skipped test passed.",
+        "Windows process-list check requires actual Windows."
+      ]
+    },
+    "built_tailnet_regression": {
+      "command": "npm run test:file -- --test-concurrency=1 --test-name-pattern='one-time key signs in' test/agent-remote.test.mjs",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "network": "Fetch stubbed; no Tailscale connection."
+    },
+    "release_build": {
+      "command": "npm run build:release",
+      "result": "passed; TypeScript, web/agent bundles, required tailnet WASM, notices and release assets"
+    },
+    "secret_scan": {
+      "command": "gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --no-banner",
+      "result": "passed; no leaks found"
+    },
+    "whitespace": {
+      "command": "git diff --cached --check",
+      "result": "passed"
+    },
+    "public_base": {
+      "result": "Public main has exactly the same source tree as the base used for the recorded local tests and release build. Only the audited patch was applied onto public history.",
+      "base_tree": "3814d55847db7b036cfcb99e417204643d5c8cbb"
+    }
+  },
+  "limits": [
+    "Actual Windows and physical iPhone/iPad/Android clients were not exercised locally.",
+    "Native screen data, mobile bridges and some platform/process behavior are synthetic or mocked as documented in the tests.",
+    "The original reported connection expiry remains unconfirmed.",
+    "Folder revalidation fixes the reproduced asynchronous upload gap; descriptor-relative parent-directory publication is not implemented."
+  ],
+  "historical_evidence": [
+    "bug-bash-2026-10-16.json",
+    "agent-feedback-bug-bash-2026-10-16.json"
+  ],
+  "source_sha256": {
+    ".github/scripts/run-tests.mjs": "63c14170827c97f144cb81561647a8ec8a5a28e15d5082e7f25aced7b39751ba",
+    ".gitleaksignore": "415ff814df4b4d5baf74e8f3814eb61ec30b17f83f7c81407d7b36e8f57d9ce0",
+    "docs/benchmarks/agent-feedback-bug-bash-2026-10-16.json": "1d39e0bd88d416c63bbf46d936f655929a9288180aa483a3e6eb7abc1d8907b0",
+    "docs/benchmarks/bug-bash-2026-10-16.json": "13664855f054c437bdff5d8b86f8abd3498389819da34082711d62d8f8f58151",
+    "reach": "926703b2cf94bd8b5c8a126752dff11371dc34e64623b9315a1f5cbac0f99b07",
+    "scripts/agent-client.mjs": "6e5a88e98600fef4fcb784e8feaa117a99c6513135b36e6296a05f6762665c2d",
+    "scripts/agent-funnel.mjs": "9c91e38780394dfa80aecc8122de12094d5bd4829fa4a6be20837bd1941b7dd8",
+    "scripts/agent-remote.mjs": "e1b935a898f15e2cdea47461a97a69015bbf2d8674cac917f19e4865f5f6a2e8",
+    "scripts/supervise.mjs": "7ce9ca85fdeabf6231a9ee405db9020988e88a112d148bad396224a80f9915dd",
+    "server/agent-desktop.mjs": "919feafa79174a67289c3e2fd9f63e866ebb827f0c96ba284ba66ffb9cb7ee79",
+    "server/agent-sessions/index.mjs": "84bd27e2a880ce37851f41ecb2fdc057bc873665b28c8109ad559043dfba591c",
+    "server/agent-sessions/outbox.mjs": "2ebf2eef6ba9b5b6e265aaa4669cc76350ace6ef896e5dc251c3863e8398d787",
+    "server/agent-transport.d.mts": "b53386afe0c8a893fe9913f48261cb7afbf86ff2785759fc25216238a80adc31",
+    "server/agent-transport.mjs": "7b88f59256d36f807740237f400ec0f10448ae445e458e5f971889485f465806",
+    "server/desktop-native.mjs": "16e62f8687539f0047ea70601b4e764e9f2a4abc2ce6f63460b3e079e07570bd",
+    "server/file-download.mjs": "2640ae45ef9287394496acb1c6a7f78cfb61e64ccd4449d4060a9c9611b90ccf",
+    "server/hosted-mcp.mjs": "734d2f67a1753154f1f226272dd0d552da07f74503fe393f5c90076f1ee406df",
+    "server/index.mjs": "501e66fac9641b9e5cf00ab958e5f37eb7f63dcd2f30c595a2c255d606a2299a",
+    "server/service-connectors.mjs": "bf328c646e3623b2545db342099cbe2b832d1c9b811effee2998320cfca3ffda",
+    "server/uploads.mjs": "92a5151bc777f08d8d0ac26e477756ea2088bbcc6a302be95f52a90490188b72",
+    "src/DesktopSurface.tsx": "5b9ea0dea69feb90cedb5c25fba88fc61ef6bd706c202a9ccdea9c5e635a4ad7",
+    "src/abort-polyfill.ts": "1da3c05b6672ece93dfeec4376a342fc9b2150a829b7f4eb72ad868fd9a8bd3a",
+    "src/transfers.ts": "f26e9b9510fef704ad62d3b0225e324a411036f3d6b35a9bb0765593501ac98d",
+    "test/abort-polyfill.test.mjs": "427d08e343c106f659f4730451336f3ccc63712b2787a80b11bff8746d7cc55d",
+    "test/agent-extended-expiry.test.mjs": "242c8eec6ed201f0442bc118b0f51b5c7ff6a4bc98e8570433f40afa23b035c5",
+    "test/agent-image-envelope-integration.test.mjs": "7fb61f90ba3527fa9b93a118b1647f91c141912079593b2f3cad26ee95947c6f",
+    "test/agent-image-envelope.test.mjs": "90ade6196cbe5e19e4f3d87601f8787d92cc566f12ac922ef3ad242d70750994",
+    "test/agent-screenshot-route.test.mjs": "45801c18bdae3d4af2ba6635377d798968174cf9c181f95536ee0996b89f8fe6",
+    "test/background-transfer-ui.test.mjs": "203847f72ee37e85c8957246f77e5ea600e33b4aaefd2863f83128c692f9918c",
+    "test/dom/fakes/background-transfer.mjs": "9514abdb940d95998dfa25c728d2881b3261b981f0facfd87abbcae67795f6c7",
+    "test/file-download-cleanup.test.mjs": "8fbcc7e09e8a23f8c5432022c2b57a4d447bf74722e545d43e8670186f40a708",
+    "test/file-download-race.test.mjs": "1fba580b2b9bcb5a3a3d89c5b30fd3d182f0e8e70afafb81bd68bc840ded1d00",
+    "test/native-helper-unicode.test.mjs": "9e3ac6ab75ae3538dce7d5f1f486e216a2c01a19af1cbfca33b13cfc34afde95",
+    "test/outbox-mutation-recovery.test.mjs": "1d32ac14d8a5b984e0642a1d842bae0addd99bd9f331e743cd433a3d2ff260d9",
+    "test/reach-relaunch.test.mjs": "7c74f9f9d438d7bd3a027bba8566daebc66d1a491e0a8b5228bb08e970371e15",
+    "test/screen-double-click-ui.test.mjs": "8b4c0b99814e6d96b781c1ebb6ba3dc9ddb56e6d77a79b4f8d0e27b11ec9aa18",
+    "test/service-failure-guidance.test.mjs": "5e4449ab679f8ad94ecd854d7c9caca493e7ff65519654d2aa18dabce886adfe",
+    "test/supervise.test.mjs": "b8115b6ee94228b4420c88a8037b102a114e538f488f1c292a154ba971c10297",
+    "test/upload-folder-race.test.mjs": "ee3b1f0ba67f88c6718e7490db20d06eef885c8e54b212769df5aca536f7a898",
+    "test/upload-restart-ui.test.mjs": "44816808a1fba54ea855146f30549986285b458402b6fbb9c715c5d1b75d5641",
+    "test/uploads-recovery.test.mjs": "ede5e530bccf70febe6c2cfe0c727f77b5407a3a35e80d35551c40bbb258300e",
+    "test/windows-commands.test.mjs": "87d44003aee3463b4dd383a56b7797ce5960ed8ec4901cf3b0593002dfe31791"
+  },
+  "repository": "https://github.com/nalebc/reach"
+}

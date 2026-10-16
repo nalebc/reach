@@ -1701,6 +1701,8 @@ export function createAgentSessions({
         throw Object.assign(new Error("Invalid order."), { status: 400 });
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
+      wakers.get(id)?.();
+      void deliver(id);
       return { reordered: true };
     },
     // Rewind to before a message, as Claude Code's own: what would change
@@ -1807,7 +1809,12 @@ export function createAgentSessions({
         throw Object.assign(new Error("That message is being sent. Wait for the chat to update."), { status: 409 });
       if (!outbox.list(id).some((m) => m.id === messageId))
         throw Object.assign(new Error("That message already left the queue."), { status: 409 });
-      outbox.remove(id, messageId);
+      // A cancellation is acknowledged only after it survives a restart.
+      outbox.remove(id, messageId, { durable: true });
+      // A paused head may have stopped the worker. The messages behind it
+      // can go again once the user removes that uncertain delivery.
+      wakers.get(id)?.();
+      void deliver(id);
       return { deleted: true };
     },
     // A message whose chat was deleted, sent to another chat from the phone:

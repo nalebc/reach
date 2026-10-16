@@ -151,6 +151,8 @@ const problems = {
   browser_closed: "Open the chosen browser on the Mac, then retry.",
   browser_window_required:
     "Open a window in the chosen browser on the Mac, then retry.",
+  loading:
+    "The browser has not finished loading the exact requested page. Check the chosen browser and service account, wait for that page to finish loading, then retry.",
   browser_access: "Allow the chosen browser in Agent Access, then retry.",
   stale:
     "This result has expired or the page changed. Find the order again before tracking it.",

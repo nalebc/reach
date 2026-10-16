@@ -682,7 +682,7 @@ export default function DesktopSurface({
     }
   };
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!ready) return;
+    if (!ready || event.button !== 0) return;
     const stopper = stopMomentum();
     dropScroll();
     serial.current++;
@@ -983,7 +983,7 @@ export default function DesktopSurface({
       if (!pointers.current.size) fling(g.multiple ? g.mid : g.last);
     }
     const tapped =
-      !g.held && !g.multiple && !g.moved && event.button !== 2 &&
+      !g.held && !g.multiple && !g.moved && event.button === 0 &&
       (performance.now() - g.at < HOLD_MS || !canControl);
     const point = tapped && !g.stopper && mode !== "pan"
       ? mode === "trackpad" ? cursorRef.current

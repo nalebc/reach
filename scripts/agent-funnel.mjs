@@ -12,7 +12,7 @@ import fs from "node:fs";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
-import { agentRequestError, agentRequestTimeout } from "../server/agent-transport.mjs";
+import { agentRequestError, agentRequestTimeout, agentJsonResponseLimit, validateAgentJsonResponse } from "../server/agent-transport.mjs";
 import { isScreenImageRoute } from "./agent-client.mjs";
 
 const RESPONSE_LIMIT = 8 * 1024 * 1024;
@@ -65,7 +65,7 @@ export function tailnetLookup(hostname, options, callback) {
 // a name that doesn't resolve, or not into the tailnet) is marked
 // unreachable: the next address is tried. Anything later isn't, so an action
 // never runs twice. A fresh connection each time, so "connected" is known.
-export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = false, connectMs = 5000 } = {}) {
+export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = false, connectMs = 5000, responseLimit = RESPONSE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
     let connected = false;
     const unreachable = (error) => Object.assign(error, { unreachable: !connected });
@@ -83,10 +83,11 @@ export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = fa
       ...(tailnetOnly ? { agent: false, lookup: tailnetLookup } : {}),
     }, (res) => {
       const chunks = [];
+      const limit = res.statusCode >= 200 && res.statusCode < 300 ? responseLimit : RESPONSE_LIMIT;
       let size = 0;
       res.on("data", (chunk) => {
         size += chunk.length;
-        if (size > RESPONSE_LIMIT) return req.destroy(Error("Reach response exceeds 8 MiB."));
+        if (size > limit) return req.destroy(Error("Reach response exceeds its transport limit."));
         chunks.push(chunk);
       });
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
@@ -128,7 +129,13 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
       const endpoint = endpoints[current];
       try {
         // Every address but the last (the public link) is a tailnet one.
-        const response = await send(endpoint, body, headers, timeoutMs, { tailnetOnly: current < endpoints.length - 1 });
+        const imageLimit = agentJsonResponseLimit(input.path, input.method, input.body);
+        const response = await send(endpoint, body, headers, timeoutMs, {
+          tailnetOnly: current < endpoints.length - 1,
+          responseLimit: Math.max(RESPONSE_LIMIT, imageLimit),
+        });
+        const limit = Math.max(RESPONSE_LIMIT, agentJsonResponseLimit(input.path, input.method, input.body, response.status));
+        if (response.bytes.length > limit) throw Error("Reach response exceeds its transport limit.");
         let json = null;
         try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
         return { ...response, json, endpoint };
@@ -175,7 +182,7 @@ export function funnelApi({ conn, credential, key = agentKey(conn), gatewayOptio
       if (response.status >= 200 && response.status < 300) {
         if (isScreenImageRoute(route) && ["image/jpeg", "image/png"].includes(type))
           return { image: response.bytes.toString("base64"), mimeType: type };
-        return response.json;
+        return validateAgentJsonResponse(route, method, body, response.json);
       }
       throw agentRequestError(response.status, response.json);
     }

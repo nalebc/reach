@@ -1,0 +1,157 @@
+{
+  "date": "2026-10-16",
+  "scope": "Follow-up bug bash prompted by an agent's report of an expired connection and failing browser/search/file tools.",
+  "incident_evidence": {
+    "source": "Read-only inspection of local connection metadata and privacy-filtered action/timing records; no credentials or page contents retained here.",
+    "confirmed": [
+      "The inspected recent Full control / Always grant was still valid.",
+      "Screen capture and screen-control calls in that session succeeded.",
+      "Two service-tool failures recorded browser_window_required and loading (the browser had not reached the exact requested page)."
+    ],
+    "unresolved": [
+      "The earlier expired connection could not be identified without its exact error or timestamp.",
+      "The newly reproduced transport and saved-expiry bugs are not proven causes of the reported incident.",
+      "No live Gmail retry or access to messages was performed."
+    ]
+  },
+  "findings": [
+    {
+      "id": "BB-F01",
+      "finding": "CLI clients rejected valid owner-extended grants after the expiry saved in the original credential passed.",
+      "evidence_before": "Three remote-CLI regressions and three legacy credential-CLI regressions failed before their corresponding local expiry checks were removed. Even the expired/revoked cases failed to reach the authoritative server response.",
+      "fix": "Treat the saved deadline as a snapshot; Reach enforces the current grant expiry and revocation on every request.",
+      "files": [
+        "scripts/agent-remote.mjs",
+        "scripts/agent-client.mjs"
+      ],
+      "tests": [
+        "test/agent-extended-expiry.test.mjs"
+      ],
+      "verified": "An extended grant succeeds after the original deadline; expired and revoked grants still receive HTTP 401."
+    },
+    {
+      "id": "BB-F02",
+      "finding": "The advertised displayId screenshot route was not recognized as a binary image route by CLI transports.",
+      "evidence_before": "Three of four regression checks failed: direct HTTP and tailnet attempted to parse JPEG bytes as JSON for /api/browser/desktop/screen?maxWidth=2560&displayId=2.",
+      "fix": "Accept valid maxWidth/displayId combinations on the exact desktop screenshot route, while rejecting duplicate, unknown, malformed or lookalike parameters.",
+      "files": [
+        "scripts/agent-client.mjs"
+      ],
+      "tests": [
+        "test/agent-screenshot-route.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-F03",
+      "finding": "MCP screenshot JSON encoding exceeded ordinary transport budgets even when the image was within the existing 8 MiB binary limit.",
+      "evidence_before": "Both direct HTTP and tailnet rejected a synthetic 2 MiB image wrapped as MCP JSON with 'Reach response exceeds 2 MiB.' An 8 MiB image also needs more than the hosted/public-link 8 MiB JSON budget after base64 encoding.",
+      "fix": "Use a shared bounded base64-envelope budget only for successful exact MCP screenshot/app-screen calls, including one compact reach_execute wrapper. Integrate direct, tailnet, signed Funnel and hosted dispatch, and validate decoded image bytes.",
+      "files": [
+        "server/agent-transport.mjs",
+        "server/agent-transport.d.mts",
+        "scripts/agent-client.mjs",
+        "scripts/agent-remote.mjs",
+        "scripts/agent-funnel.mjs",
+        "server/hosted-mcp.mjs",
+        "server/index.mjs"
+      ],
+      "tests": [
+        "test/agent-image-envelope.test.mjs",
+        "test/agent-image-envelope-integration.test.mjs"
+      ],
+      "bounds": {
+        "direct_tailnet_ordinary_json_bytes": 2097152,
+        "existing_funnel_hosted_ordinary_response_bytes": 8388608,
+        "image_binary_bytes": 8388608,
+        "successful_mcp_image_envelope_bytes": 11250348,
+        "request_payload_caps": "unchanged"
+      },
+      "verified": "An exact 8 MiB synthetic image passes full/compact calls; decoded 8 MiB + 1 byte is refused even when its encoded length is identical. Oversized ordinary responses, error responses and lookalike routes retain their prior limits."
+    },
+    {
+      "id": "BB-F04",
+      "finding": "The observed service-tool loading code lost its actionable recovery instructions at the connector boundary.",
+      "evidence_before": "Two of three fixed-message/privacy regressions failed because loading returned only generic live-page verification guidance.",
+      "fix": "Return a fixed loading message that asks the agent to check the chosen browser and account, wait for the exact page, and retry. Preserve the exact-page/account checks and never forward arbitrary native exception or page text.",
+      "files": [
+        "server/service-connectors.mjs"
+      ],
+      "tests": [
+        "test/service-failure-guidance.test.mjs"
+      ],
+      "limit": "This improves the observed failure's recovery guidance. It does not prove why Gmail failed to load or change its navigation rules."
+    }
+  ],
+  "validation": [
+    {
+      "command": "npm run test:file -- --test-concurrency=1 test/agent-image-envelope.test.mjs test/agent-screenshot-route.test.mjs test/agent-extended-expiry.test.mjs test/agent-transport.test.mjs test/browser-tools.test.mjs",
+      "passed": 32,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "command": "npm run test:file -- --test-concurrency=1 test/agent-transport.test.mjs test/agent-funnel-tools.test.mjs test/agent-funnel-reconnect.test.mjs test/hosted-mcp.test.mjs test/agent-remote.test.mjs test/mcp-entrypoints.test.mjs test/ci-policy.test.mjs",
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "command": "npm run test:file -- --test-concurrency=1 test/service-failure-guidance.test.mjs test/service-connectors.test.mjs test/agent-services.test.mjs",
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "command": "npm run test:file -- --test-concurrency=1 test/agent-image-envelope-integration.test.mjs",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "substantive_subtests": 5
+    },
+    {
+      "command": "npm run test:file -- --test-concurrency=1 test/ci-policy.test.mjs",
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "note": "Final CI selection check after adding the new regressions. Initial sandbox-only run could not write Swift's compiler cache; the permission-enabled rerun passed."
+    },
+    {
+      "command": "npm run build:release",
+      "result": "passed; includes TypeScript, web build, bundled agent, required tailnet build and release assets"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "validation_notes": [
+    "Suite counts overlap and must not be summed as unique checks.",
+    "All tests used npm's runaway guard and bounded test concurrency.",
+    "Actual macOS validation: disposable local HTTP servers, Reach authentication/expiry, signed gateway routing, response buffering, release build.",
+    "Synthetic/mocked: screenshot bytes/native capture, tailnet adapter, keyed peer identity, HTTPS-to-loopback plumbing.",
+    "Actual Windows hosts and physical iPhone/iPad/Android clients were not exercised. New shared regressions are included in Windows CI.",
+    "No provider messages, real desktop input, live screen capture, or account changes were performed."
+  ],
+  "live_activation": {
+    "cli": "./reach restart",
+    "status": "Completed after explicit user approval and the phone approval flow. ./reach status confirmed Reach running in a Terminal window since 12:05 PM local time, with its private route up. No duplicate restart command issued."
+  },
+  "source_sha256": {
+    ".github/scripts/run-tests.mjs": "bce1bf1624555739085b282bea5ae743c7e925ede6ed7edf06732fcccb344ea9",
+    "scripts/agent-client.mjs": "6e5a88e98600fef4fcb784e8feaa117a99c6513135b36e6296a05f6762665c2d",
+    "scripts/agent-funnel.mjs": "291ca478d83d788a1c42a5bdc6570546aec79f06b8ab4e04d6d548e11f9659c3",
+    "scripts/agent-remote.mjs": "51717523c8e925400fe4cd24b8fc86424c1e91772c8cd0ec8607c6370bd8b284",
+    "server/agent-transport.d.mts": "b53386afe0c8a893fe9913f48261cb7afbf86ff2785759fc25216238a80adc31",
+    "server/agent-transport.mjs": "7b88f59256d36f807740237f400ec0f10448ae445e458e5f971889485f465806",
+    "server/hosted-mcp.mjs": "734d2f67a1753154f1f226272dd0d552da07f74503fe393f5c90076f1ee406df",
+    "server/index.mjs": "e1f54f114cd12f4abc539d8531b721603f9f43a01268bd98db0069ef5c21c059",
+    "server/service-connectors.mjs": "bf328c646e3623b2545db342099cbe2b832d1c9b811effee2998320cfca3ffda",
+    "test/agent-extended-expiry.test.mjs": "242c8eec6ed201f0442bc118b0f51b5c7ff6a4bc98e8570433f40afa23b035c5",
+    "test/agent-image-envelope-integration.test.mjs": "7fb61f90ba3527fa9b93a118b1647f91c141912079593b2f3cad26ee95947c6f",
+    "test/agent-image-envelope.test.mjs": "90ade6196cbe5e19e4f3d87601f8787d92cc566f12ac922ef3ad242d70750994",
+    "test/agent-screenshot-route.test.mjs": "45801c18bdae3d4af2ba6635377d798968174cf9c181f95536ee0996b89f8fe6",
+    "test/service-failure-guidance.test.mjs": "5e4449ab679f8ad94ecd854d7c9caca493e7ff65519654d2aa18dabce886adfe"
+  },
+  "local_evidence": "reports/bug-bash-2026-10-16/agent-feedback (ignored; no live credentials or page content)",
+  "snapshot_note": "Historical evidence from the original working checkout, based on commit 1c024d08. Counts, package receipts, deployment observations and source hashes describe that tested snapshot. The PR applies only the audited fixes to current main; its exact validation is recorded separately in bug-bash-pr-validation-2026-10-16.json."
+}

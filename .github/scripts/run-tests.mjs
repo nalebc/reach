@@ -13,6 +13,7 @@ export const suites = {
   windows: [
     "agent-install", "agent-sign-in", "browser-mutations", "private-ingress-platform",
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
+    "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
@@ -27,6 +28,9 @@ export const suites = {
     "tap-clicks", "screen-double-click-ui",
     // Bug bash recovery: shared chat/file UI and native input refusals.
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
+    "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
+    "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
+    "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",

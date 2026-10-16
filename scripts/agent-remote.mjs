@@ -16,7 +16,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { agentRequestTimeout, agentRequestError, agentErrorDetails } from "../server/agent-transport.mjs";
+import { agentRequestTimeout, agentRequestError, agentErrorDetails, agentJsonResponseLimit, validateAgentJsonResponse, AGENT_SCREEN_RESPONSE_BYTES, AGENT_MCP_IMAGE_RESPONSE_BYTES } from "../server/agent-transport.mjs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -514,14 +514,14 @@ export function tailnetApi(node, origin, token, { timeoutMs } = {}) {
     try {
       const head = await call.response;
       const screenImage = isScreenImageRoute(route) && method === "GET" && body === undefined && head.status >= 200 && head.status < 300;
-      const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
+      const responseLimit = screenImage ? AGENT_SCREEN_RESPONSE_BYTES : agentJsonResponseLimit(route, method, body, head.status);
       const chunks = [];
       let size = 0;
       for (let chunk; (chunk = await head.read());) {
         size += chunk.length;
         if (size > responseLimit) {
           head.cancel();
-          throw Error(`Reach response exceeds ${screenImage ? 8 : 2} MiB.`);
+          throw Error(responseLimit === AGENT_MCP_IMAGE_RESPONSE_BYTES ? "Reach screenshot response exceeds its base64 envelope limit." : `Reach response exceeds ${screenImage ? 8 : 2} MiB.`);
         }
         chunks.push(Buffer.from(chunk));
       }
@@ -537,7 +537,7 @@ export function tailnetApi(node, origin, token, { timeoutMs } = {}) {
       );
       if (head.status < 200 || head.status >= 300)
         throw agentRequestError(head.status, result);
-      return result;
+      return validateAgentJsonResponse(route, method, body, result);
     } catch (e) {
       if (!(Number.isInteger(e.status) && e.status >= 400 && e.status <= 599) && /abort|cancel/i.test(e.message))
         throw Error(
@@ -912,10 +912,8 @@ async function liveTools(home, api, device, runtime = runtimeUpdater({ home, api
 async function open(home, name, allowLocal) {
   const conn = path.join(home, name);
   const credential = readCredential(conn);
-  if (credential.expiresAt && Date.now() >= credential.expiresAt)
-    throw Error(
-      `Access to ${credential.computer} ended. Ask its owner for a new agent invitation.`,
-    );
+  // The saved deadline is a snapshot: the owner can extend or shorten this
+  // grant. Reach checks its current expiry and revocation on every request.
   if (credential.via === "direct")
     return {
       credential,

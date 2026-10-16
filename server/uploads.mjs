@@ -136,6 +136,11 @@ export function createUploads({
         throw Object.assign(fail(409, "Continue from the offset given."), {
           offset: session.received,
         });
+      // This request can disconnect while it waits for the previous writer
+      // above. Its close event has already fired, so piping it now would
+      // leave an open file that neither finishes nor releases the session.
+      if (body.destroyed)
+        throw fail(400, "The connection dropped mid-chunk.");
       const room = Math.min(MAX_CHUNK, session.size - session.received);
       const out = fs.createWriteStream(session.file, {
         flags: "r+",
@@ -225,22 +230,28 @@ export function createUploads({
     await fsp.truncate(session.file, session.size);
     authorize();
     try {
-      // Same disk: instant, and fails if the name is taken.
-      await fsp.link(session.file, target);
+      try {
+        // Same disk: instant, and fails if the name is taken.
+        await fsp.link(session.file, target);
+      } catch (e) {
+        if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"].includes(e.code))
+          throw e;
+        authorize();
+        await fsp.copyFile(
+          session.file,
+          target,
+          fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
+        );
+      }
     } catch (e) {
+      // Conflicts have the same answer on a different disk or a filesystem
+      // without hard links as they do on the fast path.
       if (e.code === "EEXIST")
         throw fail(
           409,
           "A file with that name now exists. Rename it before uploading.",
         );
-      if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"].includes(e.code))
-        throw e;
-      authorize();
-      await fsp.copyFile(
-        session.file,
-        target,
-        fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
-      );
+      throw e;
     }
     finished.set(session.id, {
       clientId: session.clientId,
