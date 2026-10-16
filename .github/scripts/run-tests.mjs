@@ -77,6 +77,8 @@ export const suites = {
     // and restore, with the PowerShell commands agents are given.
     "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
     "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
+    // Shared credential renewal, browser tabs and recovery after lost replies.
+    "agent-funnel-reconnect", "funnel-agent-ui", "service-tools-ui",
     // Background mode out of sight: no window from its task's programs.
     "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the

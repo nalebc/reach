@@ -1,0 +1,299 @@
+{
+  "date": "2026-10-16",
+  "repository": "https://github.com/nalebc/reach",
+  "baselineCommit": "ac1a79e0b786ca92b8f443117e845324e1266f66",
+  "branch": "codex/agent-recovery-audit-2026-10-16",
+  "status": "fixed in this follow-up branch; no live Reach deployment",
+  "scope": "Follow-up to PR 53, using the merged public repository as the baseline.",
+  "findings": [
+    {
+      "id": "lost-holder-write-replay",
+      "priority": "high",
+      "symptom": "A shared CLI connection process dies after dispatching a POST but before returning its answer; the caller takes over and dispatches the POST again.",
+      "evidence": "The uninstrumented production main -> open path dispatched an inert synthetic job twice. The fixed path dispatches it once and reports an uncertain outcome with instructions to check the result.",
+      "fix": "Retry unsent writes only when the local connection explicitly proves notRun. Reads may recover automatically. A lost write answer never inherits that guarantee.",
+      "source": [
+        "scripts/agent-remote.mjs"
+      ],
+      "tests": [
+        "the production CLI never replays a POST whose holder died after dispatch"
+      ]
+    },
+    {
+      "id": "rotation-binding-before-state-change",
+      "priority": "high",
+      "symptom": "A request rejected for device identity, signing key, connection type, connector address or OAuth client can still activate a pending credential or end the legitimate connection through reuse detection.",
+      "evidence": "Independent synthetic device, browser and hosted refresh tests show legitimate access disappearing after rejected requests on public main.",
+      "fix": "Validate the credential's binding before settling rotation, recording use or notifying reuse; recheck the binding under the credential-store lock.",
+      "limit": "The demonstrated impact is unauthorized state mutation and loss of legitimate access. These tests do not demonstrate a read or control permission bypass.",
+      "source": [
+        "server/core.mjs"
+      ],
+      "tests": [
+        "a rejected device identity cannot activate or revoke another device's rotated credential",
+        "a wrong signing key or connection type cannot settle another agent's credential rotation",
+        "a retired device credential presented by a different node cannot end the active session",
+        "a retired browser credential presented with another key cannot end the active session",
+        "a retired hosted refresh token at another connector cannot end the active session",
+        "a refresh at the wrong connector or with the wrong OAuth client cannot alter rotated access"
+      ]
+    },
+    {
+      "id": "previous-session-rotation-state",
+      "priority": "high",
+      "symptom": "An old pending credential remains usable after Reopen link or session renewal; old retired credentials can also terminate the replacement session.",
+      "evidence": "On public main, a pending credential from the previous browser session is accepted after Reopen link and after reconnecting.",
+      "fix": "Clear pending and retired credential hashes atomically when replacing, reopening or starting a browser admission.",
+      "source": [
+        "server/core.mjs"
+      ],
+      "tests": [
+        "renewing a browser session retires every credential from the previous session",
+        "renewing a browser session retires every credential from the previous session after Reopen link"
+      ]
+    },
+    {
+      "id": "concurrent-holder-and-renewal",
+      "priority": "high",
+      "symptom": "Concurrent CLI calls rotate twice, and competing public-link renewals invalidate each other's receipts. Delayed refusals can replace an already renewed session.",
+      "evidence": "Real separate CLI processes and persisted synthetic admissions reproduce duplicate rotations and failed concurrent calls. A delayed rejection also triggers a second unnecessary renewal.",
+      "fix": "Share one holder per canonical connection folder, one socket connection and one renewal promise. Reload saved credentials before takeover; adopt a successor already saved by another call.",
+      "source": [
+        "scripts/agent-remote.mjs",
+        "scripts/agent-funnel.mjs"
+      ],
+      "tests": [
+        "concurrent production CLI calls share a single credential rotation",
+        "concurrent refused agent calls share one reconnect and all resume their valid Always grant",
+        "a late rejection adopts the token another call already renewed",
+        "after rejection an agent reloads a credential another process saved before reconnecting"
+      ]
+    },
+    {
+      "id": "concurrent-private-fallback",
+      "priority": "medium",
+      "symptom": "Two requests fail on the private route concurrently; one consumes the other's shared fallback cursor, so a request fails without trying the working public route.",
+      "fix": "Keep a fallback cursor per request while retaining the shared preferred endpoint for later requests.",
+      "source": [
+        "scripts/agent-funnel.mjs"
+      ],
+      "tests": [
+        "concurrent private route failures each reach the public fallback"
+      ]
+    },
+    {
+      "id": "stale-socket-close",
+      "priority": "medium",
+      "symptom": "A failed socket emits a delayed close event after its replacement connects; the old event rejects the replacement's in-flight request.",
+      "fix": "Only the currently selected socket may clear requests or deliver answers. Old connection acquisitions cannot erase a newer selection.",
+      "source": [
+        "scripts/agent-remote.mjs"
+      ],
+      "tests": [
+        "a failed shared socket's delayed close cannot reject a newer connection's request"
+      ]
+    },
+    {
+      "id": "browser-cross-tab-renewal",
+      "priority": "medium",
+      "symptom": "Two tabs using the same Always access renew independently, or a second tab rejects an action while the first tab replaces the session.",
+      "fix": "Use an optional Web Lock around renewal and saved-session reads, then adopt the session already saved by the other tab.",
+      "source": [
+        "src/funnel-agent.ts"
+      ],
+      "tests": [
+        "two tabs with Always access share one renewal and adopt its saved token",
+        "a second tab waits for an in-flight renewal before dispatching its action",
+        "without Web Locks, simultaneous requests in one tab share their renewal"
+      ],
+      "limit": "Cross-tab tests use a deterministic LockManager mock. Without Web Locks, the existing same-tab promise coordination remains the fallback. Actual mobile browsers were not exercised."
+    },
+    {
+      "id": "renewal-error-and-action-outcome",
+      "priority": "high",
+      "symptom": "Browser renewal errors and lost answers from resent actions are swallowed into the original 401/Not-Run response; CLI renewal errors similarly lose their actual status or collection reason.",
+      "evidence": "HTTP 503, network drop, timeout and explicit refusal fixtures reproduce stale statuses. A resent synthetic browser write dispatches once but its lost answer is incorrectly marked Not-Run on public main.",
+      "fix": "Preserve renewal errors and refusal statuses. Catch renewal failures separately from a resent action's uncertain outcome. Never mark a lost action answer safe to repeat.",
+      "source": [
+        "src/funnel-agent.ts",
+        "scripts/agent-funnel.mjs"
+      ],
+      "tests": [
+        "a temporary renewal HTTP 503 remains retryable and never repeats a browser action",
+        "a temporary renewal network drop remains retryable and never repeats a browser action",
+        "a temporary renewal network timeout remains retryable and never repeats a browser action",
+        "a lost action answer after successful renewal is never marked safe to repeat",
+        "reconnect reports its actual refusal instead of the original generic session error",
+        "a refused credential collection retains its actual reason"
+      ]
+    },
+    {
+      "id": "interrupted-browser-credential-collection",
+      "priority": "medium",
+      "symptom": "A renewal receipt is saved, but collection fails or its one-time answer is lost. Later requests have no session and cannot reach the normal reconnect path.",
+      "fix": "Resume credential collection from the saved approved receipt under the renewal lock; use the existing reconnect fallback when that credential was already collected.",
+      "source": [
+        "src/funnel-agent.ts"
+      ],
+      "tests": [
+        "credential collection recovers after a temporary outage without replaying an action",
+        "credential collection recovers after a lost one-time credential answer without replaying an action"
+      ]
+    },
+    {
+      "id": "rotation-grace-lease-touch",
+      "priority": "medium",
+      "symptom": "An in-flight browser request authenticates with its retired credential during the documented two-minute grace, but lease renewal rejects the same credential as ended.",
+      "fix": "Use the same current-or-live-retired credential rule when touching the browser lease.",
+      "source": [
+        "server/core.mjs"
+      ],
+      "tests": [
+        "a retired browser credential can renew its lease during the in-flight grace period"
+      ]
+    },
+    {
+      "id": "already-approved-service-ui",
+      "priority": "low",
+      "symptom": "A stale service catalog requests access that the owner already approved; the UI briefly shows waiting for approval until its next three-second poll.",
+      "fix": "Execute an already approved response immediately. Wait only for a pending response, and display ended or refused responses accurately.",
+      "source": [
+        "src/ServiceAgentTools.tsx"
+      ],
+      "tests": [
+        "a stale catalog uses an already approved service request immediately"
+      ],
+      "limit": "This is a temporary false wait, not a permanent hang. Service permissions and consent policy are unchanged."
+    }
+  ],
+  "baselineValidation": [
+    {
+      "files": [
+        "test/agent-credential-rotation.test.mjs",
+        "test/funnel-agent-ui.test.mjs",
+        "test/service-tools-ui.test.mjs"
+      ],
+      "command": "npm run test:file -- --test-concurrency=1 test/agent-credential-rotation.test.mjs test/funnel-agent-ui.test.mjs test/service-tools-ui.test.mjs",
+      "tests": 54,
+      "passed": 33,
+      "failed": 21,
+      "skipped": 0,
+      "exitCode": 1,
+      "productionCodeUnchanged": true
+    },
+    {
+      "files": [
+        "test/agent-funnel-reconnect.test.mjs"
+      ],
+      "command": "npm run test:file -- --test-concurrency=1 test/agent-funnel-reconnect.test.mjs",
+      "tests": 12,
+      "passed": 2,
+      "failed": 10,
+      "skipped": 0,
+      "exitCode": 1,
+      "productionCodeUnchanged": true
+    }
+  ],
+  "fixedValidation": {
+    "focusedRuns": [
+      {
+        "files": [
+          "test/agent-credential-rotation.test.mjs"
+        ],
+        "tests": 15,
+        "passed": 15,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "files": [
+          "test/funnel-agent-ui.test.mjs",
+          "test/service-tools-ui.test.mjs"
+        ],
+        "tests": 39,
+        "passed": 39,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "files": [
+          "test/agent-funnel-reconnect.test.mjs"
+        ],
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0
+      }
+    ],
+    "build": {
+      "command": "npm run build",
+      "exitCode": 0,
+      "includes": [
+        "TypeScript",
+        "Vite application bundle",
+        "CLI agent bundle"
+      ]
+    },
+    "combinedRun": {
+      "command": "npm run test:file -- --test-concurrency=2 test/agent-credential-rotation.test.mjs test/agent-admission-auth.test.mjs test/browser-invite-auth.test.mjs test/browser-session-approvals.test.mjs test/tailscale-auth.test.mjs test/funnel-agent-auth.test.mjs test/agent-invite.test.mjs test/hosted-mcp.test.mjs test/agent-remote.test.mjs test/agent-funnel-tools.test.mjs test/agent-funnel-reconnect.test.mjs test/agent-runtime-update.test.mjs test/agent-extended-expiry.test.mjs test/funnel-agent-ui.test.mjs test/service-tools-ui.test.mjs test/agent-image-envelope-integration.test.mjs test/ci-policy.test.mjs",
+      "tests": 204,
+      "passed": 203,
+      "failed": 0,
+      "skipped": 1,
+      "exitCode": 0,
+      "skipReason": "The one-time-key WebAssembly test initially lacked built tailnet assets; it was subsequently enabled and passed in the separate run below."
+    },
+    "resolvedSkip": {
+      "command": "npm run test:file -- --test-concurrency=1 --test-name-pattern='a one-time key signs in by itself' test/agent-remote.test.mjs",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "assets": "Reused cached tailnet assets whose source digest matches this public checkout. No fresh Go build was claimed.",
+      "network": "The real Go WebAssembly module ran in Node with fetch stubbed; no live Tailscale sign-in occurred."
+    },
+    "distinctRelatedChecksPassed": 204,
+    "releasePrivacy": {
+      "command": "node scripts/check-release.mjs",
+      "exitCode": 0
+    },
+    "diffCheck": {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  },
+  "platformCoverage": {
+    "executedOn": "macOS arm64 with Node 24",
+    "realComponents": [
+      "filesystem credential stores",
+      "WebCrypto",
+      "CLI main/open path",
+      "separate Node processes",
+      "local HTTP",
+      "macOS IPC sockets"
+    ],
+    "standIns": [
+      "remote tailnet node and HTTP service",
+      "browser gateway responses",
+      "jsdom browser UI",
+      "Web Locks"
+    ],
+    "windows": "Shared regressions are selected in Windows CI; an actual Windows run is pending.",
+    "mobile": "Actual iPhone, iPad and Android browsers were not exercised.",
+    "liveReach": "No production start, restart, real mail access or desktop input performed."
+  },
+  "limits": [
+    "These are reproducible follow-up defects, not a claim that the repository is free of other bugs.",
+    "No exact Grocbot error or expiry timestamp was supplied, so none of these tests establishes the cause of that earlier report.",
+    "Focused and broader validation overlap; their counts must not be added."
+  ],
+  "sourceSha256": {
+    ".github/scripts/run-tests.mjs": "4d1ecfac809e47ec97937cbcb2f22f59abc166ec38a7009263a68661705872eb",
+    "scripts/agent-funnel.mjs": "4f36ee27e52312919a650a2e18996f7ce39be1dd0b85fcd34bed3ec67ec06c3e",
+    "scripts/agent-remote.mjs": "14647ac01cf025bf5bfa4b5409878cb35a299db339a01e4614812be5c181dd37",
+    "server/core.mjs": "a521369de79dd1af56f80e40c3e3f86d37ba3d9528382540631eb970327c1627",
+    "src/funnel-agent.ts": "c59f99e5342c6bad47e8c0f57c55417cadd91d864d653aa48fdb97f63820e949",
+    "src/ServiceAgentTools.tsx": "2b450f0e0de3596a3b425d37f0980fc28f21e2ed53479d405e7a5c55b19734ad"
+  }
+}

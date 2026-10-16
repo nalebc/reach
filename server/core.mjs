@@ -385,12 +385,14 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // False when the digest just ended an access.
   const retiredLive = (c, digest, now) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until > now);
   const holdsDigest = (c, digest, now) => sameHash(c.hash, digest) || retiredLive(c, digest, now);
-  function settleRotation(digest, now) {
-    if (clients.some((c) => sameHash(c.hash, digest))) return true;
-    const pending = clients.find((c) => sameHash(c.pendingHash, digest));
+  function settleRotation(digest, now, authorized) {
+    // A token alone never activates or revokes a bound connection. Check
+    // its device, signing key or OAuth client before any credential write.
+    if (clients.some((c) => sameHash(c.hash, digest) && authorized(c))) return true;
+    const pending = clients.find((c) => sameHash(c.pendingHash, digest) && authorized(c));
     if (pending) {
       changeClients((latest) => {
-        const c = latest.find((entry) => entry.id === pending.id && sameHash(entry.pendingHash, digest));
+        const c = latest.find((entry) => entry.id === pending.id && sameHash(entry.pendingHash, digest) && authorized(entry));
         if (c) {
           c.retiredHashes = [...(c.retiredHashes || []).slice(-7), { hash: c.hash, until: now + ROTATION_GRACE_MS }];
           c.hash = digest;
@@ -402,12 +404,19 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       clients = loadJson(file, []);
       return true;
     }
-    const reused = clients.find((c) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until <= now));
+    const wasReused = (c) => (c.retiredHashes || []).some((r) => sameHash(r.hash, digest) && r.until <= now) && authorized(c);
+    const reused = clients.find(wasReused);
     if (!reused) return true;
-    rememberEnded(reused);
-    changeClients((latest) => latest.filter((c) => c.id !== reused.id));
+    let removed;
+    changeClients((latest) => latest.filter((c) => {
+      if (c.id !== reused.id || !wasReused(c)) return true;
+      removed = c;
+      return false;
+    }));
     clients = loadJson(file, []);
-    for (const listener of reuseListeners) try { listener(reused); } catch { /* the access ended regardless */ }
+    if (!removed) return true;
+    rememberEnded(removed);
+    for (const listener of reuseListeners) try { listener(removed); } catch { /* the access ended regardless */ }
     return false;
   }
   // "Unused for a week, end it" (the owner, Oct 10): an Always access, or an
@@ -512,22 +521,21 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     clients = loadJson(file, []);
     const now = Date.now();
     const digest = hash(secret);
-    if (!settleRotation(digest, now)) return null;
+    const authorized = (c) => c.hosted === true && c.browserBinding === binding &&
+      !(clientId !== undefined && c.hostedClientId && c.hostedClientId !== clientId) &&
+      (connector === undefined || sameHash(c.connectorHash, hash(String(connector)))) &&
+      (!authenticate || authenticate(c.hostedClientId));
+    if (!settleRotation(digest, now, authorized)) return null;
     // Only the current refresh token trades. One its successor already
     // replaced (in its two minutes) mints nothing: a new pair from it would
     // drop the real client's pending one (audit A3).
-    const client = clients.find((c) => c.hosted === true && c.browserBinding === binding && sameHash(c.hash, digest));
+    const client = clients.find((c) => sameHash(c.hash, digest) && authorized(c));
     if (!client || idle(client, now) || !funnelSession(client, binding, now)) return null;
-    if (clientId !== undefined && client.hostedClientId && client.hostedClientId !== clientId) return null;
-    // Refreshed at its own address only.
-    if (connector !== undefined && !sameHash(client.connectorHash, hash(String(connector)))) return null;
-    // The OAuth client that connected authenticates, named or not (audit A6).
-    if (authenticate && !authenticate(client.hostedClientId)) return null;
     const nextRefresh = crypto.randomBytes(32).toString("base64url");
     const nextAccess = crypto.randomBytes(32).toString("base64url");
     let refreshed = false;
     changeClients((latest) => {
-      const c = latest.find((entry) => entry.id === client.id && sameHash(entry.hash, digest));
+      const c = latest.find((entry) => entry.id === client.id && sameHash(entry.hash, digest) && authorized(entry));
       if (!c) return latest;
       c.pendingHash = hash(nextRefresh);
       if (typeof c.accessHash === "string" && c.accessUntil > now) c.accessPrevious = { hash: c.accessHash, until: c.accessUntil };
@@ -561,10 +569,16 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     clients = loadJson(file, []);
     if (typeof digest !== "string" || !digest) return null;
     const now = Date.now();
-    if (!settleRotation(digest, now)) return null;
+    const authorized = (c) => c.browserTransport !== "funnel" && !c.browserBinding &&
+      (!config.tailscaleOwner || identity?.validUntil > now) &&
+      (!c.tailscale || (identity?.validUntil > now && c.tailscale.userId === identity.userId && c.tailscale.nodeId === identity.nodeId)) &&
+      (!config.tailscaleOwner || ["guest", "agent"].includes(c.kind) ||
+        (c.tailscale && (identity.tagged ? faceJoined(c) : identity.userId === config.tailscaleOwner.userId)));
+    if (!settleRotation(digest, now, authorized)) return null;
     const client = clients.find(
       (c) =>
         holdsDigest(c, digest, now) &&
+        authorized(c) &&
         !idle(c, now) &&
         c.browserTransport !== "funnel" &&
         !c.browserBinding &&
@@ -573,31 +587,6 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
         Date.now() < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
     );
     if (client) noteUse(client.id, now);
-    if (
-      config.tailscaleOwner &&
-      (!identity || identity.validUntil <= Date.now())
-    )
-      return null;
-    if (
-      client?.tailscale &&
-      (!identity ||
-        identity.validUntil <= Date.now() ||
-        client.tailscale.userId !== identity.userId ||
-        client.tailscale.nodeId !== identity.nodeId)
-    )
-      return null;
-    // Yours: a device of your Tailscale account, or the one tagged device a
-    // Face ID sign-in made (bound to it above; server/face-join.mjs).
-    if (
-      client &&
-      config.tailscaleOwner &&
-      !["guest", "agent"].includes(client.kind) &&
-      (!client.tailscale ||
-        (identity.tagged
-          ? !faceJoined(client)
-          : identity.userId !== config.tailscaleOwner.userId))
-    )
-      return null;
     if (client)
       client.expiresAt ||= Date.parse(client.createdAt) + 30 * 86400000;
     if (client?.kind === "guest") {
@@ -1289,7 +1278,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       client.approvedAt ||= now;
       if (approvedKey) client.approvedBinding = approvedKey;
       // The previous token and receipt end here, in the same write.
-      for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt", "inviteHash", "inviteExpiresAt"]) delete client[key];
+      for (const key of ["hash", "pendingHash", "retiredHashes", "browserIdleExpiresAt", "redeemedAt", "inviteHash", "inviteExpiresAt"]) delete client[key];
       client.browserBinding = keyThumbprint;
       const requestSecret = crypto.randomBytes(32).toString("base64url");
       // `moved`: the owner's edits carry over, as for a collected session.
@@ -1433,6 +1422,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       throw fail(429, "Too many agent connection requests. Wait a minute and try again.");
     delete client.inviteHash;
     delete client.hash;
+    delete client.pendingHash;
+    delete client.retiredHashes;
     delete client.inviteExpiresAt;
     if (funnel) client.browserBinding = keyThumbprint;
     if (identity?.nodeId) client.tailscale = {
@@ -1574,13 +1565,13 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       if (fullControlNeedsInvitation(client.policy))
         throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
       if (rebindable(client, now)) {
-        for (const key of ["hash", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
+        for (const key of ["hash", "pendingHash", "retiredHashes", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
         result = { clientId: client.id, joinBy: client.expiresAt };
         return latest;
       }
       // Joined before: never cleared as an unopened invitation (clearUnopened).
       if (client.hash || client.redeemedAt || client.admission?.status === "collected") client.onceJoined = true;
-      for (const key of ["hash", "browserBinding", "admission", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
+      for (const key of ["hash", "pendingHash", "retiredHashes", "browserBinding", "admission", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
       client.inviteHash = client.linkHash;
       client.inviteExpiresAt = Math.min(client.expiresAt, now + 900000);
       result = { clientId: client.id, joinBy: client.inviteExpiresAt };
@@ -1885,7 +1876,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       if (session) noteUse(hosted.id, now);
       return session;
     }
-    if (!settleRotation(digest, now)) return null;
+    if (!settleRotation(digest, now, (c) => isFunnelBrowser(c) && c.hosted !== true && c.browserBinding === keyThumbprint)) return null;
     const client = clients.find((entry) => holdsDigest(entry, digest, now));
     if (!client || idle(client, now)) return null;
     const session = funnelSession(client, keyThumbprint, now);
@@ -1903,7 +1894,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       return;
     const digest = hash(token);
     changeClients((latest) => {
-      const client = latest.find((entry) => sameHash(entry.hash, digest));
+      const client = latest.find((entry) => holdsDigest(entry, digest, Date.now()));
       if (!funnelSession(client, keyThumbprint)) throw fail(401, "This browser connection has ended.");
       client.browserIdleExpiresAt = Math.min(client.expiresAt, Date.now() + (client.policy?.preset ? 600000 : 120000));
       return latest;

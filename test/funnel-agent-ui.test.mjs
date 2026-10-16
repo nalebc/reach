@@ -619,3 +619,196 @@ test("a request made while the page reconnects waits for the new session and lan
   const landed = await during;
   assert.equal((await landed.json()).token, "fresh-token");
 });
+
+// A deterministic stand-in for same-origin Web Locks, shared by both tabs.
+// Real browser scheduling is not exercised by this Node/jsdom test.
+function sharedLocks() {
+  const pending = new Map();
+  return {
+    request(name, run) {
+      const next = (pending.get(name) || Promise.resolve()).then(run);
+      pending.set(name, next.catch(() => {}));
+      return next;
+    },
+  };
+}
+
+test("two tabs with Always access share one renewal and adopt its saved token", async () => {
+  const keep = storage(), locks = sharedLocks();
+  let renewals = 0;
+  const f = fixture((payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") {
+      renewals++;
+      return reply({ ...receipt(), requestId: `renew-${renewals}`, refreshed: true }, 202);
+    }
+    return reply({ ...approved(), standing: true, token: renewals ? `renewed-${renewals}` : "original" });
+  });
+  const first = createFunnelAgent({ ...f.options, keep, locks });
+  const state = await first.status(await first.claim(await first.prepare(invitation)));
+  const second = createFunnelAgent({ ...f.options, keep, locks, storage: storage() });
+  const otherState = await second.prepare();
+  const results = await Promise.all([
+    first.reconnect(state, "original"),
+    second.reconnect(otherState, "original"),
+  ]);
+  assert.equal(renewals, 1);
+  assert.deepEqual(results.map((r) => r.session.peer.token), ["renewed-1", "renewed-1"]);
+  assert.ok(keep.getItem(funnelStorageKey), "both tabs retain their invitation and key");
+});
+
+test("a second tab waits for an in-flight renewal before dispatching its action", async () => {
+  const keep = storage(), locks = sharedLocks();
+  let collect;
+  const actions = [];
+  const f = fixture(async (payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") return reply({ ...receipt(), requestId: "renewed", refreshed: true }, 202);
+    if (payload.operation === "status") {
+      if (payload.requestId === "renewed") await new Promise((resolve) => (collect = resolve));
+      return reply({ ...approved(), standing: true, token: payload.requestId === "renewed" ? "fresh" : "original" });
+    }
+    actions.push(payload.token);
+    return reply({ ok: true });
+  });
+  const first = createFunnelAgent({ ...f.options, keep, locks });
+  const state = await first.status(await first.claim(await first.prepare(invitation)));
+  const second = createFunnelAgent({ ...f.options, keep, locks, storage: storage() });
+  const otherState = await second.prepare();
+  const renewing = first.reconnect(state, "original");
+  await dom.waitFor(() => collect);
+  // Attach a rejection handler immediately: the broken baseline rejects here.
+  const action = second.request(otherState.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" })
+    .then((response) => ({ response }), (error) => ({ error }));
+  await settle();
+  assert.deepEqual(actions, [], "the action waits while no usable credential is saved");
+  collect();
+  await renewing;
+  const outcome = await action;
+  assert.equal(outcome.error?.message, undefined);
+  assert.equal(outcome.response.status, 200);
+  assert.deepEqual(actions, ["fresh"]);
+});
+
+for (const [label, unavailableResult] of [
+  ["HTTP 503", () => reply({ error: "Reach is restarting" }, 503)],
+  ["network drop", () => { throw new TypeError("Renewal connection dropped"); }],
+  ["network timeout", () => { throw new DOMException("Renewal timed out", "TimeoutError"); }],
+]) test(`a temporary renewal ${label} remains retryable and never repeats a browser action`, async () => {
+  let unavailable = true, token = "original", dispatched = 0;
+  const f = fixture((payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") {
+      if (unavailable) {
+        unavailable = false;
+        return unavailableResult();
+      }
+      return reply({ ...receipt(), requestId: "renewed", refreshed: true }, 202);
+    }
+    if (payload.operation === "status") {
+      if (payload.requestId === "renewed") token = "fresh";
+      return reply({ ...approved(), token });
+    }
+    if (payload.token !== "fresh") return new Response("{}", { status: 401, headers: { "Reach-Not-Run": "1" } });
+    dispatched++;
+    return reply({ ok: true });
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  const response = await funnelFetch(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }, f.client, 1);
+  assert.equal(response.status, 200);
+  assert.equal(dispatched, 1);
+  assert.equal(f.calls.filter(({ payload }) => payload.operation === "reconnect").length, 2);
+});
+
+for (const status of [403, 410, 423]) test(`a renewal refusal preserves status ${status} and the action's Not-Run guarantee`, async () => {
+  let dispatched = 0;
+  const f = fixture((payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") return reply({ error: "Connection refused" }, status);
+    if (payload.operation === "status") return reply(approved());
+    if (payload.token === "agent-session-token") return new Response("{}", { status: 401, headers: { "Reach-Not-Run": "1" } });
+    dispatched++;
+    return reply({ ok: true });
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  const response = await funnelFetch(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }, f.client, 1);
+  assert.equal(response.status, status);
+  assert.equal(response.headers.get("Reach-Not-Run"), "1");
+  assert.equal(dispatched, 0);
+  assert.equal(f.calls.filter(({ payload }) => payload.operation === "reconnect").length, 1);
+});
+
+for (const lost of [false, true]) test(`credential collection recovers after ${lost ? "a lost one-time credential answer" : "a temporary outage"} without replaying an action`, async () => {
+  let renewals = 0, collections = 0, dispatched = 0;
+  const f = fixture((payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") {
+      renewals++;
+      return reply({ ...receipt(), requestId: `renew-${renewals}`, refreshed: true }, 202);
+    }
+    if (payload.operation === "status") {
+      if (payload.requestId === "renew-1") {
+        collections++;
+        if (collections === 1) {
+          if (lost) throw new TypeError("One-time credential answer was lost");
+          return reply({ error: "Reach is restarting" }, 503);
+        }
+        if (lost) return reply({ error: "Credential already collected" }, 409);
+      }
+      return reply({ ...approved(), token: payload.requestId === "claim-1" ? "old" : "fresh" });
+    }
+    if (payload.token !== "fresh") return new Response("{}", { status: 401, headers: { "Reach-Not-Run": "1" } });
+    dispatched++;
+    return reply({ ok: true });
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  const response = await funnelFetch(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }, f.client, 1);
+  assert.equal(response.status, 200);
+  assert.equal(collections, 2, "retry the saved receipt before starting another renewal");
+  assert.equal(renewals, lost ? 2 : 1);
+  assert.equal(dispatched, 1);
+});
+
+test("a lost action answer after successful renewal is never marked safe to repeat", async () => {
+  let dispatched = 0;
+  const f = fixture((payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") return reply({ ...receipt(), requestId: "renewed", refreshed: true }, 202);
+    if (payload.operation === "status") return reply({ ...approved(), token: payload.requestId === "renewed" ? "fresh" : "old" });
+    if (payload.token !== "fresh") return new Response("{}", { status: 401, headers: { "Reach-Not-Run": "1" } });
+    dispatched++;
+    throw new TypeError("Lost the action's answer");
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  await assert.rejects(funnelFetch(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }, f.client, 1), TypeError);
+  assert.equal(dispatched, 1);
+});
+
+test("without Web Locks, simultaneous requests in one tab share their renewal", async () => {
+  let refused = 0, release;
+  const bothRefused = new Promise((resolve) => (release = resolve));
+  let renewals = 0, dispatched = 0;
+  const f = fixture(async (payload) => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "reconnect") {
+      renewals++;
+      return reply({ ...receipt(), requestId: "renewed", refreshed: true }, 202);
+    }
+    if (payload.operation === "status") return reply({ ...approved(), token: payload.requestId === "renewed" ? "fresh" : "old" });
+    if (payload.token !== "fresh") {
+      if (++refused === 2) release();
+      await bothRefused;
+      return new Response("{}", { status: 401, headers: { "Reach-Not-Run": "1" } });
+    }
+    dispatched++;
+    return reply({ ok: true });
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  const results = await Promise.all([
+    f.client.request(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }),
+    f.client.request(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: "{}" }),
+  ]);
+  assert.deepEqual(results.map((response) => response.status), [200, 200]);
+  assert.equal(renewals, 1);
+  assert.equal(dispatched, 2, "each requested action lands exactly once");
+});
