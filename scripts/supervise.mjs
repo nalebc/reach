@@ -1,5 +1,6 @@
 import os from "node:os";
 import { spawn as spawnChild } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 
 // Reach started from `reach` (an npm install) or reach.cmd (Windows) starts
 // again in the same window when it stopped by itself, as ./reach does in a
@@ -28,7 +29,7 @@ export async function superviseReach({
   env = process.env,
   spawn = spawnChild,
   now = Date.now,
-  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  wait = (ms, signal) => sleep(ms, undefined, { signal }),
   log = (line) => console.error(line),
   signals = process,
 } = {}) {
@@ -64,11 +65,20 @@ export async function superviseReach({
       const delay = DELAYS[starts.length] ?? 30000;
       starts.push(at);
       log(`Reach: starting again in ${delay / 1000}s…`);
-      await Promise.race([wait(delay), new Promise((resolve) => { wake = resolve; })]);
-      wake = null;
+      const waiting = new AbortController();
+      try {
+        await Promise.race([wait(delay, waiting.signal), new Promise((resolve) => { wake = resolve; })]);
+      } finally {
+        // Waking the race alone leaves its timeout referenced: after a stop,
+        // the command would stay alive until the whole backoff had elapsed.
+        waiting.abort();
+        wake = null;
+      }
       if (stopping) return code;
       // It starts Reach again; what a restart stops is already stopped.
-      runArgs = runArgs.filter((arg) => arg !== "restart" && arg !== "--yes");
+      const restartAt = ["--yes", "-y"].includes(runArgs[0]) ? 1 : 0;
+      if (runArgs[restartAt] === "restart")
+        runArgs = runArgs.filter((arg, index) => index !== restartAt && !["--yes", "-y"].includes(arg));
     }
   } finally {
     for (const name of names) signals.off(name, onSignal);

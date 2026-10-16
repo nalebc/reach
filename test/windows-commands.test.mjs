@@ -27,7 +27,9 @@ function windowsReach(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-as-windows-"));
   const state = path.join(dir, "state");
   fs.mkdirSync(path.join(dir, "share"));
-  const env = { ...process.env, REACH_HOME: state, REACH_DATA: path.join(state, "quick") };
+  // This fixture invokes the source launcher as .\reach.cmd; a parent
+  // Terminal opened through the global `reach` link must not change its hints.
+  const env = { ...process.env, REACH_COMMAND: "", REACH_HOME: state, REACH_DATA: path.join(state, "quick") };
   const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
   fs.mkdirSync(path.join(dir, "scripts"));
   fs.writeFileSync(

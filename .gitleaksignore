@@ -1,0 +1,7 @@
+# Historical Chrome-extension manifest.key values are DER SPKI RSA public
+# keys, used to keep the extension ID stable. Both were parsed locally with
+# crypto.createPublicKey({ format: "der", type: "spki" }): type === "public".
+# Exclude only these two immutable generic-key findings; all other findings
+# and provider-specific credential rules remain active.
+f9d9e9f53e6dad0591af084ad55c36ea45ecabf7:browser-extension/manifest.json:generic-api-key:8
+3dc0f82a6e9cac5cf4c7c7cefeb74e7174705174:browser-extension/manifest.json:generic-api-key:8

@@ -1,15 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
-import { agentRequestTimeout, agentRequestError } from "../server/agent-transport.mjs";
+import { agentRequestTimeout, agentRequestError, agentJsonResponseLimit, validateAgentJsonResponse, AGENT_SCREEN_RESPONSE_BYTES, AGENT_MCP_IMAGE_RESPONSE_BYTES } from "../server/agent-transport.mjs";
 import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 
 // Binary decoding is limited to the exact screenshot routes. Ordinary API
 // responses must remain JSON even if a server sends an image content type.
+const desktopScreenImageRoute = (route) => {
+  const match = /^\/api\/browser\/desktop\/screen(?:\?([^#\s]+))?$/.exec(route);
+  if (!match) return false;
+  if (match[1] === undefined) return true;
+  const seen = new Set();
+  for (const [name, value] of new URLSearchParams(match[1])) {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    if (name === "maxWidth" && /^[0-9]{3,4}$/.test(value)) continue;
+    if (name === "displayId" && /^[1-9][0-9]{0,9}$/.test(value) && Number(value) <= 4294967295) continue;
+    return false;
+  }
+  return seen.size > 0;
+};
 export const isScreenImageRoute = (route) => route === "/api/browser/screen" ||
   /^\/api\/browser\/apps\/screen\?target=[A-Za-z0-9_-]{1,128}$/.test(route) ||
-  /^\/api\/browser\/desktop\/screen(?:\?maxWidth=[0-9]{3,4})?$/.test(route);
+  desktopScreenImageRoute(route);
 
 export function privateFile(file) {
   const fd = fs.openSync(
@@ -136,8 +150,8 @@ export function createAgentClient(
     !/^[A-Za-z0-9_-]{20,256}$/.test(credential.token)
   )
     throw Error("Invalid Reach credential.");
-  if (credential.expiresAt && Date.now() >= credential.expiresAt)
-    throw Error("Reach credential expired. Ask the Mac owner for a new grant.");
+  // A saved deadline is a snapshot. The owner can extend the same grant;
+  // Reach enforces its current expiry and revocation on every request.
   if (proxy && origin.protocol !== "https:")
     throw Error("Proxy connections require HTTPS.");
   const agent = proxy ? new TunnelAgent(proxy) : undefined;
@@ -169,12 +183,12 @@ export function createAgentClient(
           const chunks = [];
           // Only the named browser screen route may return a binary image.
           const screenImage = isScreenImageRoute(route) && method === "GET" && body === undefined && res.statusCode >= 200 && res.statusCode < 300;
-          const responseLimit = (screenImage ? 8 : 2) * 1024 * 1024;
+          const responseLimit = screenImage ? AGENT_SCREEN_RESPONSE_BYTES : agentJsonResponseLimit(route, method, body, res.statusCode);
           let size = 0;
           res.on("data", (chunk) => {
             size += chunk.length;
             if (size > responseLimit)
-              res.destroy(Error(`Reach response exceeds ${screenImage ? 8 : 2} MiB.`));
+              res.destroy(Error(responseLimit === AGENT_MCP_IMAGE_RESPONSE_BYTES ? "Reach screenshot response exceeds its base64 envelope limit." : `Reach response exceeds ${screenImage ? 8 : 2} MiB.`));
             else chunks.push(chunk);
           });
           res.on("error", reject);
@@ -193,7 +207,7 @@ export function createAgentClient(
               const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
               if (res.statusCode < 200 || res.statusCode >= 300)
                 throw agentRequestError(res.statusCode, result);
-              resolve(result);
+              resolve(validateAgentJsonResponse(route, method, body, result));
             } catch (e) {
               reject(e);
             }

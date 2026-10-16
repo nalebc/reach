@@ -106,11 +106,17 @@ export function createOutbox({ file = null } = {}) {
     list: (id) => queues.get(id) || [],
     sessions: () => [...queues.keys()],
     // Handed to Claude Code: no longer waiting.
-    remove(id, messageId) {
-      const list = (queues.get(id) || []).filter((m) => m.id !== messageId);
+    remove(id, messageId, { durable = false } = {}) {
+      const previous = queues.get(id);
+      const list = (previous || []).filter((m) => m.id !== messageId);
       if (list.length) queues.set(id, list);
       else queues.delete(id);
-      changed(id);
+      try { changed(id, durable); }
+      catch (error) {
+        if (previous) queues.set(id, previous);
+        else queues.delete(id);
+        throw error;
+      }
     },
     // A new order from the phone (dragged), as message ids. The one being
     // handed over stays first; ids it doesn't know change nothing.
@@ -132,9 +138,15 @@ export function createOutbox({ file = null } = {}) {
       if (!message || message.delivery === "sending") return false;
       const words = String(text ?? "");
       if (!words.trim() && !message.images.length) return false;
+      const previous = { text: message.text, error: message.error };
       message.text = words;
       delete message.error;
-      changed(id, true);
+      try { changed(id, true); }
+      catch (error) {
+        message.text = previous.text;
+        if (previous.error !== undefined) message.error = previous.error;
+        throw error;
+      }
       return true;
     },
     // Send now: first in line, and allowed to go at once.

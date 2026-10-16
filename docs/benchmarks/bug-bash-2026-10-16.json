@@ -1,0 +1,323 @@
+{
+  "date": "2026-10-16",
+  "scope": "Targeted code crawl and bug bash of access/file boundaries, transfers, queue persistence/recovery, CLI crash recovery, shared desktop input, and release packaging. Three audit agents assisted; root integrated and reviewed the changes.",
+  "host_validation": {
+    "os": "macOS",
+    "arch": "arm64",
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "actual": [
+      "Local filesystem/streams and symlinks",
+      "Disposable HTTP servers and file-integrity checks",
+      "Disposable CLI/Node subprocesses",
+      "Clean npm/portable installations and native terminal startup"
+    ],
+    "mocked": [
+      "Windows platform branching; actual Windows execution not performed",
+      "Native mobile bridge and browser DOM/pointer events",
+      "Provider/app delivery and helper pipe events"
+    ],
+    "not_validated": [
+      "Physical Windows computer",
+      "Physical iPhone/iPad/Android clients",
+      "Real Safari 15 cancellation behavior",
+      "Live provider messages or actual desktop typing/clicking"
+    ]
+  },
+  "findings": [
+    {
+      "id": "BB-01",
+      "severity": "high",
+      "finding": "Binary downloads could read outside a share after a checked pathname was replaced by a symlink.",
+      "evidence_before": "Both authenticated and short-lived-link routes served replacement bytes in four deterministic filesystem-swap regressions.",
+      "fix": "Open and validate the file once, then stream from that FileHandle; preserve ranges, conditional requests, hidden-file policy, and link identity checks.",
+      "files": [
+        "server/file-download.mjs",
+        "server/index.mjs"
+      ],
+      "tests": [
+        "test/file-download-race.test.mjs",
+        "test/file-download-cleanup.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-02",
+      "severity": "high",
+      "finding": "An upload could publish outside its share if its destination folder changed during asynchronous preparation.",
+      "evidence_before": "Swapping incoming for an outside-directory symlink during truncate created notes.txt outside the shared root.",
+      "fix": "Reauthorize and re-resolve the destination after preparation and before publication; reject changes and retain the upload for retry.",
+      "files": [
+        "server/index.mjs"
+      ],
+      "tests": [
+        "test/upload-folder-race.test.mjs"
+      ],
+      "limit": "This closes the reproduced asynchronous preparation gap. It does not provide descriptor-relative directory operations or claim to eliminate syscall-level parent-directory races after the final path check."
+    },
+    {
+      "id": "BB-03",
+      "severity": "medium",
+      "finding": "Uploads failed if Reach restarted between successful chunks or after receiving all bytes but before completion.",
+      "evidence_before": "Both new restart-timing tests reached failed instead of done; completion incorrectly claimed the destination folder was gone.",
+      "fix": "Recreate lost sessions and resend from byte zero, bounded to two renewals. Stop on revoked access, missing folders, or conflicting destination names.",
+      "files": [
+        "src/transfers.ts"
+      ],
+      "tests": [
+        "test/upload-restart-ui.test.mjs",
+        "test/transfer-integrity.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-04",
+      "severity": "medium",
+      "finding": "An already-disconnected chunk body could leave its upload session stuck indefinitely.",
+      "evidence_before": "A destroyed stream whose close event had already fired never settled until the regression explicitly released it.",
+      "fix": "Reject destroyed request bodies before allocating a file writer. Also normalize copy-fallback EEXIST internally; HTTP already mapped that code to 409.",
+      "files": [
+        "server/uploads.mjs"
+      ],
+      "tests": [
+        "test/uploads-recovery.test.mjs",
+        "test/uploads-concurrency.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-05",
+      "severity": "medium",
+      "finding": "Native download cancellation/setup races could leave tasks running, leak listeners, or leave canceled transfers marked running.",
+      "evidence_before": "All three mocked mobile-bridge regressions failed before the change: late task allocation was never canceled, listener setup escaped cleanup, and native cancellation left running state.",
+      "fix": "Register cancellation before awaiting bridge setup, clean partial subscriptions, cancel tasks allocated after cancellation, and reflect native cancellation in the tray.",
+      "files": [
+        "src/transfers.ts"
+      ],
+      "tests": [
+        "test/background-transfer-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-06",
+      "severity": "high",
+      "finding": "Failed queue edits remained eligible for delivery, and failed cancellation writes were acknowledged as successful.",
+      "evidence_before": "Injected storage failure retained rejected text in memory; a supposedly canceled message reappeared when the outbox was reopened.",
+      "fix": "Roll back rejected edits and make explicit cancellations durable before acknowledging them.",
+      "files": [
+        "server/agent-sessions/outbox.mjs",
+        "server/agent-sessions/index.mjs"
+      ],
+      "tests": [
+        "test/outbox-mutation-recovery.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-07",
+      "severity": "medium",
+      "finding": "Removing a paused queue head could strand later messages; reordering ready messages did not wake the delivery worker.",
+      "evidence_before": "Both disposable mocked-provider regressions failed to deliver the ready message after the queue mutation.",
+      "fix": "Wake and resume delivery after successful cancellation or reordering.",
+      "files": [
+        "server/agent-sessions/index.mjs"
+      ],
+      "tests": [
+        "test/outbox-mutation-recovery.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-08",
+      "severity": "medium",
+      "finding": "Crash recovery retained restart -y and removed legitimate directory names such as restart.",
+      "evidence_before": "Both launchers failed dedicated restart-flag and folder-argument preservation regressions.",
+      "fix": "Consume only actual restart commands and their confirmation flags, preserving ordinary folder arguments.",
+      "files": [
+        "reach",
+        "scripts/supervise.mjs"
+      ],
+      "tests": [
+        "test/reach-relaunch.test.mjs",
+        "test/supervise.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-09",
+      "severity": "medium",
+      "finding": "Stopping during supervisor backoff retained a referenced timer, delaying process exit by up to 30 seconds.",
+      "evidence_before": "A real disposable Node subprocess retained one timeout after stop; after the change it retained zero.",
+      "fix": "Abort the backoff sleep when the supervisor is awakened or stopped.",
+      "files": [
+        "scripts/supervise.mjs"
+      ],
+      "tests": [
+        "test/supervise.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-10",
+      "severity": "medium",
+      "finding": "UTF-8 split across helper pipe chunks corrupted clipboard/selection text and agent replies.",
+      "evidence_before": "Both desktop readers turned split Cafe-with-accent data into replacement characters. New tests split multilingual/emoji replies at every byte boundary.",
+      "fix": "Use a streaming StringDecoder in both shared helper readers.",
+      "files": [
+        "server/desktop-native.mjs",
+        "server/agent-desktop.mjs"
+      ],
+      "tests": [
+        "test/native-helper-unicode.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-11",
+      "severity": "medium",
+      "finding": "Middle and extra mouse buttons generated primary remote clicks.",
+      "evidence_before": "The UI regression observed left-click actions after buttons 1, 3, and 4.",
+      "fix": "Begin primary pointer gestures only for button zero, preserving separate context-menu handling.",
+      "files": [
+        "src/DesktopSurface.tsx"
+      ],
+      "tests": [
+        "test/screen-double-click-ui.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-12",
+      "severity": "low",
+      "finding": "The older-iOS AbortSignal.any fallback retained listeners from completed requests on long-lived view signals.",
+      "evidence_before": "Both cancellation and already-aborted-input regressions observed a remaining listener instead of zero.",
+      "fix": "Remove every source listener when the combined signal aborts, preserving its reason and deduplicating sources.",
+      "files": [
+        "src/abort-polyfill.ts"
+      ],
+      "tests": [
+        "test/abort-polyfill.test.mjs"
+      ]
+    },
+    {
+      "id": "BB-13",
+      "severity": "release-check",
+      "finding": "The history secret scanner treated two historical extension public keys as generic API secrets.",
+      "evidence_before": "Gitleaks flagged two manifest.key values; crypto.createPublicKey parsed each as a DER SPKI RSA public key.",
+      "fix": "Exclude only the two exact immutable finding fingerprints. All other scanner rules/findings remain active.",
+      "files": [
+        ".gitleaksignore"
+      ],
+      "tests": [
+        "gitleaks git --config .gitleaks.toml --redact --no-banner --log-opts=--all"
+      ]
+    }
+  ],
+  "verification": {
+    "unique_final_targeted_tests_passed": 407,
+    "server_batch_initial": {
+      "tests": 210,
+      "pass": 209,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "server_batch_resolution": "The one failing Windows fixture inherited REACH_COMMAND=reach from the parent Terminal. Its source-launcher fixture now resets that variable; all seven file tests passed on rerun. Other server cases were unchanged and were not needlessly repeated.",
+    "windows_fixture_rerun": {
+      "tests": 7,
+      "pass": 7,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "client_batch": {
+      "tests": 162,
+      "pass": 162,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "descriptor_cleanup_and_ci_rerun": {
+      "tests": 18,
+      "pass": 18,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "concurrent_workspace_service_edits": {
+      "tests": 34,
+      "pass": 34,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "counting": "210 server cases after the 7-case fixture rerun + 162 distinct client cases + 1 cleanup case (CI cases already counted in the server batch) + 34 service/guide cases = 407.",
+    "additional_baseline": {
+      "tests": 76,
+      "pass": 76,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "typescript": "tsc --noEmit passed",
+    "release_build": "npm run build:release passed",
+    "packages": "npm run package and npm run verify:package passed; npm and portable archives clean-installed outside checkout, with authenticated files, initial UI assets and native terminal smoke checks.",
+    "package_receipt": {
+      "filename": "nalebc-reach-0.2.0.tgz",
+      "sha256": "5d74f23ca279cbb643f2b3fb564729bd2b6af6039476c68ae4adc8c64396a801",
+      "version": "0.2.0",
+      "package": "@nalebc/reach",
+      "commit": "local",
+      "portable": {
+        "filename": "reach-0.2.0-portable.tar.gz",
+        "sha256": "d184632809c60ff59b462d26545a323c272cae816f8e651c3c1d258eec074641"
+      }
+    },
+    "npm_audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "gitleaks": {
+      "commits_scanned": 1382,
+      "bytes_scanned_approx": 108144538,
+      "remaining_findings": 0,
+      "exact_public_key_false_positives": 2
+    },
+    "release_privacy": "node scripts/check-release.mjs passed; this is a guardrail rather than a guarantee of absence of all private data.",
+    "whitespace": "git diff --check passed",
+    "guard": "Every Node test ran through npm run test:file with test/helpers/runaway-guard.mjs. No full npm test was started.",
+    "local_logs": "reports/bug-bash-2026-10-16/ (ignored; raw failures and passing runs retained locally)"
+  },
+  "deployment": {
+    "live_session": "Original Terminal Reach left running; no start, stop, or restart performed.",
+    "server_fixes": "Require an authorized CLI restart to become active.",
+    "ui_fixes": "Release UI rebuilt; Reach handles interface reloads without a server restart."
+  },
+  "workspace": "Pre-existing credential-recovery edits and concurrent service/tool edits were preserved. The service/tool changes are included in validation but are not attributed as bug-bash fixes.",
+  "source_sha256": {
+    ".github/scripts/run-tests.mjs": "25f09b13724caf4dc83d0cc31835b5978702b373cf347582b7aa68da0f7341df",
+    ".gitleaksignore": "415ff814df4b4d5baf74e8f3814eb61ec30b17f83f7c81407d7b36e8f57d9ce0",
+    "reach": "926703b2cf94bd8b5c8a126752dff11371dc34e64623b9315a1f5cbac0f99b07",
+    "scripts/supervise.mjs": "7ce9ca85fdeabf6231a9ee405db9020988e88a112d148bad396224a80f9915dd",
+    "server/agent-desktop.mjs": "6829c96630c939a380207235d51d75d254695cbb30bac2daaee9f2f3c86c5208",
+    "server/agent-sessions/index.mjs": "a5cb1eba03937bac4e8d8ba04a95c831814793aeacc4b321b3f4cbf93cbeb2b9",
+    "server/agent-sessions/outbox.mjs": "2ebf2eef6ba9b5b6e265aaa4669cc76350ace6ef896e5dc251c3863e8398d787",
+    "server/desktop-native.mjs": "705d1b5ac9df9e73fc32017861ce322a0e57f1fd92e80bcd1d93018c919948eb",
+    "server/file-download.mjs": "2640ae45ef9287394496acb1c6a7f78cfb61e64ccd4449d4060a9c9611b90ccf",
+    "server/index.mjs": "536b7f629eebc3fc311b83786bab7839b0f2de12c5b54b84ef6070864c071f40",
+    "server/uploads.mjs": "92a5151bc777f08d8d0ac26e477756ea2088bbcc6a302be95f52a90490188b72",
+    "src/DesktopSurface.tsx": "5b9ea0dea69feb90cedb5c25fba88fc61ef6bd706c202a9ccdea9c5e635a4ad7",
+    "src/abort-polyfill.ts": "1da3c05b6672ece93dfeec4376a342fc9b2150a829b7f4eb72ad868fd9a8bd3a",
+    "src/transfers.ts": "f26e9b9510fef704ad62d3b0225e324a411036f3d6b35a9bb0765593501ac98d",
+    "test/abort-polyfill.test.mjs": "427d08e343c106f659f4730451336f3ccc63712b2787a80b11bff8746d7cc55d",
+    "test/background-transfer-ui.test.mjs": "203847f72ee37e85c8957246f77e5ea600e33b4aaefd2863f83128c692f9918c",
+    "test/file-download-cleanup.test.mjs": "8fbcc7e09e8a23f8c5432022c2b57a4d447bf74722e545d43e8670186f40a708",
+    "test/file-download-race.test.mjs": "1fba580b2b9bcb5a3a3d89c5b30fd3d182f0e8e70afafb81bd68bc840ded1d00",
+    "test/native-helper-unicode.test.mjs": "9e3ac6ab75ae3538dce7d5f1f486e216a2c01a19af1cbfca33b13cfc34afde95",
+    "test/outbox-mutation-recovery.test.mjs": "1d32ac14d8a5b984e0642a1d842bae0addd99bd9f331e743cd433a3d2ff260d9",
+    "test/reach-relaunch.test.mjs": "ed6a62277cd983465dca6465d0f129a50f1ede45734809c2bd8aca8726df1f41",
+    "test/screen-double-click-ui.test.mjs": "8b4c0b99814e6d96b781c1ebb6ba3dc9ddb56e6d77a79b4f8d0e27b11ec9aa18",
+    "test/supervise.test.mjs": "b8115b6ee94228b4420c88a8037b102a114e538f488f1c292a154ba971c10297",
+    "test/transfer-integrity.test.mjs": "25915f9e500e432db30d7821cb1b52c05b58c5cf214737fb1842ce00b5ee9708",
+    "test/upload-folder-race.test.mjs": "ee3b1f0ba67f88c6718e7490db20d06eef885c8e54b212769df5aca536f7a898",
+    "test/upload-restart-ui.test.mjs": "44816808a1fba54ea855146f30549986285b458402b6fbb9c715c5d1b75d5641",
+    "test/uploads-concurrency.test.mjs": "568e5f03d4fa1c37e5edf1243b08fc3d6e4b41ddb22cc27c733ef07872d66aca",
+    "test/uploads-recovery.test.mjs": "ede5e530bccf70febe6c2cfe0c727f77b5407a3a35e80d35551c40bbb258300e"
+  },
+  "snapshot_note": "Historical evidence from the original working checkout, based on commit 1c024d08. Counts, package receipts, deployment observations and source hashes describe that tested snapshot. The PR applies only the audited fixes to current main; its exact validation is recorded separately in bug-bash-pr-validation-2026-10-16.json."
+}

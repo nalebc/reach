@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import os from "node:os";
 import { assertUnchanged, desktopBinary } from "./desktop-native.mjs";
 import { COLD_START_MS } from "./powershell.mjs";
@@ -280,6 +281,7 @@ export class AgentDesktopHelper {
       child.once("error", () => { if (!child.pid) resolve(); });
     });
     this.timeoutMs = timeoutMs;
+    const decoder = new StringDecoder("utf8");
     let buffer = "";
     child.stderr?.on("data", () => {});
     child.stdin.on("error", () => this.stop("stdin_error"));
@@ -287,7 +289,7 @@ export class AgentDesktopHelper {
     child.on("error", (error) => { this.spawnError ??= error; this.stop("process_error"); });
     child.on("exit", () => this.stop("process_exit"));
     child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       if (buffer.length > 12 * 1024 * 1024) return this.stop("oversized_reply");
       let at;
       while ((at = buffer.indexOf("\n")) >= 0) {

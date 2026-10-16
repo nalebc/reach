@@ -1,4 +1,9 @@
 export function agentRequestTimeout(route: string, method?: string): number;
+export const AGENT_JSON_RESPONSE_BYTES: number;
+export const AGENT_SCREEN_RESPONSE_BYTES: number;
+export const AGENT_MCP_IMAGE_RESPONSE_BYTES: number;
+export function agentJsonResponseLimit(route: string, method?: string, body?: unknown, status?: number): number;
+export function validateAgentJsonResponse<T>(route: string, method: string, body: unknown, result: T): T;
 export function agentErrorDetails(error: unknown): {
   error: string;
   status?: number;

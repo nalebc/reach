@@ -35,7 +35,9 @@ test("which commands run Reach itself", () => {
 });
 
 test("a crash or running out of memory starts it again, waiting longer each time, without restart's stopping", async () => {
-  const { spawn, runs } = fakeSpawn([70, "SIGABRT", 0]);
+  // These are Reach's documented restart codes. SIGABRT is not the number
+  // 6 everywhere: Windows reports it as 22, which maps to exit code 150.
+  const { spawn, runs } = fakeSpawn([70, 134, 0]);
   const waits = [], said = [];
   const signals = new EventEmitter();
   const code = await superviseReach({ script: "/r/scripts/bootstrap.mjs", args: ["restart", "--yes", "--port", "4318"], spawn, signals,
@@ -46,6 +48,34 @@ test("a crash or running out of memory starts it again, waiting longer each time
   assert.deepEqual(waits, [1000, 5000]);
   assert.match(said.join("\n"), /starting again in 1s/);
   assert.equal(signals.listenerCount("SIGINT"), 0, "lets go of its signal handlers");
+});
+
+test("a signaled child's exit code follows the host's signal numbering", async () => {
+  const nativeCode = 128 + os.constants.signals.SIGABRT;
+  const { spawn, runs } = fakeSpawn(["SIGABRT", 0]);
+  const code = await superviseReach({ script: "fixture", spawn, signals: new EventEmitter(), ...quiet });
+  // POSIX SIGABRT maps to the configured 134 restart code. Windows' 150
+  // stays an ordinary exit; this fixture must not invent a Windows crash.
+  assert.equal(code, nativeCode === 134 ? 0 : nativeCode);
+  assert.equal(runs.length, nativeCode === 134 ? 2 : 1);
+});
+
+test("restart's short confirmation flag is consumed before a crash relaunch", async () => {
+  for (const args of [["restart", "-y"], ["-y", "restart"]]) {
+    const { spawn, runs } = fakeSpawn([70, 0]);
+    const code = await superviseReach({ script: "s", args: [...args, "--https-port", "8443"], spawn, signals: new EventEmitter(), ...quiet });
+    assert.equal(code, 0);
+    assert.deepEqual(runs[1].argv, ["--https-port", "8443"]);
+  }
+});
+
+test("a crash preserves folder arguments named like restart options", async () => {
+  for (const folder of ["restart", "-y"]) {
+    const { spawn, runs } = fakeSpawn([70, 0]);
+    const args = ["--folder", folder];
+    await superviseReach({ script: "s", args, spawn, signals: new EventEmitter(), ...quiet });
+    assert.deepEqual(runs[1].argv, args);
+  }
 });
 
 test("Ctrl+C, a stop and an error Reach reported are not started again", async () => {
@@ -83,6 +113,25 @@ test("a stop sent to it is handed to Reach, and a stop while it waits ends it", 
   signals2.emit("SIGINT", "SIGINT");
   assert.equal(await done, 70);
   assert.equal(waiting.runs.length, 1);
+});
+
+test("stopping during crash backoff leaves no timer keeping the command alive", () => {
+  // Run only the real supervisor and an inert process event. A timeout left
+  // behind after SIGINT kept the command alive for up to its 30 s backoff.
+  const script = `
+    import { EventEmitter } from "node:events";
+    import { superviseReach } from ${JSON.stringify(new URL("../scripts/supervise.mjs", import.meta.url).href)};
+    const signals = new EventEmitter();
+    const before = process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+    const code = await superviseReach({ script: "fixture", signals,
+      spawn: () => { const child = new EventEmitter(); queueMicrotask(() => child.emit("exit", 70)); return child; },
+      log: () => setImmediate(() => signals.emit("SIGINT", "SIGINT")),
+    });
+    console.log(JSON.stringify({ code, timers: process.getActiveResourcesInfo().filter((name) => name === "Timeout").length - before }));
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { code: 70, timers: 0 });
 });
 
 test("the npm `reach` command runs Reach under the supervisor; other commands run as before", { skip: process.platform === "win32" && "POSIX paths" }, () => {

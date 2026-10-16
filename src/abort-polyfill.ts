@@ -17,12 +17,22 @@ if (typeof S.timeout !== "function")
 if (typeof S.any !== "function")
   S.any = (signals: AbortSignal[]) => {
     const controller = new AbortController();
+    const listeners = new Map<AbortSignal, () => void>();
+    const abort = (signal: AbortSignal) => {
+      for (const [source, listener] of listeners)
+        source.removeEventListener("abort", listener);
+      listeners.clear();
+      controller.abort(signal.reason);
+    };
     for (const signal of signals) {
       if (signal.aborted) {
-        controller.abort(signal.reason);
+        abort(signal);
         break;
       }
-      signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+      if (listeners.has(signal)) continue;
+      const listener = () => abort(signal);
+      listeners.set(signal, listener);
+      signal.addEventListener("abort", listener, { once: true });
     }
     return controller.signal;
   };

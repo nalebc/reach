@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { StringDecoder } from "node:string_decoder";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -263,13 +264,14 @@ export class DesktopInput {
       child.once("exit", finished);
       child.once("error", () => { if (!child.pid) finished(); });
     });
+    const decoder = new StringDecoder("utf8");
     let buffer = "";
     child.stderr.on("data", () => {});
     child.stdin.on("error", () => this.stop());
     child.on("error", () => this.stop());
     child.on("exit", () => this.stop());
     child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       if (buffer.length > 3 * 1024 * 1024) return this.stop();
       let at;
       while ((at = buffer.indexOf("\n")) >= 0) {

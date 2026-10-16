@@ -766,6 +766,12 @@ export function createAgentSessions({
   // App messages handed to Claude Code instead (their chat wasn't on screen).
   const direct = new Set();
   const wakers = new Map();
+  const wakeDelivery = (id) => {
+    // Only a registered queue callback may run. A worker that already
+    // finished has no callback to wake.
+    const wake = wakers.get(id);
+    if (typeof wake === "function") wake();
+  };
   // Messages waiting for the Claude app try again now.
   const wakeAppMessages = () => {
     for (const [id, wake] of [...wakers]) if (outbox.list(id)[0]?.via === "app") wake();
@@ -1534,7 +1540,7 @@ export function createAgentSessions({
           throw Object.assign(new Error("Choose the model or thinking level with this chat's settings before sending. This message hasn't been sent."), { status: 409 });
         const queued = outbox.add(id, { text: body.text || "", images: body.images || [], via: "app", title: session.appTitle || "Untitled", ...(body.owner ? { owner: body.owner } : {}), ...(body.mode ? { mode: body.mode } : {}) });
         // A loop already waiting tries again now, with this one in line.
-        wakers.get(id)?.();
+        wakeDelivery(id);
         void deliver(id);
         return { queued: true, delivered: false, messageId: queued.id, via: "app" };
       }
@@ -1689,7 +1695,7 @@ export function createAgentSessions({
       if (message.via !== "app")
         throw Object.assign(new Error("It goes as soon as Claude finishes where it's running."), { status: 409 });
       if (deliveringMessage.get(id) !== messageId) outbox.hurry(id, messageId);
-      wakers.get(id)?.();
+      wakeDelivery(id);
       void deliver(id);
       return { hurried: true };
     },
@@ -1701,6 +1707,8 @@ export function createAgentSessions({
         throw Object.assign(new Error("Invalid order."), { status: 400 });
       if (!outbox.reorder(id, order, deliveringMessage.get(id) || null))
         throw Object.assign(new Error("The queue changed. Try again."), { status: 409 });
+      wakeDelivery(id);
+      void deliver(id);
       return { reordered: true };
     },
     // Rewind to before a message, as Claude Code's own: what would change
@@ -1807,7 +1815,12 @@ export function createAgentSessions({
         throw Object.assign(new Error("That message is being sent. Wait for the chat to update."), { status: 409 });
       if (!outbox.list(id).some((m) => m.id === messageId))
         throw Object.assign(new Error("That message already left the queue."), { status: 409 });
-      outbox.remove(id, messageId);
+      // A cancellation is acknowledged only after it survives a restart.
+      outbox.remove(id, messageId, { durable: true });
+      // A paused head may have stopped the worker. The messages behind it
+      // can go again once the user removes that uncertain delivery.
+      wakeDelivery(id);
+      void deliver(id);
       return { deleted: true };
     },
     // A message whose chat was deleted, sent to another chat from the phone:

@@ -106,6 +106,22 @@ async function tap(s, x = 300, y = 200, pointerType = "touch") {
   );
   await settle(10);
 }
+test("middle and extra mouse buttons never send a left click or start a drag", async () => {
+  const s = await surface();
+  for (const button of [1, 3, 4]) {
+    for (const type of ["pointerdown", "pointerup"]) {
+      s.stage.dispatchEvent(new dom.window.PointerEvent(type, {
+        pointerType: "mouse", pointerId: 1, button,
+        clientX: 300, clientY: 200, bubbles: true, cancelable: true,
+      }));
+    }
+  }
+  await settle(10);
+  assert.deepEqual(s.sent, [], "unsupported buttons must not become primary clicks");
+  await tap(s, 300, 200, "mouse");
+  assert.equal(s.clicks().length, 1, "the next primary click still works");
+  assert.equal(s.clicks()[0].clickState, 1);
+});
 for (const pointerType of ["touch", "mouse", "pen"]) {
   test(`${pointerType}: rapid clicks send one press per tap and show double-click feedback`, async () => {
     const s = await surface();
