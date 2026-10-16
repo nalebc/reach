@@ -100,7 +100,11 @@ export async function startDom({
     configFile: false,
     logLevel: "silent",
     appType: "custom",
-    server: { middlewareMode: true, hmr: false, watch: null },
+    // No socket at all: with only hmr off, Vite still listened for its
+    // WebSocket on every address (port 24678), and on a Windows runner that
+    // put Windows Firewall's "allow access?" prompt in front of the desktop
+    // tests that ran after this file.
+    server: { middlewareMode: true, hmr: false, ws: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
     // Faked packages go through the plugin below instead of loading as-is.
     ssr: { noExternal: Object.keys(fakes).filter((k) => !/^(src|test)\//.test(k)) },

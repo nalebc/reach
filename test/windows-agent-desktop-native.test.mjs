@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { cscCandidates, windowsBinary } from "../server/desktop-native.mjs";
 import { nativeRules } from "../server/agent-guard.mjs";
 import { smartAppControlState, windowsHelperEnv } from "../server/windows-helper-launch.mjs";
+import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // The Windows agent helper (scripts/native/agent-desktop.cs) on a real
 // Windows runner, driven as Reach drives it: one JSON line in, one out
@@ -61,8 +62,20 @@ test.before(async () => {
   // A runner's own console (open on Windows Server 2022 runners) or a shell
   // surface in front (Windows 11 on Arm) would cover the test windows. The
   // consoles are minimized and the surface dismissed; only names are recorded.
-  const { stdout } = await exec(fixtureConsole, ["minimize-consoles"], { windowsHide: true });
-  note({ runnerConsoles: JSON.parse(stdout.trim()) });
+  note({ runnerConsoles: await clearRunnerDesktop() });
+  // What still shows after that (class and program, never a title).
+  note({ runnerDesktop: await lookAtRunnerDesktop() });
+});
+// The runner's own dialogs come at any time (clearRunnerDesktop names them):
+// cleared again before each test, and what was cleared is kept.
+const cleared = [];
+test.beforeEach(async (t) => {
+  if (skip || !work) return;
+  const done = await clearRunnerDesktop();
+  if (done.closed.length || done.dismissed.length) {
+    cleared.push({ before: t.name.slice(0, 40), ...done });
+    note({ cleared });
+  }
 });
 test.after(async () => {
   for (const child of children) try { child.kill(); } catch {}
@@ -829,4 +842,40 @@ test("bank sites in Edge and Chrome: the page's and a frame's address read, Tran
   note({ browsers: { installed: Object.fromEntries(browsers.map((browser) => [browser.name, browser.exe || null])), results } });
   assert.equal(results.openUrl.arrived, true, "Edge opened the address");
   await h.close();
+});
+
+// Saved browser tools (docs/parity/G-browser-tools.md): before each tool runs,
+// the helper checks its browser is Chrome or Edge by its program, within the
+// agent's access, as the Mac's checks a bundle. Reach's extension is the
+// server's (windows-browser-tools-native).
+test("browser-check: a saved tool's browser is Chrome or Edge within the agent's access; anything else is refused", { skip, timeout: 300000 }, async (t) => {
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files", programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const found = (...candidates) => candidates.find((file) => fs.existsSync(file));
+  const edge = fs.realpathSync.native(found(path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"), path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe")));
+  const chromeFile = found(path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"), path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"));
+  const chrome = chromeFile ? fs.realpathSync.native(chromeFile) : null;
+  const choose = "Choose Chrome or Edge within this agent's app access.";
+  const h = helper(t, { medium: true });
+  assert.equal((await h.send({ op: "rules", ...rulesFor("apps", { apps: [{ id: edge, bundleId: "", name: "Edge" }] }) })).ok, true);
+  const allowed = await h.send({ op: "browser-check", app: edge });
+  assert.equal(allowed.ok, true, JSON.stringify(allowed));
+  assert.equal(allowed.bundle, "exe:msedge.exe");
+  // Not chosen for this agent: refused with the app rule's own reason.
+  if (chrome) assert.equal((await h.send({ op: "browser-check", app: chrome })).kind, "blocked");
+  // Not a browser saved tools run in.
+  const notepad = await h.send({ op: "browser-check", app: path.join(SYSTEM32, "notepad.exe") });
+  assert.deepEqual([notepad.kind, notepad.error], ["blocked", choose]);
+  assert.deepEqual([(await h.send({ op: "browser-check", app: "C:\\nowhere\\chrome.exe" })).kind], ["blocked"]);
+  await h.close();
+  // Full control: any Chrome or Edge; Read only: none.
+  const full = helper(t, { medium: true });
+  assert.equal((await full.send({ op: "rules", ...rulesFor("full") })).ok, true);
+  assert.equal((await full.send({ op: "browser-check", app: edge })).ok, true);
+  if (chrome) assert.equal((await full.send({ op: "browser-check", app: chrome })).bundle, "exe:chrome.exe");
+  await full.close();
+  const view = helper(t, { medium: true });
+  assert.equal((await view.send({ op: "rules", ...rulesFor("view") })).ok, true);
+  const looked = await view.send({ op: "browser-check", app: edge });
+  assert.deepEqual([looked.kind, looked.error], ["blocked", choose]);
+  await view.close();
 });

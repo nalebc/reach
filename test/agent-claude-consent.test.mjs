@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClaudeConsent, pressClaudeConsent } from "../server/agent-sessions/claude-consent.mjs";
+import { createClaudeConsent as create, pressClaudeConsent as press } from "../server/agent-sessions/claude-consent.mjs";
+
+// The Mac's card, pressed through its helper, wherever these tests run (a
+// Windows PC refuses: the last test).
+const createClaudeConsent = (options) => create({ platform: "darwin", ...options });
+const pressClaudeConsent = (choice, options = {}) => press(choice, { platform: "darwin", ...options });
 
 const A = "1fa82f5d-07e5-459c-a5fd-61368b3423c5";
 const B = "8f3a3707-0000-4000-8000-000000000001";
@@ -135,4 +140,27 @@ test("while someone uses the Mac, Reach never switches the Claude app's chat to 
   await assert.rejects(consent.answer(A, "consent:toolu_1", { decision: "allow" }), /won't switch the Claude app's chat/);
   assert.deepEqual(mac.opened, []);
   assert.deepEqual(mac.presses, []);
+});
+
+// Oct 15: on a Windows PC an answer went for the Mac's Swift helper, whose
+// build told the owner to install Apple's tools on a Mac. There, it's refused
+// plainly before anything is built, switched or pressed.
+test("on a Windows PC, a consent answer is refused with a plain reason: nothing built, switched or pressed", async () => {
+  const pc = app();
+  const consent = createClaudeConsent({ press: pc.press, open: pc.open, pending: pc.pending, shown: shownAs(B, A), wait: async () => {}, idle: () => 600, platform: "win32" });
+  const reason = "Answer this in the Claude app on your Windows PC: Reach can't press its buttons from your phone there yet.";
+  for (const decision of ["deny", "allow"])
+    await assert.rejects(consent.answer(A, "consent:toolu_1", { decision }), (e) => e.status === 409 && e.message === reason && e.retry === false && !/Mac|xcode|Command Line Tools/.test(e.message));
+  assert.deepEqual(pc.opened, []);
+  assert.deepEqual(pc.presses, []);
+  // The press itself never asks for the Swift helper there.
+  await assert.rejects(
+    pressClaudeConsent("Deny", { platform: "win32", binary: async () => assert.fail("the Mac's helper was built on Windows"), run: async () => assert.fail("ran a helper") }),
+    (e) => e.status === 409 && e.notDispatched === true && e.message === reason,
+  );
+  // A Mac still presses its card.
+  const mac = app();
+  const onMac = createClaudeConsent({ press: mac.press, open: mac.open, pending: mac.pending, shown: shownAs(A), wait: async () => {}, platform: "darwin", confirmMs: 50 });
+  assert.deepEqual(await onMac.answer(A, "consent:toolu_1", { decision: "deny" }), { answered: true });
+  assert.deepEqual(mac.presses, ["Deny"]);
 });

@@ -8,6 +8,37 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-15: People you invite watch and control a Windows PC's screen as
+  they do a Mac's. Windows can't leave a window out of the picture, so in
+  theirs password managers, Reach's own windows and the rest of what agents
+  never see are painted black, in video and still images alike; your own view
+  is unchanged. A PC that can't do this says why, and doesn't offer the
+  screen to them. A password manager's copied secret stays yours there too.
+  Proven on GitHub's Windows 2025, 2022 and 11 on Arm runners; not yet on a
+  physical PC.
+- 2026-10-15: Agents' saved browser tools on a Windows PC, as on a Mac: the
+  same tools, batches, receipts and refusals run in the owner's own Chrome or
+  Edge through Reach's new browser extension, which talks only to the Reach on
+  that PC (through a small helper Reach registers by itself) and does nothing
+  until the owner allows it in Agents → Browser tools. Agents → Browser tools
+  says per browser what's left in one tap: Add (opens the store page there),
+  Open, or Allow. Proven with real Chrome and Edge on GitHub's Windows
+  runners; not yet on a physical PC. The extension waits for the owner to
+  publish it on the Chrome Web Store and Edge Add-ons; until then no copy of
+  it can connect, and setup says it isn't in the store yet. The Mac keeps
+  Apple Events, unchanged.
+
+### Fixed
+
+- 2026-10-15: On a Windows PC, answering the Claude app's consent card
+  (letting Claude use apps) from the phone no longer tells the owner to
+  install Apple's developer tools on a Mac. It says plainly to answer it in
+  the Claude app on the PC, and switches nothing there. Checked with mocked
+  tests on GitHub's Windows runners; not tried on a physical PC or with the
+  real Claude app's card.
+
 ## [0.2.0] — 2026-10-15
 
 Agents and phones on a Windows PC as on a Mac, faster agents, an

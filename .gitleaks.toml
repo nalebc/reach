@@ -30,3 +30,11 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^docs/benchmarks/[^/]+\.json$''']
 regexes = ['''^[0-9a-f]{64}$''']
+
+# The browser extension's manifest "key" is an RSA public key: Chrome and
+# Edge derive the repo build's extension id from it (docs/parity/G-browser-tools.md).
+# Public by design; the store package leaves it out.
+[[allowlists]]
+description = "The browser extension's public key"
+targetRules = ["generic-api-key"]
+paths = ['''^browser-extension/manifest\.json$''']
