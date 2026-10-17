@@ -150,6 +150,22 @@ for (const status of [401, 403, 423, 429, 500]) test(`a running native health ${
   } finally { await f.close(); }
 });
 
+test("owner recovery does not bootstrap invitation, agent or non-tailnet public pages", async () => {
+  for (const url of [origin + "/guest", origin + "/guest/", origin + "/agent", origin + "/agent-browser", "https://reach.example/files/smoke-deep-link"]) {
+    const dom = await startDom({ url });
+    const traffic = [];
+    dom.window.fetch = async input => { traffic.push(String(input)); return Response.json(config); };
+    let stop;
+    try {
+      const { watchPrivateRecovery } = await dom.load("/src/app-watch.ts");
+      stop = watchPrivateRecovery({ current: () => ({ peer: peer("APP"), device }), handoff() { assert.fail("this context must retain its own identity handling"); } });
+      dom.window.dispatchEvent(new dom.window.Event("online"));
+      dom.document.dispatchEvent(new dom.window.Event("visibilitychange"));
+      assert.deepEqual(traffic, [], `${url} cannot probe saved owner alternates`);
+    } finally { stop?.(); await dom.close(); }
+  }
+});
+
 test("a transient private bootstrap metadata failure is retried on wake without changing the mounted owner", async () => {
   const dom = await startDom({ url: origin });
   let metadata = 0, stop;
@@ -798,10 +814,10 @@ test("incomplete/corrupt persisted browser state cannot construct a new Tailscal
   }
 });
 
-test("mounted phone composer, acknowledged outbox and unknown in-flight send survive both private handoffs", async () => {
+for (const path of ["/", "/files/smoke-deep-link"]) test(`mounted phone composer, acknowledged outbox and unknown in-flight send survive both private handoffs at ${path}`, async () => {
   const chatId = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
   const chat = { agent: "codex", id: chatId, title: "Keep this draft", cwd: "/work", origin: "app", inApp: true, status: "idle", archived: false, updatedAt: Date.now(), createdAt: Date.now(), held: null };
-  const dom = await startDom({ url: origin, fakes: { "src/browser-node.ts": "test/dom/fakes/private-recovery-node.mjs" } });
+  const dom = await startDom({ url: origin + path, fakes: { "src/browser-node.ts": "test/dom/fakes/private-recovery-node.mjs" } });
   const oldFetch = globalThis.fetch, oldSocket = globalThis.WebSocket;
   const traffic = [];
   let nativeOn = true, releaseSend, wakes = 0;
@@ -869,6 +885,7 @@ test("mounted phone composer, acknowledged outbox and unknown in-flight send sur
     const send = await dom.waitFor(() => dom.document.querySelector('[aria-label="Send"]:not(:disabled)'));
     send.click();
     await dom.waitFor(() => traffic.some(call => call.path.endsWith("/messages")));
+    assert.equal(dom.window.location.pathname, path, "mounted navigation keeps the original SPA delivery path");
     const pending = await dom.waitFor(() => dom.document.querySelector(".as-user.pending"));
     await typeInto(input, "Keep this newer unsent draft");
     await dom.waitFor(() => /Queued before recovery/.test(dom.document.body.textContent));

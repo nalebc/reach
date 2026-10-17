@@ -180,7 +180,9 @@ export function watchForApp(config: StartConfig, every = 5000, options?: Recover
 export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | "selected" | "handoff">) {
   let stopped = false;
   let stop = () => {};
-  if (location.pathname !== "/" || !location.hostname.endsWith(".ts.net")) return stop;
+  // The owner SPA is also served at deep links; navigation keeps that path.
+  // Invitation and agent pages retain their own transport/identity handling.
+  if (!location.hostname.endsWith(".ts.net") || /^\/(?:guest|agent|agent-browser)(?:\/|$)/.test(location.pathname)) return stop;
   let configured = false, retryAfter = false;
   let pending: Promise<void> | undefined;
   const clearBootstrap = () => {
