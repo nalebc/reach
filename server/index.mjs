@@ -3111,7 +3111,7 @@ export async function createReach(overrides = {}) {
     if (req.client.policy?.browser) {
       const result = await browserFiles("read", req.query.root, req.query.path || "", req.reauthorize, { maxBytes: 25 * 1024 * 1024 });
       req.reauthorize();
-      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+      res.append("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
       return res.attachment(path.basename(String(req.query.path))).type("application/octet-stream").send(result.data);
     }
     const file = resolve(req.query.root, req.query.path || "", req.client);
@@ -3120,7 +3120,7 @@ export async function createReach(overrides = {}) {
     const current = req.reauthorize();
     if (resolve(req.query.root, req.query.path || "", current) !== file)
       throw fail(403, "This file is no longer shared.");
-    res.setHeader(
+    res.append(
       "Access-Control-Expose-Headers",
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
