@@ -22,23 +22,52 @@ export const browserState = (prefix = "reach.tailnet:") => ({
 });
 
 const scripts = new Map<string, Promise<void>>();
-function loadScript(src: string) {
+function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => { cleanup(); reject(signal.reason); };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    pending.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+  });
+}
+function loadScript(src: string, signal?: AbortSignal) {
   let pending = scripts.get(src);
+  if (pending) return abortable(pending, signal);
   if (!pending) {
     pending = new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
       script.src = src;
-      script.onload = () => resolve();
-      script.onerror = () => { scripts.delete(src); reject(Error("The secure connection could not load.")); };
+      const cleanup = () => {
+        signal?.removeEventListener("abort", abort);
+        script.onload = script.onerror = null;
+      };
+      const abort = () => { cleanup(); script.remove(); reject(signal?.reason); };
+      script.onload = () => {
+        cleanup();
+        if (signal) scripts.set(src, Promise.resolve());
+        resolve();
+      };
+      script.onerror = () => {
+        cleanup();
+        if (scripts.get(src) === pending) scripts.delete(src);
+        reject(Error("The secure connection could not load."));
+      };
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener("abort", abort, { once: true });
       document.head.append(script);
     });
-    scripts.set(src, pending);
+    // A cancelled recovery owns only its loader. Cache it after success,
+    // so a stalled attempt can retry without cancelling an intentional start.
+    if (!signal) scripts.set(src, pending);
   }
   return pending;
 }
 
 export async function createBrowserNode(config: StartConfig, {
-  wasm = fetch(`/tailnet/${config.tailnet!.wasm}`),
+  signal,
+  wasm = fetch(`/tailnet/${config.tailnet!.wasm}`, { signal }),
   guest = false,
   hostname = browserHostname(navigator.userAgent),
   authKey,
@@ -47,6 +76,7 @@ export async function createBrowserNode(config: StartConfig, {
   beforeStart = () => true,
 }: {
   wasm?: Promise<Response>;
+  signal?: AbortSignal;
   guest?: boolean;
   hostname?: string;
   authKey?: string;
@@ -57,10 +87,12 @@ export async function createBrowserNode(config: StartConfig, {
   // A loader failure or changed profile can cancel before instantiation.
   // Observe prefetch rejection even then; awaiting it still reports failure.
   void wasm.catch(() => {});
-  await loadScript(`/tailnet/${config.tailnet!.exec}`);
+  await loadScript(`/tailnet/${config.tailnet!.exec}`, signal);
+  signal?.throwIfAborted();
   if (!beforeStart()) throw Error("The saved browser connection changed.");
   const go = new Go();
-  const { instance } = await WebAssembly.instantiateStreaming(wasm, go.importObject);
+  const { instance } = await abortable(WebAssembly.instantiateStreaming(wasm, go.importObject), signal);
+  signal?.throwIfAborted();
   if (!beforeStart()) throw Error("The saved browser connection changed.");
   void go.run(instance).then(stopped, stopped);
   return reachTailnet({
@@ -154,7 +186,10 @@ export function existingBrowserNode(config: StartConfig): Promise<TailnetNode | 
     return standby.ready.then(running);
   }
   const restoring: NonNullable<typeof standby> = { profile, ready: Promise.resolve(null) };
-  restoring.ready = createBrowserNode(config, { stateStorage: saved.state, beforeStart: saved.unchanged }).then(node => {
+  const preload = new AbortController();
+  const deadline = setTimeout(() => preload.abort(new DOMException("The browser connection assets did not answer in time.", "TimeoutError")), 8000);
+  restoring.ready = createBrowserNode(config, { stateStorage: saved.state, beforeStart: saved.unchanged, signal: preload.signal })
+    .finally(() => clearTimeout(deadline)).then(node => {
     restoring.node = node;
     return new Promise<TailnetNode | null>(resolve => {
       const timer = setTimeout(() => resolve(null), 8000);

@@ -334,6 +334,103 @@ test("cancelled standby preload also observes a rejected prefetched WASM asset",
   }
 });
 
+for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} cannot block private checks forever or create a late duplicate node`, async t => {
+  let releaseFetch, reached, firstAsset = true, firstScript = true;
+  const fetchWait = new Promise(resolve => { releaseFetch = resolve; });
+  const boundary = new Promise(resolve => { reached = resolve; });
+  const dom = await startDom({ url: origin, routes: { "/tailnet/client.wasm": () => {
+    if (stalled === "WASM fetch" && firstAsset) { firstAsset = false; return fetchWait; }
+    return Response.json({});
+  } } });
+  const originalInstantiate = WebAssembly.instantiateStreaming;
+  const scripts = [], changes = [], traffic = [];
+  let nativeOn = false, current = { peer: peer("APP"), device }, checking, recovery, registrations = 0, runs = 0;
+  try {
+    saveBrowserState(savedState());
+    const append = dom.document.head.append.bind(dom.document.head);
+    dom.document.head.append = (...nodes) => {
+      append(...nodes);
+      for (const script of nodes) if (script.tagName === "SCRIPT") {
+        scripts.push(script);
+        if (stalled === "loader" && firstScript) { firstScript = false; reached(); }
+        else queueMicrotask(() => script.onload?.());
+      }
+    };
+    dom.window.fetch = globalThis.fetch;
+    dom.window.WebSocket = class { send() {} close() {} };
+    globalThis.Go = class { importObject = {}; run() { runs++; return new Promise(() => {}); } };
+    WebAssembly.instantiateStreaming = async wasm => {
+      if (stalled === "WASM fetch" && firstAsset === false && registrations === 0) reached();
+      await wasm;
+      return { instance: {} };
+    };
+    const browserFetch = async (input, init = {}) => {
+      traffic.push({ route: "browser", path: new URL(String(input)).pathname, token: new Headers(init.headers).get("Authorization") });
+      return Response.json(device);
+    };
+    const node = {
+      start(cb) { cb.state("Running"); }, status: () => ({ self: { state: "Running" } }), wake() {},
+      login() { assert.fail("recovery cannot enroll/log in a new identity"); },
+      fetch() { assert.fail("the deterministic probe supplies its browser fetch directly"); }, websocket() {},
+    };
+    globalThis.reachTailnet = () => { registrations++; return node; };
+    const { existingBrowserNode } = await dom.load("/src/browser-node.ts");
+    const { createPrivateRecovery } = await dom.load("/src/app-watch.ts");
+    const { privateWay } = await dom.load("/src/tailnet-transport.ts");
+    const readyConfig = { ...config, tailnet: { wasm: "client.wasm", exec: "exec.js" } };
+    recovery = createPrivateRecovery(readyConfig, {
+      current: () => current,
+      peers: route => [peer(route === "native" ? "APP" : "BROWSER")],
+      nativeFetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        traffic.push({ route: "native", path, token: new Headers(init.headers).get("Authorization") });
+        if (!nativeOn) throw TypeError("OS route unavailable");
+        return Response.json(path === "/api/health" ? { product: "Reach" } : device);
+      },
+      browser: async () => { const restored = await existingBrowserNode(readyConfig); return restored ? { node: restored, fetch: browserFetch } : null; },
+      handoff(change) { changes.push(change); current = { peer: change.peer, device: change.device }; },
+    });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    checking = recovery.check();
+    await boundary;
+    assert.equal(recovery.check(), checking, "one pending check while preload is in progress");
+    nativeOn = true;
+    t.mock.timers.tick(8000);
+    const completed = await Promise.race([checking.then(() => true), new Promise(resolve => setImmediate(() => resolve(false)))]);
+    assert.equal(completed, true, "bounded preload releases the serialized recovery check");
+    assert.equal(registrations, 0);
+    assert.equal(runs, 0);
+    await recovery.check();
+    assert.equal(traffic.filter(call => call.route === "native" && call.path === "/api/health").length, 2, "native return is checked after the bounded preload");
+    assert.equal(current.peer.token, "APP");
+    nativeOn = false;
+    await recovery.check();
+    assert.equal(current.peer.token, "BROWSER", "a later attempt can retry the assets and use its own approval");
+    assert.equal(registrations, 1);
+    assert.equal(runs, 1);
+    releaseFetch(Response.json({}));
+    scripts[0].onload?.();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(registrations, 1, "the cancelled loader/fetch cannot start a second node when it eventually completes");
+    nativeOn = true;
+    await recovery.check();
+    assert.equal(privateWay(), "native");
+    assert.equal(current.peer.token, "APP");
+    assert.deepEqual(changes.map(change => change.mode), ["browser", "native"]);
+    assert.ok(traffic.filter(call => call.token).every(call => call.token === `Bearer ${call.route === "native" ? "APP" : "BROWSER"}`));
+  } finally {
+    recovery?.stop();
+    releaseFetch(Response.json({}));
+    for (const script of scripts) script.onload?.();
+    await checking?.catch(() => {});
+    t.mock.timers.reset();
+    WebAssembly.instantiateStreaming = originalInstantiate;
+    delete globalThis.Go;
+    delete globalThis.reachTailnet;
+    await dom.close();
+  }
+});
+
 for (const refused of ["native-guest", "native-restricted", "browser-401", "browser-403", "browser-guest", "browser-wrong-id", "browser-wrong-computer", "guest-tab", "funnel-tab"]) test(`boot restoration cannot borrow owner rights for ${refused}`, async () => {
   const f = await fixture("native");
   try {
