@@ -508,7 +508,7 @@ export async function launch(options, root) {
         if (current?.instance === reach.instance) atomicJson(statusFile, { ...current, routes });
       };
       const privateUp = (value) => {
-        reach.setTransportAvailable(value);
+        reach.setPrivateTransportAvailable(value);
         if (routes.private.up === value) return;
         if (value) routes.private.since = Date.now();
         else routes.private.interruptions++;
@@ -581,6 +581,9 @@ export async function launch(options, root) {
       const noteForeign = (config) => {
         const was = foreignRoute;
         foreignRoute = foreignIngressRoute(config, ingressPort, serveTarget);
+        // A keyed-ingress security problem affects both routes, unlike an
+        // interrupted Serve on the separate private port.
+        reach.setTransportAvailable(!foreignRoute && !routeProblem);
         if (!foreignRoute || was) return;
         privateUp(false);
         const line = "Reach: Another Tailscale route leads to Reach's private port; Reach refuses it until it's removed (tailscale serve status).";
@@ -618,6 +621,7 @@ export async function launch(options, root) {
         const setRouteProblem = (problem) => {
           if (problem === routeProblem) return;
           routeProblem = problem;
+          reach.setTransportAvailable(!foreignRoute && !routeProblem);
           if (problem) {
             privateUp(false);
             say(`Browser sign-in paused on this PC: ${problem} It resumes by itself once that changes.`);
@@ -646,7 +650,7 @@ export async function launch(options, root) {
         }, options.keyedEveryMs || 15000);
         keyedMonitor.unref();
       }
-      reach.setTransportAvailable(false);
+      reach.setPrivateTransportAvailable(false);
       await startTunnel();
       recovery.nextRestart = Date.now() + 15000;
       // `healthWaitMs`: a code-only option (tests), never read from argv.

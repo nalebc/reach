@@ -154,7 +154,7 @@ test("in the browser without the Tailscale app: get the app (for this phone), ne
   await android.unmount();
 });
 
-test("the Tailscale app comes on: the suggestion goes, the Switch pill takes over, and it never comes back", async () => {
+test("the approved Tailscale app connection becomes active: its suggestion goes and never comes back", async () => {
   phone({ browserNode: true });
   const view = await show();
   assert.ok(prompt());

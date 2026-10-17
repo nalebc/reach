@@ -124,7 +124,10 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
       resolve(res.headers["content-security-policy"]);
     }).on("error", reject);
   });
-  assert.match(policy, /script-src 'self';/);
+  const scripts = policy.split(";").map((part) => part.trim().split(/\s+/))
+    .find(([directive]) => directive === "script-src")?.slice(1);
+  assert.deepEqual(scripts, ["'self'", "'wasm-unsafe-eval'"],
+    "private recovery permits WASM compilation; scripts and worklets stay same-origin without JavaScript eval or inline scripts");
   assert.doesNotMatch(policy, /127\.0\.0\.1/);
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   // The page's own address serves it with that policy; its sound socket

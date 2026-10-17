@@ -28,16 +28,20 @@ export const suites = {
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
-    // Bug bash recovery: shared chat/file UI and native input refusals.
-    "agent-markdown-ui", "back-stack-ui", "agent-too-old-ui",
+    // Bug bash recovery: shared chat/file/tool UI and native input refusals.
+    "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility", "reach-version", "agent-watch",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
+    // Private/direct first, authorized fallback, and automatic recovery on every client.
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "one-address-ui", "security", "delivery", "start-info-route",
+    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
-    "ios-launch", "bounded-command",
+    "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // The user journeys, workstream J: the built phone interface in headless

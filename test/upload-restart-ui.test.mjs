@@ -91,3 +91,70 @@ for (const failure of ["repeated restarts", "revoked access", "existing destinat
     assert.deepEqual(landed, []);
   });
 }
+
+for (const route of ["browser", "native", "held browser", "lost browser reply", "refused browser"]) {
+  test(`older companion upload keeps the ${route} peer on its approved transport`, async t => {
+    let jobs = [], nativeSends = 0, privateSends = 0;
+    const landed = [], bodies = [];
+    const browserBound = route !== "native";
+    const dom = await startDom({
+      fakes: { "src/tailnet-transport.ts": "test/dom/fakes/tailnet-toggle.mjs" },
+      routes: {
+        "/api/files/uploads": () => new Response(JSON.stringify({ error: "This action does not exist." }), { status: 404 }),
+        "/api/files/upload": async (init, url) => {
+          privateSends++;
+          assert.equal(url.searchParams.get("root"), "0");
+          assert.equal(url.searchParams.get("path"), "shared");
+          assert.equal(init.method, "POST");
+          assert.equal(init.headers.Authorization, `Bearer ${peer.token}`);
+          const file = init.body.get("file");
+          bodies.push({ name: file.name, text: await file.text() });
+          if (route === "lost browser reply") throw new TypeError("Reply lost after harmless file receipt");
+          if (route === "refused browser") return new Response(JSON.stringify({ error: "Owner paused this access" }), { status: 423 });
+          return {};
+        },
+      },
+    });
+    const original = globalThis.XMLHttpRequest;
+    globalThis.__reachTailnetBrowser = route !== "native" && route !== "held browser";
+    globalThis.__reachPeerUsesBrowserTailnet = candidate => browserBound && candidate.token === peer.token;
+    globalThis.XMLHttpRequest = class {
+      upload = {};
+      open(method, url) { this.method = method; this.url = url; }
+      setRequestHeader(name, value) { assert.equal(name, "Authorization"); assert.equal(value, `Bearer ${peer.token}`); }
+      send(form) {
+        nativeSends++;
+        assert.equal(this.method, "POST");
+        assert.equal(new URL(this.url).pathname, "/api/files/upload");
+        this.status = browserBound ? 400 : 200;
+        this.responseText = JSON.stringify(browserBound ? { error: "Native XHR cannot use this browser's private node" } : {});
+        void form.get("file").text().then(text => {
+          if (!browserBound) bodies.push({ name: form.get("file").name, text });
+          this.onload();
+        });
+      }
+      abort() { this.onabort?.(); }
+    };
+    const transfers = await dom.load("/src/transfers.ts");
+    t.after(async () => {
+      for (const job of jobs) { job.cancel(); transfers.dismiss(job.id); }
+      globalThis.XMLHttpRequest = original;
+      delete globalThis.__reachTailnetBrowser;
+      delete globalThis.__reachPeerUsesBrowserTailnet;
+      await dom.close();
+    });
+    function Probe() { jobs = transfers.useTransfers(); return null; }
+    await dom.render(dom.React.createElement(Probe));
+    transfers.uploadFiles(peer, 0, "shared", [new File(["private file bytes"], "route.txt")], name => landed.push(name));
+    await dom.waitFor(() => jobs[0] && ["done", "failed"].includes(jobs[0].state));
+    const failed = ["lost browser reply", "refused browser"].includes(route);
+    assert.equal(jobs[0].state, failed ? "failed" : "done", jobs[0].error);
+    assert.equal(nativeSends, browserBound ? 0 : 1, "a browser-bound credential never leaves through native XHR");
+    assert.equal(privateSends, browserBound ? 1 : 0, "an unknown-result write or refusal is never sent again on another route");
+    assert.deepEqual(bodies, [{ name: "route.txt", text: "private file bytes" }]);
+    assert.deepEqual(landed, failed ? [] : ["route.txt"]);
+    if (route === "refused browser") assert.match(jobs[0].error, /Owner paused/);
+    if (route === "lost browser reply") assert.match(jobs[0].error, /Check the destination before trying again/);
+    assert.deepEqual(dom.errors, []);
+  });
+}

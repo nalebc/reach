@@ -1891,7 +1891,9 @@ export default function AgentSessionView({
       sent: {} as { model?: string; effort?: string; before?: { model?: string | null; effort?: string | null }; at?: number; message?: { text: string; known: Set<string> | null } },
       reads: new Set<{ at: number }>(),
     }),
-    [peer.url, peer.token, initial.agent, initial.id],
+    // Only an authenticated, same-owner private handoff carries this stable
+    // key. Re-pairing/replacing access still invalidates the old generation.
+    [peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]), initial.agent, initial.id],
   );
   // The catalog, for a read naming the sent model by another of its names.
   const modelsNow = useRef<AgentModel[]>([]);

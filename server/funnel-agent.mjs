@@ -7,6 +7,7 @@ const CLOCK_WINDOW = 60_000;
 const REPLAY_LIMIT = 4096;
 const KNOWN_REPLAY_LIMIT = 16384;
 const RATE_BUCKET_LIMIT = 1024;
+const PRIVATE_EXPOSED_HEADERS = "Reach-Not-Run, Retry-After, ETag, X-Reach-Screen, Content-Disposition, Content-Length, Content-Range, Accept-Ranges";
 // One source per IPv4 address, per /64 for IPv6 (one machine's usual share):
 // fresh addresses from one network count as one.
 export function sourceKey(address) {
@@ -345,14 +346,38 @@ export function createFunnelAgentGateway({
     json(res, status, { error: messages[status] });
   };
   const run = async (req, res) => {
-    if (req.method !== "POST") throw failure(405);
-    if (!hosts.has(requestHost(req))) throw failure(421);
+    if (!["POST", "OPTIONS"].includes(req.method)) throw failure(405);
+    const host = requestHost(req);
+    if (!hosts.has(host)) throw failure(421);
+    const privately = host === privateHost && host !== publicOrigin.host;
     if (
       req.headers.origin !== origin ||
       (req.headers["sec-fetch-site"] !== undefined &&
-        req.headers["sec-fetch-site"] !== "same-origin")
+        req.headers["sec-fetch-site"] !== "same-origin" &&
+        !(privately && req.headers["sec-fetch-site"] === "same-site"))
     )
       throw failure(403);
+    if (req.method === "OPTIONS") {
+      if (!privately || req.headers["access-control-request-method"] !== "POST") throw failure(405);
+      const headers = req.headers["access-control-request-headers"];
+      if (headers !== undefined && (typeof headers !== "string" || !headers.split(",").every(name => ["content-type", "reach-key"].includes(name.trim().toLowerCase())))) throw failure(403);
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "POST");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Reach-Key");
+      req.resume();
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    // A public page reaches the same signed endpoint over its private port.
+    // Only that configured pair gains CORS; the POST still passes every
+    // signature, audience, admission, scope, rate and replay check below.
+    if (privately) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Expose-Headers", PRIVATE_EXPOSED_HEADERS);
+    }
     if (!available()) throw failure(503);
     if (
       !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?\s*$/i.test(

@@ -28,7 +28,7 @@ import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { callTool, computerPlan, computerTools, serveMcp, toContent, toolsFor } from "./mcp-server.mjs";
 import { createAgentClient, isScreenImageRoute } from "./agent-client.mjs";
-import { agentKey, funnelApi, funnelGateway } from "./agent-funnel.mjs";
+import { agentKey, funnelApi, funnelGateway, privateGatewaySend } from "./agent-funnel.mjs";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const tailnetHost = (u) =>
@@ -237,9 +237,9 @@ const writePrivate = (file, text) => {
 
 // Tailscale's node state, kept like the browser keeps it but in a private
 // file; written synchronously so a crash never loses the node's identity.
-export function fileState(file) {
-  let state = {};
-  try {
+export function fileState(file, initialState) {
+  let state = initialState === undefined ? {} : { ...initialState };
+  if (initialState === undefined) try {
     state = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {}
   return {
@@ -361,9 +361,9 @@ export function tailnetFileTrusted(name, data, pins = tailnetPinned()) {
 // The tailnet client comes from the computer's start page, once per
 // computer: one computer's client never handles another's node (security
 // audit M8).
-async function tailnetFiles(home, start, pins = tailnetPinned()) {
+async function tailnetFiles(home, start, pins = tailnetPinned(), { cachedOnly = false } = {}) {
   const dir = path.join(home, "tailnet", new URL(start).host.replace(/[^\w.-]/g, "_"));
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!cachedOnly) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const manifestFile = path.join(dir, "tailnet.json");
   const trusted = (file) => {
     try {
@@ -380,6 +380,7 @@ async function tailnetFiles(home, start, pins = tailnetPinned()) {
         wasmFile: path.join(dir, m.wasm),
       };
   } catch {}
+  if (cachedOnly) throw Error("This agent's saved private client is not cached. Its approved public connection is kept.");
   process.stderr.write(
     "Reach: getting the tailnet client (one time, about 6 MB)…\n",
   );
@@ -412,17 +413,17 @@ async function tailnetFiles(home, start, pins = tailnetPinned()) {
 // One node per computer in this process, made once and reused (a second
 // one with the same identity would fight the first).
 const tailnets = new Map();
-async function nodeFor({ home, conn, start, key, hostname }) {
+async function nodeFor({ home, conn, start, key, hostname, cachedOnly = false, initialState }) {
   if (!tailnets.has(conn))
     tailnets.set(
       conn,
       (async () => {
-        const factory = await loadTailnet(await tailnetFiles(home, start));
+        const factory = await loadTailnet(await tailnetFiles(home, start, tailnetPinned(), { cachedOnly }));
         const t = { state: "", asked: false };
         t.node = factory({
           hostname: hostname || "reach-agent",
           ...(key ? { authKey: key } : {}),
-          stateStorage: fileState(path.join(conn, "tailnet-state.json")),
+          stateStorage: fileState(path.join(conn, "tailnet-state.json"), initialState),
         });
         t.node.start({
           state: (s) => (t.state = s),
@@ -578,6 +579,94 @@ function reachableDirect(origin) {
 }
 const directApi = (origin, token, allowLocal) =>
   createAgentClient({ url: `${origin}/`, token }, { allowLocal, proxy: "" });
+
+// These legacy grants approve one Tailscale node, unlike the gateway's
+// signing-key grant. A different node/public route needs owner admission;
+// never try its bearer credential there after a connection failure.
+const privateIdentityApi = (api) => async (...args) => {
+  try { return await api(...args); }
+  catch (error) {
+    if (Number.isInteger(error?.status)) throw error;
+    throw Error("The approved private connection failed. A different Tailscale node or public gateway requires a new invitation and owner approval. Check the result before retrying an action.", { cause: error });
+  }
+};
+
+// The embedded runtime is pinned to Tailscale's persisted profile format.
+// Missing/partial state must not quietly create or enroll another identity.
+// Validate bytes from one opened descriptor and reuse that snapshot at node
+// startup, so replacing the pathname cannot change the recovered identity.
+export function savedTailnet(conn, { noFollow = fs.constants.O_NOFOLLOW || 0 } = {}) {
+  let fd;
+  try {
+    const file = path.join(conn, "tailnet-state.json");
+    fd = fs.openSync(file, fs.constants.O_RDONLY | noFollow | (fs.constants.O_NONBLOCK || 0));
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.size > 2n * 1024n * 1024n) return null;
+    // Windows lacks O_NOFOLLOW. Check the name after opening, but never
+    // read through that name; a link/replacement is not the opened file.
+    const named = fs.lstatSync(file, { bigint: true });
+    if (!named.isFile() || named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino) return null;
+    const bytes = Buffer.alloc(Number(stat.size) + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const read = fs.readSync(fd, bytes, size, bytes.length - size, size);
+      if (!read) break;
+      size += read;
+    }
+    if (size > Number(stat.size)) return null;
+    const state = JSON.parse(bytes.subarray(0, size).toString("utf8"));
+    const decode = key => {
+      const value = state[key];
+      if (typeof value !== "string" || !/^(?:[0-9a-f]{2})+$/i.test(value)) throw Error("Incomplete tailnet state");
+      return Buffer.from(value, "hex").toString("utf8");
+    };
+    const current = decode("_current-profile"), profiles = JSON.parse(decode("_profiles"));
+    const profile = Object.values(profiles).find(profile => profile?.Key === current && profile.NodeID);
+    const persisted = JSON.parse(decode(current)).Config;
+    const key = value => /^privkey:[a-f0-9]{64}$/i.test(value || "") && !/^privkey:0{64}$/.test(value);
+    return key(decode("_machinekey")) && !!profile && persisted?.NodeID === profile.NodeID && key(persisted?.PrivateNodeKey) ? state : null;
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+// A signed gateway envelope through a saved embedded node. Readiness probes
+// have no credential; once fetch begins, a failed reply never proves that an
+// action did not run. Only readiness failure permits a public fallback.
+function embeddedGatewaySend(where) {
+  return async (endpoint, body, headers, timeoutMs, { responseLimit = 8 * 1024 * 1024 } = {}) => {
+    let node;
+    try {
+      node = await connectTailnet({ ...where, origin: endpoint, timeoutMs: 5000, cachedOnly: true });
+      const health = await tailnetApi(node, endpoint, "", { timeoutMs: 2500 })("/api/health");
+      if (health?.product !== "Reach") throw Error("Reach's embedded private route did not answer.");
+    } catch (error) {
+      // Health is credential-free. HTTP 503 means the private route is still
+      // recovering, before an envelope was submitted; authentication, lock,
+      // rate and other HTTP refusals stay authoritative on this route.
+      if (Number.isInteger(error?.status) && error.status !== 503) throw error;
+      throw Object.assign(error, { unreachable: true });
+    }
+    let deadline;
+    try {
+      const call = node.fetch({ url: `${endpoint}/agent-gateway`, method: "POST",
+        headers: Object.entries(headers).flat(), body: new Uint8Array(Buffer.from(body)), redirect: "error" });
+      deadline = setTimeout(() => call.abort(), timeoutMs);
+      const head = await call.response, chunks = [];
+      const limit = head.status >= 200 && head.status < 300 ? responseLimit : 8 * 1024 * 1024;
+      let size = 0;
+      for (let chunk; (chunk = await head.read());) {
+        size += chunk.length;
+        if (size > limit) { head.cancel(); throw Error("Reach response exceeds its transport limit."); }
+        chunks.push(Buffer.from(chunk));
+      }
+      const responseHeaders = {};
+      for (let i = 0; i < head.headers.length; i += 2) responseHeaders[String(head.headers[i]).toLowerCase()] = head.headers[i + 1];
+      return { status: head.status, headers: responseHeaders, bytes: Buffer.concat(chunks) };
+    } catch (error) {
+      throw Object.assign(Error(`${error.message} Check the result before retrying this action.`), { unreachable: false });
+    } finally { clearTimeout(deadline); }
+  };
+}
 // Using the invitation needs no credential yet.
 function admissionDirect(origin, route, body) {
   return new Promise((resolve, reject) => {
@@ -968,7 +1057,7 @@ async function open(home, name, allowLocal) {
   if (credential.via === "direct")
     return {
       credential,
-      api: directApi(credential.origin, credential.token, allowLocal),
+      api: privateIdentityApi(directApi(credential.origin, credential.token, allowLocal)),
     };
   // Through the computer's public link (or its private address), signed by
   // this agent's own key. Several processes may share this folder (an MCP
@@ -982,7 +1071,9 @@ async function open(home, name, allowLocal) {
       credential,
       api: sharedAgentConnection(conn, () => {
         reload();
-        const api = funnelApi({ conn, credential, save, reload });
+        const initialState = savedTailnet(conn);
+        const send = privateGatewaySend({ ...(initialState && { embedded: embeddedGatewaySend({ home, conn, start: credential.start, hostname: credential.hostname, initialState }) }) });
+        const api = funnelApi({ conn, credential, save, reload, gatewayOptions: { send } });
         return { api: async (...args) => {
           await rotateIfDue(conn, credential, api).catch(() => {});
           return api(...args);
@@ -1009,7 +1100,7 @@ async function open(home, name, allowLocal) {
       },
     };
   });
-  return { credential, api };
+  return { credential, api: privateIdentityApi(api) };
 }
 
 const flags = (args) => {

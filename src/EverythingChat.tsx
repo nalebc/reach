@@ -1453,7 +1453,7 @@ export default function EverythingChat({
           ) : newApp.agent === "openclaw" ? (
             // A chat of Reach's own (webchat): replies stay in Reach and OpenClaw.
             <NewClawChat
-              key={JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
+              key={peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId])}
               peer={peer}
               onStarted={(key) => {
                 setAgent("openclaw");

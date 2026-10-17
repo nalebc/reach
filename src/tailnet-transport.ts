@@ -3,6 +3,8 @@
 // requests and WebSockets for tailnet addresses through it, so the rest of
 // the app keeps using plain fetch and WebSocket unchanged.
 
+import { nativeBrowser, nativeBrowserFetch } from "./native-browser";
+
 type GoHead = {
   status: number;
   statusText: string;
@@ -47,8 +49,35 @@ export type TailnetNode = {
   ): GoSocket;
 };
 
+export type PrivateWay = "native" | "browser";
+type PrivatePeer = { url: string; token: string; transport?: string };
 let active: { node: TailnetNode; routed: (url: URL) => boolean } | null = null;
-export const tailnetBrowser = () => !!active;
+let way: PrivateWay = "native";
+const credentials = new Map<string, { origin: string; way: PrivateWay }>();
+let installed = false;
+export const tailnetBrowser = () => !!active && way === "browser";
+export const tailnetNode = () => active?.node;
+export const privateWay = () => way;
+
+// A request already in progress may retain its old Peer after a handoff. Its
+// device-bound credential must stay on that device's original transport.
+export function bindPrivatePeer(peer: PrivatePeer, route: PrivateWay) {
+  if (peer.transport === "funnel" || !peer.token) return;
+  const origin = new URL(peer.url).origin;
+  const old = credentials.get(peer.token);
+  if (old && (old.origin !== origin || old.way !== route))
+    throw Error("This credential belongs to another private connection.");
+  credentials.set(peer.token, { origin, way: route });
+}
+export const privatePeerWay = (peer: PrivatePeer) => credentials.get(peer.token)?.way;
+export function peerUsesBrowserTailnet(peer: PrivatePeer) {
+  return peer.transport !== "funnel" && (privatePeerWay(peer) || way) === "browser";
+}
+export const nativeTailnetFetch = nativeBrowserFetch;
+export function usePrivateWay(next: PrivateWay) {
+  if (next === "browser" && !active) throw Error("The browser's private connection is not ready.");
+  way = next;
+}
 
 // Tailnet names (*.ts.net under this tailnet) and Tailscale's 100.64.0.0/10.
 export function tailnetRouter(suffix: string) {
@@ -287,29 +316,74 @@ const PRIVATE_PATH = /^\/(?:api|ws|download)\//;
 // faster without the relay. Reach itself answers at this same address too
 // (one address: Reach for your devices, this page for the internet), so its
 // API and WebSockets here go through the node.
-export function installTailnet(node: TailnetNode, tailnetSuffix: string) {
+export function installTailnet(node: TailnetNode, tailnetSuffix: string, route: PrivateWay = "browser") {
   const viaTailnet = tailnetRouter(tailnetSuffix);
   const routed = (url: URL) =>
     viaTailnet(url) &&
     (url.origin !== new URL(location.href).origin ||
       PRIVATE_PATH.test(url.pathname));
   active = { node, routed };
-  const nativeFetch = window.fetch.bind(window);
-  const NativeSocket = window.WebSocket;
+  way = route;
+  installPrivateRouting();
+}
+
+export function installPrivateRouting() {
+  if (installed) return;
+  installed = true;
+  const { fetch: nativeFetch, Socket: NativeSocket } = nativeBrowser();
+  const routed = (url: URL) => active?.routed(url) ||
+    (url.hostname.endsWith(".ts.net") && PRIVATE_PATH.test(url.pathname));
+  const credentialRoute = (token: string, url: URL, fallback: PrivateWay) => {
+    const old = credentials.get(token);
+    if (old && old.origin !== url.origin) throw Error("This credential belongs to another computer address.");
+    if (!old) bindPrivatePeer({ url: url.origin, token }, fallback);
+    return old?.way || fallback;
+  };
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       input instanceof Request ? input.url : String(input),
       location.href,
     );
-    return routed(url)
-      ? tailnetFetch(node, input instanceof Request ? input : url.href, init)
-      : nativeFetch(input, init);
+    if (!routed(url)) return nativeFetch(input, init);
+    const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+    const token = /^Bearer (.+)$/.exec(headers.get("Authorization") || "")?.[1];
+    const route = token ? credentialRoute(token, url, way) : way;
+    if (route === "native") return nativeFetch(input, init);
+    if (!active) return Promise.reject(new TypeError("The browser's private connection is unavailable."));
+    return tailnetFetch(active.node, input instanceof Request ? input : url.href, init);
   };
   const Socket = function (url: string | URL, protocols?: string | string[]) {
     const target = new URL(url, location.href);
-    return routed(target)
-      ? new TailnetSocket(node, target, protocols)
+    if (!routed(target)) return new NativeSocket(url, protocols);
+    const route = way;
+    const socket = route === "browser" && active
+      ? new TailnetSocket(active.node, target, protocols)
       : new NativeSocket(url, protocols);
+    const send = socket.send?.bind(socket);
+    if (send) socket.send = (data: Parameters<WebSocket["send"]>[0]) => {
+      if (typeof data === "string") {
+        let auth;
+        try { auth = JSON.parse(data); } catch { /* Stream payload, not authentication. */ }
+        if (auth?.type === "auth" && typeof auth.token === "string") {
+          // WebSockets open before their first auth frame. A stale callback
+          // may have created this socket just as the active route changed.
+          // Close it without ever sending the other device's credential.
+          const http = new URL(target);
+          http.protocol = http.protocol === "wss:" ? "https:" : "http:";
+          try {
+            if (credentialRoute(auth.token, http, route) !== route) {
+              socket.close(4000, "Private connection changed");
+              return;
+            }
+          } catch {
+            socket.close(4000, "Private connection changed");
+            return;
+          }
+        }
+      }
+      send(data);
+    };
+    return socket;
   } as unknown as typeof WebSocket;
   Object.assign(Socket, STATES);
   window.WebSocket = Socket;

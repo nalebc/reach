@@ -224,8 +224,8 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
 });
 
-test("Windows CI covers shared phone navigation, agent updates, gesture accuracy, accelerated scrolling and native input sequences", () => {
-  for (const name of ["back-stack-ui", "agent-too-old-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+test("Windows CI covers shared phone navigation, agent workspace privacy, updates, gesture accuracy, accelerated scrolling and native input sequences", () => {
+  for (const name of ["back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
@@ -411,4 +411,13 @@ test("publishing isolation covers multiline commands, script settings and same-r
     Object.assign(changed.steps.find(step => step.uses?.startsWith("actions/download-artifact@")).with, changes);
     assert.throws(() => assertPublishIsolation(changed));
   }
+});
+
+test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
+  for (const name of [
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
+    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
+    "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command", "headless-chrome-lifecycle",
+  ]) assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });

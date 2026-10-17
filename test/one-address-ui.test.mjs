@@ -1,6 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startDom, settle } from "./dom/harness.mjs";
+import { startDom } from "./dom/harness.mjs";
 
 // One address, in the browser: signed in without the Tailscale app, the page's
 // own tailnet node carries Reach's requests. Whether the app is on must still
@@ -11,10 +11,11 @@ let appOn = false;
 before(async () => {
   dom = await startDom({ mobile: true });
   // The browser's own fetch: the computer answers it only with the app on.
-  dom.window.fetch = async (url) => {
+  dom.window.fetch = async (url, init) => {
     native.push(String(url));
+    assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer APP");
     return appOn
-      ? new Response(JSON.stringify({ product: "Reach", instance: "i1" }), { status: 200 })
+      ? Response.json({ id: "mac", name: "Mac", platform: "darwin", access: { kind: "device", scopes: ["admin"] } })
       : new Response("Not found.", { status: 404 });
   };
   ({ watchForApp } = await dom.load("/src/app-watch.ts"));
@@ -32,7 +33,7 @@ const config = {
   tailnet: null,
 };
 
-test("the app-is-on banner asks the phone's own connection, not the page's node", async () => {
+test("automatic private recovery checks the phone's own approved credential, never the page's node", async () => {
   // The page's node always reaches the computer.
   const throughNode = [];
   installTailnet(
@@ -60,19 +61,24 @@ test("the app-is-on banner asks the phone's own connection, not the page's node"
   );
   // In a browser the global fetch is the window's: now the node's router.
   globalThis.fetch = dom.window.fetch;
-  const timer = watchForApp(config, 20);
+  const changes = [];
+  const peer = token => ({ id: "mac", name: "Mac", url: config.home, token, platform: "darwin" });
+  const stop = watchForApp(config, 20, {
+    current: () => ({ peer: peer("BROWSER"), device: { id: "mac", access: { kind: "device", scopes: ["admin"] } } }),
+    peers: mode => [peer(mode === "native" ? "APP" : "BROWSER")],
+    handoff: change => changes.push(change),
+  });
   try {
-    await settle(120);
-    const pill = () => dom.document.querySelector(".start-switch");
-    assert.equal(pill(), null, "no banner while the app is off");
-    assert.ok(native.length >= 2, "checked more than once");
-    assert.ok(native.every((u) => u === "https://mac.t.ts.net/api/health"), "at the one address");
+    await dom.waitFor(() => native.length >= 2);
+    assert.equal(changes.length, 0, "keep the browser while native is unavailable");
+    assert.ok(native.every((u) => u === "https://mac.t.ts.net/api/device"), "at the one address");
     assert.deepEqual(throughNode, [], "never through the page's node");
     appOn = true;
-    await settle(80);
-    assert.match(pill()?.textContent || "", /Tailscale app is on/);
+    await dom.waitFor(() => changes.length);
+    assert.equal(changes[0].peer.token, "APP", "automatic switch uses native's own approval");
+    assert.equal(dom.document.querySelector(".start-switch"), null, "no switch button needed");
   } finally {
-    clearInterval(timer);
+    stop();
   }
 });
 

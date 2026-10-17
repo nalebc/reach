@@ -43,6 +43,7 @@ import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
+import { TAILNET_CONNECT_SOURCES } from "./public-start.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
@@ -182,6 +183,7 @@ export async function createReach(overrides = {}) {
   if (ptyWarning) console.warn(`Reach: ${ptyWarning}`);
   const instance = crypto.randomUUID();
   let transportAvailable = true;
+  let privateTransportAvailable = true;
   const funnelRequests = new WeakMap();
   const browserResponses = new Map();
   let browserResponseCount = 0;
@@ -1512,14 +1514,14 @@ export async function createReach(overrides = {}) {
     // Reached by its Tailscale name, it's only ever HTTPS: browsers keep it so.
     if (/\.ts\.net(:\d+)?$/i.test(req.headers.host || ""))
       res.setHeader("Strict-Transport-Security", "max-age=31536000");
-    // The page talks to this computer and your others on the tailnet
-    // (*.ts.net) only: a script that got in can't send a credential anywhere
-    // else (connections audit, Oct 10). This computer's own loopback only
-    // when the page itself was opened there (local mode).
+    // Keep a previously approved browser Tailscale node ready while native
+    // private transport is healthy, so fallback needs no unavailable assets.
+    // Network destinations stay Tailscale-only; loopback is local-mode only.
+    // The loader stays same-origin; only WASM compilation is permitted.
     const local = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host || "");
     res.setHeader(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.ts.net wss://*.ts.net${local ? " http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*" : ""}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ${TAILNET_CONNECT_SOURCES}${local ? " http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*" : ""}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
     );
     if (req.path.startsWith("/api")) res.setHeader("Cache-Control", "no-store");
     if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -1529,7 +1531,7 @@ export async function createReach(overrides = {}) {
   app.use((req, res, next) => funnelRequests.has(req) ? next() : parseJSON(req, res, next));
   app.use("/api", compressJson());
   app.use((req, res, next) => {
-    if (!transportAvailable)
+    if (!transportAvailable || (!privateTransportAvailable && !funnelRequests.has(req)))
       return res.status(503).json({
         error:
           "Private connection is recovering. Reach will reconnect automatically.",
@@ -3109,7 +3111,7 @@ export async function createReach(overrides = {}) {
     if (req.client.policy?.browser) {
       const result = await browserFiles("read", req.query.root, req.query.path || "", req.reauthorize, { maxBytes: 25 * 1024 * 1024 });
       req.reauthorize();
-      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+      res.append("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
       return res.attachment(path.basename(String(req.query.path))).type("application/octet-stream").send(result.data);
     }
     const file = resolve(req.query.root, req.query.path || "", req.client);
@@ -3118,7 +3120,7 @@ export async function createReach(overrides = {}) {
     const current = req.reauthorize();
     if (resolve(req.query.root, req.query.path || "", current) !== file)
       throw fail(403, "This file is no longer shared.");
-    res.setHeader(
+    res.append(
       "Access-Control-Expose-Headers",
       "Content-Disposition, Content-Length, Content-Range, Accept-Ranges, ETag",
     );
@@ -5309,7 +5311,7 @@ export async function createReach(overrides = {}) {
     }
     if (config.tailscaleOwner && (!trustedRequest(req) || !req.reachIdentity))
       return socket.destroy();
-    if (!transportAvailable) {
+    if (!transportAvailable || !privateTransportAvailable) {
       socket.destroy();
       return;
     }
@@ -6172,6 +6174,20 @@ export async function createReach(overrides = {}) {
         screenControl.clear();
         closeInput();
         // Disconnect access without killing terminals, chats or jobs.
+        for (const ws of wss.clients) ws.terminate();
+      }
+    },
+    // Serve on the private port can fail independently of the public
+    // gateway's port. Only signed/authorized gateway dispatch bypasses this
+    // private-route pause; ordinary owner APIs remain private as before.
+    setPrivateTransportAvailable(value) {
+      if (privateTransportAvailable === value) return;
+      privateTransportAvailable = value;
+      if (value) auth.restartQuietClock();
+      else {
+        screenControl.clear();
+        closeInput();
+        // WebSockets are private-only. Funnel agents use signed HTTP calls.
         for (const ws of wss.clients) ws.terminate();
       }
     },

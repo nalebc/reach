@@ -72,7 +72,7 @@ test(
         assert.deepEqual(directives.get("object-src"), ["'none'"]);
         assert.equal(response.headers.get("x-frame-options"), "DENY");
       });
-      await t.test("the page connects to this computer and the tailnet only; loopback only in local mode", async () => {
+      await t.test("the page permits private ports and browser Tailscale recovery; loopback only in local mode", async () => {
         const connectSrc = (value) =>
           new Promise((resolve, reject) => {
             http.get(url + "/api/health", { headers: { Host: value } }, (res) => {
@@ -81,9 +81,12 @@ test(
               resolve(policy.split(";").map((p) => p.trim().split(/\s+/)).find(([n]) => n === "connect-src")?.slice(1));
             }).on("error", reject);
           });
-        assert.deepEqual(await connectSrc("localhost"), ["'self'", "https://*.ts.net", "wss://*.ts.net", "http://127.0.0.1:*", "http://localhost:*", "ws://127.0.0.1:*", "ws://localhost:*"]);
+        assert.deepEqual(await connectSrc("localhost"), ["'self'", "https://*.ts.net:*", "wss://*.ts.net:*", "https://*.tailscale.com", "wss://*.tailscale.com", "http://127.0.0.1:*", "http://localhost:*", "ws://127.0.0.1:*", "ws://localhost:*"]);
         const tailnet = await connectSrc("my-computer.example.ts.net:8444");
-        assert.deepEqual(tailnet, ["'self'", "https://*.ts.net", "wss://*.ts.net"]);
+        assert.deepEqual(tailnet, ["'self'", "https://*.ts.net:*", "wss://*.ts.net:*", "https://*.tailscale.com", "wss://*.tailscale.com"]);
+        const policy = (await call("/api/health")).headers.get("content-security-policy");
+        const scripts = policy.split(";").map(part => part.trim().split(/\s+/)).find(([name]) => name === "script-src").slice(1);
+        assert.deepEqual(scripts, ["'self'", "'wasm-unsafe-eval'"], "the standby loader remains same-origin; only WASM compilation is enabled");
         const hsts = (value) => new Promise((resolve, reject) => {
           http.get(url + "/api/health", { headers: { Host: value } }, (res) => { res.resume(); resolve(res.headers["strict-transport-security"]); }).on("error", reject);
         });

@@ -72,7 +72,7 @@ Each agent gets one **preset**:
 
 Agents with Tailscale support, including **Muse**, can join your private tailnet. With a native Tailscale connection, they can benefit from a direct path to your Mac and lower latency for tool calls, screen updates and file transfers. [Tailscale connects directly when possible](https://tailscale.com/docs/reference/connection-types), using encrypted relays when needed. Agents outside your tailnet can connect through an authenticated **Tailscale Funnel** link.
 
-Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service.
+Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service. Automatic recovery uses routes already authorized for that connection; separate device identities keep their own approvals. See the [connection fundamentals](docs/CONNECTION_POLICY.md).
 
 For an agent working through a browser, choose **Connects: Web page**: it gets your live screen and permitted controls in a page. For a service that takes a hosted MCP connector (claude.ai, ChatGPT), choose **Connects: Hosted** and add the URL it gives you (new, still being tested). See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
 
@@ -128,7 +128,7 @@ reach
 - **Mac:** allow **Screen Recording** and **Accessibility** when asked, so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
 - **Windows (experimental, not yet verified on a physical PC):** use Reach from your phone or another computer; opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control. Built as on a Mac, with no setting to turn on, and passing on GitHub's Windows machines but not yet run on a physical PC: the live screen as H.264 video from Windows itself (where Windows has no H.264 encoder, [FFmpeg](https://ffmpeg.org/)'s video or still images, and the Screen page says why), phone sign-in from the browser, invite links for people and agents, Face ID sign-in and linked computers, the notification-area icon with Pause and Resume, app icons, document previews, voice memos, your own shell in terminals, and the Claude desktop app's chats. Built the same way, its Windows tests not yet run: background mode at sign-in, sleep prevention, one Reach per PC, restarts and updates in a window of its own, the PC's own terminals on the phone, and OpenClaw. Claude Code and Codex chats haven't been verified on Windows.
 
-For a source install of this release, use `git clone --branch v0.3.0 https://github.com/nalebc/reach.git`.
+For a source install of this release, use `git clone --branch v0.3.1 https://github.com/nalebc/reach.git`.
 See [Install in the guide](docs/GUIDE.md#install) for prerequisites and portable folders.
 `main` contains unreleased contributor work.
 

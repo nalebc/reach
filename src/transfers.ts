@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Share } from "@capacitor/share";
 import { isNative } from "./native";
-import { tailnetBrowser } from "./tailnet-transport";
+import { peerUsesBrowserTailnet } from "./tailnet-transport";
 import {
   fileBlob,
   post,
@@ -170,7 +170,7 @@ function putChunk(
   signal: AbortSignal,
 ) {
   checkCanceled(signal);
-  if (tailnetBrowser())
+  if (peerUsesBrowserTailnet(peer))
     return putChunkThroughTailnet(peer, id, offset, chunk, onLoaded, signal);
   return new Promise<{ offset: number }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -270,7 +270,7 @@ async function putChunkThroughTailnet(
 }
 
 // Computers running an older Reach take one request per file.
-function legacyUpload(
+async function legacyUpload(
   peer: Peer,
   root: number,
   dir: string,
@@ -278,15 +278,36 @@ function legacyUpload(
   onLoaded: (loaded: number) => void,
   signal: AbortSignal,
 ) {
+  checkCanceled(signal);
+  const form = new FormData();
+  form.append("file", file);
+  const url = `${peer.url}/api/files/upload?${new URLSearchParams({ root: String(root), path: dir })}`;
+  if (peerUsesBrowserTailnet(peer)) {
+    const stop = new AbortController();
+    const abort = () => stop.abort();
+    const timer = setTimeout(abort, IDLE_MS * 4 + (file.size / 65536) * 1000);
+    signal.addEventListener("abort", abort);
+    try {
+      const response = await fetch(url, {
+        method: "POST", headers: { Authorization: `Bearer ${peer.token}` },
+        body: form, redirect: "error", signal: stop.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(Error(body.error || "The upload didn't finish."), { status: response.status });
+      onLoaded(file.size);
+    } catch (error) {
+      if (signal.aborted || Number.isInteger((error as { status?: number })?.status)) throw error;
+      throw Error("The upload's reply was interrupted. Check the destination before trying again.", { cause: error });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+    return;
+  }
   return new Promise<void>((resolve, reject) => {
     checkCanceled(signal);
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file);
-    xhr.open(
-      "POST",
-      `${peer.url}/api/files/upload?${new URLSearchParams({ root: String(root), path: dir })}`,
-    );
+    xhr.open("POST", url);
     xhr.setRequestHeader("Authorization", `Bearer ${peer.token}`);
     let idle = setTimeout(() => xhr.abort(), IDLE_MS);
     const abort = () => xhr.abort();
@@ -529,7 +550,7 @@ export async function downloadThroughBrowser(
   entry: FileEntry,
 ) {
   // The download manager can't reach the computer without the Tailscale app.
-  if (tailnetBrowser()) return false;
+  if (peerUsesBrowserTailnet(peer)) return false;
   try {
     const { url } = await request<{ url: string }>(
       peer,
@@ -614,8 +635,12 @@ const native = registerPlugin<{
     }) => void,
   ): Promise<{ remove: () => Promise<void> }>;
 }>("BackgroundTransfer");
-export const backgroundDownloads = () =>
+const nativeBackgroundAvailable = () =>
   isNative && Capacitor.isPluginAvailable("BackgroundTransfer");
+// URLSession cannot use the browser's Tailscale node. A callback can still
+// hold a browser-bound peer after the visible connection changed.
+export const backgroundDownloads = (peer: Peer) =>
+  nativeBackgroundAvailable() && !peerUsesBrowserTailnet(peer);
 const saveAction = (file: Finished) => ({
   label: "Save",
   run: () => void Share.share({ files: [file.uri] }).catch(() => {}),
@@ -623,7 +648,7 @@ const saveAction = (file: Finished) => ({
 // Downloads that finished while the app was closed, offered to save.
 let collected = false;
 export async function collectFinishedDownloads() {
-  if (collected || !backgroundDownloads()) return;
+  if (collected || !nativeBackgroundAvailable()) return;
   collected = true;
   const { files } = await native.finished().catch(() => ({ files: [] }));
   for (const file of files) {

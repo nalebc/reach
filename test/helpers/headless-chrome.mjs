@@ -88,12 +88,18 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
     ...args,
     "about:blank",
   ];
-  const child = spawn(binary, flags, { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"] });
+  const child = spawn(binary, flags, {
+    stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+    // A forced shutdown targets only this disposable browser's process group.
+    detached: process.platform !== "win32",
+  });
   let stderr = "";
   child.stderr.on("data", (c) => {
     if (stderr.length < 1 << 16) stderr += c;
   });
   const exited = new Promise((resolve) => child.once("exit", resolve));
+  let hasClosed = false;
+  const closed = new Promise(resolve => child.once("close", () => { hasClosed = true; resolve(); }));
   const toChrome = child.stdio[3],
     fromChrome = child.stdio[4];
   let next = 1,
@@ -127,7 +133,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
   // includes cold profile/sandbox startup on a shared runner.
   const send = (method, params = {}, sessionId, timeoutMs = 20000) =>
     new Promise((resolve, reject) => {
-      if (child.exitCode !== null) return reject(Error(`Chrome exited: ${stderr.slice(-400)}`));
+      if (hasClosed || child.exitCode !== null || child.signalCode !== null) return reject(Error(`Chrome exited: ${stderr.slice(-400)}`));
       const id = next++;
       const timer = setTimeout(() => {
         waiting.delete(id);
@@ -140,13 +146,48 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       });
       toChrome.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
     });
-  const close = async () => {
-    if (child.pid && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-      await exited;
-    }
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  const waitForClose = async (timeoutMs) => {
+    let timer;
+    try {
+      return await Promise.race([
+        closed.then(() => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
   };
+  let closing;
+  const close = () => closing ||= (async () => {
+    if (!hasClosed && child.pid) {
+      if (child.exitCode === null && child.signalCode === null) {
+        // Let Chrome stop its children and flush the throwaway profile before
+        // deleting it. A CDP reply alone is not proof that they have stopped.
+        void send("Browser.close", {}, undefined, 2000).catch(() => {});
+        await waitForClose(2000);
+      }
+      if (!hasClosed) {
+        let killError;
+        try {
+          if (process.platform === "win32") {
+            await new Promise((resolve, reject) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"],
+              { timeout: 2000, windowsHide: true }, error => error ? reject(error) : resolve()));
+          } else process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+          killError = error;
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        }
+        if (!await waitForClose(2000)) {
+          failPending(Error("Chrome shutdown timed out"));
+          for (const pipe of [child.stderr, toChrome, fromChrome]) pipe.destroy();
+          child.unref();
+          throw Error("Disposable Chrome did not close after bounded termination", { cause: killError });
+        }
+      }
+    }
+    failPending(Error("Chrome closed"));
+    // Async retries allow any final filesystem work to settle. Sync removal
+    // blocks the test event loop while a killed browser's children can write.
+    await fs.promises.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  })();
   t.after(close);
   // Answers once it's up.
   await Promise.race([

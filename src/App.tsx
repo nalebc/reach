@@ -53,6 +53,7 @@ import {
   Device,
   Session,
   readPeers,
+  guestPeers,
   savePeers,
   peersKey,
   activeKey,
@@ -99,6 +100,7 @@ import NewSessionSheet from "./NewSessionSheet";
 import { MonitorPlay } from "lucide-react";
 import { homeOrigin } from "./home-origin";
 import { tailnetBrowser } from "./tailnet-transport";
+import { watchPrivateRecovery } from "./app-watch";
 import { keepDoorKey } from "./door-key";
 import { connectionName, connectionWay, tailscaleAppLink } from "./connection";
 import PhonePrompts from "./PhonePrompts";
@@ -212,6 +214,32 @@ function ReachWorkspace() {
   const currentPeerKey = useRef(peerKey);
   currentPeerKey.current = peerKey;
   const device = deviceState?.key === peerKey ? deviceState.value : null;
+  const privateHandoff = useRef("");
+  const recoveryCurrent = useRef<{ peer: Peer; device: Device } | null>(null);
+  recoveryCurrent.current = peer && device ? { peer, device } : null;
+  const recoverySelected = useRef(peer);
+  recoverySelected.current = peer;
+  useEffect(() => {
+    if (guestPeers() || peer?.transport === "funnel" || (device && (device.access?.kind !== "device" || !device.access.scopes.includes("admin")))) return;
+    return watchPrivateRecovery({
+      current: () => recoveryCurrent.current,
+      selected: () => recoverySelected.current,
+      handoff: ({ peer: next, peers: saved, device: checked }) => {
+        // Invalidate the source refresh synchronously. Its response could be
+        // queued before React runs the old connection effect's cleanup.
+        connectionGeneration.current++;
+        deviceRequest.current?.abort();
+        const key = `${next.id}:${next.url}:${next.token}`;
+        privateHandoff.current = key;
+        // The destination was authenticated before the route changed. Keep
+        // this same computer's composer, attachments and pending sends mounted.
+        setDeviceState({ key, value: checked });
+        setPeers(saved);
+        setActive(next.id);
+        try { localStorage.setItem(activeKey(), next.id); } catch { /* Keep the current handoff when storage is full. */ }
+      },
+    });
+  }, [peerKey, device?.access?.kind, device?.access?.scopes.join(" ")]);
   const setDevice = (value: Device | null) =>
     setDeviceState(value ? { key: peerKey, value } : null);
   const [codexRevision, setCodexRevision] = useState(0);
@@ -485,10 +513,14 @@ function ReachWorkspace() {
     seenChanges.current = undefined;
     connectionGeneration.current++;
     deviceRetry.current.reset();
-    setDevice(null);
-    setTerminals([]);
-    setChats([]);
-    setRequests([]);
+    const handoff = privateHandoff.current === peerKey;
+    privateHandoff.current = "";
+    if (!handoff) {
+      setDevice(null);
+      setTerminals([]);
+      setChats([]);
+      setRequests([]);
+    }
     refreshDevice();
     refreshSessions();
     let ticks = 0;
