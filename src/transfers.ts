@@ -270,7 +270,7 @@ async function putChunkThroughTailnet(
 }
 
 // Computers running an older Reach take one request per file.
-function legacyUpload(
+async function legacyUpload(
   peer: Peer,
   root: number,
   dir: string,
@@ -278,15 +278,36 @@ function legacyUpload(
   onLoaded: (loaded: number) => void,
   signal: AbortSignal,
 ) {
+  checkCanceled(signal);
+  const form = new FormData();
+  form.append("file", file);
+  const url = `${peer.url}/api/files/upload?${new URLSearchParams({ root: String(root), path: dir })}`;
+  if (peerUsesBrowserTailnet(peer)) {
+    const stop = new AbortController();
+    const abort = () => stop.abort();
+    const timer = setTimeout(abort, IDLE_MS * 4 + (file.size / 65536) * 1000);
+    signal.addEventListener("abort", abort);
+    try {
+      const response = await fetch(url, {
+        method: "POST", headers: { Authorization: `Bearer ${peer.token}` },
+        body: form, redirect: "error", signal: stop.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(Error(body.error || "The upload didn't finish."), { status: response.status });
+      onLoaded(file.size);
+    } catch (error) {
+      if (signal.aborted || Number.isInteger((error as { status?: number })?.status)) throw error;
+      throw Error("The upload's reply was interrupted. Check the destination before trying again.", { cause: error });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+    return;
+  }
   return new Promise<void>((resolve, reject) => {
     checkCanceled(signal);
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file);
-    xhr.open(
-      "POST",
-      `${peer.url}/api/files/upload?${new URLSearchParams({ root: String(root), path: dir })}`,
-    );
+    xhr.open("POST", url);
     xhr.setRequestHeader("Authorization", `Bearer ${peer.token}`);
     let idle = setTimeout(() => xhr.abort(), IDLE_MS);
     const abort = () => xhr.abort();
