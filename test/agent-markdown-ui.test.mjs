@@ -52,6 +52,105 @@ const show = async (text) => {
   return { root, done: () => view.unmount() };
 };
 
+function mockClipboard(t, clipboard) {
+  const navigator = dom.window.navigator;
+  const saved = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  t.after(() => {
+    if (saved) Object.defineProperty(navigator, "clipboard", saved);
+    else delete navigator.clipboard;
+  });
+}
+
+test("Copy writes only the tapped block, preserving prompt whitespace and Unicode", async t => {
+  const writes = [];
+  let finish;
+  mockClipboard(t, { writeText: text => {
+    writes.push(text);
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  const prompt = "Check Reach’s connection.\n\n  Preserve indentation.\nReport ✓ or ❌.\n";
+  const { root, done } = await show(`Intro with \`inline code\`.\n\n\`\`\`\n${prompt}\n\`\`\`\n\nOther text.\n\n\`\`\`js\nconst second = 2;\n\`\`\``);
+  try {
+    const buttons = [...root.querySelectorAll("button.md-copy")];
+    assert.equal(buttons.length, 2, "plain text and labelled blocks both have Copy");
+    assert.equal(buttons[0].getAttribute("aria-label"), "Copy text");
+    buttons[0].click();
+    assert.deepEqual(writes, [prompt], "clipboard write starts within the original tap and excludes prose/fences");
+    assert.equal(buttons[0].getAttribute("aria-label"), "Copy text", "no confirmation before the clipboard accepts");
+    finish();
+    await dom.waitFor(() => buttons[0].getAttribute("aria-label") === "Copied");
+    assert.equal(buttons[1].getAttribute("aria-label"), "Copy text", "other blocks keep their own state");
+    buttons[1].click();
+    assert.deepEqual(writes, [prompt, "const second = 2;"]);
+    finish();
+  } finally {
+    await done();
+  }
+});
+
+test("unavailable or denied clipboard access reports failure and lets the user retry", async t => {
+  mockClipboard(t, undefined);
+  for (const clipboard of [
+    undefined,
+    { writeText: () => Promise.reject(Error("NotAllowedError")) },
+    { writeText: () => { throw Error("Clipboard unavailable"); } },
+  ]) {
+    Object.defineProperty(dom.window.navigator, "clipboard", { configurable: true, value: clipboard });
+    const { root, done } = await show("```\nKeep this selectable.\n```");
+    try {
+      const button = root.querySelector("button.md-copy");
+      assert.ok(button, "copy is offered without a terminal provider");
+      button.click();
+      const error = await dom.waitFor(() => root.querySelector('[role="status"]'));
+      assert.match(error.textContent, /Couldn’t copy\. Select the text/);
+      assert.equal(button.getAttribute("aria-label"), "Copy text", "failure never claims success");
+      assert.equal(root.querySelector("pre code").textContent, "Keep this selectable.");
+      let copied;
+      Object.defineProperty(dom.window.navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async text => { copied = text; } },
+      });
+      button.click();
+      await dom.waitFor(() => button.getAttribute("aria-label") === "Copied");
+      assert.equal(copied, "Keep this selectable.");
+      assert.equal(root.querySelector('[role="status"]'), null);
+    } finally {
+      await done();
+    }
+  }
+  assert.deepEqual(dom.errors, []);
+});
+
+test("a streaming block copies its latest text and never confirms an older pending copy", async t => {
+  const writes = [], pending = [];
+  mockClipboard(t, { writeText: text => {
+    writes.push(text);
+    return new Promise(resolve => pending.push(resolve));
+  } });
+  let update;
+  function Streaming() {
+    const [text, setText] = React.useState("```\nFirst part");
+    update = setText;
+    return React.createElement(AgentMarkdown, { text });
+  }
+  const view = await dom.render(React.createElement(Streaming));
+  try {
+    const button = view.container.querySelector("button.md-copy");
+    button.click();
+    dom.update(() => update("```\nFirst part\nNow complete.\n```"));
+    pending[0]();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(button.getAttribute("aria-label"), "Copy text", "old text is no longer the displayed block");
+    button.click();
+    assert.deepEqual(writes, ["First part", "First part\nNow complete."]);
+    pending[1]();
+    await dom.waitFor(() => button.getAttribute("aria-label") === "Copied");
+  } finally {
+    await view.unmount();
+  }
+});
+
 test("a markdown table shows as a table, aligned as written", async () => {
   const { root, done } = await show(
     [

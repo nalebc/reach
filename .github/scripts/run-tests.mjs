@@ -27,6 +27,7 @@ export const suites = {
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
     // Bug bash recovery: shared chat/file UI and native input refusals.
+    "agent-markdown-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
