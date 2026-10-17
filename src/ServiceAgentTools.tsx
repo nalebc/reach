@@ -224,8 +224,13 @@ export default function ServiceAgentTools({
         setConnectors((old) =>
           old.map((c) => (c.id === connector.id ? { ...c, access } : c)),
         );
-        intent.current = input;
-        setWaiting(connector.id);
+        if (access.status === "approved") {
+          running.current = false;
+          await execute(input, controller);
+        } else if (access.status === "pending") {
+          intent.current = input;
+          setWaiting(connector.id);
+        } else setError("Service access was not approved or has ended.");
       }
     } catch (error) {
       if (!controller.signal.aborted && session.current === controller) {

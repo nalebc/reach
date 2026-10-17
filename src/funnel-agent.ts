@@ -149,6 +149,7 @@ export function createFunnelAgent(dependencies: {
   crypto: Crypto;
   fetch: typeof fetch;
   now?: () => number;
+  locks?: Pick<LockManager, "request">;
 }) {
   const { origin, storage, keys, crypto } = dependencies;
   const keep = dependencies.keep || storage;
@@ -445,13 +446,22 @@ export function createFunnelAgent(dependencies: {
   // that already reconnected the same access left its session in storage.
   let reconnecting: Promise<FunnelState> | null = null;
   function reconnect(state: FunnelState, failedToken?: string) {
-    reconnecting ||= (async () => {
+    const recover = async () => {
       const stored = read();
       if (stored?.id !== state.id) throw endedError();
       if (stored.session && failedToken && stored.session.peer.token !== failedToken)
         return stored;
+      // A renewal may have reached Reach before its credential answer was
+      // interrupted. Collect that receipt before replacing it with another.
+      if (!stored.session && stored.approved && stored.receipt)
+        return exchange(stored, "status");
       return reconnectAndCollect(stored);
-    })().finally(() => {
+    };
+    // Always access shares its key and storage across tabs. Serialize renewal
+    // across tabs too, then reread what the previous tab saved.
+    reconnecting ||= (dependencies.locks
+      ? dependencies.locks.request(`reach-agent:${state.id}`, recover)
+      : recover()).finally(() => {
       reconnecting = null;
     });
     return reconnecting;
@@ -468,10 +478,29 @@ export function createFunnelAgent(dependencies: {
       next = await exchange(next, "status");
     return next;
   }
+  const notRunResponse = (error: unknown) => {
+    const status = (error as { status?: number })?.status;
+    return new Response(JSON.stringify({ error: (error as Error)?.message || "Couldn’t reconnect to the computer. Trying again…" }), {
+      status: status && status >= 400 && status <= 599 ? status : 503,
+      headers: { "Content-Type": "application/json", "Reach-Not-Run": "1" },
+    });
+  };
   async function request(peer: Peer, path: string, init: RequestInit = {}) {
     // Mid-reconnect the session is being replaced: wait for the new one.
     if (reconnecting) await reconnecting.catch(() => {});
-    const state = read();
+    if (dependencies.locks)
+      await dependencies.locks.request(`reach-agent:${peer.sessionId}`, () => {});
+    let state = read();
+    if (state && state.id === peer.sessionId && peer.url === origin &&
+        !state.session && state.approved && state.receipt) {
+      try {
+        state = await reconnect(state, peer.token);
+      } catch (error) {
+        return notRunResponse(error);
+      }
+      if (!state.session)
+        return notRunResponse(failure(503, "This page is reconnecting to the computer. Trying again in a moment."));
+    }
     // The session in storage is the one to use: a refresh may have replaced
     // the token a view still holds. Never "ended" from here: only the
     // computer says that (reconnect).
@@ -506,14 +535,19 @@ export function createFunnelAgent(dependencies: {
     // Refused before it ran (its token replaced, Reach restarted, the owner
     // changed something): reconnect this browser and send it once more.
     if (response.status === 401 && response.headers.get("Reach-Not-Run") === "1" && !init.signal?.aborted) {
+      let next: FunnelState;
       try {
-        const next = await reconnect(current, current.session!.peer.token);
-        if (next.session) {
-          current = next;
-          response = await send(current);
-        }
-      } catch {
-        // Moved or ended: the page says so (FunnelAgent).
+        next = await reconnect(current, current.session!.peer.token);
+      } catch (error) {
+        // Only the original, refused action is known not to have run. Keep a
+        // renewal outage retryable, and preserve an actual refusal's status.
+        return notRunResponse(error);
+      }
+      if (next.session) {
+        current = next;
+        // A resent action may have run. A lost answer must propagate without
+        // inheriting the original request's Not-Run guarantee.
+        response = await send(current);
       }
     }
     if (response.ok && method === "GET" && path === "/api/device") {
@@ -549,6 +583,7 @@ export function browserFunnelAgent() {
     keys: browserFunnelKeys(),
     crypto,
     fetch: (...args) => fetch(...args),
+    locks: navigator.locks,
   }));
 }
 // Granted access never gives up on a blip. A read that failed on the network

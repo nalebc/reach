@@ -653,8 +653,8 @@ export async function waitForAgentAdmission(receipt, api, {
   throw Error("Connection approval timed out. Ask the owner for a new agent invitation.");
 }
 
-// One tailnet node per computer: two copies of one node would fight. The
-// first process (usually an MCP server) holds it; others, such as a second
+// One holder per computer: two copies of a node or credential would fight.
+// The first process (usually an MCP server) holds it; others, such as a second
 // agent session or `call`, use it through a private socket next to it, and
 // take over when it's gone.
 export function lock(conn) {
@@ -732,6 +732,7 @@ export function shareNode(conn, api) {
 export const GONE = "REACH_HOLDER_GONE";
 export function viaShared(conn) {
   let socket,
+    connecting,
     next = 0;
   const waiting = new Map();
   const connect = () =>
@@ -739,9 +740,10 @@ export function viaShared(conn) {
       const s = net.connect(socketOf(conn));
       s.once("connect", () => resolve(s));
       s.once("error", () =>
-        reject(Object.assign(Error("gone"), { code: GONE })),
+        reject(Object.assign(Error("gone"), { code: GONE, notRun: true })),
       );
       s.on("close", () => {
+        if (socket !== s) return;
         socket = null;
         for (const w of waiting.values())
           w.reject(Object.assign(Error("gone"), { code: GONE }));
@@ -750,6 +752,7 @@ export function viaShared(conn) {
       const lines = readline.createInterface({ input: s });
       lines.on("error", () => {});
       lines.on("line", (line) => {
+        if (socket !== s) return;
         let r;
         try {
           r = JSON.parse(line);
@@ -764,13 +767,60 @@ export function viaShared(conn) {
       });
     });
   return async (route, method = "GET", body) => {
-    socket ||= await connect();
+    socket ||= await (connecting ||= connect().finally(() => { connecting = null; }));
+    if (socket.destroyed) throw Object.assign(Error("gone"), { code: GONE, notRun: true });
     const id = ++next;
     return new Promise((resolve, reject) => {
       waiting.set(id, { resolve, reject });
       socket.write(JSON.stringify({ id, route, method, body }) + "\n");
     });
   };
+}
+
+const sharedConnections = new Map();
+// Funnel and tailnet clients share the same holder/retry rules. Only one
+// holder rotates or renews a credential; a replacement rereads its saved state.
+function sharedAgentConnection(conn, holder) {
+  const folder = fs.realpathSync.native(conn);
+  if (sharedConnections.has(folder)) return sharedConnections.get(folder);
+  let shared = false, using;
+  const become = async () => {
+    for (let i = 0; i < 120; i++) {
+      if (lock(folder)) {
+        const current = holder();
+        if (!shared) {
+          shareNode(folder, current.api);
+          current.start?.();
+        }
+        shared = true;
+        return current;
+      }
+      if (await listening(socketOf(folder))) return { api: viaShared(folder), shared: true };
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw Error("Reach's connection to this computer didn't start.");
+  };
+  const api = async (route, method = "GET", body) => {
+    for (let i = 0; ; i++) {
+      const selected = using ||= become();
+      let current;
+      try { current = await selected; }
+      catch (error) { if (using === selected) using = null; throw error; }
+      try { return await current.api(route, method, body); }
+      catch (error) {
+        if (!current.shared || error.code !== GONE || i > 2) throw error;
+        if (using === selected) using = null;
+        // Losing an answer after a write reached the holder cannot prove
+        // the write did not run. Only an explicitly unsent write may retry.
+        if (!["GET", "HEAD"].includes(method) && error.notRun !== true)
+          throw agentRequestError(503, { error: "The shared Reach connection closed before answering. Check the result before retrying this action." });
+      }
+    }
+  };
+  sharedConnections.set(folder, api);
+  using = become();
+  using.catch(() => {});
+  return api;
 }
 
 // Joined: a saved credential (a join cut short leaves only a placeholder).
@@ -921,26 +971,22 @@ async function open(home, name, allowLocal) {
     };
   // Through the computer's public link (or its private address), signed by
   // this agent's own key. Several processes may share this folder (an MCP
-  // server, a call): the one holding the folder's lock trades the credential
-  // hourly; the others read what it saved before each request.
+  // server, a call): the holder trades and renews; the others call through
+  // its private socket, with the same rules as a tailnet connection.
   if (credential.via === "funnel") {
     const file = path.join(conn, "credential.json");
-    let seen = fs.statSync(file).mtimeMs;
-    const save = (next) => { writePrivate(file, JSON.stringify(next, null, 2)); seen = fs.statSync(file).mtimeMs; };
-    const reload = () => {
-      try {
-        const now = fs.statSync(file).mtimeMs;
-        if (now !== seen) { seen = now; Object.assign(credential, readCredential(conn)); }
-      } catch { /* kept as it was */ }
-    };
-    const rotator = lock(conn);
-    const api = funnelApi({ conn, credential, save, reload });
+    const reload = () => Object.assign(credential, readCredential(conn));
+    const save = next => writePrivate(file, JSON.stringify(next, null, 2));
     return {
       credential,
-      api: async (...args) => {
-        if (rotator) await rotateIfDue(conn, credential, api).catch(() => {});
-        return api(...args);
-      },
+      api: sharedAgentConnection(conn, () => {
+        reload();
+        const api = funnelApi({ conn, credential, save, reload });
+        return { api: async (...args) => {
+          await rotateIfDue(conn, credential, api).catch(() => {});
+          return api(...args);
+        } };
+      }),
     };
   }
   // Hold the node, or use the one another process holds.
@@ -951,44 +997,17 @@ async function open(home, name, allowLocal) {
     origin: credential.origin,
     hostname: credential.hostname,
   };
-  let shared = false;
-  const become = async () => {
-    for (let i = 0; i < 120; i++) {
-      if (lock(conn)) {
-        // Hold it: share it at once (callers wait for it with us).
-        const api = async (...args) => {
-          const node = await connectTailnet(where);
-          // A trade that fails leaves the current credential as it was.
-          await rotateIfDue(conn, credential, tailnetApi(node, credential.origin, credential.token, { timeoutMs: 15000 })).catch(() => {});
-          return tailnetApi(node, credential.origin, credential.token)(...args);
-        };
-        if (!shared) {
-          shareNode(conn, api);
-          connectTailnet(where).catch(() => {}); // start joining now
-        }
-        shared = true;
-        return { api };
-      }
-      if (await listening(socketOf(conn)))
-        return { api: viaShared(conn), shared: true };
-      await new Promise((r) => setTimeout(r, 250)); // it's still starting
-    }
-    throw Error("Reach's connection to this computer didn't start.");
-  };
-  let using;
-  const api = async (...args) => {
-    for (let i = 0; ; i++) {
-      const current = await (using ||= become());
-      try {
-        return await current.api(...args);
-      } catch (e) {
-        if (!current.shared || e.code !== GONE || i > 2) throw e;
-        using = null; // the holder ended: hold it now
-      }
-    }
-  };
-  using = become();
-  using.catch(() => {});
+  const api = sharedAgentConnection(conn, () => {
+    Object.assign(credential, readCredential(conn));
+    return {
+      start: () => { connectTailnet(where).catch(() => {}); },
+      api: async (...args) => {
+        const node = await connectTailnet(where);
+        await rotateIfDue(conn, credential, tailnetApi(node, credential.origin, credential.token, { timeoutMs: 15000 })).catch(() => {});
+        return tailnetApi(node, credential.origin, credential.token)(...args);
+      },
+    };
+  });
   return { credential, api };
 }
 

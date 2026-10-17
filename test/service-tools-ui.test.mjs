@@ -263,3 +263,26 @@ test("browser service cards explain Agent Access restrictions and cannot request
   assert.match(view.container.textContent, /Agent Access/);
   assert.equal(f.service.inspect().length, 0);
 });
+
+test("a stale catalog uses an already approved service request immediately", async (t) => {
+  const f = setup(t);
+  // The catalog can lag another tab's owner approval. Hold this tab's refresh
+  // to prove the request response itself drives the correct UI state.
+  const interval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", (run, ms, ...args) =>
+    ms === 3000 ? 0 : interval(run, ms, ...args),
+  );
+  const view = await render(ServiceTools, { peer });
+  await dom.waitFor(() => button(view.container, "Check order status"));
+  const approval = f.service.request(() => f.client, {
+    connectorId: SAMPLE_STORE.id,
+    reason: "Check my sample order.",
+  });
+  f.service.decide(() => f.owner, approval.id, { decision: "approve" });
+  button(view.container, "Check order status").click();
+  await dom.waitFor(() => f.calls.filter((call) => call.route.endsWith("/request")).length === 1);
+  await settle();
+  assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
+  await dom.waitFor(() => view.container.textContent.includes("Your sample desk lamp"));
+  assert.doesNotMatch(view.container.textContent, /automatically after approval/);
+});

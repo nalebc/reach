@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createAuth } from "../server/core.mjs";
+import { randomBytes } from "node:crypto";
+import { createAuth, hostedConnector } from "../server/core.mjs";
 import { rotateIfDue } from "../scripts/agent-remote.mjs";
 import { windowsAcl, othersAllowed } from "./helpers/windows-acl.mjs";
 
@@ -162,4 +163,141 @@ test("a public-link agent trades its credential with its key; a copy ends it; a 
   const listed = auth.list().find((c) => c.id === access.clientId);
   assert.ok(listed.expiresAt <= Date.now(), "ended for good, in the list too");
   assert.equal(auth.funnelWindow().open, false, "nothing keeps the public door for it");
+});
+
+test("a rejected device identity cannot activate or revoke another device's rotated credential", (t) => {
+  const advance = clock(t);
+  const f = fixture(t);
+  const first = f.join();
+  const second = f.auth.rotateCredential(first.token, f.node());
+  const wrong = { ...f.node(), nodeId: "another-node" };
+  assert.equal(f.auth.verify(second.token, wrong), null);
+  advance(121_000);
+  assert.ok(f.auth.verify(first.token, f.node()), "a refused request did not activate the successor");
+  assert.ok(f.auth.verify(second.token, f.node()));
+  advance(121_000);
+  assert.equal(f.auth.verify(first.token, wrong), null);
+  assert.equal(f.auth.verify(first.token), null);
+  assert.deepEqual(f.reused, [], "a request from the wrong device cannot revoke the real device");
+  assert.ok(f.auth.verify(second.token, f.node()));
+});
+
+function funnelFixture(t, extra = {}) {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-rotate-binding-")));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const auth = createAuth({ dataDir: path.join(dir, "private"), roots: [dir], agentPolicyFile: path.join(dir, "policy.json") });
+  const key = randomBytes(32).toString("base64url");
+  const grant = auth.inviteBrowser({ name: "Researcher", transport: "funnel", preset: "readonly", ttlSeconds: 3600, ...extra });
+  const connector = hostedConnector(grant.invitation);
+  const claim = extra.hosted
+    ? auth.claimHostedInvitation(key, { connector, clientId: "test-client" })
+    : auth.redeemFunnelBrowser(grant.invitation, key);
+  auth.decideAgentAdmission(claim.requestId, "approve");
+  const access = auth.pollFunnelAdmission(claim.requestId, claim.requestSecret, key);
+  return { auth, key, access, connector, grant };
+}
+
+test("a wrong signing key or connection type cannot settle another agent's credential rotation", (t) => {
+  const advance = clock(t);
+  const { auth, key, access } = funnelFixture(t);
+  const reused = [];
+  auth.onCredentialReuse((client) => reused.push(client.id));
+  const wrong = randomBytes(32).toString("base64url");
+  const next = auth.rotateFunnelCredential(access.token, key);
+  assert.equal(auth.verifyFunnel(next.token, wrong), null);
+  assert.equal(auth.verify(next.token), null, "a browser token cannot be activated through the device API");
+  advance(121_000);
+  assert.ok(auth.verifyFunnel(access.token, key));
+  assert.ok(auth.verifyFunnel(next.token, key));
+  advance(121_000);
+  assert.equal(auth.verifyFunnel(access.token, wrong), null);
+  assert.equal(auth.verify(access.token), null);
+  assert.deepEqual(reused, []);
+  assert.ok(auth.verifyFunnel(next.token, key), "the legitimate agent keeps its access");
+});
+
+test("a retired browser credential can renew its lease during the in-flight grace period", (t) => {
+  const advance = clock(t);
+  const { auth, key, access } = funnelFixture(t);
+  advance(9 * 60_000);
+  const next = auth.rotateFunnelCredential(access.token, key);
+  assert.ok(auth.verifyFunnel(next.token, key));
+  assert.doesNotThrow(() => auth.touchFunnel(access.token, key));
+  assert.ok(auth.verifyFunnel(next.token, key));
+});
+
+test("a retired device credential presented by a different node cannot end the active session", (t) => {
+  const advance = clock(t);
+  const f = fixture(t);
+  const first = f.join();
+  const second = f.auth.rotateCredential(first.token, f.node());
+  assert.ok(f.auth.verify(second.token, f.node()));
+  advance(121_000);
+  assert.equal(f.auth.verify(first.token, { ...f.node(), nodeId: "another-node" }), null);
+  assert.deepEqual(f.reused, []);
+  assert.ok(f.auth.verify(second.token, f.node()));
+});
+
+test("a retired browser credential presented with another key cannot end the active session", (t) => {
+  const advance = clock(t);
+  const { auth, key, access } = funnelFixture(t);
+  const second = auth.rotateFunnelCredential(access.token, key);
+  assert.ok(auth.verifyFunnel(second.token, key));
+  advance(121_000);
+  assert.equal(auth.verifyFunnel(access.token, randomBytes(32).toString("base64url")), null);
+  assert.ok(auth.verifyFunnel(second.token, key));
+});
+
+test("a retired hosted refresh token at another connector cannot end the active session", (t) => {
+  const advance = clock(t);
+  const { auth, key, access, connector } = funnelFixture(t, { hosted: true });
+  const own = { connector, clientId: "test-client", authenticate: (id) => id === "test-client" };
+  const first = `${key}.${access.token}`;
+  const second = auth.refreshHosted(first, own);
+  const third = auth.refreshHosted(second.refreshToken, own);
+  advance(121_000);
+  assert.equal(auth.refreshHosted(first, { ...own, connector: randomBytes(32).toString("base64url") }), null);
+  assert.ok(auth.refreshHosted(third.refreshToken, own));
+});
+
+test("a refresh at the wrong connector or with the wrong OAuth client cannot alter rotated access", (t) => {
+  const advance = clock(t);
+  const { auth, key, access, connector } = funnelFixture(t, { hosted: true });
+  const reused = [];
+  auth.onCredentialReuse((client) => reused.push(client.id));
+  const first = `${key}.${access.token}`;
+  const own = { connector, clientId: "test-client", authenticate: (id) => id === "test-client" };
+  const second = auth.refreshHosted(first, own);
+  const refused = [
+    { ...own, connector: randomBytes(32).toString("base64url") },
+    { ...own, clientId: "wrong-client" },
+    { ...own, authenticate: () => false },
+  ];
+  for (const options of refused) assert.equal(auth.refreshHosted(second.refreshToken, options), null);
+  advance(121_000);
+  const third = auth.refreshHosted(first, own);
+  assert.ok(third, "rejected refreshes did not activate the successor");
+  assert.ok(auth.refreshHosted(third.refreshToken, own));
+  advance(121_000);
+  for (const options of refused) assert.equal(auth.refreshHosted(first, options), null);
+  assert.deepEqual(reused, []);
+  assert.ok(auth.list().some((c) => c.id === access.clientId));
+});
+
+for (const reopened of [false, true]) test(`renewing a browser session retires every credential from the previous session${reopened ? " after Reopen link" : ""}`, (t) => {
+  const advance = clock(t);
+  const { auth, key, access, grant } = funnelFixture(t);
+  const active = auth.rotateFunnelCredential(access.token, key);
+  assert.ok(auth.verifyFunnel(active.token, key));
+  const pending = auth.rotateFunnelCredential(active.token, key);
+  if (reopened) {
+    auth.reopenBrowserInvitation(grant.clientId);
+    assert.equal(auth.verifyFunnel(pending.token, key), null, "an uncollected successor cannot undo Reopen link");
+  }
+  const receipt = auth.reconnectFunnelBrowser(grant.invitation, key);
+  const latest = auth.pollFunnelAdmission(receipt.requestId, receipt.requestSecret, key);
+  assert.equal(auth.verifyFunnel(pending.token, key), null, "a previous session's pending token cannot replace the renewed one");
+  advance(121_000);
+  assert.equal(auth.verifyFunnel(access.token, key), null);
+  assert.ok(auth.verifyFunnel(latest.token, key), "a previous session's retired token cannot end the new session");
 });

@@ -125,13 +125,16 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
       "Reach-Key": key.thumbprint,
     };
     if (current > 0 && (now() - failedAt > 60_000 || retry())) current = 0;
+    // Each request keeps its own fallback cursor. Another request's private
+    // failure may change the preference, but cannot consume this fallback.
+    let candidate = current;
     for (;;) {
-      const endpoint = endpoints[current];
+      const endpoint = endpoints[candidate];
       try {
         // Every address but the last (the public link) is a tailnet one.
         const imageLimit = agentJsonResponseLimit(input.path, input.method, input.body);
         const response = await send(endpoint, body, headers, timeoutMs, {
-          tailnetOnly: current < endpoints.length - 1,
+          tailnetOnly: candidate < endpoints.length - 1,
           responseLimit: Math.max(RESPONSE_LIMIT, imageLimit),
         });
         const limit = Math.max(RESPONSE_LIMIT, agentJsonResponseLimit(input.path, input.method, input.body, response.status));
@@ -140,9 +143,9 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
         try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
         return { ...response, json, endpoint };
       } catch (error) {
-        if (!error?.unreachable || current + 1 >= endpoints.length) throw error;
+        if (!error?.unreachable || candidate + 1 >= endpoints.length) throw error;
         failedAt = now();
-        current++;
+        current = ++candidate;
       }
     }
   };
@@ -161,23 +164,45 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
 // owner reopened its link) comes back through the same key, once.
 export function funnelApi({ conn, credential, key = agentKey(conn), gatewayOptions = {},
   gateway = funnelGateway(credential.origin, key, { endpoints: [credential.private, credential.origin].filter(Boolean), ...gatewayOptions }), save, reload }) {
-  const reconnect = async () => {
+  let reconnecting = null;
+  const reconnect = (failedToken) => {
+    if (reconnecting) return reconnecting;
+    // A delayed refusal may name the token another call already replaced.
+    reload?.();
+    if (credential.token !== failedToken) return true;
     if (!credential.invitation) return false;
-    const asked = await gateway.reconnect(credential.invitation);
-    if (asked.status !== 202 || asked.json?.status !== "pending" || asked.json.refreshed !== true) return false;
-    const answer = await gateway.status(asked.json.requestId, asked.json.requestSecret);
-    if (answer.json?.status !== "approved" || typeof answer.json.token !== "string") return false;
-    credential.token = answer.json.token;
-    save?.(credential);
-    return true;
+    // Renewing again invalidates the first receipt, so concurrent callers
+    // share one exchange and save its new token before any retry.
+    reconnecting = (async () => {
+      const asked = await gateway.reconnect(credential.invitation);
+      if (asked.status >= 400) throw agentRequestError(asked.status, asked.json);
+      if (asked.status !== 202 || asked.json?.status !== "pending")
+        throw agentRequestError(502, { error: "Reach returned an incomplete session renewal. Retry using this connection." });
+      if (asked.json.refreshed !== true)
+        throw agentRequestError(409, { error: "This connection is waiting for owner approval. Open its existing link to see the verification code." });
+      const answer = await gateway.status(asked.json.requestId, asked.json.requestSecret);
+      if (answer.status >= 400) throw agentRequestError(answer.status, answer.json);
+      if (answer.json?.status === "denied")
+        throw agentRequestError(403, { error: "The owner declined this connection." });
+      if (answer.json?.status === "expired")
+        throw agentRequestError(410, { error: "This connection approval expired. Open its existing link to reconnect." });
+      if (answer.status !== 200 || answer.json?.status !== "approved" || typeof answer.json.token !== "string")
+        throw agentRequestError(502, { error: "Reach could not collect the renewed session. Retry using this connection." });
+      credential.token = answer.json.token;
+      save?.(credential);
+      return true;
+    })().finally(() => { reconnecting = null; });
+    return reconnecting;
   };
   return async (route, method = "GET", body) => {
     if (!route.startsWith("/api/") || route.startsWith("//")) throw Error("Invalid API route.");
+    if (reconnecting) await reconnecting;
     // Another process may have traded the credential: what it saved.
     reload?.();
     for (let attempt = 0; ; attempt++) {
-      const response = await gateway.request(credential.token, method, route, body);
-      if (response.status === 401 && response.headers["reach-not-run"] === "1" && attempt === 0 && (await reconnect())) continue;
+      const token = credential.token;
+      const response = await gateway.request(token, method, route, body);
+      if (response.status === 401 && response.headers["reach-not-run"] === "1" && attempt === 0 && (await reconnect(token))) continue;
       const type = String(response.headers["content-type"] || "").split(";")[0].trim();
       if (response.status >= 200 && response.status < 300) {
         if (isScreenImageRoute(route) && ["image/jpeg", "image/png"].includes(type))
