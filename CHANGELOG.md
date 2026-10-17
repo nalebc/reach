@@ -36,6 +36,8 @@ candidates were not published to npm or GitHub. Their tags remain unchanged.
   public gateway and periodically return to private. Recovery reuses existing
   signing grants and previously configured private clients; it never silently
   approves another device, enrolls a node or replays an action with a lost reply.
+  Saved profiles are validated and reused as one bounded snapshot, so replacing
+  a state file cannot change the identity during startup.
 - Losing private Serve no longer disables a healthy authorized public agent
   gateway. Owner APIs and WebSockets remain private, and security stops still
   close affected access.
