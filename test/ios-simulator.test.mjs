@@ -10,6 +10,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
+import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 
 // Opt-in real WKWebView/native-plugin smoke. Uses a new disposable simulator,
 // a copied app, synthetic files, and a localhost-only Reach fixture. It never
@@ -310,13 +311,6 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   config.server = { url: origin, cleartext: true };
   await fs.writeFile(configFile, JSON.stringify(config));
   const plist = path.join(app, "Info.plist");
-  const launchScheme = `reach-smoke-${nonce}`;
-  // Only the disposable copied app registers this run's unique URL. It gives
-  // simctl a second supported launch path if its direct launcher stalls.
-  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes array", plist]);
-  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes:0 dict", plist]);
-  await exec("/usr/libexec/PlistBuddy", ["-c", "Add :CFBundleURLTypes:0:CFBundleURLSchemes array", plist]);
-  await exec("/usr/libexec/PlistBuddy", ["-c", `Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string ${launchScheme}`, plist]);
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity dict", plist]);
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true", plist]);
   const bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
@@ -332,24 +326,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  await sim("launch", attempt => attempt === 2
-    ? ["openurl", device, `${launchScheme}://launch`]
-    : ["launch", ...(attempt > 1 ? ["--terminate-running-process"] : []), device, bundle], {
-    limit: 75000, attempts: 3, progress: appPage,
-    beforeRetry: async attempt => {
-      // A first boot can answer launchctl while its application launcher is
-      // stuck. Reboot only our disposable device once if the app never asked
-      // for its unique page. Installed app/data and the test CA are retained;
-      // every pairing/transfer/share assertion still has to run afterward.
-      if (attempt !== 2 || pageSeen) return;
-      await sim("stalled launch shutdown", ["shutdown", device], { limit: 30000 });
-      await sim("stalled launch boot", ["boot", device], { limit: 30000 });
-      await sim("stalled launch bootstatus", ["bootstatus", device, "-b"], { limit: 120000 });
-      const services = (await sim("stalled launch readiness", ["spawn", device, "launchctl", "list"], { limit: 30000, attempts: 2 })).stdout;
-      assert.match(services, /^\d+\s+\S+\s+com\.apple\.SpringBoard$/m, "our rebooted simulator runs SpringBoard");
-      reached("isolated simulator rebooted after stalled launch");
-    },
-  });
+  await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached });
   reached("app launched");
   // The page's own time. A slow simulator opening Settings or reopening the
   // app (each under its own limit) doesn't spend it.
