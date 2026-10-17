@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
+import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
 
 const device = "disposable-simulator", bundle = "test.reach.smoke";
 
@@ -111,4 +115,97 @@ test("a reboot without SpringBoard fails before another app launch", async () =>
   assert.equal(f.state().launches, 1);
   assert.equal(f.state().confirmation, false);
   assert.deepEqual(f.phases, []);
+});
+
+// Diagnostic checks use fake commands and disposable files only. They never
+// connect to the host's Simulator service or read its real log directories.
+const diagnosticDevice = "11111111-2222-4333-8444-555555555555";
+async function diagnosticHome(t) {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ios-diagnostics-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  return home;
+}
+
+test("failure diagnostics query only the exact simulator and bundle within the existing deadline", async t => {
+  const home = await diagnosticHome(t);
+  for (const budget of [5000, 60000]) {
+    const calls = [], deadline = Date.now() + budget;
+    const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline,
+      run: async (command, args, limit) => {
+        calls.push({ command, args, limit });
+        return { stdout: args.includes("log") ? "l".repeat(70000) : `12\t0\tUIKitApplication:${bundle}\n34\t0\tother.bundle\n` };
+      },
+    });
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.command, "xcrun");
+      assert.deepEqual(call.args.slice(0, 3), ["simctl", "spawn", diagnosticDevice]);
+      assert.ok(call.limit > 0 && call.limit <= Math.min(budget, 10000));
+      assert.ok(!call.args.some(arg => ["all", "booted", "diagnose", "launch", "shutdown"].includes(arg)));
+    }
+    assert.equal(calls.find(call => call.args.includes("log")).args.at(-1), `eventMessage CONTAINS[c] "${bundle}"`);
+    assert.equal(result.logs.stdout.length, 65536);
+    assert.equal(result.processes.stdout, `12\t0\tUIKitApplication:${bundle}`);
+  }
+});
+
+test("crash evidence must match both bundle and simulator and never scans host crash reports", async t => {
+  const home = await diagnosticHome(t);
+  const folder = path.join(home, "Library", "Developer", "CoreSimulator", "Devices", diagnosticDevice, "data", "Library", "Logs", "CrashReporter");
+  const hostFolder = path.join(home, "Library", "Logs", "DiagnosticReports");
+  await fs.mkdir(folder, { recursive: true });
+  await fs.mkdir(hostFolder, { recursive: true });
+  const report = (owner, device, note) => JSON.stringify({ bundleID: owner }) + "\n" + JSON.stringify({
+    bundleInfo: { CFBundleIdentifier: owner }, coalitionName: `com.apple.CoreSimulator.SimDevice.${device}`,
+    exception: { signal: "SIGABRT" }, note,
+  });
+  await fs.writeFile(path.join(folder, "App-owned.ips"), report(bundle, diagnosticDevice, "x".repeat(70000)));
+  await fs.writeFile(path.join(folder, "App-other-bundle.ips"), report("another.bundle", diagnosticDevice, "UNRELATED BUNDLE"));
+  await fs.writeFile(path.join(folder, "App-other-device.ips"), report(bundle, "99999999-2222-4333-8444-555555555555", "UNRELATED DEVICE"));
+  await fs.writeFile(path.join(hostFolder, "App-host.ips"), report(bundle, diagnosticDevice, "HOST CRASH REPORT"));
+  const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 5000, run: async () => ({ stdout: "" }) });
+  assert.equal(result.crashes.reports.length, 1);
+  assert.match(result.crashes.reports[0].file, /App-owned\.ips$/);
+  assert.match(result.crashes.reports[0].content, /SIGABRT/);
+  assert.equal(result.crashes.reports[0].content.length, 65536);
+  assert.equal(result.crashes.reports[0].truncated, true);
+  assert.doesNotMatch(JSON.stringify(result), /UNRELATED BUNDLE|UNRELATED DEVICE|HOST CRASH REPORT/);
+});
+
+test("missing identities, unsafe selectors and an exhausted budget never start diagnostics", async () => {
+  for (const input of [
+    { device: undefined, bundle },
+    { device: "booted", bundle },
+    { device: diagnosticDevice, bundle: 'bad" OR TRUEPREDICATE' },
+    { device: diagnosticDevice, bundle, deadline: Date.now() - 1 },
+  ]) {
+    const result = await collectIosFailureDiagnostics({ deadline: Date.now() + 1000, ...input, run: () => assert.fail("no command may run") });
+    assert.ok(result.skipped);
+  }
+});
+
+test("stalled diagnostic commands return partial evidence at the existing deadline", async t => {
+  const home = await diagnosticHome(t);
+  const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 100,
+    run: () => new Promise(() => {}),
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.logs.pending, true);
+  assert.equal(result.processes.pending, true);
+});
+
+test("diagnostic collection errors stay evidence and do not throw over the original launch failure", async t => {
+  const home = await diagnosticHome(t), original = Error("original simctl launch timed out");
+  const problem = Object.assign(Error("diagnostic service refused"), { stdout: "o".repeat(9000), stderr: "e".repeat(9000) });
+  let result;
+  await assert.rejects(Promise.reject(original).finally(async () => {
+    result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 5000,
+      run: async () => { throw problem; },
+    });
+  }), error => error === original);
+  assert.equal(result.logs.error, "diagnostic service refused");
+  assert.equal(result.processes.error, "diagnostic service refused");
+  assert.equal(result.logs.stdout.length, 8192);
+  assert.equal(result.logs.stderr.length, 8192);
+  assert.deepEqual(commandFailureOutput(problem), { stdout: "o".repeat(8192), stderr: "e".repeat(8192) });
 });
