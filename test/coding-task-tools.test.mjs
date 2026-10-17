@@ -115,7 +115,7 @@ function browserHarness(initial) {
       return res.json(req.method === "GET" && req.path === "/api/coding-tasks" ? { tasks: [projection] } : projection);
     }
     const handler = handlers.get(`${req.method} ${req.path}`);
-    if (!handler) return res.status(404).json({ error: "No fixture route" });
+    if (typeof handler !== "function") return res.status(404).json({ error: "No fixture route" });
     Promise.resolve(handler(req, res)).catch(error => res.status(error.status || 500).json({ error: error.message }));
   };
   for (const method of ["get", "post", "delete"]) app[method] = (route, handler) => handlers.set(`${method.toUpperCase()} ${route}`, handler);

@@ -63,7 +63,7 @@ function fixture(t, { replies = {}, ownerClaim = async () => {}, claudeOptions =
   return { sessions, start, daemon, codexLive, claudeHost, calls, events, runs, dir };
 }
 
-test("delegated Codex start records the thread before its first turn and pins owner approvals", async t => {
+test("legacy delegated Codex start records the thread before its first turn and pins user approvals", async t => {
   const f = fixture(t);
   const result = await f.start("codex", { modeName: "full-access", config: { unsafe: true }, onStarted: async value => { f.events.push("started"); assert.equal(value.turnId, "initial-turn"); } });
   assert.deepEqual(result, { threadId: T, turnId: "initial-turn" });
@@ -72,6 +72,34 @@ test("delegated Codex start records the thread before its first turn and pins ow
   assert.equal(options.config, undefined);
   assert.ok(f.events.indexOf("created") < f.events.indexOf("turn/start"));
   assert.ok(f.events.indexOf("turn/start") < f.events.indexOf("started"));
+});
+
+for (const guardian of [true, false]) test(`Full control Codex tasks use the standard ${guardian ? "guardian reviewer" : "user-review fallback"}`, async t => {
+  const f = fixture(t, { sessionOptions: { codex: { list: async () => [], models: async () => ({ modes: [{ id: guardian ? "guardian-approvals" : "auto" }] }) } } });
+  await f.start("codex", { ownerDefaults: true, modeName: "full-access", approvalPolicy: "never", config: { unsafe: true } });
+  const started = f.calls.find(([method]) => method === "thread/start")[1];
+  const turn = f.calls.find(([method]) => method === "turn/start")[1];
+  for (const options of [started, turn]) {
+    assert.equal(options.approvalPolicy, "on-request");
+    assert.equal(options.approvalsReviewer, guardian ? "auto_review" : "user");
+    assert.equal(options.config, undefined);
+  }
+  assert.equal(started.sandbox, "workspace-write");
+  assert.equal(turn.permissions, ":workspace");
+});
+
+test("Full control Codex task authorization is rechecked after discovering standard modes", async t => {
+  let allowed = true;
+  const f = fixture(t, { sessionOptions: { codex: { list: async () => [], models: async () => { allowed = false; return { modes: [{ id: "guardian-approvals" }] }; } } } });
+  await assert.rejects(f.start("codex", { ownerDefaults: true, authorize: () => { if (!allowed) throw denied(); } }), { status: 401 });
+  assert.equal(f.calls.some(([method]) => method === "thread/start" || method === "turn/start"), false);
+});
+
+test("the internal task permission-default selector must be a boolean", t => {
+  const f = fixture(t);
+  for (const ownerDefaults of [null, 0, 1, "true"])
+    assert.throws(() => f.start("codex", { ownerDefaults }), { status: 400 });
+  assert.equal(f.calls.length, 0);
 });
 
 test("ordinary Codex start retains its existing automatic reviewer default", async t => {
@@ -146,12 +174,12 @@ for (const matching of [false, true]) test(`uncertain Codex cancellation ${match
   assert.deepEqual(interrupted, matching ? [["turn/interrupt", { threadId: T, turnId: "first-turn" }]] : []);
 });
 
-test("delegated Claude start persists its identity before launch and keeps Manual permissions", async t => {
+test("delegated Claude start persists its identity before launch and uses the existing Auto default", async t => {
   const f = fixture(t);
   const started = await f.start("claude", { mode: "bypassPermissions", extra: ["--dangerous"] });
   assert.ok(started.threadId); assert.equal(started.turnId, null); assert.equal(typeof started.generation, "string");
   const proc = f.runs[0];
-  assert.equal(proc.args[proc.args.indexOf("--permission-mode") + 1], "manual");
+  assert.equal(proc.args[proc.args.indexOf("--permission-mode") + 1], "auto");
   assert.equal(proc.args.includes("--dangerous"), false);
   assert.ok(f.events.indexOf("created") < f.events.indexOf("claude/spawn"));
   assert.equal(f.events.includes("claude/import"), false);
