@@ -61,14 +61,14 @@ export function tailnetLookup(hostname, options, callback) {
 }
 
 // One signed request to the gateway, over HTTPS to one of the computer's
-// addresses. A failure before the connection is made (no route, refused,
+// addresses. A failure before TLS could carry HTTP (no route, refused,
 // a name that doesn't resolve, or not into the tailnet) is marked
 // unreachable: the next address is tried. Anything later isn't, so an action
 // never runs twice. A fresh connection each time, so "connected" is known.
 export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = false, connectMs = 5000, responseLimit = RESPONSE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
-    let connected = false;
-    const unreachable = (error) => Object.assign(error, { unreachable: !connected });
+    let connected = false, socket, connecting;
+    const unreachable = (error) => Object.assign(error, { unreachable: !connected && !socket?.getCipher?.() });
     const req = https.request(`${endpoint}/agent-gateway`, {
       // No forced rejectUnauthorized: an agent behind a TLS-intercepting egress
       // proxy (Muse's sandbox) joins with its environment's TLS settings, as
@@ -82,6 +82,8 @@ export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = fa
       // sandbox before a request left (Oct 10, reproduced).
       ...(tailnetOnly ? { agent: false, lookup: tailnetLookup } : {}),
     }, (res) => {
+      connected = true;
+      clearTimeout(connecting);
       const chunks = [];
       const limit = res.statusCode >= 200 && res.statusCode < 300 ? responseLimit : RESPONSE_LIMIT;
       let size = 0;
@@ -93,16 +95,43 @@ export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = fa
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }));
       res.on("error", reject);
     });
-    const connecting = tailnetOnly
+    connecting = tailnetOnly
       ? setTimeout(() => { if (!connected) req.destroy(unreachable(Error("Reach's private address didn't answer."))); }, connectMs)
       : null;
     connecting?.unref?.();
-    req.on("socket", (socket) => socket.once("connect", () => { connected = true; clearTimeout(connecting); }));
+    // TCP alone cannot dispatch HTTPS. Keep the private deadline/fallback
+    // through TLS setup; after TLS is ready a lost answer may hide a write.
+    req.on("socket", (next) => {
+      socket = next;
+      socket.once("secureConnect", () => { connected = true; clearTimeout(connecting); });
+    });
     req.on("close", () => clearTimeout(connecting));
     req.on("timeout", () => req.destroy(unreachable(Error("Reach request timed out. Mutating operations are not retried."))));
     req.once("error", (error) => reject(unreachable(error)));
     req.end(body);
   });
+}
+
+// A signing key is authorized on both gateway routes. Prefer the installed
+// Tailscale daemon, then an already-saved embedded node, then let the gateway
+// fall back publicly. Only a proven pre-dispatch failure advances a route.
+// The embedded route never inherits a legacy node-bound bearer credential.
+export function privateGatewaySend({ native = httpsSend, embedded, now = Date.now, retryMs = 60_000 } = {}) {
+  let nativeAfter = 0;
+  return async (endpoint, body, headers, timeoutMs, options = {}) => {
+    if (!options.tailnetOnly) return native(endpoint, body, headers, timeoutMs, options);
+    let unavailable = Object.assign(Error("Reach's native private route is unavailable."), { unreachable: true });
+    if (now() >= nativeAfter) {
+      try { return await native(endpoint, body, headers, timeoutMs, options); }
+      catch (error) {
+        if (!error?.unreachable) throw error;
+        unavailable = error;
+        nativeAfter = now() + retryMs;
+      }
+    }
+    if (embedded) return embedded(endpoint, body, headers, timeoutMs, options);
+    throw unavailable;
+  };
 }
 
 // The gateway, signed for `audience` (the computer's public origin, its

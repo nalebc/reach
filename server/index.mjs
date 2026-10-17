@@ -183,6 +183,7 @@ export async function createReach(overrides = {}) {
   if (ptyWarning) console.warn(`Reach: ${ptyWarning}`);
   const instance = crypto.randomUUID();
   let transportAvailable = true;
+  let privateTransportAvailable = true;
   const funnelRequests = new WeakMap();
   const browserResponses = new Map();
   let browserResponseCount = 0;
@@ -1530,7 +1531,7 @@ export async function createReach(overrides = {}) {
   app.use((req, res, next) => funnelRequests.has(req) ? next() : parseJSON(req, res, next));
   app.use("/api", compressJson());
   app.use((req, res, next) => {
-    if (!transportAvailable)
+    if (!transportAvailable || (!privateTransportAvailable && !funnelRequests.has(req)))
       return res.status(503).json({
         error:
           "Private connection is recovering. Reach will reconnect automatically.",
@@ -5310,7 +5311,7 @@ export async function createReach(overrides = {}) {
     }
     if (config.tailscaleOwner && (!trustedRequest(req) || !req.reachIdentity))
       return socket.destroy();
-    if (!transportAvailable) {
+    if (!transportAvailable || !privateTransportAvailable) {
       socket.destroy();
       return;
     }
@@ -6173,6 +6174,20 @@ export async function createReach(overrides = {}) {
         screenControl.clear();
         closeInput();
         // Disconnect access without killing terminals, chats or jobs.
+        for (const ws of wss.clients) ws.terminate();
+      }
+    },
+    // Serve on the private port can fail independently of the public
+    // gateway's port. Only signed/authorized gateway dispatch bypasses this
+    // private-route pause; ordinary owner APIs remain private as before.
+    setPrivateTransportAvailable(value) {
+      if (privateTransportAvailable === value) return;
+      privateTransportAvailable = value;
+      if (value) auth.restartQuietClock();
+      else {
+        screenControl.clear();
+        closeInput();
+        // WebSockets are private-only. Funnel agents use signed HTTP calls.
         for (const ws of wss.clients) ws.terminate();
       }
     },
