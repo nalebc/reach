@@ -227,7 +227,7 @@ test("a checked saved profile is read once from its opened file and cannot chang
   assert.equal(pathReads, 0, "neither validation nor node startup reopens the named state file");
   assert.deepEqual(f.state.sent.map(call => call.transport), ["embedded", "embedded"], "only the original approved profile starts");
   assert.equal(f.state.starts, 1);
-  if (blocked) assert.equal(JSON.parse(readFile(file, "utf8"))._machinekey, storedState()._machinekey, "Windows denied replacing the open file");
+  if (blocked) assert.equal(savedTailnet(f.conn)?._machinekey, storedState()._machinekey, "Windows denied replacing the open file");
 });
 
 test("a saved profile returns its descriptor-bound snapshot and closes the descriptor", t => {
