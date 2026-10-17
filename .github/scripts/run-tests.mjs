@@ -32,7 +32,7 @@ export const suites = {
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
-    "agent-compatibility", "reach-version",
+    "agent-compatibility", "reach-version", "agent-watch",
     // Fake simctl launch/reboot checks; the real simulator runs in macOS CI.
     "ios-launch",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).

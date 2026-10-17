@@ -312,9 +312,21 @@ test("Windows: an occupied launcher lock names restart without starting anything
   fs.mkdirSync(state);
   const lock = path.join(state, "launcher.lock");
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+  // Another test may have a Reach fixture in the real PC inventory. Model
+  // that ambient inventory without starting or stopping another process.
+  const ambientInventory = path.join(home, "other-processes.json");
+  fs.writeFileSync(ambientInventory, JSON.stringify({ processes: [{
+    pid: process.pid, ppid: 4, image: "node.exe", path: "C:\\node\\node.exe",
+    commandLine: '"C:\\node\\node.exe" "C:\\other reach\\scripts\\bootstrap.mjs"', startedAt: Date.now() - 60000,
+  }] }));
+  const ambient = { ...process.env, REACH_TEST_WINDOWS_PROCESSES: ambientInventory };
+  // This case owns a launcher lock, not a running Reach. Real process-list
+  // coverage lives below and in windows-lifecycle/windows-processes tests.
+  const inventory = path.join(home, "lock-processes.json");
+  fs.writeFileSync(inventory, JSON.stringify({ processes: [] }));
   const result = await new Promise(resolve => execFile(process.execPath,
     ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "--local"],
-    { env: { ...process.env, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "" }, timeout: 30000 },
+    { env: { ...ambient, HOME: home, REACH_HOME: state, REACH_DATA: path.join(state, "quick"), REACH_COMMAND: "", REACH_TEST_WINDOWS_PROCESSES: inventory }, timeout: 30000 },
     (error, stdout, stderr) => resolve({ error, text: stdout + stderr })));
   assert.equal(result.error?.code, 1);
   assert.match(result.text, /already starting or running/);
