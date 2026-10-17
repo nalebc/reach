@@ -43,8 +43,17 @@ const routes = {
   "/api/agents/services": () => ({ access: [] }),
 };
 
-async function workspace({ url, place, state } = {}) {
-  const dom = await startDom({ mobile: true, routes, url });
+async function workspace({ url, place, state, deferDevice = false } = {}) {
+  let releaseDevice;
+  const deviceReady = new Promise((resolve) => { releaseDevice = resolve; });
+  const fixtureRoutes = deferDevice ? {
+    ...routes,
+    "/api/device": async (...args) => {
+      await deviceReady;
+      return routes["/api/device"](...args);
+    },
+  } : routes;
+  const dom = await startDom({ mobile: true, routes: fixtureRoutes, url });
   const socket = globalThis.WebSocket;
   globalThis.WebSocket = class {
     close() {}
@@ -82,11 +91,27 @@ async function workspace({ url, place, state } = {}) {
     assert.equal(landed, 0, "never back on the page before");
   };
   const close = async () => {
+    releaseDevice();
     await view.unmount();
     globalThis.WebSocket = socket;
     await dom.close();
   };
-  return { dom, $, on, reach, button, click, clean, close };
+  try {
+    if (deferDevice) {
+      // The Home shell renders while its device request is still pending. Chat
+      // becomes available only once the connected computer's access is known.
+      assert.ok($(".main-content.page-overview"));
+      assert.equal(button("Chat"), undefined, "the loading shell has no Chat tab yet");
+      releaseDevice();
+    }
+    // Access-dependent tabs arrive after /api/device, later than the initial
+    // Home shell. Wait for the actual control these tests use.
+    await dom.waitFor(() => $('.mobile-nav [aria-label="Chat"]'));
+    return { dom, $, on, reach, button, click, clean, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 const card = (dom) => dom.waitFor(() => [...dom.document.querySelectorAll(".chat-card")].find((c) => /Fix login/.test(c.textContent)));
 
@@ -174,7 +199,7 @@ test("Home is under every tab; switching between tabs adds no entry", async () =
 });
 
 test("with a chat open, the Home tab stays on Home: the chat's entry goes first", async () => {
-  const { dom, $, on, reach, click, clean, close } = await workspace();
+  const { dom, $, on, reach, click, clean, close } = await workspace({ deferDevice: true });
   try {
     await on("overview");
     await click("Chat");
