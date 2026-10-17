@@ -15,7 +15,7 @@ export const suites = {
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
     "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
-    "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
+    "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.

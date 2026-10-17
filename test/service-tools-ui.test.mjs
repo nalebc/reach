@@ -180,77 +180,80 @@ test("switching agent connections drops a waiting automatic run", async (t) => {
   assert.ok(!next.container.textContent.includes("Completed"));
 });
 
-test("live service UI selects the browser, displays account results and tracks an order without handle entry", async (t) => {
-  const native = [];
-  const handle = "a0000000-0000-4000-8000-000000000001";
-  const f = setup(
-    t,
-    createServiceConnectors({
-      run: async (authorize, input) => {
-        authorize();
-        native.push(input);
-        return {
-          status: "completed",
-          browser: input.browser,
-          data:
-            input.id === "builtin_walmart_find"
-              ? {
-                  orders: {
-                    coverage: "visible_page",
-                    more: true,
-                    items: [
-                      {
-                        order: "ORDER-TEST",
-                        handle,
-                        expiresAt: Date.now() + 60000,
-                      },
-                    ],
-                  },
-                }
-              : { tracking: "ORDER-TEST · In transit" },
-        };
-      },
-    }),
-  );
-  f.client.policy.preset = "full";
-  f.client.scopes.push("browser:screen", "browser:control", "browser:open");
-  const view = await render(ServiceTools, { peer });
-  await dom.waitFor(() => button(view.container, "Find orders"));
-  assert.doesNotMatch(view.container.textContent, /sample|fictional/i);
-  assert.equal(
-    view.container.querySelectorAll("input").length,
-    2,
-    "search fields only; no handle or credential fields",
-  );
-  const card = button(view.container, "Find orders").closest("article");
-  const browser = card.querySelector("select");
-  browser.value = "Safari";
-  browser.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  await settle(30);
-  const input = card.querySelector("input");
-  Object.getOwnPropertyDescriptor(
-    dom.window.HTMLInputElement.prototype,
-    "value",
-  ).set.call(input, "chair");
-  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  await settle(30);
-  button(card, "Find orders").click();
-  await dom.waitFor(() => f.service.inspect().length);
-  f.service.decide(() => f.owner, f.service.inspect()[0].id, {
-    decision: "approve",
+for (const platform of ["darwin", "win32"]) {
+  test(`${platform}: live service UI selects the browser, displays account results and tracks an order without handle entry`, async (t) => {
+    const native = [];
+    const alternate = platform === "win32" ? "Edge" : "Safari";
+    const handle = "a0000000-0000-4000-8000-000000000001";
+    const f = setup(
+      t,
+      createServiceConnectors({
+        run: async (authorize, input) => {
+          authorize();
+          native.push(input);
+          return {
+            status: "completed",
+            browser: input.browser,
+            data:
+              input.id === "builtin_walmart_find"
+                ? {
+                    orders: {
+                      coverage: "visible_page",
+                      more: true,
+                      items: [
+                        {
+                          order: "ORDER-TEST",
+                          handle,
+                          expiresAt: Date.now() + 60000,
+                        },
+                      ],
+                    },
+                  }
+                : { tracking: "ORDER-TEST · In transit" },
+          };
+        },
+      }, { platform }),
+    );
+    f.client.policy.preset = "full";
+    f.client.scopes.push("browser:screen", "browser:control", "browser:open");
+    const view = await render(ServiceTools, { peer });
+    await dom.waitFor(() => button(view.container, "Find orders"));
+    assert.doesNotMatch(view.container.textContent, /sample|fictional/i);
+    assert.equal(
+      view.container.querySelectorAll("input").length,
+      2,
+      "search fields only; no handle or credential fields",
+    );
+    const card = button(view.container, "Find orders").closest("article");
+    const browser = card.querySelector("select");
+    browser.value = alternate;
+    browser.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await settle(30);
+    const input = card.querySelector("input");
+    Object.getOwnPropertyDescriptor(
+      dom.window.HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, "chair");
+    input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    await settle(30);
+    button(card, "Find orders").click();
+    await dom.waitFor(() => f.service.inspect().length);
+    f.service.decide(() => f.owner, f.service.inspect()[0].id, {
+      decision: "approve",
+    });
+    await dom.waitFor(() => button(card, "Track shipment"));
+    assert.ok(card.textContent.includes(`visible page in ${alternate}`));
+    assert.match(card.textContent, /More results/);
+    assert.deepEqual(native[0].values, { query: "chair" });
+    assert.equal(native[0].browser, alternate);
+    button(card, "Track shipment").click();
+    await dom.waitFor(() => card.textContent.includes("In transit"));
+    assert.equal(native[1].id, "builtin_walmart_track");
+    assert.deepEqual(native[1].values, { order: handle });
+    assert.equal(native[1].browser, alternate);
+    assert.equal(f.calls.filter((c) => c.route.endsWith("/request")).length, 1);
   });
-  await dom.waitFor(() => button(card, "Track shipment"));
-  assert.match(card.textContent, /visible page in Safari/);
-  assert.match(card.textContent, /More results/);
-  assert.deepEqual(native[0].values, { query: "chair" });
-  assert.equal(native[0].browser, "Safari");
-  button(card, "Track shipment").click();
-  await dom.waitFor(() => card.textContent.includes("In transit"));
-  assert.equal(native[1].id, "builtin_walmart_track");
-  assert.deepEqual(native[1].values, { order: handle });
-  assert.equal(native[1].browser, "Safari");
-  assert.equal(f.calls.filter((c) => c.route.endsWith("/request")).length, 1);
-});
+}
 
 test("browser service cards explain Agent Access restrictions and cannot request a grant from Read only", async (t) => {
   const f = setup(

@@ -23,7 +23,9 @@ test("preset credentials advertise the preset's tools over MCP", () => {
 test("hints say what touches the Mac and what can't be undone", () => {
   const accessTool = toolsFor(presetScopes({ preset: "full" }), access("full")).find(tool => tool.name === "reach_access");
   assert.match(accessTool.description, /no command deny list, protected-window filter or shell sandbox/);
-  assert.match(accessTool.description, /confirm consequential actions/);
+  assert.match(accessTool.description, /without asking for separate action approval/);
+  assert.match(accessTool.description, /Follow any limits the owner gives; ask for missing information/);
+  assert.match(accessTool.description, /connection approval, pause and revocation still apply/);
   assert.doesNotMatch(accessTool.description, /anything that moves money or changes the account is refused/);
   const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "full" }), access("full")).map((tool) => [tool.name, tool.annotations]));
   for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_windows", "reach_menus", "reach_read_page", "reach_mac_shortcuts", "reach_describe_screen", "reach_elements", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);

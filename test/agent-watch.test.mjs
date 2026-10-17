@@ -172,20 +172,23 @@ test("the Codex app saving its choices (the permission mode it's in) is news", (
 
 test("Gemini JSON and JSONL writes and project changes wake histories in one burst", async () => {
   const callbacks = new Map(), news = [];
+  const geminiHome = path.join(os.tmpdir(), "reach-gemini-watch-fixture");
   const watcher = createAgentWatch({
-    geminiHome: "/g", debounceMs: 20,
+    geminiHome, debounceMs: 20,
     watch: (dir, options, listener) => (callbacks.set(dir, listener), { close() {} }),
   });
   watcher.onChange(n => news.push(n));
-  callbacks.get("/g/tmp")("change", "app/chats/session-2026-10-08T00-00-11111111.jsonl");
+  const temporary = callbacks.get(path.join(geminiHome, "tmp"));
+  const home = callbacks.get(geminiHome);
+  temporary("change", path.join("app", "chats", "session-2026-10-08T00-00-11111111.jsonl"));
   assert.deepEqual(news, [{ agent: "gemini", kind: "history" }]);
-  callbacks.get("/g/tmp")("rename", "app/chats/session-2026-10-08T00-00-22222222.json");
-  callbacks.get("/g/tmp")("change", "app/logs.json");
-  callbacks.get("/g")("change", "oauth_creds.json");
+  temporary("rename", path.join("app", "chats", "session-2026-10-08T00-00-22222222.json"));
+  temporary("change", path.join("app", "logs.json"));
+  home("change", "oauth_creds.json");
   assert.equal(news.length, 1);
   await new Promise(r => setTimeout(r, 35));
   assert.equal(news.length, 2);
-  callbacks.get("/g")("change", "projects.json");
+  home("change", "projects.json");
   assert.deepEqual(news.at(-1), { agent: "gemini", kind: "projects" });
   watcher.close();
 });

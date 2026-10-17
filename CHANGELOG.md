@@ -11,7 +11,8 @@ release notes, so date the heading before tagging.
 ### Added
 
 - Invited agents can start, inspect and cancel owned coding tasks in shared
-  projects, with durable request IDs, bounded results and owner-only approvals.
+  projects, with durable request IDs, bounded results, per-agent request limits
+  and the existing chat permission defaults.
 - Full control invitations include service tools for the agent's session. The
   owner can still revoke a service; narrower invitations retain their approval
   workflow. The agent's guide and phone interface describe the same access.
@@ -20,6 +21,8 @@ release notes, so date the heading before tagging.
 
 - Agent CLI, MCP, health and access diagnostics report the loaded package
   version, including standalone agents moved outside the installed package.
+- Signed-in service tools use Chrome or Edge on Windows and Chrome or Safari
+  on macOS, with the platform's matching app grants and setup guidance.
 - CI waits for native watcher registration and isolates launcher-lock fixtures
   from other running tests. Windows console checks follow the explicit private
   QR fallback; stalled iOS launches retain bounded command and simulator evidence.
