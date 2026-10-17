@@ -64,6 +64,8 @@ Switching sections keeps pending tools, request IDs, input drafts, and results i
 
 ## Tools (`window.reach`)
 
+Full control also exposes `reach_start_coding_task`, `reach_get_coding_task`, `reach_list_coding_tasks` and `reach_cancel_coding_task`. These delegate one task to local Codex or Claude Code, with task ownership, bounded progress/results and owner approvals. See [coding tasks](CODING_TASKS.md) for arguments and lifecycle behavior.
+
 ```js
 const tools = await window.reach.listTools();
 const access = await window.reach.callTool("reach_access", {});

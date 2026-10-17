@@ -35,6 +35,7 @@ export const suites = {
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility", "reach-version", "agent-watch",
+    "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).

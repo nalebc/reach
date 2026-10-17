@@ -57,6 +57,8 @@ Your agent can work on your actual laptop: native Mac apps, your signed-in brows
 
 Once approved, the agent can list and call tools from the CLI; the join command also prints its MCP setup instructions. Ask it to open an app and fill a form, find a document, or run a project's tests. See the [agent setup guide](docs/AGENTS.md) and [full tool reference](docs/BROWSER_AGENT_TOOLS.md).
 
+Agents with Full control can also [delegate a coding task to your local Codex or Claude Code](docs/CODING_TASKS.md), follow progress, retrieve recorded changes and command results, and cancel it. Approval prompts stay with you in Reach.
+
 Each agent gets one **preset**:
 
 | Preset           | The agent can                                            |
