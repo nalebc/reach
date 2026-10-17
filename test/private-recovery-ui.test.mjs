@@ -276,9 +276,19 @@ for (const nativeApproval of ["missing", 401, 403]) test(`a fresh private page r
   if (nativeApproval !== "missing") localStorage.setItem("reach.devices", JSON.stringify([peer("APP")]));
   localStorage.setItem("reach.browser.devices", JSON.stringify([peer("BROWSER")]));
   saveBrowserState(savedState());
+  let view, restoredBeforeUnmount = false;
   try {
     const { default: App } = await dom.load("/src/App.tsx");
-    await dom.render(dom.React.createElement(App));
+    view = await dom.render(dom.React.createElement(App));
+    const dispose = view.unmount;
+    view.unmount = async () => {
+      const installed = globalThis.WebSocket;
+      restoredBeforeUnmount ||= installed !== Socket;
+      // Fence the cleanup too: a failing isolation assertion must never
+      // let a React effect reach Node's real networking implementation.
+      globalThis.WebSocket = Socket;
+      try { await dispose(); } finally { globalThis.WebSocket = installed; }
+    };
     await dom.waitFor(() => dom.document.documentElement.dataset.connection === "browser" && dom.document.querySelector(".home-live"), 1000);
     assert.ok(traffic.some(call => call.route === "browser" && call.path === "/api/health" && !call.token));
     assert.ok(traffic.some(call => call.route === "browser" && call.path === "/api/device" && call.token === "Bearer BROWSER"));
@@ -288,10 +298,14 @@ for (const nativeApproval of ["missing", 401, 403]) test(`a fresh private page r
     assert.equal(localStorage.getItem("reach.devices"), nativeApproval === "missing" ? null : JSON.stringify([peer("APP")]));
     assert.deepEqual(dom.errors, []);
   } finally {
+    // Passive effects can still run while React unmounts. Keep every
+    // transport fake installed until its workspace has been disposed.
+    await view?.unmount();
     globalThis.fetch = oldFetch;
     globalThis.WebSocket = oldSocket;
     delete globalThis.__reachPrivateRecoveryNode;
     await dom.close();
+    assert.equal(restoredBeforeUnmount, false, "the private transport fixture must remain installed until React is unmounted");
   }
 });
 
