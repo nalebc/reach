@@ -107,10 +107,12 @@ function setupPlatform(t, platform) {
 }
 
 // Both native transports are mocked; execute the real service and page interpreter on each platform.
-for (const platform of ["darwin", "win32"]) {
-  const alternate = platform === "win32" ? "Edge" : "Safari";
+for (const [platform, browser, alternate] of [
+  ["darwin", "Chrome", "Safari"], ["darwin", "Safari", "Chrome"],
+  ["win32", "Chrome", "Edge"], ["win32", "Edge", "Chrome"],
+]) {
   const setup = (t) => setupPlatform(t, platform);
-  test(`${platform}: production registry contains real browser adapters only, with no example queries or orders`, (t) => {
+  test(`${platform}/${browser}: production registry contains real browser adapters only, with no example queries or orders`, (t) => {
     const f = setup(t),
       catalog = f.services.catalog(f.authorize);
     assert.deepEqual(
@@ -125,7 +127,7 @@ for (const platform of ["darwin", "win32"]) {
     assert.doesNotMatch(JSON.stringify(catalog), /sample|fictional|DEMO-/i);
     for (const connector of catalog.connectors) {
       for (const action of connector.actions) {
-        assert.deepEqual(action.inputSchema.properties.browser.enum, ["Chrome", alternate]);
+        assert.deepEqual(action.inputSchema.properties.browser.enum, platform === "win32" ? ["Chrome", "Edge"] : ["Chrome", "Safari"]);
         const implementation = f.connectors.find(c => c.id === connector.id).actions.find(a => a.id === action.id);
         assert.throws(() => implementation.validate({ ...action.example, browser: platform === "win32" ? "Safari" : "Edge" }), /browser/);
       }
@@ -138,13 +140,13 @@ for (const platform of ["darwin", "win32"]) {
     assert.equal(agentRequestTimeout("/api/browser/services/run", "POST"), 70000);
   });
 
-  test(`${platform}: Gmail service runs the browser interpreter with the chosen account; only verified subject/sender results are returned`, async (t) => {
+  test(`${platform}/${browser}: Gmail service runs the browser interpreter with the chosen account; only verified subject/sender results are returned`, async (t) => {
     const f = setup(t);
     f.approve("gmail");
-    const values = { browser: alternate, account: "2", query: "invoice" },
+    const values = { browser, account: "2", query: "invoice" },
       id = crypto.randomUUID();
     const result = await f.run("gmail", "find", values, id);
-    assert.equal(result.data.browser, alternate);
+    assert.equal(result.data.browser, browser);
     assert.equal(result.data.coverage, "visible_page");
     assert.equal(result.data.items[0].label, "Invoice October");
     assert.equal(result.data.items[0].detail, "sender@example.test");
@@ -163,7 +165,7 @@ for (const platform of ["darwin", "win32"]) {
     );
   });
 
-  test(`${platform}: Full control runs the Gmail adapter directly using its invitation grant`, async (t) => {
+  test(`${platform}/${browser}: Full control runs the Gmail adapter directly using its invitation grant`, async (t) => {
     const f = setup(t);
     f.client.policy = {
       invite: true,
@@ -174,7 +176,7 @@ for (const platform of ["darwin", "win32"]) {
     };
     f.client.scopes = presetScopes(f.client.policy);
     const result = await f.run("gmail", "find", {
-      browser: "Chrome",
+      browser,
       account: "0",
       query: "invoice",
     });
@@ -200,11 +202,11 @@ for (const platform of ["darwin", "win32"]) {
     );
   });
 
-  test(`${platform}: Walmart selection tracks an actual interpreter handle and never accepts a handle from another browser`, async (t) => {
+  test(`${platform}/${browser}: Walmart selection tracks an actual interpreter handle and never accepts a handle from another browser`, async (t) => {
     const f = setup(t);
     f.approve("walmart");
     const found = await f.run("walmart", "find", {
-      browser: "Chrome",
+      browser,
       query: "Blue chair",
     });
     const order = found.data.items[0].handle;
@@ -214,7 +216,7 @@ for (const platform of ["darwin", "win32"]) {
     );
     assert.equal(f.driver.counters.clicks, 0);
     const tracking = await f.run("walmart", "track", {
-      browser: "Chrome",
+      browser,
       order,
     });
     assert.match(tracking.data.summary, /ORDER-123.*Delivered October 7/);
@@ -222,7 +224,7 @@ for (const platform of ["darwin", "win32"]) {
     assert.deepEqual(Object.keys(tracking.data).sort(), ["browser", "summary"]);
   });
 
-  test(`${platform}: Files/Read only/hidden browser permissions cannot be bypassed by a service grant`, async (t) => {
+  test(`${platform}/${browser}: Files/Read only/hidden browser permissions cannot be bypassed by a service grant`, async (t) => {
     const f = setup(t);
     for (const preset of ["files", "readonly"]) {
       f.client.policy.preset = preset;
@@ -240,7 +242,7 @@ for (const platform of ["darwin", "win32"]) {
     assert.equal(f.driver.calls.length, 0);
   });
 
-  test(`${platform}: revoking service consent aborts the in-flight native browser call and releases no data`, async (t) => {
+  test(`${platform}/${browser}: revoking service consent aborts the in-flight native browser call and releases no data`, async (t) => {
     const f = setup(t),
       grant = f.approve("gmail");
     let began;
@@ -256,7 +258,7 @@ for (const platform of ["darwin", "win32"]) {
       );
     };
     const running = f.run("gmail", "find", {
-      browser: "Chrome",
+      browser,
       account: "0",
       query: "invoice",
     });
@@ -270,7 +272,7 @@ for (const platform of ["darwin", "win32"]) {
     assert.equal(f.driver.counters.clicks, 0);
   });
 
-  test(`${platform}: login/setup failures yield guidance, never invented results or provider error details`, async (t) => {
+  test(`${platform}/${browser}: login/setup failures yield guidance, never invented results or provider error details`, async (t) => {
     const f = setup(t);
     f.approve("gmail");
     f.driver.transport = async () => {
@@ -280,7 +282,7 @@ for (const platform of ["darwin", "win32"]) {
     };
     await assert.rejects(
       f.run("gmail", "find", {
-        browser: "Chrome",
+        browser,
         account: "0",
         query: "invoice",
       }),

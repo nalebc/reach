@@ -15,54 +15,46 @@ const query = (description, maxLength) => ({
   maxLength,
   description,
 });
-const schemasFor = (platform) => {
-  const browser = {
-    type: "string",
-    enum: Object.keys(toolBrowsersFor(platform)),
-    description: "Signed-in browser",
-  };
-  return {
-    gmail: {
-      browser,
-      account: {
-        type: "string",
-        enum: Array.from({ length: 10 }, (_, i) => String(i)),
-        description: "Google account",
-      },
-      query: query("Gmail search", 500),
+const schemasFor = (browser) => ({
+  gmail: {
+    browser,
+    account: {
+      type: "string",
+      enum: Array.from({ length: 10 }, (_, i) => String(i)),
+      description: "Google account",
     },
-    orders: { browser, query: query("Item or order number", 200) },
-    tracking: {
-      browser,
-      order: {
-        ...query("Order handle from Find orders", 36),
-        pattern: "^[a-f0-9-]{36}$",
-      },
+    query: query("Gmail search", 500),
+  },
+  orders: { browser, query: query("Item or order number", 200) },
+  tracking: {
+    browser,
+    order: {
+      ...query("Order handle from Find orders", 36),
+      pattern: "^[a-f0-9-]{36}$",
     },
-  };
-};
-const unavailable = (client, platform) => {
-  const browsers = Object.values(toolBrowsersFor(platform));
-  const words = toolBrowserWords(platform);
+  },
+});
+const serviceUnavailable = (client, browsers, browserWords) => {
   if (
     !["full", "apps"].includes(client.policy?.preset) ||
     !["browser:screen", "browser:control", "browser:open"].every((scope) =>
       client.scopes?.includes(scope),
     )
   )
-    return `In Agent Access, allow ${words} with the Apps preset to use signed-in services.`;
+    return `In Agent Access, allow ${browserWords} with the Apps preset to use signed-in services.`;
+  const identities = Object.values(browsers);
   const allowed =
     client.policy.preset === "full"
-      ? browsers
+      ? identities
       : (client.policy.apps || []).map((app) => app.bundleId);
   if (
     !allowed.some(
       (id) =>
-        browsers.includes(id) &&
+        identities.includes(id) &&
         !(client.policy.hidden || []).some((app) => app.bundleId === id),
     )
   )
-    return `Allow ${words} in Agent Access to use signed-in services.`;
+    return `Allow ${browserWords} in Agent Access to use signed-in services.`;
   return null;
 };
 function validate(properties, values) {
@@ -146,18 +138,18 @@ const action = (
   project,
   ...extra,
 });
-const problemsFor = (platform) => ({
+const problemsFor = (computer) => ({
   setup_required:
-    platform === "win32"
-      ? "Add Reach's extension to the chosen browser and allow it in Reach under Agents → Browser tools, then retry."
+    computer === "PC"
+      ? "On the PC, add Reach's extension to the chosen browser and allow it in Reach: Agents → Browser tools. Then retry."
       : "On the Mac, allow browser automation for Reach and enable Allow JavaScript from Apple Events in the chosen browser, then retry.",
   login_required:
-    "Sign in to this service in the chosen browser on this computer, then retry.",
+    `Sign in to this service in the chosen browser on the ${computer}, then retry.`,
   wrong_site:
-    "The browser reached another site. Finish signing in on this computer, then retry.",
-  browser_closed: "Open the chosen browser on this computer, then retry.",
+    `The browser reached another site. Finish signing in on the ${computer}, then retry.`,
+  browser_closed: `Open the chosen browser on the ${computer}, then retry.`,
   browser_window_required:
-    "Open a window in the chosen browser on this computer, then retry.",
+    `Open a window in the chosen browser on the ${computer}, then retry.`,
   loading:
     "The browser has not finished loading the exact requested page. Check the chosen browser and service account, wait for that page to finish loading, then retry.",
   browser_access: "Allow the chosen browser in Agent Access, then retry.",
@@ -167,19 +159,20 @@ const problemsFor = (platform) => ({
 });
 
 export function createServiceConnectors(tools, { platform = process.platform } = {}) {
-  const schemas = schemasFor(platform);
-  const problems = problemsFor(platform);
-  const availability = (client) => unavailable(client, platform);
+  const browsers = toolBrowsersFor(platform);
+  const schemas = schemasFor({ type: "string", enum: Object.keys(browsers), description: "Signed-in browser" });
+  const unavailable = (client) => serviceUnavailable(client, browsers, toolBrowserWords(platform));
+  const computer = platform === "win32" ? "PC" : "Mac", problems = problemsFor(computer);
   const make = (definition, toolIds) => ({
     ...definition,
     transport: "browser",
     account: "Your signed-in browser session",
-    unavailable: availability,
+    unavailable,
     async run(id, values, { authorize, requestId, signal }) {
       const guarded = () => {
         signal.throwIfAborted();
         const client = authorize();
-        const reason = availability(client);
+        const reason = unavailable(client);
         if (reason) throw new ServiceConnectorError(reason, 403);
         return client;
       };
@@ -196,7 +189,7 @@ export function createServiceConnectors(tools, { platform = process.platform } =
         guarded();
         throw new ServiceConnectorError(
           problems[error.code || error.kind] ||
-            "Could not use this browser. Check Agent Access and the chosen browser on this computer, then retry.",
+            `Could not use this browser. Check Agent Access and the chosen browser on the ${computer}, then retry.`,
         );
       }
       guarded();
@@ -204,9 +197,9 @@ export function createServiceConnectors(tools, { platform = process.platform } =
         throw new ServiceConnectorError(
           problems[result.code] ||
             (result.status === "uncertain"
-              ? "The live page could not be verified, and the action may have happened. Check the service in the browser on this computer before retrying."
+              ? `The live page could not be verified, and the action may have happened. Check the service in the browser on the ${computer} before retrying.`
               : null) ||
-            "The live page could not be verified. Check the service in the browser on this computer, then retry. No service result was returned.",
+            `The live page could not be verified. Check the service in the browser on the ${computer}, then retry. No service result was returned.`,
         );
       return result;
     },
