@@ -149,6 +149,10 @@ export function presetRouteAllowed(client, method, route) {
   // request itself then meets this allowlist like any other.
   if (read && ["/browser/mcp/tools", "/browser/mcp/discover"].includes(route)) return has("browser:read");
   if (method === "POST" && ["/browser/mcp/plan", "/browser/mcp/call"].includes(route)) return has("browser:read");
+  if (client.kind === "agent" && policy.preset === "full" && policy.fullControlVersion === FULL_CONTROL_VERSION && has("browser:shell")) {
+    if (read && (route === "/coding-tasks" || /^\/coding-tasks\/[A-Za-z0-9_-]{1,128}$/.test(route))) return true;
+    if (method === "POST" && (route === "/coding-tasks" || /^\/coding-tasks\/[A-Za-z0-9_-]{1,128}\/cancel$/.test(route))) return true;
+  }
   // Discovery/requesting is available to every admitted preset. Execution also
   // requires separate, owner-approved service consent in agent-services.mjs.
   if (read && route === "/browser/services") return has("browser:read");
@@ -195,6 +199,7 @@ export function presetAccess(client) {
   const policy = client.policy, scopes = client.scopes || [];
   return {
     preset: policy.preset,
+    ...(policy.preset === "full" && policy.fullControlVersion !== undefined ? { fullControlVersion: policy.fullControlVersion } : {}),
     presetName: PRESET_NAMES[policy.preset],
     screen: scopes.includes("browser:screen"),
     control: scopes.includes("browser:control"),

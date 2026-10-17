@@ -211,6 +211,8 @@ export function createAgentSessions({
   // A team's lead chat (teams.mjs): kept out of the Claude app (its process
   // wouldn't have the team's tools), and what it's launched or resumed with.
   keepOut = () => false,
+  // Delegated threads are recovered only by their durable task manager.
+  recoveryAllowed = () => true,
   teamExtras = () => null,
   daemon = createCodexDaemon(),
   codex = createCodexSessions({ daemon }),
@@ -377,6 +379,11 @@ export function createAgentSessions({
     ...(process.env.NODE_TEST_CONTEXT ? { codexMethods: async () => new Set() } : { codexMethods: createCodexMethods() }),
   }),
 } = {}) {
+  const canRecover = (agent, id) => {
+    try { return recoveryAllowed(agent, id) === true; } catch { return false; }
+  };
+  const originalKeepOut = keepOut;
+  keepOut = (agent, id) => !canRecover(agent, id) || originalKeepOut(agent, id);
   // Windows' owner checks (Codex's pipes, the files it holds) build their
   // helper in this data folder (windows-owners.mjs).
   useOwnersFolder(dataDir);
@@ -395,9 +402,11 @@ export function createAgentSessions({
         open,
         desktopAutomation,
         resume: true,
-        held: (id) => claudeHost.drives(id),
+        held: (id) => !canRecover("claude", id) || claudeHost.drives(id),
         describe: async (id) => {
+          if (!canRecover("claude", id)) return null;
           const { session } = await claude.read(id, { limit: 1 });
+          if (!canRecover("claude", id)) return null;
           const origin = moves.into("claude", id);
           if (!session.inApp && session.updatedAt <= origin?.at) Object.assign(session, origin.to.settings || {});
           return {
@@ -759,7 +768,7 @@ export function createAgentSessions({
   // the outbox until each is handed to Claude Code: never dropped, and one
   // that can't go yet says why.
   let closed = false;
-  let recoveryChats = claudeHost.interrupted?.() || [];
+  let recoveryChats = (claudeHost.interrupted?.() || []).filter(chat => canRecover("claude", chat.id));
   const preparingHelpers = new AbortController();
   const delivering = new Set();
   const deliveringMessage = new Map();
@@ -777,7 +786,7 @@ export function createAgentSessions({
     for (const [id, wake] of [...wakers]) if (outbox.list(id)[0]?.via === "app") wake();
   };
   const deliver = async (id) => {
-    if (delivering.has(id)) return;
+    if (delivering.has(id) || !canRecover("claude", id)) return;
     delivering.add(id);
     const started = Date.now();
     // The last try put its message in: the next one goes on the usual beat
@@ -796,7 +805,7 @@ export function createAgentSessions({
       return appRetryMs;
     };
     try {
-      while (!closed && outbox.list(id).length) {
+      while (!closed && canRecover("claude", id) && outbox.list(id).length) {
         // A deleted chat's messages wait for the phone, not for their chat.
         if (outbox.list(id)[0]?.stranded) break;
         // Waiting never keeps Reach from quitting; after two hours, less often.
@@ -820,7 +829,7 @@ export function createAgentSessions({
           });
         });
         wakers.delete(id);
-        if (closed) break;
+        if (closed || !canRecover("claude", id)) break;
         const next = outbox.list(id)[0];
         if (!next || next.delivery === "paused" || next.delivery === "sending") break;
         try {
@@ -830,6 +839,7 @@ export function createAgentSessions({
             // marked while it still queued behind other Claude app work, a
             // Reach restart paused it as maybe sent when it never was.
             const begin = () => {
+              if (!canRecover("claude", id)) throw Object.assign(new Error("This chat is managed by its coding task."), { retryable: false });
               if (!outbox.begin(id, next.id)) throw Object.assign(new Error("This message is no longer waiting."), { waiting: true });
             };
             // A mode sent with it goes with Claude Code's next request (its
@@ -845,7 +855,9 @@ export function createAgentSessions({
             wentIn = true;
             continue;
           }
+          if (!canRecover("claude", id)) break;
           const holder = await holderOf(id);
+          if (!canRecover("claude", id)) break;
           if (holder && ((await busy(id, holder)) || !(await handOver(holder)))) {
             outbox.problem(id, next.id, null);
             continue;
@@ -864,7 +876,9 @@ export function createAgentSessions({
           // Reach's own Claude Code runs it in the mode queued for the chat:
           // taken now (kept while it waited, for the app's next request).
           if (message.mode && claudeMode(agentAsks.queuedMode?.("claude", id)) === claudeMode(message.mode)) agentAsks.clearMode?.("claude", id);
-          await claudeHost.send(id, message);
+          await claudeHost.send(id, { ...message, authorize: () => {
+            if (!canRecover("claude", id)) throw Object.assign(new Error("This chat is managed by its coding task."), { retryable: false });
+          } });
           outbox.remove(id, messageId);
           direct.delete(messageId);
         } catch (e) {
@@ -907,10 +921,14 @@ export function createAgentSessions({
   // whether it got in. In it: done. Not in it: it goes again by itself (a
   // restart mid-delivery left it paused until someone tapped Send).
   const recheckRestarted = async (id) => {
+    if (!canRecover("claude", id)) return;
     for (const m of [...outbox.list(id)]) {
+      if (!canRecover("claude", id)) return;
       if (!m.restarted || m.via !== "app") continue;
       try {
-        if (await claude.arrived(id, m.text, m.at, { images: m.images.length })) outbox.remove(id, m.id);
+        const arrived = await claude.arrived(id, m.text, m.at, { images: m.images.length });
+        if (!canRecover("claude", id)) return;
+        if (arrived) outbox.remove(id, m.id);
         else outbox.resume(id, m.id);
       } catch {
         /* the chat can't be read: it stays paused for the phone */
@@ -1328,6 +1346,28 @@ export function createAgentSessions({
       },
     };
   };
+  const startSession = async (agent, body) => {
+    const authorize = body.authorize || (() => {});
+    authorize();
+    if (host(agent) === codexLive) {
+      // Preserve the ordinary chat default; coding tasks supply their own
+      // fixed owner-approval mode before reaching this shared path.
+      if (!body.modeName && !body.approvalPolicy && !body.sandbox && !body.approvalsReviewer && !body.config) {
+        const catalog = await codex.models?.();
+        authorize();
+        const modeName = !catalog?.modes?.length || catalog.modes.some((m) => m.id === "guardian-approvals") ? "guardian-approvals" : "auto";
+        body = { ...body, ...codexStartMode(modeName), modeName };
+      }
+      const started = await codexLive.start(body);
+      if (body.modeName) chatModes.set(started.threadId, body.modeName);
+      return started;
+    }
+    await signedIn();
+    authorize();
+    const started = await claudeHost.start(body);
+    if (!body.keepOut && !keepOut(agent, started.threadId)) void claudeImports.add(started.threadId);
+    return started;
+  };
   return {
     onPromptChange(listener) {
       const stops = Object.entries(hosts).map(([agent, h]) => h.onChange?.(id => listener(agent, id, h.view(id).prompts)));
@@ -1561,25 +1601,18 @@ export function createAgentSessions({
       if (queuedMode) agentAsks.clearMode?.("claude", id);
       return claudeHost.send(id, message);
     },
-    async start(agent, body) {
-      if (host(agent) === codexLive) {
-        // Apply the same default for every caller, including API and team starts.
-        // Explicit modes and custom permission settings remain authoritative.
-        if (!body.modeName && !body.approvalPolicy && !body.sandbox && !body.approvalsReviewer && !body.config) {
-          const catalog = await codex.models?.();
-          const modeName = !catalog?.modes?.length || catalog.modes.some((m) => m.id === "guardian-approvals")
-            ? "guardian-approvals" : "auto";
-          body = { ...body, ...codexStartMode(modeName), modeName };
-        }
-        const started = await codexLive.start(body);
-        // Its next messages keep the mode it started in.
-        if (body.modeName) chatModes.set(started.threadId, body.modeName);
-        return started;
-      }
-      await signedIn();
-      const started = await claudeHost.start(body);
-      if (!body.keepOut) void claudeImports.add(started.threadId);
-      return started;
+    start: startSession,
+    startCodingTask(agent, { cwd, text, name, onCreated, onStarted, authorize = () => {} }) {
+      if (!["codex", "claude"].includes(agent) || typeof onCreated !== "function" || typeof authorize !== "function" || (onStarted !== undefined && typeof onStarted !== "function"))
+        throw Object.assign(new Error("Choose a coding agent and durable task callbacks."), { status: 400 });
+      return startSession(agent, {
+        cwd, text, name, images: [], onCreated, onStarted, authorize, codingTask: true, keepOut: true,
+        ...(agent === "codex" ? { ...codexStartMode("auto"), modeName: "auto" } : { mode: "manual" }),
+      });
+    },
+    stopCodingTask(agent, id, boundary = {}) {
+      if (!["codex", "claude"].includes(agent)) throw Object.assign(new Error("Unknown coding agent."), { status: 400 });
+      return host(agent).stopCodingTask(id, boundary);
     },
     // A permission mode picked on the phone for a chat the Claude app holds:
     // picked in the app's own menu, so both show it. Elsewhere (chats Reach
@@ -2024,15 +2057,16 @@ export function createAgentSessions({
       recoveryChats = [];
       if (left.length) {
         const resume = async (chat, tries = 0) => {
-          if (closed) return;
+          if (closed || !canRecover("claude", chat.id)) return;
           try {
             const { session } = await claude.read(chat.id, { limit: 1 });
+            if (!canRecover("claude", chat.id)) return;
             const holder = await holderOf(chat.id, { requireLive: true });
-            if (closed) return;
+            if (closed || !canRecover("claude", chat.id)) return;
             // Someone may already have continued in the native app. Never
             // send a second continuation into their running turn.
             const running = claudeHost.running(chat.id) || (holder && await busy(chat.id, holder));
-            if (closed) return;
+            if (closed || !canRecover("claude", chat.id)) return;
             if (!running && !outbox.list(chat.id).length) {
               const { recovery, model, effort, mode } = chat;
               const native = session.inApp && claudeCompose && !keepOut("claude", chat.id);
@@ -2058,7 +2092,7 @@ export function createAgentSessions({
           } catch {
             // No send occurs here: the durable outbox owns delivery and
             // pauses uncertain writes. Only read/save failures retry here.
-            if (!closed && tries < 4) setTimeout(() => void resume(chat, tries + 1), 30000).unref?.();
+            if (!closed && canRecover("claude", chat.id) && tries < 4) setTimeout(() => void resume(chat, tries + 1), 30000).unref?.();
           }
         };
         setTimeout(() => left.forEach((chat) => void resume(chat)), continueMs).unref?.();

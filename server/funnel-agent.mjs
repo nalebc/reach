@@ -116,6 +116,7 @@ export function permittedPath(method, value) {
         "/api/device",
         // A newer agent runtime, for an agent already admitted.
         "/api/device/runtime",
+        "/api/coding-tasks",
         "/api/browser",
         "/api/browser/screen",
         "/api/browser/requests",
@@ -138,6 +139,8 @@ export function permittedPath(method, value) {
       ].includes(route)) ||
     (read && /^\/api\/browser\/terminals\/[A-Za-z0-9_:.-]+$/.test(route)) ||
     (read && /^\/api\/browser\/tools\/operations\/[a-f0-9-]{36}$/.test(route)) ||
+    (read && /^\/api\/coding-tasks\/[A-Za-z0-9_-]{1,128}$/.test(route)) ||
+    (method === "POST" && /^\/api\/coding-tasks\/[A-Za-z0-9_-]{1,128}\/cancel$/.test(route)) ||
     (method === "POST" &&
       ["/api/browser/requests", "/api/browser/scroll", "/api/browser/terminal", "/api/browser/apps/input", "/api/browser/apps/requests",
         // Preset sessions: one input action, opening an app, one command, one file change.
@@ -149,6 +152,7 @@ export function permittedPath(method, value) {
         "/api/browser/mcp/plan", "/api/browser/mcp/call",
         // The agent's credential traded for a new one (core.mjs).
         "/api/device/rotate",
+        "/api/coding-tasks",
         "/api/browser/services/request", "/api/browser/services/run",
         // Asking the owner for a missing Mac permission.
         "/api/browser/permissions/request"].includes(route)) ||
@@ -157,6 +161,14 @@ export function permittedPath(method, value) {
         route === "/api/browser/shortcuts/record" ||
         /^\/api\/browser\/requests\/[a-f0-9-]{36}$/.test(route)));
   if (!allowed) throw failure(403);
+  if (route === "/api/coding-tasks" || route.startsWith("/api/coding-tasks/")) {
+    const polling = read && /^\/api\/coding-tasks\/[A-Za-z0-9_-]{1,128}$/.test(route);
+    for (const [name, value] of url.searchParams) {
+      const number = Number(value);
+      if (!polling || !["after", "waitSeconds"].includes(name) || !/^(0|[1-9][0-9]*)$/.test(value) ||
+          !Number.isSafeInteger(number) || (name === "waitSeconds" && number > 25)) throw failure(400);
+    }
+  }
   return route.slice(4);
 }
 
