@@ -43,6 +43,7 @@ import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
+import { TAILNET_CONNECT_SOURCES } from "./public-start.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
@@ -1512,14 +1513,14 @@ export async function createReach(overrides = {}) {
     // Reached by its Tailscale name, it's only ever HTTPS: browsers keep it so.
     if (/\.ts\.net(:\d+)?$/i.test(req.headers.host || ""))
       res.setHeader("Strict-Transport-Security", "max-age=31536000");
-    // The page talks to this computer and your others on the tailnet
-    // (*.ts.net) only: a script that got in can't send a credential anywhere
-    // else (connections audit, Oct 10). This computer's own loopback only
-    // when the page itself was opened there (local mode).
+    // Keep a previously approved browser Tailscale node ready while native
+    // private transport is healthy, so fallback needs no unavailable assets.
+    // Network destinations stay Tailscale-only; loopback is local-mode only.
+    // The loader stays same-origin; only WASM compilation is permitted.
     const local = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host || "");
     res.setHeader(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.ts.net wss://*.ts.net${local ? " http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*" : ""}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ${TAILNET_CONNECT_SOURCES}${local ? " http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*" : ""}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
     );
     if (req.path.startsWith("/api")) res.setHeader("Cache-Control", "no-store");
     if (req.method === "OPTIONS") return res.sendStatus(204);

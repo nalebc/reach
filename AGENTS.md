@@ -1,5 +1,17 @@
 # Working on Reach (coding agents)
 
+## Product fundamentals
+
+Connection preference is a product requirement on every supported host and client, including iPhone, iPad and Android:
+
+- Prefer an eligible private Tailscale connection. Prefer the native connection, which can use direct device-to-device transport; an encrypted private Tailscale relay remains preferable to a public route.
+- Use the authenticated public agent gateway only when no eligible private path is available for that grant. Recheck availability and return to the preferred private path automatically, including after sleep, network changes and reconnection. Do not require a transport switch from the user.
+- Eligible means both reachable and authorized. Keep the same invitation, permissions and device binding. A different Tailscale device needs its own existing approval; never transfer a device-bound credential to another identity or approve it automatically.
+- Preserve open work across a handoff. Never replay commands, writes, payments or other actions whose delivery/result is unknown merely because the transport changed.
+- Owner APIs and WebSockets stay private. A public start page that bootstraps a browser's private Tailscale connection is not permission to expose owner APIs through Funnel.
+
+Changes to connection selection or recovery must cover private → fallback → private, unavailable/unapproved alternatives, concurrent requests, and held work from the previous route. Put shared regression checks in Windows CI as well, and distinguish simulated transports, actual operating-system execution and physical-device validation.
+
 ## Platform support
 
 Build changes for every platform Reach supports. Screen control must cover macOS and Windows hosts and touch clients on iPhone, iPad, and Android. Prefer shared gesture and coordinate logic. When native behavior differs, cover both paths and put the relevant shared and Windows-specific regression tests in Windows CI. Clearly distinguish mocked checks from validation run on the actual operating system.

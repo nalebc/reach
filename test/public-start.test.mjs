@@ -104,8 +104,8 @@ test("automatic private ports remain reachable from the browser entry's security
   // Compare whole CSP sources; an allowed URL embedded in another source
   // must not satisfy this check.
   assert.deepEqual(connect, [
-    "connect-src", "'self'", "https://mac.tail1.ts.net:8444", "wss://mac.tail1.ts.net:8444",
-    "https://*.ts.net", "https://*.ts.net:8443", "wss://*.ts.net", "https://*.tailscale.com", "wss://*.tailscale.com",
+    "connect-src", "'self'", "https://*.ts.net:*", "wss://*.ts.net:*",
+    "https://*.tailscale.com", "wss://*.tailscale.com",
   ]);
 });
 

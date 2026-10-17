@@ -72,7 +72,7 @@ Each agent gets one **preset**:
 
 Agents with Tailscale support, including **Muse**, can join your private tailnet. With a native Tailscale connection, they can benefit from a direct path to your Mac and lower latency for tool calls, screen updates and file transfers. [Tailscale connects directly when possible](https://tailscale.com/docs/reference/connection-types), using encrypted relays when needed. Agents outside your tailnet can connect through an authenticated **Tailscale Funnel** link.
 
-Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service.
+Reach's agent client prefers the private connection. If it starts over Funnel and later joins your tailnet, it automatically switches to the private route when detected, keeping the same permissions and MCP setup. Hosted MCP connectors use the URL configured in their service. Automatic recovery uses routes already authorized for that connection; separate device identities keep their own approvals. See the [connection fundamentals](docs/CONNECTION_POLICY.md).
 
 For an agent working through a browser, choose **Connects: Web page**: it gets your live screen and permitted controls in a page. For a service that takes a hosted MCP connector (claude.ai, ChatGPT), choose **Connects: Hosted** and add the URL it gives you (new, still being tested). See [agents](docs/AGENTS.md) and the [tool reference](docs/BROWSER_AGENT_TOOLS.md).
 

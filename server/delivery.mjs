@@ -3,6 +3,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { rateLimit } from "express-rate-limit";
 import { agentSteps, agentStepsPage, wantsPage } from "./agent-steps.mjs";
+import { readTailnetManifest } from "./public-start.mjs";
 
 const accepts = (req, encoding) =>
   new RegExp(`(?:^|[\\s,])${encoding}(?:[\\s,;]|$)`).test(
@@ -22,7 +23,10 @@ export function setStartInfo(read) {
 // at build time. The page itself is revalidated on every open.
 // `agentStart`: this computer's public start page, where agent links point
 // (none: not on Tailscale, and /agent is the app as before).
-export function serveBuild(app, express, dist, { agentStart = () => "", platform = process.platform } = {}) {
+export function serveBuild(app, express, dist, {
+  agentStart = () => "", platform = process.platform,
+  tailnetDir = path.resolve(dist, "..", "tailnet", "dist"),
+} = {}) {
   const send = (res, next, file, options = {}) =>
     res.sendFile(file, { root: dist, ...options }, (error) => {
       if (!error) return;
@@ -91,11 +95,49 @@ export function serveBuild(app, express, dist, { agentStart = () => "", platform
       }
     send(res, next, name, { cacheControl: false });
   });
+  const browserClient = () => {
+    const manifest = readTailnetManifest(tailnetDir);
+    if (!manifest) return null;
+    try {
+      for (const [kind, extension] of [["wasm", ".wasm"], ["exec", ".js"]]) {
+        const name = manifest[kind];
+        if (!/^[a-zA-Z0-9][\w.-]*$/.test(name) || !name.endsWith(extension) ||
+            !fs.lstatSync(path.join(tailnetDir, name)).isFile()) return null;
+      }
+      return manifest;
+    } catch { return null; }
+  };
+  const homeFor = (info) => {
+    try {
+      const origin = new URL(info.origin), candidate = info.home || agentStart();
+      const home = new URL(candidate);
+      return origin.protocol === "https:" && origin.origin === info.origin &&
+        origin.hostname.endsWith(".ts.net") && home.protocol === "https:" &&
+        home.origin === candidate && home.hostname === origin.hostname && !home.port
+        ? home.origin : "";
+    } catch { return ""; }
+  };
   app.get("/reach-start.json", (req, res, next) => {
     const info = startInfo?.();
     if (!info) return next();
+    const { home: ignoredHome, tailnet: ignoredClient, ...identity } = info;
+    const home = homeFor(info);
     res.setHeader("Cache-Control", "no-store");
-    res.json(info);
+    res.json({ ...identity, ...(home ? { home } : {}), tailnet: browserClient() });
+  });
+  // Private pages prepare the same fixed client assets as the start page.
+  // Never turn this directory into a static file browser or serve SPA HTML
+  // when a client asset is absent.
+  app.use("/tailnet", (req, res, next) => {
+    const manifest = browserClient(), name = req.path.slice(1);
+    if (!["GET", "HEAD"].includes(req.method) || !manifest ||
+        ![manifest.wasm, manifest.exec].includes(name)) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.sendStatus(404);
+    }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.type(name.endsWith(".wasm") ? "application/wasm" : "text/javascript");
+    send(res, next, name, { root: tailnetDir, cacheControl: false });
   });
   const page = path.join(dist, "index.html");
   app.use(

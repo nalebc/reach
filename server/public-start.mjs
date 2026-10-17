@@ -27,11 +27,13 @@ const TYPES = {
   ".woff2": "font/woff2",
   ".png": "image/png",
 };
-// https://*.ts.net:8443: the start page asks the Mac's private address (port
-// 8443) whether this phone is on the tailnet (probeDirect); without it a phone
-// with the Tailscale app is sent down the in-browser path (Oct 10).
+// Private ports can change during recovery or differ between linked computers.
+// Browser Tailscale uses its encrypted control/relay endpoints; no arbitrary
+// HTTPS hosts or plain network connections are allowed.
+export const TAILNET_CONNECT_SOURCES =
+  "https://*.ts.net:* wss://*.ts.net:* https://*.tailscale.com wss://*.tailscale.com";
 export const PUBLIC_CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.ts.net https://*.ts.net:8443 wss://*.ts.net https://*.tailscale.com wss://*.tailscale.com; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+  `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ${TAILNET_CONNECT_SOURCES}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`;
 // One file name: no "." or ".." (they name folders).
 const NAME = /^\/(?!\.{1,2}$)[\w.-]+$/;
 
@@ -74,11 +76,7 @@ export function publicStartHandler({
   platform = process.platform,
 }) {
   const publicHost = new URL(privateOrigin).hostname;
-  // Automatic port recovery must also permit the direct-connection probe
-  // to this computer's selected port, including its WebSocket connection.
-  const direct = new URL(privateOrigin);
-  const csp = !direct.port || direct.port === "8443" ? PUBLIC_CSP
-    : PUBLIC_CSP.replace("connect-src 'self'", `connect-src 'self' ${direct.origin} ${direct.origin.replace(/^https:/, "wss:")}`);
+  const csp = PUBLIC_CSP;
   // Where an agent's link points, and its runtime comes from.
   const agentStart = home || `https://${publicHost}`;
   const config = () =>
