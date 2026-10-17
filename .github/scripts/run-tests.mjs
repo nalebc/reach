@@ -41,7 +41,7 @@ export const suites = {
     "one-address-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
-    "ios-launch", "ios-page-evidence", "bounded-command",
+    "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // The user journeys, workstream J: the built phone interface in headless
