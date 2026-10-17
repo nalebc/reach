@@ -8,6 +8,8 @@ These requirements apply to every supported Reach host and client, including mac
 
 Eligibility includes authorization. An owner credential bound to one Tailscale device cannot be sent under another device's identity. Native and browser devices retain their own approvals. A signing-key invitation can use the routes already authorized for that same grant. A private-only credential does not acquire public access or approval for another node during recovery.
 
+Browser and operating-system network permissions also remain required. A saved Reach approval does not bypass those permissions.
+
 The signed browser-agent gateway probes the native private route before using public access. A CLI signing-key connection can also restore its own saved embedded private profile and pinned client. Neither flow borrows an owner's or another invitation's browser identity to create an alternative.
 
 A public start page can load the fixed client code and help establish a browser's private Tailscale node. Owner APIs and WebSockets remain private. Hosted MCP services control their configured connector URL and network; Reach cannot change another service's routing or authorize it to join the tailnet.
@@ -15,6 +17,10 @@ A public start page can load the fixed client code and help establish a browser'
 ## Recovery behavior
 
 Connection selection must recover after network changes, foregrounding and Reach restarts. A runtime identifier changes when Reach restarts; authenticated computer and device identity determine which approval can be used.
+
+A public start screen checks its existing native approval before browser sign-in and while waiting. It opens the workspace at the same origin with that exact grant, including restricted permissions. Native and browser startup compete for one workspace; abandoned sign-in or enrollment cannot restart after the native workspace opens.
+
+Restoring an approved browser profile uses one validated snapshot. A changed profile cancels pending startup, and a stalled loader or WebAssembly fetch must release recovery checks after a bounded deadline. A late result cannot construct a second node or overwrite a profile another tab removed.
 
 A handoff preserves open work, including drafts, attachments and pending operations. Existing callbacks retain the transport associated with their credential. Changed routing must never replay a command, write or other action with an unknown result. An authorization denial is authoritative for that request and grant; the action cannot be retried through another route.
 

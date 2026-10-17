@@ -28,16 +28,30 @@ candidates were not published to npm or GitHub. Their tags remain unchanged.
 
 - Owner clients prefer native private Tailscale, recover through an already
   approved browser Tailscale connection when available, and return to native
-  automatically. Initial startup can also restore a saved approved browser
+  automatically, including from private workspace deep links. Initial startup
+  can also restore a saved approved browser
   when the native device is unapproved or unavailable. Each device keeps its
   own credential and approval; recovery preserves open chats, drafts,
   attachments and pending work.
+- A public start page uses its saved native approval before browser sign-in,
+  and checks again while waiting. Startup keeps the page's saved credentials
+  and restricted permissions, opens the workspace once, and cancels abandoned
+  browser or Face ID enrollment when native access returns.
+- Browser recovery reads a validated profile snapshot and stops if the saved
+  profile changes during loading. Stalled assets have a bounded recovery
+  deadline; late completion cannot create a second node. Cancellation also
+  works on supported older iOS browsers.
 - Agent connections prefer available private routes before their authorized
   public gateway and periodically return to private. Recovery reuses existing
   signing grants and previously configured private clients; it never silently
   approves another device, enrolls a node or replays an action with a lost reply.
   Saved profiles are validated and reused as one bounded snapshot, so replacing
   a state file cannot change the identity during startup.
+- Private DNS keeps every eligible address, so an unavailable IPv6 route does
+  not discard a working private IPv4 connection in favor of public access.
+- Browser agents can use the computer's private gateway across HTTPS ports.
+  Preflight and response headers allow only the configured public origin and
+  private host; signing grants, scopes and replay protection still apply.
 - Losing private Serve no longer disables a healthy authorized public agent
   gateway. Owner APIs and WebSockets remain private, and security stops still
   close affected access.

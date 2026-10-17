@@ -417,5 +417,6 @@ test("Windows CI enforces private-first selection, fallback, recovery and privat
   for (const name of [
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
     "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
+    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
   ]) assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });

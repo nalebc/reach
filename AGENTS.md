@@ -11,6 +11,7 @@ Connection preference is a product requirement on every supported host and clien
 - Owner APIs and WebSockets stay private. A public start page that bootstraps a browser's private Tailscale connection is not permission to expose owner APIs through Funnel.
 
 Changes to connection selection or recovery must cover private → fallback → private, unavailable/unapproved alternatives, concurrent requests, and held work from the previous route. Put shared regression checks in Windows CI as well, and distinguish simulated transports, actual operating-system execution and physical-device validation.
+Check browser-enforced connection boundaries in a real browser, including cross-port private gateways; mocked fetch responses cannot verify CORS or browser network permissions.
 
 ## Platform support
 

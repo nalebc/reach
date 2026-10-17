@@ -39,6 +39,7 @@ export const suites = {
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
     "one-address-ui", "security", "delivery", "start-info-route",
+    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
