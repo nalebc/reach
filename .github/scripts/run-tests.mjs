@@ -36,6 +36,9 @@ export const suites = {
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility", "reach-version", "agent-watch",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
+    // Private/direct first, authorized fallback, and automatic recovery on every client.
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "one-address-ui", "security", "delivery", "start-info-route",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).

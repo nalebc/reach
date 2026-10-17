@@ -412,3 +412,10 @@ test("publishing isolation covers multiline commands, script settings and same-r
     assert.throws(() => assertPublishIsolation(changed));
   }
 });
+
+test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
+  for (const name of [
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
+  ]) assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+});

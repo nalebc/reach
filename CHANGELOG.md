@@ -8,6 +8,62 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-17
+
+Early access: private connections recover automatically across supported hosts
+and clients. Includes the owned coding tasks, agent tools, file/chat recovery,
+Windows setup and version diagnostics prepared for 0.3.0 and 0.2.1; those
+candidates were not published to npm or GitHub. Their tags remain unchanged.
+
+### Added
+
+- Invited agents can start, inspect and cancel owned coding tasks in shared
+  projects. Durable request IDs, bounded results, invitation scopes and existing
+  chat permission defaults apply. Full control invitations include service tools
+  that the owner can revoke.
+- A documented connection policy makes private preference, authorized fallback,
+  automatic recovery and preservation of open work requirements on every device.
+
+### Fixed
+
+- Owner clients prefer native private Tailscale, recover through an already
+  approved browser Tailscale connection when available, and return to native
+  automatically. Each device keeps its own credential and approval; recovery
+  preserves open chats, drafts, attachments and pending work.
+- Agent connections prefer available private routes before their authorized
+  public gateway and periodically return to private. Recovery reuses existing
+  signing grants and previously configured private clients; it never silently
+  approves another device, enrolls a node or replays an action with a lost reply.
+- Losing private Serve no longer disables a healthy authorized public agent
+  gateway. Owner APIs and WebSockets remain private, and security stops still
+  close affected access.
+- Native file downloads and uploads follow the connection bound to their peer,
+  including during a handoff. Previously completed native downloads stay usable.
+- Private pages supply the fixed browser networking assets needed for recovery.
+  Content security policy permits the private Tailscale connection without
+  enabling arbitrary scripts or exposing owner APIs publicly.
+- The tool-error privacy regression checks the actual error display without
+  mistaking a matching number in a run UUID for an exposed native error.
+
+### Validation and limits
+
+- Candidate checks cover Linux on Node 22 and 24, Apple Silicon and Intel macOS,
+  Windows, the iOS simulator and clean-installed npm and portable artifacts.
+  Connection regression checks also run in the blocking Windows suite.
+- iPhone, iPad and Android recovery scenarios use shared client code with
+  simulated networking. Hosted runners and the iOS simulator do not establish
+  physical-device VPN, cellular, sleep or relay transitions. Physical Windows,
+  iPhone, iPad and Android acceptance remains incomplete.
+- Destination routes must already be authorized. Different native/browser
+  device identities cannot share a device-bound approval. Hosted MCP providers
+  control their connector URL and network; Reach cannot switch their network.
+- Real Codex and Claude disposable coding tasks were checked on macOS. Grok and
+  Muse have not acceptance-tested the new coding tools; Windows provider checks
+  remain synthetic. Browser extension store publication remains pending.
+- npm users can update with `reach update`; source installs use `v0.3.1`.
+  Keep the existing `.reach` state or configured external state folders and
+  restart through the CLI. Restarting ends terminals and live screens.
+
 ## [0.3.0] — 2026-10-17
 
 Early access: owned coding tasks for invited agents, reliable Windows phone
