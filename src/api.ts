@@ -1,4 +1,5 @@
 import { agentRequestTimeout } from "../server/agent-transport.mjs";
+import type { PrivateWay } from "./tailnet-transport";
 export type Peer = {
   id: string;
   computerId?: string;
@@ -10,6 +11,8 @@ export type Peer = {
   platform: string;
   transport?: "funnel";
   sessionId?: string;
+  // Keep an in-memory composer mounted across a verified private handoff.
+  workspaceKey?: string;
 };
 export type Root = { id: number; name: string; path: string };
 export type Device = {
@@ -157,10 +160,9 @@ try {
 } catch {
   /* no storage here (private mode): nothing to move */
 }
-export const readPeers = (): Peer[] => {
-  if (guestPeers()) return guestPeers()!;
+export const readPrivatePeers = (route: PrivateWay): Peer[] => {
   try {
-    const value = JSON.parse(localStorage.getItem(peersKey()) || "[]");
+    const value = JSON.parse(localStorage.getItem(route === "browser" ? "reach.browser.devices" : "reach.devices") || "[]");
     return Array.isArray(value)
       ? value.filter(
           (p): p is Peer =>
@@ -170,15 +172,18 @@ export const readPeers = (): Peer[] => {
             ) &&
             !!p.id &&
             !!p.token,
-        )
+        ).map(({ workspaceKey: _workspaceKey, ...peer }) => peer)
       : [];
   } catch {
     return [];
   }
 };
+export const readPeers = (): Peer[] => guestPeers() || readPrivatePeers(way() === "reach.browser." ? "browser" : "native");
 export function savePeers(peers: Peer[]) {
   if (guestPeers()) return setGuestPeers(peers);
-  localStorage.setItem(peersKey(), JSON.stringify(peers));
+  // A verified handoff can retain a mounted composer's credential generation,
+  // but that label must never carry an old token into a different saved way.
+  localStorage.setItem(peersKey(), JSON.stringify(peers.map(({ workspaceKey: _workspaceKey, ...peer }) => peer)));
 }
 const endpoint = (peer: Peer) => {
   try {

@@ -10,7 +10,14 @@ async function load(file) {
     new URL(`../src/${file}`, import.meta.url),
     "utf8",
   );
-  const outputText = transpile(source);
+  let outputText = transpile(source);
+  // The transport now shares the original native browser handles with the
+  // signed gateway. Keep this pure TS fixture's dependency in the same data
+  // module graph, without starting a browser/node or an OS connection.
+  if (file === "tailnet-transport.ts") {
+    const native = transpile(await fs.readFile(new URL("../src/native-browser.ts", import.meta.url), "utf8"));
+    outputText = outputText.replace('from "./native-browser"', `from "data:text/javascript;base64,${Buffer.from(native).toString("base64")}"`);
+  }
   return import(
     `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
   );

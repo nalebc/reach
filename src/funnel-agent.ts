@@ -1,5 +1,7 @@
 import { agentRequestTimeout } from "../server/agent-transport.mjs";
 import type { Peer } from "./api";
+import { privateGatewayRoute, type PrivateGatewayRoute } from "./private-gateway";
+import { nativeBrowserFetch } from "./native-browser";
 
 export const funnelStorageKey = "reach.funnel-agent";
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
@@ -150,6 +152,7 @@ export function createFunnelAgent(dependencies: {
   fetch: typeof fetch;
   now?: () => number;
   locks?: Pick<LockManager, "request">;
+  gateway?: PrivateGatewayRoute;
 }) {
   const { origin, storage, keys, crypto } = dependencies;
   const keep = dependencies.keep || storage;
@@ -286,7 +289,8 @@ export function createFunnelAgent(dependencies: {
         new TextEncoder().encode(JSON.stringify({ crv: "P-256", kty: "EC", x: publicKey.x, y: publicKey.y })),
       ),
     );
-    return dependencies.fetch(`${origin}/agent-gateway`, {
+    const endpoint = await dependencies.gateway?.endpoint() || origin;
+    return dependencies.fetch(`${endpoint}/agent-gateway`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Reach-Key": thumbprint },
       body: JSON.stringify({ payload, publicKey, signature }),
@@ -295,6 +299,12 @@ export function createFunnelAgent(dependencies: {
       referrerPolicy: "no-referrer",
       cache: "no-store",
       signal: signal || AbortSignal.timeout(35000),
+    }).catch(error => {
+      // The answer may have been lost after a click/command ran. Record the
+      // route failure for future requests, never resend this operation here.
+      if (!signal?.aborted && (error instanceof TypeError || error?.name === "TimeoutError"))
+        dependencies.gateway?.failed(endpoint);
+      throw error;
     });
   }
   // What a refusal means for this page: over (401 unknown or revoked link,
@@ -583,6 +593,7 @@ export function browserFunnelAgent() {
     keys: browserFunnelKeys(),
     crypto,
     fetch: (...args) => fetch(...args),
+    gateway: privateGatewayRoute({ origin: location.origin, fetch: nativeBrowserFetch }),
     locks: navigator.locks,
   }));
 }

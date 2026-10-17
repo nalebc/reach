@@ -7,7 +7,8 @@ import "./abort-polyfill";
 import "./storage-fallback";
 // Keeps the browser's install prompt from page load: the app comes later here.
 import "./home-screen";
-import { watchForApp } from "./app-watch";
+import { browserState as storeFor, createBrowserNode } from "./browser-node";
+import { rememberPrivateConfig } from "./app-watch";
 import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";
 import { observeGuestNetwork } from "./guest-network";
@@ -45,41 +46,8 @@ import {
 } from "./start-flow";
 import "./start.css";
 
-declare global {
-  // Defined by the browser client (tailnet/main.go) and wasm_exec.js.
-  function reachTailnet(config: {
-    hostname: string;
-    authKey?: string;
-    stateStorage: {
-      getState(key: string): string;
-      setState(key: string, value: string): void;
-    };
-  }): TailnetNode;
-  // eslint-disable-next-line no-var
-  var Go: new () => {
-    importObject: WebAssembly.Imports;
-    run(i: WebAssembly.Instance): Promise<void>;
-  };
-}
-
 const view = document.getElementById("start")!;
 const USED = "reach.tailnet.used";
-// Your browser's Tailscale device, or an invited guest's (kept apart, so a
-// guest link opened on your phone never replaces your own device).
-const storeFor = (prefix: string) => ({
-  getState: (key: string) => {
-    try {
-      return localStorage.getItem(`${prefix}${key}`) || "";
-    } catch {
-      return "";
-    }
-  },
-  setState: (key: string, value: string) => {
-    try {
-      localStorage.setItem(`${prefix}${key}`, value);
-    } catch {}
-  },
-});
 
 function render(parts: {
   title: string;
@@ -173,7 +141,7 @@ function render(parts: {
     link.textContent = "Get the Tailscale app";
     hint.append(
       link,
-      " for a faster connection. Reach switches to it automatically once it’s on.",
+      " for a faster connection. Reach switches to it automatically when that connection is already approved.",
     );
     card.append(hint);
   }
@@ -192,45 +160,16 @@ async function loadConfig(): Promise<StartConfig | null> {
   }
 }
 
-function loadScript(src: string) {
-  return new Promise<void>((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = () => resolve();
-    s.onerror = () => reject(Error("The secure connection could not load."));
-    document.head.append(s);
-  });
-}
-
 // Joining with the one-time key a Face ID sign-in gave this browser.
 type FaceJoin = { key: string; hostname: string };
 
-async function startNode(
-  config: StartConfig,
-  wasm: Promise<Response>,
-  guest: GuestLink | null,
-  face?: FaceJoin,
-) {
-  const files = config.tailnet!;
-  await loadScript(`/tailnet/${files.exec}`);
-  const go = new Go();
-  const { instance } = await WebAssembly.instantiateStreaming(
+async function startNode(config: StartConfig, wasm: Promise<Response>, guest: GuestLink | null, face?: FaceJoin) {
+  return createBrowserNode(config, {
     wasm,
-    go.importObject,
-  );
-  void go.run(instance).then(() => {
-    // The Go side never exits on purpose; if it does, start over.
-    render({
-      title: "Connection stopped",
-      action: { label: "Reconnect", onClick: () => location.reload() },
-    });
-  });
-  const key = face?.key || guest?.key;
-  return reachTailnet({
-    hostname:
-      face?.hostname || guest?.hostname || browserHostname(navigator.userAgent),
-    ...(key ? { authKey: key } : {}),
-    stateStorage: storeFor(guest ? "reach.guest:" : "reach.tailnet:"),
+    guest: !!guest,
+    hostname: face?.hostname || guest?.hostname || browserHostname(navigator.userAgent),
+    authKey: face?.key || guest?.key || undefined,
+    stopped: () => render({ title: "Connection stopped", action: { label: "Reconnect", onClick: () => location.reload() } }),
   });
 }
 
@@ -239,6 +178,7 @@ async function boot(
   node: TailnetNode,
   guest: GuestLink | null,
 ) {
+  rememberPrivateConfig(config);
   installTailnet(node, tailnetSuffix(config.origin));
   // A device that joined with Face ID may only use Reach's private port.
   setHomeOrigin(
@@ -246,7 +186,6 @@ async function boot(
       (faceDevice() ? config.origin : ownOrigin(config)),
   );
   document.documentElement.dataset.connection = "browser";
-  if (!guest) watchForApp(config);
   await openReach(() => import("./main"), view);
 }
 
