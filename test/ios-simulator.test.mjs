@@ -12,7 +12,8 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
-import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport } from "./helpers/ios-page-evidence.mjs";
+import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
+import { createIosProxyForwarder } from "./helpers/ios-proxy.mjs";
 
 // Opt-in real WKWebView/native-plugin smoke. Uses a new disposable simulator,
 // a copied app, synthetic files, and a localhost-only Reach fixture. It never
@@ -48,7 +49,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // outcome. A timeout ends the test before its report: cleanup then leaves
   // what it has.
   const started = Date.now(), phases = [], steps = [], requests = [];
-  let device, bundle, failure, runtimeVersion, ready, pageLimit, pageSeen = false, reported = false;
+  let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, pageSeen = false, reported = false;
   const pageEvidence = createIosPageEvidence({ started });
   const since = from => Math.round((Date.now() - from) / 100) / 10;
   const left = () => started + budget - Date.now();
@@ -90,9 +91,11 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const diagnostics = await collectIosFailureDiagnostics({ device, bundle, deadline: started + budget, run })
         .catch(error => ({ error: String(error.message).slice(0, 1000) }));
       await fs.mkdir(path.dirname(output), { recursive: true });
-      await fs.writeFile(output, JSON.stringify(iosPageFailureReport({ error: failure, last, context: {
-        phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageEvidence.snapshot(),
-        runtime: runtimeVersion, diagnostics, physicalDevice: false } }), null, 2) + "\n").catch(() => {});
+      const pageState = pageEvidence.snapshot();
+      const report = applyIosAssetGate(iosPageFailureReport({ error: failure, last, context: {
+        phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageState,
+        proxyEvidence: proxyForwarder?.snapshot(), runtime: runtimeVersion, diagnostics, physicalDevice: false } }), pageState);
+      await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
     if (device) {
@@ -106,6 +109,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const upstream = reach.output().match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
   const code = reach.output().match(/Pairing code: (\d{4}) (\d{4})/)?.slice(1).join("");
   assert.ok(upstream && code, "isolated CLI fixture provides its URL and pairing code");
+  proxyForwarder = createIosProxyForwarder(upstream, { started });
   await fs.writeFile(path.join(reach.home, "simulator-proof.txt"), "Reach simulator bytes\n");
   const nonce = crypto.randomBytes(16).toString("hex"), probe = `/__simulator_${nonce}`;
   const certificate = path.join(dir, "localhost.pem"), key = path.join(dir, "localhost.key");
@@ -205,14 +209,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       return;
     }
     // The proxy keeps the synthetic browser and companion on one origin.
-    const headers = { ...req.headers, host: new URL(upstream).host };
-    if (headers.origin) headers.origin = upstream;
-    const forwarded = http.request(upstream + req.url, { method: req.method, headers }, response => {
-      res.writeHead(response.statusCode, response.headers);
-      response.pipe(res);
-    });
-    forwarded.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
-    req.pipe(forwarded);
+    proxyForwarder.forward(req, res);
   };
   const proxy = http.createServer(handler);
   const downloadProxy = https.createServer({ key: await fs.readFile(key), cert: await fs.readFile(certificate) }, handler);
@@ -399,10 +396,12 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     reached("page reported");
   } catch (error) { failure = error.message; throw error; }
   finally { clearTimeout(timer); allowDownload(); }
+  const pageState = pageEvidence.snapshot();
+  report = applyIosAssetGate(report, pageState);
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
-      pageEvidence: pageEvidence.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });

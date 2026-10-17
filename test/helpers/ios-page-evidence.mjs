@@ -85,3 +85,24 @@ export function iosPageFailureReport({ error, last, context }) {
   return { ...context, ok: false,
     error: (typeof error === "string" ? error : error?.message) || `Did not finish. Last step reached: ${last}.` };
 }
+
+export function applyIosAssetGate(report, evidence) {
+  const failures = new Map();
+  const asset = value => {
+    const path = pathname(value);
+    return path.startsWith("/assets/") ? path : "";
+  };
+  for (const response of evidence?.network || []) {
+    const path = asset(response.path);
+    if (path && response.status >= 400) failures.set(path, { path, status: response.status });
+  }
+  for (const event of evidence?.browser || []) {
+    const path = asset(event.source);
+    if (path && event.kind === "resource-error") failures.set(path, { ...failures.get(path), path, resourceError: true });
+  }
+  const assetFailures = [...failures.values()];
+  if (!assetFailures.length) return { ...report, assetFailures };
+  const detail = assetFailures.slice(0, 8).map(value => `${value.path}${value.status ? ` (HTTP ${value.status})` : " (resource error)"}`).join(", ");
+  return { ...report, ok: false, assetFailures,
+    error: report.ok === false && report.error ? report.error : `Built interface assets failed to load: ${detail}` };
+}

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { JSDOM } from "jsdom";
-import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport } from "./helpers/ios-page-evidence.mjs";
+import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
 
 const probe = "/__simulator_disposable";
 function request(evidence, path, status = 200) {
@@ -99,4 +99,38 @@ test("diagnostic error messages redact URL credentials, query strings and bearer
   evidence.event({ kind: "error", message: "Failed https://user:password@isolated.test/assets/app.js?token=secret#fragment with Bearer private-value" });
   const entry = evidence.snapshot().browser[0];
   assert.equal(entry.message, "Failed https://isolated.test/assets/app.js with Bearer [redacted]");
+});
+
+const observedAssets = [
+  "/assets/r2-Screen-DhsLo3GP.js", "/assets/r2-screen-bar-ONjNkpRo.css", "/assets/r2-KeyRow-CTFHeBlt.js",
+  "/assets/r2-screen-bar-DWtt80gK.js", "/assets/r2-useImmersiveChrome-DmMoYGQd.js",
+];
+const observedEvidence = () => ({ network: observedAssets.map(path => ({ path, method: "GET", outcome: "finished", status: 502 })),
+  browser: observedAssets.map(source => ({ kind: "resource-error", source })) });
+
+test("the observed402 report with eight native checks and five asset502s must fail its final verdict", () => {
+  const report = { ok: true, checks: Array.from({ length: 8 }, (_, i) => `native check ${i}`), platform: "ios" };
+  const final = applyIosAssetGate(report, observedEvidence());
+  assert.equal(final.ok, false);
+  assert.match(final.error, /built interface assets/i);
+  assert.equal(final.assetFailures.length, 5);
+  assert.deepEqual(final.checks, report.checks, "all eight original native checks remain required");
+  assert.equal(report.ok, true, "the source evidence is preserved");
+});
+
+test("a native failure remains the primary error when interface assets also fail", () => {
+  const report = { ok: false, error: "Native download failed: certificate rejected", checks: ["pairing succeeded"] };
+  const final = applyIosAssetGate(report, observedEvidence());
+  assert.equal(final.ok, false);
+  assert.equal(final.error, report.error);
+  assert.equal(final.assetFailures.length, 5);
+});
+
+test("an assets resource error without an HTTP status still fails, and intentionally blocked API calls do not", () => {
+  const report = { ok: true, checks: [] };
+  const apiOnly = { network: [{ path: "/api/sessions", status: 503 }], browser: [] };
+  assert.equal(applyIosAssetGate(report, apiOnly).ok, true);
+  const failed = applyIosAssetGate(report, { ...apiOnly, browser: [{ kind: "resource-error", source: "/assets/r2-module.js" }] });
+  assert.equal(failed.ok, false);
+  assert.deepEqual(failed.assetFailures, [{ path: "/assets/r2-module.js", resourceError: true }]);
 });
