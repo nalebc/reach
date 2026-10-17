@@ -27,7 +27,8 @@ import {
   signWithFaceId,
   type FaceOptions,
 } from "./passkeys";
-import { installTailnet, type TailnetNode } from "./tailnet-transport";
+import { bindPrivatePeer, installPrivateRouting, installTailnet, usePrivateWay, type TailnetNode } from "./tailnet-transport";
+import { watchNativeStart } from "./start-native";
 import {
   appLink,
   browserHostname,
@@ -48,6 +49,24 @@ import "./start.css";
 
 const view = document.getElementById("start")!;
 const USED = "reach.tailnet.used";
+let workspaceStarted = false;
+let browserNode: TailnetNode | null = null;
+const startupStops = new Set<() => void>();
+const startupConnection = new AbortController();
+startupStops.add(() => startupConnection.abort());
+function stopStartup() {
+  for (const stop of startupStops) stop();
+  startupStops.clear();
+}
+const hideStartup = (event: PageTransitionEvent) => { if (!event.persisted) stopStartup(); };
+window.addEventListener("pagehide", hideStartup);
+function claimWorkspace() {
+  if (workspaceStarted) return false;
+  workspaceStarted = true;
+  stopStartup();
+  window.removeEventListener("pagehide", hideStartup);
+  return true;
+}
 
 function render(parts: {
   title: string;
@@ -64,6 +83,7 @@ function render(parts: {
   step?: string;
   diagnostics?: string;
 }) {
+  if (workspaceStarted) return;
   const diagnosticsOpen =
     !!view.querySelector<HTMLDetailsElement>(".start-diagnostics")?.open;
   view.replaceChildren();
@@ -166,9 +186,11 @@ type FaceJoin = { key: string; hostname: string };
 async function startNode(config: StartConfig, wasm: Promise<Response>, guest: GuestLink | null, face?: FaceJoin) {
   return createBrowserNode(config, {
     wasm,
+    signal: startupConnection.signal,
     guest: !!guest,
     hostname: face?.hostname || guest?.hostname || browserHostname(navigator.userAgent),
     authKey: face?.key || guest?.key || undefined,
+    beforeStart: () => !workspaceStarted,
     stopped: () => render({ title: "Connection stopped", action: { label: "Reconnect", onClick: () => location.reload() } }),
   });
 }
@@ -178,6 +200,7 @@ async function boot(
   node: TailnetNode,
   guest: GuestLink | null,
 ) {
+  if (!claimWorkspace()) return;
   rememberPrivateConfig(config);
   installTailnet(node, tailnetSuffix(config.origin));
   // A device that joined with Face ID may only use Reach's private port.
@@ -204,6 +227,7 @@ async function browserMode(
     faceOk?: boolean;
   } = {},
 ) {
+  if (workspaceStarted) return;
   if (!config.tailnet) {
     render({
       title: `Connect to ${config.name}`,
@@ -249,7 +273,7 @@ async function browserMode(
   try {
     node = await startNode(
       config,
-      wasm || fetch(`/tailnet/${config.tailnet.wasm}`),
+      wasm || fetch(`/tailnet/${config.tailnet.wasm}`, { signal: startupConnection.signal }),
       guest,
       face,
     );
@@ -263,6 +287,15 @@ async function browserMode(
     });
     return;
   }
+  browserNode = node;
+  if (workspaceStarted) {
+    // A native probe may finish while WASM is being constructed. Keep this
+    // node as private standby; never begin a login after the workspace won.
+    installTailnet(node, tailnetSuffix(config.origin), "native");
+    node.start({ state: () => {}, authURL: () => {}, error: () => {} });
+    stopNetworkObservation();
+    return;
+  }
   try {
     if (!guest) localStorage.setItem(USED, "1");
   } catch {}
@@ -273,7 +306,6 @@ async function browserMode(
   });
   let authURL = "",
     asked = false,
-    booted = false,
     checks = 0;
   const signIn = () =>
     render({
@@ -290,7 +322,7 @@ async function browserMode(
     ? guest.invites.map((x) => x.origin)
     : [ownOrigin(config)];
   const running = () => {
-    if (booted) return;
+    if (workspaceStarted) return;
     const states = targets.map((t) => homeReachable(node.status(), t));
     const reach = states.includes("ok")
       ? "ok"
@@ -298,7 +330,6 @@ async function browserMode(
         ? "offline"
         : "missing";
     if (reach === "ok") {
-      booted = true;
       void boot(config, node, guest);
       return;
     }
@@ -356,6 +387,7 @@ async function browserMode(
   // Network startup can briefly report NeedsLogin while registering a valid
   // key. Only a real key rejection may say the key was not accepted.
   let keyTimer: ReturnType<typeof setTimeout> | undefined;
+  startupStops.add(() => clearTimeout(keyTimer));
   // The same for a Face ID sign-in's key (it lasts ten minutes).
   const faceFailed = () =>
     render({
@@ -365,6 +397,7 @@ async function browserMode(
     });
   node.start({
     state: (state) => {
+      if (workspaceStarted) return;
       if (guestJoin) {
         guestJoin.state(state);
         return;
@@ -400,7 +433,7 @@ async function browserMode(
         clearTimeout(keyTimer);
         checks = 0;
         running();
-      } else if (!booted && state === "Starting")
+      } else if (state === "Starting")
         render({
           title: `Joining your network…`,
           hint: true,
@@ -408,6 +441,7 @@ async function browserMode(
         });
     },
     authURL: (url) => {
+      if (workspaceStarted) return;
       if (guestJoin) {
         guestJoin.error("key");
         return;
@@ -415,7 +449,7 @@ async function browserMode(
       authURL = url;
       signIn();
     },
-    error: (kind) => guestJoin?.error(kind),
+    error: (kind) => { if (!workspaceStarted) guestJoin?.error(kind); },
   });
 }
 
@@ -423,14 +457,19 @@ async function browserMode(
 // gives this browser a one-time key to join your tailnet as a limited device;
 // Reach's Connect then uses its one-time ticket (src/ConnectForm.tsx).
 async function faceMode(config: StartConfig, wasm: Promise<Response>) {
+  void wasm.catch(() => {});
+  if (workspaceStarted) return;
   let ask: { id: string; options: FaceOptions } | null = null;
   let note = "";
   let renew: ReturnType<typeof setTimeout> | undefined;
+  startupStops.add(() => clearTimeout(renew));
   const post = async (path: string, body: unknown) => {
+    if (workspaceStarted) throw Error("Reach is already open.");
     const response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: startupConnection.signal,
     });
     const value = await response.json().catch(() => ({}));
     if (!response.ok)
@@ -457,9 +496,11 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
   // Fetched ahead (Safari only shows Face ID straight from a tap), and
   // renewed before the two-minute challenge runs out.
   const load = async () => {
+    if (workspaceStarted) return;
     clearTimeout(renew);
     try {
       ask = await post("/faceid/options", {});
+      if (workspaceStarted) return;
       renew = setTimeout(load, 100000);
     } catch (e) {
       ask = null;
@@ -468,7 +509,7 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
     show();
   };
   function tap() {
-    if (!ask) return;
+    if (!ask || workspaceStarted) return;
     const { id, options } = ask;
     ask = null;
     note = "";
@@ -478,6 +519,7 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
     answer
       .then((credential) => post("/faceid/join", { id, credential }))
       .then(({ key, hostname, ticket }) => {
+        if (workspaceStarted) return;
         saveTicket(ticket, config.origin);
         try {
           localStorage.setItem(FACE_DEVICE, "1");
@@ -485,6 +527,7 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
         return browserMode(config, wasm, null, { face: { key, hostname } });
       })
       .catch((e) => {
+        if (workspaceStarted) return;
         note = faceIdError(e);
         void load();
       });
@@ -525,7 +568,10 @@ async function main() {
     used = localStorage.getItem(USED) === "1";
   } catch {}
   const wasm =
-    used && config.tailnet ? fetch(`/tailnet/${config.tailnet.wasm}`) : null;
+    used && config.tailnet ? fetch(`/tailnet/${config.tailnet.wasm}`, { signal: startupConnection.signal }) : null;
+  // A native connection can win before the browser consumes this prefetch.
+  // Observe its rejection now; awaiting it still reports an asset failure.
+  void wasm?.catch(() => {});
   // An invitation: the key is single use; take it out of the address now.
   const guest =
     location.pathname === "/guest"
@@ -553,6 +599,23 @@ async function main() {
     );
     return;
   }
+  if (!guest && location.pathname === "/" && config.home === location.origin) {
+    const native = watchNativeStart(config, (peer) => {
+      if (!claimWorkspace()) return;
+      rememberPrivateConfig(config);
+      bindPrivatePeer(peer, "native");
+      installPrivateRouting();
+      if (browserNode) installTailnet(browserNode, tailnetSuffix(config.origin), "native");
+      usePrivateWay("native");
+      delete document.documentElement.dataset.connection;
+      setHomeOrigin(peer.url);
+      try { localStorage.setItem("reach.active", peer.id); } catch {}
+      void openReach(() => import("./main"), view);
+    });
+    startupStops.add(native.stop);
+    await native.check();
+    if (workspaceStarted) return;
+  }
   // An invited guest's browser (a key now, or joined with one before) uses
   // its guest device; a guest link without a key signs in to Tailscale.
   const joined = !!storeFor("reach.guest:").getState("_current-profile");
@@ -563,8 +626,9 @@ async function main() {
   // Face ID sign-in, when your computer offers it.
   const faceOk =
     !guest && !!config.faceId && !!config.tailnet && (await faceIdReady());
+  if (workspaceStarted) return;
   if (faceOk && !device) {
-    await faceMode(config, wasm || fetch(`/tailnet/${config.tailnet!.wasm}`));
+    await faceMode(config, wasm || fetch(`/tailnet/${config.tailnet!.wasm}`, { signal: startupConnection.signal }));
     return;
   }
   await browserMode(
