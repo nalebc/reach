@@ -238,13 +238,14 @@ else if (command === "serve" && rest[0] === "status") {
       const headers = {};
       for (const [name, value] of Object.entries(req.headers)) {
         const lower = name.toLowerCase();
-        if (lower.startsWith("tailscale-") || lower === "forwarded" || lower.startsWith("x-forwarded-") || lower === "x-fake-from") continue;
+        if (lower.startsWith("tailscale-") || lower === "forwarded" || lower.startsWith("x-forwarded-") || lower === "x-fake-from" || lower === "x-fake-tailnet") continue;
         headers[name] = value;
       }
       const source = typeof req.headers["x-fake-from"] === "string" ? req.headers["x-fake-from"] : "100.64.0.20";
       headers["x-forwarded-host"] = req.headers.host;
       headers["x-forwarded-for"] = source;
-      if (funnel) headers["tailscale-funnel-request"] = "?1";
+      // The same listener serves authenticated tailnet devices without a Funnel mark.
+      if (funnel && req.headers["x-fake-tailnet"] !== "1") headers["tailscale-funnel-request"] = "?1";
       else headers["tailscale-user-login"] = state.identities?.[source]?.UserProfile?.LoginName || state.login;
       return headers;
     };

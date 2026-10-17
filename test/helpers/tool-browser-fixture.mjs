@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
 import { toolPageOperation } from "../../server/tool-page-runtime.mjs";
+import { toolBrowsersFor } from "../../server/tool-protocol.mjs";
 
 export const toolApps = [
   {
@@ -15,11 +16,14 @@ export const toolApps = [
     running: true,
   },
 ];
-export function toolBrowserFixture() {
-  const browsers = new Map([
-      ["Chrome", []],
-      ["Safari", []],
-    ]),
+export const toolAppsFor = (platform) => platform === "win32" ? [
+  { id: String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`, name: "Google Chrome", bundleId: "exe:chrome.exe", running: true },
+  { id: String.raw`C:\Program Files\Microsoft\Edge\Application\msedge.exe`, name: "Microsoft Edge", bundleId: "exe:msedge.exe", running: true },
+] : toolApps;
+
+// The native browser transport is mocked; page operations use the real interpreter.
+export function toolBrowserFixture({ platform = "darwin" } = {}) {
+  const browsers = new Map(Object.keys(toolBrowsersFor(platform)).map(name => [name, []])),
     calls = [],
     counters = { clicks: 0, drafts: 0, attachments: 0 };
   let next = 1;

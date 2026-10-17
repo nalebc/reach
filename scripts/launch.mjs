@@ -1,5 +1,7 @@
 import {
   readPreferences,
+  readHttpsPort,
+  rememberHttpsPort,
   assertSocketSupport,
   assertOwnerAccount,
   preferencesFile,
@@ -61,6 +63,7 @@ import { startOrigin } from "./public-link.mjs";
 import { EphemeralFunnel } from "./ephemeral-funnel.mjs";
 import { ForegroundServe, createLock } from "./foreground-serve.mjs";
 import { ForegroundFunnel } from "./foreground-funnel.mjs";
+import { checkBrowserLink } from "./browser-link.mjs";
 
 // Windows' keyed route: its check took Tailscale's own connections for
 // another program's, or didn't answer in time again and again.
@@ -99,7 +102,7 @@ export async function launch(options, root) {
   // there is one.
   let crashRedact = (text) => text;
   installCrashGuard({ dataDir, supervised, redact: (text) => crashRedact(text) });
-  const httpsPort = options.httpsPort || 8443;
+  const httpsPort = options.httpsPort || readHttpsPort(root) || 8443;
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
   const statusFile = path.join(privateDir, "host-status.json");
@@ -107,6 +110,7 @@ export async function launch(options, root) {
   // Windows has no Unix socket: a keyed loopback route only Tailscale's own
   // process may use (docs/parity/D-public-door.md).
   const keyedDoor = !!preferences && process.platform === "win32";
+  const browserRequired = keyedDoor;
   // What an earlier start noted about that route (below): Tailscale's own
   // connections taken for another program's (pairing codes for a day, or
   // until Tailscale changes), or its check not answering in time twice
@@ -228,7 +232,7 @@ export async function launch(options, root) {
     : await prepareTailscale(
         httpsPort,
         // Reach's own route from an earlier run is reused, or replaced when
-        // its target changed; anybody else's on the port refuses to start.
+        // its target changed; anybody else's route is left on its own port.
         (config, origin) => recordedRouteOwned(routeFile, config, origin),
       );
   // The one address (https://<computer>.ts.net): Reach for your devices, the
@@ -294,6 +298,7 @@ export async function launch(options, root) {
     keyedMonitor;
   let startUrl = "";
   let phoneLinkShown = false;
+  let refreshBrowserLink;
   const forgetStatus = () => {
     if (loadJson(statusFile, null)?.instance === reach.instance)
       fs.rmSync(statusFile, { force: true });
@@ -690,6 +695,7 @@ export async function launch(options, root) {
         throw Error(
           "The private phone link could not connect. Check Tailscale and HTTPS setup, then rerun Reach. No public tunnel was opened.",
         );
+      rememberHttpsPort(root, Number(new URL(privateOrigin).port || 443));
       monitor = setInterval(() => void recovery.check(), 5000);
       monitor.unref();
       if (publicStart && !stopped) {
@@ -709,6 +715,8 @@ export async function launch(options, root) {
             if (!open) {
               startUrl = "";
               noteLink(privateOrigin);
+            } else if (browserRequired) {
+              void refreshBrowserLink?.();
             } else if (!startUrl) {
               // A new tailnet can enable Funnel only after Reach has shown
               // its private link. Update `status`/`pair` and the waiting
@@ -794,11 +802,17 @@ export async function launch(options, root) {
       }
       console.log("  Code works once and expires in 10 minutes.");
     };
+    const showPrivate = () => {
+      if (!preferences) return showCode(true);
+      console.log(`\n  Private link: ${privateOrigin}\n  Your phone's Tailscale app must be on this computer's Tailscale network.\n`);
+      qr.generate(privateOrigin, { small: true });
+      console.log(`  Tap Connect, then approve the code here.\n`);
+    };
     if (preferences) {
       // The one address once Reach holds it (port 443): with the Tailscale
       // app it's Reach itself; without the app, the start page, while a
       // pairing window is open. Otherwise the private address.
-      startUrl = publicLink?.live ? publicStart : "";
+      startUrl = !browserRequired && publicLink?.live ? publicStart : "";
       // Someone at this terminal, reading the QR: a phone without the
       // Tailscale app may sign in from its browser for the next minutes.
       // Not a window Reach opened by itself (a restart from the phone, at
@@ -806,17 +820,47 @@ export async function launch(options, root) {
       // The request to pair starts now even if Funnel still needs enabling.
       // It expires normally and approval on the private link closes it too.
       if (attended) openPairingWindow(dataDir);
+      if (browserRequired) {
+        let checking = null, lastReason = "";
+        refreshBrowserLink = () => checking ??= (async () => {
+          if (stopped || startUrl) return;
+          const result = publicLink?.live
+            ? await (options.browserCheck || checkBrowserLink)(publicStart, reach.instance)
+            : { ready: false, reason: publicLink?.lastError || "Waiting for Tailscale to enable this computer's public browser link." };
+          if (stopped) return;
+          const current = loadJson(statusFile, null);
+          if (current?.instance === reach.instance)
+            atomicJson(statusFile, { ...current, browserLink: result });
+          if (!result.ready) {
+            if (result.reason !== lastReason) console.log(`Reach: ${result.reason}\n  Waiting before showing the phone QR. Keep this terminal open.`);
+            lastReason = result.reason;
+            return;
+          }
+          startUrl = publicStart;
+          noteLink(startUrl);
+          if (phoneLinkShown) {
+            console.log(`\nReach: browser connection is ready.\n  Open on your phone: ${startUrl}\n`);
+            if (!options.service) qr.generate(startUrl, { small: true });
+            const pairing = loadJson(pairingWindowFile(dataDir), null);
+            console.log(phoneLinkText({ oneAddress: true, attended: pairing?.until > Date.now() }));
+          }
+        })().catch(error => console.warn(`Reach: checking the browser link: ${error.message}`)).finally(() => { checking = null; });
+        await refreshBrowserLink();
+        publicMonitor = setInterval(() => void refreshBrowserLink(), 5000);
+        publicMonitor.unref();
+      }
       // Linked computers share one link: the one where Reach started first.
       const link = startUrl
         ? reach.fleet?.homeLink({ start: startUrl, since: setupSince() }) ||
           startUrl
         : origin;
       if (startUrl) noteLink(link);
-      console.log(
+      if (browserRequired && !startUrl) console.log(`\n${heading()}\n  Preparing the connection for your phone's browser. No phone app is needed.\n  Tailscale account: ${preferences.owner.login}\n  Already connected to this Tailscale network? Private link: ${privateOrigin}\n`);
+      else console.log(
         `\n${heading()}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
-      if (!options.service) qr.generate(link, { small: true });
-      console.log(
+      if (!options.service && (!browserRequired || startUrl)) qr.generate(link, { small: true });
+      if (!browserRequired || startUrl) console.log(
         phoneLinkText({
           oneAddress: !!startUrl,
           attended,
@@ -891,6 +935,7 @@ export async function launch(options, root) {
       console.log(
         `Reach is ready · ${origin}\nRun ${command} pair for a fresh pairing code and QR.`,
       );
+    else if (browserRequired) console.log(`\nReach: the phone browser connection could not be prepared.\n  ${signInOff || "Run Reach setup to configure browser sign-in."}\n  A private QR would require the phone app, so none is shown.\n`);
     else showCode();
     if (fs.existsSync(reach.config.agentPolicyFile))
       console.log(`  Agent permissions: ${reach.config.agentPolicyFile}`);
@@ -905,6 +950,8 @@ export async function launch(options, root) {
       console.log(
         "  Private Tailscale link: only your Tailscale devices open it, and Reach pairing is also required. No public internet tunnel is enabled.",
       );
+    if (browserRequired && !options.service)
+      console.log("  Already using the Tailscale app on this computer's network? Type private for its private QR. Other phones use the browser QR when it is ready.");
     if (!options.service) {
       console.log(
         preferences
@@ -930,7 +977,9 @@ export async function launch(options, root) {
               ),
             (e) => console.log(e.message),
           );
-        } else if (!preferences) showCode(true);
+        } else if (!options.local && line.trim().toLowerCase() === "private") showPrivate();
+        else if (!preferences && !browserRequired) showCode(true);
+        else if (!preferences) console.log("Reach: waiting for browser setup. Type private only if your phone is already connected to this Tailscale network.");
         else if (/^(un)?link\b/i.test(line.trim()) && reach.fleet) {
           const [command, name = ""] = line.trim().split(/\s+/);
           if (command.toLowerCase() === "unlink")

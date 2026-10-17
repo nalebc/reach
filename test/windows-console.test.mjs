@@ -229,10 +229,13 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   await pc.fake.setStatus({ CertDomains: [HOST] });
   await reach.waitFor(`✔ 2. Your private link — ${HOST}`, "the link step done");
   // 6. On: the phone. This PC can't hold the keyed route here (no
-  // Tailscale service to check its connections): said, then the private
-  // link, its pairing code and QR.
+  // Tailscale service to check its connections). No browser QR is offered;
+  // a phone already on the tailnet can explicitly request the private one.
   await reach.waitFor("▸ 3. Your phone", "the phone step");
-  const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the pairing code", { ms: 180000 });
+  await reach.waitFor("Type private for its private QR", "the labeled private fallback", { ms: 180000 });
+  assert.doesNotMatch(reach.text(), /Pairing code:/, "a private pairing QR is not an automatic browser handoff");
+  reach.write(`private${ENTER}`);
+  const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the requested private pairing code", { ms: 30000 });
   assert.match(squeezed(phone), /Reach:browsersign-inisoffonthisPCfornow:.+Phonesjoinwithapairingcodeandneedthe(Tailscale)?app\./);
   assert.ok(squeezed(phone).includes(squeezed(`Open on your phone: https://${HOST}:8443 Pairing code:`)), phone.slice(-3000));
   await reach.waitFor("Scan with your phone camera, then tap Connect.", "the QR's line");
@@ -314,7 +317,10 @@ test("Windows console, npm install: npm's reach.cmd runs the first run to the pa
   await reach.waitFor("Which Tailscale account should Reach use?", "the account menu");
   reach.write(ENTER);
   await reach.waitFor(`✔ 2. Your private link — ${HOST}`, "the link step done");
-  const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the pairing code", { ms: 180000 });
+  await reach.waitFor("Type private for its private QR", "the installed CLI's private fallback", { ms: 180000 });
+  assert.doesNotMatch(reach.text(), /Pairing code:/, "an installed CLI also gates its browser QR");
+  reach.write(`private${ENTER}`);
+  const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the requested private pairing code", { ms: 30000 });
   assert.ok(squeezed(phone).includes(squeezed(`Open on your phone: https://${HOST}:8443 Pairing code:`)), phone.slice(-3000));
   await reach.waitFor("Scan with your phone camera, then tap Connect.", "the QR's line");
   assert.ok([...reach.raw()].filter((char) => "▀▄█".includes(char)).length > 100, "a QR code");

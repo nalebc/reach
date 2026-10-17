@@ -96,7 +96,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // (code-only options such as a stand-in peer check), `prepare` may add some.
 export async function startCleanReach(
   t,
-  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true, launchCode = "" } = {},
+  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true, launchCode = "", packageRoot = process.cwd() } = {},
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-clean-"));
   const home = path.join(root, "home");
@@ -127,7 +127,7 @@ export async function startCleanReach(
     env.Path = ["System32", "", "System32\\Wbem", "System32\\WindowsPowerShell\\v1.0"].map((dir) => path.win32.join(windows, dir)).join(";");
     env.USERPROFILE = home;
   }
-  const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
+  const entry = pathToFileURL(path.resolve(packageRoot, "scripts/launch.mjs")).href;
   const child = spawn(
     process.execPath,
     [
@@ -160,7 +160,7 @@ export async function startCleanReach(
       throw Error(`Reach did not start:\n${output}`);
     await sleep(30);
   }
-  if (!pair) return { child, exited, root, home, output: () => output, stdin: child.stdin };
+  if (!pair) return { child, exited, root, home, env, output: () => output, stdin: child.stdin };
   const url = output.match(/http:\/\/127\.0\.0\.1:\d+/)[0];
   const [, a, b] = output.match(/Pairing code: (\d{4}) (\d{4})/);
   const paired = await fetch(url + "/api/pair", {

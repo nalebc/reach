@@ -6,7 +6,7 @@ import path from "node:path";
 // installed `reach` doesn't mean pairing again. Copies only what identifies
 // this computer and its people; never paths, logs, locks, background-mode
 // records or caches, which belong to where they were made.
-const settings = ["preferences.json", "agent-policy.json"];
+const settings = ["preferences.json", "agent-policy.json", "https-port.json"];
 const data = [
   "clients.json",
   "device.json",

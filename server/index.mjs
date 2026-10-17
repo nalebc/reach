@@ -1,4 +1,5 @@
 import { browserAgentRoutes } from "./browser-agents.mjs";
+import { REACH_VERSION } from "./reach-version.mjs";
 import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
 import { createBrowserHostGuard, personOnHostMessage, personWaitingMessage } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
@@ -73,6 +74,7 @@ import { applyAgentPolicy, readAgentPolicy, within } from "./agent-policy.mjs";
 import { presetAppsFromCatalog } from "./agent-presets.mjs";
 import { createAgentDesktop, reachAddresses } from "./agent-desktop.mjs";
 import { createAgentPauses } from "./agent-pauses.mjs";
+import { createCodingTasks } from "./coding-tasks.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
 import { createAgentTimings } from "./agent-timings.mjs";
@@ -510,13 +512,34 @@ export async function createReach(overrides = {}) {
   // Team chats (agent-sessions/teams.mjs, made below): their leads stay
   // Reach's and keep their tools on every launch and resume.
   let teams = null;
+  // Load ownership before the session adapters warm up. Delegated chats
+  // never inherit ordinary Claude chat recovery after an owner restart.
+  const codingTasks = createCodingTasks({
+    file: path.join(config.dataDir, "coding-tasks.json"),
+    sessions: () => agentSessions,
+    authorize: codingClient,
+    resolveProject: (client, root, folder) => {
+      const cwd = resolve(root, folder, client);
+      if (!fs.statSync(cwd).isDirectory()) throw fail(400, "Choose a project folder.");
+      return fs.realpathSync.native(cwd);
+    },
+    validateProject: (client, cwd) => {
+      const roots = client.agentRoots || config.roots;
+      const index = roots.findIndex((root) => within(root, cwd));
+      if (index < 0) throw fail(403, "The coding task's project is no longer shared with this agent.");
+      const current = resolve(index, path.relative(roots[index], cwd), client);
+      if (fs.realpathSync.native(current) !== cwd || !fs.statSync(current).isDirectory())
+        throw fail(403, "The coding task's project changed. Start a new task in a shared folder.");
+    },
+  });
   const agentSessions =
     overrides.agentSessions ||
     (overrides.agentSessionsFactory || createAgentSessions)({
       dataDir: config.dataDir,
       openClaw,
       desktopAutomation,
-      keepOut: (agent, id) => !!teams?.inTeam(agent, id),
+      keepOut: (agent, id) => !!teams?.inTeam(agent, id) || codingTasks.ownsSession(agent, id),
+      recoveryAllowed: (agent, id) => !codingTasks.ownsSession(agent, id),
       teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
     });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
@@ -1092,10 +1115,33 @@ export async function createReach(overrides = {}) {
   // lets go of what the agent holds first, then the pause is kept. A pause
   // that can't be saved still holds now (507, agent-pauses.mjs).
   const pauseAgent = (id, value) => {
-    if (value) agentDesktop?.letGo?.(id);
+    if (value) {
+      agentDesktop?.letGo?.(id);
+      void codingTasks.cancelClient(id).catch(() => {});
+    }
     return agentPauses.set(id, value);
   };
   const agentPaused = (id) => agentPauses.has(id);
+  // Stable client IDs survive hourly credential rotation. Background work
+  // checks the current grant, never a bearer token captured at task start.
+  function codingClient(clientId) {
+    const all = auth.list();
+    const raw = all.find((client) => client.id === clientId);
+    const current = raw && applyAgentPolicy(raw, config);
+    const expires = (client) => client?.expiresAt || Date.parse(client?.createdAt) + 30 * 86400000;
+    if (!current || !(expires(current) > Date.now()) || (current.status && current.status !== "accepted"))
+      throw fail(403, "The requesting agent's access has ended.");
+    // Full control is supervised by the native owner device that approved
+    // the invitation. Revoking that device also ends its delegated work.
+    if (current.policy?.browser === true && current.policy.preset === "full") {
+      const binding = current.browserAppApprover;
+      if (!binding || !all.some((owner) => owner.id === binding.clientId && owner.kind === "device" &&
+          owner.scopes?.includes("admin") && expires(owner) > Date.now() &&
+          owner.tailscale?.nodeId === binding.nodeId && owner.tailscale?.userId === binding.userId))
+        throw fail(403, "The owner device supervising this agent is no longer available.");
+    }
+    return { ...current, expiresAt: expires(current), codingPaused: agentPaused(clientId) };
+  }
   // Every such agent paused at once, and the owner told why: who was paused
   // is unknown (the saved pauses unreadable) or Reach ended unexpectedly.
   const pauseScreenAgents = (why) => {
@@ -1491,7 +1537,7 @@ export async function createReach(overrides = {}) {
     next();
   });
   app.get("/api/health", (req, res) =>
-    res.json({ product: "Reach", version: "0.1.0", instance }),
+    res.json({ product: "Reach", version: REACH_VERSION, instance }),
   );
   app.get("/api/auth/method", (req, res) =>
     res.json({
@@ -2011,6 +2057,7 @@ export async function createReach(overrides = {}) {
       screen: "screen",
       chats: "codex",
       codex: "codex",
+      "coding-tasks": "codex",
       clients: "admin",
       guests: "admin",
       jobs: "exec",
@@ -2076,7 +2123,7 @@ export async function createReach(overrides = {}) {
     // anything, here and before each later step of a running call.
     const acts = client.policy?.preset !== undefined && requestMethod === "POST" &&
       ["/browser/shell", "/browser/files/change", "/browser/desktop/mac-shortcuts/run", "/browser/shortcuts/run",
-        "/browser/tools/run", "/browser/tools/batch", "/browser/services/run"].includes(subpath);
+        "/browser/tools/run", "/browser/tools/batch", "/browser/services/run", "/coding-tasks"].includes(subpath);
     const ownerPaused = (identity) => acts && agentPaused(identity.id);
     const PAUSED_AGENT = "The owner paused this agent. It can look, not touch, until they resume it.";
     if (ownerPaused(client)) return res.status(409).json({ error: PAUSED_AGENT, kind: "paused" });
@@ -2175,6 +2222,7 @@ export async function createReach(overrides = {}) {
       ...device,
       name: config.name,
       platform: process.platform,
+      reachVersion: REACH_VERSION,
       release: os.release(),
       arch: os.arch(),
       roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
@@ -2697,6 +2745,7 @@ export async function createReach(overrides = {}) {
     browserApprovals.cancelClient(id);
     browserAppAccess.cancelClient(id);
     browserOperations.cancelClient(id);
+    void codingTasks.sweep();
     const lost = before.scopes.filter((s) => !after.scopes.includes(s));
     const fullControlLost = before.fullControlVersion === 1 && after.fullControlVersion !== 1;
     const narrower =
@@ -2747,6 +2796,7 @@ export async function createReach(overrides = {}) {
   // Ends a credential now: requests, sockets, screen control.
   // A session's work ends; its credential stays (Reopen link) or goes (revoke).
   const endSession = (id) => {
+    void codingTasks.cancelClient(id).catch(() => {});
     agentShortcuts.cancelClient(id);
     agentTools.cancelClient(id);
     agentServices.cancelClient(id);
@@ -2867,6 +2917,56 @@ export async function createReach(overrides = {}) {
       throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
     return target;
   };
+  // Bound authenticated task work by stable agent identity. Polling and
+  // creation cannot consume the separate budget needed to cancel work.
+  const codingTaskCreateStore = new MemoryStore();
+  const codingTaskReadStore = new MemoryStore();
+  const codingTaskCancelStore = new MemoryStore();
+  const codingTaskLimitOptions = {
+    windowMs: 60_000,
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this agent first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    message: { error: "Too many coding task requests. Try again in one minute." },
+  };
+  const codingTaskCreateLimit = rateLimit({ ...codingTaskLimitOptions, limit: 20, store: codingTaskCreateStore, identifier: "coding-task-create" });
+  const codingTaskReadLimit = rateLimit({ ...codingTaskLimitOptions, limit: 120, store: codingTaskReadStore, identifier: "coding-task-read" });
+  const codingTaskCancelLimit = rateLimit({ ...codingTaskLimitOptions, limit: 60, store: codingTaskCancelStore, identifier: "coding-task-cancel" });
+  app.post("/api/coding-tasks", codingTaskCreateLimit, (req, res) => {
+    if (Object.keys(req.query).length) throw fail(400, "Task creation takes no query parameters.");
+    req.reauthorize();
+    res.status(202).json(codingTasks.start(req.client.id, req.body));
+  });
+  app.get("/api/coding-tasks", codingTaskReadLimit, (req, res) => {
+    if (Object.keys(req.query).length) throw fail(400, "Task listing takes no query parameters.");
+    req.reauthorize();
+    res.set("Cache-Control", "no-store").json(codingTasks.list(req.client.id));
+  });
+  app.get("/api/coding-tasks/:id", codingTaskReadLimit, async (req, res) => {
+    if (Object.entries(req.query).some(([key, value]) => !["after", "waitSeconds"].includes(key) || typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)))
+      throw fail(400, "Use only whole-number after and waitSeconds query parameters.");
+    const controller = new AbortController();
+    const disconnected = () => controller.abort();
+    res.once("close", disconnected);
+    try {
+      const result = await codingTasks.get(req.client.id, req.params.id, {
+        ...(req.query.after === undefined ? {} : { after: Number(req.query.after) }),
+        waitSeconds: req.query.waitSeconds === undefined ? 0 : Number(req.query.waitSeconds), signal: controller.signal,
+      });
+      req.reauthorize();
+      if (!controller.signal.aborted) res.set("Cache-Control", "no-store").json(result);
+    } finally { res.removeListener("close", disconnected); }
+  });
+  app.post("/api/coding-tasks/:id/cancel", codingTaskCancelLimit, async (req, res) => {
+    if (Object.keys(req.query).length) throw fail(400, "Task cancellation takes no query parameters.");
+    if (req.body && (!isPlainRecord(req.body) || Object.keys(req.body).length)) throw fail(400, "Cancel takes only the task ID.");
+    const result = await codingTasks.cancel(req.client.id, req.params.id);
+    req.reauthorize();
+    res.json(result);
+  });
+  server.once("listening", () => codingTasks.startMonitoring());
   const browserFiles = async (operation, rootIndex, relative, authorize, limits = {}) => {
     const client = authorize(), index = Number(rootIndex);
     if (!client?.policy?.browser || !Number.isSafeInteger(index) || index < 0 ||
@@ -6032,6 +6132,7 @@ export async function createReach(overrides = {}) {
     terminals,
     codex,
     jobs,
+    codingTasks,
     instance,
     // Pause or resume from the computer itself (its terminal).
     setPaused,
@@ -6077,6 +6178,9 @@ export async function createReach(overrides = {}) {
     async close() {
       warming.abort();
       maintenanceStore.shutdown();
+      codingTaskCreateStore.shutdown();
+      codingTaskReadStore.shutdown();
+      codingTaskCancelStore.shutdown();
       // Asked to stop: the next start isn't after an unexpected end, even if
       // what follows takes too long and the launcher exits anyway.
       if (runMarker) markStopped(config.dataDir);
@@ -6127,6 +6231,7 @@ export async function createReach(overrides = {}) {
       closeInput();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
+      await codingTasks.close();
       agentSessions.close?.();
       openClaw.close?.();
       doneWatch.stop();

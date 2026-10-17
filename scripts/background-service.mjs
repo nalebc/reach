@@ -291,6 +291,7 @@ export async function backgroundService(options, root, deps = {}) {
         (config, address) =>
           recordedRouteMatches(routeFile, config, address, target),
       );
+  if (!resolved.local) resolved.httpsPort = Number(new URL(origin).port || 443);
   const dataDir = path.resolve(env.REACH_DATA || path.join(state, "quick"));
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(logDir, 0o700);

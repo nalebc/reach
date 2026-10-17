@@ -74,6 +74,11 @@ export function publicStartHandler({
   platform = process.platform,
 }) {
   const publicHost = new URL(privateOrigin).hostname;
+  // Automatic port recovery must also permit the direct-connection probe
+  // to this computer's selected port, including its WebSocket connection.
+  const direct = new URL(privateOrigin);
+  const csp = !direct.port || direct.port === "8443" ? PUBLIC_CSP
+    : PUBLIC_CSP.replace("connect-src 'self'", `connect-src 'self' ${direct.origin} ${direct.origin.replace(/^https:/, "wss:")}`);
   // Where an agent's link points, and its runtime comes from.
   const agentStart = home || `https://${publicHost}`;
   const config = () =>
@@ -148,7 +153,7 @@ export function publicStartHandler({
     res.end(req.method === "HEAD" ? undefined : body);
   };
   return (req, res) => {
-    res.setHeader("Content-Security-Policy", PUBLIC_CSP);
+    res.setHeader("Content-Security-Policy", csp);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Frame-Options", "DENY");

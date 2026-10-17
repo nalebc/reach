@@ -542,13 +542,15 @@ export function statusText(hosts, { command = "reach", started = new Map(), now,
   const note = partial ? `Reach couldn't read this PC's process list (${partial}), so it only knows the Reach run from this folder.\n` : "";
   if (!hosts.length) return `${note}Reach isn't running${partial ? " from this folder" : ""}. Start it with ${command}.`;
   const blocks = hosts.map((h) => {
-    const { link, origin, awake, routes, signInOff } = runtime(h);
+    const { link, origin, awake, routes, signInOff, browserLink } = runtime(h);
     const url = link || origin;
     const since = (route) => (route.since ? ` since ${clock(route.since, now)}` : "");
     const interruptions = routes?.private?.interruptions || 0;
     return [
       `Reach: running ${describe(h, { started: started.get(h.pid), now, dir })}`,
-      ...(url ? [`Link: ${url}`] : []),
+      ...(browserLink?.ready === false
+        ? [`Private link (same Tailscale network): ${origin}`, `Browser link: preparing — ${browserLink.reason}`]
+        : url ? [`Link: ${url}`] : []),
       // Its routes in Tailscale: the private one phones use, the public one
       // open while an invitation or agent session is live.
       ...(routes?.private ? [`Private route: ${routes.private.up ? `up${since(routes.private)}` : "down"}${interruptions ? ` · ${interruptions} interruption${interruptions === 1 ? "" : "s"}` : ""}`] : []),

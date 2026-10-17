@@ -330,6 +330,15 @@ export async function startComputer(t) {
   await setupMenu(reach, /Which Tailscale account should Reach use\?/);
   const phoneStep = await reach.until(/▸ 3\. Your phone/, 120000);
   assert.ok(phoneStep);
+  if (windows) {
+    // These desktop journeys model a phone on this PC's private tailnet.
+    // Their Tailscale stand-in has no Windows service, so browser sign-in
+    // stays off. Request that labeled fallback instead of waiting for the
+    // automatic private QR that Reach deliberately no longer prints.
+    await reach.until(/Type private for its private QR/, 120000);
+    assert.doesNotMatch(reach.output(), /Pairing code:/);
+    reach.answer("private");
+  }
   const said = await reach.until(/Open on your phone: (https:\/\/\S+)/, 120000);
   const origin = said[1].replace(/\/$/, "");
   const [, a, b] = await reach.until(/Pairing code: ?(\d{4}) ?(\d{4})|Type a device request code to approve/, 60000);

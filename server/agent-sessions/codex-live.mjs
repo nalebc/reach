@@ -1128,10 +1128,12 @@ export function createCodexLive({
         if (t.questionReplies.get(itemId) === "sending") t.questionReplies.delete(itemId);
       }
     },
-    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, modeName, name, developerInstructions, config }) {
+    async start({ cwd, text, images, model: picked, effort, speed, approvalPolicy, sandbox, approvalsReviewer, modeName, name, developerInstructions, config, authorize = () => {}, onCreated, onStarted, codingTask = false }) {
+      authorize();
       if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw bad("Choose a folder.");
       const input = codexInput({ text, images });
       const model = await withModel(picked);
+      authorize();
       const started = await daemon.rpc("thread/start", {
         cwd,
         serviceName: "reach",
@@ -1142,28 +1144,47 @@ export function createCodexLive({
         ...(approvalsReviewer ? { approvalsReviewer } : {}),
         ...(typeof developerInstructions === "string" && developerInstructions ? { developerInstructions } : {}),
         ...(config && typeof config === "object" ? { config } : {}),
-      });
-      const threadId = started.thread.id;
-      subscribed.add(threadId);
-      await owner.claim(threadId, started);
-      if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) }).catch(() => {});
+      }).catch(error => { throw codingTask ? Object.assign(uncertainDelivery("codex"), { cause: error }) : error; });
+      const threadId = started?.thread?.id;
+      if (codingTask && !UUID.test(threadId || "")) throw uncertainDelivery("codex");
       let r;
       try {
+        // A delegated task must durably own its new thread before any turn
+        // can run, even if cancellation arrived while thread/start waited.
+        await onCreated?.({ threadId });
+        authorize();
+        subscribed.add(threadId);
+        await owner.claim(threadId, started);
+        authorize();
+        if (name) await daemon.rpc("thread/name/set", { threadId, name: String(name).slice(0, 120) }).catch(() => {});
+        authorize();
         r = await daemon.rpc("turn/start", {
           threadId,
           input,
           clientUserMessageId: randomUUID(),
           ...(effort ? { effort } : {}),
           ...codexTurnMode(modeName),
-        });
+        }).catch(error => { throw codingTask ? Object.assign(uncertainDelivery("codex"), { threadId, cause: error }) : error; });
+        if (codingTask && (typeof r?.turn?.id !== "string" || !r.turn.id || r.turn.id.length > 128)) throw uncertainDelivery("codex");
       } catch (e) {
         release(threadId);
         // An empty thread nobody asked for is archived, as fork() does.
-        await daemon.rpc("thread/archive", { threadId }).catch(() => {});
+        // An unconfirmed dispatch may already be running; its manager keeps
+        // the thread and original marker to cancel that exact first turn.
+        if (!codingTask || !e.uncertain) await daemon.rpc("thread/archive", { threadId }).catch(() => {});
+        if (codingTask) Object.assign(e, { threadId, retryable: false });
         throw e;
       }
       begin(threadId, r.turn);
-      return { threadId, turnId: r.turn?.id || null };
+      const boundary = { threadId, turnId: r.turn?.id || null };
+      try { await onStarted?.(boundary); }
+      catch (error) {
+        if (boundary.turnId) await api.stopCodingTask(threadId, boundary).catch(() => {});
+        throw Object.assign(error, boundary, { uncertain: true, retryable: false });
+      }
+      // A successful late dispatch remains visible to its manager, which
+      // cancels it if authority ended while turn/start was in flight.
+      return boundary;
     },
     // Import a complete visible archive with bounded model context when needed.
     // No turn runs until a message is sent. Release it for the Codex app.
@@ -1224,6 +1245,24 @@ export function createCodexLive({
       }
       release(threadId);
       return { threadId };
+    },
+    async stopCodingTask(threadId, { turnId, taskTextPrefix, authorize = () => {} } = {}) {
+      authorize();
+      if (!UUID.test(threadId)) throw bad("Unknown session.", 404);
+      if (!turnId && typeof taskTextPrefix === "string" && taskTextPrefix && taskTextPrefix.length <= 200) {
+        // A crash can lose turn/start's answer. Inspect only the first user
+        // message, in a bounded oldest-first page; never choose a later turn.
+        const page = await daemon.rpc("thread/items/list", { threadId, limit: 100, sortDirection: "asc", cursor: null });
+        authorize();
+        const first = (page?.data || []).find(entry => entry?.item?.type === "userMessage");
+        const text = (first?.item?.content || []).filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("\n");
+        if (text.startsWith(taskTextPrefix)) turnId = first?.turnId;
+      }
+      if (typeof turnId !== "string" || !turnId || turnId.length > 128)
+        return { stopped: false, uncertain: true };
+      authorize();
+      await daemon.rpc("turn/interrupt", { threadId, turnId });
+      return { stopped: true };
     },
     async stop(threadId, authorize = () => {}) {
       authorize();

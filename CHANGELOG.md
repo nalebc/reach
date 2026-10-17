@@ -8,6 +8,31 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Invited agents can start, inspect and cancel owned coding tasks in shared
+  projects, with durable request IDs, bounded results, per-agent request limits
+  and the existing chat permission defaults.
+- Full control invitations include service tools for the agent's session. The
+  owner can still revoke a service; narrower invitations retain their approval
+  workflow. The agent's guide and phone interface describe the same access.
+
+### Fixed
+
+- Agent CLI, MCP, health and access diagnostics report the loaded package
+  version, including standalone agents moved outside the installed package.
+- Signed-in service tools use Chrome or Edge on Windows and Chrome or Safari
+  on macOS, with the platform's matching app grants and setup guidance.
+- CI waits for native watcher registration and isolates launcher-lock fixtures
+  from other running tests. Windows console checks follow the explicit private
+  QR fallback; stalled iOS launches retain bounded command and simulator evidence.
+- Windows phone setup verifies public DNS and HTTPS before showing its browser
+  QR, so a link that works only on the PC cannot be handed to a phone without
+  Tailscale. Phones on the same Tailscale network retain private access. Busy
+  private HTTPS ports recover automatically and the selected port is remembered.
+  CI decodes the emitted QR and exercises phone onboarding against source and
+  installed packages, including Windows.
+
 ## [0.2.1] — 2026-10-16
 
 More reliable agent connections, safer file transfers and chat recovery.

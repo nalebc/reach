@@ -21,6 +21,40 @@ const terminalAction = object({
   command: { ...string(2000), description: "Use pwd, cd, ls, cat, head, tail, wc or grep. Each action supplies its own cwd; cd does not change later actions. A restricted read-only command. The host validates commands and paths and asks the owner before running." },
 }, ["type", "root", "command"]);
 const definition = (name, title, description, inputSchema, example, extra = {}) => ({ name, title, description, inputSchema, example, ...extra });
+export const CODING_TASK_NAMES = Object.freeze(["reach_start_coding_task", "reach_get_coding_task", "reach_list_coding_tasks", "reach_cancel_coding_task"]);
+const codingId = { ...string(128), pattern: "^[A-Za-z0-9_-]+$", description: "The task id returned by reach_start_coding_task." };
+// Shared with legacy stdio clients: those credentials offer Codex only.
+// Preset clients receive both engines only with explicit Full control v1.
+export function codingTaskTools(agents = ["codex"]) {
+  const annotations = (readOnlyHint, destructiveHint = false, openWorldHint = false) => ({ annotations: { readOnlyHint, destructiveHint, openWorldHint } });
+  return [
+    definition(CODING_TASK_NAMES[0], "Start a coding task", "Delegate one coding task in a shared folder. Starts asynchronously; use reach_get_coding_task for bounded progress, actual command outputs, recorded diffs and needsOwner. Choose one requestId and reuse the same requestId after an error or lost reply; never create a new id just to retry. Approval requests remain for the owner in Reach.", object({
+      requestId: { ...string(80, 8), pattern: "^[A-Za-z0-9_-]+$" }, agent: kinds(agents),
+      root: { ...integer(0), default: 0 }, path: { ...string(4096, 0), default: "" }, task: { ...string(16000), pattern: "\\S" },
+      title: { ...string(120, 0), pattern: "^[^\\x00-\\x1f\\x7f]*$" }, timeoutSeconds: { ...integer(60, 3600), default: 1800 },
+    }, ["requestId", "agent", "task"]), { requestId: "coding_task_1", agent: agents[0], root: 0, path: "", task: "Implement the requested change and report the checks." }, annotations(false, true, true)),
+    definition(CODING_TASK_NAMES[1], "Check a coding task", "Read your task's bounded summary, commands with actual outputs/status, recorded diffs, progress, needsOwner and version/status. Supply after and waitSeconds to wait up to 25 seconds for a newer version. This cannot approve an engine request.", object({ id: codingId, after: integer(0), waitSeconds: integer(0, 25) }, ["id"]), { id: "task-id-from-start", after: 0, waitSeconds: 25 }, annotations(true)),
+    definition(CODING_TASK_NAMES[2], "List coding tasks", "List bounded metadata for this Reach agent's most recent coding tasks, up to 50. Other sessions and transcripts are not exposed.", object(), {}, annotations(true)),
+    definition(CODING_TASK_NAMES[3], "Cancel a coding task", "Request cancellation of one of your coding tasks and read its current status. Poll while cancelling or cancellationPending is true. Completed commands and file changes cannot be undone by cancellation.", object({ id: codingId }, ["id"]), { id: "task-id-from-start" }, annotations(false, true)),
+  ];
+}
+export function codingTaskRequest(name, args, { agents = ["codex"], access } = {}) {
+  const tool = codingTaskTools(agents).find(tool => tool.name === name);
+  if (!tool) throw Error("This coding tool is not available.");
+  validate(tool.inputSchema, args);
+  const input = JSON.parse(JSON.stringify(args));
+  if (name === "reach_start_coding_task") {
+    pathAllowed(input.path);
+    if (access) rootAllowed(access, input.root ?? 0);
+    return { route: "/api/coding-tasks", method: "POST", body: { ...input, root: input.root ?? 0, path: input.path ?? "", timeoutSeconds: input.timeoutSeconds ?? 1800 }, response: "json" };
+  }
+  if (name === "reach_list_coding_tasks") return { route: "/api/coding-tasks", method: "GET", response: "json" };
+  const route = `/api/coding-tasks/${encodeURIComponent(input.id)}`;
+  if (name === "reach_cancel_coding_task") return { route: route + "/cancel", method: "POST", body: {}, response: "json" };
+  const query = new URLSearchParams();
+  for (const key of ["after", "waitSeconds"]) if (input[key] !== undefined) query.set(key, String(input[key]));
+  return { route: route + (query.size ? `?${query}` : ""), method: "GET", response: "json" };
+}
 export const savedToolName = item => `reach_saved_${item.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 12) || "task"}_${item.id.replace(/-/g, "")}`;
 export const SAVED_TOOLS_HINT = "Before starting a laptop task, open Tools in the workspace, search for a matching task, and click Run, or use reach_tools and call its reach_tool_* tool once with a requestId. Apps, Files, Commands and Access are under More. To create a deterministic tool, read reach_tool_protocol and submit the same reach.tool.v1 format with reach_define_tool. Recorded tasks are in Tools under Recorded tasks, and in reach_shortcuts.";
 export const deterministicToolName = item => `reach_tool_${item.id}`;
@@ -29,6 +63,7 @@ export const deterministicToolName = item => `reach_tool_${item.id}`;
 // navigation super fast and smooth"): one turn per step, not act, look, act.
 export const ACT_AND_SEE = "Acting answers with the screen as text, only what changed since your last look (full: true for all of it); use that result for your next decision. When no screen state is needed, describe: false returns only the action receipt and skips the read and settling wait.";
 export const GO_FAST = "Act and you get the screen back as text; use that result for your next decision. Batch up to 10 actions in one reach_act and observe once at the end. Use describe: false when you need only the action receipt; observe: {within, query, maxChars} for a known region or relevant text. Prefer stable element refs. Use reach_wait_for instead of looking again and again.";
+export const FULL_CONTROL_ACTIONS = "Carry out the owner's requests without asking for separate action approval, including payments, sending messages and deleting files. Follow any limits the owner gives; ask for missing information when needed.";
 const requestId = { ...string(36), pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "A fresh UUID for a new operation. Reuse it after a lost response; effects will never be repeated." };
 const toolDefinitionSchema = object({ protocol: kinds("reach.tool.v1"), id: { ...string(48), pattern: "^[a-z][a-z0-9_]*$" }, title: string(80), description: string(500), origins: { type: "array", minItems: 1, maxItems: 4, items: string(2000) }, inputs: { type: "object", maxProperties: 12, additionalProperties: true }, steps: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", maxProperties: 8, additionalProperties: true } } }, ["protocol", "id", "title", "description", "origins", "inputs", "steps"]);
 const location = { root, path: relativePath };
@@ -92,16 +127,18 @@ export const compactTools = tools => tools.filter(tool => compactNames.has(tool.
 function presetTools(access) {
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", `Read this session's preset, what it may do, its shared folders and when it ends. Your user's request is your permission: act without asking at each step, but ask your user before paying, sending a message or deleting something. Sign in with reach_act type + secret from your vault; read emailed codes in Gmail or Mail on the Mac. The Mac refuses for a missing permission: ask the owner with reach_request_permission. Bank, card and brokerage sites (reach_open_bank) are read-only: sign in, read balances and transactions, search, filter by date, download statements, then sign out; anything that moves money or changes the account is refused.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`, object(), {})];
+  if (access.preset === "full" && access.fullControlVersion === 1 && access.shell === true) tools.push(...codingTaskTools(["codex", "claude"]));
   // Any preset: a permission the Mac lacks goes to the owner as one tap.
   tools.push(definition("reach_request_permission", "Ask the owner for a Mac permission", "When the Mac refuses for a missing permission (\"setup_required\", \"Allow JavaScript from Apple Events\", Automation, Screen Recording, Accessibility), ask the owner here instead of telling them where to click: they get a notification and one tap on their phone. need: browser-tools (with browser: Chrome or Safari on a Mac, Chrome or Edge on Windows), screen-recording or accessibility; reason: one sentence for the owner. Answers ready (already allowed), pending (asked; call again in a minute), allowed or denied. Ask once per need; repeats return the same request.", object({ need: { ...string(20), enum: ["browser-tools", "screen-recording", "accessibility"] }, browser: { ...string(10), enum: ["Chrome", "Safari", "Edge"] }, reason: string(300) }, ["need", "reason"]), { need: "browser-tools", browser: "Chrome", reason: "To check your Uber Eats cart with the saved tool, many items at once." }));
   if (access.services) {
+    const full = access.preset === "full";
     tools.push(
-      definition("reach_services", "Services", "Discover available service tools and this agent's service access. Service consent is separate from laptop permissions.", object(), {}),
-      definition("reach_service_request", "Request service access", "Request read-only service access from the owner once for this agent session. Repeated calls reuse an open request. Poll reach_services; never approve your own access.", object({ connectorId: string(48), reason: string(300) }, ["connectorId", "reason"]), access.services.connectors?.[0] ? { connectorId: access.services.connectors[0].id, reason: "Read the requested information." } : {}, { approvalRequired: true }),
+      definition("reach_services", "Services", `Discover available service tools and this agent's service access. ${full ? "Full control includes service access without separate approval." : "Service consent is separate from laptop permissions."}`, object(), {}),
+      definition("reach_service_request", "Request service access", full ? "Read service access included in this Full control invitation. No separate owner approval is needed; explicit service revocation still applies." : "Request read-only service access from the owner once for this agent session. Repeated calls reuse an open request. Poll reach_services; never approve your own access.", object({ connectorId: string(48), reason: string(300) }, ["connectorId", "reason"]), access.services.connectors?.[0] ? { connectorId: access.services.connectors[0].id, reason: "Read the requested information." } : {}, { approvalRequired: !full }),
     );
     for (const connector of access.services.connectors || []) for (const action of connector.unavailable ? [] : connector.actions) {
       tools.push(definition(`reach_service_${connector.id}_${action.id}`, `${action.title} · ${connector.name}`,
-        `${connector.description} ${action.permission}. First request service access with reach_service_request if not approved; after approval reuse it for this session.`,
+        `${connector.description} ${action.permission}. ${full ? "Run directly using the access included in the Full control invitation; no separate service approval is needed. Explicit service revocation still applies." : "First request service access with reach_service_request if not approved; after approval reuse it for this session."}`,
         { ...action.inputSchema, properties: { ...action.inputSchema.properties, requestId }, required: [...(action.inputSchema.required || []), "requestId"] },
         { ...action.example, requestId: "00000000-0000-4000-8000-000000000001" }));
     }
@@ -203,7 +240,7 @@ function presetTools(access) {
     }
     if (access.preset === "full") {
       const descriptions = {
-        reach_access: `Read this session's access, filesystem roots and expiry. Full control can use every app, page, file and command as the owner's OS account, including Reach and security settings. It has no command deny list, protected-window filter or shell sandbox. Follow the owner's instructions and confirm consequential actions such as payments, sending messages or deleting files. macOS permissions, session approval, pause and revocation still apply.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`,
+        reach_access: `Read this session's access, filesystem roots and expiry. Full control can use every app, page, file and command as the owner's OS account, including Reach and security settings. It has no command deny list, protected-window filter or shell sandbox. ${FULL_CONTROL_ACTIONS} Operating system permissions, connection approval, pause and revocation still apply.${access.control && access.open ? ` Also returns savedTools with their callable tool names. ${SAVED_TOOLS_HINT}` : ""}`,
         reach_screenshot: "See the whole Mac display as a JPEG, up to maxWidth pixels. Full control does not hide apps or windows. Coordinates are fractions of this image.",
         reach_windows: "List all open windows and browser tabs, then target one with reach_focus_window. Full control does not filter protected or hidden apps.",
         reach_open_url: "Open an HTTP(S) address in the owner's browser with its existing sign-ins. Full control has no Reach page restrictions. Use reach_act for browser-internal addresses.",
@@ -341,13 +378,14 @@ function rootAllowed(access, value) {
   if (!access.roots?.some((item) => item.index === value)) invalid("Choose a currently shared folder index from reach_access.");
 }
 
-/** Returns a fixed request plan. Arbitrary routes, execution, owner APIs and delegation are never accepted. */
+/** Returns a fixed request plan. Arbitrary routes, owner APIs and engine configuration are never accepted. */
 export function browserToolRequest(name, args, access) {
   const tool = browserToolsFor(access).find((item) => item.name === name);
   if (!tool) throw Error("This tool is not available in the current session.");
   validate(tool.inputSchema, args);
   // Copy before the asynchronous request; later mutations cannot change approval content.
   const input = JSON.parse(JSON.stringify(args));
+  if (CODING_TASK_NAMES.includes(name)) return codingTaskRequest(name, input, { agents: ["codex", "claude"], access });
   if (name === "reach_execute") {
     if (input.name === "reach_execute") invalid("Nested execution is not allowed.");
     return browserToolRequest(input.name, input.arguments, access);

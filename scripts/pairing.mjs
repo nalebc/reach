@@ -2,10 +2,11 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { atomicJson, loadJson, openPairingWindow, PAIRING_WINDOW_MS } from "../server/core.mjs";
 import { stateDir, command } from "./home.mjs";
+import { checkBrowserLink } from "./browser-link.mjs";
 
 export async function pairRunningHost(
   root,
-  { env = process.env, fetchHost = fetch, print = console.log, qr } = {},
+  { env = process.env, fetchHost = fetch, print = console.log, qr, browserCheck = checkBrowserLink } = {},
 ) {
   const service = loadJson(path.join(stateDir(root), "service.json"), null);
   const host = loadJson(path.join(stateDir(root), "host-status.json"), null);
@@ -72,6 +73,11 @@ export async function pairRunningHost(
     /* no one address: the private one */
   }
   if (one) openPairingWindow(dataDir);
+  if (process.platform === "win32" && host.tailscaleApproval) {
+    openPairingWindow(dataDir);
+    const browser = one ? await browserCheck(one, host.instance) : { ready: false, reason: host.browserLink?.reason || "Reach is still preparing the public browser link." };
+    if (!browser.ready) throw Error(`${browser.reason} Keep Reach's terminal open; its phone QR appears when the browser connection is ready.`);
+  }
   const url = `${one || origin.origin}/#${new URLSearchParams({ pair: pairing.code, name: host.name || "My computer" })}`;
   print(
     `Reach: ${one || origin.origin}\nPairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\nOne use. Expires in 10 minutes. Previous unused code replaced.` +

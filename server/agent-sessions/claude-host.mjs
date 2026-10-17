@@ -308,6 +308,10 @@ export function createClaudeHost({
   stopSettleMs = 3000,
 }) {
   const sessions = new Map();
+  // A task may stop only its own initial user message. A subsequent owner
+  // message (even queued in the same process) invalidates that boundary.
+  const generations = new WeakMap();
+  const codingGenerations = new WeakMap();
   const spawned = new Set();
   const rewinds = createClaudeRewinds({ file: rewindFile });
   const rewindUncertain = () => Object.assign(uncertainDelivery("claude"), { message: "Claude may already have continued this rewind. Check the chat in Claude, then choose a rewind again before sending." });
@@ -795,12 +799,18 @@ export function createClaudeHost({
     await control(s, { subtype: "rename_session", title, source: "host", session_id: s.id }).catch(() => {});
   }
 
-  async function turn(s, input) {
+  async function turn(s, input, authorize = () => {}, codingTask = false) {
+    authorize();
+    // The owner can open the newly created chat while its handshake waits.
+    // Never queue delegated work behind that owner's turn or interrupt it.
+    if (codingTask && (generations.get(s)?.id || s.turns || s.background)) throw bad("The owner continued this chat before the coding task started.", 409);
     s.cutOff = false;
     // Each message until Claude Code takes it (its replay). One sent while a
     // turn runs waits in Claude Code's own queue meanwhile: the phone shows
     // it waiting (it went out of view, or away on a reload, until taken).
     const sent = { id: randomUUID(), blocks: input.map((b) => (b.type === "text" ? { type: "text", text: b.text } : { type: b.type })), during: s.turns > 0, at: now() };
+    generations.set(s, { id: sent.id, prefix: input.filter(block => block.type === "text").map(block => block.text).join("\n").slice(0, 256) });
+    if (codingTask) codingGenerations.set(s, generations.get(s));
     (s.sent ||= []).push(sent);
     s.turns++;
     s.unread = s.sent.length;
@@ -809,12 +819,13 @@ export function createClaudeHost({
     s.error = null;
     clearTimeout(s.idle);
     changed(s);
-    try { await write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id }); }
+    try { authorize(); await write(s, { type: "user", message: { role: "user", content: input }, parent_tool_use_id: null, session_id: s.id }); }
     catch (error) { s.error = error.message; end(s); changed(s); throw error; }
     return sent;
   }
 
-  return {
+  let api;
+  return api = {
     drives: (id) => !!sessions.get(id)?.proc,
     // A Claude Code process Reach started, until it exits: where Windows
     // can't say whose child a process is (processes.mjs).
@@ -862,13 +873,15 @@ export function createClaudeHost({
       const s = sessions.get(id);
       return !!s && (!!s.waiters.size || now() < (s.watchedUntil || 0));
     },
-    async send(id, { text, images, model, effort, mode, cwd, ultracode } = {}) {
+    async send(id, { text, images, model, effort, mode, cwd, ultracode, authorize = () => {} } = {}) {
+      authorize();
       if (!UUID.test(id)) throw bad("Unknown session.", 404);
       const input = claudeContent({ text, images }, readFile);
       const s = state(id);
       const previous = s.sending || Promise.resolve();
       s.pendingSends = (s.pendingSends || 0) + 1;
       const operation = previous.catch(() => {}).then(async () => {
+      authorize();
       if (s.rewinding) throw bad("A rewind is in progress. Wait for it to finish before sending.", 409);
       const pendingRewind = rewinds.get(id);
       if (pendingRewind?.phase === "dispatching") throw rewindUncertain();
@@ -881,20 +894,23 @@ export function createClaudeHost({
       if (!s.proc) {
         if (model) s.settings.model = model;
         if (mode) s.settings.mode = mode;
-        await launch(s, { resume: true });
+        await launch(s, { resume: true, authorize });
       }
       else {
         if (model) {
           await control(s, { subtype: "set_model", model });
+          authorize();
           s.settings.model = model;
         }
         if (mode) {
           await control(s, { subtype: "set_permission_mode", mode: runMode(mode) });
+          authorize();
           s.settings.mode = mode;
         }
       }
+      authorize();
       if (pendingRewind) rewinds.set(id, { ...pendingRewind, phase: "dispatching" });
-      const sent = await turn(s, input);
+      const sent = await turn(s, input, authorize);
       // Persist consumption only after sending; an uncertain write leaves the
       // dispatch marker in place, including after a Reach restart.
       if (pendingRewind) {
@@ -922,7 +938,8 @@ export function createClaudeHost({
       record();
       return true;
     },
-    async start({ cwd, text, images, model, effort, mode, extra }) {
+    async start({ cwd, text, images, model, effort, mode, extra, authorize = () => {}, onCreated, onStarted, codingTask = false }) {
+      authorize();
       // A full path as the computer writes it: C:\Users\me\proj on Windows.
       const folder = platform === "win32" ? /^[A-Za-z]:\\$/.test(cwd) || windowsPath(cwd) : typeof cwd === "string" && cwd.startsWith("/");
       if (!folder) throw bad("Choose a folder.");
@@ -931,10 +948,40 @@ export function createClaudeHost({
       const s = state(id);
       s.cwd = cwd;
       s.settings = { model: model || null, effort: effort || null, mode: mode || "auto", ...(Array.isArray(extra) ? { extra } : {}) };
-      await launch(s, { resume: false });
-      await turn(s, input);
+      // Known locally before launch: if durable creation or authorization
+      // fails, its manager can confirm that no user turn was dispatched.
+      if (codingTask) {
+        const initial = { id: null, prefix: input.filter(block => block.type === "text").map(block => block.text).join("\n").slice(0, 256) };
+        generations.set(s, initial);
+        codingGenerations.set(s, initial);
+      }
+      let sent;
+      try {
+        await onCreated?.({ threadId: id });
+        authorize();
+        await launch(s, { resume: false, authorize });
+        sent = await turn(s, input, authorize, codingTask);
+      } catch (error) {
+        if (codingTask) Object.assign(error, { threadId: id, ...(codingGenerations.has(s) ? { generation: codingGenerations.get(s).id } : {}), retryable: false });
+        throw error;
+      }
+      const boundary = { threadId: id, turnId: null, ...(codingTask ? { generation: sent.id } : {}) };
+      try { await onStarted?.(boundary); }
+      catch (error) {
+        await api.stopCodingTask(id, boundary).catch(() => {});
+        throw Object.assign(error, boundary, { uncertain: true, retryable: false });
+      }
       s.naming = name(s, text).finally(() => (s.naming = null));
-      return { threadId: id, turnId: null };
+      return boundary;
+    },
+    async stopCodingTask(id, { generation, taskTextPrefix, authorize = () => {} } = {}) {
+      authorize();
+      const s = sessions.get(id), initial = s && codingGenerations.get(s), latest = s && generations.get(s);
+      if (!initial || !latest) return { stopped: false, uncertain: true };
+      if (latest.id !== initial.id || (generation ? generation !== initial.id : !(typeof taskTextPrefix === "string" && taskTextPrefix && taskTextPrefix.length <= 200 && initial.prefix.startsWith(taskTextPrefix))))
+        return { stopped: false, turnChanged: true };
+      if (!s.proc || (!s.turns && !s.background)) return { stopped: true, alreadyStopped: true };
+      return api.stop(id);
     },
     async stop(id) {
       const s = sessions.get(id);

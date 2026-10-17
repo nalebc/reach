@@ -89,13 +89,29 @@ export async function assertSocketSupport(run = exec) {
       "Update Tailscale: secure device approval requires Serve's Unix socket support. No less secure fallback was enabled.",
     );
 }
-// `./reach --https-port 9443` once: kept, so the next start, the invite
-// rule (invites.mjs) and the background service use it too. True if changed.
+const httpsPortFile = (root) => path.join(stateDir(root), "https-port.json");
+const validHttpsPort = (port) => Number.isInteger(port) && port >= 1 && port <= 65535;
+// Pairing-code mode on Windows has no account preferences. Keep its port
+// separately too, so automatic recovery keeps the same link on later starts.
+export function readHttpsPort(root) {
+  const saved = loadJson(httpsPortFile(root), null);
+  return saved?.version === 1 && validHttpsPort(saved.port) ? saved.port : undefined;
+}
+// Explicit and automatically selected ports are kept for later starts and
+// the invite rule (invites.mjs). True if anything changed.
 export function rememberHttpsPort(root, port) {
+  if (!validHttpsPort(port)) return false;
   const preferences = readPreferences(root);
-  if (!preferences || !Number.isInteger(port) || preferences.httpsPort === port) return false;
-  atomicJson(preferencesFile(root), { ...preferences, httpsPort: port });
-  return true;
+  let changed = false;
+  if (preferences && preferences.httpsPort !== port) {
+    atomicJson(preferencesFile(root), { ...preferences, httpsPort: port });
+    changed = true;
+  }
+  if (readHttpsPort(root) !== port) {
+    atomicJson(httpsPortFile(root), { version: 1, port });
+    changed = true;
+  }
+  return changed;
 }
 export function applyPreferences(options, preferences, args = []) {
   if (!preferences || options.local) return options;
@@ -271,7 +287,7 @@ export async function configure(root, deps = {}) {
     owner,
     folders,
     stayAwake: "always",
-    httpsPort: old.httpsPort || 8443,
+    httpsPort: old.httpsPort || readHttpsPort(root) || 8443,
   };
   atomicJson(preferencesFile(root), preferences);
   if (keyedProblem)

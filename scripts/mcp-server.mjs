@@ -2,8 +2,9 @@
 // computer: `api(route, method, body)` does the requests (HTTPS on the
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
+import { REACH_VERSION } from "../server/reach-version.mjs";
 import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
-import { browserToolsFor, browserToolRequest, compactTools } from "../server/browser-tools.mjs";
+import { browserToolsFor, browserToolRequest, compactTools, CODING_TASK_NAMES, codingTaskTools, codingTaskRequest } from "../server/browser-tools.mjs";
 
 const BROWSER_ONLY_NAMES = new Set(["reach_discover", "reach_execute", "reach_displays","reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_access", "reach_search_files", "reach_read_terminal", "reach_screen", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_list_requests", "reach_cancel_request", "reach_terminal_command", "reach_terminal_history", "reach_apps", "reach_app_windows", "reach_app_screen", "reach_request_app", "reach_screenshot", "reach_front", "reach_act", "reach_press", "reach_fill", "reach_wait_for", "reach_elements", "reach_describe_screen", "reach_open_url", "reach_desktop_apps", "reach_change_file", "reach_shell", "reach_shell_history",
   "reach_windows", "reach_focus_window", "reach_find", "reach_menus", "reach_read_page", "reach_open_file", "reach_mac_shortcuts", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
@@ -25,12 +26,13 @@ const BROWSER_TOOL_SCOPES = {
   reach_focus_window: "browser:open", reach_open_file: "browser:open", reach_mac_shortcuts: "browser:open", reach_run_mac_shortcut: "browser:open",
   reach_open_bank: "browser:open", reach_request_permission: "browser:read",
   reach_shell: "browser:shell", reach_shell_history: "browser:shell",
+  reach_start_coding_task: "browser:shell", reach_get_coding_task: "browser:shell", reach_list_coding_tasks: "browser:shell", reach_cancel_coding_task: "browser:shell",
   reach_shortcuts: "browser:control", reach_record_shortcut: "browser:control", reach_save_shortcut: "browser:control", reach_discard_shortcut: "browser:control", reach_run_shortcut: "browser:control",
 };
 // Tools that change the Mac, and the ones whose changes can't be undone.
-const BROWSER_WRITES = new Set(["reach_execute","reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
-const BROWSER_DESTRUCTIVE = new Set(["reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_open_file", "reach_run_mac_shortcut", "reach_discard_shortcut", "reach_cancel_request"]);
-const BROWSER_OPEN_WORLD = new Set(["reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_scroll", "reach_find", "reach_focus_window", "reach_open_app", "reach_open_url", "reach_open_bank", "reach_open_file", "reach_run_mac_shortcut", "reach_request_action", "reach_request_batch", "reach_request_app"]);
+const BROWSER_WRITES = new Set(["reach_start_coding_task", "reach_cancel_coding_task", "reach_execute","reach_service_request", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut", "reach_scroll", "reach_request_action", "reach_request_batch", "reach_cancel_request", "reach_terminal_command", "reach_request_app", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_change_file", "reach_shell", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_bank", "reach_request_permission"]);
+const BROWSER_DESTRUCTIVE = new Set(["reach_start_coding_task", "reach_cancel_coding_task", "reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_change_file", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_open_app", "reach_open_url", "reach_open_file", "reach_run_mac_shortcut", "reach_discard_shortcut", "reach_cancel_request"]);
+const BROWSER_OPEN_WORLD = new Set(["reach_start_coding_task", "reach_execute", "reach_run_shortcut", "reach_terminal_command", "reach_shell", "reach_act", "reach_press", "reach_fill", "reach_scroll", "reach_find", "reach_focus_window", "reach_open_app", "reach_open_url", "reach_open_bank", "reach_open_file", "reach_run_mac_shortcut", "reach_request_action", "reach_request_batch", "reach_request_app"]);
 function browserAnnotations(name, approvalRequired) {
   const toolEffect = name.startsWith("reach_tool_") && !["reach_tool_protocol", "reach_tool_operation"].includes(name);
   const savedEffect = name.startsWith("reach_saved_");
@@ -70,6 +72,7 @@ const location = {
   path: { type: "string", description: "Path relative to the shared folder." },
 };
 export const tools = [
+  ...codingTaskTools().map(({ example, ...tool }) => tool),
   {
     name: "reach_device",
     description: "Read the connected computer, its shared folders, and your guide: what you may do there and the owner's rules.",
@@ -274,6 +277,10 @@ export async function callTool(api, name, a, browserAccess) {
     const plan = browserToolRequest(name, a, access);
     return api(plan.route, plan.method, plan.body);
   }
+  if (CODING_TASK_NAMES.includes(name)) {
+    const plan = codingTaskRequest(name, a);
+    return api(plan.route, plan.method, plan.body);
+  }
   const query = new URLSearchParams({
     root: String(a.root || 0),
     path: a.path || "",
@@ -368,6 +375,10 @@ export function toContent(result) {
 }
 // The scope each tool needs; a tool missing here is never offered.
 const TOOL_SCOPES = {
+  reach_start_coding_task: "codex",
+  reach_get_coding_task: "codex",
+  reach_list_coding_tasks: "codex",
+  reach_cancel_coding_task: "codex",
   reach_device: null,
   reach_list_files: "files:read",
   reach_read_file: "files:read",
@@ -528,7 +539,7 @@ export function serveMcp({
         result = {
           protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
-          serverInfo: { name, version: "0.1.0" },
+          serverInfo: { name, version: REACH_VERSION },
           ...withGuide(serverInstructions(scopes, profile), liveScopes ? await guide() : ""),
         };
       else if (r.method === "ping") result = {};

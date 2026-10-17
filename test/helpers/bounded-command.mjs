@@ -8,8 +8,8 @@ export function boundedCommand(command, args, limit, { progress } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", settled = false, force;
-    child.stdout.setEncoding("utf8").on("data", chunk => { if (stdout.length < 2 << 20) stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", chunk => { if (stderr.length < 1 << 16) stderr += chunk; });
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk.slice(0, Math.max(0, (2 << 20) - stdout.length)); });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk.slice(0, Math.max(0, (1 << 16) - stderr.length)); });
     const stop = () => {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
@@ -23,7 +23,9 @@ export function boundedCommand(command, args, limit, { progress } = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) reject(error);
+      // A stalled launch can explain itself before its pipes close. Preserve
+      // that bounded evidence while retaining the original failure/deadline.
+      if (error) reject(Object.assign(error instanceof Error ? error : Error(String(error)), { stdout, stderr }));
       else resolve({ stdout, stderr, ...(observed ? { observed: true } : {}) });
     };
     const timer = setTimeout(() => {

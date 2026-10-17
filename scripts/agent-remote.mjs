@@ -14,6 +14,7 @@
 //
 // JSON-RPC and results go to stdout; everything else to stderr.
 import crypto from "node:crypto";
+import { REACH_VERSION } from "../server/reach-version.mjs";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { agentRequestTimeout, agentRequestError, agentErrorDetails, agentJsonResponseLimit, validateAgentJsonResponse, AGENT_SCREEN_RESPONSE_BYTES, AGENT_MCP_IMAGE_RESPONSE_BYTES } from "../server/agent-transport.mjs";
@@ -1015,6 +1016,7 @@ const flags = (args) => {
   const o = { _: [] };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--allow-local") o.allowLocal = true;
+    else if (args[i] === "--version" || args[i] === "-v") o.version = true;
     else if (args[i] === "--computer") o.computer = args[++i];
     else o._.push(args[i]);
   }
@@ -1170,10 +1172,14 @@ export async function join(o) {
 
 export async function main(argv = process.argv.slice(2)) {
   const o = flags(argv);
+  if (o.version) {
+    process.stdout.write(REACH_VERSION + "\n");
+    return 0;
+  }
   const verb = o._[0];
   if (!verb || ["help", "--help", "-h"].includes(verb)) {
     process.stdout.write(
-      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  config                its MCP settings as JSON (Claude Desktop, Cursor, Windsurf, VS Code, Gemini)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\nWith several computers, add --computer NAME.\nIt takes the tools of the computer it joined as Reach there changes (REACH_AGENT_UPDATES=off to keep this copy).\n",
+      "Reach for agents\n  join '<agent link>'   connect to the computer that invited you (once)\n  mcp                   serve its tools over MCP (stdio)\n  config                its MCP settings as JSON (Claude Desktop, Cursor, Windsurf, VS Code, Gemini)\n  status                computers you're connected to\n  tools                 tools and argument schemas as JSON\n  call TOOL '{json}'    use one tool once\n  keep                  your access as one line, for your vault (restore it on another machine)\n  restore               your access back, from that line on standard input\n  leave                 disconnect and forget it\n  --version, -v         show this agent's package version without connecting\nWith several computers, add --computer NAME.\nIt takes the tools of the computer it joined as Reach there changes (REACH_AGENT_UPDATES=off to keep this copy).\n",
     );
     return 0;
   }

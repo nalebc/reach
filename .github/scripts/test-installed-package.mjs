@@ -7,7 +7,6 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 if (!process.env.npm_execpath) throw Error("Run with npm run test:ci:installed.");
-if (process.platform === "win32") throw Error("The installed onboarding matrix requires POSIX; Windows package smoke is a separate required check.");
 const root = process.cwd();
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const tarball = path.join(root, "release", `nalebc-reach-${pkg.version}.tgz`);
@@ -25,11 +24,16 @@ const npm = (args, extraEnv = {}) => new Promise((resolve, reject) => {
 });
 try {
   await npm(["install", "--prefix", temp, "--omit=dev", "--no-audit", "--no-fund", tarball]);
+  // The full menu harness still uses POSIX fixtures. QR/network onboarding
+  // runs against the installed artifact on Windows too, without a platform skip.
+  const files = ["test/qr-onboarding-e2e.test.mjs", ...(process.platform === "win32" ? [] : [
+    "test/first-install-e2e.test.mjs", "test/first-install-phone-ui.test.mjs", "test/portable-install.test.mjs",
+  ])];
   await npm(["run", "test:file", "--", "--test-timeout=540000", "--test-concurrency=1",
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=junit", "--test-reporter-destination=reports/installed.xml",
     "--test-reporter=tap", "--test-reporter-destination=reports/installed.tap",
-    "test/first-install-e2e.test.mjs", "test/first-install-phone-ui.test.mjs", "test/portable-install.test.mjs"], {
+    ...files], {
       REACH_TEST_PACKAGE: path.join(temp, "node_modules", "@nalebc", "reach"),
       REACH_TEST_PORTABLE_ARCHIVE: portable,
   });

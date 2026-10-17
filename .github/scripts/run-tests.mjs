@@ -15,9 +15,11 @@ export const suites = {
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
     "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
-    "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
+    "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
-    "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
+    "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
+    // Decode the emitted QR and follow it through a separate phone network.
+    "qr-onboarding-e2e",
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
@@ -27,14 +29,15 @@ export const suites = {
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
     // Bug bash recovery: shared chat/file UI and native input refusals.
-    "agent-markdown-ui",
+    "agent-markdown-ui", "back-stack-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
-    "agent-compatibility",
-    // Fake simctl launch/reboot checks; the real simulator runs in macOS CI.
-    "ios-launch",
+    "agent-compatibility", "reach-version", "agent-watch",
+    "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
+    // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
+    "ios-launch", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
     "keep-in-sync",
     // The user journeys, workstream J: the built phone interface in headless
@@ -53,7 +56,7 @@ export const suites = {
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
@@ -81,7 +84,7 @@ export const suites = {
     "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
     "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
     // Shared credential renewal, browser tabs and recovery after lost replies.
-    "agent-funnel-reconnect", "funnel-agent-ui", "service-tools-ui",
+    "agent-funnel-reconnect", "funnel-agent-ui", "agent-guide", "agent-services", "service-connectors", "service-tools-ui",
     // Background mode out of sight: no window from its task's programs.
     "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the

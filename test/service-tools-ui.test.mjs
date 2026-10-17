@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { SAMPLE_STORE } from "./helpers/service-connector-fixture.mjs";
 import { createAgentServices } from "../server/agent-services.mjs";
 import { createServiceConnectors } from "../server/service-connectors.mjs";
-import { startDom, settle } from "./dom/harness.mjs";
+import { FULL_CONTROL_VERSION, presetScopes } from "../server/agent-presets.mjs";
+import { startDom, settle, typeInto } from "./dom/harness.mjs";
 
 let dom, ServiceTools, AccessPanel, useAccess, NeedsYouStrip, SavedTools;
 const views = new Set();
@@ -179,77 +180,80 @@ test("switching agent connections drops a waiting automatic run", async (t) => {
   assert.ok(!next.container.textContent.includes("Completed"));
 });
 
-test("live service UI selects the browser, displays account results and tracks an order without handle entry", async (t) => {
-  const native = [];
-  const handle = "a0000000-0000-4000-8000-000000000001";
-  const f = setup(
-    t,
-    createServiceConnectors({
-      run: async (authorize, input) => {
-        authorize();
-        native.push(input);
-        return {
-          status: "completed",
-          browser: input.browser,
-          data:
-            input.id === "builtin_walmart_find"
-              ? {
-                  orders: {
-                    coverage: "visible_page",
-                    more: true,
-                    items: [
-                      {
-                        order: "ORDER-TEST",
-                        handle,
-                        expiresAt: Date.now() + 60000,
-                      },
-                    ],
-                  },
-                }
-              : { tracking: "ORDER-TEST · In transit" },
-        };
-      },
-    }),
-  );
-  f.client.policy.preset = "full";
-  f.client.scopes.push("browser:screen", "browser:control", "browser:open");
-  const view = await render(ServiceTools, { peer });
-  await dom.waitFor(() => button(view.container, "Find orders"));
-  assert.doesNotMatch(view.container.textContent, /sample|fictional/i);
-  assert.equal(
-    view.container.querySelectorAll("input").length,
-    2,
-    "search fields only; no handle or credential fields",
-  );
-  const card = button(view.container, "Find orders").closest("article");
-  const browser = card.querySelector("select");
-  browser.value = "Safari";
-  browser.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  await settle(30);
-  const input = card.querySelector("input");
-  Object.getOwnPropertyDescriptor(
-    dom.window.HTMLInputElement.prototype,
-    "value",
-  ).set.call(input, "chair");
-  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  await settle(30);
-  button(card, "Find orders").click();
-  await dom.waitFor(() => f.service.inspect().length);
-  f.service.decide(() => f.owner, f.service.inspect()[0].id, {
-    decision: "approve",
+for (const platform of ["darwin", "win32"]) {
+  test(`${platform}: live service UI selects the browser, displays account results and tracks an order without handle entry`, async (t) => {
+    const native = [];
+    const alternate = platform === "win32" ? "Edge" : "Safari";
+    const handle = "a0000000-0000-4000-8000-000000000001";
+    const f = setup(
+      t,
+      createServiceConnectors({
+        run: async (authorize, input) => {
+          authorize();
+          native.push(input);
+          return {
+            status: "completed",
+            browser: input.browser,
+            data:
+              input.id === "builtin_walmart_find"
+                ? {
+                    orders: {
+                      coverage: "visible_page",
+                      more: true,
+                      items: [
+                        {
+                          order: "ORDER-TEST",
+                          handle,
+                          expiresAt: Date.now() + 60000,
+                        },
+                      ],
+                    },
+                  }
+                : { tracking: "ORDER-TEST · In transit" },
+          };
+        },
+      }, { platform }),
+    );
+    f.client.policy.preset = "full";
+    f.client.scopes.push("browser:screen", "browser:control", "browser:open");
+    const view = await render(ServiceTools, { peer });
+    await dom.waitFor(() => button(view.container, "Find orders"));
+    assert.doesNotMatch(view.container.textContent, /sample|fictional/i);
+    assert.equal(
+      view.container.querySelectorAll("input").length,
+      2,
+      "search fields only; no handle or credential fields",
+    );
+    const card = button(view.container, "Find orders").closest("article");
+    const browser = card.querySelector("select");
+    browser.value = alternate;
+    browser.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await settle(30);
+    const input = card.querySelector("input");
+    Object.getOwnPropertyDescriptor(
+      dom.window.HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, "chair");
+    input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    await settle(30);
+    button(card, "Find orders").click();
+    await dom.waitFor(() => f.service.inspect().length);
+    f.service.decide(() => f.owner, f.service.inspect()[0].id, {
+      decision: "approve",
+    });
+    await dom.waitFor(() => button(card, "Track shipment"));
+    assert.ok(card.textContent.includes(`visible page in ${alternate}`));
+    assert.match(card.textContent, /More results/);
+    assert.deepEqual(native[0].values, { query: "chair" });
+    assert.equal(native[0].browser, alternate);
+    button(card, "Track shipment").click();
+    await dom.waitFor(() => card.textContent.includes("In transit"));
+    assert.equal(native[1].id, "builtin_walmart_track");
+    assert.deepEqual(native[1].values, { order: handle });
+    assert.equal(native[1].browser, alternate);
+    assert.equal(f.calls.filter((c) => c.route.endsWith("/request")).length, 1);
   });
-  await dom.waitFor(() => button(card, "Track shipment"));
-  assert.match(card.textContent, /visible page in Safari/);
-  assert.match(card.textContent, /More results/);
-  assert.deepEqual(native[0].values, { query: "chair" });
-  assert.equal(native[0].browser, "Safari");
-  button(card, "Track shipment").click();
-  await dom.waitFor(() => card.textContent.includes("In transit"));
-  assert.equal(native[1].id, "builtin_walmart_track");
-  assert.deepEqual(native[1].values, { order: handle });
-  assert.equal(native[1].browser, "Safari");
-  assert.equal(f.calls.filter((c) => c.route.endsWith("/request")).length, 1);
-});
+}
 
 test("browser service cards explain Agent Access restrictions and cannot request a grant from Read only", async (t) => {
   const f = setup(
@@ -285,4 +289,104 @@ test("a stale catalog uses an already approved service request immediately", asy
   assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
   await dom.waitFor(() => view.container.textContent.includes("Your sample desk lamp"));
   assert.doesNotMatch(view.container.textContent, /automatically after approval/);
+});
+
+test("Full control Gmail runs from the phone UI without a service approval prompt", async (t) => {
+  let runs = 0;
+  const f = setup(
+    t,
+    createServiceConnectors({
+      run: async (authorize, input) => {
+        authorize();
+        runs++;
+        assert.equal(input.id, "builtin_gmail_find");
+        return {
+          status: "completed",
+          browser: "Chrome",
+          data: {
+            messages: {
+              coverage: "visible_page",
+              more: false,
+              items: [
+                {
+                  subject: "Invoice October",
+                  sender: "sender@example.test",
+                  handle: "a0000000-0000-4000-8000-000000000001",
+                  expiresAt: Date.now() + 60000,
+                },
+              ],
+            },
+          },
+        };
+      },
+    }),
+  );
+  f.client.policy = {
+    invite: true,
+    browser: true,
+    preset: "full",
+    fullControlVersion: FULL_CONTROL_VERSION,
+    roots: [],
+  };
+  f.client.scopes = presetScopes(f.client.policy);
+  const view = await render(ServiceTools, { peer });
+  await dom.waitFor(() => button(view.container, "Find messages"));
+  assert.match(view.container.textContent, /Included in Full control/);
+  await typeInto(
+    button(view.container, "Find messages")
+      .closest("article")
+      .querySelector("input"),
+    "invoice",
+  );
+  button(view.container, "Find messages").click();
+  await dom.waitFor(() =>
+    view.container.textContent.includes("Invoice October"),
+  );
+  assert.equal(runs, 1);
+  assert.equal(
+    f.calls.filter((call) => call.route.endsWith("/request")).length,
+    0,
+  );
+  assert.doesNotMatch(
+    view.container.textContent,
+    /Waiting for owner approval|automatically after approval/,
+  );
+  const permissions = await render(ServiceTools, { peer, accessOnly: true });
+  await dom.waitFor(() =>
+    permissions.container.textContent.includes(
+      "Full control includes services",
+    ),
+  );
+  const phone = await render(Home, { peer: { ...peer, token: "owner" } });
+  await settle(50);
+  assert.equal(button(phone.container, "Allow for session"), undefined);
+  assert.ok(f.service.inspect().every((entry) => entry.status === "approved"));
+});
+
+test("an immediately granted service request runs without entering the approval wait", async (t) => {
+  const f = setup(t);
+  const view = await render(ServiceTools, { peer });
+  await dom.waitFor(() => button(view.container, "Check order status"));
+  // The open page still has an older catalog when Full control takes effect.
+  f.client.policy = {
+    invite: true,
+    browser: true,
+    preset: "full",
+    fullControlVersion: FULL_CONTROL_VERSION,
+    roots: [],
+  };
+  f.client.scopes = presetScopes(f.client.policy);
+  button(view.container, "Check order status").click();
+  await dom.waitFor(() =>
+    view.container.textContent.includes("Your sample desk lamp"),
+  );
+  assert.equal(
+    f.calls.filter((call) => call.route.endsWith("/request")).length,
+    1,
+  );
+  assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
+  assert.doesNotMatch(
+    view.container.textContent,
+    /automatically after approval/,
+  );
 });

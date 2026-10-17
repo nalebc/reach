@@ -1,4 +1,5 @@
 import { fail, isPlainRecord, hasReviewControls } from "./core.mjs";
+import { toolBrowsersFor, toolBrowserWords } from "./tool-protocol.mjs";
 
 // Real browser adapters, not PAP (its specification is not published yet).
 // Do not register test providers or accept agent-supplied endpoints here.
@@ -8,18 +9,13 @@ export class ServiceConnectorError extends Error {
     this.status = status;
   }
 }
-const browser = {
-  type: "string",
-  enum: ["Chrome", "Safari"],
-  description: "Signed-in browser",
-};
 const query = (description, maxLength) => ({
   type: "string",
   minLength: 1,
   maxLength,
   description,
 });
-const schemas = {
+const schemasFor = (browser) => ({
   gmail: {
     browser,
     account: {
@@ -37,27 +33,28 @@ const schemas = {
       pattern: "^[a-f0-9-]{36}$",
     },
   },
-};
-const unavailable = (client) => {
+});
+const serviceUnavailable = (client, browsers, browserWords) => {
   if (
     !["full", "apps"].includes(client.policy?.preset) ||
     !["browser:screen", "browser:control", "browser:open"].every((scope) =>
       client.scopes?.includes(scope),
     )
   )
-    return "In Agent Access, allow Chrome or Safari with the Apps preset to use signed-in services.";
+    return `In Agent Access, allow ${browserWords} with the Apps preset to use signed-in services.`;
+  const identities = Object.values(browsers);
   const allowed =
     client.policy.preset === "full"
-      ? ["com.google.Chrome", "com.apple.Safari"]
+      ? identities
       : (client.policy.apps || []).map((app) => app.bundleId);
   if (
     !allowed.some(
       (id) =>
-        ["com.google.Chrome", "com.apple.Safari"].includes(id) &&
+        identities.includes(id) &&
         !(client.policy.hidden || []).some((app) => app.bundleId === id),
     )
   )
-    return "Allow Chrome or Safari in Agent Access to use signed-in services.";
+    return `Allow ${browserWords} in Agent Access to use signed-in services.`;
   return null;
 };
 function validate(properties, values) {
@@ -141,25 +138,31 @@ const action = (
   project,
   ...extra,
 });
-const problems = {
+const problemsFor = (computer) => ({
   setup_required:
-    "On the Mac, allow browser automation for Reach and enable Allow JavaScript from Apple Events in the chosen browser, then retry.",
+    computer === "PC"
+      ? "On the PC, add Reach's extension to the chosen browser and allow it in Reach: Agents → Browser tools. Then retry."
+      : "On the Mac, allow browser automation for Reach and enable Allow JavaScript from Apple Events in the chosen browser, then retry.",
   login_required:
-    "Sign in to this service in the chosen browser on the Mac, then retry.",
+    `Sign in to this service in the chosen browser on the ${computer}, then retry.`,
   wrong_site:
-    "The browser reached another site. Finish signing in on the Mac, then retry.",
-  browser_closed: "Open the chosen browser on the Mac, then retry.",
+    `The browser reached another site. Finish signing in on the ${computer}, then retry.`,
+  browser_closed: `Open the chosen browser on the ${computer}, then retry.`,
   browser_window_required:
-    "Open a window in the chosen browser on the Mac, then retry.",
+    `Open a window in the chosen browser on the ${computer}, then retry.`,
   loading:
     "The browser has not finished loading the exact requested page. Check the chosen browser and service account, wait for that page to finish loading, then retry.",
   browser_access: "Allow the chosen browser in Agent Access, then retry.",
   stale:
     "This result has expired or the page changed. Find the order again before tracking it.",
   busy: "Another browser tool is running. Wait for it to finish, then retry.",
-};
+});
 
-export function createServiceConnectors(tools) {
+export function createServiceConnectors(tools, { platform = process.platform } = {}) {
+  const browsers = toolBrowsersFor(platform);
+  const schemas = schemasFor({ type: "string", enum: Object.keys(browsers), description: "Signed-in browser" });
+  const unavailable = (client) => serviceUnavailable(client, browsers, toolBrowserWords(platform));
+  const computer = platform === "win32" ? "PC" : "Mac", problems = problemsFor(computer);
   const make = (definition, toolIds) => ({
     ...definition,
     transport: "browser",
@@ -186,7 +189,7 @@ export function createServiceConnectors(tools) {
         guarded();
         throw new ServiceConnectorError(
           problems[error.code || error.kind] ||
-            "Could not use this browser. Check Agent Access and the chosen browser on the Mac, then retry.",
+            `Could not use this browser. Check Agent Access and the chosen browser on the ${computer}, then retry.`,
         );
       }
       guarded();
@@ -194,9 +197,9 @@ export function createServiceConnectors(tools) {
         throw new ServiceConnectorError(
           problems[result.code] ||
             (result.status === "uncertain"
-              ? "The live page could not be verified, and the action may have happened. Check the service in the browser on the Mac before retrying."
+              ? `The live page could not be verified, and the action may have happened. Check the service in the browser on the ${computer} before retrying.`
               : null) ||
-            "The live page could not be verified. Check the service in the browser on the Mac, then retry. No service result was returned.",
+            `The live page could not be verified. Check the service in the browser on the ${computer}, then retry. No service result was returned.`,
         );
       return result;
     },

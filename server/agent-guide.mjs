@@ -1,5 +1,5 @@
 import { appLabel } from "./app-identity.mjs";
-import { GO_FAST } from "./browser-tools.mjs";
+import { FULL_CONTROL_ACTIONS, GO_FAST } from "./browser-tools.mjs";
 
 // What an agent is told once it's in (Oct 12: "a very small prompt with a
 // link; the instructions come when they connect"): what it may do, then the
@@ -37,13 +37,10 @@ const appName = (app) =>
     : typeof app?.id === "string" ? appLabel(app.id) : "";
 const names = (apps) => (Array.isArray(apps) ? apps.map(appName).filter(Boolean) : []);
 
-// The rules, the same for every agent: its hands stay out of passwords
-// (Apps types into the owner's own apps), and it asks before anything that
-// can't be taken back.
-const RULES = [
-  "Ask me before paying, sending or deleting anything.",
-  "Don't share your Reach credentials.",
-];
+// Restricted invitations ask before consequential actions. Full control
+// already authorizes the actions needed for the owner's requested task.
+const ASK_FIRST = "Ask me before paying, sending or deleting anything.";
+const CREDENTIALS = "Don't share your Reach credentials.";
 // How it signs in (Oct 13: "they can log in to my accounts… I should not
 // intervene, so either sign in SSO, or something like their vault"): the
 // owner's Google (Apple, Microsoft) sign-in in the browser, else its own
@@ -108,6 +105,6 @@ export function agentGuide(client, { word = "computer", folders = [], page = fal
   if (hands) lines.push(STAY_OUT);
   // How to go fast on the screen, said as every tool that acts says it.
   if (acts) lines.push(GO_FAST);
-  lines.push(...RULES);
+  lines.push(policy.browser === true && policy.preset === "full" ? FULL_CONTROL_ACTIONS : ASK_FIRST, CREDENTIALS);
   return lines.join("\n");
 }

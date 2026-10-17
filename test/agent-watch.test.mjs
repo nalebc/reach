@@ -16,12 +16,21 @@ const until = async (check, ms = 15000) => {
   return false;
 };
 
-test("a write to the Codex app's queue or history, or to a Claude Code transcript, is news at once; once per burst", async () => {
+async function nativeBurst() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));
   const codexHome = path.join(root, "codex");
   const claudeProjects = path.join(root, "claude");
   fs.mkdirSync(codexHome);
   fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
+  // fs.watch returning does not acknowledge native event registration.
+  // Observe ignored probe events through the production adapter before the
+  // single measured burst, rather than repeat that burst until it passes.
+  const probe = ".reach-watch-ready", registered = new Set();
+  const nativeWatch = fs.watch;
+  fs.watch = (dir, options, listener) => nativeWatch(dir, options, (event, file) => {
+    if (String(file || "") === probe) registered.add(dir);
+    listener(event, file);
+  });
   // Isolate every provider root: native Claude activity must not enter this
   // fixture through the registry/app-record defaults on the test machine.
   const watch = createAgentWatch({
@@ -35,10 +44,20 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
   const news = [];
   watch.onChange((n) => news.push(n));
   try {
+    // Readiness consumes the existing queue-news budget; a missing or dead
+    // native watcher still fails within 15 seconds.
+    const queueDeadline = Date.now() + 15000;
+    const roots = [codexHome, claudeProjects];
+    for (; registered.size < roots.length && Date.now() < queueDeadline;) {
+      for (const dir of roots) if (!registered.has(dir)) fs.appendFileSync(path.join(dir, probe), "x");
+      await until(() => registered.size === roots.length, Math.min(20, Math.max(0, queueDeadline - Date.now())));
+    }
+    assert.equal(registered.size, roots.length, "native fixture watchers acknowledge registration");
+    for (const dir of roots) fs.rmSync(path.join(dir, probe), { force: true });
     // Codex's queue, written three times in a row: said at once, not after
     // a wait, and once more at most for the rest of the burst.
     for (let i = 0; i < 3; i++) fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
-    assert.ok(await until(() => news.some((n) => n.kind === "queue")), "queue news");
+    assert.ok(await until(() => news.some((n) => n.kind === "queue"), Math.max(0, queueDeadline - Date.now())), "queue news");
     await new Promise((r) => setTimeout(r, 150));
     assert.ok(news.filter((n) => n.agent === "codex" && n.kind === "queue").length <= 2);
     // Its history.
@@ -56,9 +75,38 @@ test("a write to the Codex app's queue or history, or to a Claude Code transcrip
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(news.length, before);
   } finally {
+    fs.watch = nativeWatch;
     watch.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+test("a write to the Codex app's queue or history, or to a Claude Code transcript, is news at once; once per burst", nativeBurst);
+
+test("the first native burst waits for registration instead of losing its only notification", async t => {
+  // A native watcher may return before its event source is registered. This
+  // stand-in drops mutations in that first turn; the files themselves are
+  // real, and the production watch/filter/debounce path remains in use.
+  const states = [];
+  t.mock.method(fs, "watch", (dir, options, listener) => {
+    const watcher = new EventEmitter(), state = { dir, options, listener, active: false };
+    const registering = setImmediate(() => { state.active = true; });
+    watcher.close = () => { clearImmediate(registering); state.active = false; };
+    watcher.unref = () => {};
+    states.push(state);
+    return watcher;
+  });
+  const notify = file => {
+    for (const state of states) {
+      const relative = path.relative(state.dir, String(file));
+      if (state.active && relative && !relative.startsWith("..") && !path.isAbsolute(relative) &&
+          (state.options.recursive || path.dirname(relative) === ".")) state.listener("change", relative);
+    }
+  };
+  for (const method of ["appendFileSync", "writeFileSync"]) {
+    const original = fs[method];
+    t.mock.method(fs, method, (file, ...args) => { const result = original(file, ...args); notify(file); return result; });
+  }
+  await nativeBurst();
 });
 
 test("an agent that isn't installed is simply not watched", () => {
@@ -122,25 +170,31 @@ test("the Codex app saving its choices (the permission mode it's in) is news", (
   watch.close();
 });
 
-test("Gemini JSON and JSONL writes and project changes wake histories in one burst", async () => {
-  const callbacks = new Map(), news = [];
+for (const windowsPaths of [false, true]) {
+test(`Gemini JSON and JSONL writes and project changes wake histories in one burst${windowsPaths ? " (Windows path model)" : ""}`, async t => {
+  // Exercise Windows separator handling on every host, through the same
+  // production watch/filter/debounce path. No native provider files run.
+  if (windowsPaths) t.mock.method(path, "join", path.win32.join);
+  const callbacks = new Map(), news = [], geminiHome = "/g";
+  const transcripts = path.join(geminiHome, "tmp");
   const watcher = createAgentWatch({
-    geminiHome: "/g", debounceMs: 20,
+    geminiHome, debounceMs: 20,
     watch: (dir, options, listener) => (callbacks.set(dir, listener), { close() {} }),
   });
+  t.after(() => watcher.close());
   watcher.onChange(n => news.push(n));
-  callbacks.get("/g/tmp")("change", "app/chats/session-2026-10-08T00-00-11111111.jsonl");
+  callbacks.get(transcripts)("change", path.join("app", "chats", "session-2026-10-08T00-00-11111111.jsonl"));
   assert.deepEqual(news, [{ agent: "gemini", kind: "history" }]);
-  callbacks.get("/g/tmp")("rename", "app/chats/session-2026-10-08T00-00-22222222.json");
-  callbacks.get("/g/tmp")("change", "app/logs.json");
-  callbacks.get("/g")("change", "oauth_creds.json");
+  callbacks.get(transcripts)("rename", path.join("app", "chats", "session-2026-10-08T00-00-22222222.json"));
+  callbacks.get(transcripts)("change", path.join("app", "logs.json"));
+  callbacks.get(geminiHome)("change", "oauth_creds.json");
   assert.equal(news.length, 1);
   await new Promise(r => setTimeout(r, 35));
   assert.equal(news.length, 2);
-  callbacks.get("/g")("change", "projects.json");
+  callbacks.get(geminiHome)("change", "projects.json");
   assert.deepEqual(news.at(-1), { agent: "gemini", kind: "projects" });
-  watcher.close();
 });
+}
 
 test("a folder that appears after Reach starts (an agent installed later) is watched once it's there", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));

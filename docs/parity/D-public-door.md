@@ -1111,7 +1111,9 @@ The test runs only when `process.platform === "win32" && process.env.REACH_TEST_
 - **PowerShell:** test-only orchestration uses pwsh 7. Agent paths never use it.
 - **What CI can't prove:** real Serve and Funnel, the real service's DACL, multi-user LocalAPI behaviour, tailscaled's own-machine listener, and phones. Those are §9.
 
-## 9. Owner's real-PC acceptance (all must pass before default-on)
+## 9. Owner's real-PC acceptance (still pending)
+
+Oct 16: browser sign-in is enabled by default at the owner's request after a Windows user received a private QR that could not open on a phone without Tailscale. The runtime folder, service-peer and keyed-route checks remain mandatory; public DNS and HTTPS readiness now gate the browser QR. The checks below remain outstanding on a physical PC and phone. Mocked startup checks and native CI checks do not establish that this acceptance has passed.
 
 **Setup:**
 

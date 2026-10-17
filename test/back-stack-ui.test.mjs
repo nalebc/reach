@@ -43,8 +43,17 @@ const routes = {
   "/api/agents/services": () => ({ access: [] }),
 };
 
-async function workspace({ url, place, state } = {}) {
-  const dom = await startDom({ mobile: true, routes, url });
+async function workspace({ url, place, state, deferDevice = false } = {}) {
+  let releaseDevice;
+  const deviceReady = new Promise((resolve) => { releaseDevice = resolve; });
+  const fixtureRoutes = deferDevice ? {
+    ...routes,
+    "/api/device": async (...args) => {
+      await deviceReady;
+      return routes["/api/device"](...args);
+    },
+  } : routes;
+  const dom = await startDom({ mobile: true, routes: fixtureRoutes, url });
   const socket = globalThis.WebSocket;
   globalThis.WebSocket = class {
     close() {}
@@ -73,26 +82,45 @@ async function workspace({ url, place, state } = {}) {
     [...dom.document.querySelectorAll("button")].find(
       (b) => b.getAttribute("aria-label") === label || (b.querySelector(".more-row-label, .gs-label")?.textContent || b.textContent).trim() === label,
     );
+  // The page shell can precede its navigation controls on a busy runner.
+  // Wait for the actual target using the existing DOM readiness budget.
+  const click = async (label) => (await dom.waitFor(() => button(label))).click();
   // Nothing went wrong, and Back never left this page.
   const clean = () => {
     assert.deepEqual(dom.errors, []);
     assert.equal(landed, 0, "never back on the page before");
   };
   const close = async () => {
+    releaseDevice();
     await view.unmount();
     globalThis.WebSocket = socket;
     await dom.close();
   };
-  return { dom, $, on, reach, button, clean, close };
+  try {
+    if (deferDevice) {
+      // The Home shell renders while its device request is still pending. Chat
+      // becomes available only once the connected computer's access is known.
+      assert.ok($(".main-content.page-overview"));
+      assert.equal(button("Chat"), undefined, "the loading shell has no Chat tab yet");
+      releaseDevice();
+    }
+    // Access-dependent tabs arrive after /api/device, later than the initial
+    // Home shell. Wait for the actual control these tests use.
+    await dom.waitFor(() => $('.mobile-nav [aria-label="Chat"]'));
+    return { dom, $, on, reach, button, click, clean, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 const card = (dom) => dom.waitFor(() => [...dom.document.querySelectorAll(".chat-card")].find((c) => /Fix login/.test(c.textContent)));
 
 test("a chat, then back: its list, then Home; never a reload", async () => {
-  const { dom, $, on, reach, button, clean, close } = await workspace();
+  const { dom, $, on, reach, click, clean, close } = await workspace();
   try {
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 }, "Home is the first entry");
-    button("Chat").click();
+    await click("Chat");
     await on("sessions");
     assert.deepEqual(reach(), { page: "sessions", i: 1 });
     (await card(dom)).click();
@@ -114,16 +142,16 @@ test("a chat, then back: its list, then Home; never a reload", async () => {
 });
 
 test("More, Settings, Agents & people: back twice comes back the same way", async () => {
-  const { dom, on, reach, button, clean, close } = await workspace();
+  const { dom, on, reach, button, click, clean, close } = await workspace();
   try {
     await on("overview");
-    button("More workspace options").click();
+    await click("More workspace options");
     await dom.waitFor(() => button("Settings"));
-    button("Settings").click();
+    await click("Settings");
     await on("settings");
     assert.deepEqual(reach(), { page: "settings", i: 1 });
     await dom.waitFor(() => button("Agents & people"));
-    button("Agents & people").click();
+    await click("Agents & people");
     await on("invite");
     assert.deepEqual(reach(), { page: "invite", i: 2 });
     dom.window.history.back();
@@ -140,25 +168,25 @@ test("More, Settings, Agents & people: back twice comes back the same way", asyn
 // Not quite "tabs only replace": Home stays under the tabs, so the first tab
 // opened from Home adds the one entry back to it; after that, tabs replace.
 test("Home is under every tab; switching between tabs adds no entry", async () => {
-  const { dom, on, reach, button, clean, close } = await workspace();
+  const { dom, on, reach, button, click, clean, close } = await workspace();
   try {
     await on("overview");
     const start = dom.window.history.length;
-    button("Chat").click();
+    await click("Chat");
     await on("sessions");
     const above = dom.window.history.length;
     assert.equal(above, start + 1, "Home stays under the tab");
     for (const [tab, page] of [["Files", "files"], ["Chat", "sessions"]]) {
       if (tab === "Files") {
         // A page from More, then a tab: the tab takes the place above Home.
-        button("More workspace options").click();
+        await click("More workspace options");
         await dom.waitFor(() => button("Files"));
-        button("Files").click();
-      } else button(tab).click();
+        await click("Files");
+      } else await click(tab);
       await on(page);
     }
     assert.deepEqual(reach(), { page: "sessions", i: 1 });
-    button("Chat").click();
+    await click("Chat");
     await settle(50);
     assert.deepEqual(reach(), { page: "sessions", i: 1 }, "re-selecting the tab adds nothing");
     dom.window.history.back();
@@ -171,14 +199,14 @@ test("Home is under every tab; switching between tabs adds no entry", async () =
 });
 
 test("with a chat open, the Home tab stays on Home: the chat's entry goes first", async () => {
-  const { dom, $, on, reach, button, clean, close } = await workspace();
+  const { dom, $, on, reach, click, clean, close } = await workspace({ deferDevice: true });
   try {
     await on("overview");
-    button("Chat").click();
+    await click("Chat");
     (await card(dom)).click();
     await dom.waitFor(() => $(".as-page"));
     await settle();
-    button("Home").click();
+    await click("Home");
     await on("overview");
     await settle(100);
     assert.ok($(".main-content.page-overview"), "still on Home once the chat's entry is popped");
@@ -193,16 +221,17 @@ test("with a chat open, the Home tab stays on Home: the chat's entry goes first"
 // way; a phone may take the second from Home, past it. App's leaveTo ignores
 // a step asked for while one is under way.
 test("a double tap on Home with a chat open steps back once, never past Home", async () => {
-  const { dom, $, on, reach, button, clean, close } = await workspace();
+  const { dom, $, on, reach, button, click, clean, close } = await workspace();
   try {
     await on("overview");
-    button("Chat").click();
+    await click("Chat");
     (await card(dom)).click();
     await dom.waitFor(() => $(".as-page"));
     await settle();
     assert.equal(reach().i, 2);
-    button("Home").click();
-    button("Home").click();
+    const home = await dom.waitFor(() => button("Home"));
+    home.click();
+    home.click();
     await on("overview");
     await settle(150);
     assert.deepEqual(reach(), { page: "overview", i: 0 });

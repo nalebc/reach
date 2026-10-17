@@ -43,12 +43,12 @@ function fixture() {
   return { dir, dist, tailnet };
 }
 
-async function serve(t) {
+async function serve(t, privateOrigin = "https://mac.tail1.ts.net:8443") {
   const f = fixture();
   const server = createPublicStart({
     dist: f.dist,
     tailnetDir: f.tailnet,
-    privateOrigin: "https://mac.tail1.ts.net:8443",
+    privateOrigin,
     name: "Mac",
     instance: "inst-1",
   });
@@ -92,6 +92,22 @@ async function serve(t) {
   };
   return { get, raw, f };
 }
+
+test("automatic private ports remain reachable from the browser entry's security policy", async (t) => {
+  const { get } = await serve(t, "https://mac.tail1.ts.net:8444");
+  const page = await get("/");
+  assert.equal(page.status, 200);
+  const connect = page.headers["content-security-policy"]
+    .split(";")
+    .map(directive => directive.trim().split(/\s+/))
+    .find(([name]) => name === "connect-src");
+  // Compare whole CSP sources; an allowed URL embedded in another source
+  // must not satisfy this check.
+  assert.deepEqual(connect, [
+    "connect-src", "'self'", "https://mac.tail1.ts.net:8444", "wss://mac.tail1.ts.net:8444",
+    "https://*.ts.net", "https://*.ts.net:8443", "wss://*.ts.net", "https://*.tailscale.com", "wss://*.tailscale.com",
+  ]);
+});
 
 test("serves the start page, its config and the browser client, nothing else", async (t) => {
   const served = await serve(t);

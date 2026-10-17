@@ -134,7 +134,13 @@ export function useServiceAccess(peer: Peer, enabled = true, changes?: string) {
 }
 
 // bare: in its own sheet, without the heading and explanation.
-export function ServiceAccessPanel({ peer, bare = false }: { peer: Peer; bare?: boolean }) {
+export function ServiceAccessPanel({
+  peer,
+  bare = false,
+}: {
+  peer: Peer;
+  bare?: boolean;
+}) {
   const { entries, decide, busy, error } = useServiceAccess(peer);
   const active = entries.filter((entry) =>
     ["pending", "approved"].includes(entry.status),
@@ -147,9 +153,9 @@ export function ServiceAccessPanel({ peer, bare = false }: { peer: Peer; bare?: 
             <ShieldCheck size={17} /> Service access
           </h3>
           <p>
-            Services use the agent's allowed browser. Approve them once per session.
-            Revoking a service stops these tools; existing browser access is managed
-            in Agent Access.
+            Full control includes services in the agent's allowed browser. Other
+            invitations need approval once per session. Revoking a service stops
+            these tools; existing browser access is managed in Agent Access.
           </p>
         </>
       )}
@@ -172,6 +178,7 @@ export function ServiceAccessPanel({ peer, bare = false }: { peer: Peer; bare?: 
           <p>
             {entry.permissions.join(", ")} · {entry.account}
           </p>
+          {entry.approval === "invitation" && <p>Included in Full control</p>}
           <small>
             Until{" "}
             {until(

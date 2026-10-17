@@ -1,4 +1,5 @@
 import { validateBrowserScript } from "./browser-scripts.mjs";
+import { REACH_VERSION } from "./reach-version.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
 import { agentErrorDetails } from "./agent-transport.mjs";
 import fs from "node:fs/promises";
@@ -381,6 +382,7 @@ export function browserAccessRoutes(
     if (client.policy.preset !== undefined) {
       return {
         name: config.name,
+        reachVersion: REACH_VERSION,
         expiresAt: client.expiresAt,
         ...(runtime ? { runtime } : {}),
         roots: client.agentRoots.map((p, index) => ({ index, name: fileRootName(p), path: p })),
@@ -396,6 +398,7 @@ export function browserAccessRoutes(
     }
     return {
       name: config.name,
+      reachVersion: REACH_VERSION,
       expiresAt: client.expiresAt,
       ...(runtime ? { runtime } : {}),
       roots: client.agentRoots.map((p, index) => ({
