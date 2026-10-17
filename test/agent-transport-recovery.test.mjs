@@ -7,9 +7,10 @@ import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import { main, socketOf } from "../scripts/agent-remote.mjs";
+import { main, savedTailnet, socketOf } from "../scripts/agent-remote.mjs";
 import { agentKey, funnelGateway, httpsSend } from "../scripts/agent-funnel.mjs";
 import { testCertificate } from "./helpers/headless-chrome.mjs";
 
@@ -22,6 +23,14 @@ const storedState = () => ({
   _profiles: hex({ fixture: { ID: "fixture", Key: "profile-fixture", NodeID: "n-fixture" } }),
   "profile-fixture": hex({ Config: { PrivateNodeKey: `privkey:${"2".repeat(64)}`, NodeID: "n-fixture" } }),
 });
+function storedProfile(t) {
+  const conn = fs.mkdtempSync(path.join(os.tmpdir(), "reach-saved-profile-"));
+  t.after(() => fs.rmSync(conn, { recursive: true, force: true }));
+  const file = path.join(conn, "tailnet-state.json");
+  fs.writeFileSync(file, JSON.stringify(storedState()), { mode: 0o600 });
+  return { conn, file };
+}
+const closed = fd => assert.throws(() => fs.fstatSync(fd), { code: "EBADF" }, "the saved-profile descriptor is always closed");
 const head = (value, status = 200) => {
   let bytes = Buffer.from(JSON.stringify(value));
   return { status, headers: ["Content-Type", "application/json"],
@@ -187,6 +196,179 @@ test("a saved profile without its pinned runtime keeps public access without dow
   assert.ok(f.state.sent.every(call => call.transport === "public"));
   assert.equal(f.state.starts, 0);
   assert.equal(fs.existsSync(path.join(path.dirname(f.conn), "tailnet")), false, "a cache-only probe creates no download state");
+});
+
+test("a checked saved profile is read once from its opened file and cannot change identity before node startup", async t => {
+  const f = fixture(t), file = path.join(f.conn, "tailnet-state.json");
+  const before = fs.statSync(file, { bigint: true });
+  const readFile = fs.readFileSync, read = fs.readSync;
+  let pathReads = 0, swaps = 0, blocked = false;
+  const replace = () => {
+    if (swaps++) return;
+    try { fs.renameSync(file, file + ".opened"); }
+    catch (error) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+      blocked = true; return;
+    }
+    fs.writeFileSync(file, JSON.stringify({ ...storedState(), _machinekey: hex(`privkey:${"3".repeat(64)}`) }), { mode: 0o600 });
+  };
+  t.mock.method(fs, "readFileSync", (input, ...args) => {
+    if (input === file) { pathReads++; replace(); }
+    return readFile(input, ...args);
+  });
+  t.mock.method(fs, "readSync", (fd, ...args) => {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (opened.dev === before.dev && opened.ino === before.ino) replace();
+    return read(fd, ...args);
+  });
+  await f.call();
+  assert.ok(swaps > 0, "the replacement race was exercised at the actual state read");
+  assert.equal(pathReads, 0, "neither validation nor node startup reopens the named state file");
+  assert.deepEqual(f.state.sent.map(call => call.transport), ["embedded", "embedded"], "only the original approved profile starts");
+  assert.equal(f.state.starts, 1);
+  if (blocked) assert.equal(JSON.parse(readFile(file, "utf8"))._machinekey, storedState()._machinekey, "Windows denied replacing the open file");
+});
+
+test("a saved profile returns its descriptor-bound snapshot and closes the descriptor", t => {
+  const { conn, file } = storedProfile(t), open = fs.openSync, readFile = fs.readFileSync;
+  let fd, flags, pathReads = 0;
+  t.mock.method(fs, "openSync", (input, options, ...args) => {
+    const opened = open(input, options, ...args);
+    if (input === file) { fd = opened; flags = options; }
+    return opened;
+  });
+  t.mock.method(fs, "readFileSync", (input, ...args) => {
+    if (input === file) pathReads++;
+    return readFile(input, ...args);
+  });
+  assert.deepEqual(savedTailnet(conn), storedState());
+  assert.equal(pathReads, 0, "profile bytes are never reopened by path");
+  if (fs.constants.O_NOFOLLOW) assert.ok(flags & fs.constants.O_NOFOLLOW);
+  if (fs.constants.O_NONBLOCK) assert.ok(flags & fs.constants.O_NONBLOCK);
+  closed(fd);
+});
+
+test("without O_NOFOLLOW, exact bigint device and inode mismatches reject a saved profile before reading", t => {
+  const { conn, file } = storedProfile(t), open = fs.openSync, fstat = fs.fstatSync, lstat = fs.lstatSync;
+  const identity = 2n ** 55n;
+  let fd, reads = 0, mismatch;
+  t.mock.method(fs, "openSync", (...args) => (fd = open(...args)));
+  t.mock.method(fs, "fstatSync", (...args) => Object.assign(Object.create(fstat(...args)), { dev: identity, ino: identity }));
+  t.mock.method(fs, "lstatSync", (input, ...args) => {
+    const named = lstat(input, ...args);
+    return input === file ? Object.assign(Object.create(named), { dev: identity, ino: identity, [mismatch]: identity + 1n }) : named;
+  });
+  t.mock.method(fs, "readSync", () => { reads++; throw Error("an identity mismatch must not read any bytes"); });
+  for (mismatch of ["dev", "ino"]) {
+    assert.equal(savedTailnet(conn, { noFollow: 0 }), null);
+    closed(fd);
+  }
+  assert.equal(reads, 0, "Windows-style identity checks fail closed even beyond Number's exact integer range");
+});
+
+test("a saved profile replaced after open is rejected, or the operating system prevents the replacement", t => {
+  const { conn, file } = storedProfile(t), open = fs.openSync;
+  let fd, blocked = false, reads = 0;
+  t.mock.method(fs, "openSync", (...args) => {
+    const opened = open(...args);
+    if (fd !== undefined || args[0] !== file) return opened;
+    fd = opened;
+    try { fs.renameSync(file, file + ".opened"); }
+    catch (error) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+      blocked = true; return fd;
+    }
+    fs.writeFileSync(file, JSON.stringify(storedState()), { mode: 0o600 });
+    return fd;
+  });
+  const read = fs.readSync;
+  t.mock.method(fs, "readSync", (...args) => { reads++; return read(...args); });
+  assert.deepEqual(savedTailnet(conn, { noFollow: 0 }), blocked ? storedState() : null);
+  if (!blocked) assert.equal(reads, 0, "a new file at the checked name cannot supply private identity bytes");
+  closed(fd);
+});
+
+test("a saved-profile symlink is rejected by native and no-O_NOFOLLOW checks without reading its target", t => {
+  const { conn, file } = storedProfile(t), target = path.join(conn, "target.json");
+  fs.renameSync(file, target);
+  let modeled = false;
+  try { fs.symlinkSync(target, file, "file"); }
+  catch (error) {
+    if (process.platform !== "win32" || !["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+    // A Windows runner may not grant symlink creation. Still exercise its
+    // real descriptor + named metadata check with a reparse-point model.
+    modeled = true;
+    fs.copyFileSync(target, file);
+    const lstat = fs.lstatSync;
+    t.mock.method(fs, "lstatSync", (input, ...args) => input === file
+      ? Object.assign(Object.create(lstat(input, ...args)), { isFile: () => false, isSymbolicLink: () => true })
+      : lstat(input, ...args));
+    t.diagnostic("Windows symlink creation denied; exercising a modeled reparse-point lstat result");
+  }
+  const open = fs.openSync, descriptors = [];
+  t.mock.method(fs, "openSync", (...args) => { const fd = open(...args); descriptors.push(fd); return fd; });
+  let reads = 0;
+  t.mock.method(fs, "readSync", () => { reads++; throw Error("a linked profile must never be read"); });
+  assert.equal(savedTailnet(conn), null);
+  assert.equal(savedTailnet(conn, { noFollow: 0 }), null);
+  assert.equal(reads, 0);
+  assert.ok(descriptors.length > 0, "the no-O_NOFOLLOW fallback actually opened a descriptor");
+  for (const fd of descriptors) closed(fd);
+  if (!modeled) assert.equal(fs.readFileSync(target, "utf8"), JSON.stringify(storedState()));
+});
+
+test("nonregular saved profiles are refused without blocking on a POSIX FIFO", { timeout: 5000 }, t => {
+  const { conn, file } = storedProfile(t), open = fs.openSync;
+  fs.unlinkSync(file);
+  const descriptors = [];
+  let pipe = false, flags;
+  t.mock.method(fs, "openSync", (input, options, ...args) => {
+    flags = options;
+    // Fail instead of hanging this regression if O_NONBLOCK is removed.
+    if (pipe && !(options & fs.constants.O_NONBLOCK)) throw Error("FIFO open would block");
+    const fd = open(input, options, ...args); descriptors.push(fd); return fd;
+  });
+  let reads = 0;
+  t.mock.method(fs, "readSync", () => { reads++; throw Error("nonregular state must not be read"); });
+  fs.mkdirSync(file);
+  assert.equal(savedTailnet(conn), null);
+  fs.rmdirSync(file);
+  if (process.platform !== "win32") {
+    execFileSync("mkfifo", [file], { timeout: 2000 });
+    pipe = true;
+    assert.equal(savedTailnet(conn), null);
+    assert.ok(flags & fs.constants.O_NONBLOCK, "the actual FIFO is opened without waiting for a writer");
+  }
+  assert.equal(reads, 0);
+  for (const fd of descriptors) closed(fd);
+});
+
+test("oversized, growing or malformed saved profiles fail closed and release their descriptors", t => {
+  const { conn, file } = storedProfile(t), open = fs.openSync, fstat = fs.fstatSync, read = fs.readSync;
+  let fd, reads = 0, grow = false;
+  t.mock.method(fs, "openSync", (...args) => {
+    const opened = open(...args);
+    if (args[0] === file && typeof args[1] === "number" && !(args[1] & (fs.constants.O_WRONLY | fs.constants.O_RDWR))) fd = opened;
+    return opened;
+  });
+  t.mock.method(fs, "fstatSync", (...args) => {
+    const stat = fstat(...args);
+    if (grow) { grow = false; fs.appendFileSync(file, " "); }
+    return stat;
+  });
+  t.mock.method(fs, "readSync", (...args) => { reads++; return read(...args); });
+  fs.truncateSync(file, 2 * 1024 * 1024 + 1);
+  assert.equal(savedTailnet(conn), null);
+  assert.equal(reads, 0, "oversized files are rejected before allocating or reading their contents");
+  closed(fd);
+  fs.writeFileSync(file, JSON.stringify(storedState()));
+  grow = true;
+  assert.equal(savedTailnet(conn), null, "growth beyond the descriptor's measured bound is rejected");
+  assert.ok(reads > 0);
+  closed(fd);
+  fs.writeFileSync(file, "{");
+  assert.equal(savedTailnet(conn), null, "a parse failure also closes the opened file");
+  closed(fd);
 });
 
 test("saved private routes downgrade only before dispatch, and recover from public to embedded without changing the grant", async t => {

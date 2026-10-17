@@ -237,9 +237,9 @@ const writePrivate = (file, text) => {
 
 // Tailscale's node state, kept like the browser keeps it but in a private
 // file; written synchronously so a crash never loses the node's identity.
-export function fileState(file) {
-  let state = {};
-  try {
+export function fileState(file, initialState) {
+  let state = initialState === undefined ? {} : { ...initialState };
+  if (initialState === undefined) try {
     state = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {}
   return {
@@ -413,7 +413,7 @@ async function tailnetFiles(home, start, pins = tailnetPinned(), { cachedOnly = 
 // One node per computer in this process, made once and reused (a second
 // one with the same identity would fight the first).
 const tailnets = new Map();
-async function nodeFor({ home, conn, start, key, hostname, cachedOnly = false }) {
+async function nodeFor({ home, conn, start, key, hostname, cachedOnly = false, initialState }) {
   if (!tailnets.has(conn))
     tailnets.set(
       conn,
@@ -423,7 +423,7 @@ async function nodeFor({ home, conn, start, key, hostname, cachedOnly = false })
         t.node = factory({
           hostname: hostname || "reach-agent",
           ...(key ? { authKey: key } : {}),
-          stateStorage: fileState(path.join(conn, "tailnet-state.json")),
+          stateStorage: fileState(path.join(conn, "tailnet-state.json"), initialState),
         });
         t.node.start({
           state: (s) => (t.state = s),
@@ -593,11 +593,28 @@ const privateIdentityApi = (api) => async (...args) => {
 
 // The embedded runtime is pinned to Tailscale's persisted profile format.
 // Missing/partial state must not quietly create or enroll another identity.
-function savedTailnet(conn) {
+// Validate bytes from one opened descriptor and reuse that snapshot at node
+// startup, so replacing the pathname cannot change the recovered identity.
+export function savedTailnet(conn, { noFollow = fs.constants.O_NOFOLLOW || 0 } = {}) {
+  let fd;
   try {
-    const file = path.join(conn, "tailnet-state.json"), stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return false;
-    const state = JSON.parse(fs.readFileSync(file, "utf8"));
+    const file = path.join(conn, "tailnet-state.json");
+    fd = fs.openSync(file, fs.constants.O_RDONLY | noFollow | (fs.constants.O_NONBLOCK || 0));
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.size > 2n * 1024n * 1024n) return null;
+    // Windows lacks O_NOFOLLOW. Check the name after opening, but never
+    // read through that name; a link/replacement is not the opened file.
+    const named = fs.lstatSync(file, { bigint: true });
+    if (!named.isFile() || named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino) return null;
+    const bytes = Buffer.alloc(Number(stat.size) + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const read = fs.readSync(fd, bytes, size, bytes.length - size, size);
+      if (!read) break;
+      size += read;
+    }
+    if (size > Number(stat.size)) return null;
+    const state = JSON.parse(bytes.subarray(0, size).toString("utf8"));
     const decode = key => {
       const value = state[key];
       if (typeof value !== "string" || !/^(?:[0-9a-f]{2})+$/i.test(value)) throw Error("Incomplete tailnet state");
@@ -607,8 +624,9 @@ function savedTailnet(conn) {
     const profile = Object.values(profiles).find(profile => profile?.Key === current && profile.NodeID);
     const persisted = JSON.parse(decode(current)).Config;
     const key = value => /^privkey:[a-f0-9]{64}$/i.test(value || "") && !/^privkey:0{64}$/.test(value);
-    return key(decode("_machinekey")) && !!profile && persisted?.NodeID === profile.NodeID && key(persisted?.PrivateNodeKey);
-  } catch { return false; }
+    return key(decode("_machinekey")) && !!profile && persisted?.NodeID === profile.NodeID && key(persisted?.PrivateNodeKey) ? state : null;
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 // A signed gateway envelope through a saved embedded node. Readiness probes
@@ -1053,7 +1071,8 @@ async function open(home, name, allowLocal) {
       credential,
       api: sharedAgentConnection(conn, () => {
         reload();
-        const send = privateGatewaySend({ ...(savedTailnet(conn) && { embedded: embeddedGatewaySend({ home, conn, start: credential.start, hostname: credential.hostname }) }) });
+        const initialState = savedTailnet(conn);
+        const send = privateGatewaySend({ ...(initialState && { embedded: embeddedGatewaySend({ home, conn, start: credential.start, hostname: credential.hostname, initialState }) }) });
         const api = funnelApi({ conn, credential, save, reload, gatewayOptions: { send } });
         return { api: async (...args) => {
           await rotateIfDue(conn, credential, api).catch(() => {});
