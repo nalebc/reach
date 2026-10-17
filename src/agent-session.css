@@ -387,31 +387,50 @@ button.as-title:active {
   color: var(--as-inline);
   font: 0.86em "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
 }
-/* A code block, and a shell one's play button in its corner. */
+/* Copy stays outside the scrolling text, with room for a shell's Run button. */
 .md-code {
-  position: relative;
   margin: 0 0 10px;
-}
-.md-runnable pre {
-  padding-right: 46px;
-}
-.md-run {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
+  min-width: 0;
   border: 1px solid var(--as-code-line);
-  border-radius: 8px;
-  background: var(--as-bg);
-  color: var(--as-text);
-  cursor: pointer;
+  border-radius: 10px;
+  background: var(--as-code-bg);
 }
+.md-code-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--as-code-line);
+}
+.md-copy,
+.md-run {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--as-text);
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.md-copy:active,
 .md-run:active {
   opacity: 0.6;
+}
+.md .md-copy-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--as-code-line);
+  color: var(--as-muted);
+  font-size: 12px;
 }
 .md pre {
   margin: 0;
@@ -420,6 +439,11 @@ button.as-title:active {
   border: 1px solid var(--as-code-line);
   border-radius: 10px;
   background: var(--as-code-bg);
+}
+.md .md-code pre {
+  border: 0;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
 }
 .md pre code {
   padding: 0;

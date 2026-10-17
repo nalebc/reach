@@ -1,5 +1,5 @@
-import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
-import { Play } from "lucide-react";
+import { createContext, Fragment, memo, useContext, useEffect, useState, type ReactNode } from "react";
+import { Check, Copy, Play } from "lucide-react";
 
 // A link to another Claude session, as the Claude app writes them
 // ("[title](#local_<id>)"): the chat that shows this message opens that
@@ -216,21 +216,61 @@ const runnable = (code: string) =>
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const run = useContext(RunCommandContext);
   const command = run && SHELL.test(lang) ? runnable(code) : "";
+  const [copyResult, setCopyResult] = useState<{ code: string; ok: boolean } | null>(null);
+  // A streaming block can change while its clipboard write is pending.
+  // Only confirm copying the text that is still on screen.
+  const copied = copyResult?.code === code && copyResult.ok;
+  const copyError = copyResult?.code === code && !copyResult.ok;
+  useEffect(() => {
+    if (!copyResult?.ok) return;
+    const timer = setTimeout(() => setCopyResult(null), 1600);
+    return () => clearTimeout(timer);
+  }, [copyResult]);
+  const copy = () => {
+    setCopyResult(null);
+    try {
+      if (!navigator.clipboard?.writeText) throw Error("Clipboard unavailable");
+      // Start inside the tap: Safari requires the original user gesture.
+      navigator.clipboard.writeText(code).then(
+        () => setCopyResult({ code, ok: true }),
+        () => setCopyResult({ code, ok: false }),
+      );
+    } catch {
+      setCopyResult({ code, ok: false });
+    }
+  };
   return (
-    <div className={command ? "md-code md-runnable" : "md-code"}>
+    <div className="md-code">
+      <div className="md-code-actions">
+        <button
+          type="button"
+          className="md-copy"
+          aria-label={copied ? "Copied" : "Copy text"}
+          title={copied ? "Copied" : "Copy text"}
+          onClick={copy}
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
+          <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+        </button>
+        {command && (
+          <button
+            type="button"
+            className="md-run"
+            aria-label="Run in a terminal"
+            title="Run in a terminal"
+            onClick={() => run!(command)}
+          >
+            <Play size={14} fill="currentColor" />
+          </button>
+        )}
+      </div>
       <pre>
         <code>{code}</code>
       </pre>
-      {command && (
-        <button
-          type="button"
-          className="md-run"
-          aria-label="Run in a terminal"
-          title="Run in a terminal"
-          onClick={() => run!(command)}
-        >
-          <Play size={14} fill="currentColor" />
-        </button>
+      {copyError && (
+        <p className="md-copy-error" role="status">
+          Couldn’t copy. Select the text to copy it instead.
+        </p>
       )}
     </div>
   );
