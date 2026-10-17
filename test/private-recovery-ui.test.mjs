@@ -219,6 +219,121 @@ test("an asset fetch failure before any standby node exists can recover without 
   }
 });
 
+for (const boundary of ["loader", "WASM"]) for (const mutation of ["clear", "replace"]) test(`standby profile ${mutation} during ${boundary} loading cannot start a fresh identity or resurrect storage`, async () => {
+  const dom = await startDom({ url: origin });
+  const originalInstantiate = WebAssembly.instantiateStreaming;
+  const initial = { ...savedState(), extra: hex("existing preference") };
+  const replacement = {
+    _machinekey: hex(`privkey:${"3".repeat(64)}`),
+    "_current-profile": hex("profile-replacement"),
+    _profiles: hex({ replacement: { ID: "replacement", Key: "profile-replacement", NodeID: "n-replacement" } }),
+    "profile-replacement": hex({ Config: { PrivateNodeKey: `privkey:${"4".repeat(64)}`, NodeID: "n-replacement" } }),
+  };
+  let script, releaseWasm, heldWasm = false, runs = 0, starts = 0;
+  const registrations = [];
+  const node = { start(cb) { starts++; cb.state("Running"); }, status: () => ({ self: { state: "Running" } }), login() { assert.fail("recovery must not log in"); } };
+  try {
+    saveBrowserState(initial);
+    localStorage.setItem("reach.guest:private-guest-state", "separate-guest-value");
+    const append = dom.document.head.append.bind(dom.document.head);
+    dom.document.head.append = (...nodes) => { append(...nodes); script = nodes.find(node => node.tagName === "SCRIPT"); };
+    globalThis.Go = class { importObject = {}; run() { runs++; return new Promise(() => {}); } };
+    WebAssembly.instantiateStreaming = async () => {
+      if (boundary === "WASM" && !heldWasm) {
+        heldWasm = true;
+        return new Promise(resolve => { releaseWasm = resolve; });
+      }
+      return { instance: {} };
+    };
+    globalThis.reachTailnet = configuration => { registrations.push(configuration); return node; };
+    const { existingBrowserNode } = await dom.load("/src/browser-node.ts");
+    const readyConfig = { ...config, tailnet: { wasm: "client.wasm", exec: "exec.js" } };
+    const starting = existingBrowserNode(readyConfig);
+    assert.ok(script, "startup waits at the loader with the original profile validated");
+    if (boundary === "WASM") {
+      script.onload();
+      await dom.waitFor(() => releaseWasm);
+    }
+    const changed = mutation === "clear" ? {} : replacement;
+    saveBrowserState(changed);
+    if (boundary === "loader") script.onload();
+    else releaseWasm({ instance: {} });
+    assert.equal(await starting, null);
+    assert.equal(registrations.length, 0, "stop before constructing another identity");
+    assert.equal(runs, 0, "the changed profile cannot start a Go runtime");
+    assert.deepEqual(Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith("reach.tailnet:")).map(key => [key.slice("reach.tailnet:".length), localStorage.getItem(key)])), changed);
+    saveBrowserState(initial);
+    assert.equal(await existingBrowserNode(readyConfig), node, "a later complete approval may retry rejected preload");
+    assert.equal(registrations.length, 1);
+    assert.equal(starts, 1);
+    const store = registrations[0].stateStorage;
+    for (const [key, value] of Object.entries(initial)) assert.equal(store.getState(key), value);
+    assert.equal(store.getState("private-guest-state"), "", "owner snapshot never borrows guest state");
+    const updated = hex({ Config: { PrivateNodeKey: `privkey:${"2".repeat(64)}`, NodeID: "n-fixture", Hostname: "updated-by-runtime" } });
+    store.setState("profile-fixture", updated);
+    const profiles = hex({ fixture: { ID: "fixture", Key: "profile-fixture", NodeID: "n-fixture", Name: "runtime update" } });
+    store.setState("_profiles", profiles);
+    store.setState("_current-profile", initial["_current-profile"]);
+    store.setState("new-runtime-preference", hex("new preference"));
+    assert.equal(store.getState("profile-fixture"), updated);
+    assert.equal(localStorage.getItem("reach.tailnet:profile-fixture"), updated);
+    assert.equal(store.getState("_profiles"), profiles);
+    assert.equal(localStorage.getItem("reach.tailnet:_profiles"), profiles);
+    assert.equal(localStorage.getItem("reach.tailnet:_current-profile"), initial["_current-profile"]);
+    assert.equal(store.getState("new-runtime-preference"), hex("new preference"));
+    assert.equal(localStorage.getItem("reach.tailnet:new-runtime-preference"), hex("new preference"));
+    saveBrowserState(changed);
+    assert.equal(store.getState("_machinekey"), initial._machinekey, "constructed node keeps the identity it validated");
+    store.setState("_current-profile", initial["_current-profile"]);
+    store.setState("profile-fixture", updated);
+    assert.deepEqual(Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith("reach.tailnet:")).map(key => [key.slice("reach.tailnet:".length), localStorage.getItem(key)])), changed, "runtime writes cannot resurrect or overwrite state another tab cleared/replaced");
+    assert.equal(localStorage.getItem("reach.guest:private-guest-state"), "separate-guest-value");
+    assert.equal(registrations.length, 1);
+    assert.equal(starts, 1);
+  } finally {
+    WebAssembly.instantiateStreaming = originalInstantiate;
+    delete globalThis.Go;
+    delete globalThis.reachTailnet;
+    await dom.close();
+  }
+});
+
+test("cancelled standby preload also observes a rejected prefetched WASM asset", async () => {
+  let rejectAsset, first = true, script;
+  const failedAsset = new Promise((resolve, reject) => { rejectAsset = reject; });
+  const dom = await startDom({ url: origin, routes: { "/tailnet/client.wasm": () => {
+    if (first) { first = false; return failedAsset; }
+    return Response.json({});
+  } } });
+  const originalInstantiate = WebAssembly.instantiateStreaming;
+  let starts = 0;
+  const node = { start(cb) { starts++; cb.state("Running"); }, status: () => ({ self: { state: "Running" } }), login() { assert.fail("no login"); } };
+  try {
+    saveBrowserState(savedState());
+    const append = dom.document.head.append.bind(dom.document.head);
+    dom.document.head.append = (...nodes) => { append(...nodes); script = nodes.find(node => node.tagName === "SCRIPT"); };
+    globalThis.Go = class { importObject = {}; run() { return new Promise(() => {}); } };
+    WebAssembly.instantiateStreaming = async wasm => { await wasm; return { instance: {} }; };
+    globalThis.reachTailnet = () => node;
+    const { existingBrowserNode } = await dom.load("/src/browser-node.ts");
+    const readyConfig = { ...config, tailnet: { wasm: "client.wasm", exec: "exec.js" } };
+    const starting = existingBrowserNode(readyConfig);
+    saveBrowserState({});
+    rejectAsset(TypeError("WASM fetch lost while the profile was cleared"));
+    script.onload();
+    assert.equal(await starting, null);
+    assert.equal(starts, 0);
+    saveBrowserState(savedState());
+    assert.equal(await existingBrowserNode(readyConfig), node);
+    assert.equal(starts, 1);
+  } finally {
+    WebAssembly.instantiateStreaming = originalInstantiate;
+    delete globalThis.Go;
+    delete globalThis.reachTailnet;
+    await dom.close();
+  }
+});
+
 for (const refused of ["native-guest", "native-restricted", "browser-401", "browser-403", "browser-guest", "browser-wrong-id", "browser-wrong-computer", "guest-tab", "funnel-tab"]) test(`boot restoration cannot borrow owner rights for ${refused}`, async () => {
   const f = await fixture("native");
   try {
