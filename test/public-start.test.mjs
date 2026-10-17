@@ -97,9 +97,16 @@ test("automatic private ports remain reachable from the browser entry's security
   const { get } = await serve(t, "https://mac.tail1.ts.net:8444");
   const page = await get("/");
   assert.equal(page.status, 200);
-  assert.ok(page.headers["content-security-policy"].includes("https://mac.tail1.ts.net:8444"));
-  assert.ok(page.headers["content-security-policy"].includes("wss://mac.tail1.ts.net:8444"));
-  assert.ok(!page.headers["content-security-policy"].includes("https://*.ts.net:*"));
+  const connect = page.headers["content-security-policy"]
+    .split(";")
+    .map(directive => directive.trim().split(/\s+/))
+    .find(([name]) => name === "connect-src");
+  // Compare whole CSP sources; an allowed URL embedded in another source
+  // must not satisfy this check.
+  assert.deepEqual(connect, [
+    "connect-src", "'self'", "https://mac.tail1.ts.net:8444", "wss://mac.tail1.ts.net:8444",
+    "https://*.ts.net", "https://*.ts.net:8443", "wss://*.ts.net", "https://*.tailscale.com", "wss://*.tailscale.com",
+  ]);
 });
 
 test("serves the start page, its config and the browser client, nothing else", async (t) => {
