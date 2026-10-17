@@ -138,7 +138,18 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     proxy.on("error", error => res.destroy(error)); req.pipe(proxy);
   });
   await new Promise((resolve, reject) => { tls.once("error", reject); tls.listen(0, "127.0.0.1", resolve); });
-  t.after(async () => { await browser?.close(); tls.closeAllConnections(); await new Promise(resolve => tls.close(resolve)); if (reach) { reach.server.closeAllConnections(); await reach.close(); } fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    const errors = [];
+    for (const cleanup of [
+      () => browser?.close(),
+      async () => { tls.closeAllConnections(); await new Promise(resolve => tls.close(resolve)); },
+      async () => { if (reach) { reach.server.closeAllConnections(); await reach.close(); } },
+      () => fs.rmSync(root, { recursive: true, force: true }),
+    ]) {
+      try { await cleanup(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, "Disposable CORS fixture cleanup failed");
+  });
   const privateOrigin = `${ORIGIN}:${tls.address().port}`;
   reach = await createReach({ publicOrigin: privateOrigin, allowedOrigins: [ORIGIN], dataDir: path.join(root, "state"), roots: [],
     agentPolicyFile: path.join(root, "policy.json"), name: "Disposable CORS host", previousRun: null, runMarker: false, tidy: false,
