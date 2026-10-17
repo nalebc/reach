@@ -12,6 +12,7 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
+import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport } from "./helpers/ios-page-evidence.mjs";
 
 // Opt-in real WKWebView/native-plugin smoke. Uses a new disposable simulator,
 // a copied app, synthetic files, and a localhost-only Reach fixture. It never
@@ -47,7 +48,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // outcome. A timeout ends the test before its report: cleanup then leaves
   // what it has.
   const started = Date.now(), phases = [], steps = [], requests = [];
-  let device, bundle, launchFailure, runtimeVersion, ready, reported = false;
+  let device, bundle, failure, runtimeVersion, ready, pageLimit, pageSeen = false, reported = false;
+  const pageEvidence = createIosPageEvidence({ started });
   const since = from => Math.round((Date.now() - from) / 100) / 10;
   const left = () => started + budget - Date.now();
   const reached = name => {
@@ -88,8 +90,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const diagnostics = await collectIosFailureDiagnostics({ device, bundle, deadline: started + budget, run })
         .catch(error => ({ error: String(error.message).slice(0, 1000) }));
       await fs.mkdir(path.dirname(output), { recursive: true });
-      await fs.writeFile(output, JSON.stringify({ ok: false, error: launchFailure || `Did not finish. Last step reached: ${last}.`,
-        phases, steps, ready, requests, runtime: runtimeVersion, diagnostics, physicalDevice: false }, null, 2) + "\n").catch(() => {});
+      await fs.writeFile(output, JSON.stringify(iosPageFailureReport({ error: failure, last, context: {
+        phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageEvidence.snapshot(),
+        runtime: runtimeVersion, diagnostics, physicalDevice: false } }), null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
     if (device) {
@@ -143,9 +146,10 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const downloadResponded = new Promise(resolve => { noteResponse = resolve; });
   t.after(() => allowDownload());
   let script = "";
-  let pageStarted, pageSeen = false;
+  let pageStarted;
   const appPage = new Promise(resolve => { pageStarted = resolve; });
   const handler = async (req, res) => {
+    pageEvidence.request(req, res);
     res.on("finish", () => {
       if (req.url.startsWith("/api/")) requests.push({ path: req.url.split("?")[0], status: res.statusCode });
     });
@@ -164,6 +168,23 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       catch (error) { rejectResult(error); res.writeHead(400).end(); }
       return;
     }
+    if (req.url === `${probe}/evidence` && req.method === "POST") {
+      let body = "";
+      try {
+        for await (const chunk of req) {
+          body += chunk;
+          if (body.length > 4096) { res.writeHead(413).end(); return; }
+        }
+        pageEvidence.event(JSON.parse(body));
+        res.writeHead(204).end();
+      } catch { res.writeHead(400).end(); }
+      return;
+    }
+    if (req.url === `${probe}/diagnostics.js`) {
+      res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" })
+        .end(iosPageDiagnosticScript(`${probe}/evidence`));
+      return;
+    }
     if (req.url === `${probe}.js`) {
       pageSeen = true;
       pageStarted();
@@ -173,7 +194,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     if (req.url === "/") {
       const html = await fs.readFile(path.resolve("dist/index.html"), "utf8");
       res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" })
-        .end(html.replace("</body>", `<script src="${probe}.js" defer></script></body>`));
+        .end(instrumentIosPage(html, probe));
       return;
     }
     // This smoke covers pairing and file/native bridges. Other workspace
@@ -205,6 +226,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const downloadOrigin = `https://127.0.0.1:${downloadProxy.address().port}`;
   script = `(${async function run({ code, probe, downloadOrigin }) {
     const checks = [];
+    const note = kind => window.__reachIosSmokeEvidence?.({ kind });
     const wait = async (get, name, ms = 25000) => {
       const end = Date.now() + ms;
       while (Date.now() < end) {
@@ -221,12 +243,16 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       input.dispatchEvent(new Event("change", { bubbles: true }));
     };
     try {
+      note("test-script");
+      note("waiting-native-bridge");
       await wait(() => window.Capacitor?.nativePromise, "native bridge");
+      note("waiting-computer-address");
       const address = await wait(() => document.querySelector('input[type="url"]'), "computer address");
       // The bridge arrives before React finishes attaching its event handlers.
       await new Promise(resolve => setTimeout(resolve, 800));
       fill(address, location.origin);
       const pairing = await wait(() => document.querySelector("input.pair-code"), "pairing form");
+      note("pairing-form");
       fill(pairing, code);
       await new Promise(resolve => setTimeout(resolve, 100));
       pairing.closest("form").requestSubmit();
@@ -238,6 +264,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
         }
       }, "paired workspace");
       check(!!peer.token, "real pairing UI saved its credential");
+      note("paired-workspace");
       const headers = { Authorization: "Bearer " + peer.token };
       const file = await fetch("/api/files/text?root=0&path=simulator-proof.txt", { headers });
       check(file.ok && (await file.json()).text === "Reach simulator bytes\n", "authenticated file bytes in WKWebView");
@@ -254,6 +281,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       window.Capacitor.nativeCallback("BackgroundTransfer", "addListener", { eventName: "done" }, value => completed.set(value.id, value));
       window.Capacitor.nativeCallback("BackgroundTransfer", "addListener", { eventName: "failed" }, value => failures.set(value.id, value));
       const download = await native("BackgroundTransfer", "download", { url: downloadOrigin + "/api/files/content?root=0&path=simulator-proof.txt", name: "simulator-proof.txt", headers });
+      note("waiting-native-download");
       const finished = await wait(async () => {
         if (failures.has(download.id)) throw Error("Native download failed: " + JSON.stringify(failures.get(download.id)));
         return completed.get(download.id) || (await native("BackgroundTransfer", "finished")).files.find(file => file.id === download.id);
@@ -263,10 +291,12 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       await wait(async () => (await native("App", "getState")).isActive, "app foreground resume");
       check(true, "native app resumes after downloading while backgrounded");
       check((await native("Share", "canShare")).value === true, "native share capability available");
+      note("test-completed");
       await fetch(probe + "/result", { method: "POST", body: JSON.stringify({ ok: true, checks, platform: window.Capacitor.getPlatform(), userAgent: navigator.userAgent }) });
       // Open the native sheet for inspection, without selecting a recipient.
       native("Share", "share", { files: [written.uri] }).catch(() => {});
     } catch (error) {
+      note("test-failed");
       await fetch(probe + "/result", { method: "POST", body: JSON.stringify({ ok: false, checks, error: error.message }) });
     }
   }.toString()})(${JSON.stringify({ code, probe, downloadOrigin })});`;
@@ -331,11 +361,11 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
   try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached }); }
-  catch (error) { launchFailure = error.message; throw error; }
+  catch (error) { failure = error.message; throw error; }
   reached("app launched");
   // The page's own time. A slow simulator opening Settings or reopening the
   // app (each under its own limit) doesn't spend it.
-  const pageLimit = Math.max(0, Math.min(100000, left()));
+  pageLimit = Math.max(0, Math.min(100000, left()));
   let pageLeft = pageLimit, pageSince = 0, timer;
   const pageClock = () => {
     pageSince = Date.now();
@@ -367,10 +397,12 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     }
     report = first.report || await result;
     reached("page reported");
-  } finally { clearTimeout(timer); allowDownload(); }
+  } catch (error) { failure = error.message; throw error; }
+  finally { clearTimeout(timer); allowDownload(); }
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
-    await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+    await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
+      pageEvidence: pageEvidence.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });
