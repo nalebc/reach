@@ -8,6 +8,13 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-17
+
+Early access: owned coding tasks for invited agents, reliable Windows phone
+setup and package version diagnostics. Includes the agent connection, file
+transfer and chat recovery fixes prepared for `v0.2.1`; that earlier candidate
+was not published to npm or GitHub.
+
 ### Added
 
 - Invited agents can start, inspect and cancel owned coding tasks in shared
@@ -32,6 +39,23 @@ release notes, so date the heading before tagging.
   private HTTPS ports recover automatically and the selected port is remembered.
   CI decodes the emitted QR and exercises phone onboarding against source and
   installed packages, including Windows.
+
+### Validation and limits
+
+- Release CI checks Linux on Node 22 and 24, macOS on Apple Silicon and Intel,
+  Windows and the iOS simulator, including installed npm and portable artifacts.
+  The release tag repeats those checks on the exact candidate before publishing.
+- Windows native checks use hosted runners and local browser pages. Physical
+  Windows, iPhone, iPad and Android qualification remains incomplete. Mocked
+  service checks do not establish live Gmail, Walmart or hosted-agent provider
+  compatibility. Native iOS remains an optional developer build.
+- Disposable coding fixes and their requested checks were verified with real
+  Codex and Claude on macOS. Windows coding-provider tests remain synthetic;
+  the new coding tools have not been acceptance-tested through Grok or Muse.
+  Claude edits made through shell commands may lack structured file diffs.
+- npm users can update with `reach update`; source installs use `v0.3.0`.
+  Restart through the CLI and keep the existing `.reach` state or configured
+  external state folders. A restart ends terminals and live screens.
 
 ## [0.2.1] — 2026-10-16
 
