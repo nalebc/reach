@@ -8,6 +8,13 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-10-16
+
+More reliable agent connections, safer file transfers and chat recovery.
+This patch includes the fixes merged in [#52](https://github.com/nalebc/reach/pull/52),
+[#53](https://github.com/nalebc/reach/pull/53) and
+[#54](https://github.com/nalebc/reach/pull/54).
+
 ### Added
 
 - 2026-10-15: People you invite watch and control a Windows PC's screen as
@@ -32,12 +39,43 @@ release notes, so date the heading before tagging.
 
 ### Fixed
 
+- Agent credential renewal now checks the original device, key and connector
+  before changing credentials. Concurrent requests and browser tabs share renewal
+  work, and in-flight calls can finish during the short credential handover.
+- A dropped agent connection no longer replays an action whose result is unknown.
+  Commands that were never sent can retry; an interrupted answer no longer tells
+  the agent that an action definitely did not run.
+- File downloads keep the verified file open through transfer. Uploads recheck
+  their destination and recover from bounded session loss; cancellation and
+  failed setup clean up native transfers.
+- Interrupted chat delivery, queued edits and cancellation recover without losing
+  the saved outbox or leaving queued work asleep.
+- CLI restart flags and folders with spaces, supervisor shutdown during recovery,
+  split UTF-8 helper output, primary-pointer filtering and abort cleanup behave
+  consistently across their supported paths.
+- Agent screenshots preserve binary data and display selection, with a bounded
+  image response allowance. Ordinary JSON response limits remain unchanged.
+- Already-approved service requests run immediately; service failures give useful
+  guidance without exposing private response details.
 - 2026-10-15: On a Windows PC, answering the Claude app's consent card
   (letting Claude use apps) from the phone no longer tells the owner to
   install Apple's developer tools on a Mac. It says plainly to answer it in
   the Claude app on the PC, and switches nothing there. Checked with mocked
   tests on GitHub's Windows runners; not tried on a physical PC or with the
   real Claude app's card.
+
+### Validation and limits
+
+- The merged fixes passed the public repository's blocking Linux, macOS (Apple
+  Silicon and Intel), Windows and iOS simulator checks, including clean installs
+  of the packaged artifacts. Release tags repeat those checks on the exact
+  candidate before publishing.
+- Physical Windows, iPhone, iPad and Android qualification remains incomplete.
+  Automated protocol checks do not establish live Grok or Muse compatibility;
+  provider acceptance results must be recorded separately.
+- npm users can update with `reach update`; source users can fetch and check out
+  `v0.2.1`, then restart through the CLI. A restart ends terminals and live
+  screens; keep the existing `.reach` state or configured external state folders.
 
 ## [0.2.0] — 2026-10-15
 

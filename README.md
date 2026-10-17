@@ -168,7 +168,7 @@ Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SEC
 
 ## Status
 
-Early access (0.2.0). macOS comes first, and testing on physical phones is still in progress.
+Early access (0.2.1). macOS comes first, and testing on physical phones is still in progress.
 
 ## Contributing
 

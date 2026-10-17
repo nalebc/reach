@@ -97,12 +97,12 @@ See [Agent CLI setup](AGENT_CLI.md) for owner commands, restricted tailnet grant
 With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22.12 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
 
 ```sh
-git clone --branch v0.2.0 https://github.com/nalebc/reach.git
+git clone --branch v0.2.1 https://github.com/nalebc/reach.git
 cd reach
 ./reach
 ```
 
-`--branch v0.2.0` installs the latest release. `main` carries changes that aren't released yet.
+`--branch v0.2.1` installs the latest release. `main` carries changes that aren't released yet.
 
 On Windows, use `.\reach.cmd` in place of `./reach`, and put the Tailscale app on your phone, signed in to the same account (experimental; see [Supported platforms](#supported-platforms) and the [README's setup steps](../README.md#what-setup-walks-you-through)).
 
@@ -212,7 +212,7 @@ When you run `./reach restart` in Terminal from another checkout, Reach transfer
 
 Phone interface updates keep the same Home Screen icon. Reach checks when opened, brought to the foreground, restored or reconnected, and every minute while visible. A new interface loads automatically once typing and live streams have finished. **Settings → General → Reach updates** shows its status and offers **Check for updates**. An already-open copy from before this mechanism needs one fresh load; close it from the app switcher and reopen the same icon.
 
-Reach on the computer updates itself too, when installed with npm. It checks npm a few times a day; a new version comes to your phone once as **Update Reach to 0.2.0** under Needs you, and stays in **Settings → Reach updates**. **Update** installs exactly that version into the folder npm installed Reach in (never with sudo) and starts Reach again on it: its terminals and live screens end, phones reload onto the new interface, and agents connected to the computer pick up the new version by themselves on their next use. In Terminal, `reach update` does the same after asking. Windows can't replace the files of a Reach that runs, so there the update you confirm on the phone runs in a window of its own, which stops Reach, installs exactly that version and starts Reach again; `reach update` in a terminal stops Reach before npm too. Run without a terminal (by an agent), it installs nothing and points to your phone. When Reach can't write to its own folder, it shows the command to run instead. A source checkout moves to a newer release with `git fetch --tags` and `git checkout v<version>` ([releases](https://github.com/nalebc/reach/releases)), then a restart.
+Reach on the computer updates itself too, when installed with npm. It checks npm a few times a day; a new version comes to your phone once as **Update Reach to 0.2.1** under Needs you, and stays in **Settings → Reach updates**. **Update** installs exactly that version into the folder npm installed Reach in (never with sudo) and starts Reach again on it: its terminals and live screens end, phones reload onto the new interface, and agents connected to the computer pick up the new version by themselves on their next use. In Terminal, `reach update` does the same after asking. Windows can't replace the files of a Reach that runs, so there the update you confirm on the phone runs in a window of its own, which stops Reach, installs exactly that version and starts Reach again; `reach update` in a terminal stops Reach before npm too. Run without a terminal (by an agent), it installs nothing and points to your phone. When Reach can't write to its own folder, it shows the command to run instead. A source checkout moves to a newer release with `git fetch --tags` and `git checkout v<version>` ([releases](https://github.com/nalebc/reach/releases)), then a restart.
 
 **Agents & people** shows an agent still on a runtime from before agents updated themselves as **Needs a one-time update**; **Copy update command** gives the one command to run on its machine.
 
