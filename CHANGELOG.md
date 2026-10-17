@@ -28,8 +28,10 @@ candidates were not published to npm or GitHub. Their tags remain unchanged.
 
 - Owner clients prefer native private Tailscale, recover through an already
   approved browser Tailscale connection when available, and return to native
-  automatically. Each device keeps its own credential and approval; recovery
-  preserves open chats, drafts, attachments and pending work.
+  automatically. Initial startup can also restore a saved approved browser
+  when the native device is unapproved or unavailable. Each device keeps its
+  own credential and approval; recovery preserves open chats, drafts,
+  attachments and pending work.
 - Agent connections prefer available private routes before their authorized
   public gateway and periodically return to private. Recovery reuses existing
   signing grants and previously configured private clients; it never silently
