@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
+import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
 
 // Opt-in real WKWebView/native-plugin smoke. Uses a new disposable simulator,
 // a copied app, synthetic files, and a localhost-only Reach fixture. It never
@@ -46,7 +47,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // outcome. A timeout ends the test before its report: cleanup then leaves
   // what it has.
   const started = Date.now(), phases = [], steps = [], requests = [];
-  let device, runtimeVersion, ready, reported = false;
+  let device, bundle, launchFailure, runtimeVersion, ready, reported = false;
   const since = from => Math.round((Date.now() - from) / 100) / 10;
   const left = () => started + budget - Date.now();
   const reached = name => {
@@ -73,7 +74,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
       } catch (error) {
-        steps.push({ step: name, attempt, seconds: since(began), ok: false, error: error.message });
+        steps.push({ step: name, attempt, seconds: since(began), ok: false, error: error.message,
+          ...(name === "launch" ? commandFailureOutput(error) : {}) });
         tries.push(`attempt ${attempt} ${error.message} after ${since(began)} s`);
         process.stderr.write(`iOS simulator test:   ${name}: attempt ${attempt} of ${attempts} ${error.message} (${since(began)} s)\n`);
       }
@@ -83,9 +85,11 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   t.after(async () => {
     if (output && !reported) {
       const last = phases.at(-1)?.phase || "nothing";
+      const diagnostics = await collectIosFailureDiagnostics({ device, bundle, deadline: started + budget, run })
+        .catch(error => ({ error: String(error.message).slice(0, 1000) }));
       await fs.mkdir(path.dirname(output), { recursive: true });
-      await fs.writeFile(output, JSON.stringify({ ok: false, error: `Did not finish. Last step reached: ${last}.`,
-        phases, steps, ready, requests, runtime: runtimeVersion, physicalDevice: false }, null, 2) + "\n").catch(() => {});
+      await fs.writeFile(output, JSON.stringify({ ok: false, error: launchFailure || `Did not finish. Last step reached: ${last}.`,
+        phases, steps, ready, requests, runtime: runtimeVersion, diagnostics, physicalDevice: false }, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
     if (device) {
@@ -313,7 +317,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const plist = path.join(app, "Info.plist");
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity dict", plist]);
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true", plist]);
-  const bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
+  bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
   await exec("codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime", "--generate-entitlement-der", app], { timeout: 30000 });
   reached("app copied and signed");
   // A slow install took 45 s; a slow launch hung past 90 s on the home
@@ -326,7 +330,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached });
+  try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached }); }
+  catch (error) { launchFailure = error.message; throw error; }
   reached("app launched");
   // The page's own time. A slow simulator opening Settings or reopening the
   // app (each under its own limit) doesn't spend it.
