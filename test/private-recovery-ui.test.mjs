@@ -334,7 +334,7 @@ test("cancelled standby preload also observes a rejected prefetched WASM asset",
   }
 });
 
-for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} cannot block private checks forever or create a late duplicate node`, async t => {
+for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} recovers without duplicate nodes on modeled WebKit without throwIfAborted`, async t => {
   let releaseFetch, reached, firstAsset = true, firstScript = true;
   const fetchWait = new Promise(resolve => { releaseFetch = resolve; });
   const boundary = new Promise(resolve => { reached = resolve; });
@@ -343,9 +343,13 @@ for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} canno
     return Response.json({});
   } } });
   const originalInstantiate = WebAssembly.instantiateStreaming;
+  const throwIfAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "throwIfAborted");
+  const abortReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason");
   const scripts = [], changes = [], traffic = [];
   let nativeOn = false, current = { peer: peer("APP"), device }, checking, recovery, registrations = 0, runs = 0;
   try {
+    Object.defineProperty(AbortSignal.prototype, "throwIfAborted", { configurable: true, value: undefined });
+    Object.defineProperty(AbortSignal.prototype, "reason", { configurable: true, get: () => undefined });
     saveBrowserState(savedState());
     const append = dom.document.head.append.bind(dom.document.head);
     dom.document.head.append = (...nodes) => {
@@ -374,7 +378,7 @@ for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} canno
       fetch() { assert.fail("the deterministic probe supplies its browser fetch directly"); }, websocket() {},
     };
     globalThis.reachTailnet = () => { registrations++; return node; };
-    const { existingBrowserNode } = await dom.load("/src/browser-node.ts");
+    const { existingBrowserNode, createBrowserNode } = await dom.load("/src/browser-node.ts");
     const { createPrivateRecovery } = await dom.load("/src/app-watch.ts");
     const { privateWay } = await dom.load("/src/tailnet-transport.ts");
     const readyConfig = { ...config, tailnet: { wasm: "client.wasm", exec: "exec.js" } };
@@ -392,7 +396,7 @@ for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} canno
     });
     t.mock.timers.enable({ apis: ["setTimeout"] });
     checking = recovery.check();
-    await boundary;
+    assert.equal(await Promise.race([boundary.then(() => true), checking.then(() => false)]), true, "preload must reach its asset phase rather than fail on an unsupported AbortSignal method");
     assert.equal(recovery.check(), checking, "one pending check while preload is in progress");
     nativeOn = true;
     t.mock.timers.tick(8000);
@@ -418,12 +422,20 @@ for (const stalled of ["loader", "WASM fetch"]) test(`a stalled ${stalled} canno
     assert.equal(current.peer.token, "APP");
     assert.deepEqual(changes.map(change => change.mode), ["browser", "native"]);
     assert.ok(traffic.filter(call => call.token).every(call => call.token === `Bearer ${call.route === "native" ? "APP" : "BROWSER"}`));
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await assert.rejects(createBrowserNode(readyConfig, { signal: cancelled.signal }), error => error?.name === "AbortError");
+    assert.equal(registrations, 1, "an already aborted signal without reason cannot construct another identity");
   } finally {
     recovery?.stop();
     releaseFetch(Response.json({}));
     for (const script of scripts) script.onload?.();
     await checking?.catch(() => {});
     t.mock.timers.reset();
+    if (throwIfAborted) Object.defineProperty(AbortSignal.prototype, "throwIfAborted", throwIfAborted);
+    else delete AbortSignal.prototype.throwIfAborted;
+    if (abortReason) Object.defineProperty(AbortSignal.prototype, "reason", abortReason);
+    else delete AbortSignal.prototype.reason;
     WebAssembly.instantiateStreaming = originalInstantiate;
     delete globalThis.Go;
     delete globalThis.reachTailnet;

@@ -22,11 +22,12 @@ export const browserState = (prefix = "reach.tailnet:") => ({
 });
 
 const scripts = new Map<string, Promise<void>>();
+const abortReason = (signal?: AbortSignal) => signal?.reason ?? new DOMException("The operation was aborted.", "AbortError");
 function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return pending;
   return new Promise((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
-    const abort = () => { cleanup(); reject(signal.reason); };
+    const abort = () => { cleanup(); reject(abortReason(signal)); };
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
     pending.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
@@ -43,7 +44,7 @@ function loadScript(src: string, signal?: AbortSignal) {
         signal?.removeEventListener("abort", abort);
         script.onload = script.onerror = null;
       };
-      const abort = () => { cleanup(); script.remove(); reject(signal?.reason); };
+      const abort = () => { cleanup(); script.remove(); reject(abortReason(signal)); };
       script.onload = () => {
         cleanup();
         if (signal) scripts.set(src, Promise.resolve());
@@ -88,11 +89,11 @@ export async function createBrowserNode(config: StartConfig, {
   // Observe prefetch rejection even then; awaiting it still reports failure.
   void wasm.catch(() => {});
   await loadScript(`/tailnet/${config.tailnet!.exec}`, signal);
-  signal?.throwIfAborted();
+  if (signal?.aborted) throw abortReason(signal);
   if (!beforeStart()) throw Error("The saved browser connection changed.");
   const go = new Go();
   const { instance } = await abortable(WebAssembly.instantiateStreaming(wasm, go.importObject), signal);
-  signal?.throwIfAborted();
+  if (signal?.aborted) throw abortReason(signal);
   if (!beforeStart()) throw Error("The saved browser connection changed.");
   void go.run(instance).then(stopped, stopped);
   return reachTailnet({
