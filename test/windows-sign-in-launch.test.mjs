@@ -31,7 +31,7 @@ const until = async (check, what, ms = 15000) => {
   }
 };
 
-function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true, unrecognised = "", noted = null, healthWaitMs = 0, ready } = {}) {
+function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true, unrecognised = "", noted = null, healthWaitMs = 0, ready, browserCheck } = {}) {
   const seen = {};
   const started = startCleanReach(t, {
     args: { local: false, stayAwake: false },
@@ -63,6 +63,7 @@ function keyedReach(t, { scenario = {}, problem = "", folders = "", prefs = true
           `peerCheck: ((m) => (hooks) => m.fakePeerCheck(${JSON.stringify(root)}, { problem: ${JSON.stringify(problem)}, unrecognised: ${JSON.stringify(unrecognised)}, log: ${JSON.stringify(seen.peerLog)}, ...hooks }))(await import(${JSON.stringify(PEER)}))`,
           `privateFolders: await (async () => { const fs = (await import("node:fs")).default; return ${privateFolders}; })()`,
           "keyedEveryMs: 1000",
+          `browserCheck: ${browserCheck || "async () => ({ ready: true })"}`,
           ...(healthWaitMs ? [`healthWaitMs: ${healthWaitMs}`] : []),
         ].join(", "),
       };
@@ -236,6 +237,30 @@ test("Windows set up with your account: a keyed private route and a foreground F
   assertNoKey(key, root, reach.output());
 });
 
+test("Windows waits for a publicly reachable browser page before showing a QR, then recovers automatically", asWindows, async (t) => {
+  const { seen, started } = keyedReach(t, {
+    ready: /Preparing the connection for your phone's browser/,
+    browserCheck: `(() => { let checks = 0; return async () => ++checks >= 2 ? { ready: true } : { ready: false, reason: "Public DNS is still publishing." }; })()`,
+  });
+  const reach = await started;
+  const text = reach.output();
+  assert.doesNotMatch(text, /Open on your phone:/);
+  assert.doesNotMatch(text, /▄|█/, "no dead browser QR");
+  assert.ok(text.includes(`Already connected to this Tailscale network? Private link: https://${HOST}:8443`));
+  const stateFile = path.join(seen.root, ".reach/host-status.json");
+  assert.equal(JSON.parse(fs.readFileSync(stateFile)).browserLink.ready, false);
+  reach.stdin.write("private\n");
+  await until(() => /Your phone's Tailscale app must be on this computer's Tailscale network/.test(reach.output()) && /▄|█/.test(reach.output()), "private fallback for a phone already on this tailnet");
+  assert.match(reach.output(), /Your phone's Tailscale app must be on this computer's Tailscale network/);
+  assert.match(reach.output(), /▄|█/, "a private QR is still available when explicitly requested");
+  await until(() => /browser connection is ready/.test(reach.output()), "public publication to recover");
+  assert.ok(reach.output().includes(`Open on your phone: https://${HOST}\n`));
+  assert.match(reach.output(), /▄|█/);
+  const recovered = JSON.parse(fs.readFileSync(stateFile));
+  assert.equal(recovered.browserLink.ready, true);
+  assert.equal(recovered.link, `https://${HOST}`);
+});
+
 for (const [name, options, why] of [
   ["the peer check can't start", { problem: "Tailscale's Windows service isn't running." }, /Tailscale's Windows service isn't running\./],
   ["Tailscale runs in userspace", { scenario: { TUN: false } }, /without its network adapter here \(userspace networking\)/],
@@ -243,13 +268,14 @@ for (const [name, options, why] of [
   ["an older Tailscale command line", { scenario: { cliVersion: "1.90.0" } }, /Tailscale's command line \(1\.90\.0\) is older than 1\.104/],
   ["its folders can't be made private", { folders: "Reach's folder C:\\reach can be changed by other people on this PC, so browser sign-in stays off." }, /Reach's folder C:\\reach can be changed by other people on this PC/],
 ])
-  test(`Windows set up with your account, ${name}: pairing codes, with the reason; no key, no Funnel`, asWindows, async (t) => {
+  test(`Windows set up with your account, ${name}: explains the browser failure without a private QR; no key, no Funnel`, asWindows, async (t) => {
     const { seen, started } = keyedReach(t, { ...options, ready: /No public internet tunnel is enabled/ });
     const reach = await started;
     const text = reach.output();
     assert.match(text, /Reach: browser sign-in is off on this PC for now: /);
     assert.match(text, why);
-    assert.match(text, /Pairing code: \d{4} \d{4}/);
+    assert.doesNotMatch(text, /Pairing code: \d{4} \d{4}/);
+    assert.match(text, /A private QR would require the phone app, so none is shown/);
     const sessions = await seen.fake.sessions();
     assert.equal(sessions.length, 1);
     assert.doesNotMatch(sessions[0].args.at(-1), /\/r-/);
@@ -311,12 +337,13 @@ for (const [name, noted, reason] of [
   ["today with this Tailscale (taken for another program's)", { kind: "other", count: 1, tailscale: "1.104.0-tfake", at: Date.now() - 3600000 }, UNRECOGNISED],
   ["twice unanswered within the hour", { kind: "late", count: 2, tailscale: "1.104.0-tfake", at: Date.now() - 600000 }, UNANSWERED],
 ])
-  test(`Windows, noted ${name}: pairing codes with the reason, no key, no Funnel`, asWindows, async (t) => {
+  test(`Windows, noted ${name}: explains the browser failure without a private QR, no key, no Funnel`, asWindows, async (t) => {
     const { seen, started } = keyedReach(t, { noted, ready: /No public internet tunnel is enabled/ });
     const reach = await started;
     const text = reach.output();
     assert.match(text, new RegExp(`Reach: browser sign-in is off on this PC for now: ${reason.source}`));
-    assert.match(text, /Pairing code: \d{4} \d{4}/);
+    assert.doesNotMatch(text, /Pairing code: \d{4} \d{4}/);
+    assert.match(text, /A private QR would require the phone app, so none is shown/);
     const sessions = await seen.fake.sessions();
     assert.equal(sessions.length, 1);
     assert.doesNotMatch(sessions[0].args.at(-1), /\/r-/);

@@ -8,6 +8,15 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows phone setup verifies public DNS and HTTPS before showing its browser
+  QR, so a link that works only on the PC cannot be handed to a phone without
+  Tailscale. Phones on the same Tailscale network retain private access. Busy
+  private HTTPS ports recover automatically and the selected port is remembered.
+  CI decodes the emitted QR and exercises phone onboarding against source and
+  installed packages, including Windows.
+
 ## [0.2.1] — 2026-10-16
 
 More reliable agent connections, safer file transfers and chat recovery.

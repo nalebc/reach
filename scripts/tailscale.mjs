@@ -181,8 +181,28 @@ export function ownsServeRoute(config, origin, target) {
       ]?.Proxy === target,
   );
 }
-export async function prepareTailscale(port, acceptExisting) {
-  const status = await tailscaleJson(["status", "--json"]);
+// Prefer the saved port, then find a private port without changing any
+// existing service. Funnel flags count even when no listener is listed.
+export function selectPrivatePort(config, preferred, acceptExisting) {
+  const used = new Set(), publicPorts = new Set();
+  for (const item of serveConfigs(config)) {
+    for (const [port, listener] of Object.entries(item?.TCP || {}))
+      if (listener) used.add(Number(port));
+    for (const host of Object.keys(item?.Web || {}))
+      used.add(Number(host.slice(host.lastIndexOf(":") + 1)));
+    for (const [host, enabled] of Object.entries(item?.AllowFunnel || {}))
+      if (enabled) publicPorts.add(Number(host.slice(host.lastIndexOf(":") + 1)));
+  }
+  const available = (port) => !publicPorts.has(port) && (!used.has(port) || acceptExisting?.(port));
+  for (const port of [preferred, 9443, 8443])
+    if (Number.isInteger(port) && port >= 1 && port <= 65535 && available(port)) return port;
+  for (const [start, end] of [[8444, 65535], [1024, 8442]])
+    for (let port = start; port <= end; port++)
+      if (available(port)) return port;
+  throw Error("Tailscale has no free private HTTPS port for Reach. Free a port in Tailscale, then run Reach again.");
+}
+export async function prepareTailscale(port = 8443, acceptExisting, { json = tailscaleJson, print = console.log } = {}) {
+  const status = await json(["status", "--json"]);
   if (status.BackendState !== "Running")
     throw Error(
       "Open Tailscale and sign in on this computer, then rerun Reach.",
@@ -192,11 +212,12 @@ export async function prepareTailscale(port, acceptExisting) {
     throw Error(
       "Tailscale did not provide a valid device hostname. Enable MagicDNS and HTTPS in Tailscale.",
     );
-  const origin = `https://${hostname}${port === 443 ? "" : ":" + port}`;
-  const config = await tailscaleJson(["serve", "status", "--json"]);
-  assertPrivatePort(config, port);
-  if (!acceptExisting?.(config, origin)) assertUnusedPort(config, port);
-  return origin;
+  const originAt = (chosen) => `https://${hostname}${chosen === 443 ? "" : ":" + chosen}`;
+  const config = await json(["serve", "status", "--json"]);
+  const chosen = selectPrivatePort(config, port, (candidate) => acceptExisting?.(config, originAt(candidate)));
+  if (chosen !== port)
+    print(`Reach: port ${port} is unavailable; using port ${chosen} automatically.`);
+  return originAt(chosen);
 }
 export async function checkUnused(port) {
   assertUnusedPort(await tailscaleJson(["serve", "status", "--json"]), port);

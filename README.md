@@ -96,7 +96,7 @@ From your phone, read and reply to Claude Code, Codex and OpenClaw chats, send f
 | ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | **On the computer** | [Tailscale](https://tailscale.com/download), signed in. macOS 13 or newer  | [Tailscale](https://tailscale.com/download/windows), signed in. Windows 10 or 11, x64 or ARM64 |
 | **Your tailnet**    | MagicDNS and HTTPS certificates on (setup opens the page and waits)        | The same                                                                              |
-| **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | **The Tailscale app**, signed in to the same account and turned on                    |
+| **On the phone**    | Just a browser. The Tailscale app is optional and faster                  | Just a browser. The Tailscale app is optional and faster                    |
 
 From source, a phone without the Tailscale app signs in from its browser only if [Go](https://go.dev/dl/) was installed when Reach was built: Go builds that in-browser Tailscale client. The npm package includes it. On Windows it also needs Tailscale 1.104 or newer; with an older one, phones join with a pairing code and the app until Tailscale is updated, and Reach says so.
 
@@ -104,11 +104,11 @@ From source, a phone without the Tailscale app signs in from its browser only if
 
 The first run takes about 3 minutes. It shows three steps, then prompts you through each one. Ctrl+C stops at any point; run Reach again to pick up where you left off.
 
-1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. On a Mac or Linux it also asks which Tailscale account your phones sign in with.
+1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. It also asks which Tailscale account your phones sign in with.
 2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
 3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
-   - **Mac or Linux:** type the code your phone shows into the terminal to approve it. No Tailscale app on the phone? Sign in from its browser in the next 15 minutes (later: `reach pair`).
-   - **Windows:** install the Tailscale app on the phone first and sign in with the same account. The QR carries a one-time code; press Enter for a new one.
+   - Type the code your phone shows into the terminal to approve it. Without the phone app, or with it connected to another Tailscale network, sign in through the browser in the next 15 minutes (later: `reach pair`). A phone already on this computer’s Tailscale network uses the private connection.
+   - On Windows, Reach verifies its public DNS and HTTPS page before showing the browser QR. While it prepares that link, type `private` for a QR that works with the phone app on the same Tailscale network. Busy private ports are handled automatically.
 
 The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
 

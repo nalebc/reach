@@ -244,6 +244,25 @@ test("installed CI covers a real portable first launch and npm 12 on Linux", () 
   assert.match(ci, /REACH_TEST_NPM12_INSTALL: "1"/);
 });
 
+test("default Windows QR onboarding is required in source CI and the installed-artifact gate", () => {
+  assert.ok(suites.windows.includes("qr-onboarding-e2e"));
+  assert.ok(suites.windows.includes("windows-sign-in-launch"));
+  const ci = workflow("ci");
+  assert.ok(ci.jobs.verify.strategy.matrix.include.some(entry => entry.os.startsWith("windows-")));
+  const installed = ci.jobs.verify.steps.find(step => step.run === "npm run test:ci:installed");
+  assert.ok(installed, "the built package must be installed and exercised");
+  assert.equal(installed.if, undefined, "Windows cannot be excluded from the installed QR gate");
+  const runner = fs.readFileSync(new URL("../.github/scripts/test-installed-package.mjs", import.meta.url), "utf8");
+  assert.match(runner, /test\/qr-onboarding-e2e\.test\.mjs/);
+  assert.match(runner, /REACH_TEST_PACKAGE: path\.join\(temp, "node_modules", "@nalebc", "reach"\)/);
+  assert.doesNotMatch(runner, /process\.platform === "win32"\) throw/);
+  const regression = fs.readFileSync(new URL("./qr-onboarding-e2e.test.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(regression, /\bskip\s*:/, "the critical path cannot silently skip on Windows");
+  assert.doesNotMatch(regression, /browserCheck\s*:/, "production public DNS and TLS readiness must run");
+  const startup = fs.readFileSync(new URL("./windows-sign-in-launch.test.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(startup, /\bskip\s*:/, "Windows startup and route recovery must run on Windows itself");
+});
+
 test("required workflows cover every job and evaluate the same declared prerequisites", () => {
   const ci = workflow("ci"), security = workflow("security");
   for (const { jobs } of [ci, security]) {

@@ -611,7 +611,7 @@ ${command} --folder /path       Share a folder (repeatable)
 ${command} --agent-policy FILE  Agent permission policy
 ${command} --local              Local access only
 ${command} --port 4318          Local port (service saves a fixed port)
-${command} --https-port 8443    Tailscale HTTPS port
+${command} --https-port 8443    Preferred Tailscale HTTPS port (chooses another if busy)
 
 ${process.platform === "win32"
   ? `Stay-awake asks Windows to keep the PC awake while Reach runs; it never changes
@@ -832,6 +832,10 @@ Uninstall/foreground Ctrl+C ends Reach-owned terminals and jobs.
         // Installed service arguments are its saved folder/port choices.
         if (!options.service)
           options = applyPreferences(options, preferences, process.argv.slice(2));
+        if (!options.service && !process.argv.includes("--https-port")) {
+          const { readHttpsPort } = await import("./configure.mjs");
+          options.httpsPort = readHttpsPort(root) || options.httpsPort;
+        }
         if (!options.service && process.argv.includes("--https-port")) {
           const { rememberHttpsPort } = await import("./configure.mjs");
           if (rememberHttpsPort(root, options.httpsPort))

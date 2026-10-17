@@ -17,7 +17,9 @@ export const suites = {
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
-    "uploads-concurrency", "windows-agent-cli", "windows-commands", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
+    "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
+    // Decode the emitted QR and follow it through a separate phone network.
+    "qr-onboarding-e2e",
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
@@ -52,7 +54,7 @@ export const suites = {
     "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
-    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in",
+    "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
     "windows-route-audit", "windows-private-folder", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.

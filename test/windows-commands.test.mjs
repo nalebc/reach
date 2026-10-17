@@ -145,7 +145,7 @@ const tailscaleWindows = { timeout: 90000 };
 const ORIGIN = `https://${HOST}:8443`;
 const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`${HOST}:8443`]: { Handlers: { "/": { Proxy: target } } } } });
 // `serve` and `record`: what an earlier Reach or another service left.
-function windowsTailscaleReach(t, { serve, record } = {}) {
+function windowsTailscaleReach(t, { serve, record, savedPort } = {}) {
   const seen = {};
   const started = startCleanReach(t, {
     args: { local: false, stayAwake: false },
@@ -160,6 +160,10 @@ function windowsTailscaleReach(t, { serve, record } = {}) {
       if (record) {
         fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
         fs.writeFileSync(path.join(root, ".reach", "serve-owner.json"), JSON.stringify({ version: 1, ...record }));
+      }
+      if (savedPort) {
+        fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
+        fs.writeFileSync(path.join(root, ".reach/https-port.json"), JSON.stringify({ version: 1, port: savedPort }));
       }
       return { env: { REACH_TAILSCALE: seen.fake.cli }, preloads: [tailnetPreload(seen.fake.state)] };
     },
@@ -293,17 +297,34 @@ test("Windows, Tailscale mode: an older Reach's background route, recorded as it
   assert.equal(fs.existsSync(path.join(seen.root, ".reach", "serve-owner.json")), false, "nothing left to record");
 });
 
-test("Windows, Tailscale mode: someone else's route on the port still refuses to start, and is left alone", tailscaleWindows, async (t) => {
+test("Windows, Tailscale mode: someone else's route is left alone and setup continues on another port", tailscaleWindows, async (t) => {
   const theirs = backgroundRoute("http://127.0.0.1:3000");
   // Even beside a record of Reach's own (another target): not Reach's route.
   const { seen, started } = windowsTailscaleReach(t, { serve: theirs, record: { origin: ORIGIN, target: "http://127.0.0.1:1" } });
-  await assert.rejects(started, /Tailscale port 8443 is already in use/);
+  const reach = await started;
+  assert.match(reach.output(), /port 8443 is unavailable; using port 9443 automatically/);
+  assert.ok(reach.output().includes(`Open on your phone: https://${HOST}:9443\n`));
+  assert.match(reach.output(), /Pairing code: \d{4} \d{4}/);
   const state = await seen.fake.read();
-  assert.deepEqual(state.serve, theirs, "never replaced");
-  assert.ok(!state.calls.some(([command, ...rest]) => (command === "serve" || command === "funnel") && rest[0] !== "status" && rest[0] !== "--help"), "nothing changed in Tailscale");
-  assert.deepEqual(await seen.fake.sessions(), []);
+  assert.deepEqual(state.serve.TCP, theirs.TCP, "never replaced");
+  assert.deepEqual(state.serve.Web, theirs.Web, "never replaced");
+  assert.ok(!state.calls.some((args) => args.includes("--https=8443") || args.includes("--bg") || args[0] === "funnel"), "no changes to the occupied port or public routes");
+  const [session] = await seen.fake.sessions();
+  assert.deepEqual(session.args.slice(0, 2), ["serve", "--https=9443"]);
+  const saved = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach/https-port.json")));
+  assert.equal(saved.port, 9443, "Windows remembers the new link without account settings");
+  const host = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach/host-status.json")));
+  assert.equal(host.origin, `https://${HOST}:9443`);
 });
 
+test("Windows, Tailscale mode: later starts keep the saved link even when port 8443 is free again", tailscaleWindows, async (t) => {
+  const { seen, started } = windowsTailscaleReach(t, { savedPort: 9443 });
+  const reach = await started;
+  assert.ok(reach.output().includes(`Open on your phone: https://${HOST}:9443\n`));
+  assert.doesNotMatch(reach.output(), /using port .* automatically/);
+  const [session] = await seen.fake.sessions();
+  assert.deepEqual(session.args.slice(0, 2), ["serve", "--https=9443"]);
+});
 
 test("Windows: an occupied launcher lock names restart without starting anything", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-lock-windows-"));
