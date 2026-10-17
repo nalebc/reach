@@ -287,15 +287,14 @@ async function browserMode(
     });
     return;
   }
-  browserNode = node;
   if (workspaceStarted) {
-    // A native probe may finish while WASM is being constructed. Keep this
-    // node as private standby; never begin a login after the workspace won.
-    installTailnet(node, tailnetSuffix(config.origin), "native");
-    node.start({ state: () => {}, authURL: () => {}, error: () => {} });
+    // Native readiness can win after construction but before this await
+    // resumes. Do not start/enroll the abandoned node or publish an unstarted
+    // identity as standby. A browser node already started below is retained.
     stopNetworkObservation();
     return;
   }
+  browserNode = node;
   try {
     if (!guest) localStorage.setItem(USED, "1");
   } catch {}

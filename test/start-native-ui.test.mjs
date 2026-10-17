@@ -25,6 +25,11 @@ async function page({ native = true, peers = [PEER], device = DEVICE, path = "/"
         if (controls.wait) await controls.wait;
         if (controls.native === false) throw TypeError("Native private connection unavailable");
         if (typeof controls.native === "number") return Response.json({}, { status: controls.native });
+        if (controls.deviceBody) {
+          const response = Response.json(controls.device);
+          response.json = () => { controls.readingDeviceBody = true; return controls.deviceBody; };
+          return response;
+        }
         return controls.device;
       },
       "/faceid/options": () => ({ id: "challenge", options: {} }),
@@ -50,9 +55,9 @@ async function page({ native = true, peers = [PEER], device = DEVICE, path = "/"
   const oldNode = Object.getOwnPropertyDescriptor(globalThis, "reachTailnet");
   globalThis.Go = class { importObject = {}; run() { return new Promise(() => {}); } };
   WebAssembly.instantiateStreaming = async () => { controls.instantiating = true; if (wasmWait) await wasmWait; return { instance: {} }; };
-  const node = { calls: [], status: () => ({ self: { state: "Running" }, peers: [{ dnsName: "mac.t.ts.net.", online: true }] }), wake() {},
-    start(cb) { this.cb = cb; }, login() { this.calls.push("login"); }, logout() { this.calls.push("logout"); } };
-  globalThis.reachTailnet = () => { controls.registrations++; return node; };
+  const node = { calls: [], status: () => ({ self: { state: controls.nodeState || "Running" }, peers: [{ dnsName: "mac.t.ts.net.", online: true }] }), wake() {},
+    start(cb) { controls.starts = (controls.starts || 0) + 1; this.cb = cb; }, login() { this.calls.push("login"); }, logout() { this.calls.push("logout"); } };
+  globalThis.reachTailnet = options => { controls.registrations++; controls.constructorOptions = options; controls.constructed?.(); return node; };
   await dom.load("/src/start.ts");
   return { dom, calls, boots, controls, node, faceAnswer,
     text: () => dom.document.body.textContent,
@@ -225,6 +230,39 @@ test("native recovery during WASM loading cancels an unstarted browser identity"
     assert.equal(f.boots.length, 1);
     assert.equal(f.dom.document.getElementById("start"), null);
   } finally { wasm.resolve(); await f.close(); }
+});
+
+for (const face of [false, true]) test(`a native win between ${face ? "Face ID" : "fresh browser"} construction and startup continuation cannot start the abandoned node`, async () => {
+  const wasm = pending(), deviceBody = pending();
+  const f = await page({ native: false, config: { ...CONFIG, faceId: face }, face, wasmWait: wasm.promise });
+  try {
+    if (face) {
+      await f.dom.waitFor(() => f.dom.document.querySelector(".start-action")?.textContent === "Continue with Face ID", 1000);
+      f.dom.document.querySelector(".start-action").click();
+      f.faceAnswer.resolve({ id: "credential" });
+    }
+    await f.dom.waitFor(() => f.controls.instantiating, 1000);
+    f.controls.nodeState = "NoState";
+    f.controls.deviceBody = deviceBody.promise;
+    f.controls.native = true;
+    f.wake("online");
+    await f.dom.waitFor(() => f.controls.readingDeviceBody, 1000);
+    // Resolve authenticated native readiness synchronously in reachTailnet.
+    // That check claims the workspace before browserMode resumes from its
+    // await, after the new node object exists but before node.start runs.
+    f.controls.constructed = () => deviceBody.resolve(DEVICE);
+    wasm.resolve();
+    await f.dom.waitFor(() => f.boots.length, 1000);
+    await settle(50);
+    assert.equal(f.controls.registrations, 1, "the constructor-to-continuation gap was reached");
+    assert.equal(!!f.controls.constructorOptions.authKey, face, "the Face ID case carries its new enrollment key");
+    assert.equal(f.boots[0].way, "native");
+    assert.equal(f.boots[0].selected.token, "NATIVE");
+    assert.equal(f.controls.starts || 0, 0, "native handoff cannot start/enroll an abandoned fresh node");
+    const transport = await f.dom.load("/src/tailnet-transport.ts");
+    assert.equal(transport.tailnetNode(), undefined, "an unstarted NoState node cannot block later saved private recovery");
+    assert.equal(f.boots.length, 1);
+  } finally { wasm.resolve(); deviceBody.resolve(DEVICE); f.faceAnswer.resolve({}); await f.close(); }
 });
 
 test("native recovery cancels a stalled browser loader without leaving it cached", async () => {
