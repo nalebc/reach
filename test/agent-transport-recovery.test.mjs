@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { main, savedTailnet, socketOf } from "../scripts/agent-remote.mjs";
-import { agentKey, funnelGateway, httpsSend } from "../scripts/agent-funnel.mjs";
+import { agentKey, funnelGateway, httpsSend, tailnetLookup } from "../scripts/agent-funnel.mjs";
 import { testCertificate } from "./helpers/headless-chrome.mjs";
 
 const PUBLIC = "https://computer.fixture.ts.net";
@@ -122,9 +122,10 @@ function fixture(t, { address = "100.64.0.20", saved = true, via = "funnel" } = 
         return { response: state.lost && command ? Promise.reject(Error("reply lost after dispatch")) : Promise.resolve(head(result, state.denied || 200)), abort() {} };
       } };
   };
-  t.mock.method(dns, "lookup", (_host, _options, callback) => {
+  t.mock.method(dns, "lookup", (_host, options, callback) => {
     const selected = state.native ? address : "203.0.113.7";
-    callback(null, selected, net.isIP(selected));
+    if (options.all) callback(null, [{ address: selected, family: net.isIP(selected) }]);
+    else callback(null, selected, net.isIP(selected));
   });
   t.mock.method(globalThis, "fetch", () => assert.fail("recovery cannot download bootstrap files or start a login"));
   t.mock.method(https, "request", (url, options, callback) => {
@@ -544,5 +545,107 @@ test("a negotiated client cipher without secureConnect is ambiguous and never pe
     publicDispatches++; return { status: 200, headers: {}, bytes: Buffer.from('{"ok":true}') };
   } });
   await assert.rejects(gateway.request("fixture-token", "POST", "/api/jobs", { command: "disposable no-op" }), error => error.unreachable === false);
+  assert.equal(publicDispatches, 0);
+});
+
+const lookup = (options) => new Promise(resolve => tailnetLookup("computer.fixture.ts.net", options, (error, ...answers) => resolve({ error, answers })));
+for (const candidates of [
+  [{ address: "100.64.0.20", family: 4 }, { address: "100.64.0.21", family: 4 }],
+  [{ address: "fd7a:115c:a1e0::20", family: 6 }, { address: "fd7a:115c:a1e0::21", family: 6 }],
+]) {
+  test(`private DNS preserves every IPv${candidates[0].family} answer and the single-address callback contract`, async t => {
+    const options = { all: true, verbatim: true }, calls = [];
+    t.mock.method(dns, "lookup", (_hostname, requested, callback) => {
+      calls.push(requested);
+      if (requested.all) callback(null, candidates);
+      else callback(null, candidates[0].address, candidates[0].family);
+    });
+    assert.deepEqual(await lookup(options), { error: null, answers: [candidates] });
+    assert.deepEqual(await lookup({ all: false }), { error: null, answers: [candidates[0].address, candidates[0].family] });
+    assert.deepEqual(await lookup(undefined), { error: null, answers: [candidates[0].address, candidates[0].family] });
+    assert.ok(calls.every(call => call.all === true), "select private candidates from the complete DNS answer");
+    assert.equal(calls[0].verbatim, true);
+    assert.deepEqual(options, { all: true, verbatim: true }, "the caller's options stay unchanged");
+  });
+}
+
+test("private DNS filters public and loopback answers before returning eligible private addresses", async t => {
+  const candidates = [
+    { address: "203.0.113.7", family: 4 }, { address: "fd7a:115c:a1e0::20", family: 6 },
+    { address: "::1", family: 6 }, { address: "100.64.0.20", family: 4 },
+    { address: "2001:db8::7", family: 6 }, { address: "127.0.0.1", family: 4 },
+  ];
+  t.mock.method(dns, "lookup", (_hostname, requested, callback) => requested.all
+    ? callback(null, candidates) : callback(null, candidates[0].address, candidates[0].family));
+  assert.deepEqual(await lookup({ all: true }), { error: null, answers: [[candidates[1], candidates[3]]] });
+  assert.deepEqual(await lookup({}), { error: null, answers: [candidates[1].address, candidates[1].family] });
+});
+
+test("private DNS without a private candidate fails closed in both callback forms", async t => {
+  let candidates;
+  t.mock.method(dns, "lookup", (_hostname, requested, callback) => requested.all
+    ? callback(null, candidates) : callback(null, candidates[0]?.address, candidates[0]?.family));
+  for (candidates of [[], [{ address: "203.0.113.7", family: 4 }, { address: "2001:db8::7", family: 6 }]])
+    for (const options of [{ all: true }, {}]) {
+      const result = await lookup(options);
+      assert.equal(result.error?.code, "ENOTTAILNET");
+      assert.deepEqual(result.answers, []);
+    }
+});
+
+test("private DNS preserves resolver errors without returning any address", async t => {
+  const error = Object.assign(Error("fixture DNS unavailable"), { code: "EAI_AGAIN" });
+  t.mock.method(dns, "lookup", (_hostname, _options, callback) => callback(error));
+  for (const options of [{ all: true }, {}]) assert.deepEqual(await lookup(options), { error, answers: [] });
+});
+
+test("native private DNS tries the available IPv4 route before public when the first IPv6 route fails", { timeout: 10000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-private-dns-"));
+  const hostname = new URL(PUBLIC).hostname, certificate = await testCertificate(root, hostname);
+  let privateDispatches = 0, publicDispatches = 0;
+  const server = https.createServer(certificate, (req, res) => {
+    req.resume(); req.on("end", () => { privateDispatches++; res.end('{"private":true}'); });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  const endpoint = `${PUBLIC}:${server.address().port}`;
+  const candidates = [{ address: "fd7a:115c:a1e0::20", family: 6 }, { address: "203.0.113.7", family: 4 }, { address: "100.64.0.20", family: 4 }];
+  const dnsCalls = [], nodeCalls = [], nodeAnswers = [];
+  t.mock.method(dns, "lookup", (host, options, callback) => {
+    assert.equal(host, hostname); dnsCalls.push({ ...options });
+    queueMicrotask(() => options.all ? callback(null, candidates) : callback(null, candidates[0].address, candidates[0].family));
+  });
+  const originalRequest = https.request;
+  let socket;
+  t.mock.method(https, "request", (url, options, callback) => {
+    const request = originalRequest(url, { ...options, ca: certificate.cert, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 10,
+      lookup: (host, requested, answer) => {
+        nodeCalls.push({ ...requested });
+        options.lookup(host, requested, (error, found, family) => {
+          if (error) return answer(error);
+          nodeAnswers.push(...found);
+          // Map only already-filtered private IPs into disposable loopback
+          // sockets. Actual Node address selection and TLS stay intact;
+          // the fixture cannot send HTTP to an off-tailnet DNS answer.
+          const mapped = new Map([[candidates[0].address, "::1"], [candidates[2].address, "127.0.0.1"]]);
+          if (found.some(item => !mapped.has(item.address))) return answer(Error("An off-tailnet address reached Node's private connector"));
+          answer(null, found.map(item => ({ ...item, address: mapped.get(item.address) })), family);
+        });
+      },
+    }, callback);
+    request.on("socket", value => { socket = value; });
+    return request;
+  });
+  const gateway = funnelGateway(PUBLIC, agentKey(root), { endpoints: [endpoint, PUBLIC], send: async (target, ...args) => {
+    if (target === endpoint) return httpsSend(target, ...args);
+    publicDispatches++; return { status: 200, headers: {}, bytes: Buffer.from('{"private":false}') };
+  } });
+  const response = await gateway.request("disposable-token", "GET", "/api/device");
+  assert.equal(response.endpoint, endpoint, "a reachable native private alternative precedes public fallback");
+  assert.equal(nodeCalls[0].all, true, "real Node requested every address for family selection");
+  assert.equal(dnsCalls[0].all, true, "the resolver preserves every candidate");
+  assert.deepEqual(nodeAnswers, [candidates[0], candidates[2]], "no public DNS address is passed to Node's connector");
+  assert.deepEqual(socket.autoSelectFamilyAttemptedAddresses, [`::1:${server.address().port}`, `127.0.0.1:${server.address().port}`], "the actual client tried IPv6 then the usable IPv4 address");
+  assert.equal(privateDispatches, 1);
   assert.equal(publicDispatches, 0);
 });

@@ -50,12 +50,15 @@ export function tailnetAddress(address) {
 // on when no connection is made within a few seconds (connections audit,
 // Oct 10).
 export function tailnetLookup(hostname, options, callback) {
-  dns.lookup(hostname, { ...options, all: false }, (error, address, family) => {
+  dns.lookup(hostname, { ...options, all: true }, (error, answers) => {
     if (error) return callback(error);
-    if (!tailnetAddress(address))
+    const privateAnswers = answers.filter(({ address }) => tailnetAddress(address));
+    if (!privateAnswers.length)
       return callback(Object.assign(Error(`${hostname} isn't on your tailnet from here.`), { code: "ENOTTAILNET" }));
-    // Node's connect asks for every address (all: true) and refuses a single one.
-    if (options?.all) return callback(null, [{ address, family }]);
+    // Keep every eligible answer for Node's family selection. A failed
+    // first IPv6 address must not discard a working private IPv4 route.
+    if (options?.all) return callback(null, privateAnswers);
+    const { address, family } = privateAnswers[0];
     callback(null, address, family);
   });
 }
