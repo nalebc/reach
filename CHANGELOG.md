@@ -10,6 +10,8 @@ release notes, so date the heading before tagging.
 
 ### Added
 
+- Invited agents can start, inspect and cancel owned coding tasks in shared
+  projects, with durable request IDs, bounded results and owner-only approvals.
 - Full control invitations include service tools for the agent's session. The
   owner can still revoke a service; narrower invitations retain their approval
   workflow. The agent's guide and phone interface describe the same access.
