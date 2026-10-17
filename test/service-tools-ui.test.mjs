@@ -14,6 +14,8 @@ const peer = {
   url: "https://reach.test",
   token: "agent",
 };
+// These DOM fixtures model a Mac's Chrome/Safari catalog on every CI host.
+// Chrome/Edge service contracts run separately in service-connectors.test.mjs.
 const button = (root, text) =>
   [...root.querySelectorAll("button")].find(
     (node) => node.textContent.trim() === text,
@@ -210,7 +212,7 @@ test("live service UI selects the browser, displays account results and tracks a
               : { tracking: "ORDER-TEST · In transit" },
         };
       },
-    }),
+    }, { platform: "darwin" }),
   );
   f.client.policy.preset = "full";
   f.client.scopes.push("browser:screen", "browser:control", "browser:open");
@@ -255,7 +257,7 @@ test("live service UI selects the browser, displays account results and tracks a
 test("browser service cards explain Agent Access restrictions and cannot request a grant from Read only", async (t) => {
   const f = setup(
     t,
-    createServiceConnectors({ run: () => assert.fail("must not run") }),
+    createServiceConnectors({ run: () => assert.fail("must not run") }, { platform: "darwin" }),
   );
   const view = await render(ServiceTools, { peer });
   await dom.waitFor(() => button(view.container, "Find orders"));
@@ -316,7 +318,7 @@ test("Full control Gmail runs from the phone UI without a service approval promp
           },
         };
       },
-    }),
+    }, { platform: "darwin" }),
   );
   f.client.policy = {
     invite: true,

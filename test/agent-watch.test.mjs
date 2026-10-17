@@ -170,25 +170,31 @@ test("the Codex app saving its choices (the permission mode it's in) is news", (
   watch.close();
 });
 
-test("Gemini JSON and JSONL writes and project changes wake histories in one burst", async () => {
-  const callbacks = new Map(), news = [];
+for (const windowsPaths of [false, true]) {
+test(`Gemini JSON and JSONL writes and project changes wake histories in one burst${windowsPaths ? " (Windows path model)" : ""}`, async t => {
+  // Exercise Windows separator handling on every host, through the same
+  // production watch/filter/debounce path. No native provider files run.
+  if (windowsPaths) t.mock.method(path, "join", path.win32.join);
+  const callbacks = new Map(), news = [], geminiHome = "/g";
+  const transcripts = path.join(geminiHome, "tmp");
   const watcher = createAgentWatch({
-    geminiHome: "/g", debounceMs: 20,
+    geminiHome, debounceMs: 20,
     watch: (dir, options, listener) => (callbacks.set(dir, listener), { close() {} }),
   });
+  t.after(() => watcher.close());
   watcher.onChange(n => news.push(n));
-  callbacks.get("/g/tmp")("change", "app/chats/session-2026-10-08T00-00-11111111.jsonl");
+  callbacks.get(transcripts)("change", "app/chats/session-2026-10-08T00-00-11111111.jsonl");
   assert.deepEqual(news, [{ agent: "gemini", kind: "history" }]);
-  callbacks.get("/g/tmp")("rename", "app/chats/session-2026-10-08T00-00-22222222.json");
-  callbacks.get("/g/tmp")("change", "app/logs.json");
-  callbacks.get("/g")("change", "oauth_creds.json");
+  callbacks.get(transcripts)("rename", "app/chats/session-2026-10-08T00-00-22222222.json");
+  callbacks.get(transcripts)("change", "app/logs.json");
+  callbacks.get(geminiHome)("change", "oauth_creds.json");
   assert.equal(news.length, 1);
   await new Promise(r => setTimeout(r, 35));
   assert.equal(news.length, 2);
-  callbacks.get("/g")("change", "projects.json");
+  callbacks.get(geminiHome)("change", "projects.json");
   assert.deepEqual(news.at(-1), { agent: "gemini", kind: "projects" });
-  watcher.close();
 });
+}
 
 test("a folder that appears after Reach starts (an agent installed later) is watched once it's there", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));

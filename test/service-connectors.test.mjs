@@ -23,11 +23,22 @@ import {
   apps,
 } from "./helpers/preset-fixture.mjs";
 
-function setup(t) {
+// The browser and desktop adapters are synthetic on every operating system.
+// Both platform catalogs still pass through production service/tool policy,
+// schemas, interpreter, handles, consent and cancellation.
+function fixture(t, platform) {
   const dataDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "reach-service-browser-"),
   );
   const driver = toolBrowserFixture();
+  const catalog = platform === "win32" ? [
+    { id: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", name: "Google Chrome", bundleId: "exe:chrome.exe", running: true },
+    { id: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", name: "Microsoft Edge", bundleId: "exe:msedge.exe", running: true },
+  ] : toolApps;
+  if (platform === "win32") {
+    driver.browsers.delete("Safari");
+    driver.browsers.set("Edge", []);
+  }
   const client = {
     id: "agent",
     name: "Test agent",
@@ -39,7 +50,7 @@ function setup(t) {
       browser: true,
       preset: "apps",
       roots: [],
-      apps: toolApps,
+      apps: catalog,
     },
     scopes: [
       "browser:read",
@@ -54,12 +65,13 @@ function setup(t) {
     { dataDir },
     {
       driver,
+      platform,
       waitMs: 100,
       runMs: 5000,
       desktop: {
         catalog: async (auth) => {
           auth();
-          return toolApps;
+          return catalog;
         },
         withBrowser: async (_client, _app, auth, work) =>
           work(
@@ -71,7 +83,7 @@ function setup(t) {
       },
     },
   );
-  const connectors = createServiceConnectors(tools);
+  const connectors = createServiceConnectors(tools, { platform });
   const services = createAgentServices({
     connectors,
     verifyClient: (id) => (id === client.id ? client : null),
@@ -99,12 +111,18 @@ function setup(t) {
     services,
     tools,
     driver,
+    catalog,
     approve,
     run,
   };
 }
 
-test("production registry contains real browser adapters only, with no example queries or orders", (t) => {
+for (const [platform, browser, otherBrowser] of [
+  ["darwin", "Chrome", "Safari"], ["darwin", "Safari", "Chrome"],
+  ["win32", "Chrome", "Edge"], ["win32", "Edge", "Chrome"],
+]) {
+const setup = t => fixture(t, platform);
+test(`${platform}/${browser}: production registry contains real browser adapters only, with no example queries or orders`, (t) => {
   const f = setup(t),
     catalog = f.services.catalog(f.authorize);
   assert.deepEqual(
@@ -116,6 +134,8 @@ test("production registry contains real browser adapters only, with no example q
       (c) => c.transport === "browser" && !c.unavailable,
     ),
   );
+  for (const connector of catalog.connectors) for (const action of connector.actions)
+    assert.deepEqual(action.inputSchema.properties.browser.enum, platform === "win32" ? ["Chrome", "Edge"] : ["Chrome", "Safari"]);
   assert.doesNotMatch(JSON.stringify(catalog), /sample|fictional|DEMO-/i);
   assert.ok(
     catalog.connectors.every((c) =>
@@ -125,13 +145,13 @@ test("production registry contains real browser adapters only, with no example q
   assert.equal(agentRequestTimeout("/api/browser/services/run", "POST"), 70000);
 });
 
-test("Gmail service runs the browser interpreter with the chosen account; only verified subject/sender results are returned", async (t) => {
+test(`${platform}/${browser}: Gmail service runs the browser interpreter with the chosen account; only verified subject/sender results are returned`, async (t) => {
   const f = setup(t);
   f.approve("gmail");
-  const values = { browser: "Safari", account: "2", query: "invoice" },
+  const values = { browser, account: "2", query: "invoice" },
     id = crypto.randomUUID();
   const result = await f.run("gmail", "find", values, id);
-  assert.equal(result.data.browser, "Safari");
+  assert.equal(result.data.browser, browser);
   assert.equal(result.data.coverage, "visible_page");
   assert.equal(result.data.items[0].label, "Invoice October");
   assert.equal(result.data.items[0].detail, "sender@example.test");
@@ -150,7 +170,7 @@ test("Gmail service runs the browser interpreter with the chosen account; only v
   );
 });
 
-test("Full control runs the Gmail adapter directly using its invitation grant", async (t) => {
+test(`${platform}/${browser}: Full control runs the Gmail adapter directly using its invitation grant`, async (t) => {
   const f = setup(t);
   f.client.policy = {
     invite: true,
@@ -161,7 +181,7 @@ test("Full control runs the Gmail adapter directly using its invitation grant", 
   };
   f.client.scopes = presetScopes(f.client.policy);
   const result = await f.run("gmail", "find", {
-    browser: "Chrome",
+    browser,
     account: "0",
     query: "invoice",
   });
@@ -187,21 +207,21 @@ test("Full control runs the Gmail adapter directly using its invitation grant", 
   );
 });
 
-test("Walmart selection tracks an actual interpreter handle and never accepts a handle from another browser", async (t) => {
+test(`${platform}/${browser}: Walmart selection tracks an actual interpreter handle and never accepts a handle from another browser`, async (t) => {
   const f = setup(t);
   f.approve("walmart");
   const found = await f.run("walmart", "find", {
-    browser: "Chrome",
+    browser,
     query: "Blue chair",
   });
   const order = found.data.items[0].handle;
   await assert.rejects(
-    f.run("walmart", "track", { browser: "Safari", order }),
+    f.run("walmart", "track", { browser: otherBrowser, order }),
     /browser|expired/i,
   );
   assert.equal(f.driver.counters.clicks, 0);
   const tracking = await f.run("walmart", "track", {
-    browser: "Chrome",
+    browser,
     order,
   });
   assert.match(tracking.data.summary, /ORDER-123.*Delivered October 7/);
@@ -209,7 +229,7 @@ test("Walmart selection tracks an actual interpreter handle and never accepts a 
   assert.deepEqual(Object.keys(tracking.data).sort(), ["browser", "summary"]);
 });
 
-test("Files/Read only/hidden browser permissions cannot be bypassed by a service grant", async (t) => {
+test(`${platform}/${browser}: Files/Read only/hidden browser permissions cannot be bypassed by a service grant`, async (t) => {
   const f = setup(t);
   for (const preset of ["files", "readonly"]) {
     f.client.policy.preset = preset;
@@ -222,12 +242,12 @@ test("Files/Read only/hidden browser permissions cannot be bypassed by a service
     );
     assert.throws(() => f.approve("walmart"), /Agent Access/);
   }
-  f.client.policy = { browser: true, preset: "full", hidden: toolApps };
+  f.client.policy = { browser: true, preset: "full", hidden: f.catalog };
   assert.throws(() => f.approve("gmail"), /Agent Access/);
   assert.equal(f.driver.calls.length, 0);
 });
 
-test("revoking service consent aborts the in-flight native browser call and releases no data", async (t) => {
+test(`${platform}/${browser}: revoking service consent aborts the in-flight native browser call and releases no data`, async (t) => {
   const f = setup(t),
     grant = f.approve("gmail");
   let began;
@@ -243,7 +263,7 @@ test("revoking service consent aborts the in-flight native browser call and rele
     );
   };
   const running = f.run("gmail", "find", {
-    browser: "Chrome",
+    browser,
     account: "0",
     query: "invoice",
   });
@@ -257,7 +277,7 @@ test("revoking service consent aborts the in-flight native browser call and rele
   assert.equal(f.driver.counters.clicks, 0);
 });
 
-test("login/setup failures yield guidance, never invented results or provider error details", async (t) => {
+test(`${platform}/${browser}: login/setup failures yield guidance, never invented results or provider error details`, async (t) => {
   const f = setup(t);
   f.approve("gmail");
   f.driver.transport = async () => {
@@ -267,17 +287,21 @@ test("login/setup failures yield guidance, never invented results or provider er
   };
   await assert.rejects(
     f.run("gmail", "find", {
-      browser: "Chrome",
+      browser,
       account: "0",
       query: "invoice",
     }),
     (error) => {
-      assert.match(error.message, /Allow JavaScript from Apple Events/);
+      if (platform === "win32") {
+        assert.match(error.message, /extension/i);
+        assert.doesNotMatch(error.message, /Apple Events|Mac/);
+      } else assert.match(error.message, /Allow JavaScript from Apple Events/);
       assert.doesNotMatch(error.message, /secret|cookie/);
       return true;
     },
   );
 });
+}
 
 test(
   "production HTTP wiring: Apps agent requests Gmail, phone approves, browser runs, revocation stops replay",
