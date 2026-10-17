@@ -1350,8 +1350,8 @@ export function createAgentSessions({
     const authorize = body.authorize || (() => {});
     authorize();
     if (host(agent) === codexLive) {
-      // Preserve the ordinary chat default; coding tasks supply their own
-      // fixed owner-approval mode before reaching this shared path.
+      // Full control tasks share the ordinary chat default. Legacy scoped
+      // Codex tasks supply their fixed user-review mode on this path.
       if (!body.modeName && !body.approvalPolicy && !body.sandbox && !body.approvalsReviewer && !body.config) {
         const catalog = await codex.models?.();
         authorize();
@@ -1602,12 +1602,12 @@ export function createAgentSessions({
       return claudeHost.send(id, message);
     },
     start: startSession,
-    startCodingTask(agent, { cwd, text, name, onCreated, onStarted, authorize = () => {} }) {
-      if (!["codex", "claude"].includes(agent) || typeof onCreated !== "function" || typeof authorize !== "function" || (onStarted !== undefined && typeof onStarted !== "function"))
+    startCodingTask(agent, { cwd, text, name, onCreated, onStarted, authorize = () => {}, ownerDefaults = false }) {
+      if (!["codex", "claude"].includes(agent) || typeof ownerDefaults !== "boolean" || typeof onCreated !== "function" || typeof authorize !== "function" || (onStarted !== undefined && typeof onStarted !== "function"))
         throw Object.assign(new Error("Choose a coding agent and durable task callbacks."), { status: 400 });
       return startSession(agent, {
         cwd, text, name, images: [], onCreated, onStarted, authorize, codingTask: true, keepOut: true,
-        ...(agent === "codex" ? { ...codexStartMode("auto"), modeName: "auto" } : { mode: "manual" }),
+        ...(agent === "codex" && !ownerDefaults ? { ...codexStartMode("auto"), modeName: "auto" } : {}),
       });
     },
     stopCodingTask(agent, id, boundary = {}) {

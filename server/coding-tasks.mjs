@@ -102,6 +102,7 @@ export function createCodingTasks({
             !Number.isSafeInteger(r.project.root) || r.project.root < 0 || typeof r.project.path !== "string" || r.project.path.length > 4096 ||
             typeof r.title !== "string" || r.title.length > 120 || !Number.isFinite(r.deadline) || !Number.isFinite(r.createdAt) ||
             !Number.isFinite(r.updatedAt) || !Number.isSafeInteger(r.version) || (r.threadId !== undefined && !UUID.test(r.threadId)) ||
+            (r.ownerDefaults !== undefined && typeof r.ownerDefaults !== "boolean") ||
             records.has(r.id) || requests.has(requestKey)) throw Error();
         requests.add(requestKey);
         records.set(r.id, r);
@@ -172,6 +173,8 @@ export function createCodingTasks({
     if (closed || r.cancelRequested) throw fail(409, "This coding task was cancelled.");
     const client = permitted(r.clientId, r);
     if (client.codingPaused) throw fail(409, "The owner paused this agent. Resume it in Reach before starting coding work.");
+    if (r.ownerDefaults && (client.policy?.browser !== true || client.policy.preset !== "full" || client.policy.fullControlVersion !== FULL_CONTROL_VERSION))
+      throw fail(403, "The Full control grant for this coding task ended.");
     const deadline = Math.min(r.deadline, client.expiresAt, r.createdAt + (client.maxJobMs || 3600000));
     if (deadline < r.deadline) change(r, { deadline });
     if (now() >= r.deadline || !(client.expiresAt > now())) throw fail(403, "The task deadline or its access has ended.");
@@ -271,6 +274,7 @@ export function createCodingTasks({
     try {
       const client = assertRun(r);
       const started = await host().startCodingTask(r.agent, {
+        ownerDefaults: r.ownerDefaults === true,
         cwd: r.cwd, name: `${String(client.name || "Invited agent").slice(0, 80)}: ${r.title}`.slice(0, 120),
         text: `Reach delegated coding task ${r.id}.\nRequested by ${String(client.name || "an invited agent").slice(0, 80)} through Reach.\n\n${input.task}\n\nFinish with a summary of the changes and the commands you actually ran, including failures or remaining work.`,
         authorize: () => assertRun(r),
@@ -336,6 +340,7 @@ export function createCodingTasks({
       validateProject(client, cwd);
       const at = now();
       const r = { id: crypto.randomUUID(), clientId, requestId: input.requestId, inputHash, agent: input.agent,
+        ownerDefaults: client.policy?.browser === true && client.policy.preset === "full" && client.policy.fullControlVersion === FULL_CONTROL_VERSION,
         project: { root: input.root, path: input.path }, cwd, title: input.title || input.task.split("\n")[0].replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120),
         status: "starting", createdAt: at, updatedAt: at, version: 1,
         deadline: Math.min(at + input.timeoutSeconds * 1000, client.expiresAt, at + (client.maxJobMs || 3600000)) };

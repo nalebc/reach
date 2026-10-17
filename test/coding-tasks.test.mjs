@@ -105,7 +105,7 @@ test("coding tools require Full control v1; legacy Codex access grants Codex onl
 
 test("task input cannot inject permissions, attachments, config or provider commands", () => {
   const input = { requestId: "valid-request", agent: "codex", task: "Fix it" };
-  for (const field of ["threadId", "mode", "modeName", "approvalPolicy", "approvalsReviewer", "sandbox", "config", "developerInstructions", "extra", "images", "files", "owner"]) {
+  for (const field of ["threadId", "mode", "modeName", "approvalPolicy", "approvalsReviewer", "sandbox", "config", "developerInstructions", "extra", "images", "files", "owner", "ownerDefaults"]) {
     assert.throws(() => codingTaskInput({ ...input, [field]: "arbitrary" }), { status: 400 }, field);
   }
   for (const patch of [{ requestId: "short" }, { agent: "shell" }, { timeoutSeconds: 3601 }, { timeoutSeconds: 59 }, { task: " " }, { root: -1 }, { title: "two\nlines" }])
@@ -358,4 +358,18 @@ test("a shorter live owner policy also shortens an already-running task deadline
   assert.equal(result.status, "cancelled");
   assert.equal(result.deadline, result.createdAt + 1000);
   assert.equal(h.stopped.length, 1);
+});
+
+test("only a live Full v1 grant selects normal owner defaults, with no caller override", async t => {
+  const h = fixture(t);
+  const full = await h.start("full-owner-defaults", "codex");
+  assert.equal(full.run.body.ownerDefaults, true);
+  const client = h.clients.get("first");
+  delete client.policy;
+  client.scopes = ["codex"];
+  await h.manager.sweep();
+  assert.equal(h.stopped.length, 1, "losing Full control stops work started under its defaults");
+  const legacy = await h.start("legacy-user-reviewer", "codex");
+  assert.equal(legacy.run.body.ownerDefaults, false);
+  assert.equal((await h.manager.get("first", full.task.id)).status, "cancelled");
 });

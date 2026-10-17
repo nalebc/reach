@@ -2915,17 +2915,34 @@ export async function createReach(overrides = {}) {
       throw fail(403, "Reach, system credentials, and browser profiles are not shared with agents.");
     return target;
   };
-  app.post("/api/coding-tasks", (req, res) => {
+  // Bound authenticated task work by stable agent identity. Polling and
+  // creation cannot consume the separate budget needed to cancel work.
+  const codingTaskCreateStore = new MemoryStore();
+  const codingTaskReadStore = new MemoryStore();
+  const codingTaskCancelStore = new MemoryStore();
+  const codingTaskLimitOptions = {
+    windowMs: 60_000,
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this agent first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    message: { error: "Too many coding task requests. Try again in one minute." },
+  };
+  const codingTaskCreateLimit = rateLimit({ ...codingTaskLimitOptions, limit: 20, store: codingTaskCreateStore, identifier: "coding-task-create" });
+  const codingTaskReadLimit = rateLimit({ ...codingTaskLimitOptions, limit: 120, store: codingTaskReadStore, identifier: "coding-task-read" });
+  const codingTaskCancelLimit = rateLimit({ ...codingTaskLimitOptions, limit: 60, store: codingTaskCancelStore, identifier: "coding-task-cancel" });
+  app.post("/api/coding-tasks", codingTaskCreateLimit, (req, res) => {
     if (Object.keys(req.query).length) throw fail(400, "Task creation takes no query parameters.");
     req.reauthorize();
     res.status(202).json(codingTasks.start(req.client.id, req.body));
   });
-  app.get("/api/coding-tasks", (req, res) => {
+  app.get("/api/coding-tasks", codingTaskReadLimit, (req, res) => {
     if (Object.keys(req.query).length) throw fail(400, "Task listing takes no query parameters.");
     req.reauthorize();
     res.set("Cache-Control", "no-store").json(codingTasks.list(req.client.id));
   });
-  app.get("/api/coding-tasks/:id", async (req, res) => {
+  app.get("/api/coding-tasks/:id", codingTaskReadLimit, async (req, res) => {
     if (Object.entries(req.query).some(([key, value]) => !["after", "waitSeconds"].includes(key) || typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)))
       throw fail(400, "Use only whole-number after and waitSeconds query parameters.");
     const controller = new AbortController();
@@ -2940,7 +2957,7 @@ export async function createReach(overrides = {}) {
       if (!controller.signal.aborted) res.set("Cache-Control", "no-store").json(result);
     } finally { res.removeListener("close", disconnected); }
   });
-  app.post("/api/coding-tasks/:id/cancel", async (req, res) => {
+  app.post("/api/coding-tasks/:id/cancel", codingTaskCancelLimit, async (req, res) => {
     if (Object.keys(req.query).length) throw fail(400, "Task cancellation takes no query parameters.");
     if (req.body && (!isPlainRecord(req.body) || Object.keys(req.body).length)) throw fail(400, "Cancel takes only the task ID.");
     const result = await codingTasks.cancel(req.client.id, req.params.id);
@@ -6159,6 +6176,9 @@ export async function createReach(overrides = {}) {
     async close() {
       warming.abort();
       maintenanceStore.shutdown();
+      codingTaskCreateStore.shutdown();
+      codingTaskReadStore.shutdown();
+      codingTaskCancelStore.shutdown();
       // Asked to stop: the next start isn't after an unexpected end, even if
       // what follows takes too long and the launcher exits anyway.
       if (runMarker) markStopped(config.dataDir);

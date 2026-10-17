@@ -14,8 +14,8 @@ async function until(check) {
   assert.fail("controlled provider operation did not settle");
 }
 function provider() {
-  const runs = new Map(), stopped = [];
-  return { runs, stopped, sessions: {
+  const runs = new Map(), stopped = [], reads = [];
+  return { runs, stopped, reads, sessions: {
     list: async () => ({ sessions: [], errors: {} }), health: async () => [],
     async startCodingTask(agent, body) {
       const threadId = crypto.randomUUID(), turnId = crypto.randomUUID();
@@ -24,7 +24,7 @@ function provider() {
       body.authorize(); body.onCreated({ threadId }); body.onStarted({ threadId, turnId });
       return { threadId, turnId };
     },
-    async read(agent, id) { const run = runs.get(id); return { session: { status: run.status }, items: run.items, before: null }; },
+    async read(agent, id) { reads.push({ agent, id }); const run = runs.get(id); return { session: { status: run.status }, items: run.items, before: null }; },
     view(agent, id) { return { status: runs.get(id)?.status }; },
     async stopCodingTask(agent, id, boundary) { stopped.push({ agent, id, boundary }); return { stopped: true }; },
   } };
@@ -43,7 +43,7 @@ async function fixture(t) {
   const owner = reach.auth.issue("Owner", ALL_SCOPES);
   const call = async (route, token = first.token, method = "GET", body) => {
     const response = await fetch(url + route, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    return { status: response.status, body: await response.json() };
+    return { status: response.status, body: await response.json(), headers: response.headers };
   };
   return { dir, project, reach, first, second, owner, call, ...p,
     input: (requestId = "api-request-one") => ({ requestId, agent: "codex", root: 0, path: "", task: "Fix only the disposable fixture" }) };
@@ -95,6 +95,70 @@ test("coding API rejects permission injection, Claude escalation and projects ou
     assert.equal((await h.call("/api/coding-tasks", h.first.token, "POST", { ...h.input(), path: "outside" })).status, 403);
     assert.equal(h.runs.size, 0);
   }
+});
+
+test("coding creation has an independent per-agent budget that excludes invalid callers", async t => {
+  const h = await fixture(t);
+  for (let i = 0; i < 21; i++) {
+    assert.equal((await h.call("/api/coding-tasks", "invalid", "POST", h.input())).status, 401);
+    assert.equal((await h.call("/api/coding-tasks/unknown", "invalid")).status, 401);
+  }
+  assert.equal(h.runs.size, 0);
+  assert.equal(h.reads.length, 0, "invalid authentication never reaches provider work");
+  for (let i = 0; i < 20; i++) assert.equal((await h.call("/api/coding-tasks", h.first.token, "POST", h.input())).status, 202);
+  const blocked = await h.call("/api/coding-tasks", h.first.token, "POST", h.input());
+  assert.equal(blocked.status, 429);
+  assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+  assert.match(blocked.body.error, /Try again/i);
+  assert.equal(h.runs.size, 1, "idempotent retries never launch another provider task");
+  assert.equal((await h.call("/api/coding-tasks", h.second.token, "POST", h.input())).status, 202, "agents on the same socket have independent budgets");
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  t.mock.timers.tick(60_001);
+  assert.equal((await h.call("/api/coding-tasks", h.first.token, "POST", h.input())).status, 202, "the budget recovers after its window");
+});
+
+test("coding list and get share a read budget without starving cancellation or another agent", async t => {
+  const h = await fixture(t);
+  const created = await h.call("/api/coding-tasks", h.first.token, "POST", h.input());
+  assert.equal(created.status, 202);
+  await until(() => h.runs.size === 1);
+  const route = `/api/coding-tasks/${created.body.id}`;
+  for (let i = 0; i < 120; i++) assert.equal((await h.call(i % 2 ? route : "/api/coding-tasks")).status, 200);
+  for (const target of [route, "/api/coding-tasks"]) {
+    const blocked = await h.call(target);
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+  }
+  assert.equal((await h.call(route + "/cancel", h.first.token, "POST", {})).status, 200, "polling cannot exhaust the cancellation budget");
+  assert.equal(h.stopped.length, 1);
+  assert.equal((await h.call("/api/coding-tasks", h.second.token)).status, 200);
+});
+
+test("coding cancellation has its own per-agent budget", async t => {
+  const h = await fixture(t);
+  const created = await h.call("/api/coding-tasks", h.first.token, "POST", h.input());
+  assert.equal(created.status, 202);
+  await until(() => h.runs.size === 1);
+  const route = `/api/coding-tasks/${created.body.id}/cancel`;
+  for (let i = 0; i < 60; i++) assert.equal((await h.call(route, h.first.token, "POST", {})).status, 200);
+  const blocked = await h.call(route, h.first.token, "POST", {});
+  assert.equal(blocked.status, 429);
+  assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+  assert.equal(h.stopped.length, 1, "repeated cancellation never interrupts another turn");
+  assert.equal((await h.call(route, h.second.token, "POST", {})).status, 404, "a different agent keeps its own quota and still cannot cancel this task");
+  assert.equal((await h.call("/api/coding-tasks")).status, 200, "cancellation does not consume reads");
+});
+
+test("coding creation keeps the same budget after an admitted Full control agent rotates credentials", privateIngressTest, async t => {
+  const p = provider();
+  const f = await presetFixture(t, { overrides: { agentSessions: p.sessions } });
+  const agent = await f.join({ preset: "full", folders: [{ root: 0, path: "Desktop/Project" }] });
+  const body = { requestId: "rotation-rate-limit", agent: "codex", task: "Inspect the disposable fixture", root: 0, path: "" };
+  for (let i = 0; i < 20; i++) assert.equal((await agent.as("/api/coding-tasks", { method: "POST", body })).status, 202);
+  const rotated = await agent.as("/api/device/rotate", { method: "POST", body: {} });
+  assert.equal(rotated.status, 200);
+  assert.equal((await f.call("/api/coding-tasks", { node: "nAgent", token: rotated.body.token, method: "POST", body })).status, 429);
+  assert.equal(p.runs.size, 1);
 });
 
 test("HTTP access revocation interrupts delegated work", async t => {
