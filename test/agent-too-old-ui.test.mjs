@@ -1,4 +1,4 @@
-import test, { before, after } from "node:test";
+import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle, typeInto } from "./dom/harness.mjs";
 
@@ -23,6 +23,8 @@ const said = [
 ];
 const messages = [];
 let updates = [];
+let updateGate = null, releaseUpdates = null;
+const views = new Set();
 let terminal = null;
 let overview = null;
 const sent = [];
@@ -35,7 +37,10 @@ before(async () => {
       "/api/sessions/logos": () => ({ version: "v1", logos: {} }),
       "/api/sessions/commands": () => ({ commands: [] }),
       "/api/sessions/models": () => ({ models: [], modes: [], mode: null }),
-      "/api/sessions/agent-updates": () => ({ agents: updates }),
+      "/api/sessions/agent-updates": async () => {
+        await updateGate;
+        return { agents: updates };
+      },
       "/api/sessions/agent-update/claude": async (init) => {
         const body = JSON.parse(init.body || "{}");
         sent.push(body);
@@ -71,11 +76,23 @@ before(async () => {
   Relays = await dom.load("/src/Relays.tsx");
   ({ default: AgentSessionView } = await dom.load("/src/AgentSession.tsx"));
 });
+afterEach(async () => {
+  releaseUpdates?.();
+  updateGate = releaseUpdates = null;
+  for (const view of views) await view.unmount();
+  views.clear();
+});
 after(() => dom?.close());
+const mount = async (element) => {
+  const view = await dom.render(element);
+  views.add(view);
+  return { ...view, unmount: async () => { views.delete(view); await view.unmount(); } };
+};
 const $$ = (s) => [...dom.document.querySelectorAll(s)];
 const button = (text) => $$("button").find((b) => b.textContent.trim() === text || b.getAttribute("aria-label") === text);
 const text = () => dom.document.body.textContent;
-const click = async (el) => {
+const click = async (target) => {
+  const el = typeof target === "function" ? await dom.waitFor(target) : target;
   assert.ok(el, "button exists");
   el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle();
@@ -83,7 +100,7 @@ const click = async (el) => {
 let rechecks = 0;
 const render = (health, app, sessions = chats) => {
   dom.window.localStorage.setItem("reach.chatAgent", app);
-  return dom.render(
+  return mount(
     React.createElement(EverythingChat, {
       peer,
       feed: {
@@ -104,6 +121,9 @@ test("a Claude Code too old: one line with the version, Update runs its update, 
   terminal = { id: "u1", status: "running", preview: ["Updating…"] };
   sent.length = 0;
   rechecks = 0;
+  // The version warning precedes the update plan. Hold that real API
+  // response so this race is exercised on every host, not only a busy one.
+  updateGate = new Promise(resolve => { releaseUpdates = resolve; });
   const view = await render([ok("codex"), claudeOld], "claude");
   const line = await dom.waitFor(() => dom.document.querySelector(".agent-update.too-old"));
   assert.equal(line.querySelector("span").textContent, "Update Claude Code to 2.1.259 or newer to use it here.");
@@ -112,9 +132,11 @@ test("a Claude Code too old: one line with the version, Update runs its update, 
   assert.equal(button("New chat"), undefined);
   assert.equal(button("New Claude Code chat"), undefined);
   assert.equal(/Update Reach/.test(text()), false);
-  await click(button("Update"));
+  assert.equal(button("Update"), undefined, "the update plan is still pending");
+  releaseUpdates();
+  await click(() => button("Update"));
   await dom.waitFor(() => dom.document.querySelector(".agent-update .chat-setup-command"));
-  await click(button("Update"));
+  await click(() => button("Update"));
   assert.deepEqual(sent, [{ confirm: false }, { confirm: true }]);
   await dom.waitFor(() => /Updating Claude Code…/.test(text()));
   updates = [{ agent: "claude", name: "Claude Code", state: "current", installed: "2.1.296", latest: "2.1.296" }];
@@ -158,7 +180,7 @@ test("New chat from All skips a too-old agent; picked anyway, it says why instea
   // Opened on the agent that can answer.
   const current = await dom.waitFor(() => button("Change app, Claude Code selected"));
   await click(current);
-  const codexRow = $$("[role=menuitemradio]").find((b) => b.getAttribute("aria-label") === "Codex");
+  const codexRow = await dom.waitFor(() => $$("[role=menuitemradio]").find((b) => b.getAttribute("aria-label") === "Codex"));
   assert.equal(codexRow.querySelector("small")?.textContent, "Update needed");
   await click(codexRow);
   await dom.waitFor(() => button("Change app, Codex selected"));
@@ -198,10 +220,10 @@ test("an OpenClaw too old: its line and Update (OpenClaw's own, confirmed), not 
   const line = await dom.waitFor(() => dom.document.querySelector(".agent-update.too-old"));
   assert.equal(line.querySelector("span").textContent, "Update OpenClaw to 2026.2.26 or newer to use it here.");
   assert.equal(button("Retry connection"), undefined);
-  await click(button("Update"));
+  await click(() => button("Update"));
   // OpenClaw's update, asked first.
   await dom.waitFor(() => /Update OpenClaw\?/.test(text()));
-  const confirm = $$(".claw-confirm-actions button").find((b) => b.textContent.trim() === "Update OpenClaw");
+  const confirm = await dom.waitFor(() => $$(".claw-confirm-actions button").find((b) => b.textContent.trim() === "Update OpenClaw"));
   await click(confirm);
   await dom.waitFor(() => clawPosts.length > 0);
   assert.deepEqual(clawPosts, [{ confirm: true }]);
@@ -212,7 +234,7 @@ test("an OpenClaw too old: its line and Update (OpenClaw's own, confirmed), not 
 test("a chat of a Codex too old: it reads, the box stays, a short line says why, and a refused message says the same", async () => {
   messages.length = 0;
   const health = [{ ...codexOld, signedIn: false }, ok("claude")];
-  const view = await dom.render(
+  const view = await mount(
     React.createElement(AgentSessionView, { peer, session: codexChat, siblings: [], health, logos: {}, onSelect() {}, onBack() {} }),
   );
   await dom.waitFor(() => /Built it\./.test(text()));
@@ -223,7 +245,7 @@ test("a chat of a Codex too old: it reads, the box stays, a short line says why,
   assert.ok(box, "writing stays on");
   assert.equal(box.disabled, false);
   await typeInto(box, "Keep going");
-  await click(button("Send"));
+  await click(() => button("Send"));
   await dom.waitFor(() => messages.length === 1);
   await dom.waitFor(() => dom.document.querySelector(".as-hint.bad"));
   assert.equal(dom.document.querySelector(".as-hint.bad").textContent, "Codex 0.147.0 is older than Reach works with. Update it to 0.148.0 or newer to use it here.");

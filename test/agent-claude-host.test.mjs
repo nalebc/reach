@@ -2217,7 +2217,7 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
     const fake = fakeClaude(), h = host(fake, { workingFile });
     const outbox = createOutbox({ file: path.join(dir, "outbox.json") });
     if (scenario === "queued reply") outbox.add(ID, { text: "my queued reply", via: "app", title: "Claw" });
-    let attempts = 0;
+    let attempts = 0, reads = 0;
     const received = [];
     const sessions = createAgentSessions({
       dataDir: dir, outbox, claudeHost: h,
@@ -2227,6 +2227,7 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
       starts: async () => [],
         list: async () => [],
         read: async (id) => {
+          reads++;
           if (scenario === "read unavailable") throw Error("temporarily unavailable");
           return { session: { agent: "claude", id, cwd: "/work/site", inApp: true, title: "Claw", model: "native-model", effort: "low" }, items: [] };
         },
@@ -2243,7 +2244,15 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
     t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
     sessions.warm();
     sessions.warm(); // warmup can be called twice without duplicating recovery.
-    await settle(100);
+    // Recovery removes its journal before asynchronous delivery finishes.
+    // Observe that final state instead of assuming a 100 ms timer wins.
+    const recovered = () => scenario === "read unavailable" ? reads > 0
+      : scenario === "already running" ? !fs.existsSync(workingFile)
+      : scenario === "uncertain delivery" ? outbox.list(ID)[0]?.delivery === "paused"
+      : received.length === 1 && outbox.list(ID).length === 0;
+    const deadline = Date.now() + 5000;
+    while (!recovered() && Date.now() < deadline) await settle(10);
+    assert.ok(recovered(), `restart recovery completed: ${scenario}`);
     assert.equal(fake.runs.length, 0, "native recovery must not start a Reach-owned Claude process");
     if (scenario === "read unavailable") {
       assert.equal(fs.existsSync(workingFile), true);

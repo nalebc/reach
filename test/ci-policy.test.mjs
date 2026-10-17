@@ -224,8 +224,8 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
 });
 
-test("Windows CI covers shared phone navigation, gesture accuracy, accelerated scrolling and native input sequences", () => {
-  for (const name of ["back-stack-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+test("Windows CI covers shared phone navigation, agent updates, gesture accuracy, accelerated scrolling and native input sequences", () => {
+  for (const name of ["back-stack-ui", "agent-too-old-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
