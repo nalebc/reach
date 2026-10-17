@@ -80,6 +80,8 @@ async function fixture(t, render) {
   const tools = createAgentTools(
     { dataDir },
     {
+      // The DOM driver models macOS Chrome/Safari on every test host.
+      platform: "darwin",
       driver,
       waitMs: 250,
       desktop: {
@@ -564,17 +566,26 @@ test("owner setup errors stop before account navigation; checking status preserv
       "/Users/sample/Reach/scripts/native/tool-browser.js: execution error: Error: Error: (-2700)",
     );
   };
+  // Keep the native error digits inside a legitimate Run ID to guard the
+  // privacy assertion's scope.
+  const runId = "5d0c49f3-8be0-421b-bd39-9270045718aa";
+  t.mock.method(globalThis.crypto, "randomUUID", () => runId);
   await click(f.root, "Run Open Gmail account");
   await dom.waitFor(
     () =>
       f.root.querySelector(".atl-result-heading h2")?.textContent === "Stopped",
   );
-  assert.match(
-    f.root.querySelector('[role="alert"]').textContent,
-    /browser command failed/,
+  assert.equal(runs(f).at(-1).body.requestId, runId);
+  assert.equal(runner(f.root).querySelector(".atl-raw code").textContent, runId);
+  const error = f.root.querySelector('[role="alert"]').textContent;
+  assert.match(error, /browser command failed/);
+  assert.doesNotMatch(error, /2700/);
+  assert.doesNotMatch(
+    f.root.querySelector('[aria-label="Tool results"]').textContent,
+    /2700/,
   );
   assert.doesNotMatch(
     f.root.textContent,
-    /\/Users\/|tool-browser\.js|execution error|2700/,
+    /\/Users\/|tool-browser\.js|execution error|\(-2700\)/,
   );
 });
