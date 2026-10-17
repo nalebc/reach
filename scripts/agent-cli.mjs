@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import { REACH_VERSION } from "../server/reach-version.mjs";
 import { agentErrorDetails } from "../server/agent-transport.mjs";
 import { toolsFor } from "./mcp-server.mjs";
 import path from "node:path";
@@ -45,6 +46,7 @@ Ephemeral cloud connection (does not alter the machine's existing Tailscale):
 
 Options: --data-dir (owner; default ~/.reach/quick, or .reach/quick in a checkout), --ttl (seconds), --max-seconds
 (join; default 3600), --credential (or REACH_CREDENTIAL), --allow-local (tests).
+--version (or -v) prints this CLI's package version without connecting.
 JSON results on stdout; diagnostics on stderr. Secret files must be private.
 Network grants are a reviewable fragment, not automatically applied. Review existing
 allow-all rules: Tailscale grants are additive. No automatic shell access is granted.
@@ -60,6 +62,7 @@ export function parseAgentArgs(args) {
       break;
     }
     if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--version" || arg === "-v") options.version = true;
     else if (arg === "--allow-local") options["allow-local"] = true;
     else if (arg.startsWith("--")) {
       const name = arg.slice(2);
@@ -135,6 +138,10 @@ function hostConfig(options) {
 }
 export async function main(args = process.argv.slice(2)) {
   const { options: o, words, command } = parseAgentArgs(args);
+  if (o.version) {
+    console.log(REACH_VERSION);
+    return 0;
+  }
   if (o.help || !words.length) {
     console.log(help);
     return 0;

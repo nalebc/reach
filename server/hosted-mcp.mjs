@@ -23,6 +23,7 @@
 // key would (its browserBinding): the public door knows it, and keeps the
 // token and discovery endpoints up while a hosted agent has access.
 import crypto from "node:crypto";
+import { REACH_VERSION } from "./reach-version.mjs";
 import { compactTools } from "./browser-tools.mjs";
 import path from "node:path";
 import { atomicJson, loadJson, sameHash } from "./core.mjs";
@@ -464,7 +465,7 @@ export function createHostedMcp({
             protocolVersion: PROTOCOLS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOLS.at(-1),
             // No stream back to the client here, so no change notices.
             capabilities: { tools: {} },
-            serverInfo: { name: "reach", version: "0.1.0" },
+            serverInfo: { name: "reach", version: REACH_VERSION },
             ...withGuide(serverInstructions(client.scopes, toolProfile), guideOf(client)),
           } };
         case "ping": return { result: {} };

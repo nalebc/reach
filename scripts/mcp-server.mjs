@@ -2,6 +2,7 @@
 // computer: `api(route, method, body)` does the requests (HTTPS on the
 // tailnet, or the agent's own tailnet node). Only JSON-RPC goes to `output`.
 import readline from "node:readline";
+import { REACH_VERSION } from "../server/reach-version.mjs";
 import { agentErrorDetails, idSegment } from "../server/agent-transport.mjs";
 import { browserToolsFor, browserToolRequest, compactTools } from "../server/browser-tools.mjs";
 
@@ -528,7 +529,7 @@ export function serveMcp({
         result = {
           protocolVersion: PROTOCOLS.includes(r.params?.protocolVersion) ? r.params.protocolVersion : PROTOCOLS.at(-1),
           capabilities: { tools: { listChanged: true } },
-          serverInfo: { name, version: "0.1.0" },
+          serverInfo: { name, version: REACH_VERSION },
           ...withGuide(serverInstructions(scopes, profile), liveScopes ? await guide() : ""),
         };
       else if (r.method === "ping") result = {};
