@@ -1,4 +1,5 @@
 import { browserAgentRoutes } from "./browser-agents.mjs";
+import { REACH_VERSION } from "./reach-version.mjs";
 import { createBrowserOperationCoordinator } from "./browser-operation-coordinator.mjs";
 import { createBrowserHostGuard, personOnHostMessage, personWaitingMessage } from "./browser-host-guard.mjs";
 import { createBrowserAppAccess } from "./browser-app-access.mjs";
@@ -1491,7 +1492,7 @@ export async function createReach(overrides = {}) {
     next();
   });
   app.get("/api/health", (req, res) =>
-    res.json({ product: "Reach", version: "0.1.0", instance }),
+    res.json({ product: "Reach", version: REACH_VERSION, instance }),
   );
   app.get("/api/auth/method", (req, res) =>
     res.json({
@@ -2175,6 +2176,7 @@ export async function createReach(overrides = {}) {
       ...device,
       name: config.name,
       platform: process.platform,
+      reachVersion: REACH_VERSION,
       release: os.release(),
       arch: os.arch(),
       roots: (req.client.agentRoots ? req.client.agentRoots.map((path, id) => ({ id, path })) : refreshDriveRoots(config.roots, { platform: hostPlatform })).map(({ id, path: p }) => ({
