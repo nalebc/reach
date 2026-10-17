@@ -20,6 +20,8 @@ These presets require macOS. The protected file helper is macOS-only, so Linux a
 
 **Full control needs no folder selection.** Its roots include the filesystem root; existing folder indices remain available for compatibility. Stored hidden-app choices are ignored. Read only may share the owner's exact Home; Files and earlier narrow invitations require project or data folders. These narrower presets still refuse system roots and protected private names and paths. Read only defaults to configured roots that pass validation.
 
+Full control includes service tools such as Gmail and Walmart without a separate service approval. Agents carry out the owner's requested actions without repeated confirmation, following any limits the owner gives. Narrower invitations retain their service approval workflow. Explicit service revocation, pause and session expiry still stop service tools.
+
 The preset is one field on the invitation (`policy.preset`). Its scopes, its route allowlist, its tools and the rules the native checker applies are derived from it on every request (`server/agent-presets.mjs`). A stored credential can't grow. Full control and Apps bind the phone that created the invitation (the host guard, as app sessions did): while one exists, owner APIs answer only that phone. Separately invited people can use their granted guest APIs; browser/WASM nodes require explicit owner approval before coexisting with an agent. The native host node is refused. Lowering a preset later is always allowed; raising Files or Read only into Full control or Apps needs a new invitation from the phone.
 
 ## Restrictions for Apps and Read only

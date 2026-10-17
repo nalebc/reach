@@ -149,8 +149,8 @@ export function presetRouteAllowed(client, method, route) {
   // request itself then meets this allowlist like any other.
   if (read && ["/browser/mcp/tools", "/browser/mcp/discover"].includes(route)) return has("browser:read");
   if (method === "POST" && ["/browser/mcp/plan", "/browser/mcp/call"].includes(route)) return has("browser:read");
-  // Discovery/requesting is available to every admitted preset. Execution also
-  // requires separate, owner-approved service consent in agent-services.mjs.
+  // Full control includes service access. Narrower presets request separate
+  // service consent in agent-services.mjs.
   if (read && route === "/browser/services") return has("browser:read");
   if (method === "POST" && ["/browser/services/request", "/browser/services/run"].includes(route)) return has("browser:read");
   // Asking the owner for a Mac permission it lacks (permission-requests.mjs).

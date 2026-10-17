@@ -28,6 +28,7 @@ export type ServiceAccess = {
   permissions: string[]; reason: string;
   status: "pending" | "approved" | "denied" | "revoked" | "expired";
   createdAt: number; expiresAt: number; accessExpiresAt: number;
+  approval?: "owner" | "invitation";
 };
 export type ServiceConnector = {
   id: string; name: string; description: string; transport?: "browser"; account: string;

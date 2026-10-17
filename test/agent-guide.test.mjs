@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { agentGuide } from "../server/agent-guide.mjs";
-import { GO_FAST } from "../server/browser-tools.mjs";
+import { FULL_CONTROL_ACTIONS, GO_FAST, browserToolsFor, compactTools } from "../server/browser-tools.mjs";
 import { serveMcp } from "../scripts/mcp-server.mjs";
 import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
@@ -23,7 +23,7 @@ const preset = (policy, extra = {}) => ({ kind: "agent", scopes: [], policy: { i
 
 test("each preset says what it may do, in plain words, then the rules", () => {
   assert.equal(agentGuide(preset({ preset: "full" }), { word: "Mac", folders: ["Home", "Computer"] }),
-    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${SIGN_IN}\n${FAST}${RULES}`);
+    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${SIGN_IN}\n${FAST}${FULL_CONTROL_ACTIONS}\nDon't share your Reach credentials.`);
   assert.equal(agentGuide(preset({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }, { id: "/System/Applications/Notes.app" }] }), { word: "Mac" }),
     `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\n${SIGN_IN}\n${STAY_OUT}\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files", write: true }), { word: "Mac", folders: ["Project"] }),
@@ -81,6 +81,18 @@ test("fails closed: unknown shapes claim nothing, people get nothing, names can'
 // that agent only.
 test("presets: the guide follows the agent's current access, for that agent only", privateIngressTest, async (t) => {
   const f = await fixture(t);
+  const full = await f.join({ preset: "full" });
+  for (const route of ["/api/browser", "/api/device"]) {
+    const view = await full.as(route);
+    assert.equal(view.status, 200, JSON.stringify(view.body));
+    assert.match(view.body.guide, /without asking for separate action approval/);
+    assert.doesNotMatch(view.body.guide, /Ask me before/);
+  }
+  for (const profile of ["full", "compact"]) {
+    const catalog = await full.as(`/api/browser/mcp/tools?profile=${profile}`);
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    assert.match(catalog.body.tools.find((tool) => tool.name === "reach_access").description, /without asking for separate action approval/);
+  }
   const agent = await f.join({ preset: "apps", apps: [{ id: apps.chrome.id }] });
   let view = await agent.as("/api/browser");
   assert.equal(view.status, 200, JSON.stringify(view.body));
@@ -124,6 +136,10 @@ test("MCP initialize carries the computer's guide after Reach's own line", async
   const told = await run(async (route) => (route.startsWith("/api/device") ? { guide } : {}));
   assert.match(told.instructions, /^Check reach_tools[^\n]*reach_tool_batch\.[^\n]*\n\nYou get only "Notes"/);
   assert.ok(told.instructions.endsWith(RULES));
+  const fullGuide = agentGuide(preset({ preset: "full" }));
+  const full = await run(async () => ({ guide: fullGuide }));
+  assert.match(full.instructions, /without asking for separate action approval/);
+  assert.doesNotMatch(full.instructions, /Ask me before/);
   // A command-line agent has no screen line: the guide alone.
   assert.equal((await run(async () => ({ guide }), ["files:read"])).instructions, guide);
   // Not answering, or an older computer: initialize as before.
@@ -135,4 +151,26 @@ test("MCP initialize carries the computer's guide after Reach's own line", async
   let asked = 0;
   await run(async () => { asked++; return { guide }; }, ["files:read"], { liveScopes: false });
   assert.equal(asked, 0);
+});
+
+test("Full control carries the owner's action authorization in the guide and every tool profile", () => {
+  for (const word of ["Mac", "Windows PC"]) {
+    const client = preset({ preset: "full" });
+    for (const page of [false, true]) {
+      const guide = agentGuide(client, { word, page });
+      assert.match(guide, /without asking for separate action approval/);
+      assert.match(guide, /payments, sending messages and deleting files/);
+      assert.match(guide, /Follow any limits the owner gives; ask for missing information/);
+      assert.doesNotMatch(guide, /Ask me before/);
+    }
+  }
+  const tools = browserToolsFor({ preset: "full", screen: true, control: true, open: true });
+  for (const catalog of [tools, compactTools(tools)]) {
+    const tool = catalog.find((tool) => tool.name === "reach_access");
+    assert.match(tool.description, /without asking for separate action approval/);
+    assert.doesNotMatch(tool.description, /confirm consequential actions|ask your user before/);
+  }
+  const restricted = browserToolsFor({ preset: "apps", screen: true, control: true, open: true }).find((tool) => tool.name === "reach_access");
+  assert.match(restricted.description, /ask your user before paying, sending a message or deleting/);
+  assert.doesNotMatch(agentGuide(preset({ preset: "apps" })), /without asking for separate action approval/);
 });

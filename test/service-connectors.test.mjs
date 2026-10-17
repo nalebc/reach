@@ -10,6 +10,10 @@ import { createAgentTools } from "../server/agent-tools.mjs";
 import { browserToolsFor } from "../server/browser-tools.mjs";
 import { agentRequestTimeout } from "../server/agent-transport.mjs";
 import {
+  FULL_CONTROL_VERSION,
+  presetScopes,
+} from "../server/agent-presets.mjs";
+import {
   toolApps,
   toolBrowserFixture,
 } from "./helpers/tool-browser-fixture.mjs";
@@ -30,7 +34,13 @@ function setup(t) {
     kind: "agent",
     status: "accepted",
     expiresAt: Date.now() + 600000,
-    policy: { browser: true, preset: "full" },
+    policy: {
+      invite: true,
+      browser: true,
+      preset: "apps",
+      roots: [],
+      apps: toolApps,
+    },
     scopes: [
       "browser:read",
       "browser:screen",
@@ -137,6 +147,43 @@ test("Gmail service runs the browser interpreter with the chosen account; only v
     f.driver.calls.length,
     count,
     "lost response replay does not navigate again",
+  );
+});
+
+test("Full control runs the Gmail adapter directly using its invitation grant", async (t) => {
+  const f = setup(t);
+  f.client.policy = {
+    invite: true,
+    browser: true,
+    preset: "full",
+    fullControlVersion: FULL_CONTROL_VERSION,
+    roots: [],
+  };
+  f.client.scopes = presetScopes(f.client.policy);
+  const result = await f.run("gmail", "find", {
+    browser: "Chrome",
+    account: "0",
+    query: "invoice",
+  });
+  assert.equal(result.data.items[0].label, "Invoice October");
+  const catalog = f.services.catalog(f.authorize);
+  assert.ok(
+    catalog.connectors.every(
+      (connector) => connector.access.status === "approved",
+    ),
+  );
+  const tools = browserToolsFor({ preset: "full", services: catalog });
+  assert.equal(
+    tools.find((tool) => tool.name === "reach_service_request")
+      .approvalRequired,
+    false,
+  );
+  assert.match(
+    tools.find((tool) => tool.name === "reach_service_gmail_find").description,
+    /Run directly/,
+  );
+  assert.ok(
+    f.services.inspect().every((entry) => entry.approval === "invitation"),
   );
 });
 
@@ -295,6 +342,24 @@ test(
         })
       ).status,
       403,
+    );
+    const full = await f.join({ name: "Trusted helper", preset: "full" });
+    const direct = await full.as("/api/browser/services/run", {
+      method: "POST",
+      body: { ...payload, requestId: crypto.randomUUID() },
+    });
+    assert.equal(direct.status, 200, JSON.stringify(direct.body));
+    assert.equal(direct.body.data.items[0].label, "Invoice October");
+    const services = await full.as("/api/browser/services");
+    assert.ok(
+      services.body.connectors.every(
+        (connector) => connector.access.status === "approved",
+      ),
+    );
+    assert.ok(
+      services.body.connectors.every(
+        (connector) => connector.access.approval === "invitation",
+      ),
     );
   },
 );

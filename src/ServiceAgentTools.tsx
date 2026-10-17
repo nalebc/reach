@@ -257,7 +257,11 @@ export default function ServiceAgentTools({
       </h2>
       <p>
         {accessOnly
-          ? "Services use your allowed browser and need owner approval for this session."
+          ? connectors.some(
+              (connector) => connector.access?.approval === "invitation",
+            )
+            ? "Full control includes services in your allowed browser. No separate approval is needed."
+            : "Services use your allowed browser and need owner approval for this session."
           : "Use accounts already signed in on the Mac. Choose that browser, then run a task."}
       </p>
       {error && (
@@ -292,7 +296,7 @@ export default function ServiceAgentTools({
             <small>
               {connector.unavailable ||
                 (connector.access?.status === "approved"
-                  ? `Read-only access · Until ${new Date(connector.access.expiresAt).toLocaleString()}`
+                  ? `${connector.access.approval === "invitation" ? "Included in Full control" : "Read-only access"} · Until ${new Date(connector.access.expiresAt).toLocaleString()}`
                   : connector.access?.status === "pending"
                     ? "Waiting for owner approval"
                     : "Owner approval needed")}

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { SAMPLE_STORE } from "./helpers/service-connector-fixture.mjs";
 import { createAgentServices } from "../server/agent-services.mjs";
 import { createServiceConnectors } from "../server/service-connectors.mjs";
-import { startDom, settle } from "./dom/harness.mjs";
+import { FULL_CONTROL_VERSION, presetScopes } from "../server/agent-presets.mjs";
+import { startDom, settle, typeInto } from "./dom/harness.mjs";
 
 let dom, ServiceTools, AccessPanel, useAccess, NeedsYouStrip, SavedTools;
 const views = new Set();
@@ -285,4 +286,104 @@ test("a stale catalog uses an already approved service request immediately", asy
   assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
   await dom.waitFor(() => view.container.textContent.includes("Your sample desk lamp"));
   assert.doesNotMatch(view.container.textContent, /automatically after approval/);
+});
+
+test("Full control Gmail runs from the phone UI without a service approval prompt", async (t) => {
+  let runs = 0;
+  const f = setup(
+    t,
+    createServiceConnectors({
+      run: async (authorize, input) => {
+        authorize();
+        runs++;
+        assert.equal(input.id, "builtin_gmail_find");
+        return {
+          status: "completed",
+          browser: "Chrome",
+          data: {
+            messages: {
+              coverage: "visible_page",
+              more: false,
+              items: [
+                {
+                  subject: "Invoice October",
+                  sender: "sender@example.test",
+                  handle: "a0000000-0000-4000-8000-000000000001",
+                  expiresAt: Date.now() + 60000,
+                },
+              ],
+            },
+          },
+        };
+      },
+    }),
+  );
+  f.client.policy = {
+    invite: true,
+    browser: true,
+    preset: "full",
+    fullControlVersion: FULL_CONTROL_VERSION,
+    roots: [],
+  };
+  f.client.scopes = presetScopes(f.client.policy);
+  const view = await render(ServiceTools, { peer });
+  await dom.waitFor(() => button(view.container, "Find messages"));
+  assert.match(view.container.textContent, /Included in Full control/);
+  await typeInto(
+    button(view.container, "Find messages")
+      .closest("article")
+      .querySelector("input"),
+    "invoice",
+  );
+  button(view.container, "Find messages").click();
+  await dom.waitFor(() =>
+    view.container.textContent.includes("Invoice October"),
+  );
+  assert.equal(runs, 1);
+  assert.equal(
+    f.calls.filter((call) => call.route.endsWith("/request")).length,
+    0,
+  );
+  assert.doesNotMatch(
+    view.container.textContent,
+    /Waiting for owner approval|automatically after approval/,
+  );
+  const permissions = await render(ServiceTools, { peer, accessOnly: true });
+  await dom.waitFor(() =>
+    permissions.container.textContent.includes(
+      "Full control includes services",
+    ),
+  );
+  const phone = await render(Home, { peer: { ...peer, token: "owner" } });
+  await settle(50);
+  assert.equal(button(phone.container, "Allow for session"), undefined);
+  assert.ok(f.service.inspect().every((entry) => entry.status === "approved"));
+});
+
+test("an immediately granted service request runs without entering the approval wait", async (t) => {
+  const f = setup(t);
+  const view = await render(ServiceTools, { peer });
+  await dom.waitFor(() => button(view.container, "Check order status"));
+  // The open page still has an older catalog when Full control takes effect.
+  f.client.policy = {
+    invite: true,
+    browser: true,
+    preset: "full",
+    fullControlVersion: FULL_CONTROL_VERSION,
+    roots: [],
+  };
+  f.client.scopes = presetScopes(f.client.policy);
+  button(view.container, "Check order status").click();
+  await dom.waitFor(() =>
+    view.container.textContent.includes("Your sample desk lamp"),
+  );
+  assert.equal(
+    f.calls.filter((call) => call.route.endsWith("/request")).length,
+    1,
+  );
+  assert.equal(f.calls.filter((call) => call.route.endsWith("/run")).length, 1);
+  assert.doesNotMatch(
+    view.container.textContent,
+    /automatically after approval/,
+  );
 });
