@@ -376,7 +376,7 @@ export default function Files({
       if (!isNative && (await downloadThroughBrowser(peer, root, file)))
         return toast(`Downloading ${file.name}`);
       // The iPhone app: iOS keeps downloading in the background.
-      if (backgroundDownloads())
+      if (backgroundDownloads(peer))
         return void (await downloadInBackground(peer, root, file, () =>
           gone(file),
         ));

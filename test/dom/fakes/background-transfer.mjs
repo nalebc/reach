@@ -1,11 +1,12 @@
 export const isNative = true;
 export const Capacitor = { isPluginAvailable: () => true };
-export const state = { listeners: new Map(), canceled: [], start: null, finish: null, failListener: 0, registrations: 0 };
+export const state = { listeners: new Map(), canceled: [], start: null, finish: null, failListener: 0, registrations: 0, saved: [], finished: [] };
 export function reset() {
   state.listeners.clear();
   state.canceled = [];
   state.start = state.finish = null;
   state.failListener = state.registrations = 0;
+  state.saved = []; state.finished = [];
 }
 const transfer = {
   async addListener(event, listener) {
@@ -15,7 +16,12 @@ const transfer = {
   },
   async download() { state.start = true; return new Promise(resolve => { state.finish = resolve; }); },
   async cancel({ id }) { state.canceled.push(id); },
-  async finished() { return { files: [] }; },
+  async finished() { return { files: state.finished }; },
 };
 export const registerPlugin = () => transfer;
 export const Share = { async share() {} };
+
+export const nativeFileSharing = () => false;
+export async function saveBlob(blob, name) {
+  state.saved.push({ name, bytes: new Uint8Array(await blob.arrayBuffer()) });
+}

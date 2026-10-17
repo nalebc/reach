@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Share } from "@capacitor/share";
 import { isNative } from "./native";
-import { tailnetBrowser } from "./tailnet-transport";
+import { peerUsesBrowserTailnet } from "./tailnet-transport";
 import {
   fileBlob,
   post,
@@ -170,7 +170,7 @@ function putChunk(
   signal: AbortSignal,
 ) {
   checkCanceled(signal);
-  if (tailnetBrowser())
+  if (peerUsesBrowserTailnet(peer))
     return putChunkThroughTailnet(peer, id, offset, chunk, onLoaded, signal);
   return new Promise<{ offset: number }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -529,7 +529,7 @@ export async function downloadThroughBrowser(
   entry: FileEntry,
 ) {
   // The download manager can't reach the computer without the Tailscale app.
-  if (tailnetBrowser()) return false;
+  if (peerUsesBrowserTailnet(peer)) return false;
   try {
     const { url } = await request<{ url: string }>(
       peer,
@@ -614,8 +614,12 @@ const native = registerPlugin<{
     }) => void,
   ): Promise<{ remove: () => Promise<void> }>;
 }>("BackgroundTransfer");
-export const backgroundDownloads = () =>
+const nativeBackgroundAvailable = () =>
   isNative && Capacitor.isPluginAvailable("BackgroundTransfer");
+// URLSession cannot use the browser's Tailscale node. A callback can still
+// hold a browser-bound peer after the visible connection changed.
+export const backgroundDownloads = (peer: Peer) =>
+  nativeBackgroundAvailable() && !peerUsesBrowserTailnet(peer);
 const saveAction = (file: Finished) => ({
   label: "Save",
   run: () => void Share.share({ files: [file.uri] }).catch(() => {}),
@@ -623,7 +627,7 @@ const saveAction = (file: Finished) => ({
 // Downloads that finished while the app was closed, offered to save.
 let collected = false;
 export async function collectFinishedDownloads() {
-  if (collected || !backgroundDownloads()) return;
+  if (collected || !nativeBackgroundAvailable()) return;
   collected = true;
   const { files } = await native.finished().catch(() => ({ files: [] }));
   for (const file of files) {
