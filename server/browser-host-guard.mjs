@@ -175,7 +175,12 @@ export function createBrowserHostGuard({
     return operation;
   };
   const refresh = async ({ force = false } = {}) => {
-    if (!force && fresh() && until > now() + leadMs) return self;
+    // A copy still within its lifetime serves at once (a request never
+    // waits on a slow lookup for it); one near its end is renewed meanwhile.
+    if (!force && fresh()) {
+      if (until <= now() + leadMs) lookupNow().catch(() => {});
+      return self;
+    }
     try {
       return await lookupNow();
     } catch (error) {

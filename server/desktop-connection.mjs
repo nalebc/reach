@@ -295,9 +295,9 @@ export function desktopConnection(
       }),
     );
   };
+  const hold = identityHold({ within: holdFor, recheck: () => auth.recheck?.() });
   // Parked, the connection still answers to its device and to pause; only
   // the lease is not asked for.
-  const hold = identityHold({ within: holdFor, recheck: () => auth.recheck?.() });
   const authorize = (lease = true) => {
     const client = auth.verify(token);
     if (!client) {

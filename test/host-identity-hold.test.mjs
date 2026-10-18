@@ -180,6 +180,17 @@ test("a forced refresh (an invitation) needs a new answer; others get the still-
   assert.equal(await forced, 503);
 });
 
+test("a request never waits on a slow lookup while the copy is still valid", async () => {
+  const w = world({ latency: 1700 });
+  await w.start();
+  // Into the last 3 s of the copy, with the timer's 1.7 s lookup on its way.
+  await w.c.run(500);
+  let answered = false;
+  void w.guard.refresh().then(() => { answered = true; });
+  await w.c.flush();
+  assert.equal(answered, true, "served from the copy at once");
+});
+
 test("the guard's timer runs only while an agent has app access, and stops with Reach", async () => {
   const w = world();
   await w.start();
