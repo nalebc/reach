@@ -216,16 +216,16 @@ Check 70 ([System.Windows.Automation.AutomationElement]::LastPoint.Y)
 Check 0 ([ReachDesktopFieldProbe]::At(-1100,70))
 [System.Windows.Automation.AutomationElement]::Refused=$false
 # Text surfaces count as fields: a document that says its text can be
-# changed (a rich text box, Word), or says nothing; never one that says
-# read-only (a web page) or mixed, nor one that can't be focused, nor a
-# pane. Windows Terminal's text area is a TermControl.
+# changed (a rich text box, Word); never one that says nothing, read-only
+# (a web page) or mixed, nor one that can't be focused, nor a pane.
+# Windows Terminal's text area is a TermControl.
 $doc=Field;$doc.Current.ControlType=[System.Windows.Automation.ControlType]::Document;$doc.Text=New-Object System.Windows.Automation.TextPattern
 [System.Windows.Automation.AutomationElement]::Hit=$doc
 Check 1 ([ReachDesktopFieldProbe]::At(-1100,70))
 [System.Windows.Automation.AutomationElement]::FocusedElement=$doc
 Check $true (Get-ReachTextTarget $p $screen).editable
 $doc.Text.DocumentRange.ReadOnly=[System.Windows.Automation.AutomationElement]::NotSupported
-Check 1 ([ReachDesktopFieldProbe]::At(-1100,70))
+Check 0 ([ReachDesktopFieldProbe]::At(-1100,70))
 $doc.Text.DocumentRange.ReadOnly=$true
 Check 0 ([ReachDesktopFieldProbe]::At(-1100,70))
 Check $false (Get-ReachTextTarget $p $screen).editable

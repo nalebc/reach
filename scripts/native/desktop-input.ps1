@@ -273,11 +273,12 @@ public class ReachDesktopFieldProbe {
   if(info.ControlType==ControlType.Edit || info.ControlType==ControlType.ComboBox)return true;
   return info.ControlType==ControlType.Document && element.TryGetCurrentPattern(TextPattern.Pattern,out pattern) && Changeable((TextPattern)pattern);
  }
- // A document's own word on its text: changeable when it says so, or says
- // nothing; a web page says read-only (or mixed, around its own fields).
+ // A document's own word on its text: changeable only when it says so. A
+ // web page says read-only (or mixed, around its own fields); one that says
+ // nothing isn't taken for a field (the keyboard button still types there).
  static bool Changeable(TextPattern text){
   object readOnly=text.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute);
-  return readOnly==AutomationElement.NotSupported || (readOnly is bool && !(bool)readOnly);
+  return readOnly is bool && !(bool)readOnly;
  }
  // A console (conhost) takes typing anywhere in its text area, as a Mac's
  // Terminal does, though its own UI Automation text says it can't be

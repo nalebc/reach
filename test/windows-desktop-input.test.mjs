@@ -102,7 +102,7 @@ test("text surfaces are fields for the probe, the field map and the focus check 
   assert.match(editable, /return !\(\(ValuePattern\)pattern\)\.Current\.IsReadOnly;/);
   assert.match(editable, /info\.ControlType==ControlType\.Document && element\.TryGetCurrentPattern\(TextPattern\.Pattern,out pattern\) && Changeable\(\(TextPattern\)pattern\)/);
   assert.doesNotMatch(editable, /ControlType\.(Pane|Group|Custom|Text)\b/);
-  assert.match(probe, /TextPattern\.IsReadOnlyAttribute\);\s*return readOnly==AutomationElement\.NotSupported \|\| \(readOnly is bool && !\(bool\)readOnly\);/);
+  assert.match(probe, /TextPattern\.IsReadOnlyAttribute\);\s*return readOnly is bool && !\(bool\)readOnly;/);
   // One rule: the probe's walk, the field map's scan and the focus check.
   assert.match(method(probe, "static int Read(double x,double y){"), /if\(ConsoleAt\(x,y\)\)return 1;[\s\S]*if\(Editable\(element\) &&/);
   assert.match(probe, /shown\.Width>=8 && shown\.Height>=8 && Editable\(element\)\)/);
