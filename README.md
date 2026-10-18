@@ -110,7 +110,7 @@ The first run takes about 3 minutes. It shows three steps, then prompts you thro
 2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
 3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
    - Type the code your phone shows into the terminal to approve it. Without the phone app, or with it connected to another Tailscale network, sign in through the browser in the next 15 minutes (later: `reach pair`). A phone already on this computer’s Tailscale network uses the private connection.
-   - On Windows, Reach verifies its public DNS and HTTPS page before showing the browser QR. While it prepares that link, type `private` for a QR that works with the phone app on the same Tailscale network. Busy private ports are handled automatically.
+   - On Windows, Reach shows the working private QR while browser setup is pending. That QR needs the phone's Tailscale app on the same network. The browser QR appears automatically after public DNS, HTTPS and any Funnel approval are ready. Busy private ports are handled automatically.
 
 The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
 

@@ -9,6 +9,7 @@ import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST, SELF_IP } from "./helpers/fake-tailscale.mjs";
 import { onlyReach } from "./helpers/windows-stop.mjs";
+import { scanTerminalQRs } from "./helpers/scan-terminal-qr.mjs";
 
 // Windows' browser sign-in, wired end to end (docs/parity/D-public-door.md
 // §7): a real Reach set up with your account that takes its Windows paths
@@ -237,16 +238,17 @@ test("Windows set up with your account: a keyed private route and a foreground F
   assertNoKey(key, root, reach.output());
 });
 
-test("Windows waits for a publicly reachable browser page before showing a QR, then recovers automatically", asWindows, async (t) => {
+test("Windows shows a private QR while waiting for a publicly reachable browser page, then adds its browser QR", asWindows, async (t) => {
   const { seen, started } = keyedReach(t, {
-    ready: /Preparing the connection for your phone's browser/,
+    ready: /Type a device request code to approve/,
     browserCheck: `(() => { let checks = 0; return async () => ++checks >= 2 ? { ready: true } : { ready: false, reason: "Public DNS is still publishing." }; })()`,
   });
   const reach = await started;
   const text = reach.output();
   assert.doesNotMatch(text, /Open on your phone:/);
-  assert.doesNotMatch(text, /▄|█/, "no dead browser QR");
-  assert.ok(text.includes(`Already connected to this Tailscale network? Private link: https://${HOST}:8443`));
+  assert.deepEqual(scanTerminalQRs(text), [`https://${HOST}:8443`], "the healthy private QR is available without typing a transport command");
+  assert.ok(text.includes(`Private link: https://${HOST}:8443`));
+  assert.match(text, /Your phone's Tailscale app must be on this computer's Tailscale network/);
   const stateFile = path.join(seen.root, ".reach/host-status.json");
   assert.equal(JSON.parse(fs.readFileSync(stateFile)).browserLink.ready, false);
   reach.stdin.write("private\n");
@@ -259,7 +261,38 @@ test("Windows waits for a publicly reachable browser page before showing a QR, t
   const recovered = JSON.parse(fs.readFileSync(stateFile));
   assert.equal(recovered.browserLink.ready, true);
   assert.equal(recovered.link, `https://${HOST}`);
+  assert.equal(scanTerminalQRs(reach.output()).at(-1), `https://${HOST}`);
 });
+
+for (const funnelEnable of ["wait", "exit"]) {
+  test(`Windows shows a private QR before Funnel approval (${funnelEnable}), then adds browser pairing without another command`, asWindows, async (t) => {
+    const { seen, started } = keyedReach(t, {
+      ready: /Type a device request code to approve/,
+      scenario: { funnelEnable },
+    });
+    const reach = await started;
+    const text = reach.output();
+    assert.match(text, /Allow Tailscale Funnel for this computer/);
+    assert.deepEqual(scanTerminalQRs(text), [`https://${HOST}:8443`]);
+    assert.match(text, /Your phone's Tailscale app must be on this computer's Tailscale network/);
+    assert.doesNotMatch(text, /Open on your phone:/, "no unusable public QR is advertised");
+    const method = await viaProxy(seen.fake, 8443, "/api/auth/method");
+    assert.equal(method.status, 200);
+    assert.equal(method.json.eligible, true, "the private QR reaches an eligible private sign-in route");
+    const windowFile = path.join(seen.root, ".reach/quick/pairing-window.json");
+    const windowBefore = JSON.parse(fs.readFileSync(windowFile, "utf8"));
+    const serve = (await keyedSessions(seen.fake)).serve;
+    const key = serve.args.at(-1).match(KEYED)[2];
+    assertNoKey(key, seen.root, text);
+    await seen.fake.setStatus({ funnelEnabled: true });
+    await until(() => scanTerminalQRs(reach.output()).includes(`https://${HOST}`), "the browser QR after Funnel approval", 20000);
+    assert.equal(JSON.parse(fs.readFileSync(windowFile, "utf8")).until, windowBefore.until, "recovery does not extend the original pairing window");
+    const recovered = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach/host-status.json"), "utf8"));
+    assert.equal(recovered.browserLink.ready, true);
+    assert.equal(recovered.link, `https://${HOST}`);
+    assertNoKey(key, seen.root, reach.output());
+  });
+}
 
 for (const [name, options, why] of [
   ["the peer check can't start", { problem: "Tailscale's Windows service isn't running." }, /Tailscale's Windows service isn't running\./],

@@ -836,7 +836,7 @@ export async function launch(options, root) {
           if (current?.instance === reach.instance)
             atomicJson(statusFile, { ...current, browserLink: result });
           if (!result.ready) {
-            if (result.reason !== lastReason) console.log(`Reach: ${result.reason}\n  Waiting before showing the phone QR. Keep this terminal open.`);
+            if (result.reason !== lastReason) console.log(`Reach: ${result.reason}\n  Browser QR is waiting. Phones already on this Tailscale network can use the private QR below.`);
             lastReason = result.reason;
             return;
           }
@@ -859,7 +859,12 @@ export async function launch(options, root) {
           startUrl
         : origin;
       if (startUrl) noteLink(link);
-      if (browserRequired && !startUrl) console.log(`\n${heading()}\n  Preparing the connection for your phone's browser. No phone app is needed.\n  Tailscale account: ${preferences.owner.login}\n  Already connected to this Tailscale network? Private link: ${privateOrigin}\n`);
+      if (browserRequired && !startUrl) {
+        console.log(`\n${heading()}\n  Preparing the connection for your phone's browser.\n  Tailscale account: ${preferences.owner.login}\n`);
+        noteLink(privateOrigin);
+        if (!options.service) showPrivate();
+        else console.log(`  Private link: ${privateOrigin}\n`);
+      }
       else console.log(
         `\n${heading()}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
       );
@@ -955,7 +960,7 @@ export async function launch(options, root) {
         "  Private Tailscale link: only your Tailscale devices open it, and Reach pairing is also required. No public internet tunnel is enabled.",
       );
     if (browserRequired && !options.service)
-      console.log("  Already using the Tailscale app on this computer's network? Type private for its private QR. Other phones use the browser QR when it is ready.");
+      console.log("  The private QR needs the Tailscale app on this computer's network (type private to show it again). The browser QR appears automatically when its connection is ready.");
     if (!options.service) {
       console.log(
         preferences
