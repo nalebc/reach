@@ -8,6 +8,21 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Paste into terminals from the phone: a Paste key in the terminal's key row
+  sends the phone's clipboard, in terminals Reach started and in the Mac's or
+  PC's own terminal tabs. Where the phone won't share its clipboard, a small
+  box takes the phone's own paste. A paste whose line breaks would run commands
+  asks first, unless the program takes pastes whole (bracketed paste). Control
+  characters are removed, and a terminal that isn't connected says so instead
+  of keeping the paste for later.
+
+### Fixed
+
+- Terminal input longer than 32,768 characters (a large paste, from the phone
+  or a computer's keyboard) arrives whole, in pieces, instead of being dropped.
+
 ## [0.3.3] — 2026-10-18
 
 Early access: includes the Windows QR and Codex connection fixes prepared for
