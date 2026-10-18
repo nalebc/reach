@@ -38,3 +38,32 @@ test("acceptance artifact refuses source links, traversal and a preexisting dest
   assert.equal(fs.readFileSync(path.join(outside, "keep"), "utf8"), "outside bytes\n");
   assert.equal(fs.readFileSync(path.join(f.destination, "existing"), "utf8"), "destination bytes\n");
 });
+
+test("acceptance artifact refuses actual source replacement between inspection and opening", t => {
+  const f = fixture(t), sourceFile = path.join(f.source, "member"), retained = path.join(f.source, "retained");
+  fs.writeFileSync(sourceFile, "original source bytes\n");
+  const open = fs.openSync.bind(fs);
+  let replaced = false, opened;
+  // Schedule a real rename/replacement at the open boundary. All file
+  // operations and metadata are real; no stat/read result is substituted.
+  t.mock.method(fs, "openSync", (file, ...args) => {
+    if (file === sourceFile && !replaced) {
+      replaced = true;
+      fs.renameSync(sourceFile, retained);
+      fs.writeFileSync(sourceFile, "replacement source bytes\n");
+    }
+    const fd = open(file, ...args);
+    if (file === sourceFile) opened = fd;
+    return fd;
+  });
+  let refusal;
+  try { copyPrivateAcceptanceArtifact({ ...f, members: ["member"] }); }
+  catch (error) { refusal = error; }
+  finally { t.mock.restoreAll(); }
+  assert.equal(replaced, true, "the source was really replaced after its metadata was inspected");
+  assert.match(refusal?.message || "No source replacement refusal.", /artifact member changed/);
+  assert.throws(() => fs.fstatSync(opened), { code: "EBADF" }, "the refused source descriptor must be closed");
+  assert.deepEqual(fs.readdirSync(f.destination), [], "replacement bytes must never reach the artifact");
+  assert.equal(fs.readFileSync(retained, "utf8"), "original source bytes\n");
+  assert.equal(fs.readFileSync(sourceFile, "utf8"), "replacement source bytes\n");
+});

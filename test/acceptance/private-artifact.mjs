@@ -39,7 +39,7 @@ export function copyPrivateAcceptanceArtifact({ source, destination, members }) 
     relativeName(relative);
     const parent = path.posix.dirname(relative);
     sourceDirectory(parent === "." ? "" : parent);
-    const at = path.join(source, ...relative.split("/")), stat = fs.lstatSync(at);
+    const at = path.join(source, ...relative.split("/")), stat = fs.lstatSync(at, { bigint: true });
     if (stat.isSymbolicLink()) throw Error("An artifact member is a link.");
     if (stat.isDirectory()) {
       directory(relative);
@@ -51,7 +51,20 @@ export function copyPrivateAcceptanceArtifact({ source, destination, members }) 
     if (names.has(key)) throw Error("An artifact member is repeated.");
     names.add(key);
     directory(parent === "." ? "" : parent);
-    const bytes = fs.readFileSync(at), hash = sha256(bytes), target = path.join(destination, ...relative.split("/"));
+    // Pin the inspected file before reading. Windows lacks O_NOFOLLOW, so
+    // fstat identity is required even when the final link flag is available.
+    const fd = fs.openSync(at, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    let bytes;
+    try {
+      const unchanged = () => {
+        const opened = fs.fstatSync(fd, { bigint: true });
+        return opened.isFile() && ["dev", "ino", "size", "mtimeNs", "ctimeNs"].every(key => opened[key] === stat[key]);
+      };
+      if (!unchanged()) throw Error("An artifact member changed while being copied.");
+      bytes = fs.readFileSync(fd);
+      if (!unchanged() || BigInt(bytes.length) !== stat.size) throw Error("An artifact member changed while being copied.");
+    } finally { fs.closeSync(fd); }
+    const hash = sha256(bytes), target = path.join(destination, ...relative.split("/"));
     fs.writeFileSync(target, bytes, { flag: "wx", mode: 0o600 });
     if (sha256(fs.readFileSync(target)) !== hash) throw Error("The copied artifact differs from its source.");
     manifest.push({ file: relative, bytes: bytes.length, sha256: hash });
