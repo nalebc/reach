@@ -14,7 +14,9 @@ export function useDesktopInput(
   peer: Peer,
   enabled: boolean,
   display: string,
-  onEnd: (message: string) => void,
+  // elsewhere: another window of this phone took control over (the
+  // computer kept it for that one); this one only stops.
+  onEnd: (message: string, elsewhere?: boolean) => void,
   // While the screen is open, a stopped control keeps its connection a
   // minute, parked on the Mac: Control again resumes on it at once.
   open = enabled,
@@ -171,6 +173,21 @@ export function useDesktopInput(
       try {
         const m = JSON.parse(event.data);
         if (m.type === "error") {
+          if (m.superseded === true) {
+            // Another window took this control over: let it be, quietly
+            // (no reconnect taking it back, nothing ending its control).
+            failed = true;
+            clearTimeout(deadline);
+            setReady(false);
+            setReconnecting(false);
+            queue?.close();
+            retry.current.reset();
+            tries.current = 0;
+            link.current = null;
+            socket.close(4002, "Superseded");
+            end.current("Control moved to your other window.", true);
+            return;
+          }
           // The Mac says whether this is the connection (back in a moment)
           // or the grant (over): older companions only ever meant the grant.
           stop(m.error, m.retryable === true);

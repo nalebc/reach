@@ -176,14 +176,16 @@ export default function Screen({
   const viewer = useRef<HTMLElement>(null),
     intent = useRef(false),
     mounted = useRef(true);
-  const release = useCallback(() => {
+  // tell: say so to the computer too. Not when control went to this
+  // phone's other window: that would end its control.
+  const release = useCallback((tell = true) => {
     intent.current = false;
     typingEpoch.current++;
     setTypingTarget(null);
     setControl(false);
     setDrag(false);
     setPanel(null);
-    if (canControl)
+    if (canControl && tell)
       void post(peer, "/api/screen/control", { enabled: false }).catch(
         () => {},
       );
@@ -206,10 +208,10 @@ export default function Screen({
   }, [controlKey]);
   const controlBeforePause = useRef(false);
   const ended = useCallback(
-    (message: string) => {
+    (message: string, elsewhere?: boolean) => {
       if (isPausedMessage(message)) controlBeforePause.current = true;
       else setError(message);
-      release();
+      release(!elsewhere);
     },
     [release],
   );

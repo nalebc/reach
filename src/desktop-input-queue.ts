@@ -177,8 +177,10 @@ export class DesktopInputQueue {
     this.flush();
     return this.now() - item.sent;
   }
+  // Longer than the computer may hold input while it confirms this phone
+  // again (server/identity-hold.mjs, 5 s): a hold isn't a dead link.
   checkTimeout() {
-    if ([...this.pending.values()].some((p) => this.now() - p.sent > 3000))
+    if ([...this.pending.values()].some((p) => this.now() - p.sent > 6000))
       this.fail("Desktop input timed out.");
   }
   close() {

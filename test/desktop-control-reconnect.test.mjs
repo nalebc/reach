@@ -378,3 +378,48 @@ test("retries are bounded: too many in a row end control with the reason", async
   assert.equal(seen.input.reconnecting, false);
   await view.unmount();
 });
+
+test("another window of this phone taking control over: this one stops quietly, without ending that control", async () => {
+  const ended = [];
+  const seen = { input: null };
+  function Probe() {
+    seen.input = useDesktopInput({ url: "http://mac.test", token: "T" }, true, "primary", (m, elsewhere) => ended.push([m, elsewhere]));
+    return null;
+  }
+  const view = await dom.render(React.createElement(Probe));
+  await settle(10);
+  const first = FakeSocket.all.at(-1);
+  first.push({ type: "ready", window: 8, typing: true, probe: true });
+  await settle(10);
+  first.push({ type: "error", error: "Desktop control moved to a new connection.", retryable: true, superseded: true });
+  first.ends(1012, "Superseded");
+  await settle(10);
+  assert.deepEqual(ended, [["Control moved to your other window.", true]]);
+  assert.equal(seen.input.reconnecting, false);
+  const count = FakeSocket.all.length;
+  await settle(400);
+  assert.equal(FakeSocket.all.length, count, "no reconnect taking it back");
+  await view.unmount();
+});
+
+test("a replaced connection closes as reconnecting while control is on; turned off, it lets go", async () => {
+  const { view, first } = await control();
+  await view.unmount();
+  assert.deepEqual(first.closedWith, { code: 4002, reason: "Reconnecting" }, "never a code-less close (1005), read as letting go");
+  let turn;
+  function Toggle() {
+    const [on, set] = React.useState(true);
+    turn = set;
+    useDesktopInput({ url: "http://mac.test", token: "T" }, on, "primary", () => {}, on);
+    return null;
+  }
+  const toggle = await dom.render(React.createElement(Toggle));
+  await settle(10);
+  const live = FakeSocket.all.at(-1);
+  live.push({ type: "ready", window: 8, typing: true, probe: true });
+  await settle(10);
+  turn(false);
+  await settle(10);
+  assert.deepEqual(live.closedWith, { code: 1000, reason: "Control off" });
+  await toggle.unmount();
+});
