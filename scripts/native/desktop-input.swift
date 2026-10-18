@@ -139,7 +139,7 @@ final class DesktopMouse {
     }
     return (landed, continuing ? 2 : count)
   }
-  // 8 ms: far under a person's click, and the next press isn't delayed.
+  // 8 ms, far under a person's click; nothing waits after a release.
   static let pressHold: useconds_t = 8_000
 }
 // END DESKTOP MOUSE
