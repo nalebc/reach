@@ -68,6 +68,7 @@ test("Windows default QR: host-only success, public browser entry, and same-tail
   const statusFile = path.join(reach.root, ".reach/host-status.json");
   const status = () => JSON.parse(fs.readFileSync(statusFile));
   const privateOrigin = `https://${HOST}:8444`;
+  const publicOrigin = `https://${HOST}`;
   assert.equal(status().tailscaleApproval, true, "normal Windows startup must enable browser approval without an opt-in flag");
   assert.equal(status().origin, privateOrigin, "occupied 8443 and 9443 recover to 8444");
 
@@ -77,15 +78,15 @@ test("Windows default QR: host-only success, public browser entry, and same-tail
     assert.equal(host.json.instance, status().instance);
     for (const mode of ["no-app", "app-off", "different-tailnet"])
       await assert.rejects(network.request(privateOrigin, { mode }), { code: "ENOTFOUND" });
-    assert.deepEqual(scanTerminalQRs(reach.output()), [], "host-local success cannot authorize a browser QR");
+    assert.deepEqual(scanTerminalQRs(reach.output()), [privateOrigin], "only the private QR is shown while the browser connection waits");
     assert.equal(status().browserLink.ready, false);
     assert.equal(network.requests.filter(r => r.kind === "public").length, 0, "missing public DNS prevents the host probe from using its MagicDNS route");
   });
 
   network.publish(true);
-  await until(() => scanTerminalQRs(reach.output()).length, "a publicly verified, decodable QR", reach.output);
-  const initialQR = scanTerminalQRs(reach.output())[0];
-  assert.equal(initialQR, `https://${HOST}`, "the QR itself, not just its caption, is the public entry");
+  await until(() => scanTerminalQRs(reach.output()).includes(publicOrigin), "a publicly verified, decodable QR", reach.output);
+  const initialQR = scanTerminalQRs(reach.output()).find(link => link === publicOrigin);
+  assert.equal(initialQR, publicOrigin, "the QR itself, not just its caption, is the public entry");
   assert.equal(status().browserLink.ready, true);
   assert.ok(network.requests.some(r => r.kind === "public" && r.path === "/reach-start.json"), "production readiness crossed the real TLS public relay");
   const start = await network.request(initialQR, { mode: "no-app" });
