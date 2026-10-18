@@ -330,10 +330,15 @@ func inspect(_ sample: CMSampleBuffer) {
       capture.width = width
       capture.height = height
       do { try capture.configureEncoder() } catch { print("encoder unavailable: \(error)"); return }
+      // An encoder without long-term references (a virtual Mac's) can't
+      // say: its frames below still must not ask for acknowledgements.
       var value: CFTypeRef?
-      precondition(VTSessionCopyProperty(capture.encoder!, key: kVTCompressionPropertyKey_EnableLTR,
-        allocator: nil, valueOut: &value) == noErr, "EnableLTR is readable")
-      precondition((value as? Bool) == false, "EnableLTR reads \(String(describing: value))")
+      let read = VTSessionCopyProperty(capture.encoder!, key: kVTCompressionPropertyKey_EnableLTR,
+        allocator: nil, valueOut: &value)
+      if read != kVTPropertyNotSupportedErr {
+        precondition(read == noErr, "EnableLTR unreadable (\(read))")
+        precondition((value as? Bool) == false, "EnableLTR reads \(String(describing: value))")
+      }
       var made: CVPixelBuffer?
       CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary, &made)
@@ -358,7 +363,7 @@ func inspect(_ sample: CMSampleBuffer) {
       precondition(samples >= 12, "\(width)x\(height): only \(samples) frames came out")
       precondition(acknowledgements == 0, "\(width)x\(height): \(acknowledgements) frames asked for an LTR acknowledgement")
       VTCompressionSessionInvalidate(capture.encoder!)
-      print("\(width)x\(height): \(samples) frames, EnableLTR false, no LTR acknowledgements")
+      print("\(width)x\(height): \(samples) frames, EnableLTR \(read == noErr ? "false" : "unsupported"), no LTR acknowledgements")
     }
     print("encoder LTR checks passed")
   }
