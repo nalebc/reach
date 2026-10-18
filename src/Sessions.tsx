@@ -9,7 +9,14 @@ import {
   FolderOpen,
   Pointer,
 } from "lucide-react";
-import { arrowKey, controlKey } from "./terminal-keys";
+import {
+  arrowKey,
+  controlKey,
+  inputPieces,
+  pastable,
+  pasteQuestion,
+} from "./terminal-keys";
+import { usePhonePaste } from "./TerminalPaste";
 import { useViewportBox } from "./useViewportBox";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
@@ -400,7 +407,8 @@ export function TerminalView({
         setCtrl(false);
       }
       if (ws?.readyState === WebSocket.OPEN && connectedRef)
-        ws.send(JSON.stringify({ type: "input", data }));
+        for (const piece of inputPieces(data))
+          ws.send(JSON.stringify({ type: "input", data: piece }));
     });
     const ro = new ResizeObserver(resize);
     ro.observe(mount.current);
@@ -425,6 +433,23 @@ export function TerminalView({
     if (socket.current?.readyState === WebSocket.OPEN)
       socket.current.send(JSON.stringify({ type: "input", data }));
   };
+  // The phone's clipboard, pasted as the terminal pastes (bracketed when the
+  // program asks for it), so it arrives as typing would. Sent once, now:
+  // never held for a later connection.
+  const phonePaste = usePhonePaste((text) => {
+    const term = terminal.current;
+    if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN)
+      return toast("This terminal isn't connected. Paste again once it is.");
+    const clean = pastable(text);
+    // A program that takes pastes whole (bracketed paste: shells, Codex,
+    // Claude Code) runs nothing as it arrives.
+    const question = term.modes.bracketedPasteMode ? null : pasteQuestion(clean);
+    if (question && !confirm(question)) return;
+    // Sticky ctrl is for the next key typed, never a pasted letter (ctrl-D).
+    ctrlArmed.current = false;
+    setCtrl(false);
+    term.paste(clean);
+  }, toast);
   const arrow = (direction: "up" | "down" | "left" | "right") =>
     send(
       arrowKey(
@@ -651,12 +676,14 @@ export function TerminalView({
             onClick={() => terminal.current?.focus()}
           />
           {history.reading && <button className="terminal-latest" onClick={history.latest}>↓ Latest output</button>}
+          {phonePaste.box}
           <KeyRow
             className="terminal-key-row"
             label="Terminal keys"
             modifier="ctrl"
             armed={ctrl}
             onArm={armCtrl}
+            onPaste={phonePaste.paste}
             onKey={(key) =>
               key === "escape"
                 ? send("\x1b")

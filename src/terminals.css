@@ -210,6 +210,43 @@
   background: #e9f0ec;
 }
 /* Mac tabs: one line at a time, sent with Enter. */
+/* Where the phone won't hand its clipboard to Paste: a box above the keys
+   that takes the phone's own paste (TerminalPaste.tsx). */
+.terminal-paste {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: #0b1012;
+  border-top: 1px solid #ffffff14;
+}
+.terminal-paste textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 96px;
+  padding: 7px 9px;
+  resize: none;
+  font: 14px/1.4 "SFMono-Regular", Consolas, monospace;
+}
+.terminal-paste button {
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #ffffff1f;
+  border-radius: 9px;
+  background: #ffffff12;
+  color: #e9f0ec;
+  font: 600 13px system-ui, sans-serif;
+}
+.terminal-paste button[type="submit"]:not(:disabled) {
+  background: var(--lime, #b9efd4);
+  border-color: var(--lime, #b9efd4);
+  color: #0b1012;
+}
+.terminal-paste button:disabled {
+  opacity: 0.5;
+}
 .terminal-key-row.mac-line {
   align-items: center;
 }
