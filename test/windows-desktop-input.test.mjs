@@ -143,9 +143,13 @@ test("a window run as administrator is refused with why, before a click, a key o
   // is the general failure.
   assert.match(source, /function Stop-Reach\(\$message\) \{throw \(New-Object ReachRefusal \$message\)\}/);
   assert.match(loop, /\$e=\$_\.Exception;while\(\$e -and \$e -isnot \[ReachRefusal\]\)\{\$e=\$e\.InnerException\}/);
-  assert.match(loop, /@\{error=\$\(if\(\$e\)\{\$e\.Message\}else\{'Desktop action failed\. Check the selected display and keep Windows unlocked\.'\}\)\}/);
-  assert.doesNotMatch(loop, /fatal/, "a refusal never ends control");
-  for (const said of ["Typing target changed. Tap the field again.", "Display disconnected. Select a display again.", "Invalid typing edit.", "Unsupported key"])
+  assert.match(loop, /\$answer=@\{error=\$\(if\(\$e\)\{\$e\.Message\}else\{'Desktop action failed\. Check the selected display and keep Windows unlocked\.'\}\)\}/);
+  // Only a display that's gone ends control, as on a Mac (its helper's
+  // fatal error, code 2): a refusal never does.
+  assert.match(loop, /if\(\$e -and \$e\.Fatal\)\{\$answer\.fatal=\$true\}/);
+  assert.equal(source.match(/New-Object ReachRefusal '[^']*',\$true/g)?.length, 1);
+  assert.ok(source.includes("throw (New-Object ReachRefusal 'This display disconnected. Select a display again.',$true)"));
+  for (const said of ["Typing target changed. Tap the field again.", "Invalid typing edit.", "Unsupported key"])
     assert.ok(source.includes(`Stop-Reach '${said}'`), said);
   assert.doesNotMatch(loop.slice(0, loop.indexOf("} catch {")), /\bthrow '/, "known failures are said, not thrown as the general one");
 });

@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 // A failure the phone shows as said (a typing target that moved, a window
 // run as administrator); anything else is the general one (the loop's catch).
-public class ReachRefusal : Exception {public ReachRefusal(string message):base(message){}}
+public class ReachRefusal : Exception {public bool Fatal;public ReachRefusal(string message):base(message){}public ReachRefusal(string message,bool fatal):base(message){Fatal=fatal;}}
 public class ReachDesktopInput {
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
@@ -385,7 +385,8 @@ try {
    [ReachDesktopInput]::Touch()
    $p=$line | ConvertFrom-Json
    $screen=if($Display -eq 'primary'){[System.Windows.Forms.Screen]::PrimaryScreen}else{[System.Windows.Forms.Screen]::AllScreens | Where-Object {($_.DeviceName -replace '^.*(DISPLAY[0-9]+)$','$1') -eq $Display} | Select-Object -First 1}
-   if(!$screen){[ReachDesktopInput]::Release();Stop-Reach 'Display disconnected. Select a display again.'}
+   # Gone: control ends with why, as on a Mac (its helper's fatal error).
+   if(!$screen){[ReachDesktopInput]::Release();throw (New-Object ReachRefusal 'This display disconnected. Select a display again.',$true)}
    $result=@{ok=$true}
    if($p.focus){Assert-ReachTypingTarget $p.focus}
    if($p.type -in 'text','type-edit','menu','release'){[ReachDesktopInput]::ForgetClick()}
@@ -444,7 +445,9 @@ try {
   } catch {
    # What Reach knows how to say (a ReachRefusal, from here or from C#), else the general failure.
    [ReachDesktopInput]::Release();$e=$_.Exception;while($e -and $e -isnot [ReachRefusal]){$e=$e.InnerException}
-   $writer.WriteLine((@{error=$(if($e){$e.Message}else{'Desktop action failed. Check the selected display and keep Windows unlocked.'})}|ConvertTo-Json -Compress))
+   $answer=@{error=$(if($e){$e.Message}else{'Desktop action failed. Check the selected display and keep Windows unlocked.'})}
+   if($e -and $e.Fatal){$answer.fatal=$true}
+   $writer.WriteLine(($answer|ConvertTo-Json -Compress))
   }
  }
 } finally {[ReachDesktopInput]::Release()}
