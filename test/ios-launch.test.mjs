@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
-import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
+import { collectIosFailureDiagnostics, commandFailureOutput, startIosLaunchLogs } from "./helpers/ios-diagnostics.mjs";
 
 const device = "disposable-simulator", bundle = "test.reach.smoke";
 
 // No simulator or app is started. Commands model the observed iOS behavior:
 // openurl exits successfully at an Open/Cancel prompt without loading a page.
-function fixture({ failures = 1, observed = false, springBoard = true } = {}) {
+function fixture({ failures = 1, observed = false, springBoard = true, startLogs } = {}) {
   const commands = [], phases = [];
   let seen = observed, confirmation = false, launches = 0, options;
   let observe;
@@ -46,7 +48,7 @@ function fixture({ failures = 1, observed = false, springBoard = true } = {}) {
   };
   return {
     start: () => launchIosSmokeApp({ sim, device, bundle, appPage,
-      pageSeen: () => seen, reached: phase => phases.push(phase) }),
+      pageSeen: () => seen, reached: phase => phases.push(phase), ...(startLogs ? { startLogs } : {}) }),
     commands, phases, appPage,
     state: () => ({ seen, confirmation, launches, options }),
   };
@@ -117,6 +119,34 @@ test("a reboot without SpringBoard fails before another app launch", async () =>
   assert.deepEqual(f.phases, []);
 });
 
+test("launch observation stops on success and preserves the original failed launch", async () => {
+  for (const fails of [false, true]) {
+    const stops = [], original = Error("original launch failure");
+    const operation = launchIosSmokeApp({ device, bundle,
+      startLogs: identities => {
+        assert.deepEqual(identities, { device, bundle });
+        return { stop: options => stops.push(options) };
+      },
+      sim: async () => { if (fails) throw original; return { stdout: "started" }; },
+    });
+    if (fails) await assert.rejects(operation, error => error === original);
+    else assert.deepEqual(await operation, { stdout: "started" });
+    assert.deepEqual(stops, fails ? [{ retain: true }, undefined] : [undefined]);
+  }
+});
+
+test("each existing launch retry gets a fresh observer after recovery", async () => {
+  const observers = [];
+  const f = fixture({ startLogs: () => {
+    const stops = [];
+    observers.push(stops);
+    return { stop: options => stops.push(options) };
+  } });
+  await f.start();
+  assert.deepEqual(observers, [[{ retain: true }], [undefined]]);
+  assert.equal(f.state().launches, 2);
+});
+
 // Diagnostic checks use fake commands and disposable files only. They never
 // connect to the host's Simulator service or read its real log directories.
 const diagnosticDevice = "11111111-2222-4333-8444-555555555555";
@@ -136,16 +166,18 @@ test("failure diagnostics query only the exact simulator and bundle within the e
         return { stdout: args.includes("log") ? "l".repeat(70000) : `12\t0\tUIKitApplication:${bundle}\n34\t0\tother.bundle\n` };
       },
     });
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     for (const call of calls) {
       assert.equal(call.command, "xcrun");
-      assert.deepEqual(call.args.slice(0, 3), ["simctl", "spawn", diagnosticDevice]);
+      if (call.args[1] === "appinfo") assert.deepEqual(call.args, ["simctl", "appinfo", diagnosticDevice, bundle]);
+      else assert.deepEqual(call.args.slice(0, 3), ["simctl", "spawn", diagnosticDevice]);
       assert.ok(call.limit > 0 && call.limit <= Math.min(budget, 10000));
       assert.ok(!call.args.some(arg => ["all", "booted", "diagnose", "launch", "shutdown"].includes(arg)));
     }
     assert.equal(calls.find(call => call.args.includes("log")).args.at(-1), `eventMessage CONTAINS[c] "${bundle}"`);
     assert.equal(result.logs.stdout.length, 65536);
     assert.equal(result.processes.stdout, `12\t0\tUIKitApplication:${bundle}`);
+    assert.equal(result.installedApp.ok, true);
   }
 });
 
@@ -190,8 +222,11 @@ test("stalled diagnostic commands return partial evidence at the existing deadli
     run: () => new Promise(() => {}),
   });
   assert.equal(result.timedOut, true);
-  assert.equal(result.logs.pending, true);
-  assert.equal(result.processes.pending, true);
+  for (const field of ["logs", "processes", "installedApp"]) {
+    assert.equal(result[field].timedOut, true);
+    assert.match(result[field].error, /did not finish within the existing time budget/);
+    assert.equal(result[field].pending, undefined);
+  }
 });
 
 test("diagnostic collection errors stay evidence and do not throw over the original launch failure", async t => {
@@ -208,4 +243,73 @@ test("diagnostic collection errors stay evidence and do not throw over the origi
   assert.equal(result.logs.stdout.length, 8192);
   assert.equal(result.logs.stderr.length, 8192);
   assert.deepEqual(commandFailureOutput(problem), { stdout: "o".repeat(8192), stderr: "e".repeat(8192) });
+});
+
+// Modeled log processes test the evidence harness only, not an iOS launch.
+function logProcess() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.signals = [];
+  child.kill = signal => {
+    child.signals.push(signal);
+    queueMicrotask(() => { child.signalCode = signal; child.emit("close", null, signal); });
+  };
+  return child;
+}
+
+test("live launch evidence is scoped, bounded and retained only for its failed launch", async t => {
+  const home = await diagnosticHome(t), child = logProcess(), calls = [];
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: (...args) => { calls.push(args); return child; } });
+  assert.deepEqual(calls[0], ["xcrun", ["simctl", "spawn", diagnosticDevice, "log", "stream", "--style", "compact", "--level", "info", "--predicate", `eventMessage CONTAINS[c] "${bundle}"`], { stdio: ["ignore", "pipe", "pipe"] }]);
+  child.stdout.write("x".repeat(70000) + " exact launch error");
+  child.stderr.write("e".repeat(9000));
+  logs.stop({ retain: true });
+  logs.stop();
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() - 1, run: () => assert.fail("no new commands after deadline") });
+  assert.equal(result.liveLogs.stdout.length, 65536);
+  assert.match(result.liveLogs.stdout, /exact launch error$/);
+  assert.equal(result.liveLogs.stderr.length, 8192);
+  assert.equal(result.liveLogs.truncated, true);
+  assert.equal(result.liveLogs.stopped, true);
+  const consumed = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.equal(consumed.liveLogs, undefined);
+});
+
+test("a log observer failure remains diagnostic evidence and cannot hide a launch failure", async () => {
+  const original = Error("observer unavailable");
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: () => { throw original; } });
+  logs.stop({ retain: true });
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.equal(result.liveLogs.error, original.message);
+  for (const input of [{ device: "booted", bundle }, { device: diagnosticDevice, bundle: 'bad" OR TRUEPREDICATE' }]) {
+    startIosLaunchLogs({ ...input, start: () => assert.fail("unsafe identities cannot start a log process") }).stop();
+  }
+});
+
+test("restarting the observer preserves earlier launch evidence within the same bounds", async () => {
+  const first = logProcess();
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: () => first });
+  first.stdout.write("first failed attempt\n");
+  logs.stop({ retain: true });
+  const second = logProcess();
+  const retry = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: () => second });
+  second.stdout.write("second failed attempt\n");
+  retry.stop({ retain: true });
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.equal(result.liveLogs.stdout, "first failed attempt\nsecond failed attempt\n");
+  assert.equal(result.liveLogs.captures, 2);
+});
+
+test("a live log observer stops at its own bound without changing launch limits", async () => {
+  const child = logProcess();
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, limit: 10, start: () => child });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  logs.stop({ retain: true });
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.equal(result.liveLogs.timedOut, true);
 });

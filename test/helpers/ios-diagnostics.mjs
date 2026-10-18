@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 const tail = (value, limit) => typeof value === "string" ? value.slice(-limit) : "";
 export const commandFailureOutput = error => ({
@@ -10,6 +11,56 @@ export const commandFailureOutput = error => ({
 const failure = error => ({ error: String(error?.message || error).slice(0, 1000), ...commandFailureOutput(error) });
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const bundleId = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
+const launchLogs = new Map();
+
+// Capture launch errors before a stalled simulator stops answering `log show`.
+// Scope both the device and predicate; never query the host's unified log.
+// This observer does not launch/recover the app or decide whether it passed.
+export function startIosLaunchLogs({ device, bundle, start = spawn, limit = 570000 }) {
+  if (!uuid.test(device || "") || !bundleId.test(bundle || "")) return { stop() {} };
+  const key = `${device}:${bundle}`;
+  const previous = launchLogs.get(key);
+  launchLogs.delete(key);
+  const evidence = { stdout: previous?.stdout || "", stderr: previous?.stderr || "", truncated: previous?.truncated || false,
+    captures: (previous?.captures || 0) + 1, ...(previous?.error ? { error: previous.error } : {}) };
+  let child, timer, force, stopped = false;
+  const append = (field, chunk, maximum) => {
+    const value = String(chunk);
+    evidence.truncated ||= evidence[field].length + value.length > maximum;
+    evidence[field] = tail(evidence[field] + value, maximum);
+  };
+  const stop = ({ retain = false, timedOut = false } = {}) => {
+    if (!stopped) {
+      stopped = true;
+      clearTimeout(timer);
+      evidence.stopped = true;
+      if (timedOut) evidence.timedOut = true;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGTERM"); } catch (error) { evidence.error = String(error.message).slice(0, 1000); }
+        force = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* Diagnostic cleanup cannot change the launch result. */ } }, 5000);
+        force.unref();
+      }
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    }
+    if (retain) {
+      // Only failed launches need later collection; bound even that cache.
+      if (launchLogs.size >= 4) launchLogs.delete(launchLogs.keys().next().value);
+      launchLogs.set(key, { ...evidence });
+    }
+  };
+  try {
+    child = start("xcrun", ["simctl", "spawn", device, "log", "stream", "--style", "compact", "--level", "info",
+      "--predicate", `eventMessage CONTAINS[c] "${bundle}"`], { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.setEncoding("utf8").on("data", chunk => append("stdout", chunk, 65536));
+    child.stderr.setEncoding("utf8").on("data", chunk => append("stderr", chunk, 8192));
+    child.on("error", error => { evidence.error = String(error.message).slice(0, 1000); stop(); });
+    child.on("close", (code, signal) => { clearTimeout(force); evidence.exitCode = code; evidence.signal = signal; stop(); });
+    timer = setTimeout(() => stop({ timedOut: true }), Math.min(570000, Math.max(1, limit)));
+    timer.unref();
+  } catch (error) { evidence.error = String(error.message).slice(0, 1000); stop(); }
+  return { stop };
+}
 
 // Read only UUID-scoped simulator folders, never the host's DiagnosticReports
 // or another device's logs. Missing local crash reports do not rule out a crash.
@@ -71,9 +122,11 @@ async function crashEvidence({ home, device, bundle, until, now }) {
 // broken diagnostics command cannot replace the failure that triggered it.
 export async function collectIosFailureDiagnostics({ device, bundle, deadline, run, home = os.homedir(), now = Date.now }) {
   if (!uuid.test(device || "") || !bundleId.test(bundle || "")) return { skipped: "Disposable simulator or bundle identity unavailable." };
+  const key = `${device}:${bundle}`, liveLogs = launchLogs.get(key);
+  launchLogs.delete(key);
   const until = Math.min(deadline, now() + 10000);
-  if (!Number.isFinite(until) || until <= now()) return { skipped: "No diagnostic time remains in the existing work budget." };
-  const result = { device, bundle, logs: { pending: true }, processes: { pending: true }, crashes: { pending: true } };
+  if (!Number.isFinite(until) || until <= now()) return { skipped: "No diagnostic time remains in the existing work budget.", ...(liveLogs ? { liveLogs } : {}) };
+  const result = { device, bundle, ...(liveLogs ? { liveLogs } : {}), logs: { pending: true }, processes: { pending: true }, installedApp: { pending: true }, crashes: { pending: true } };
   const capture = async (args, project) => {
     const remaining = Math.max(0, until - now());
     if (!remaining) return { skipped: "Diagnostic budget exhausted." };
@@ -86,6 +139,8 @@ export async function collectIosFailureDiagnostics({ device, bundle, deadline, r
       .then(value => { result.logs = value; }),
     capture(["spawn", device, "launchctl", "list"], value => tail(String(value || "").split("\n").filter(line => line.includes(bundle)).slice(0, 20).join("\n"), 8192))
       .then(value => { result.processes = value; }),
+    capture(["appinfo", device, bundle], value => tail(value, 16384))
+      .then(value => { result.installedApp = value; }),
     crashEvidence({ home, device, bundle, until, now }).catch(failure)
       .then(value => { result.crashes = value; }),
   ];
@@ -94,5 +149,8 @@ export async function collectIosFailureDiagnostics({ device, bundle, deadline, r
       timer = setTimeout(() => { timedOut = true; resolve(); }, Math.max(0, until - now()));
     })]);
   } finally { clearTimeout(timer); }
+  for (const field of ["logs", "processes", "installedApp", "crashes"]) {
+    if (result[field].pending) result[field] = { timedOut: true, error: "Diagnostic collection did not finish within the existing time budget." };
+  }
   return { ...result, ...(timedOut ? { timedOut: true } : {}) };
 }
