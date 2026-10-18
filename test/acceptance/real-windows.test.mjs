@@ -95,7 +95,7 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     }
     report.finishedAt = new Date().toISOString();
     write();
-    const summary = ["## Real Windows acceptance: " + report.overall,
+    const summary = ["## Windows process probes (before native security result): " + report.overall,
       "", "**Overall real-device qualification is incomplete.** Local mode does not qualify private Tailscale or Funnel. Local console/files/screen run with the hosted administrator token; Codex is a separate standard-user probe. No provider inference, normal-user GUI parity or physical-device pass is claimed.",
       "", "| Case | Result | Evidence or prerequisite |", "| --- | --- | --- |",
       ...report.cases.map((c) => `| ${c.id} | ${c.status} | ${redact(c.error || c.prerequisite || "Real execution; see acceptance.json").replaceAll("|", "\\|").replaceAll("\n", " ")} |`), ""].join("\n");

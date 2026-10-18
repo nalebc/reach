@@ -42,8 +42,9 @@ npm run test:file -- --test-timeout=900000 --test-concurrency=1 test/acceptance/
 
 The installer is intentionally restricted to GitHub-hosted Windows. No owner
 Reach instance is touched. There are no repository/provider/Tailscale secrets in
-this workflow and no authentication or enrollment command. The existing general
-CI remains required and unchanged.
+this workflow and no provider or Tailscale sign-in/enrollment command. Local
+Reach pairing and the disposable Windows account use real authentication. The
+existing general CI remains required and unchanged.
 
 Artifacts contain an allowlisted vendor report, standard-user worker/harness
 reports, and redacted `acceptance.json`. `checkoutCommit` records the checked-out

@@ -77,8 +77,23 @@ jobs:
           }
           $report = Get-Content (Join-Path $reportDir 'acceptance.json') -Raw | ConvertFrom-Json
           $nativeStatus = if ($env:NATIVE_SOCKET_OUTCOME -eq 'success') { 'PASS' } else { 'FAIL' }
-          $report.cases = @($report.cases) + @(@{ id = 'real-windows-socket-directory-security'; status = $nativeStatus; evidence = 'Actual Windows NTFS ACL/junction APIs and native helper compilation; see the dedicated workflow step. Connected-peer success is the separate real Codex case.' })
+          $nativeEvidence = if ($nativeStatus -eq 'PASS') {
+            'All six actual native NTFS ACL/junction assertions passed; see the dedicated step. Connected-peer success is the separate real Codex case.'
+          } else {
+            'Native security setup or assertions failed; inspect the dedicated step. No native denial assertion pass is claimed.'
+          }
+          $report.cases = @($report.cases) + @(@{ id = 'real-windows-socket-directory-security'; status = $nativeStatus; evidence = $nativeEvidence })
           $report | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $reportDir 'acceptance.json')
+          @(
+            ('## Final Windows acceptance: ' + $report.overall),
+            '',
+            'This final result includes the separate native security step. Full device qualification remains incomplete.',
+            '',
+            '| Case | Result | Evidence |',
+            '| --- | --- | --- |',
+            ('| Native socket directory security | ' + $nativeStatus + ' | ' + $nativeEvidence + ' |'),
+            '| Authenticated Tailscale/recovery and physical clients | BLOCKED | Required identities and devices are unavailable. |'
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append
       - name: Preserve only redacted acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
