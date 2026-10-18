@@ -41,6 +41,9 @@ export const suites = {
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    // The host guard refreshing ahead, and live connections held through a
+    // lapse of Tailscale's word instead of closed (Oct 18).
+    "browser-host-guard", "host-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.

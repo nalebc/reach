@@ -25,6 +25,8 @@ function fixture(options = {}) {
     clients: () => records ?? [owner(), owner("nOther"), owner("nWasm"), ...(active ? [grant()] : [])],
     lookup: async () => { calls++; if (reply instanceof Error) throw reply; return reply; },
     trusted: (req) => trusted.has(req), now: () => time,
+    // The guard's own timer stays still here (host-identity-hold.test.mjs).
+    setTimer: () => null, clearTimer: () => {},
     ...options,
   });
   const request = (nodeId = "nPhone", { trust = true, url = "/api/agents/browser-invitations", method = "POST" } = {}) => {

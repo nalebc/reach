@@ -6,13 +6,14 @@
 // `within`. Before, one host lookup that came late closed the live screen,
 // its control, sound and terminals together, again and again (Oct 18).
 export function identityHold({ within = 5000, now = Date.now, recheck = () => {} } = {}) {
-  let since = 0,
+  // When it began (null: not held), and why.
+  let since = null,
     why = "";
   return {
     // Refused for a moment (why): true while it may wait, false once the
     // hold is over and the connection ends.
     hold(message = "") {
-      if (!since) {
+      if (since === null) {
         since = now();
         why = message;
         // Tailscale is asked again now; a lookup already on its way is shared.
@@ -21,16 +22,16 @@ export function identityHold({ within = 5000, now = Date.now, recheck = () => {}
       return now() - since < within;
     },
     get held() {
-      return since > 0;
+      return since !== null;
     },
     // How long it's been held, and why (for the one line in Reach's log).
     get lapse() {
-      return since ? { ms: now() - since, why } : null;
+      return since === null ? null : { ms: now() - since, why };
     },
     // A check passed: the lapse it ends, if there was one.
     clear() {
       const lapse = this.lapse;
-      since = 0;
+      since = null;
       why = "";
       return lapse;
     },
