@@ -18,14 +18,15 @@ const prepared = new Map();
 async function prepare(dataDir) {
   const dir = path.join(dataDir, "codex-socket-native");
   if (!prepared.has(dir)) prepared.set(dir, (async () => {
-    // Only Reach's dedicated helper directory is secured. The Codex socket's
-    // own ACL is checked read-only inside the helper, and is never repaired.
+    // Secure Reach's own state root and nested helper directory together.
+    // Retained-handle preparation must create an absent state parent first.
+    // The Codex socket's ACL is checked read-only, and is never repaired.
     // A helper and its note might both predate this directory's protection.
     // Compile a new unpredictable file on the first use of each Reach process;
     // a pre-existing matching EXE/note pair never establishes provenance.
-    const secured = await ensurePrivateFolders({ protect: [dir], nativeDir: dir, helpers: ["codex-socket"],
+    const secured = await ensurePrivateFolders({ protect: [dataDir, dir], nativeDir: dir, helpers: ["codex-socket"],
       build: (kind, options) => windowsHelper(kind, { ...options, fresh: true }) });
-    if (!secured.ok) throw new Error("Reach couldn't prepare its private Codex connection helper on this Windows PC.");
+    if (!secured.ok) throw preparationRefusal(secured);
     return secured.helper("codex-socket")();
   })().catch((error) => { prepared.delete(dir); throw error; }));
   return prepared.get(dir);
@@ -39,6 +40,30 @@ const reasons = {
   length: "Codex's session service path is longer than Windows AF_UNIX supports.",
 };
 const refusal = (reason) => Object.assign(new Error(reasons[reason] || "Reach couldn't securely connect to Codex's session service on this Windows PC."), { status: 503, code: "CODEX_SOCKET_REFUSED" });
+const prepareCodes = new Set(["EPRIVATESTAGE", "ECHANGED", "EACCES", "EPERM", "ENOENT", "ENOSYS", "ETIMEDOUT", "ABORT_ERR"]);
+const prepareStatuses = new Set([400, 401, 403, 409, 421, 423, 429, 500, 501, 502, 503, 504]);
+const stagePhases = new Set("validate command token leaf parent path volume ancestors descriptor-build container stage-create stage-check ancestor-recheck output".split(" "));
+const stageReasons = new Set("input account leaf path reparse descriptor owner ancestor-access stage-acl profile volume depth exists not-empty changed exception unknown ABORT_ERR ETIMEDOUT ENOENT EACCES EPERM".split(" "));
+const exceptionClasses = new Set(["none", "unknown", "System.ArgumentException", "System.ArgumentNullException", "System.InvalidCastException", "System.InvalidOperationException",
+  "System.UnauthorizedAccessException", "System.IO.IOException", "System.IO.DirectoryNotFoundException", "System.IO.FileNotFoundException", "System.Security.SecurityException",
+  "System.Management.Automation.RuntimeException", "System.Management.Automation.MethodInvocationException", "System.Management.Automation.PropertyNotFoundException"]);
+const stageIds = new Set([...stageReasons, "none", "RuntimeException", "MethodInvocationException", "PropertyNotFoundStrict", "InvokeMethodOnNull", "InvalidCastException", "ArgumentException", "UnauthorizedAccessException"]);
+function preparationRefusal(value) {
+  // Keep only finite diagnostic categories. Native stdout, messages, paths,
+  // tokens and arbitrary error fields never become the public failure.
+  const error = Object.assign(new Error("Reach couldn't prepare its private Codex connection helper on this Windows PC."), { status: 503, code: "CODEX_SOCKET_PREPARE" });
+  const code = value?.prepareCode ?? value?.code, status = value?.prepareStatus ?? value?.status;
+  if (prepareCodes.has(code)) error.prepareCode = code;
+  if (prepareStatuses.has(status)) error.prepareStatus = status;
+  if (value?.stage && typeof value.stage === "object") {
+    const stage = value.stage;
+    error.stage = { phase: stagePhases.has(stage.phase) ? stage.phase : "unknown", reason: stageReasons.has(stage.reason) ? stage.reason : "unknown" };
+    for (const key of ["exception", "innerException"]) if (exceptionClasses.has(stage[key])) error.stage[key] = stage[key];
+    if (stageIds.has(stage.id)) error.stage.id = stage.id;
+    if (Number.isSafeInteger(stage.line) && stage.line >= 0 && stage.line <= 99999) error.stage.line = stage.line;
+  }
+  return error;
+}
 
 // Exported separately to exercise helper protocol and lifecycle on every OS;
 // those tests model the child, and do not qualify Windows socket security.
@@ -124,7 +149,12 @@ export async function openWindowsCodexSocket(file, {
 } = {}) {
   if (!windowsCodexSocketPath(file)) throw refusal("endpoint");
   signal?.throwIfAborted();
-  const helper = await prepareHelper(dataDir);
+  let helper;
+  try { helper = await prepareHelper(dataDir); }
+  catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw preparationRefusal(error);
+  }
   signal?.throwIfAborted();
   try { unchanged(helper.file, helper.sha256); }
   catch (error) { prepared.delete(path.join(dataDir, "codex-socket-native")); throw error; }

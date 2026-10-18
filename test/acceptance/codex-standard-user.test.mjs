@@ -147,8 +147,7 @@ test("real Codex and Reach daemon client under a genuine standard Windows accoun
     if (initialized) await check("actual-live-codex-and-helper-architecture", async () => {
       const inspected = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
         path.join(repo, "test", "acceptance", "read-windows-architecture.ps1"),
-        "-NodeProcessId", String(process.pid), "-VendorProcessId", String(daemonPid),
-        "-CodexHelperDirectory", path.join(os.homedir(), ".reach", "codex-socket-native")], 60000);
+        "-NodeProcessId", String(process.pid), "-VendorProcessId", String(daemonPid), "-InspectCodexHelper"], 60000);
       assert.ok(inspected.ok, inspected.error);
       const actual = lastJSON(inspected.stdout);
       report.architecture = actual;
@@ -160,6 +159,7 @@ test("real Codex and Reach daemon client under a genuine standard Windows accoun
       assert.equal(actual.codexDaemon.runtimeArchitecture, native, "actual Codex must match the native CPU");
       assert.equal(actual.codexDaemon.emulated, false);
       assert.equal(actual.codexHelpers.length, 1);
+      assert.equal(actual.codexHelpers[0].parentProcessId, process.pid);
       assert.equal(actual.codexHelpers[0].nativeArchitecture, native);
       // AnyCPU helpers may run under a Windows CLR emulation path. Record
       // IsWow64Process2's actual result; never infer native execution from IL.
