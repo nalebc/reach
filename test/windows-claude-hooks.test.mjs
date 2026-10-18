@@ -104,7 +104,7 @@ async function modeledHook(t, { mode = "ok", answer, away = 2200, retry = 4500 }
     socket.on("error", () => {});
   });
   server.listen(pipe); await once(server, "listening");
-  const child = spawn(process.execPath, ["--import", register, fileURLToPath(new URL("../scripts/agent-hook.mjs", import.meta.url)), "claude", "--pipe-dir", dir], {
+  const child = spawn(process.execPath, ["--import", pathToFileURL(register).href, fileURLToPath(new URL("../scripts/agent-hook.mjs", import.meta.url)), "claude", "--pipe-dir", dir], {
     env: {...process.env, SystemRoot: "C:\\Windows", REACH_HOOK_MODEL:JSON.stringify(config), REACH_HOOK_AWAY_MS:String(away), REACH_HOOK_RETRY_MS:String(retry)},
     stdio:["pipe","pipe","pipe"],
   });

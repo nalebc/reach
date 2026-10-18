@@ -75,10 +75,12 @@ try {
   function AssertAncestor([string]$folder, [bool]$last) {
     $raw = Descriptor $folder
     foreach ($ace in $raw.DiscretionaryAcl) {
-      if ($ace -isnot [System.Security.AccessControl.CommonAce] -or $ace.IsCallback -or ($ace.AceFlags -band 224) -ne 0) { throw 'descriptor' }
+      # Windows PowerShell 5's byte-backed enum bitwise operators can throw;
+      # inspect the same exact flag masks as integers (224, InheritOnly=8).
+      if ($ace -isnot [System.Security.AccessControl.CommonAce] -or $ace.IsCallback -or (([int]$ace.AceFlags) -band 224) -ne 0) { throw 'descriptor' }
       if ($ace.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied) { continue }
       if ($ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { throw 'descriptor' }
-      if (($ace.AceFlags -band [System.Security.AccessControl.AceFlags]::InheritOnly) -ne 0) { continue }
+      if ((([int]$ace.AceFlags) -band 8) -ne 0) { continue }
       $who = $ace.SecurityIdentifier.Value
       if ($trusted.ContainsKey($who) -or $who -eq 'S-1-3-4') { continue }
       # READ/list/traverse and creation-only grants on a higher ancestor do
