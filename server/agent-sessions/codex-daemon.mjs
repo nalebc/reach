@@ -11,6 +11,7 @@ import { spawnable } from "../agent-cli.mjs";
 import { computerWord } from "../computer-word.mjs";
 import { trustedSocket } from "./trusted-socket.mjs";
 import { PIPE } from "../windows-owners.mjs";
+import { codexNativeFolder, openWindowsCodexSocket, windowsCodexSocketPath } from "./windows-codex-socket.mjs";
 
 const exec = promisify(execFile);
 
@@ -142,6 +143,10 @@ export function createCodexDaemon({
   // How Windows reaches the service's pipe (ws+unix:// can't name a drive
   // path or a pipe: audit #2, Oct 12).
   connect = net.connect,
+  // Codex 0.163's actual Windows shared daemon uses Winsock AF_UNIX. Its
+  // connected peer is verified by a private native helper before ws sees it.
+  connectWindowsSocket = openWindowsCodexSocket,
+  dataDir = codexNativeFolder(),
 } = {}) {
   let socket = null;
   let ready = null;
@@ -154,6 +159,7 @@ export function createCodexDaemon({
   let requestHandler = null;
   // Set when Reach quits; nothing reconnects after that.
   let closed = false;
+  let preparingConnection = null;
   let version = null;
   let serviceVersion = null;
   // A Codex older than Reach works with (compatibility.mjs), as last read:
@@ -207,6 +213,14 @@ export function createCodexDaemon({
     });
     const status = JSON.parse(stdout.trim().split("\n").pop());
     if (!status.socketPath) throw new Error("Codex did not report its session service.");
+    if (platform === "win32" && !PIPE.test(status.socketPath)) {
+      // trustedSocket's named-pipe policy remains unchanged. AF_UNIX's
+      // directory and actual connected peer are checked together by its
+      // native connection; a path-only check could race the later connect.
+      if (!windowsCodexSocketPath(status.socketPath))
+        throw Object.assign(new Error("Codex reported a session service endpoint Reach can't securely open on this Windows PC."), { status: 503 });
+      return status.socketPath;
+    }
     return (await checkSocket(status.socketPath)) || status.socketPath;
   }
   // Said without the pipe's name, which Node's own errors carry.
@@ -214,18 +228,24 @@ export function createCodexDaemon({
   async function open() {
     const path = await socketPath();
     if (closed) throw closedError();
-    // Windows: the URL names no endpoint; ws takes the connection net.connect
-    // makes to the pipe. Node reaches nothing else there (no socket files).
-    const pipe = platform === "win32";
-    if (pipe && !PIPE.test(path))
-      throw Object.assign(new Error(`Codex's session service isn't on a named pipe, the only kind Reach can open on this ${computerWord(platform)}.`), { status: 503 });
-    const ws = pipe
-      ? new Socket("ws://localhost/", { handshakeTimeout: connectTimeout, createConnection: () => connect(path) })
-      : new Socket(`ws+unix://${path}:/`, { handshakeTimeout: connectTimeout });
-    await new Promise((resolve, reject) => {
-      ws.once("open", resolve);
-      ws.once("error", pipe ? () => reject(unreachable()) : reject);
-    });
+    // Windows: localhost names no network endpoint. Existing named pipes
+    // still use net.connect; AF_UNIX uses only the verified native Duplex.
+    const windows = platform === "win32", pipe = windows && PIPE.test(path);
+    let bridge, ws;
+    const controller = windows && !pipe ? new AbortController() : null;
+    if (controller) preparingConnection = controller;
+    try {
+      if (controller) bridge = await connectWindowsSocket(path, { dataDir, timeout: connectTimeout, signal: controller.signal });
+      if (closed) throw closedError();
+      ws = windows
+        ? new Socket("ws://localhost/", { handshakeTimeout: connectTimeout, createConnection: () => pipe ? connect(path) : bridge })
+        : new Socket(`ws+unix://${path}:/`, { handshakeTimeout: connectTimeout });
+      await new Promise((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", windows ? () => reject(unreachable()) : reject);
+      });
+    } catch (error) { ws?.terminate(); bridge?.destroy(); throw error; }
+    finally { if (preparingConnection === controller) preparingConnection = null; }
     // Reach quit while this connection was being made.
     if (closed) {
       ws.terminate();
@@ -380,6 +400,8 @@ export function createCodexDaemon({
   }
   // Drop this connection; the next call opens a new one (a new hello).
   function reconnect() {
+    preparingConnection?.abort();
+    preparingConnection = null;
     const was = socket;
     socket = null;
     ready = null;
@@ -495,6 +517,8 @@ export function createCodexDaemon({
     // wait 30 s on a stuck daemon) and never reconnect.
     close() {
       closed = true;
+      preparingConnection?.abort();
+      preparingConnection = null;
       fail("Codex session service closed.");
       socket?.terminate();
       socket = null;

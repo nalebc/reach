@@ -79,7 +79,8 @@ export const suites = {
     // on a real screen only with REACH_TEST_WINDOWS_DESKTOP (ci.yml's step).
     "windows-helper-launch", "agent-desktop-windows-policy", "windows-agent-desktop-native",
     // Coding agents, workstream M.
-    "windows-codex-transport", "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
+    "windows-codex-transport", "windows-codex-socket", "windows-codex-socket-native",
+    "windows-pipe-owner", "windows-codex-holder", "windows-team-bridge",
     // Proof below the phone, workstream U (audit #18-#20, #22, #24): the
     // stand-in Tailscale's own tailscale.exe and the Tailscale-mode launches
     // on it; the first run, Ctrl+C and crash relaunch in a real console;

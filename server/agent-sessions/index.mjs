@@ -214,7 +214,8 @@ export function createAgentSessions({
   // Delegated threads are recovered only by their durable task manager.
   recoveryAllowed = () => true,
   teamExtras = () => null,
-  daemon = createCodexDaemon(),
+  dataDir = path.join(os.homedir(), ".reach"),
+  daemon = createCodexDaemon({ dataDir }),
   codex = createCodexSessions({ daemon }),
   // The Codex app's own IPC (codex-desktop.mjs): settings, turns and its
   // approvals for chats it holds.
@@ -237,7 +238,6 @@ export function createAgentSessions({
       : background
         ? openInBackground(url)
         : exec("/usr/bin/open", [url], { timeout: 10000 }),
-  dataDir = path.join(os.homedir(), ".reach"),
   // Signing an agent in on the Mac from the phone (sign-in.mjs).
   signIn = createSignIn({
     dataDir,

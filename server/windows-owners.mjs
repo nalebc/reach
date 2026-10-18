@@ -12,7 +12,7 @@ import { assertUnchanged, windowsHelper } from "./desktop-native.mjs";
 const exec = promisify(execFile);
 
 // A Windows named pipe (\\.\pipe\name or \\?\pipe\name), the only local
-// endpoint Node can open there. One name, as Windows documents it: no
+// endpoint Node can open directly there. One name, as Windows documents it: no
 // slashes and not only dots, so it can't turn into a path to something else.
 export const PIPE = /^\\\\[.?]\\pipe\\(?!\.+$)[^\\/\0-\x1f]{1,256}$/i;
 

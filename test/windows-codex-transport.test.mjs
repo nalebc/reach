@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
 import { createCodexDaemon } from "../server/agent-sessions/codex-daemon.mjs";
+import { windowsCodexSocketPath } from "../server/agent-sessions/windows-codex-socket.mjs";
 import { PIPE } from "../server/windows-owners.mjs";
 import { findCodexExecutable } from "../server/capabilities.mjs";
 import { spawnable } from "../server/agent-cli.mjs";
@@ -94,18 +95,18 @@ test("on Windows the WebSocket names no endpoint and rides net.connect to the pi
   assert.equal(connected.length, 1, "a Mac never takes the Windows route");
 });
 
-test("on Windows a service that isn't on a named pipe is refused before connecting, without its path", async (t) => {
+test("on Windows a service on an unsupported remote path is refused before connecting, without its path", async (t) => {
   const connected = [];
   const daemon = createCodexDaemon({
     locate: async () => "C:\\codex.exe",
-    run: async () => ({ stdout: JSON.stringify({ socketPath: "C:\\Users\\me\\.codex\\app-server-control\\control.sock" }) }),
+    run: async () => ({ stdout: JSON.stringify({ socketPath: "\\\\other-computer\\codex\\control.sock" }) }),
     connect: (where) => (connected.push(where), new net.Socket()),
     platform: "win32",
     ...quiet,
   });
   t.after(() => daemon.close());
   await assert.rejects(daemon.rpc("thread/list"), (e) => {
-    assert.equal(e.message, "Codex's session service isn't on a named pipe, the only kind Reach can open on this Windows PC.");
+    assert.equal(e.message, "Codex reported a session service endpoint Reach can't securely open on this Windows PC.");
     assert.doesNotMatch(e.message, /control\.sock|Users/);
     return e.status === 503;
   });
@@ -166,9 +167,9 @@ test("on real Windows, Codex's session service is reached on a named pipe with N
   assert.equal(seen.length, 1, "one connection for both calls");
 });
 
-// What Codex itself reports on Windows isn't known yet (audit #2). Where
-// the runner has Codex, its daemon is started and its answer kept.
-test("on real Windows with Codex installed, its session service is on a named pipe Reach reaches", { skip: !windows, timeout: 120000 }, async (t) => {
+// Optional installed-vendor integration (not present on ordinary CI images).
+// Real Codex 0.163 uses Windows AF_UNIX; older pipe endpoints remain supported.
+test("on real Windows with Codex installed, Reach reaches its supported shared-daemon endpoint", { skip: !windows, timeout: 120000 }, async (t) => {
   const codex = await findCodexExecutable();
   if (!codex) return t.skip("Codex isn't installed on this runner.");
   const cli = spawnable(codex);
@@ -176,7 +177,7 @@ test("on real Windows with Codex installed, its session service is on a named pi
   const status = JSON.parse(stdout.trim().split("\n").pop());
   await fs.mkdir("reports", { recursive: true });
   await fs.writeFile("reports/windows-codex-daemon.json", JSON.stringify({ codex: path.basename(codex), status }, null, 2));
-  assert.ok(PIPE.test(status.socketPath), `Codex reported ${JSON.stringify(status.socketPath)}`);
+  assert.ok(PIPE.test(status.socketPath) || windowsCodexSocketPath(status.socketPath), "Codex must report a supported local endpoint");
   const daemon = createCodexDaemon({ locate: async () => codex, run: async () => ({ stdout }), ...quiet });
   t.after(() => daemon.close());
   assert.ok(Array.isArray((await daemon.rpc("thread/list", { limit: 1 })).data));
