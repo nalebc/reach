@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST, SELF_IP } from "./helpers/fake-tailscale.mjs";
-import { onlyReach } from "./helpers/windows-stop.mjs";
+import { foregroundTask, onlyReach } from "./helpers/windows-stop.mjs";
 import { scanTerminalQRs } from "./helpers/scan-terminal-qr.mjs";
 
 // Windows' browser sign-in, wired end to end (docs/parity/D-public-door.md
@@ -145,7 +145,7 @@ const stop = (root, pid) =>
     state: () => path.join(root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: () => assert.fail("it stops itself"), end: () => assert.fail("it stops itself"), reaches: onlyReach({ pid, root }) },
+    windows: { task: foregroundTask, taskkill: () => assert.fail("it stops itself"), end: () => assert.fail("it stops itself"), reaches: onlyReach({ pid, root }) },
   });
 
 test("Windows set up with your account: a keyed private route and a foreground Funnel, browser sign-in, and a key nobody else sees", { ...asWindows, timeout: 180000 }, async (t) => {

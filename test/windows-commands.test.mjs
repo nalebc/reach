@@ -9,7 +9,7 @@ import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fake-tailscale.mjs";
-import { onlyReach } from "./helpers/windows-stop.mjs";
+import { foregroundTask, onlyReach, scopeWindowsStop } from "./helpers/windows-stop.mjs";
 import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
@@ -23,6 +23,36 @@ import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 // never reach a Reach that really runs on this computer.
 const AS_WINDOWS = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
 const UNREAD = /^Reach couldn't read this PC's process list \(Windows' C# compiler isn't on this PC\), so it only knows the Reach run from this folder\.\n/;
+
+// Synthetic process/task dependencies and a disposable filesystem exercise
+// the real stop controller; this does not qualify Windows token behavior.
+test("modeled Windows stop inventory: another fixture's background starter stays outside a foreground stop", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-stop-inventory-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const own = { pid: 4000001, startedAt: 1, image: "node.exe" };
+  const otherStarter = { pid: 4000002, startedAt: 2, image: "reach-background-0123456789ab.exe", commandLine: '"C:\\other\\reach-background-0123456789ab.exe"' };
+  const found = scopeWindowsStop({ hosts: [{ ...own, root, terminals: [], descendants: [] }], processes: [own, otherStarter], partial: "" }, own.pid);
+  const printed = [], taskCalls = [], ended = [];
+  let running = true;
+  const result = await stopReach(root, {
+    platform: "win32", yes: true, print: (line) => printed.push(line), state: () => root, wait: async () => {},
+    windows: {
+      env: {}, graceMs: 0, starterMs: 0, reaches: async () => found, list: async () => found.processes,
+      alive: (pid) => pid === own.pid && running,
+      end: (pid) => { ended.push(pid); running = false; },
+      task: {
+        state: () => ({ installed: false, ours: false }),
+        hold: () => taskCalls.push("hold"), end: () => taskCalls.push("end"),
+        release: () => taskCalls.push("release"), run: () => taskCalls.push("run"),
+      },
+    },
+  });
+  assert.deepEqual(printed, ["Stopped Reach."]);
+  assert.equal(result.service, false);
+  assert.deepEqual(taskCalls, []);
+  assert.deepEqual(ended, [own.pid]);
+  assert.equal(fs.existsSync(path.join(root, "stop-request.json")), false);
+});
 
 // Only the existing Windows-on-Mac/Linux model substitutes the unavailable
 // native preflight. A genuine Windows run uses production checks unchanged.
@@ -109,13 +139,14 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
     table: () => [],
     launchctl: () => "",
     windows: {
+      task: foregroundTask,
       taskkill: (pid) => killed.push(pid),
       // What it left running may be ended; never the Reach itself.
       end: (pid) => pid === reach.child.pid && killed.push(pid),
       // This test's Reach only, never another on this computer.
       reaches: async () => {
         const found = await windowsReaches({ root: reach.dir, state: reach.state, list: () => windowsProcesses({ nativeDir: path.join(reach.state, "native") }) });
-        return { ...found, hosts: found.hosts.filter((h) => h.pid === reach.child.pid) };
+        return scopeWindowsStop(found, reach.child.pid);
       },
     },
   });
@@ -239,7 +270,7 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
     state: () => path.join(seen.root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: (pid) => killed.push(pid), end: (pid) => killed.push(pid), reaches: onlyReach({ pid: reach.child.pid, root: seen.root }) },
+    windows: { task: foregroundTask, taskkill: (pid) => killed.push(pid), end: (pid) => killed.push(pid), reaches: onlyReach({ pid: reach.child.pid, root: seen.root }) },
   });
   const [code] = await reach.exited;
   assert.equal(result.stopped, 1);
@@ -274,7 +305,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "reach-no-request-"));
   t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
   const { windowsProcesses } = await import("../server/windows-processes.mjs");
-  const list = () => windowsProcesses({ nativeDir: path.join(elsewhere, "native") });
+  const list = async () => (await windowsProcesses({ nativeDir: path.join(elsewhere, "native") })).filter((entry) => entry.pid === reach.child.pid);
   const listed = (await list()).find((p) => p.pid === reach.child.pid);
   assert.ok(Number.isFinite(listed?.startedAt), "Windows' process list names it, with when it started");
   const said = [];
@@ -285,6 +316,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
     state: () => elsewhere,
     windows: {
       env: {},
+      task: foregroundTask,
       list,
       graceMs: 500,
       // This test's Reach only; what it started is left to Windows.
@@ -293,6 +325,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
   });
   assert.equal(result.stopped, 1);
   assert.deepEqual(said, ["Stopped Reach."]);
+  assert.equal(result.service, false, "only the foreground fixture was stopped");
   const [code] = await reach.exited;
   assert.equal(code, 1, "ended outright");
   await routeGone(seen.fake, session);
