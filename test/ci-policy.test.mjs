@@ -262,7 +262,12 @@ test("default Windows QR onboarding is required in source CI and the installed-a
   assert.ok(ci.jobs.verify.strategy.matrix.include.some(entry => entry.os.startsWith("windows-")));
   const installed = ci.jobs.verify.steps.find(step => step.run === "npm run test:ci:installed");
   assert.ok(installed, "the built package must be installed and exercised");
-  assert.equal(installed.if, undefined, "Windows cannot be excluded from the installed QR gate");
+  assert.equal(installed.if, "${{ !cancelled() && steps.package_build.outcome == 'success' }}",
+    "every platform must run the installed QR gate once its package exists, including after another test phase failed");
+  assert.equal(ci.jobs.verify.steps.find(step => step.id === "package_build")?.run, "npm run package",
+    "the prerequisite must be the actual package build");
+  assert.equal(ci.jobs.verify.steps.find(step => step.run?.includes("package-candidate.mjs"))?.if, "${{ success() }}",
+    "failed phases must still prevent release candidate handoff");
   const runner = fs.readFileSync(new URL("../.github/scripts/test-installed-package.mjs", import.meta.url), "utf8");
   assert.match(runner, /test\/qr-onboarding-e2e\.test\.mjs/);
   assert.match(runner, /REACH_TEST_PACKAGE: path\.join\(temp, "node_modules", "@nalebc", "reach"\)/);

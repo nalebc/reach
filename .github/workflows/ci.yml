@@ -137,21 +137,25 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
       - run: npm run build:release
+        id: release_build
+      # Collect independent failures in one run. A failed phase still fails
+      # this job; only a successful build may run the following test phases.
+      # Cancellation stops them, and candidate handoff keeps success() below.
       - name: Full guarded suite
-        if: matrix.suite == 'all'
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.suite == 'all' }}
         run: npm run test:ci
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
       - name: Windows contracts, HTTP, files and native terminals
-        if: matrix.suite == 'windows'
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.suite == 'windows' }}
         run: npm run test:ci:windows
         env:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
       - name: Windows browser ingress against a LocalSystem service
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
         shell: pwsh
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
@@ -160,12 +164,12 @@ jobs:
         env:
           REACH_TEST_WINDOWS_PEER: "1"
       - name: Native policies, file/script sandboxes, generated video and PDF rendering
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'macOS' }}
         # Synthetic AX objects and inert input sinks. No actual global typing,
         # private browser profiles, provider sign-in, or OS permission grants.
         run: npm run test:ci:native
       - name: Real Windows screen, clicks and typing under a normal PC's script policy
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
         # GitHub's runners allow every script; a normal PC refuses them
         # (Oct 11: a first Windows user's live screen never loaded). Set
         # Windows PowerShell's default policy, then list displays and capture
@@ -183,22 +187,26 @@ jobs:
           REACH_TEST_WINDOWS_DESKTOP: "1"
           CI: "true"
       - run: npm run package
+        id: package_build
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' }}
       - run: npm run verify:package
+        if: ${{ !cancelled() && steps.package_build.outcome == 'success' }}
       - name: QR scan and phone matrix against the installed npm artifact
+        if: ${{ !cancelled() && steps.package_build.outcome == 'success' }}
         run: npm run test:ci:installed
       - name: Cold source install without Node, npm, Go or Tailscale
-        if: matrix.os == 'ubuntu-24.04' && matrix.node == 22
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 22 }}
         run: npm run test:file -- --test-timeout=240000 test/first-install-source.test.mjs
         env:
           REACH_TEST_SOURCE_INSTALL: "1"
       - name: Record CLI and MCP transport timings using the same read-only fixture
-        if: matrix.os == 'ubuntu-24.04' && matrix.node == 22
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 22 }}
         run: npm run test:file -- test/agent-transport-benchmark.test.mjs
         env:
           REACH_TEST_TRANSPORT_BENCHMARK: "1"
           REACH_TRANSPORT_BENCHMARK_OUTPUT: reports/transport-benchmark.json
       - name: npm 12 Linux install-script diagnostics and approved native rebuild
-        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 24 }}
         # The pinned npm release is the compatibility subject. It runs only
         # on this disposable, read-only runner with no publishing authority.
         run: | # zizmor: ignore[adhoc-packages]
@@ -207,6 +215,7 @@ jobs:
         env:
           REACH_TEST_NPM12_INSTALL: "1"
       - run: node .github/scripts/package-candidate.mjs
+        if: ${{ success() }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reach-${{ matrix.os }}-node${{ matrix.node }}
