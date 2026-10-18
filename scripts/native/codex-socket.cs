@@ -50,7 +50,11 @@ static class CodexSocket {
   [DllImport("kernel32.dll")]
   static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll")]
-  static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+  static extern uint WaitForMultipleObjects(uint count, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] IntPtr[] handles, bool all, uint milliseconds);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr CreateEventW(IntPtr security, bool manualReset, bool initialState, string name);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetEvent(IntPtr handle);
   [DllImport("kernel32.dll")]
   static extern bool CloseHandle(IntPtr handle);
   [DllImport("advapi32.dll", SetLastError = true)]
@@ -240,22 +244,31 @@ static class CodexSocket {
   }
   static int Main(string[] args) {
     bool winsock = false;
-    IntPtr parent = IntPtr.Zero;
+    IntPtr parent = IntPtr.Zero, stopWatcher = IntPtr.Zero;
+    Thread watcher = null;
+    bool watcherStarted = false;
     try {
       uint parentPid;
       if (args.Length != 2 || !uint.TryParse(args[1], out parentPid) || parentPid == 0) throw new Refused("endpoint");
       parent = OpenProcess(SYNCHRONIZE, false, parentPid);
       if (parent == IntPtr.Zero) throw new Refused("parent");
-      IntPtr watched = parent;
-      Thread watcher = new Thread(delegate() {
-        if (WaitForSingleObject(watched, INFINITE) == 0) {
+      stopWatcher = CreateEventW(IntPtr.Zero, true, false, null);
+      if (stopWatcher == IntPtr.Zero) throw new Refused("parent");
+      IntPtr watched = parent, stop = stopWatcher;
+      watcher = new Thread(delegate() {
+        // Stop wins simultaneous signals during normal shutdown. Neither
+        // wait handle is closed until this watcher has returned and joined.
+        uint outcome = WaitForMultipleObjects(2, new IntPtr[] { stop, watched }, false, INFINITE);
+        if (outcome == 1) {
           CloseSocket();
           // This also ends a blocked stdio writer; Windows closes all pinned
           // handles. No child or daemon is started by this helper.
           Environment.Exit(0);
         }
+        // A failed/unexpected wait cannot leave an unmonitored relay alive.
+        if (outcome != 0) Environment.Exit(1);
       });
-      watcher.IsBackground = true; watcher.Start();
+      watcher.IsBackground = true; watcher.Start(); watcherStarted = true;
       using (Token current = new Token(GetCurrentProcess())) {
         string endpoint;
         using (SafeFileHandle directory = PinDirectory(args[0], current.User, out endpoint)) {
@@ -279,8 +292,17 @@ static class CodexSocket {
     catch { Control("error check"); return 1; }
     finally {
       CloseSocket();
+      // Closing a handle during a pending Windows wait is undefined. End the
+      // wait and join first; on failure, process exit lets Windows end every
+      // thread before reclaiming its handles rather than racing their reuse.
+      if (watcherStarted) {
+        bool joined = false;
+        try { joined = SetEvent(stopWatcher) && watcher.Join(2000); } catch { }
+        if (!joined) Environment.Exit(1);
+      }
       if (winsock) WSACleanup();
       if (parent != IntPtr.Zero) CloseHandle(parent);
+      if (stopWatcher != IntPtr.Zero) CloseHandle(stopWatcher);
     }
   }
 }
