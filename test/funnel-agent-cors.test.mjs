@@ -136,6 +136,7 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     if (req.url !== "/agent-gateway") { res.writeHead(404); return res.end(); }
     const proxy = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method,
       headers: { ...req.headers, host: "localhost", "x-forwarded-host": req.headers.host, "x-forwarded-for": "100.64.0.20" } }, response => {
+      observation.upstream = { status: response.statusCode, headers: response.headers };
       res.writeHead(response.statusCode, response.headers); response.pipe(res);
     });
     proxy.on("error", error => { observation.proxyError = error.message; res.destroy(error); }); req.pipe(proxy);
@@ -179,14 +180,23 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     catch (error) { if (!/Invalid PermissionDescriptor|Unknown permission|Unrecognized permission/i.test(error.message)) throw error; }
   }
   const tab = await openTab(browser);
-  const networkFailures = [];
+  const networkFailures = [], browserTrace = [];
   browser.on("Network.loadingFailed", (event, session) => { if (session === tab.sessionId) networkFailures.push(event); });
+  for (const name of ["Page.frameNavigated", "Page.frameStartedLoading", "Page.frameStoppedLoading", "Page.loadEventFired", "Runtime.executionContextsCleared"])
+    browser.on(name, (event, session) => { if (session === tab.sessionId) browserTrace.push({ event: name, at: Date.now(), ...event }); });
+  browser.on("Network.responseReceivedExtraInfo", (event, session) => {
+    if (session === tab.sessionId) browserTrace.push({ event: "responseExtra", requestId: event.requestId, status: event.statusCode, resourceIPAddressSpace: event.resourceIPAddressSpace,
+      headers: Object.fromEntries(Object.entries(event.headers || {}).filter(([name]) => /^(access-control-|content-type|content-length)/i.test(name))) });
+  });
+  browser.on("Network.requestWillBeSent", (event, session) => { if (session === tab.sessionId) browserTrace.push({ event: "request", at: Date.now(), requestId: event.requestId, type: event.type, loaderId: event.loaderId, frameId: event.frameId, url: event.request.url, method: event.request.method }); });
+  browser.on("Network.requestWillBeSentExtraInfo", (event, session) => { if (session === tab.sessionId) browserTrace.push({ event: "requestExtra", requestId: event.requestId, clientSecurityState: event.clientSecurityState }); });
   await tab.send("Network.enable");
   // Fulfill the inert bootstrap document (and refuse its favicon) without
   // touching any public listener at its real HTTPS origin.
   // Private API requests use actual Chrome CORS + loopback TLS + Reach's
   // gateway/inner Express middleware; no CORS or fetch-site flags disabled.
   browser.on("Fetch.requestPaused", (event, session) => {
+    if (session === tab.sessionId) browserTrace.push({ event: "intercept", at: Date.now(), requestId: event.requestId, url: event.request.url, method: event.request.method });
     if (session === tab.sessionId) void tab.send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: event.request.url === `${ORIGIN}/` ? 200 : 404,
       responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Disposable CORS fixture</title>").toString("base64") })
       .catch(error => t.diagnostic(`Disposable bootstrap ended: ${error.message}`));
@@ -197,7 +207,7 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   const fetchSigned = (envelope) => tab.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(`${privateOrigin}/agent-gateway`)}, { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", "Reach-Key": ${JSON.stringify(key.thumbprint)} }, body: ${JSON.stringify(JSON.stringify(envelope))} });
     return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())), headers: Object.fromEntries(response.headers) };
-  })()`).catch(error => { t.diagnostic(JSON.stringify({ chrome: version.product, seen, networkFailures, browserProblems: tab.problems })); throw error; });
+  })()`).catch(error => { t.diagnostic(JSON.stringify({ chrome: version.product, seen, networkFailures, browserTrace, browserProblems: tab.problems })); throw error; });
   const device = await fetchSigned(request(key, token));
   assert.equal(device.status, 200);
   assert.equal(JSON.parse(Buffer.from(device.bytes).toString()).access.kind, "agent");
