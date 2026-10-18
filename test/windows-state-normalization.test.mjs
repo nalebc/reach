@@ -65,7 +65,8 @@ test("actual Windows retained-handle state normalization", {
     path.resolve("test/fixtures/windows/existing-state-acl.cs")]);
   const handles = path.join(stage.dir, "state-handles.exe");
   await run(compiler, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/main:PrivateStateHandles", `/out:${handles}`,
-    `/reference:${path.join(path.dirname(compiler), "System.dll")}`, path.resolve("scripts/native/private-state.cs"), path.resolve("test/fixtures/windows/private-state-handles.cs")]);
+    `/reference:${path.join(path.dirname(compiler), "System.dll")}`, `/reference:${path.join(path.dirname(compiler), "System.Core.dll")}`,
+    path.resolve("scripts/native/private-state.cs"), path.resolve("test/fixtures/windows/private-state-handles.cs")]);
   const planted = path.join(stage.dir, "planted-helper.exe");
   await run(compiler, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", `/out:${planted}`,
     `/reference:${path.join(path.dirname(compiler), "System.dll")}`, path.resolve("test/fixtures/windows/planted-state-helper.cs")]);
