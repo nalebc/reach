@@ -23,8 +23,9 @@ export const suites = {
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
-    // The app-in-front read beside the input queue, on the scanner (Oct 18).
-    "desktop-context-scanner",
+    // The app-in-front read beside the input queue, on the scanner, and a
+    // phone's new control connection taking over from its old one (Oct 18).
+    "desktop-context-scanner", "desktop-control-takeover",
     "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",

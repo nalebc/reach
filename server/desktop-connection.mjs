@@ -3,6 +3,18 @@ import { streamOptions, inputAction } from "./desktop-protocol.mjs";
 import { fail } from "./core.mjs";
 import { actsAsOwner } from "./screen.mjs";
 import { refuseGuest } from "./windows-guest-screen.mjs";
+// One control connection per phone. A new one from it takes over from the
+// one before: the phone made it to replace that one (a stalled old one,
+// busy with a slow action and not yet 3 s silent, turned every reconnect
+// away with 409 until the phone's tries ran out). The old one ends as
+// superseded, retryable, so its lease stays; its helper stops, which lets go
+// of anything it held, and the new one's helper starts only once it exited.
+export function takeOver(connections, id, socket) {
+  const current = connections.get(id);
+  if (current && current !== socket)
+    current.endControl?.("Desktop control moved to this device's newer connection.", true, true);
+  connections.set(id, socket);
+}
 export function desktopConnection(
   ws,
   {
@@ -193,7 +205,7 @@ export function desktopConnection(
   // A retryable end (the connection, not the grant, is the trouble) closes
   // with 1012 and keeps the lease a moment; the phone reconnects quietly
   // (src/useDesktopInput.ts). Anything else is 4001: control is over.
-  const close = (message = "Desktop control ended.", retryable = false) => {
+  const close = (message = "Desktop control ended.", retryable = false, superseded = false) => {
     if (closed) return;
     closed = true;
     ended = retryable ? "retry" : "end";
@@ -205,7 +217,14 @@ export function desktopConnection(
     stopInput(helper);
     if (ws.readyState === 1) {
       ws.send(
-        JSON.stringify({ type: "error", error: message, ...(retryable && { retryable: true }) }),
+        JSON.stringify({
+          type: "error",
+          error: message,
+          ...(retryable && { retryable: true }),
+          // Another connection from this device has control now: this one
+          // ends quietly, neither reconnecting nor letting control go.
+          ...(superseded && { superseded: true }),
+        }),
       );
       if (retryable) ws.close(1012, "Desktop control reconnecting");
       else ws.close(4001, "Desktop control ended");
@@ -581,10 +600,12 @@ export function desktopConnection(
     fields?.stop();
     if (ws.clientId && unregister(ws.clientId, ws) !== false) {
       // Over for good (revoked, expired, or the phone let go: a clean close,
-      // 1000 or one without a code): control ends now. Dropped (the link,
-      // 1006; a retryable end here; the phone closing to reconnect, 4002):
-      // the lease waits for it, up to the grace.
-      if (ended === "end" || code === 1000 || code === 1005 || !control.revokeLater)
+      // 1000): control ends now. Dropped (the link, 1006; a retryable end
+      // here; the phone closing to reconnect, 4002; one without a code,
+      // 1005, as a phone tearing a connection down to make the next sends):
+      // the lease waits for it, up to the grace. Stop on the phone ends
+      // control at once on its own (/api/screen/control, enabled: false).
+      if (ended === "end" || code === 1000 || !control.revokeLater)
         control.revoke(ws.clientId);
       else control.revokeLater(ws.clientId, grace);
     }

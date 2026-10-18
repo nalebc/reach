@@ -119,7 +119,7 @@ import { createNotificationActions, notificationPush, admissionNotification, pus
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopBinary, desktopDisplays, windowsBinary } from "./desktop-native.mjs";
 import { prepareOwners } from "./windows-owners.mjs";
-import { desktopConnection } from "./desktop-connection.mjs";
+import { desktopConnection, takeOver } from "./desktop-connection.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
@@ -5499,22 +5499,8 @@ export async function createReach(overrides = {}) {
           // The same rule as watching it: every app on it must be theirs.
           !appThreads.ownsDisplay(display) ||
           displayAppsAllowed(client, display),
-        register: (id, socket) => {
-          // One control connection per phone; one on its way out (closed
-          // here to reconnect, or by the phone for the same reason) makes
-          // room for the one taking its place.
-          const current = inputConnections.get(id);
-          // A parked one (control off) gives way to the new one.
-          if (current && current.readyState === WebSocket.OPEN && !current.parked)
-            // Retryable: a reconnect can arrive a moment before the stalled
-            // connection it replaces is noticed here (3 s without a word).
-            throw Object.assign(
-              fail(409, "This device already has a control connection. Reconnecting…"),
-              { retryable: true },
-            );
-          current?.endControl?.("Desktop control reconnecting…", true);
-          inputConnections.set(id, socket);
-        },
+        // One control connection per phone: a new one takes over.
+        register: (id, socket) => takeOver(inputConnections, id, socket),
         unregister: (id, socket) => {
           if (inputConnections.get(id) === socket) {
             inputConnections.delete(id);
