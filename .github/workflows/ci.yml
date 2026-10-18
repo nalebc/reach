@@ -207,7 +207,7 @@ jobs:
         env:
           REACH_TEST_NPM12_INSTALL: "1"
       - run: node .github/scripts/package-candidate.mjs
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reach-${{ matrix.os }}-node${{ matrix.node }}
           path: release/candidate/*
@@ -215,7 +215,7 @@ jobs:
           retention-days: 7
       - name: Preserve reports even after a test failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-${{ matrix.os }}-node${{ matrix.node }}
           path: reports/
@@ -250,7 +250,7 @@ jobs:
           REACH_TEST_IOS_REPORT: reports/ios-simulator.json
       - name: Preserve simulator evidence even after a test failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-ios-simulator
           path: reports/
