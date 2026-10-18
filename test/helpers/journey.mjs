@@ -410,6 +410,13 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
   browser.on("Network.responseReceived", ({ requestId, response }, from) => {
     if (from === tab.sessionId && asked.has(requestId)) asked.get(requestId).status = response.status;
   });
+  browser.on("Network.loadingFailed", ({ requestId, errorText, canceled, blockedReason }, from) => {
+    if (from !== tab.sessionId || !asked.has(requestId)) return;
+    const request = asked.get(requestId);
+    request.failed = /^net::ERR_[A-Z0-9_]+$/.test(errorText || "") ? errorText : "request failed";
+    request.cancelled = !!canceled;
+    if (/^[a-zA-Z-]{1,64}$/.test(blockedReason || "")) request.blockedReason = blockedReason;
+  });
   page.requests = () => [...asked.values()];
   // What the phone downloads lands in a folder of this test's own:
   // [{ name, state, file }], `state` "completed" once all of it is there.
@@ -505,6 +512,12 @@ const PAGE_TRACE = `(() => {
   };
   add("load " + location.pathname + location.search);
   addEventListener("click", (e) => add("click " + (e.isTrusted ? "" : "(script) ") + label(e.target) + " at " + Math.round(e.clientX) + "," + Math.round(e.clientY)), true);
+  for (const type of ["pointerdown", "pointerup", "touchstart", "touchend"]) {
+    addEventListener(type, (e) => {
+      const point = e.changedTouches?.[0] || e;
+      add(type + " " + (e.isTrusted ? "" : "(script) ") + label(e.target) + " at " + Math.round(point.clientX) + "," + Math.round(point.clientY));
+    }, { capture: true, passive: true });
+  }
   addEventListener("popstate", (e) => add("popstate " + JSON.stringify(e.state && (e.state.page || e.state)).slice(0, 60)), true);
   for (const name of ["pushState", "replaceState"]) {
     const original = history[name];
@@ -562,6 +575,31 @@ function phonePage(t, tab, { name, origin }) {
         const found = await why().catch(() => "");
         const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
         const did = await tab.evaluate(`(() => { try { return JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch { return []; } })()`).catch(() => []);
+        // Node's reporter can buffer the assertion until this file ends. Keep
+        // bounded evidence beside the screenshot even if the job ends first.
+        // Record API paths/statuses and input length, never bodies, headers,
+        // field values, URL queries or full browser diagnostics.
+        const state = await tab.evaluate(`(() => {
+          const input = document.querySelector("input.pair-code");
+          const form = input?.closest("form");
+          const button = form?.querySelector("button");
+          const viewport = visualViewport;
+          return { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
+            pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
+            submitDisabled: button?.disabled ?? null,
+            activeTag: document.activeElement?.tagName || null,
+            viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null };
+        })()`).catch(() => null);
+        if (file) {
+          try {
+            fs.writeFileSync(file.replace(/\.png$/, ".json"), JSON.stringify({
+              step: description.slice(0, 160), state,
+              requests: (page.requests?.() || []).slice(-15),
+              gestures: did.filter((entry) => /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30),
+              taps: tapped.slice(-6),
+            }, null, 2) + "\n");
+          } catch { /* Preserve the original assertion if evidence cannot be written. */ }
+        }
         assert.fail(
           `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nIt did: ${JSON.stringify(did)}\nTapped: ${JSON.stringify(tapped.slice(-6))}\nScreenshot: ${file}`,
         );
