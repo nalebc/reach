@@ -171,6 +171,12 @@ export function useRemoteScreen(
       waitKey = true,
       // Frames the current decoder has shown, and the last chunk it was given.
       decoded = 0,
+      // Whether it ever showed one (a backlog reset doesn't make it new),
+      // chunks given since the last keyframe, and its queue when given one:
+      // a failing decoder empties its queue before saying so.
+      showedFrame = false,
+      sinceKey = 0,
+      queuedAtSend = 0,
       lastChunk = { key: false, width: 0, height: 0, codec: "" },
       // No new decoder before this: one that failed before its first frame
       // gets the phone a moment (1 s, then 2 s), as reconnecting once did.
@@ -361,6 +367,7 @@ export function useRemoteScreen(
           if (stopped || failed || next !== decoder) frame.close();
           else {
             decoded++;
+            showedFrame = true;
             painter.push(frame);
           }
         },
@@ -370,6 +377,8 @@ export function useRemoteScreen(
       openDecoders();
       decoders.add(next);
       decoded = 0;
+      showedFrame = false;
+      sinceKey = 0;
       configured = "";
       waitKey = true;
       return next;
@@ -380,8 +389,8 @@ export function useRemoteScreen(
     const decoderFailed = (which: VideoDecoder | undefined, error: string) => {
       if (stopped || failed || which !== decoder) return;
       const now = Date.now();
-      const firstFrame = !decoded;
-      const queued = which?.decodeQueueSize ?? 0;
+      const firstFrame = !showedFrame;
+      const queued = queuedAtSend;
       if (which && which.state !== "closed") which.close();
       decoder = undefined;
       configured = "";
@@ -400,7 +409,7 @@ export function useRemoteScreen(
       const chunk = lastChunk;
       const resets = codecFailures.current.length + hiccups.current.length;
       report(
-        `${giveUp ? "switching to still images" : smaller ? `stepping down from ${chunk.width}×${chunk.height} after ${resets} decoder restarts this minute` : `decoder restarted (${resets} this minute)`}: ${error} · ${where} ${chunk.width}×${chunk.height} ${chunk.codec} · ${firstFrame ? "before its first frame" : `after ${decoded} frames`} · on a ${chunk.key ? "keyframe" : "delta"} · ${queued} queued · ${openDecoders()} decoders open · page ${document.hidden ? "hidden" : "visible"} · ${Math.round((now - opened) / 1000)} s in`,
+        `${giveUp ? "switching to still images" : smaller ? `stepping down from ${chunk.width}×${chunk.height} after ${resets} decoder restarts this minute` : `decoder restarted (${resets} this minute)`}: ${error} · ${where} ${chunk.width}×${chunk.height} ${chunk.codec} · ${firstFrame ? "before its first frame" : `after ${decoded} frames`} · ${sinceKey} chunks since its keyframe, the last a ${chunk.key ? "keyframe" : "delta"} · ${queued} queued then · ${openDecoders()} decoders open · page ${document.hidden ? "hidden" : "visible"} · ${Math.round((now - opened) / 1000)} s in`,
       );
       decoded = 0;
       if (firstFrame)
@@ -625,6 +634,8 @@ export function useRemoteScreen(
               data: data.subarray(4 + length),
             }),
           );
+          sinceKey = meta.key ? 1 : sinceKey + 1;
+          queuedAtSend = decoder.decodeQueueSize;
         } catch (e) {
           // Closed by an error Safari hasn't reported yet: same as reported.
           decoderFailed(decoder, `Video decoder: ${(e as Error).message}`);

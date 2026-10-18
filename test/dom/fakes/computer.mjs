@@ -14,8 +14,15 @@ export const computer = {
   lease: undefined,
   connected: null,
   refused: 0,
+  inputDown: false,
+  inputListeners: new Set(),
   frame() {
     for (const deliver of this.frames) deliver();
+  },
+  // The input connection drops (true) or comes back (false).
+  blink(down) {
+    this.inputDown = down;
+    for (const listen of this.inputListeners) listen();
   },
   reset() {
     this.doubleClickSupported = false;
@@ -30,5 +37,6 @@ export const computer = {
     this.endInput = null;
     this.video = undefined;
     this.videoWhy = undefined;
+    this.inputDown = false;
   },
 };

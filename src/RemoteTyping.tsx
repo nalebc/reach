@@ -3,10 +3,11 @@ import { typingEdit, typingTail } from "./typing-edit";
 import { renewingKeyboardFocus } from "./keyboard-focus";
 import KeyRow, { type RowKey } from "./KeyRow";
 import "./typing-keys.css";
-import type {
-  DesktopAction,
-  InputResult,
-  TextTarget,
+import {
+  mergeTyping,
+  type DesktopAction,
+  type InputResult,
+  type TextTarget,
 } from "./desktop-input-queue";
 
 type Editor = HTMLInputElement | HTMLTextAreaElement;
@@ -21,7 +22,11 @@ export default function RemoteTyping({
   editorRef,
   keyRow = false,
   modifier = "meta",
+  onRetarget,
 }: {
+  // Tab or Esc can move the computer's focus: confirm the field again,
+  // keeping the keyboard open.
+  onRetarget?: () => void;
   keyRow?: boolean;
   // The key row's sticky modifier: ⌘ on a Mac, ctrl on Windows.
   modifier?: "meta" | "control";
@@ -77,6 +82,14 @@ export default function RemoteTyping({
   const dispatch = (action: DesktopAction) => {
     if (!valid.current) return;
     if (target.pending) {
+      // Waiting letters go as one edit (the queue never fills while a slow
+      // computer confirms the field).
+      const last = queued.current.at(-1);
+      const merged = last && mergeTyping(last, action);
+      if (merged) {
+        queued.current[queued.current.length - 1] = merged;
+        return;
+      }
       if (queued.current.length >= 32) return fail(Error("Field confirmation took too long. Tap the field again."));
       queued.current.push(action);
       return;
@@ -101,9 +114,22 @@ export default function RemoteTyping({
     for (const action of actions) dispatch(action);
   }, [target.pending, target.focus]);
   const key = (name: string, modifiers: string[] = []) => {
+    // ⌘ (or ctrl) armed in the key row goes with this key too, once.
+    if (armedRef.current) {
+      arm(false);
+      if (!modifiers.includes(modifier)) modifiers = [...modifiers, modifier];
+    }
     dispatch({ type: "key", key: name, modifiers });
     shadow.current = "";
     setDraft("");
+  };
+  // A word still being composed (Android's keyboard, Japanese, Chinese)
+  // goes before a key from the key row, never lost under it.
+  const settle = () => {
+    const element = editorRef.current;
+    if (!composing.current || !element) return;
+    composing.current = false;
+    commit(element.value);
   };
   const commit = (raw: string) => {
     if (composing.current || !valid.current) return;
@@ -119,9 +145,9 @@ export default function RemoteTyping({
         arm(false);
         const letter = [...edit.text].at(-1)!;
         const name = letter === " " ? "space" : letter.toLowerCase();
+        shadow.current = "";
+        setDraft("");
         if (/^([a-z0-9]|space)$/.test(name)) {
-          shadow.current = "";
-          setDraft("");
           dispatch({
             type: "key",
             key: name,
@@ -130,8 +156,8 @@ export default function RemoteTyping({
               ...(letter !== name && name !== "space" ? ["shift"] : []),
             ],
           });
-          return;
-        }
+        } else onError(`${modifier === "meta" ? "⌘" : "Ctrl"} goes with a letter or a number.`);
+        return;
       }
       // Retain enough context for autocorrection without silently stopping long
       // typing sessions at an invisible maxlength. Never copy host text here.
@@ -221,16 +247,16 @@ export default function RemoteTyping({
       } else if (e.key === "Enter") {
         e.preventDefault();
         key("enter", modifiers);
-      } else if (e.key === "Backspace" && modifiers.length) {
+      } else if (e.key === "Backspace" && (modifiers.length || armedRef.current)) {
         e.preventDefault();
         key("backspace", modifiers);
-      } else if (e.key === "Tab") {
+      } else if (e.key === "Tab" || e.key === "Escape") {
+        // Both reach the computer (Tab completes in a terminal; Esc leaves
+        // vim's insert mode). Either can move its focus: confirm it again.
         e.preventDefault();
-        key("tab", modifiers);
-        onClose();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
+        key(e.key === "Tab" ? "tab" : "escape", modifiers);
+        if (onRetarget) onRetarget();
+        else if (e.key === "Tab") onClose();
       }
     },
   };
@@ -250,9 +276,9 @@ export default function RemoteTyping({
   if (!keyRow) return sink;
   // The terminal's key row, right above the phone keyboard.
   const rowKey = (name: RowKey) => {
-    const modifiers = armedRef.current ? [modifier] : [];
-    arm(false);
-    key(name, modifiers);
+    settle();
+    key(name);
+    if ((name === "tab" || name === "escape") && onRetarget) onRetarget();
   };
   return (
     <>

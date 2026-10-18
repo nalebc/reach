@@ -1,28 +1,32 @@
 import { useEffect, useRef } from "react";
 import { typingEdit, typingTail } from "./typing-edit";
-import type {
-  DesktopAction,
-  InputResult,
-  TextTarget,
+import {
+  mergeTyping,
+  type DesktopAction,
+  type InputResult,
+  type TextTarget,
 } from "./desktop-input-queue";
 import { RemoteKeyboard } from "./remote-keyboard";
 
 // Native-app counterpart of RemoteTyping: the iPhone keyboard opens as soon as
 // a text field is detected on the computer, without waiting for another tap.
-// Edits use the same grapheme-safe diff, so autocorrect and emoji behave alike.
+// Edits use the same grapheme-safe diff, so emoji and accents behave alike.
 export default function NativeRemoteTyping({
   target,
   send,
   onClose,
   onError,
+  onRetarget,
 }: {
   target: TextTarget;
   send: (action: DesktopAction) => Promise<InputResult>;
   onClose: () => void;
   onError: (message: string) => void;
+  // Tab or Esc can move the computer's focus: confirm the field again.
+  onRetarget?: () => void;
 }) {
-  const latest = useRef({ target, send, onClose, onError });
-  latest.current = { target, send, onClose, onError };
+  const latest = useRef({ target, send, onClose, onError, onRetarget });
+  latest.current = { target, send, onClose, onError, onRetarget };
   const queued = useRef<DesktopAction[]>([]);
   const active = useRef(false);
   const generation = useRef(0);
@@ -33,6 +37,12 @@ export default function NativeRemoteTyping({
     const current = latest.current;
     const sentIn = generation.current;
     if (current.target.pending) {
+      const last = queued.current.at(-1);
+      const merged = last && mergeTyping(last, action);
+      if (merged) {
+        queued.current[queued.current.length - 1] = merged;
+        return;
+      }
       if (queued.current.length >= 32) {
         active.current = false;
         current.onError("Field confirmation took too long. Tap the field again.");
@@ -84,8 +94,12 @@ export default function NativeRemoteTyping({
       }),
       RemoteKeyboard.addListener("key", ({ key }) => {
         if (!valid) return;
-        if (key === "enter" || key === "backspace")
-          dispatch({ type: "key", key, modifiers: [] });
+        if (!["enter", "backspace", "tab", "escape", "up", "down", "left", "right"].includes(key)) return;
+        dispatch({ type: "key", key, modifiers: [] });
+        // Return and the keys start a new context on the phone (the native
+        // input cleared itself): the next word is diffed from nothing.
+        if (key !== "backspace") shadow = "";
+        if (key === "tab" || key === "escape") latest.current.onRetarget?.();
       }),
       RemoteKeyboard.addListener("closed", () => {
         if (valid) latest.current.onClose();

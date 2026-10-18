@@ -15,7 +15,7 @@ import {
   typingView,
 } from "./desktop-geometry";
 import { screenImageRect, screenPoint, screenTouchTolerance } from "./screen-pointer";
-import { TapClicks } from "./tap-clicks";
+import { DOUBLE_TAP_MS, TapClicks } from "./tap-clicks";
 import { TouchScroll } from "./touch-scroll";
 import ScreenConnection from "./ScreenConnection";
 import ScreenGestureFeedback, { type GestureFeedback } from "./ScreenGestureFeedback";
@@ -36,6 +36,15 @@ const WAVE_MS = 600;
 const HOLD_MS = 400;
 const HOLD_FEEDBACK_MS = 100;
 const MOVE_SLOP = 8;
+// A finger aiming at the very edge (the menu bar, the Dock, the taskbar)
+// can land a few CSS pixels into the dark border: that's still the edge.
+// Further out is the border (a tap there only puts the keyboard away).
+const EDGE_MARGIN = 4;
+// After a finger lifts, phones send the tap again as mouse events and a
+// click, up to this long after (iOS: about 200 ms).
+const SYNTHETIC_MS = 1000;
+type Pair = { x: number; y: number };
+type Sequence = { clickId: number; clickState: number; pair?: Pair };
 // Why a tap didn't reach the computer, as one short line.
 const notSentLine = (why: string) =>
   `Tap not sent · ${why.replace(/[.…]+$/u, "").replace(/\s*Reconnecting$/u, "")}`;
@@ -63,6 +72,7 @@ export default function DesktopSurface({
   onStaleFields,
   resetKey,
   initialCursor,
+  hostCursor,
   compact = false,
   focusPoint,
   focusRect,
@@ -108,6 +118,9 @@ export default function DesktopSurface({
   // desktop): its text fields can't be found, so offer the keyboard button.
   resetKey: string;
   initialCursor: Point | null;
+  // Where the computer last said its pointer is, and when (trackpad mode
+  // starts from there when that's newer than the phone's own last move).
+  hostCursor?: () => (Point & { at: number }) | null;
   compact?: boolean;
   focusPoint?: Point;
   // An area to open on (fractions of the screen): a Mac dialog to answer.
@@ -135,6 +148,10 @@ export default function DesktopSurface({
   viewRef.current = view;
   const beforeTyping = useRef<typeof view | null>(null);
   const tapClicks = useRef(new TapClicks());
+  // When a finger last touched the picture, and its last single tap: a
+  // phone's late mouse events and double-click belong to these.
+  const lastTouch = useRef(-Infinity);
+  const lastTap = useRef<{ clickId: number; point: Point; touch?: Touch; image: { width: number; height: number }; at: number } | null>(null);
   const cursorRef = useRef<Point>({ x: 0.5, y: 0.5 });
   // A finger on the picture: the zoom pill steps aside meanwhile.
   const [touching, setTouching] = useState(false);
@@ -251,8 +268,10 @@ export default function DesktopSurface({
     if (dragPan.current.frame) cancelAnimationFrame(dragPan.current.frame);
     dragPan.current = { frame: 0, at: 0 };
   };
+  const cursorAt = useRef(-Infinity);
   const moveCursor = (p: Point) => {
     cursorRef.current = p;
+    cursorAt.current = performance.now();
   };
   const action = (a: DesktopAction) => {
     if (!canControl) return;
@@ -374,6 +393,37 @@ export default function DesktopSurface({
     stopMomentum();
     dropScroll();
   }, [width, height, size.width, size.height]);
+  // A tap on the picture can open the keyboard and its key row right under
+  // the finger; the phone's late click for that tap then lands on whatever
+  // is there now (iOS pressed ↑ on the computer that way). Late mouse
+  // events outside the picture count only on something the finger itself
+  // pressed.
+  useEffect(() => {
+    let pressed: { target: EventTarget | null; at: number } = { target: null, at: -Infinity };
+    const press = (event: PointerEvent) => {
+      pressed = { target: event.target, at: performance.now() };
+    };
+    const ghost = (event: MouseEvent) => {
+      const area = stage.current, target = event.target;
+      if (!area || !(target instanceof Node) || area.contains(target)) return;
+      // A keyboard's Enter or Space on a button clicks without a pointer.
+      if (event.type === "click" && event.detail === 0) return;
+      if (performance.now() - lastTouch.current > SYNTHETIC_MS) return;
+      const own = pressed.target instanceof Node &&
+        (pressed.target === target || pressed.target.contains(target) || target.contains(pressed.target)) &&
+        performance.now() - pressed.at < SYNTHETIC_MS;
+      if (own) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const types = ["mousedown", "mouseup", "click", "dblclick"] as const;
+    window.addEventListener("pointerdown", press, true);
+    for (const type of types) window.addEventListener(type, ghost, true);
+    return () => {
+      window.removeEventListener("pointerdown", press, true);
+      for (const type of types) window.removeEventListener(type, ghost, true);
+    };
+  }, []);
   useEffect(() => {
     const hidden = () => { if (document.hidden) release(); };
     const blur = () => release();
@@ -554,13 +604,13 @@ export default function DesktopSurface({
       next = clamp(scale, 1, 4),
       ox = (size.width - baseW * v.scale) / 2 + v.x,
       oy = (size.height - baseH * v.scale) / 2 + v.y;
-    setView(
-      bounded(
-        next,
-        p.x - ((p.x - ox) / v.scale) * next - (size.width - baseW * next) / 2,
-        p.y - ((p.y - oy) / v.scale) * next - (size.height - baseH * next) / 2,
-      ),
+    const zoomed = bounded(
+      next,
+      p.x - ((p.x - ox) / v.scale) * next - (size.width - baseW * next) / 2,
+      p.y - ((p.y - oy) / v.scale) * next - (size.height - baseH * next) / 2,
     );
+    viewRef.current = zoomed;
+    setView(zoomed);
   };
   // The Mac did it: a wave where it landed, gone by itself.
   const wave = (point: Point, kind: WaveKind) => {
@@ -588,7 +638,7 @@ export default function DesktopSurface({
     pendingTap.current = { point, right, at, timer, touch };
   };
   const click = (point: Point, right: boolean, at: number, touch?: Touch,
-    sequence?: { clickId: number; clickState: number }) => {
+    sequence?: Sequence) => {
     const id = ++serial.current;
     const kind: WaveKind = right || clickMode === "right" ? "right" : clickMode === "double" || sequence?.clickState === 2 ? "double" : "click";
     onFeedback("");
@@ -599,6 +649,7 @@ export default function DesktopSurface({
       count: clickMode === "double" && kind !== "right" ? 2 : 1,
       ...(touch && kind !== "right" ? { touch } : {}),
       ...(sequence && { clickId: sequence.clickId, clickState: sequence.clickState }),
+      ...(sequence?.clickState === 2 && sequence.pair ? { pair: sequence.pair } : {}),
     })
       .then((result) => {
         const actual = (result as { point?: Point } | null)?.point;
@@ -644,7 +695,7 @@ export default function DesktopSurface({
   // A tap on the picture: sent, or held a moment while control comes back,
   // or said why not. Only watching, there is no mark at all.
   const tap = (point: Point, right = false, touch?: Touch,
-    sequence?: { clickId: number; clickState: number }) => {
+    sequence?: Sequence) => {
     const at = performance.now();
     if (!sequence) tapClicks.current.reset();
     if (canControl) return click(point, right, at, touch, sequence);
@@ -661,7 +712,8 @@ export default function DesktopSurface({
     dropScroll();
     if (e.ctrlKey || e.metaKey || !canControl)
       zoomAt(
-        view.scale * Math.exp(-e.deltaY * 0.002),
+        // The latest view: several wheel steps can come within one frame.
+        viewRef.current.scale * Math.exp(-e.deltaY * 0.002),
         local(e.clientX, e.clientY),
       );
     else {
@@ -681,7 +733,29 @@ export default function DesktopSurface({
       });
     }
   };
+  // A mouse or pen pressed and moved drags at once, as on the computer
+  // itself; a finger rests first (HOLD_MS) so that a swipe can scroll.
+  const startDrag = (g: NonNullable<typeof gesture.current>) => {
+    if (!g.point) return;
+    clearHold();
+    tapClicks.current.reset();
+    g.held = true;
+    moveCursor(g.point);
+    cue("grabbing", g.last);
+    void send({ type: "down", ...g.point, button: clickMode === "right" ? "right" : "left" })
+      .then(() => {
+        if (gesture.current !== g || !g.held) return;
+        g.acknowledged = true;
+        cue("drag", g.last);
+      })
+      .catch((error: Error) => {
+        if (gesture.current !== g || !g.held) return;
+        release();
+        onFeedback(`Drag not sent · ${error.message}`);
+      });
+  };
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "touch") lastTouch.current = performance.now();
     if (!ready || event.button !== 0) return;
     const stopper = stopMomentum();
     dropScroll();
@@ -696,12 +770,15 @@ export default function DesktopSurface({
       clearHold();
       clearTimeout(wheelFeedback.current);
       setGestureFeedback(null);
+      const host = mode === "trackpad" ? hostCursor?.() : null;
+      if (host && host.at > cursorAt.current) moveCursor({ x: host.x, y: host.y });
       const image = canvas.current;
       const imageBox = image?.getBoundingClientRect();
       const point =
         mode === "trackpad"
           ? cursorRef.current
-          : image && imageBox ? screenPoint(event.clientX, event.clientY, imageBox, image.width, image.height) : null;
+          : image && imageBox ? screenPoint(event.clientX, event.clientY, imageBox, image.width, image.height,
+            event.pointerType === "touch" ? EDGE_MARGIN : false) : null;
       gesture.current = {
         start: p,
         clientStart: { x: event.clientX, y: event.clientY },
@@ -913,17 +990,28 @@ export default function DesktopSurface({
       g.moved = true;
       clearHold();
       if (!g.held) setGestureFeedback(null);
+      if (!g.held && event.pointerType !== "touch" && mode === "direct" && canControl && !g.stopper)
+        startDrag(g);
     }
     if (mode === "trackpad" && canControl) {
+      // Relative to the picture as shown: zoomed in, the cursor is as
+      // precise as the picture.
+      const scale = viewRef.current.scale;
       const point = {
-        x: clamp(cursorRef.current.x + dx / Math.max(1, baseW), 0, 1),
-        y: clamp(cursorRef.current.y + dy / Math.max(1, baseH), 0, 1),
+        x: clamp(cursorRef.current.x + dx / Math.max(1, baseW * scale), 0, 1),
+        y: clamp(cursorRef.current.y + dy / Math.max(1, baseH * scale), 0, 1),
       };
       moveCursor(point);
       action({ type: "move", ...point });
       if (g.held) cue(g.acknowledged ? "drag" : "grabbing", p);
     } else if (g.held && canControl) {
       cue(g.acknowledged ? "drag" : "grabbing", p);
+      // A resting finger wobbles: the pointer stays where it went down
+      // until the finger really moves, so a long tap never selects text.
+      if (!g.moved) {
+        g.last = p;
+        return;
+      }
       const point = dragPosition(p);
       if (point) {
         moveCursor(point);
@@ -995,6 +1083,10 @@ export default function DesktopSurface({
     const sequence = tapped && !g.stopper && mode !== "pan" && canControl && doubleClick && clickMode === "left" && box
       ? tapClicks.current.next(point, performance.now(), event.pointerType, box)
       : undefined;
+    if (event.pointerType === "touch") lastTouch.current = performance.now();
+    lastTap.current = sequence?.clickState === 1 && event.pointerType === "touch" && point && box
+      ? { clickId: sequence.clickId, point, touch: g.touch, image: { width: box.width, height: box.height }, at: performance.now() }
+      : null;
     // Ordinary taps dismiss typing, including margins, pan mode and stopping
     // momentum. A repeat can retain a confirmed editor unless its fresh hit
     // test has already established that this tap is outside an input.
@@ -1006,10 +1098,11 @@ export default function DesktopSurface({
       stopDragPan();
       // Pointer-up may contain the final motion when the browser coalesces
       // events. Move there before dropping, rather than at the last sample.
+      const scale = viewRef.current.scale;
       const point = mode === "trackpad" ? {
-        x: clamp(cursorRef.current.x + (lifted.x - g.last.x) / Math.max(1, baseW), 0, 1),
-        y: clamp(cursorRef.current.y + (lifted.y - g.last.y) / Math.max(1, baseH), 0, 1),
-      } : dragPosition(lifted);
+        x: clamp(cursorRef.current.x + (lifted.x - g.last.x) / Math.max(1, baseW * scale), 0, 1),
+        y: clamp(cursorRef.current.y + (lifted.y - g.last.y) / Math.max(1, baseH * scale), 0, 1),
+      } : g.moved ? dragPosition(lifted) : null;
       if (point && Math.hypot(point.x - cursorRef.current.x, point.y - cursorRef.current.y) > 1e-8) {
         moveCursor(point);
         action({ type: "move", ...point });
@@ -1110,6 +1203,26 @@ export default function DesktopSurface({
         onPointerUp={up}
         onTouchEnd={activateField}
         onClick={clicked}
+        // The tap again, as the phone's late mouse events: their default
+        // would focus this area and take the phone keyboard away.
+        onMouseDown={(event) => {
+          if (performance.now() - lastTouch.current < SYNTHETIC_MS) event.preventDefault();
+        }}
+        // iOS can swallow a quick second tap's touch events and say only
+        // this: the second click of the pair, unless the tap itself sent it.
+        onDoubleClick={() => {
+          const first = lastTap.current;
+          lastTap.current = null;
+          if (!first || !canControl || !doubleClick || clickMode !== "left" ||
+            performance.now() - first.at > DOUBLE_TAP_MS + 300 || performance.now() - lastTouch.current > SYNTHETIC_MS)
+            return;
+          tapClicks.current.reset();
+          tap(first.point, false, first.touch, {
+            clickId: first.clickId,
+            clickState: 2,
+            pair: { x: Math.min(0.1, 8 / Math.max(1, first.image.width)), y: Math.min(0.1, 8 / Math.max(1, first.image.height)) },
+          });
+        }}
         onPointerCancel={(event) => {
           if (!pointers.current.has(event.pointerId)) return;
           // The browser took the touch back mid-tap (a system gesture):
@@ -1127,8 +1240,9 @@ export default function DesktopSurface({
           e.preventDefault();
           stopMomentum();
           dropScroll();
-          const g = gesture.current;
-          if (g && (g.held || g.multiple || g.moved)) return;
+          // A finger's long press (Android says contextmenu) is a hold
+          // or a drag, never a right-click; a mouse's right button is.
+          if (gesture.current || performance.now() - lastTouch.current < SYNTHETIC_MS) return;
           const point =
             mode === "trackpad"
               ? cursorRef.current

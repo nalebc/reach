@@ -1,6 +1,10 @@
 type Point = { x: number; y: number };
 type Image = { width: number; height: number };
 export const DOUBLE_TAP_MS = 350;
+const pairing = (radius: number, image: Image, previous: Image) => ({
+  x: Math.min(0.1, radius / Math.max(1, image.width, previous.width)),
+  y: Math.min(0.1, radius / Math.max(1, image.height, previous.height)),
+});
 
 // Each tap still sends one press/release. The second carries the first tap's
 // identity so the host can preserve click timing. Each tap keeps its own point.
@@ -51,6 +55,9 @@ export class TapClicks {
         clickId: previous.clickId,
         clickState: 2,
         point,
+        // The same tolerance for the computer, in shares of its display: a
+        // host comparing in its own pixels would refuse a finger's drift.
+        pair: pairing(radius, image, previous.image),
       };
     }
     this.id = (this.id % 2147483647) + 1;

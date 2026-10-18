@@ -326,6 +326,38 @@ export default function Screen({
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
   };
+  // The field again (a new connection, or Tab/Esc moved the computer's
+  // focus): its keyboard stays open and keystrokes wait meanwhile. Another
+  // field, or none: typing ends and the phone says so.
+  const rejoinTyping = async () => {
+    const current = typingRef.current;
+    if (!current?.rejoin) return;
+    const epoch = typingEpoch.current;
+    const at = current.rejoin === true ? {} : current.rejoin;
+    const still = () => epoch === typingEpoch.current && mounted.current && typingRef.current?.rejoin === current.rejoin;
+    try {
+      let result = await send({ type: "focus", ...at });
+      for (const delay of [80, 160, 320]) {
+        if (!still() || (result.target?.editable && result.target.focus)) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (still()) result = await send({ type: "focus", ...at });
+      }
+      if (!still()) return;
+      if (result.target?.editable && result.target.focus)
+        setTypingTarget({ ...typingRef.current!, ...result.target, pending: false, rejoin: undefined });
+      else {
+        clearTyping();
+        setFeedback("The computer's text field changed · tap it to type");
+      }
+    } catch {
+      if (still() && input.ready) clearTyping();
+    }
+  };
+  const retarget = () => {
+    const t = typingRef.current;
+    if (!t?.focus) return;
+    setTypingTarget({ ...t, pending: true, rejoin: true, session: t.session ?? t.focus });
+  };
   useEffect(() => {
     mounted.current = true;
     const hide = () => {
@@ -387,8 +419,21 @@ export default function Screen({
     const timer = setTimeout(() => setFeedback(""), 4000);
     return () => clearTimeout(timer);
   }, [feedback]);
-  // Typing doesn't unmount when the picture goes stale: queued edits stay.
-  const typingAllowed = control && input.ready && live && visible;
+  // Typing doesn't unmount when the picture goes stale or controls blink
+  // (reconnecting): queued edits stay, the keyboard stays open.
+  const typingAllowed = control && (input.ready || input.reconnecting) && live && visible;
+  // Controls dropped while typing: hold the keystrokes and confirm the same
+  // field on the new connection (each connection has its own typing guard).
+  useEffect(() => {
+    if (input.ready) return;
+    const t = typingRef.current;
+    if (t?.focus && !t.pending)
+      setTypingTarget({ ...t, pending: true, rejoin: t.point ?? true, session: t.session ?? t.focus });
+  }, [input.ready]);
+  useEffect(() => {
+    if (input.ready && typingTarget?.rejoin) void rejoinTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input.ready, typingTarget?.rejoin]);
   const typing = !!typingTarget && typingAllowed && !panel;
   const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
@@ -894,6 +939,7 @@ export default function Screen({
             blocked={tapBlocked}
             waitForControl={tapWaits}
             initialCursor={input.initialCursor}
+            hostCursor={input.hostCursor}
             mode={mode}
             drag={drag}
             clickMode={clickMode}
@@ -944,16 +990,18 @@ export default function Screen({
             typingTarget &&
             (nativeKeyboard ? (
               <NativeRemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 send={send}
                 onClose={clearTyping}
                 onError={setError}
+                onRetarget={retarget}
               />
             ) : (
               <RemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
+                onRetarget={retarget}
                 keyRow={mobile}
                 modifier={device.platform === "darwin" ? "meta" : "control"}
                 editorRef={typingEditor}
@@ -971,7 +1019,7 @@ export default function Screen({
               // duplicate the keyboard field and key row, and reset the field
               // between keystrokes (each next letter then deleted the last).
               <TapToType
-                key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
+                key={`tap:${typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 onOpen={openKeyboard}
                 onPrepare={() => prepareKeyboard(typingEditor.current)}
               />

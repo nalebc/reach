@@ -20,3 +20,7 @@ export const RemoteKeyboard = registerPlugin<RemoteKeyboardPlugin>("RemoteKeyboa
 // Apps installed before this plugin existed lack it; they keep the web keyboard.
 export const nativeKeyboard =
   Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("RemoteKeyboard");
+
+// A page that reloads while the native keyboard is up (a new build, the web
+// view's process restarted) has no listener left for it: close it.
+if (nativeKeyboard) void RemoteKeyboard.hide().catch(() => {});
