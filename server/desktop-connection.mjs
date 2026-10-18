@@ -68,6 +68,68 @@ export function desktopConnection(
     scanTimer,
     scannedAt = 0,
     sent = "";
+  // The scanner answers one look at a time: field scans, and which app is
+  // in front (the phone asks every 2.5 s; a menu rebuild there walks up to
+  // 300 items, which on the input helper held up the clicks and keys behind
+  // it until they were dropped late or the helper timed out). A phone's
+  // read goes ahead of a scan waiting its turn.
+  const looks = [];
+  let looking = false,
+    // The phone's reads with the scanner now, within its input window.
+    reading = 0;
+  const look = (action, first = false) =>
+    new Promise((resolve, reject) => {
+      const item = { action, resolve, reject };
+      const at = first ? looks.findIndex((queued) => queued.action.type === "fields") : -1;
+      looks.splice(at < 0 ? looks.length : at, 0, item);
+      void nextLook();
+    });
+  const nextLook = async () => {
+    if (looking) return;
+    looking = true;
+    try {
+      while (looks.length) {
+        const { action, resolve, reject } = looks.shift();
+        if (!fields || closed) reject(fail(403, "Desktop control ended."));
+        else await fields.send(action).then(resolve, reject);
+      }
+    } finally {
+      looking = false;
+    }
+  };
+  // The scanner up and running (not stopped): it reads which app is in front.
+  const scannerUp = () => !!fields && fields.stopped !== true;
+  const answerLook = async (id, action) => {
+    const current = epoch;
+    reading++;
+    let result;
+    try {
+      try {
+        authorize();
+      } catch (e) {
+        return close(e.message, e?.retryable === true);
+      }
+      try {
+        result = await look(action, true);
+      } catch (e) {
+        // A read that fails costs only that read; control goes on.
+        if (!closed && current === epoch && ws.readyState === 1)
+          ws.send(JSON.stringify({ type: "ack", id, ok: false, error: e.message }));
+        return;
+      }
+    } finally {
+      reading--;
+    }
+    if (closed || parked || current !== epoch || ws.readyState !== 1) return;
+    let client;
+    try {
+      client = authorize();
+    } catch (e) {
+      return close(e.message, e?.retryable === true);
+    }
+    control.acquire(client, true);
+    ws.send(JSON.stringify({ type: "ack", id, ...result }));
+  };
   const scan = async (cheap = false) => {
     if (!fields || closed || parked) return;
     if (scanning) {
@@ -77,7 +139,7 @@ export function desktopConnection(
     scanning = true;
     const after = doneId;
     try {
-      const result = await fields.send({ type: "fields", cheap });
+      const result = await look({ type: "fields", cheap });
       scannedAt = Date.now();
       if (closed || ws.readyState !== 1 || result.same || !Array.isArray(result.fields)) return;
       authorize();
@@ -138,8 +200,8 @@ export function desktopConnection(
     clearTimeout(parkTimer);
     clearTimeout(scanTimer);
     fields?.stop();
-    for (const item of queue) item.reject?.(fail(403, message));
-    queue.length = 0;
+    for (const item of [...queue, ...looks]) item.reject?.(fail(403, message));
+    queue.length = looks.length = 0;
     stopInput(helper);
     if (ws.readyState === 1) {
       ws.send(
@@ -466,7 +528,7 @@ export function desktopConnection(
         message.type !== "input" ||
         !Number.isSafeInteger(message.id) ||
         message.id <= lastId ||
-        queue.length >= 8
+        queue.length + reading >= 8
       )
         throw fail(400, "Invalid desktop input or full input window.");
       lastId = message.id;
@@ -476,6 +538,16 @@ export function desktopConnection(
       } catch (e) {
         // A bad action (text too long, an unknown key) fails alone; control stays.
         ws.send(JSON.stringify({ type: "ack", id: message.id, ok: false, error: e.message }));
+        return;
+      }
+      // Which app is in front: read by the scanner, beside the input queue,
+      // never ahead of (or behind) a click. Without one, the input helper
+      // reads it in turn. A menu press acts, so it stays in the queue; it
+      // walks the menu bar itself, no cache needed. A probe stays there too:
+      // the helper that types remembers the field it found under the finger
+      // (desktop-input.swift textTarget), which the focus after a tap uses.
+      if (action.type === "context" && scannerUp()) {
+        void answerLook(message.id, action);
         return;
       }
       // Only replace consecutive queued moves. Button and key order is preserved.
@@ -498,9 +570,9 @@ export function desktopConnection(
   });
   ws.on("close", (code) => {
     closed = true;
-    for (const item of queue)
+    for (const item of [...queue, ...looks])
       item.reject?.(fail(403, "Desktop control ended."));
-    queue.length = 0;
+    queue.length = looks.length = 0;
     clearTimeout(deadline);
     clearTimeout(parkTimer);
     clearTimeout(scanTimer);
