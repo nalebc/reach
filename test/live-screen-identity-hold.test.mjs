@@ -121,7 +121,9 @@ test("a live screen and terminal ride out slow host lookups and a short lapse, a
   assert.equal(shown.some((m) => m.data === "while held"), false, "no terminal output on a stale identity");
   assert.deepEqual(written, [], "nothing typed on a stale identity");
   mode = "ok";
-  await until(() => framesSince(lapsedAfter + 1) > 0 && written.length > 0, 4000);
+  // (Written here at once; shown on the phone once its message arrives.)
+  await until(() => framesSince(lapsedAfter + 1) > 0 && written.length > 0 &&
+    shown.some((m) => m.data === "while held"), 4000);
   assert.equal(screen.closed, null);
   assert.equal(terminal.closed, null);
   assert.ok(shown.some((m) => m.data === "while held"), "held output shown once confirmed");
