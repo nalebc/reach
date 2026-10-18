@@ -343,6 +343,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
       kVTCompressionPropertyKey_ExpectedFrameRate: fps,
       kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * 10,
       kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 10,
+      // Low-latency rate control turns long-term references on by default
+      // (reads 1): frames after each keyframe then carry LTR marking and
+      // reordering, meant for a sender that acknowledges the receiver's LTR
+      // frames. Reach never does, and a phone decoder has failed on deltas,
+      // so they're off. (macOS 12.0+, inside this macOS 12.3+ class.)
+      kVTCompressionPropertyKey_EnableLTR: false,
     ]
     for (key, value) in properties {
       VTSessionSetProperty(encoder, key: key, value: value as CFTypeRef)

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
+import { execFileSync, spawnSync } from "node:child_process";
 import { WebSocket } from "ws";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
@@ -287,4 +288,90 @@ test("revoking access during capture discards the in-flight frame", async () => 
   complete(Buffer.from("must not leave the host"));
   await until(() => stopped === 1);
   assert.equal(sent.length, 0);
+});
+
+// Long-term references need a sender that acknowledges the receiver's LTR
+// frames; Reach never does. Low-latency rate control turns them on unless
+// told not to (measured Oct 18: EnableLTR read 1, every few frames asked for
+// an acknowledgement), so the encoder must say false itself.
+test("the Mac H.264 encoder turns long-term references off and keeps its reference count", async () => {
+  const swift = await fs.readFile(new URL("../scripts/native/screen-stream.swift", import.meta.url), "utf8");
+  const configure = swift.slice(swift.indexOf("func configureEncoder()"), swift.indexOf("func adjust("));
+  assert.match(configure, /kVTCompressionPropertyKey_EnableLTR: false,/);
+  assert.match(configure, /kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true/);
+  assert.doesNotMatch(swift, /ReferenceBufferCount/);
+});
+
+// The production configureEncoder() on this Mac's hardware encoder, fed
+// generated pixels: no screen is captured and nothing is posted.
+test("the Mac encoder session reads EnableLTR false and its frames ask for no LTR acknowledgement", {
+  skip: process.platform !== "darwin", timeout: 120000,
+}, async (t) => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "reach-encoder-ltr-"));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const swift = await fs.readFile(new URL("../scripts/native/screen-stream.swift", import.meta.url), "utf8");
+  const hook = "  func compressed(_ sample: CMSampleBuffer) {\n";
+  assert.ok(swift.includes(hook));
+  const capture = swift.split("@main struct ReachScreenStream")[0]
+    .replace(hook, hook + "    inspect(sample); return\n");
+  const file = path.join(folder, "main.swift"), binary = path.join(folder, "encoder");
+  await fs.writeFile(file, capture + String.raw`
+var samples = 0, acknowledgements = 0
+func inspect(_ sample: CMSampleBuffer) {
+  samples += 1
+  let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
+  if attachments?.first?[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] != nil { acknowledgements += 1 }
+}
+@main struct EncoderCheck {
+  static func main() {
+    guard #available(macOS 12.3, *) else { print("macOS too old"); return }
+    for (width, height) in [(640, 360), (1440, 900), (1920, 1200)] {
+      let capture = Capture(["primary", "h264", "30", String(width), "8000000", "hardware"])
+      capture.width = width
+      capture.height = height
+      do { try capture.configureEncoder() } catch { print("encoder unavailable: \(error)"); return }
+      var value: CFTypeRef?
+      precondition(VTSessionCopyProperty(capture.encoder!, key: kVTCompressionPropertyKey_EnableLTR,
+        allocator: nil, valueOut: &value) == noErr, "EnableLTR is readable")
+      precondition((value as? Bool) == false, "EnableLTR reads \(String(describing: value))")
+      var made: CVPixelBuffer?
+      CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary, &made)
+      let buffer = made!
+      samples = 0; acknowledgements = 0
+      for frame in 0..<24 {
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let luma = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!.assumingMemoryBound(to: UInt8.self)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        for y in 0..<height { memset(luma + y * stride, Int32((y / 8 + frame * 7) % 200), width) }
+        memset(CVPixelBufferGetBaseAddressOfPlane(buffer, 1), 128,
+          CVPixelBufferGetBytesPerRowOfPlane(buffer, 1) * CVPixelBufferGetHeightOfPlane(buffer, 1))
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        let properties = frame == 0 ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        VTCompressionSessionEncodeFrame(capture.encoder!, imageBuffer: buffer,
+          presentationTimeStamp: CMTime(value: Int64(frame), timescale: 30),
+          duration: CMTime(value: 1, timescale: 30), frameProperties: properties,
+          sourceFrameRefcon: nil, infoFlagsOut: nil)
+        VTCompressionSessionCompleteFrames(capture.encoder!, untilPresentationTimeStamp: .invalid)
+      }
+      capture.queue.sync {}
+      precondition(samples >= 12, "\(width)x\(height): only \(samples) frames came out")
+      precondition(acknowledgements == 0, "\(width)x\(height): \(acknowledgements) frames asked for an LTR acknowledgement")
+      VTCompressionSessionInvalidate(capture.encoder!)
+      print("\(width)x\(height): \(samples) frames, EnableLTR false, no LTR acknowledgements")
+    }
+    print("encoder LTR checks passed")
+  }
+}
+`);
+  const built = spawnSync("xcrun", ["swiftc", "-parse-as-library", "-module-cache-path", path.join(folder, "cache"), file, "-o", binary], { encoding: "utf8", timeout: 90000 });
+  assert.equal(built.status, 0, built.stderr);
+  const checked = spawnSync(binary, [], { encoding: "utf8", timeout: 30000 });
+  assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
+  // A virtual Mac (GitHub's Intel runners) has no hardware H.264 encoder.
+  if (/encoder unavailable/.test(checked.stdout)) {
+    const vm = (() => { try { return execFileSync("/usr/sbin/sysctl", ["-n", "kern.hv_vmm_present"], { encoding: "utf8" }).trim() === "1"; } catch { return false; } })();
+    if (vm) return t.skip(`virtual Mac without a hardware encoder: ${checked.stdout.trim()}`);
+  }
+  assert.match(checked.stdout, /encoder LTR checks passed/, checked.stdout);
 });
