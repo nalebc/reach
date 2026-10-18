@@ -328,7 +328,7 @@ test(
   {
     skip: process.platform !== "win32",
   },
-  async () => {
+  async (t) => {
     let code = source.match(/Add-Type @'\r?\n([\s\S]*?)\r?\n'@/)[1];
     const swap = (from, to) => {
       assert.ok(code.includes(from), from);
@@ -529,13 +529,16 @@ foreach($case in @(
 }
 Write-Output 'Windows pointer and scroll sequences passed'
 `;
+    // Run from a file, as Reach runs its helper (powershellFile): this
+    // fixture outgrew a command line's 32 767 characters as -EncodedCommand.
+    // With a byte-order mark: Windows PowerShell reads its typed sample as UTF-8.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-pointer-fixture-"));
+    const file = path.join(dir, "pointer.ps1");
+    await fs.writeFile(file, "\ufeff" + script, "utf8");
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const { stdout } = await exec(
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64"),
-      ],
+      powershellFile(file),
       { timeout: 45000, windowsHide: true, maxBuffer: 65536 },
     );
     assert.match(stdout, /Windows pointer and scroll sequences passed/);

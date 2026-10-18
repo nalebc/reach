@@ -15,7 +15,8 @@ import { COLD_START_MS } from "../server/powershell.mjs";
 // computer; windows-desktop-input-native.test.mjs runs the same C# on
 // Windows with its window calls recorded, and the screen-control journey
 // (test/journeys/screen-control.test.mjs) drives the real thing.
-const read = (name) => fs.readFileSync(new URL(`../scripts/native/${name}`, import.meta.url), "utf8");
+// As written, whatever line endings a Windows checkout gave the file.
+const read = (name) => fs.readFileSync(new URL(`../scripts/native/${name}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const source = read("desktop-input.ps1");
 const oneShot = read("input.ps1");
 const input = source.match(/Add-Type @'\r?\n([\s\S]*?)\r?\n'@/)[1];
