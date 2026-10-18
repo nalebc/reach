@@ -1,0 +1,48 @@
+{
+  "repository": "nalebc/reach",
+  "date": "2026-10-18",
+  "pr": 72,
+  "analysis": 1976792775,
+  "analysisHead": "744f0aacac1a2bb18af04ac6c5a5a19d4eac2c4f",
+  "sarifSHA256": "6d5898ff911202b2e3a06ae6ebb6109d60a87e2c1cad88bdbaaf76e1eec4f489",
+  "findings": [
+    {
+      "alerts": [
+        323,
+        324
+      ],
+      "rule": "js/bad-code-sanitization",
+      "disposition": "Corrected test construction: clipboard command/expected marker pass as structured CDP function arguments; static predicates inspect stored data. No source suppression. Selected actual Mac PTY+Chrome journey passed with simulated Tailscale/phone; Windows CI pending.",
+      "commit": "c180ad3dc2c22b781e61ba5b100a42e88d8e6496"
+    },
+    {
+      "alerts": [
+        325,
+        326,
+        327,
+        328
+      ],
+      "rule": "js/path-injection",
+      "disposition": "Existing file(id) permits only36 hex/hyphen characters, so HTTP values cannot inject path separators or dot traversal. Strengthened stored-record consistency: pending/poll require record.id===requested id before issuing access, and subsequent atomic writes use the validated server-issued stored record ID, after claimant-secret and Tailscale identity validation. Corrupt-record regression RED on prior source and GREEN after correction; original receipt and another device receipt stay intact. Await new CodeQL analysis rather than dismissing path alerts.",
+      "commit": "de54665787ff7ae66239c759c1028a7800f3f0ad"
+    },
+    {
+      "alerts": [
+        329
+      ],
+      "rule": "js/http-to-file-access",
+      "disposition": "Reviewed intentional JSON-state persistence, not arbitrary upload or an executable download. HTTP values are JSON data written to an exclusively opened file descriptor; destinations are server-selected state files. No HTTP parameter chooses atomicJson destination. Shortcuts persist bounded commands intentionally and execute only through a separate authorized action; neither JSON persistence nor parsing executes strings. A distinct paired-owner authorization gap found during this review was corrected and tested, not dismissed.",
+      "sourceGroups": [
+        "Device request names: trimmed, max80, no controls; owner-identity check; generated request ID in fixed device-requests folder.",
+        "Paired client names: bounded80; pairing/issuance authorization; fixed private pairing receipt.",
+        "Paused, FaceID and screen values: booleans with applicable settings authorization; fixed settings file.",
+        "Custom shortcuts: max2000 command or validated app/website record; fixed shortcuts.json; explicit paired device plus admin/apps gate rechecked for save/list/delete/run. Full guests remain excluded even when they hold admin/apps scopes."
+      ],
+      "reviewGuidance": "https://codeql.github.com/codeql-query-help/javascript/js-http-to-file-access/",
+      "limitations": "This finding disposition covers these six retained SARIF sources only. It is not a blanket declassification of arbitrary network data, state paths or commands."
+    }
+  ],
+  "checksUnchanged": true,
+  "ruleSetsUnchanged": true,
+  "severityPolicyUnchanged": true
+}

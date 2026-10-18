@@ -40,18 +40,40 @@
       "pr": 74,
       "head": "53dbe55ac5c2aaec903eb5fe3b20b59e8998bc72",
       "scope": "Narrow state repair, fresh helpers, fail-closed startup and observed Windows bootstrap fixes"
+    },
+    {
+      "pr": 75,
+      "head": "03590662ea8477d66659e8766f988e91064d1173",
+      "scope": "New Dependabot Tailscale1.104.1 module update; exact source retained"
+    },
+    {
+      "pr": 76,
+      "head": "c983f89a3f87c0516f2646b373db67d3b4b526c7",
+      "scope": "New Dependabot npm lockfile updates: Capacitor8.5.3,Express5.3,Lucide1.55,Prettier3.9.10"
+    },
+    {
+      "pr": 77,
+      "head": "cc286b0dbb08a052e3c7950eaadb5bfae764a1d4",
+      "scope": "New Dependabot official action pins; provenance reviewed, no checks/selectors/timeouts weakened"
     }
   ],
   "additionalPreservedCommits": {
     "atomicNativeBaseline": "163273b0edeb9b33e55139c7eebd48c309854b2f",
     "correctedTestOnlyBaseline": "6f1a3fd3ae96805b69520355a596230f04ea29ab",
     "atomicReplacementAndPairingDedupFix": "7c2e20c0a7f49b22793cd7de63cd56047e3e1f6f",
-    "nativeStateFixtureCompilerReference": "88736d1b749b466e950454556a4127f5865f4571"
+    "nativeStateFixtureCompilerReference": "88736d1b749b466e950454556a4127f5865f4571",
+    "foreignHardlinkDiagnostic": "8297637a346404023f12c330b6f9e5a62e382162",
+    "boundedNativeHardlinkRecheck": "72a07e2ebb100e543287694c564513b493bc69a4",
+    "codexFreshStateAndStageArchitectureFixture": "943182b85e4ec5a5c2f8ea4cf02d0910c68c1293",
+    "visibleConsoleCanonicalFixture": "7c7b3f561608b7d12644b9f3e5a79a738d25d9d9",
+    "structuredTerminalClipboardJourney": "c180ad3dc2c22b781e61ba5b100a42e88d8e6496",
+    "approvalReceiptBinding": "de54665787ff7ae66239c759c1028a7800f3f0ad",
+    "pairedOwnerShortcutGate": "0fa82303b0d9ada5a94b58cf2f2c1d5a14f2b1aa"
   },
   "preservation": {
     "allRecordedHeadsAreAncestors": true,
     "sourceBranchesDeleted": false,
-    "supersessionPolicy": "Close67,69,70,71,73,74 only after verifying their exact heads are ancestors of the published PR72 head. PR68 was merged by the user.",
+    "supersessionPolicy": "Close each superseded PR only after exact source-head ancestry is verified against the published72 head. 67,69,70,71,73,74 are closed; new75,76,77 await publication verification. 68 was user-merged. No source branch is deleted by this work.",
     "fixtureConflictResolution": "Retained all original fixture operations and the corrected OWNER RIGHTS controls, then the expanded native fixture superset from74. No old diagnostic false-positive oracle is restored.",
     "testSelection": "Union retained; fresh hook native checks explicitly selected in Restricted Windows native lane. Atomic native filesystem case remains selected in shared Windows CI.",
     "closedSupersededPRs": [
@@ -62,8 +84,13 @@
       73,
       74
     ],
-    "onlyOpenPR": 72,
-    "obsoleteWorkflowCancellation": "Seven normal cancellations and one normal-then-forced old53dbe55 cancellation independently verified completed/cancelled; failures and source branches retained. Obsolete combined heads may be canceled after replacement; current exact-head validation stays active."
+    "onlyOpenPR": "72 after new Dependabot75\u201377 are verified and closed; no claim they are already closed.",
+    "obsoleteWorkflowCancellation": "Seven normal cancellations and one normal-then-forced old53dbe55 cancellation independently verified completed/cancelled; failures and source branches retained. Obsolete combined heads may be canceled after replacement; current exact-head validation stays active.",
+    "newDependabotPRsPendingClosure": [
+      75,
+      76,
+      77
+    ]
   },
   "combinedValidation": {
     "host": "macOS, Node24.21.0",
@@ -98,7 +125,8 @@
     "realBrowserScope": "Actual Chrome HTTPS/CORS/recovery with controlled routing and admission; not authenticated real-tailnet/physical-device handoff",
     "windowsScope": "Portable modeled checks and disposable launch/filesystem tests with controlled Windows predicates; native OS evidence is separate",
     "build": "npm run build PASS",
-    "CI": "Actual combined b37 x64 and ARM64 native runs:44 each passed,1 failed,0 skipped. The state-handle fixture omitted System.Core.dll and blocked all33 normalization subcases; production core builds, OWNER RIGHTS, fresh hook and atomic file cases passed. Corrected fixture requires a new exact-head x64/ARM run. Required combined CI remains enforced."
+    "CI": "744f0aa actual x64/ARM:76PASS2FAIL(parent+one held-hardlink child)0skip,all33normalization cases executed. Immediate production recheck and stronger actual Retain/Update barrier now added; final exact combined validation with new dependencies pending.",
+    "priorValidationHead": "b37e45d0b0993e3e01ae1609a5235c9619db62cc"
   },
   "retainedFailureEvidence": [
     {
@@ -141,6 +169,21 @@
       ],
       "head": "b37e45d0b0993e3e01ae1609a5235c9619db62cc",
       "classification": "Combined actual x64 and ARM64 independently:44PASS1FAIL0skip each; state-handles fixture CS0246 missing System.Core.dll,0of33 normalization subcases executed on either architecture. Actual bootstrap, production helper builds,9 OWNER RIGHTS cases, fresh hook and atomic file cases passed on both. Test-only88736d1 adds the same framework reference used by production, with no assertion or ACL-mask change."
+    },
+    {
+      "runs": [
+        39161280348,
+        39161290322
+      ],
+      "head": "744f0aacac1a2bb18af04ac6c5a5a19d4eac2c4f",
+      "classification": "Actual x64/ARM76PASS2FAIL0skip each; Windows allowed trusted current owner to create a hardlink while metadata handle was held. Original OS-exclusion assertion disproven; no passing repair claim."
+    },
+    {
+      "runs": [
+        39162279073
+      ],
+      "head": "8297637a346404023f12c330b6f9e5a62e382162",
+      "classification": "Actual x64 diagnostic,35tests33PASS2FAIL0skip,34native cases reached. Genuine read-only foreign account owns/writes independent destination but CreateHardLinkW denies5 both before/held; trusted-owner RED retained. Source SD/bytes and cleanup passed. Final required foreign denial and trusted-owner Update barrier pending both architectures."
     }
   ],
   "releaseQualification": "BLOCKED: native repair/final combined Windows proof, retained-profile installed upgrade, configured owner browser QR, authenticated real handoff and physical clients remain incomplete. No release performed.",
@@ -149,5 +192,7 @@
     "allInitialHeadsArchivedAndBundleVerified": true,
     "recentClosedAudit": "42/43/44 preserved via39 squash;59/60 via58 reconciliation;62 via63. No missing patch found in scoped tree/blob/patch-ID audit.",
     "closedDependencies": "Older dependency proposals retained separately; no blind resurrection."
-  }
+  },
+  "nativeRepairScope": "Object-based subtraction of recognized broad READ grants on validated owned objects. Preexisting/newly observed aliases refuse before that object is changed. Immediate identity/linkcount/descriptor recheck is not an atomic forest transaction, does not revoke historical open handles, and cannot fence all trusted-owner activity between final check and kernel mutation. Late concurrent refusals may leave earlier objects stricter. No added rights/owner/bytes changes.",
+  "codeqlReview": "docs/benchmarks/codeql-review-2026-10-18.json; no rule/severity gate disabled. Final CodeQL analysis remains required."
 }
