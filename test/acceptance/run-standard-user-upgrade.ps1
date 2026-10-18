@@ -14,6 +14,7 @@ $sid = $null
 $created = $false
 $grants = @()
 $resultCode = 1
+$interactive = $null
 $harness = [ordered]@{ status = 'FAIL'; stage = 'account-create'; execution = 'real standard Windows account, loaded default profile and private acceptance desktop'; accountCreated = $false; passwordPersisted = $false; cleanup = 'pending' }
 New-Item -ItemType Directory -Force $reportDir, $scratch | Out-Null
 function Grant-AcceptancePath([string]$target, [string]$rights) {
@@ -40,6 +41,12 @@ try {
     Grant-AcceptancePath $RepoRoot 'RX'
     Grant-AcceptancePath $reportDir 'M'
     Grant-AcceptancePath $scratch 'RX'
+    $harness.stage = 'interactive-desktop-setup'
+    Add-Type -Path (Join-Path $PSScriptRoot 'upgrade-interactive-process.cs')
+    $interactive = New-Object ReachUpgradeInteractiveProcess($sid)
+    $interactive.Open()
+    if ($interactive.State.Desktop -notmatch '^ReachUpgrade[0-9a-f]{32}$') { throw 'The generated interactive desktop name was invalid.' }
+    $harness.interactiveDesktop = $interactive.State
     $nodeDir = Split-Path $NodeExecutable -Parent
     $npm = Join-Path $nodeDir 'npm.cmd'
     $script = Join-Path $scratch 'run-worker.cmd'
@@ -61,16 +68,16 @@ try {
         'set "REACH_ACCEPTANCE_UPGRADE_WORKER=1"',
         ('set "REACH_ACCEPTANCE_EXPECTED_SID=' + $sid + '"'),
         ('set "REACH_ACCEPTANCE_RUNNER_PROFILE=' + $env:USERPROFILE + '"'),
+        ('set "REACH_ACCEPTANCE_UPGRADE_DESKTOP=' + $interactive.State.Desktop + '"'),
         ('call "' + $npm + '" run test:file -- --test-timeout=900000 --test-concurrency=1 test/acceptance/windows-upgrade-state.test.mjs'),
         'exit /b %errorlevel%'
     ) -join "`r`n" | Set-Content -LiteralPath $script -Encoding ascii
-    Add-Type -Path (Join-Path $PSScriptRoot 'standard-user-process.cs')
     $application = Join-Path $env:SystemRoot 'System32\cmd.exe'
     $command = '"' + $application + '" /d /s /c ""' + $script + '""'
     $harness.stage = 'credential-process-launch-and-wait'
-    $started = [ReachAcceptanceUserProcess]::Run($account, $accountPassword, $sid, $application, $command, $RepoRoot, 930000)
+    $started = $interactive.Run($account, $accountPassword, $application, $command, $RepoRoot, 930000)
     $harness.workerProcessId = $started.ProcessId
-    $harness.desktop = $started.Desktop
+    $harness.desktop = 'WinSta0\' + $interactive.State.Desktop
     $harness.workerExitCode = $started.ExitCode
     $resultCode = $started.ExitCode
     $harness.status = 'PASS'
@@ -80,6 +87,7 @@ try {
     $harness.reason = 'The real account/profile/process harness failed; inspect the separate upgrade report when present. Credential details are never retained.'
     $harness.errorType = $_.Exception.GetType().Name
     $harness.win32Error = $_.Exception.InnerException.NativeErrorCode
+    if ($null -ne $interactive) { $harness.interactiveFailureStage = $interactive.State.Stage }
     $resultCode = 1
 } finally {
     $accountPassword = $null
@@ -94,6 +102,14 @@ try {
                 } catch { }
             }
         } catch { $cleanupFailed = $true }
+        # The interactive lease outlives the worker and its owned descendants.
+        # Restore the exact station ACL and original input desktop even after a
+        # failed worker, before removing its account/profile and file grants.
+        if ($null -ne $interactive) {
+            try { $interactive.Dispose() } catch { $cleanupFailed = $true }
+            $harness.interactiveDesktop = $interactive.State
+            if ($interactive.State.Cleanup -ne 'PASS') { $cleanupFailed = $true }
+        }
         foreach ($target in $grants) {
             try {
                 & icacls.exe $target /remove:g ('*' + $sid) /T /Q | Out-Null
@@ -121,6 +137,6 @@ try {
         $harness.cleanup = 'FAIL'; $harness.status = 'FAIL'; $resultCode = 1
         $harness.cleanupReason = 'The owned disposable processes/account/profile/path grants did not all clean up.'
     } else { $harness.cleanup = 'PASS' }
-    $harness | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $reportDir 'harness.json') -Encoding utf8
+    $harness | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $reportDir 'harness.json') -Encoding utf8
 }
 exit $resultCode

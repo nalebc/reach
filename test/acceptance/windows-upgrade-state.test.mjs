@@ -57,6 +57,11 @@ test("real installed Windows 0.3.1 to 0.3.3 upgrade preserves and protects defau
     assert.ok(result.ok, `Actual installed upgrade probes failed; see upgrade.json (${report.cases.filter((one) => one.status === "FAIL").map((one) => one.id).join(", ")}).`);
     assert.equal(report.overall, "BLOCKED", "all attempted upgrade/ACL cases must pass; configured-owner QR remains blocked");
     assert.equal(harness.cleanup, "PASS");
+    assert.equal(harness.interactiveDesktop?.Cleanup, "PASS");
+    for (const name of ["StationGrantApplied", "DesktopCreated", "DesktopActivated", "DedicatedDesktopReceivesInput", "OriginalInputRestored", "CallerThreadDesktopRestored", "StationBeforeRestoreMatchesExpected", "StationAclRestored", "DesktopHandleClosed", "DesktopRemoved", "StationHandleClosed", "ProcessHandlesClosed"])
+      assert.equal(harness.interactiveDesktop[name], true, `the real interactive fixture must prove ${name}`);
+    assert.equal(harness.interactiveDesktop.OriginalDaclSHA256, harness.interactiveDesktop.RestoredDaclSHA256);
+    assert.equal(harness.interactiveDesktop.OriginalDaclControl, harness.interactiveDesktop.RestoredDaclControl);
     return;
   }
 
@@ -143,6 +148,15 @@ test("real installed Windows 0.3.1 to 0.3.3 upgrade preserves and protects defau
     report.token = token; one.evidence = token; write();
     assert.ok(typeof token.npmHomeEnvironment === "string" && path.isAbsolute(token.npmHomeEnvironment), "npm HOME must be an absolute path");
     assert.equal(path.resolve(token.npmHomeEnvironment).toLowerCase(), path.resolve(token.nativeProfileDirectory).toLowerCase(), "npm HOME must match the actual worker token's native Windows profile");
+    const desktop = await ps(`Add-Type -Path ${quotePS(path.join(repo, "test", "acceptance", "upgrade-interactive-process.cs"))}; [ReachUpgradeInteractiveProcess]::InspectCurrent() | ConvertTo-Json -Compress`, 60000, { env });
+    assert.ok(desktop.ok, desktop.error);
+    report.interactiveDesktop = json(desktop.stdout); write();
+    assert.equal(report.interactiveDesktop.WindowStation.toLowerCase(), "winsta0");
+    assert.equal(report.interactiveDesktop.WindowStationVisible, true);
+    assert.equal(report.interactiveDesktop.WindowStationFlags & 1, 1, "actual WSF_VISIBLE");
+    assert.equal(report.interactiveDesktop.Desktop, process.env.REACH_ACCEPTANCE_UPGRADE_DESKTOP);
+    assert.match(report.interactiveDesktop.Desktop, /^ReachUpgrade[0-9a-f]{32}$/);
+    assert.equal(report.interactiveDesktop.InputDesktop, true, "the real dedicated VM desktop must receive input");
     assert.equal(fs.existsSync(state), false, "the genuine new account must start without old Reach state");
     sid = token.userSid; report.token = token; report.defaultStatePath = state;
     fs.mkdirSync(shared, { recursive: true });

@@ -3,7 +3,22 @@
 Explicitly select `acceptance/windows-upgrade-state` in the existing Windows
 validation workflow. This test creates a genuine standard account only on a
 disposable GitHub-hosted Windows VM and runs its worker through the existing
-Windows credential/profile API harness. No owner service is used.
+Windows credential/profile API harness. No owner service is used. A new
+upgrade-only helper requires the actual visible `WinSta0`, captures the original
+station DACL, adds a single noninheriting generated-account ACE with station
+mask `0x123`, and creates a unique desktop with account mask `0xC7`. It activates
+only that disposable VM desktop. The worker independently verifies its actual
+station, desktop, `WSF_VISIBLE` and input-desktop provenance; the native console
+`IsWindowVisible` requirement remains unchanged. No daemon-only helper is changed.
+Cleanup restores the original input desktop and exact original station DACL
+(including ACL bytes, control flags, SDDL and hash), closes the owned desktop and
+verifies removal, then removes the generated account/profile/grants. A missing
+interactive station is a fixture prerequisite failure, never a product pass.
+If the station ACL changes unexpectedly, cleanup fails rather than restoring an
+old snapshot over other changes. It removes only a uniquely identifiable exact
+generated-account ACE after rechecking the current ACL, preserving every other
+rule and current control flags; ambiguous or further-changed ACLs remain untouched.
+That path never reports exact restoration or a fixture pass.
 
 The first two version phases download the official published npm tarballs for
 0.3.1 and 0.3.3, compare SHA-512 SRI to the registry metadata, install each into
