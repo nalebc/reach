@@ -18,7 +18,11 @@ test("Mac drag events position before pressing, carry movement deltas and pair t
   await fs.writeFile(file, "import CoreGraphics\nimport Foundation\n" + mouse + String.raw`
 var events: [CGEvent] = []
 let source = CGEventSource(stateID: .hidSystemState)
-let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: { events.append($0) })
+var times: [UInt64] = []
+let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: {
+  events.append($0)
+  times.append(DispatchTime.now().uptimeNanoseconds)
+})
 func field(_ e: CGEvent, _ key: CGEventField) -> Int64 { e.getIntegerValueField(key) }
 mouse.down(at: CGPoint(x: 150, y: 200), button: .left)
 precondition(events.map { $0.type } == [.mouseMoved, .leftMouseDown])
@@ -117,6 +121,19 @@ precondition(mouse.click(at: CGPoint(x: 304, y: 296), button: .left, id: 14, sta
   pair: CGSize(width: 1, height: 1)) == (CGPoint(x: 300, y: 300), 2))
 // A first tap only starts a pair: a state 1 click with a radius is a click.
 precondition(mouse.click(at: CGPoint(x: 301, y: 300), button: .left, id: 14, pair: radius) == (CGPoint(x: 301, y: 300), 1))
+// Each press of a click is held a few milliseconds before its release,
+// never as long as a slow tap.
+precondition(DesktopMouse.pressHold >= 1_000 && DesktopMouse.pressHold <= 20_000)
+for count in [1, 2] {
+  events = []; times = []
+  _ = mouse.click(at: CGPoint(x: 40, y: 50), button: .left, count: count)
+  let downs = events.indices.filter { events[$0].type == .leftMouseDown }
+  let ups = events.indices.filter { events[$0].type == .leftMouseUp }
+  precondition(downs.count == count && ups.count == count)
+  for (down, up) in zip(downs, ups) {
+    precondition(times[up] - times[down] >= UInt64(DesktopMouse.pressHold) * 1000, "held \(times[up] - times[down]) ns")
+  }
+}
 // A second press releases the first one where it was actually held.
 events = []
 mouse.down(at: CGPoint(x: 5, y: 10), button: .left)

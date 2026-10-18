@@ -127,6 +127,10 @@ final class DesktopMouse {
     }
     for index in 1...count {
       down(at: landed, button: button, count: continuing ? 2 : index)
+      // Held a moment, as a finger would: an app that reads the button
+      // state on the press otherwise finds it already up. Only clicks
+      // wait; typing never comes through here.
+      usleep(DesktopMouse.pressHold)
       up(at: landed)
     }
     if single && state == 1, let id {
@@ -134,6 +138,8 @@ final class DesktopMouse {
     }
     return (landed, continuing ? 2 : count)
   }
+  // 8 ms: far under a person's click, and the next press isn't delayed.
+  static let pressHold: useconds_t = 8_000
 }
 // END DESKTOP MOUSE
 
