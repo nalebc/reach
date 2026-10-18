@@ -18,20 +18,25 @@ public static class ReachAcceptanceConsole {
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetConsoleScreenBufferInfo(IntPtr handle, out Info info);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ReadConsoleOutputCharacter(IntPtr handle, StringBuilder text, uint count, Coord at, out uint read);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    static Win32Exception NativeFailure(string stage) {
+        int code = Marshal.GetLastWin32Error();
+        return new Win32Exception(code, stage + " failed (Win32 " + code + ").");
+    }
     public static string Read(uint pid) {
         FreeConsole();
-        if (!AttachConsole(pid)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!AttachConsole(pid)) throw NativeFailure("AttachConsole");
         IntPtr handle = new IntPtr(-1);
         try {
             if (!IsWindowVisible(GetConsoleWindow())) throw new Exception("The Reach console is not visible.");
             handle = CreateFile("CONOUT$", 0x80000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (handle == new IntPtr(-1)) throw NativeFailure("CreateFile(CONOUT$)");
             Info info;
-            if (!GetConsoleScreenBufferInfo(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (!GetConsoleScreenBufferInfo(handle, out info)) throw NativeFailure("GetConsoleScreenBufferInfo");
             int rows = Math.Min(info.Size.Y, info.Cursor.Y + 2);
             int count = Math.Min(200000, info.Size.X * rows);
             var buffer = new StringBuilder(count);
             uint read;
-            if (!ReadConsoleOutputCharacter(handle, buffer, (uint)count, new Coord(), out read)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (!ReadConsoleOutputCharacter(handle, buffer, (uint)count, new Coord(), out read)) throw NativeFailure("ReadConsoleOutputCharacter");
             return buffer.ToString();
         } finally { if (handle != new IntPtr(-1)) CloseHandle(handle); FreeConsole(); }
     }
