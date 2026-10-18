@@ -60,6 +60,10 @@ function windowsPrivatePaths(home, env) {
   const programFiles = [absolute(env.ProgramFiles) || 'C:\\Program Files', absolute(env['ProgramFiles(x86)']) || 'C:\\Program Files (x86)', absolute(env.ProgramW6432)];
   const documents = [p.join(home, 'Documents'), ...(absolute(env.OneDrive) ? [p.join(env.OneDrive, 'Documents')] : [])];
   return [p.join(home, 'AppData'), absolute(env.APPDATA), absolute(env.LOCALAPPDATA),
+    // Hooks compile into their own private stage, outside the host's data
+    // directory. Keep its reserved container even when jobs permit AppData
+    // tool installations (windowsJobDenies omits the broad AppData entries).
+    p.join(absolute(env.LOCALAPPDATA) || p.join(home, 'AppData', 'Local'), 'Reach'),
     ...documents.flatMap(folder => [p.join(folder, 'PowerShell'), p.join(folder, 'WindowsPowerShell')]),
     p.join(programData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'StartUp'), p.join(programData, 'Tailscale'),
     ...programFiles.filter(Boolean).map(folder => p.join(folder, 'Tailscale')),

@@ -39,6 +39,8 @@ export async function setupInvites(root, deps = {}) {
       nativeDir: path.join(stateDir(root), "native"),
     });
     if (!folders.ok) throw Error(`${folders.reason} Invite links weren't set up.`);
+    // All checks have finished; invites retain no native helper process.
+    await folders.dispose?.();
   }
   const device = loadJson(path.join(dataDir, "device.json"), null);
   if (!device?.id)

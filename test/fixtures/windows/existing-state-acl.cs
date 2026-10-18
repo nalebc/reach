@@ -6,8 +6,13 @@ using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Web.Script.Serialization;
+using System.Runtime.InteropServices;
 
 static class ExistingStateAcl {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr file);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool MoveFileExW(string source, string destination, uint flags);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool LogonUserW(string user, string domain, string password, int type, int provider, out IntPtr token);
   static readonly SecurityIdentifier Me = WindowsIdentity.GetCurrent().User;
   static readonly InheritanceFlags Children = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
   static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
@@ -39,6 +44,40 @@ static class ExistingStateAcl {
     if (folder) Directory.SetAccessControl(target, (DirectorySecurity)acl);
     else File.SetAccessControl(target, (FileSecurity)acl);
   }
+  static void DenyWriteDac(string target, bool folder) {
+    // Suppress the owner's implicit WRITE_DAC first. A deny to the ordinary
+    // account SID by itself does not prove that owner-token access is denied.
+    Add(target, folder, "S-1-3-4", false, PropagationFlags.None);
+    FileSystemSecurity acl = folder ? (FileSystemSecurity)Directory.GetAccessControl(target) : File.GetAccessControl(target);
+    acl.AddAccessRule(new FileSystemAccessRule(Me, FileSystemRights.ChangePermissions, AccessControlType.Deny));
+    if (folder) Directory.SetAccessControl(target, (DirectorySecurity)acl);
+    else File.SetAccessControl(target, (FileSecurity)acl);
+  }
+  static object Access(string path, uint wanted) {
+    IntPtr file = CreateFileW(path, wanted, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero);
+    if (file == new IntPtr(-1)) return new Dictionary<string, object> { { "ok", false }, { "error", Marshal.GetLastWin32Error() } };
+    CloseHandle(file);
+    return new Dictionary<string, object> { { "ok", true }, { "error", 0 } };
+  }
+  static object ForeignAttempt(string root, string expectedSid) {
+    RequireRoot(root);
+    string user = Environment.GetEnvironmentVariable("REACH_ACL_FIXTURE_USER"), password = Environment.GetEnvironmentVariable("REACH_ACL_FIXTURE_PASSWORD");
+    if (String.IsNullOrEmpty(user) || !user.StartsWith("ReachAcl", StringComparison.Ordinal) || String.IsNullOrEmpty(password)) throw new Exception("Missing disposable actor.");
+    IntPtr token;
+    if (!LogonUserW(user, Environment.MachineName, password, 2, 0, out token)) throw new Exception("Disposable actor logon failed: " + Marshal.GetLastWin32Error());
+    try {
+      using (WindowsIdentity.Impersonate(token)) {
+        WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        if (identity.User.Value != expectedSid || new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) throw new Exception("Unexpected disposable actor token.");
+        string state = Path.Combine(root, "state"), file = Path.Combine(state, "history", "legacy.json");
+        object read = Access(file, 1), write = Access(file, 2);
+        bool moved = MoveFileExW(state, Path.Combine(root, "foreign-moved-state"), 0);
+        int moveError = moved ? 0 : Marshal.GetLastWin32Error();
+        return new Dictionary<string, object> { { "sid", identity.User.Value }, { "administratorToken", false },
+          { "read", read }, { "write", write }, { "rename", new Dictionary<string, object> { { "ok", moved }, { "error", moveError } } } };
+      }
+    } finally { CloseHandle(token); }
+  }
   static void RequireRoot(string root) {
     if (!Directory.Exists(root) || !Path.GetFileName(root).StartsWith("reach-existing-state-")) throw new Exception("Not a generated fixture root.");
   }
@@ -68,6 +107,19 @@ static class ExistingStateAcl {
     else if (mode == "creator-owner") Add(history, true, "S-1-3-0", false, PropagationFlags.InheritOnly);
     else if (mode == "creator-owner-materialized") Add(file, false, "S-1-3-0", false, PropagationFlags.None);
     else if (mode == "foreign-ace") Add(file, false, foreign, false, PropagationFlags.None);
+    else if (mode == "broad-write") {
+      FileSecurity acl = File.GetAccessControl(file);
+      acl.AddAccessRule(Rule(Sid("S-1-1-0"), FileSystemRights.Modify, false, PropagationFlags.None));
+      File.SetAccessControl(file, acl);
+    }
+    else if (mode == "private-deny") DenyWriteDac(file, false);
+    else if (mode == "broad-deny") { Add(file, false, "S-1-1-0", false, PropagationFlags.None); DenyWriteDac(file, false); }
+    else if (mode == "private-directory-deny") DenyWriteDac(state, true);
+    else if (mode == "broad-directory-write") {
+      DirectorySecurity acl = Directory.GetAccessControl(state);
+      acl.AddAccessRule(Rule(Sid("S-1-1-0"), FileSystemRights.Modify, true, PropagationFlags.None));
+      Directory.SetAccessControl(state, acl);
+    }
   }
   static Dictionary<string, object> Entry(string target) {
     FileAttributes attributes = File.GetAttributes(target);
@@ -83,7 +135,8 @@ static class ExistingStateAcl {
     return new Dictionary<string, object> {
       { "path", target }, { "directory", folder }, { "reparse", (attributes & FileAttributes.ReparsePoint) != 0 },
       { "owner", acl.GetOwner(typeof(SecurityIdentifier)).Value }, { "protected", acl.AreAccessRulesProtected },
-      { "sddl", acl.GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access) }, { "rules", rules }
+      { "sddl", acl.GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access) }, { "rules", rules },
+      { "readControlAccess", Access(target, 0x20000) }, { "writeDacAccess", Access(target, 0x40000) }
     };
   }
   static object Snapshot(string root) {
@@ -111,6 +164,10 @@ static class ExistingStateAcl {
         return 0;
       }
       if (args.Length < 2) throw new Exception("Missing fixture arguments.");
+      if (args[0] == "foreign-attempt") {
+        Console.WriteLine(Json.Serialize(ForeignAttempt(args[1], args[2])));
+        return 0;
+      }
       if (args[0] == "setup") Setup(args[1], args[2], args.Length > 3 ? args[3] : "");
       else if (args[0] == "owner-rights") {
         RequireRoot(args[1]);

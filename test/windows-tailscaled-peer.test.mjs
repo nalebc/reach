@@ -87,6 +87,12 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   const existing = await sc("query", "Tailscale");
   assert.equal(existing.code, 1060, "a real Tailscale service is installed; refusing to touch it");
   fs.mkdirSync(CI_ROOT, { recursive: true });
+  // The common ancestor is fixture-owned code/custody, not shared state.
+  // Standard actors can read it and use their explicitly granted children;
+  // neither actor may replace another's checked state through this parent.
+  const parentAcl = await icacls(CI_ROOT, "/inheritance:r", "/remove:g", "*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545", "*S-1-15-2-1", "*S-1-15-2-2",
+    "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/Q");
+  assert.equal(parentAcl.code, 0, parentAcl.stdout + parentAcl.stderr);
   fs.mkdirSync(SERVICE_DIR, { recursive: true });
   const bin = path.join(CI_ROOT, "bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -530,9 +536,10 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   });
 
   await t.test("12. a helper changed on disk after its build: never started again", async () => {
-    const native = path.join(state, "native");
-    const helper = fs.readdirSync(native).find((name) => /^reach-tailscaled-peer-[0-9a-f]{12}\.exe$/.test(name));
-    assert.ok(helper, "the cached helper");
+    const native = host.nativeDir;
+    const helper = path.basename(host.helper?.file || "");
+    assert.ok(native && path.dirname(host.helper.file) === native, "the actual fresh stage reported by the standard-user peer host");
+    assert.match(helper, /^reach-tailscaled-peer-[0-9a-f]{12}-[0-9a-f]{8}\.exe$/, "the actual freshly compiled helper");
     // Windows won't overwrite a running program; moved aside, replaced, and the running one ended.
     fs.renameSync(path.join(native, helper), path.join(native, `${helper}.old`));
     fs.copyFileSync(tailscaled, path.join(native, helper));
@@ -544,8 +551,8 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
   await t.test("10. no Tailscale service at all: pairing codes, with the reason", async () => {
     await stopService();
     await sc("delete", "Tailscale");
-    // A fresh build of the helper (the swapped one was set aside).
-    fs.rmSync(path.join(state, "native"), { recursive: true, force: true });
+    // Every start creates a separate private stage, without trusting either
+    // the swapped file or a matching historical EXE/digest pair.
     const fresh = await startPeerHost();
     assert.deepEqual(fresh.ready, { ok: false, reason: "Tailscale isn't installed as a Windows service here." });
   });
@@ -554,31 +561,43 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     const open = path.join(CI_ROOT, "open");
     fs.rmSync(open, { recursive: true, force: true });
     fs.mkdirSync(open);
-    // Under C:\ it inherits Authenticated Users: Modify, as a checkout there does.
-    await icacls(open, "/reset", "/Q");
+    // Deliberately shared code/state is a negative case. The guarded source
+    // must not repair a parent other accounts may write/replace.
+    await icacls(open, "/grant", "*S-1-1-0:(OI)(CI)M", "/Q");
     const reach = path.join(open, ".reach");
     const quick = path.join(reach, "quick");
     const checker = path.join(fixtures, "private-check.mjs");
-    const check = async (code, out) => {
+    const check = async (code, out, state = reach, data = quick) => {
       fs.rmSync(out, { force: true });
-      await asUser("reachci", `${node} ${quote(checker)} ${quote(out)} ${quote(reach)} ${quote(quick)} ${quote(code)}`, { dir: repo });
+      await asUser("reachci", `${node} ${quote(checker)} ${quote(out)} ${quote(state)} ${quote(data)} ${quote(code)}`, { dir: repo });
       return JSON.parse(fs.readFileSync(out, "utf8"));
     };
     await asUser("reachci", `cmd.exe /c mkdir ${quote(quick)}`);
-    await asUser("reachci2", `cmd.exe /c echo planted> ${quote(path.join(quick, "x.json"))}`);
-    const planted = await check(open, path.join(reachciResults, "planted.json"));
-    t.diagnostic(`planted: ${JSON.stringify(planted)}`);
-    assert.equal(planted.ok, false);
-    fs.rmSync(path.join(quick, "x.json"), { force: true });
     const shared = await check(open, path.join(reachciResults, "shared.json"));
     t.diagnostic(`code under C:\\: ${JSON.stringify(shared)}`);
     assert.equal(shared.ok, false);
     assert.match(shared.reason, /can be changed by other people on this PC/);
     const own = `C:\\Users\\reachci\\code`;
     await asUser("reachci", `cmd.exe /c mkdir ${quote(own)}`);
-    const fine = await check(own, path.join(reachciResults, "fine.json"));
+    const ownState = `C:\\Users\\reachci\\.reach-peer-state`, ownQuick = path.join(ownState, "quick");
+    await asUser("reachci", `cmd.exe /c mkdir ${quote(ownQuick)}`);
+    // This independent foreign-owner negative has safe code AND ancestors;
+    // an earlier shared-code refusal cannot satisfy its owner oracle.
+    const plantedFile = path.join(ownQuick, "x.json");
+    fs.writeFileSync(plantedFile, "planted synthetic state\n");
+    const ownerSet = await icacls(plantedFile, "/setowner", `*${sids.reachci2}`, "/Q");
+    assert.equal(ownerSet.code, 0, ownerSet.stdout + ownerSet.stderr);
+    const actualOwner = await pwsh(`[IO.File]::GetAccessControl('${plantedFile}').GetOwner([System.Security.Principal.SecurityIdentifier]).Value`);
+    assert.equal(actualOwner.code, 0, actualOwner.stderr);
+    assert.equal(actualOwner.stdout.trim(), sids.reachci2);
+    const planted = await check(own, path.join(reachciResults, "planted.json"), ownState, ownQuick);
+    t.diagnostic(`foreign-owned file under private parent: ${JSON.stringify(planted)}`);
+    assert.equal(planted.ok, false);
+    assert.match(planted.reason, /belongs to another account on this PC/);
+    fs.rmSync(plantedFile, { force: true });
+    const fine = await check(own, path.join(reachciResults, "fine.json"), ownState, ownQuick);
     assert.deepEqual(fine, { ok: true });
-    const secret = path.join(quick, "tailscale-oauth.json");
+    const secret = path.join(ownQuick, "tailscale-oauth.json");
     await asUser("reachci", `cmd.exe /c echo {}> ${quote(secret)}`);
     const typed = path.join(probes, "type.txt");
     await asUser("reachci2", `cmd.exe /c type ${quote(secret)} > ${quote(typed)} 2>&1`);

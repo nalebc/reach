@@ -7,7 +7,7 @@
 // question, and anything else is no answer.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assertUnchanged, windowsHelper } from "./desktop-native.mjs";
+import { assertUnchanged, windowsBuildDirectory, windowsHelper } from "./desktop-native.mjs";
 
 const exec = promisify(execFile);
 
@@ -27,14 +27,16 @@ export const useOwnersFolder = (dir) => {
 // first Codex connection or team call that needs it; once per data folder,
 // so two at start never undo each other's build.
 const prepared = new Map();
-export const prepareOwners = (dataDir, { build = windowsHelper } = {}) => {
+export const prepareOwners = async (dataDir, { build = windowsHelper } = {}) => {
+  const directory = windowsBuildDirectory(dataDir); // Refuse before any prepared/cache lookup.
   if (build !== windowsHelper) return build("owners", { dir: dataDir });
-  if (!prepared.has(dataDir))
-    prepared.set(dataDir, build("owners", { dir: dataDir }).catch((error) => {
-      prepared.delete(dataDir);
+  const key = `${dataDir}\0${directory}`;
+  if (!prepared.has(key))
+    prepared.set(key, build("owners", { dir: dataDir }).catch((error) => {
+      prepared.delete(key);
       throw error;
     }));
-  return prepared.get(dataDir);
+  return prepared.get(key);
 };
 
 export async function askOwners(verb, target, { dataDir = folder, run = exec, build = windowsHelper, unchanged = assertUnchanged } = {}) {
@@ -47,7 +49,7 @@ export async function askOwners(verb, target, { dataDir = folder, run = exec, bu
     unchanged(file, sha256);
   } catch (error) {
     // Changed on disk since: never run, and built again next time.
-    prepared.delete(dataDir);
+    prepared.delete(`${dataDir}\0${windowsBuildDirectory(dataDir)}`);
     throw error;
   }
   const { stdout } = await run(file, [verb, target], { timeout: 15000, maxBuffer: 1 << 20, windowsHide: true });

@@ -5,12 +5,16 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { accountSid, ensurePrivateFolders } from "../server/windows-private-folder.mjs";
-import { spawnVerified, windowsHelper } from "../server/desktop-native.mjs";
+import { builtWindowsHelper, registerWindowsBuildDirectory, spawnVerified, windowsBinary, windowsHelper } from "../server/desktop-native.mjs";
+import { askOwners, prepareOwners } from "../server/windows-owners.mjs";
+import { windowsProcesses } from "../server/windows-processes.mjs";
+import { windowsNativeVideo } from "../server/windows-video.mjs";
 
 // Reach's folders on Windows made as private as 0700 makes them on a Mac, and
 // checked by a checker compiled just now (docs/parity/D-public-door.md §4.5).
-// Off Windows: whoami, icacls, csc and the checker are stand-ins that record
-// their arguments; the real ones run in test/windows-tailscaled-peer.test.mjs.
+// These dependency-injected orchestration checks use controlled bootstrap,
+// compiler and native replies. Actual NTFS security runs separately in
+// windows-state-normalization.test.mjs; these cannot qualify Windows ACLs.
 const env = { SystemRoot: String.raw`C:\Windows` };
 const system = String.raw`C:\Windows\System32`;
 const fx64 = String.raw`C:\Windows\Microsoft.NET\Framework64\v4.0.30319`;
@@ -33,13 +37,13 @@ const csc = () => {
 };
 const builder = (compiler) => (kind, options) =>
   windowsHelper(kind, { ...options, platform: "win32", env, run: compiler.run, exists: (file) => file === path.win32.join(fx64, "csc.exe") });
-// whoami, icacls and the checker: answers by program.
-const programs = ({ whoami = `"desktop-7\\owner","${SID}"\r\n`, icacls = () => ({ stdout: "" }), checker = () => "ok\r\n" } = {}) => {
+// Native programs are modeled only here, with their production line protocol.
+const programs = ({ whoami = `"desktop-7\\owner","${SID}"\r\n`, normalizer = () => "ok\r\n", checker = () => "ok\r\n" } = {}) => {
   const calls = [];
   const run = async (file, args, options) => {
     calls.push({ file, args, options });
     if (file === path.win32.join(system, "whoami.exe")) return { stdout: whoami };
-    if (file === path.win32.join(system, "icacls.exe")) return icacls(args);
+    if (/reach-private-state-[0-9a-f]{12}-[0-9a-f]{8}\.exe$/.test(file)) return { stdout: normalizer(args) };
     if (/reach-private-folder-[0-9a-f]{12}-[0-9a-f]{8}\.exe$/.test(file)) return { stdout: checker(args) };
     throw Error(`unexpected ${file}`);
   };
@@ -53,7 +57,8 @@ const setup = async (t, answers = {}) => {
   const code = path.join(root, "code");
   const compiler = csc();
   const run = programs(answers);
-  const options = { protect: [state, data], check: [code], nativeDir, helpers: ["tailscaled-peer"], run: run.run, build: builder(compiler), platform: "win32", env };
+  const createStage = async ({ sid }) => ({ sid, dir: await fs.mkdtemp(path.join(root, "stage-")) });
+  const options = { protect: [state, data], check: [code], nativeDir, helpers: ["tailscaled-peer"], run: run.run, build: builder(compiler), createStage, platform: "win32", env };
   return { root, state, data, nativeDir, code, compiler, run, options };
 };
 
@@ -66,90 +71,153 @@ test("the account is read from whoami's CSV by its SID only, whatever the accoun
     assert.equal(accountSid(bad), "", bad);
 });
 
-test("Reach's state and data folders are tightened with SIDs only, inheritance removed, every launch", async (t) => {
+test("orchestration stages fresh helpers and checks code before any native state repair", async (t) => {
   const s = await setup(t);
   const result = await ensurePrivateFolders(s.options);
   assert.equal(result.ok, true, result.reason);
+  t.after(result.dispose);
   assert.equal(result.sid, SID);
   const [whoami, ...rest] = s.run.calls;
   assert.equal(whoami.file, path.win32.join(system, "whoami.exe"));
   assert.deepEqual(whoami.args, ["/user", "/fo", "csv", "/nh"]);
-  const icacls = rest.filter((c) => c.file === path.win32.join(system, "icacls.exe"));
-  assert.deepEqual(icacls.map((c) => c.args), [s.state, s.data].map((dir) => [
-    dir, "/inheritance:r", "/remove:g", "*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545", "*S-1-15-2-1", "*S-1-15-2-2",
-    "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${SID}:(OI)(CI)F`, "/Q",
-  ]));
-  // Made if missing; Reach's code is never changed, only checked.
-  assert.ok(existsSync(s.data));
-  assert.ok(!icacls.some((c) => c.args[0] === s.code));
-  // The checker was given every folder and the cached helper, in order.
+  assert.ok(!rest.some(c => c.file.endsWith("icacls.exe")), "no path-based ACL mutation");
+  assert.ok(!existsSync(s.state), "the JS orchestrator does not mkdir through unchecked state");
+  assert.deepEqual(rest[0].args, [SID, "state", result.nativeDir, "code", s.code, "file"]);
+  assert.deepEqual(rest[1].args, [SID, s.state, s.data]);
+  assert.match(rest[1].file, /reach-private-state-/);
+  // The independent checker receives every protected root and fresh helper.
   const checker = s.run.calls.at(-1);
   const helper = (await result.helper("tailscaled-peer")());
-  assert.deepEqual(checker.args, [SID, "state", s.state, s.data, "code", s.code, "file", helper.file]);
-  assert.equal(path.dirname(helper.file), s.nativeDir);
+  assert.deepEqual(checker.args, [SID, "state", s.state, s.data, result.nativeDir, "code", s.code, "file", helper.file]);
+  assert.equal(path.dirname(helper.file), result.nativeDir);
+  assert.notEqual(result.nativeDir, s.nativeDir);
+  assert.deepEqual(result.privatePaths, [result.nativeDir]);
   assert.match(helper.sha256, /^[0-9a-f]{64}$/);
 });
 
-test("a folder icacls couldn't tighten, or an account Reach can't name, refuses browser sign-in", async (t) => {
-  const failing = await setup(t, { icacls: () => { throw Object.assign(Error("Command failed"), { code: 5 }); } });
-  const refused = await ensurePrivateFolders(failing.options);
+test("an unsafe bootstrap or unknown account refuses before any state mutation or compilation", async (t) => {
+  const failing = await setup(t);
+  const refused = await ensurePrivateFolders({ ...failing.options, createStage: async () => { throw Error("unsafe parent"); } });
   assert.equal(refused.ok, false);
-  assert.equal(refused.reason, `Reach couldn't make its folder ${failing.state} private to your Windows account, so browser sign-in stays off.`);
+  assert.match(refused.reason, /couldn't prepare a private helper folder/);
   assert.equal(failing.compiler.calls.length, 0, "nothing built in a folder left open");
   for (const whoami of [`"NT AUTHORITY\\SYSTEM","S-1-5-18"`, `"AzureAD\\Owner","S-1-12-1-1-2-3-4"`, ""]) {
     const s = await setup(t, { whoami });
     const result = await ensurePrivateFolders(s.options);
     assert.deepEqual(result, { ok: false, problem: "Reach couldn't tell which Windows account it runs as", reason: "Reach couldn't tell which Windows account it runs as, so browser sign-in stays off." });
-    assert.ok(!s.run.calls.some((c) => c.file.endsWith("icacls.exe")));
+    assert.equal(s.compiler.calls.length, 0);
   }
   const noWindows = await setup(t);
   assert.match((await ensurePrivateFolders({ ...noWindows.options, env: {} })).reason, /couldn't find the Windows folder/);
   assert.deepEqual(await ensurePrivateFolders({ ...noWindows.options, platform: "darwin" }), { ok: false, problem: "Windows only.", reason: "Windows only." });
 });
 
-test("the checker is compiled fresh on every call; older checkers are removed; the cached helper is built once", async (t) => {
+test("a new stage is used every preparation and an old matching helper/note is never trusted", async (t) => {
   const s = await setup(t);
   await fs.mkdir(s.nativeDir, { recursive: true });
   await fs.writeFile(path.join(s.nativeDir, "reach-private-folder-aaaaaaaaaaaa-0badc0de.exe"), "planted");
-  await fs.writeFile(path.join(s.nativeDir, "notes.txt"), "kept");
+  const plantedNote = path.join(s.nativeDir, "reach-private-folder-aaaaaaaaaaaa-0badc0de.sha256");
+  await fs.writeFile(plantedNote, "a matching note is not provenance");
   const first = await ensurePrivateFolders(s.options);
   const second = await ensurePrivateFolders(s.options);
   assert.equal(first.ok && second.ok, true);
+  t.after(first.dispose); t.after(second.dispose);
   const checkers = s.run.calls.filter((c) => /reach-private-folder-/.test(c.file)).map((c) => c.file);
-  assert.equal(checkers.length, 2);
-  assert.notEqual(checkers[0], checkers[1], "a new name each time");
+  assert.equal(new Set(checkers).size, 2);
+  assert.notEqual(first.nativeDir, second.nativeDir);
   const names = await fs.readdir(s.nativeDir);
-  assert.deepEqual(names.filter((n) => n.startsWith("reach-private-folder-")), [path.basename(checkers[1])]);
-  assert.ok(names.includes("notes.txt"));
-  // private-folder twice, tailscaled-peer once (then reused with its hash).
+  assert.ok(names.includes("reach-private-folder-aaaaaaaaaaaa-0badc0de.exe"), "older state bytes are preserved");
+  assert.equal(await fs.readFile(plantedNote, "utf8"), "a matching note is not provenance");
   const built = s.compiler.calls.map((args) => path.basename(args.at(-1)));
-  assert.deepEqual(built.sort(), ["private-folder.cs", "private-folder.cs", "tailscaled-peer.cs"]);
-  assert.deepEqual(await first.helper("tailscaled-peer")(), await second.helper("tailscaled-peer")());
+  assert.deepEqual(built.sort(), ["private-folder.cs", "private-folder.cs", "private-state.cs", "private-state.cs", "tailscaled-peer.cs", "tailscaled-peer.cs"]);
+  assert.notDeepEqual(await first.helper("tailscaled-peer")(), await second.helper("tailscaled-peer")());
 });
 
 test("anything the checker finds open refuses, naming the folder; Reach's code is told how to fix", async (t) => {
   const s = await setup(t);
   const answer = async (line) => {
-    const run = programs({ checker: () => `${line}\r\n` });
-    return ensurePrivateFolders({ ...s.options, run: run.run });
+    const run = programs({ checker: args => args.includes(s.state) ? `${line}\r\n` : "ok" });
+    const result = await ensurePrivateFolders({ ...s.options, run: run.run });
+    if (result.ok) t.after(result.dispose);
+    return result;
   };
   const off = "so browser sign-in stays off.";
   assert.equal((await answer("open 0 ace")).reason, `Reach's folder ${s.state} can be read or changed by other people on this PC, ${off}`);
   assert.equal((await answer("open 1 owner")).reason, `Reach's folder ${s.data} belongs to another account on this PC, ${off}`);
   assert.equal((await answer("open 0 reparse")).reason, `Reach's folder ${s.state} leads somewhere else on this PC (a link or junction), ${off}`);
   assert.equal((await answer("open 0 limit")).reason, `Reach's folder ${s.state} holds too many files to check, ${off}`);
-  assert.equal((await answer("open 2 ace")).reason, `Reach's folder ${s.code} can be changed by other people on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
-  assert.equal((await answer("open 2 owner")).reason, `Reach's folder ${s.code} belongs to another account on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
+  assert.equal((await answer("open 3 ace")).reason, `Reach's folder ${s.code} can be changed by other people on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
+  assert.equal((await answer("open 3 owner")).reason, `Reach's folder ${s.code} belongs to another account on this PC, ${off} Move it into your user folder, or install Reach with npm.`);
   // What's wrong, without what it turns off for sign-in: agents' helpers say it their own way.
-  const code = await answer("open 2 ace");
+  const code = await answer("open 3 ace");
   assert.equal(code.problem, `Reach's folder ${s.code} can be changed by other people on this PC`);
   assert.equal(code.advice, "Move it into your user folder, or install Reach with npm.");
   assert.equal((await answer("open 0 ace")).problem, `Reach's folder ${s.state} can be read or changed by other people on this PC`);
-  const helper = await answer("open 3 ace");
-  assert.match(helper.reason, /^Reach's helper .*reach-tailscaled-peer-[0-9a-f]{12}\.exe can be read or changed by other people on this PC/);
-  for (const line of ["open 4 ace", "open 0 weird", "", "OK", "ok but", "open -1 ace", "open 99999 ace"])
+  const helper = await answer("open 4 ace");
+  assert.match(helper.reason, /^Reach's helper .*reach-tailscaled-peer-[0-9a-f]{12}-[0-9a-f]{8}\.exe can be read or changed by other people on this PC/);
+  for (const line of ["open 5 ace", "open 0 weird", "", "OK", "ok but", "open -1 ace", "open 99999 ace"])
     assert.equal((await answer(line)).reason, `Reach couldn't check who can use its folders on this PC, ${off}`, line);
   assert.equal((await answer("ok")).ok, true);
+});
+
+test("unsafe code is refused before state repair, and native descendant refusals name the actual path", async (t) => {
+  const s = await setup(t);
+  const unsafeCode = programs({ checker: () => "open 1 ace" });
+  const result = await ensurePrivateFolders({ ...s.options, run: unsafeCode.run });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /can be changed by other people/);
+  assert.ok(!unsafeCode.calls.some(c => /reach-private-state-/.test(c.file)), "native state mutator never started");
+  const descendant = String.raw`C:\Users\owner\.reach\history\legacy.json`;
+  for (const reason of ["owner", "ace", "write", "deny", "complex", "hardlink", "sharing", "changed", "access"]) {
+    const run = programs({ normalizer: () => `open 0 ${reason} ${Buffer.from(descendant).toString("base64")}` });
+    const refused = await ensurePrivateFolders({ ...s.options, run: run.run });
+    assert.equal(refused.ok, false, reason);
+    assert.ok(refused.problem.includes(descendant), reason);
+    assert.ok(!run.calls.some(c => c.args.includes(s.state) && /reach-private-folder-/.test(c.file)), "no final acceptance after native refusal");
+  }
+});
+
+test("lazy helpers stay fresh in the verified stage and disposal removes their trust context", async (t) => {
+  const s = await setup(t);
+  const secured = await ensurePrivateFolders(s.options);
+  assert.equal(secured.ok, true);
+  secured.activate();
+  const build = builder(s.compiler);
+  const [first, second] = await Promise.all([build("owners", { dir: s.data }), build("owners", { dir: s.data })]);
+  assert.deepEqual(first, second, "one staged build for concurrent launch-owned readers");
+  assert.equal(path.dirname(first.file), secured.nativeDir);
+  assert.ok(!(await fs.readdir(secured.nativeDir)).some(name => name.endsWith(".sha256")), "only in-memory digests authorize staged binaries");
+  const helper = await secured.helper("sandbox")();
+  assert.equal(path.dirname(helper.file), secured.nativeDir);
+  await fs.writeFile(first.file, "changed after preparation");
+  await assert.rejects(build("owners", { dir: s.data }), { code: "ECHANGED" });
+  await secured.dispose();
+  assert.ok(!existsSync(secured.nativeDir));
+  await assert.rejects(secured.helper("sandbox")(), /has closed/);
+});
+
+test("a refused launch cannot mkdir, discover, build or execute a matching historical helper cache", async (t) => {
+  const dir = await folder(t), untouched = path.join(dir, "not-created");
+  const compiler = csc(), build = builder(compiler);
+  const old = await build("owners", { dir });
+  const before = compiler.calls.length;
+  let looked = 0, executed = 0, askedBuild = 0;
+  const unregister = registerWindowsBuildDirectory({ roots: [dir], refusal: "State custody was refused." });
+  t.after(unregister);
+  const rejected = /State custody was refused/;
+  assert.throws(() => builtWindowsHelper("owners", { dir, exists: () => { looked++; return true; } }), rejected);
+  await assert.rejects(build("owners", { dir }), rejected);
+  await assert.rejects(windowsHelper("sandbox", { dir: untouched }), rejected);
+  await assert.rejects(windowsBinary({ dataDir: dir }, "processes", { platform: "win32" }), rejected);
+  await assert.rejects(prepareOwners(dir, { build: () => { askedBuild++; return old; } }), rejected);
+  await assert.rejects(askOwners("pipe", String.raw`\\.\pipe\reach-refused`, { dataDir: dir, run: () => { executed++; return {}; } }), rejected);
+  await assert.rejects(windowsProcesses({ nativeDir: untouched, platform: "win32", build: () => { askedBuild++; return old.file; }, run: () => { executed++; return {}; } }), rejected);
+  const video = await windowsNativeVideo({ dataDir: dir }, { build: () => { askedBuild++; return old.file; }, run: () => { executed++; return {}; } });
+  assert.equal(video.ok, false); assert.match(video.why, rejected);
+  assert.equal(compiler.calls.length, before);
+  assert.equal(looked, 0); assert.equal(executed, 0); assert.equal(askedBuild, 0);
+  assert.equal(existsSync(untouched), false);
+  assert.equal(readFileSync(old.file.replace(/\.exe$/, ".sha256"), "utf8"), `${old.sha256}\n`, "planted matching old pair remains untouched and untrusted");
 });
 
 test("a checker or helper changed on disk after its build is never run", async (t) => {

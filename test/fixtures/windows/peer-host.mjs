@@ -36,13 +36,14 @@ const diagnose = () => {
   const probe = path.join(results, "peer-probe.exe");
   if (fs.existsSync(probe)) save("peer-probe-node.txt", probe, []);
 };
+let folders, peerCheck;
 try {
-  const folders = await ensurePrivateFolders({ protect: [state], check: code ? [code] : [], nativeDir: path.join(state, "native"), helpers: ["tailscaled-peer"] });
+  folders = await ensurePrivateFolders({ protect: [state], check: code ? [code] : [], nativeDir: path.join(state, "native"), helpers: ["tailscaled-peer"] });
   if (!folders.ok) {
     done({ ready: { ok: false, reason: folders.reason }, folders: folders.reason });
     process.exit(0);
   }
-  const peerCheck = createTailscaledPeerCheck({
+  peerCheck = createTailscaledPeerCheck({
     helper: folders.helper("tailscaled-peer"),
     onProblem: (reason) => event({ problem: reason }),
     onAnswer: (answer) => event({ answer }),
@@ -52,6 +53,7 @@ try {
     diagnose();
     done({ ready });
     await peerCheck.close();
+    await folders.dispose?.();
     process.exit(0);
   }
   const key = newIngressKey();
@@ -67,15 +69,18 @@ try {
     onRefused: (kind) => event({ refused: kind }),
   });
   server.on("connection", (socket) => event({ accepted: socket.remotePort }));
-  done({ port: server.address().port, key, ready, folders: "ok" });
+  done({ port: server.address().port, key, ready, folders: "ok", nativeDir: folders.nativeDir,
+    helper: await folders.helper("tailscaled-peer")() });
   const timer = setInterval(async () => {
     if (!fs.existsSync(path.join(results, "stop"))) return;
     clearInterval(timer);
     await peerCheck.close();
-    server.close(() => process.exit(0));
+    server.close(async () => { await folders.dispose?.(); process.exit(0); });
     setTimeout(() => process.exit(0), 2000).unref();
   }, 200);
 } catch (error) {
+  await peerCheck?.close().catch(() => {});
+  await folders?.dispose?.().catch(() => {});
   done({ ready: { ok: false, reason: `peer-host: ${error.message}` } });
   process.exit(1);
 }
