@@ -91,6 +91,12 @@ test("CI test selection never silently loses a renamed required platform test", 
   for (const suite of Object.keys(suites)) assert.equal(testFiles(suite).length, suites[suite].length);
 });
 
+test("Windows CI retains the atomic JSON sharing regression beside installed pairing", () => {
+  assert.ok(suites.windows.includes("windows-atomic-json"), "transient and permanent state-write refusals need Windows execution");
+  assert.ok(suites.windows.includes("qr-onboarding-e2e"), "the installed pairing flow remains required");
+  assert.ok(testFiles("windows").includes(path.join("test","windows-atomic-json.test.mjs")));
+});
+
 test("the CI runner executes guarded npm tests, writes both reports, and propagates failures", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-runner-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
