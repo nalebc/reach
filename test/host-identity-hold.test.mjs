@@ -326,6 +326,22 @@ test("a lapse that doesn't end closes control after the hold, retryable, having 
   d.end();
 });
 
+test("control stopped during a hold: what waited never runs, and letting go isn't held up", async () => {
+  const c = control();
+  await until(() => c.ws.sent.some((m) => m.type === "ready"));
+  c.lapse();
+  c.input({ type: "click", x: 0.5, y: 0.5 });
+  await new Promise((r) => setTimeout(r, 200));
+  // Stop on the phone (/api/screen/control, enabled: false).
+  c.lease.acquire(phoneClient, false);
+  c.ws.parkControl();
+  await until(() => c.helped.some((a) => a.type === "release"), 1000);
+  c.confirm();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(c.helped.map((a) => a.type), ["heartbeat", "release"]);
+  c.end();
+});
+
 test("a live screen viewer held a moment is kept, sent nothing, and goes on", async () => {
   const asks = [];
   const group = new RemoteBroadcast(

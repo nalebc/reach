@@ -121,8 +121,9 @@ export function desktopConnection(
     let result;
     try {
       try {
-        await verified();
+        await verified(true, () => current === epoch);
       } catch (e) {
+        if (current !== epoch) return;
         return close(e.message, e?.retryable === true);
       }
       if (closed || parked || current !== epoch) return;
@@ -140,8 +141,9 @@ export function desktopConnection(
     if (closed || parked || current !== epoch || ws.readyState !== 1) return;
     let client;
     try {
-      client = await verified();
+      client = await verified(true, () => current === epoch);
     } catch (e) {
+      if (current !== epoch) return;
       return close(e.message, e?.retryable === true);
     }
     if (closed || parked || current !== epoch || ws.readyState !== 1) return;
@@ -329,22 +331,22 @@ export function desktopConnection(
     return client;
   };
   // Allowed now, or once a held check passes (never on a stale identity);
-  // over with the hold.
-  const verified = async (lease = true) => {
+  // over with the hold, or once it's no longer wanted (control stopped).
+  const verified = async (lease = true, wanted = () => true) => {
     for (;;) {
       try {
         return authorize(lease);
       } catch (e) {
-        if (!e?.held || closed) throw e;
+        if (!e?.held || closed || !wanted()) throw e;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
-  const readyForInput = async () => {
+  const readyForInput = async (wanted) => {
     await control.waitForInputStop?.();
     if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
     // A grant, pause or identity can change while the old native helper exits.
-    return verified();
+    return verified(true, wanted);
   };
   const drain = async () => {
     if (busy || closed) return;
@@ -355,7 +357,7 @@ export function desktopConnection(
         const current = epoch;
         let result;
         try {
-          const client = await readyForInput();
+          const client = await readyForInput(() => current === epoch);
           // Control stopped while it waited (a hold, an old helper's exit):
           // it doesn't run for a control that has ended.
           if (current !== epoch) {
@@ -436,7 +438,7 @@ export function desktopConnection(
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
           if (current !== epoch) continue;
           // Done: acknowledged once it's confirmed (held, the answer waits).
-          await verified();
+          await verified(true, () => current === epoch);
           if (current !== epoch) continue;
         } catch (e) {
           if (current !== epoch && !closed) continue;
