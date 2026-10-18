@@ -12,6 +12,7 @@ static class ExistingStateAcl {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr file);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool MoveFileExW(string source, string destination, uint flags);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateHardLinkW(string link, string existing, IntPtr security);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool LogonUserW(string user, string domain, string password, int type, int provider, out IntPtr token);
   static readonly SecurityIdentifier Me = WindowsIdentity.GetCurrent().User;
   static readonly InheritanceFlags Children = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
@@ -75,6 +76,43 @@ static class ExistingStateAcl {
         int moveError = moved ? 0 : Marshal.GetLastWin32Error();
         return new Dictionary<string, object> { { "sid", identity.User.Value }, { "administratorToken", false },
           { "read", read }, { "write", write }, { "rename", new Dictionary<string, object> { { "ok", moved }, { "error", moveError } } } };
+      }
+    } finally { CloseHandle(token); }
+  }
+  static object ForeignLink(string root, string expectedSid, string label) {
+    RequireRoot(root);
+    if (label != "before" && label != "held") throw new Exception("Unknown disposable link phase.");
+    string user = Environment.GetEnvironmentVariable("REACH_ACL_FIXTURE_USER"), password = Environment.GetEnvironmentVariable("REACH_ACL_FIXTURE_PASSWORD");
+    if (String.IsNullOrEmpty(user) || !user.StartsWith("ReachAcl", StringComparison.Ordinal) || String.IsNullOrEmpty(password)) throw new Exception("Missing disposable actor.");
+    IntPtr token;
+    if (!LogonUserW(user, Environment.MachineName, password, 2, 0, out token)) throw new Exception("Disposable actor logon failed: " + Marshal.GetLastWin32Error());
+    try {
+      using (WindowsIdentity.Impersonate(token)) {
+        WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        if (identity.User.Value != expectedSid || new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) throw new Exception("Unexpected disposable actor token.");
+        // The destination is outside protected state. This real actor makes
+        // and owns its own directory; no inability to write there can be
+        // mistaken for a source-file hardlink or sharing restriction.
+        string destination = Path.Combine(root, "foreign-output", "owned");
+        Directory.CreateDirectory(destination);
+        string owner = Directory.GetAccessControl(destination, AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier)).Value;
+        if (owner != expectedSid) throw new Exception("Unexpected disposable destination owner.");
+        string control = Path.Combine(destination, label + "-write-control");
+        IntPtr writable = CreateFileW(control, 0x40000000, 0, IntPtr.Zero, 1, 0, IntPtr.Zero);
+        bool canCreate = writable != new IntPtr(-1);
+        int createError = canCreate ? 0 : Marshal.GetLastWin32Error();
+        if (canCreate) { CloseHandle(writable); File.Delete(control); }
+        string source = Path.Combine(root, "state", "history", "legacy.json");
+        object read = Access(source, 1), write = Access(source, 2), delete = Access(source, 0x10000);
+        string link = Path.Combine(destination, label + "-link");
+        bool linked = CreateHardLinkW(link, source, IntPtr.Zero);
+        int linkError = linked ? 0 : Marshal.GetLastWin32Error();
+        return new Dictionary<string, object> {
+          { "sid", identity.User.Value }, { "administratorToken", false }, { "destinationOwner", owner },
+          { "destinationCreate", new Dictionary<string, object> { { "ok", canCreate }, { "error", createError } } },
+          { "sourceRead", read }, { "sourceWrite", write }, { "sourceDelete", delete },
+          { "link", new Dictionary<string, object> { { "ok", linked }, { "error", linkError } } }
+        };
       }
     } finally { CloseHandle(token); }
   }
@@ -168,7 +206,20 @@ static class ExistingStateAcl {
         Console.WriteLine(Json.Serialize(ForeignAttempt(args[1], args[2])));
         return 0;
       }
-      if (args[0] == "setup") Setup(args[1], args[2], args.Length > 3 ? args[3] : "");
+      if (args[0] == "foreign-link") {
+        Console.WriteLine(Json.Serialize(ForeignLink(args[1], args[2], args[3])));
+        return 0;
+      }
+      if (args[0] == "foreign-link-destination") {
+        RequireRoot(args[1]);
+        string destination = Path.Combine(args[1], "foreign-output");
+        Directory.CreateDirectory(destination);
+        Private(destination, true);
+        DirectorySecurity acl = Directory.GetAccessControl(destination);
+        acl.AddAccessRule(Rule(Sid(args[2]), FileSystemRights.FullControl, true, PropagationFlags.None));
+        Directory.SetAccessControl(destination, acl);
+      }
+      else if (args[0] == "setup") Setup(args[1], args[2], args.Length > 3 ? args[3] : "");
       else if (args[0] == "owner-rights") {
         RequireRoot(args[1]);
         Add(Path.Combine(args[1], "state", "history", "legacy.json"), false, "S-1-3-4", false, PropagationFlags.None);

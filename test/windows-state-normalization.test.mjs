@@ -169,10 +169,11 @@ test("actual Windows retained-handle state normalization", {
     await run(fixture, ["setup", generated, mode === "repair" ? "file-explicit" : "private", foreignSid]);
     const history = path.join(generated, "state", "history"), legacy = path.join(history, "legacy.json"), outsideLink = path.join(generated, "outside", "attempted-link");
     const item = { mode: `held-${mode}`, before: await snapshot(generated) }; report.cases.push(item);
-    const child = spawn(handles, [mode, history], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const bytes = await fs.readFile(legacy);
+    const child = spawn(handles, [mode === "repair" ? "repair-update" : mode, history], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let output = "", errors = "";
     child.stderr.on("data", data => { errors += data; });
-    const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal })); });
+    const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
     const ready = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Error(`handle fixture did not reach its barrier: ${output} ${errors}`)), 20000);
       child.stdout.on("data", data => { output += data; if (output === "held\r\n" || output === "held\n") { clearTimeout(timer); resolve(); } });
@@ -181,9 +182,12 @@ test("actual Windows retained-handle state normalization", {
     try {
       await ready;
       if (mode === "repair") {
-        await assert.rejects(fs.link(legacy, outsideLink), "actual NO-sharing repair-file handle blocks CreateHardLink");
-        assert.equal(await fs.stat(outsideLink).then(() => true, () => false), false);
-        item.hardlinkBlocked = true;
+        // Real Windows disproved share0 as a hardlink exclusion guarantee.
+        // The trusted owner can create an alias; production must observe it
+        // and refuse BEFORE touching this state object or its outside alias.
+        await fs.link(legacy, outsideLink);
+        assert.equal((await fs.stat(legacy)).nlink, 2);
+        item.aliasCreatedWhileHeld = true;
       } else if (mode === "private") {
         const ownerWriter = await fs.open(legacy, "a");
         await ownerWriter.write("Owner's current log write.\n"); await ownerWriter.close();
@@ -193,9 +197,25 @@ test("actual Windows retained-handle state normalization", {
         assert.equal((await fs.lstat(history)).isDirectory(), true);
         item.directoryReplacementBlocked = true;
       }
-      child.stdin.end("release\n");
-      assert.deepEqual(await exited, { code: 0, signal: null }, errors);
+      child.stdin.end(mode === "repair" ? "update\n" : "release\n");
+      const outcome = await exited;
       if (mode === "repair") {
+        item.updateOutcome = outcome; item.updateOutput = output;
+        item.afterAttempt = await snapshot(generated);
+        item.sourceBytesPreserved = (await fs.readFile(legacy)).equals(bytes);
+        item.aliasBytesPreserved = (await fs.readFile(outsideLink)).equals(bytes);
+      }
+      assert.deepEqual(outcome, { code: 0, signal: null }, errors);
+      if (mode === "repair") {
+        assert.match(output, /^held\r?\nrefused hardlink\r?\n$/, "only the production hardlink refusal can pass this barrier");
+        const refused = item.afterAttempt;
+        const original = item.before.entries.find(entry => entry.path === legacy).sddl;
+        assert.equal(refused.entries.find(entry => entry.path === legacy).sddl, original);
+        assert.equal(refused.entries.find(entry => entry.path === outsideLink).sddl, original, "new outside alias ACL is unchanged");
+        assert.deepEqual(await fs.readFile(legacy), bytes);
+        assert.deepEqual(await fs.readFile(outsideLink), bytes);
+        item.refusal = "hardlink"; item.outsideAliasSddlPreserved = true; item.bytesPreserved = true;
+        await fs.unlink(outsideLink);
         await fs.link(legacy, outsideLink); await fs.unlink(outsideLink);
         item.hardlinkSucceedsAfterRelease = true;
       } else if (mode === "directory") {
@@ -206,6 +226,67 @@ test("actual Windows retained-handle state normalization", {
     item.after = await snapshot(generated);
     for (const entry of item.before.entries) assert.equal(item.after.entries.find(candidate => candidate.path === entry.path)?.sddl, entry.sddl, "handle probe changes no ACL");
     item.passed = true;
+  });
+  await t.test("actual foreign read-only token cannot create hardlinks before or during a held production repair handle", async () => {
+    const generated = await fs.mkdtemp(path.join(root, "reach-existing-state-"));
+    await run(fixture, ["setup", generated, "file-explicit", foreignSid]);
+    await run(fixture, ["foreign-link-destination", generated, foreignSid]);
+    const history = path.join(generated, "state", "history"), source = path.join(history, "legacy.json");
+    const item = { mode: "actual-foreign-hardlink", before: await snapshot(generated) }; report.cases.push(item);
+    const bytes = await fs.readFile(source);
+    const sourceSddl = item.before.entries.find(entry => entry.path === source).sddl;
+    const probe = async label => {
+      const facts = JSON.parse((await run(fixture, ["foreign-link", generated, foreignSid, label], {
+        env: { ...process.env, REACH_ACL_FIXTURE_USER: user, REACH_ACL_FIXTURE_PASSWORD: password },
+      })).stdout);
+      assert.equal(facts.sid, foreignSid); assert.equal(facts.administratorToken, false);
+      assert.equal(facts.destinationOwner, foreignSid, "the genuine foreign token owns its independent destination");
+      assert.deepEqual(facts.destinationCreate, { ok: true, error: 0 }, "a source/link refusal cannot be caused by an unwritable destination");
+      assert.equal(facts.sourceWrite.ok, false); assert.ok(facts.sourceWrite.error > 0);
+      assert.equal(facts.sourceDelete.ok, false); assert.ok(facts.sourceDelete.error > 0);
+      assert.deepEqual(facts.link, { ok: false, error: 5 }, "the actual read-only foreign token cannot create an outside alias");
+      return facts;
+    };
+    const finishProbe = async (label, facts) => {
+      const alias = path.join(generated, "foreign-output", "owned", `${label}-link`);
+      facts.sourceLinks = (await fs.stat(source)).nlink;
+      if (facts.link.ok) {
+        const after = await snapshot(generated);
+        facts.aliasSddl = after.entries.find(entry => entry.path === alias).sddl;
+        assert.equal(facts.aliasSddl, sourceSddl);
+        assert.deepEqual(await fs.readFile(alias), bytes);
+        await fs.unlink(alias); // Only the exact generated outside alias.
+      } else assert.equal(await fs.lstat(alias).then(() => true, () => false), false);
+      assert.equal((await fs.stat(source)).nlink, 1, "restore the one-link precondition before the next phase");
+    };
+    item.actorBefore = await probe("before");
+    assert.deepEqual(item.actorBefore.sourceRead, { ok: true, error: 0 }, "the actual foreign token can initially read the synthetic broad-read file");
+    assert.deepEqual(item.actorBefore.sourceWrite, { ok: false, error: 5 });
+    assert.deepEqual(item.actorBefore.sourceDelete, { ok: false, error: 5 });
+    await finishProbe("before", item.actorBefore);
+    const child = spawn(handles, ["repair", history], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "", errors = "";
+    child.stderr.on("data", data => { errors += data; });
+    const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal })); });
+    const ready = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error(`foreign-link handle fixture did not reach its barrier: ${output} ${errors}`)), 20000);
+      child.stdout.on("data", data => { output += data; if (output === "held\r\n" || output === "held\n") { clearTimeout(timer); resolve(); } });
+      exited.then(value => { clearTimeout(timer); reject(Error(`foreign-link handle fixture ended before barrier: ${JSON.stringify(value)} ${errors}`)); }, reject);
+    });
+    try {
+      await ready;
+      // Retain the actual foreign-token result from the diagnostic run as
+      // a regression; the trusted-owner barrier above is a separate case.
+      item.actorHeld = await probe("held");
+      child.stdin.end("release\n");
+      assert.deepEqual(await exited, { code: 0, signal: null }, errors);
+      await finishProbe("held", item.actorHeld);
+    } finally { child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy(); child.kill(); await exited.catch(() => {}); }
+    item.after = await snapshot(generated);
+    assert.equal(item.after.entries.find(entry => entry.path === source).sddl, sourceSddl);
+    assert.deepEqual(await fs.readFile(source), bytes);
+    item.passed = true;
+    console.log(`Actual foreign hardlink access (no mutation): ${JSON.stringify({ before: item.actorBefore, held: item.actorHeld })}`);
   });
   await t.test("actual foreign token cannot write or swap checked state, and loses broad read after repair", async () => {
     const generated = await fs.mkdtemp(path.join(root, "reach-existing-state-"));
