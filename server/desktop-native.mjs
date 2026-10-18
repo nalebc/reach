@@ -252,11 +252,16 @@ export async function desktopDisplays(config, { run = exec, platform = process.p
 // One helper per control connection, never one process per pointer movement.
 // The helper releases every held button on EOF, SIGTERM or its own watchdog.
 export class DesktopInput {
-  constructor(child) {
+  // coldStartMs: how long its first answer may take. A Windows helper
+  // compiles its C# before it answers at all (server/powershell.mjs); every
+  // answer after that, and a Mac's prebuilt helper, gets the usual 10 s.
+  constructor(child, { coldStartMs = 0 } = {}) {
     this.child = child;
     this.pending = null;
     this.stopped = false;
     this.exited = false;
+    this.coldStartMs = coldStartMs;
+    this.answered = false;
     // Pending requests reject as soon as stop starts, but the native process
     // can still finish an action or release held buttons until it really exits.
     this.terminated = new Promise((resolve) => {
@@ -282,6 +287,7 @@ export class DesktopInput {
           const p = this.pending;
           if (!p) return this.stop();
           this.pending = null;
+          this.answered = true;
           clearTimeout(p.timer);
           // refused: the helper turned down this one action (a typing target
           // that moved, a key it doesn't know); control goes on.
@@ -295,7 +301,7 @@ export class DesktopInput {
     });
   }
   static async create(config, display) {
-    let executable, args;
+    let executable, args, coldStartMs = 0;
     if (config.desktopInputCommand) {
       [executable, ...args] = config.desktopInputCommand;
     } else if (process.platform === "darwin") {
@@ -304,12 +310,14 @@ export class DesktopInput {
     } else if (process.platform === "win32") {
       executable = "powershell.exe";
       args = powershellFile(path.join(native, "desktop-input.ps1"), [display], { sta: true });
+      coldStartMs = COLD_START_MS;
     } else throw fail(501, "Desktop input supports macOS and Windows.");
     return new DesktopInput(
       spawn(executable, args, {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       }),
+      { coldStartMs },
     );
   }
   send(action) {
@@ -320,7 +328,7 @@ export class DesktopInput {
     if (this.pending)
       return Promise.reject(fail(429, "Wait for the previous desktop action."));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.stop(), 10000);
+      const timer = setTimeout(() => this.stop(), !this.answered && this.coldStartMs ? this.coldStartMs : 10000);
       this.pending = { resolve, reject, timer };
       this.child.stdin.write(JSON.stringify(action) + "\n");
     });
