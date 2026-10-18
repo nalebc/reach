@@ -68,6 +68,7 @@ var displayBounds = CGRect(x: 0, y: 0, width: 1000, height: 500)
 var fixtureCursor = CGPoint(x: 800, y: 400)
 var root: AXUIElement!, button: AXUIElement!, overlay: AXUIElement!
 var cover = false, incomplete = false, slow = false
+var under: AXUIElement? // What a tap off the button hits, the window otherwise.
 func node(_ role: String, _ frame: CGRect, _ enabled: Bool = true) -> AXUIElement {
   let element = AXUIElementCreateApplication(pid_t(700000 + objects.count))
   var origin = frame.origin, size = frame.size
@@ -107,7 +108,7 @@ var hits = 0
 func AXUIElementCopyElementAtPosition(_ system: AXUIElement, _ x: Float, _ y: Float, _ out: inout AXUIElement?) -> AXError {
   hits += 1
   if x >= 104 && x <= 124 && y >= 90 && y <= 110 { out = cover ? overlay : button }
-  else { out = root }
+  else { out = under ?? root }
   return .success
 }
 root = node("AXWindow", displayBounds)
@@ -129,6 +130,64 @@ precondition(fixture.touchPoint(at, tolerance) == at, "scan timeout falls back t
 slow = false
 attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: false)
 precondition(fixture.touchPoint(at, tolerance) == at, "disabled button cannot attract a miss")
+attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: true)
+// Only background moves. Text, an image, a cell or a row under the finger,
+// or anything else not background, keeps the exact point.
+func beside(_ role: String, _ frame: CGRect = CGRect(x: 60, y: 80, width: 43, height: 40)) -> AXUIElement {
+  let element = node(role, frame)
+  attributes[number(element)][kAXParentAttribute] = root
+  attributes[number(element)][kAXWindowAttribute] = root
+  return element
+}
+for role in ["AXStaticText", "AXImage", "AXCell", "AXRow", "AXList", "AXOutline", "AXHeading", "AXSlider"] {
+  under = beside(role)
+  precondition(fixture.touchPoint(at, tolerance) == at, "a tap on \(role) stays exact")
+}
+for role in ["AXGroup", "AXScrollArea", "AXWebArea", "AXSplitGroup", "AXToolbar", "AXLayoutArea", "AXUnknown"] {
+  under = beside(role)
+  precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "a tap on \(role) background moves")
+}
+// A role not read (in time) is no proof of background.
+under = beside("AXGroup")
+attributes[number(under!)][kAXRoleAttribute] = nil
+precondition(fixture.touchPoint(at, tolerance) == at, "an unreadable role stays exact")
+under = nil
+// Text fields are reached by exact hits only. One beside the tap never takes
+// it, and ranks like a disabled control: nearer than the button, or nearly
+// as near, the tap stays exact.
+let field = beside("AXTextField", CGRect(x: 80, y: 90, width: 18, height: 20))
+func place(_ element: AXUIElement, x: Double) {
+  var origin = CGPoint(x: x, y: 90)
+  attributes[number(element)][kAXPositionAttribute] = AXValueCreate(.cgPoint, &origin)!
+}
+attributes[number(root)][kAXChildrenAttribute] = [field] as NSArray
+precondition(fixture.touchPoint(at, tolerance) == at, "a field alone never attracts a miss")
+attributes[number(root)][kAXChildrenAttribute] = [button!, field] as NSArray
+precondition(fixture.touchPoint(at, tolerance) == at, "a nearer field keeps the button from taking the tap")
+place(field, x: 77)
+precondition(fixture.touchPoint(at, tolerance) == at, "a field nearly as near as the button")
+place(field, x: 74)
+precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "a field well behind the button")
+attributes[number(field)][kAXSubroleAttribute] = "AXSecureTextField" as NSString
+for role in ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"] {
+  attributes[number(field)][kAXRoleAttribute] = role as NSString
+  place(field, x: 80)
+  attributes[number(root)][kAXChildrenAttribute] = [field] as NSArray
+  precondition(fixture.touchPoint(at, tolerance) == at, "\(role) never attracts a miss")
+}
+// The tap from the report: on the window 16 pt above a field, at the
+// largest tolerance (44 pt), used to land 37 pt away inside it.
+let wide: [String: Any] = ["x": 44.0 / 999, "y": 44.0 / 499]
+var origin = CGPoint(x: 40, y: 116), size = CGSize(width: 300, height: 22)
+attributes[number(field)][kAXRoleAttribute] = "AXTextField" as NSString
+attributes[number(field)][kAXPositionAttribute] = AXValueCreate(.cgPoint, &origin)!
+attributes[number(field)][kAXSizeAttribute] = AXValueCreate(.cgSize, &size)!
+precondition(fixture.touchPoint(at, wide) == at, "a tap above a field stays above it")
+// An exact hit on the field still reaches it.
+under = field
+precondition(fixture.touchPoint(CGPoint(x: 100, y: 120), wide) == CGPoint(x: 100, y: 120))
+under = nil
+attributes[number(root)][kAXChildrenAttribute] = [button!] as NSArray
 print("live target fixtures passed")
 // Exercise the production normalized click -> targeting -> native down/up
 // path, including the pointer positioning recently added for Mac dragging.

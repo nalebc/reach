@@ -471,6 +471,11 @@ final class Input: @unchecked Sendable {
   // A near miss from a finger only. Read the live window under the tap,
   // bounded to 120 ms and 512 nodes. Incomplete/opaque trees keep the exact
   // point. No labels, text, screenshots, or cached target positions.
+  // Only a tap on background (a window, a group, a toolbar, a scroll area,
+  // a page) moves, and only onto a button-like control: text, an image, a
+  // row or a cell under the finger is what it meant. Text fields are reached
+  // by exact hits only: a tap 16 pt above one snapped 37 pt into it and
+  // opened the phone's keyboard.
   func touchPoint(_ at: CGPoint, _ tolerance: [String: Any]) -> CGPoint {
     guard let x = tolerance["x"] as? Double, let y = tolerance["y"] as? Double,
       x.isFinite, y.isFinite, x > 0, y > 0, x <= 0.1, y <= 0.1
@@ -485,24 +490,30 @@ final class Input: @unchecked Sendable {
       var value: CFTypeRef?
       return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
     }
-    let roles: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
-      "AXMenuButton", "AXLink", "AXMenuItem", "AXTab", "AXDisclosureTriangle",
-      "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    let controls: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+      "AXMenuButton", "AXLink", "AXMenuItem", "AXTab", "AXDisclosureTriangle"]
+    let fields: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    let backgrounds: Set<String> = ["AXWindow", "AXGroup", "AXToolbar", "AXSplitGroup",
+      "AXScrollArea", "AXLayoutArea", "AXTabGroup", "AXSheet", "AXUnknown", "AXWebArea"]
     let system = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(system, 0.008)
     var hit: AXUIElement?
     guard AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
       let original = hit else { return at }
-    var current = original
-    // Preserve exact hits on a control or its text/icon descendants.
+    var current = original, leaf: String?
+    // Preserve exact hits on a control or a field, or their text/icon
+    // descendants. A role not read in time keeps the exact point too.
     for _ in 0..<6 where Date() < until {
-      if roles.contains(read(current, kAXRoleAttribute) as? String ?? "") { return at }
+      guard let role = read(current, kAXRoleAttribute) as? String else { return at }
+      if leaf == nil { leaf = role }
+      if controls.contains(role) || fields.contains(role) { return at }
       guard let parent = read(current, kAXParentAttribute),
         CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
       current = parent as! AXUIElement
     }
+    guard let leaf, backgrounds.contains(leaf) else { return at }
     let root: AXUIElement
-    if read(original, kAXRoleAttribute) as? String == "AXWindow" { root = original }
+    if leaf == "AXWindow" { root = original }
     else if let window = read(original, kAXWindowAttribute),
       CFGetTypeID(window) == AXUIElementGetTypeID() { root = window as! AXUIElement }
     else { return at }
@@ -528,8 +539,13 @@ final class Input: @unchecked Sendable {
         frame = CGRect(origin: origin, size: size).intersection(bounds)
       }
       if let frame, frame.width > 0, frame.height > 0, !frame.intersects(near) { continue }
-      if roles.contains(v[0] as? String ?? ""), let frame {
-        candidates.append(TouchCandidate(frame: frame, enabled: v[3] as? Bool ?? false))
+      // An element without a role leaves the scan incomplete.
+      guard let role = v[0] as? String else { return at }
+      // A field never attracts a miss, but ranks like a disabled control:
+      // a nearer field keeps a farther button from taking its tap.
+      if controls.contains(role) || fields.contains(role), let frame {
+        candidates.append(TouchCandidate(frame: frame,
+          enabled: !fields.contains(role) && (v[3] as? Bool ?? false)))
         elements.append(element)
         continue
       }
