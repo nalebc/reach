@@ -31,6 +31,8 @@ export const suites = {
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
+    // Editing a text file in Files: hash, line endings, never written over.
+    "file-editor-ui",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
