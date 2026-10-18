@@ -36,6 +36,7 @@ jobs:
         shell: pwsh
         env:
           REACH_REAL_WINDOWS_ACCEPTANCE: "1"
+          REACH_ACCEPTANCE_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
           if ($LASTEXITCODE) { exit 1 }

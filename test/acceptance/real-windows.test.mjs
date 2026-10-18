@@ -6,10 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createHash } from "node:crypto";
 import WebSocket from "ws";
-import { findCodexExecutable } from "../../server/capabilities.mjs";
-import { createCodexDaemon } from "../../server/agent-sessions/codex-daemon.mjs";
 import { loadPty, releaseExitedPty } from "../../server/pty-helper.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -56,8 +53,12 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
   const report = {
     schema: 1, startedAt: new Date().toISOString(), platform: process.platform,
     osRelease: os.release(), node: process.version,
-    commit: process.env.GITHUB_SHA, runId: process.env.GITHUB_RUN_ID,
+    checkoutCommit: process.env.GITHUB_SHA, prHeadCommit: process.env.REACH_ACCEPTANCE_PR_HEAD, runId: process.env.GITHUB_RUN_ID,
     execution: "actual GitHub-hosted Windows; vendor processes and real local HTTP; no simulated transports",
+    executionContexts: {
+      local: "actual elevated hosted-runner administrator token; these local GUI/files/screen passes do not establish standard-user parity",
+      codex: "separate real disposable standard account with loaded Windows profile; see actual token evidence",
+    },
     physicalDevicesValidated: [], fullDeviceQualification: false,
     overall: "BLOCKED", qualification: "INCOMPLETE: authenticated network and physical-device prerequisites are absent",
     cases: [],
@@ -73,8 +74,8 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     report.overall = report.cases.some((c) => c.status === "FAIL") ? "FAIL" : "BLOCKED";
     fs.writeFileSync(path.join(reportDir, "acceptance.json"), redact(JSON.stringify(report, null, 2)) + "\n");
   };
-  const caseTest = (id, check) => t.test(id, async () => {
-    const one = { id, status: "RUNNING", execution: "actual Windows" };
+  const caseTest = (id, check, execution = "actual Windows, hosted runner administrator context") => t.test(id, async () => {
+    const one = { id, status: "RUNNING", execution };
     report.cases.push(one);
     write();
     try {
@@ -95,7 +96,7 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     report.finishedAt = new Date().toISOString();
     write();
     const summary = ["## Real Windows acceptance: " + report.overall,
-      "", "**Overall real-device qualification is incomplete.** Local mode does not qualify private Tailscale or Funnel. No provider inference or physical-device pass is claimed.",
+      "", "**Overall real-device qualification is incomplete.** Local mode does not qualify private Tailscale or Funnel. Local console/files/screen run with the hosted administrator token; Codex is a separate standard-user probe. No provider inference, normal-user GUI parity or physical-device pass is claimed.",
       "", "| Case | Result | Evidence or prerequisite |", "| --- | --- | --- |",
       ...report.cases.map((c) => `| ${c.id} | ${c.status} | ${redact(c.error || c.prerequisite || "Real execution; see acceptance.json").replaceAll("|", "\\|").replaceAll("\n", " ")} |`), ""].join("\n");
     if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
@@ -123,38 +124,26 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     assert.match(release.daemonLong, /^1\.104\.1(?:-|$)/);
     return { version: { short: release.short, long: release.long, daemonLong: release.daemonLong }, statusExitSuccessful: status.ok, backendState: value.BackendState, authenticated: false, enrollmentAttempted: false };
   });
-  let codex;
-  await caseTest("real-codex-daemon-start-and-endpoint", async () => {
-    codex = await findCodexExecutable();
-    assert.ok(codex, "Reach must discover the installed real Codex CLI");
-    assert.equal(path.resolve(codex).toLowerCase(), path.resolve(vendors.codex.executable).toLowerCase());
-    assert.equal(createHash("sha256").update(fs.readFileSync(codex)).digest("hex"), vendors.codex.sha256);
-    const version = await run(codex, ["--version"]);
-    assert.ok(version.ok, version.error);
-    const started = await run(codex, ["app-server", "daemon", "start"]);
-    assert.ok(started.ok, started.error);
-    const status = lastJSON(started.stdout);
-    assert.equal(typeof status.socketPath, "string", "record the vendor's actual endpoint, without converting it");
-    const daemonVersion = await run(codex, ["app-server", "daemon", "version"]);
-    const release = daemonVersion.ok ? lastJSON(daemonVersion.stdout) : null;
-    report.codex = {
-      version: version.stdout.trim(), socketPath: status.socketPath,
-      endpointKind: /^\\\\[.?]\\pipe\\/i.test(status.socketPath) ? "named-pipe" : "filesystem-or-other",
-      startStatusShape: Object.fromEntries(Object.entries(status).map(([key, value]) => [key, value === null ? "null" : typeof value])),
-      daemonVersion: release ? { cliVersion: release.cliVersion, managedCodexVersion: release.managedCodexVersion, appServerVersion: release.appServerVersion } : { error: daemonVersion.error },
+  await caseTest("real-standard-user-codex-compatibility", async () => {
+    const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "test", "acceptance", "run-standard-user-codex.ps1"), "-RepoRoot", repo, "-NodeExecutable", process.execPath], { timeout: 300000 });
+    // Read allowlisted reports even after a genuine failure; no alternate
+    // transport, privileged token or mock daemon replaces the failed probe.
+    const read = (name) => {
+      try { return JSON.parse(fs.readFileSync(path.join(reportDir, name), "utf8").replace(/^\uFEFF/, "")); }
+      catch { return null; }
     };
-    return report.codex;
-  });
-  await caseTest("reach-real-codex-initialize-and-thread-list", async () => {
-    // Deliberately zero injection: real executable discovery, exec, owner
-    // checks, socket connection and initialization are production defaults.
-    const daemon = createCodexDaemon();
-    try {
-      const result = await daemon.rpc("thread/list", { limit: 1 });
-      assert.ok(Array.isArray(result.data));
-      return { initialized: true, threadsReturned: result.data.length, compatibility: await daemon.compatibility(), inferenceAttempted: false };
-    } finally { daemon.close(); }
-  });
+    report.standardUserCodex = read("codex-standard-user.json");
+    report.standardUserHarness = read("codex-standard-user-harness.json");
+    write();
+    const failed = report.standardUserCodex?.cases?.find((one) => one.status === "FAIL");
+    const failure = report.standardUserHarness?.status === "PASS"
+      ? `Actual standard-user Codex probe failed${failed ? ` (${failed.id}): ${failed.error}` : "; see worker report"}.`
+      : `The real account/profile/process harness failed at ${report.standardUserHarness?.stage || "an unreported stage"}; no endpoint compatibility conclusion can be drawn.`;
+    assert.ok(result.ok, failure);
+    assert.equal(report.standardUserHarness?.status, "PASS", "the real account/profile/cleanup harness must succeed");
+    assert.equal(report.standardUserCodex?.overall, "PASS", "actual vendor daemon initialization/thread-list failures remain failures");
+    return { report: "codex-standard-user.json", harnessReport: "codex-standard-user-harness.json", actualToken: report.standardUserCodex.token };
+  }, "actual standard local Windows account, loaded profile, dedicated acceptance desktop");
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "reach-real-acceptance-"));
   const shared = path.join(temp, "shared");

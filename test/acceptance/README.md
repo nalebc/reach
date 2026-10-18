@@ -4,12 +4,27 @@ This lane runs only on a disposable GitHub-hosted `windows-2025` runner. It
 installs the published official Codex CLI and a signed official Tailscale MSI,
 records their versions/provenance, asks the actual Codex daemon for its endpoint,
 and calls Reach's production Codex daemon client without injected dependencies.
+Codex runs under a real new standard local Windows account, launched through
+`CreateProcessWithLogonW(LOGON_WITH_PROFILE)` on a dedicated private test desktop.
+Its random password remains in the launcher process's memory. The worker verifies
+its actual SID, Windows elevation/integrity, loaded registry hive, and profile
+path against `GetUserProfileDirectoryW` and Windows' `ProfileList` before probing.
+The account receives read/execute access to the source and vendor paths and
+modify access to acceptance output/scratch only. Cleanup removes its grants,
+account, and owned processes; it does not change an existing user's credentials.
+Account/process harness failure is reported separately from Codex compatibility.
 An observed incompatible endpoint or failed `thread/list` is a failure.
+The report retains the installed vendor's `app-server --help` and
+`app-server daemon --help`, exact reported endpoint path, and allowlisted
+`lstat`/`stat` kind/size metadata. It never reads endpoint/rendezvous contents.
 
 The separate local smoke starts `reach.cmd --local` in a visible native console,
 reads that console through Windows APIs, loads Reach in real Chrome, and uses
 real HTTP against Reach for disposable file and native terminal work. Native
-screen capture is attempted with Reach's real helper. It does not enroll a
+screen capture is attempted with Reach's real helper. Those local checks run
+with the hosted runner's administrator token; their passes do not establish
+standard-user GUI or device parity. They are separate from the Codex account
+probe. The lane does not enroll a
 Tailscale device, sign a provider in, run provider inference, or validate a phone.
 The local case cannot qualify private Tailscale or Funnel behavior.
 
@@ -26,7 +41,9 @@ Reach instance is touched. There are no repository/provider/Tailscale secrets in
 this workflow and no authentication or enrollment command. The existing general
 CI remains required and unchanged.
 
-Artifacts contain an allowlisted vendor report and redacted `acceptance.json`.
+Artifacts contain an allowlisted vendor report, standard-user worker/harness
+reports, and redacted `acceptance.json`. `checkoutCommit` records the checked-out
+PR merge commit; `prHeadCommit` separately records the PR source head.
 The Actions summary distinguishes `PASS`, `FAIL`, and `BLOCKED`; a passing local
 probe never changes a blocked required case to a pass. Full device qualification
 remains incomplete until approved real Tailscale identities, public gateway and
