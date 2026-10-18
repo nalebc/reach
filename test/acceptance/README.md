@@ -46,6 +46,12 @@ standard-user GUI or device parity. They are separate from the Codex account
 probe. The lane does not enroll a
 Tailscale device, sign a provider in, run provider inference, or validate a phone.
 The local case cannot qualify private Tailscale or Funnel behavior.
+The disposable state uses measured canonical long paths, recorded in the report.
+If the actual CLI exits, its owned console retains the real buffer within the
+existing startup bound, then cleanup releases it. Failure evidence retains the
+numeric CLI exit code, native console-reader API/error, and at most 3,000
+characters of redacted text with URLs and QR graphics removed. Reach stdout is
+never redirected; visible-console and real CLI startup assertions stay required.
 
 Run the **Real Windows acceptance (partial qualification)** pull-request workflow,
 or dispatch it after GitHub has registered the workflow on the default branch.

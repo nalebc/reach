@@ -20,6 +20,18 @@ const redact = (value) => String(value)
   .replace(/\bBearer\s+\S+|\b(?:tskey-[\w-]+|sk-[\w-]+)/gi, "[redacted credential]")
   .replace(/https:\/\/(?:login|console)\.tailscale\.com\/\S+/gi, "[redacted login URL]")
   .replace(/([?&#](?:token|secret|pair|invite|key)=)[^\s&#"']+/gi, "$1[redacted]");
+// Failure evidence only: discard QR graphics, escape/control sequences and URLs
+// as well as credentials. The raw native buffer stays in memory for pairing.
+const consoleDiagnostic = (value) => {
+  const text = String(value)
+    .replace(/\x1b\][^\x07]*(?:\x07|$)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x1f\x7f\u2580-\u259f]/g, " ");
+  return redact(text)
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted URL]")
+    .replace(/\b\d{4}\s+\d{4}\b/g, "[redacted eight-digit code]")
+    .replace(/\s+/g, " ").trim().slice(-3000);
+};
 const run = async (file, args, options = {}) => {
   try {
     return { ok: true, ...(await exec(file, args, { timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true, ...options })) };
@@ -155,13 +167,20 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     return { report: "codex-standard-user.json", harnessReport: "codex-standard-user-harness.json", actualToken: report.standardUserCodex.token };
   }, "actual standard local Windows account, loaded profile, dedicated acceptance desktop");
 
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "reach-real-acceptance-"));
+  // Windows TEMP can use an 8.3 alias (RUNNER~1). Hand production the actual
+  // long fixture path; its security checks must continue to reject aliases.
+  const tempParent = fs.realpathSync.native(os.tmpdir());
+  const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(tempParent, "reach-real-acceptance-")));
   const shared = path.join(temp, "shared");
   fs.mkdirSync(shared);
   fs.writeFileSync(path.join(shared, "acceptance.txt"), "real Windows read\n");
   const env = { ...process.env, REACH_HOME: path.join(temp, "state"), REACH_DATA: path.join(temp, "data"), REACH_SCREEN: "1" };
   delete env.NODE_OPTIONS;
   delete env.NODE_TEST_CONTEXT;
+  report.localFixture = { suppliedTempDirectory: os.tmpdir(), canonicalTempDirectory: tempParent,
+    directory: temp, reachHome: env.REACH_HOME, reachData: env.REACH_DATA, shortNameAlias: /~\d/.test(temp) };
+  const consoleHold = path.join(temp, "keep-console-open");
+  const cliExitFile = path.join(temp, "local-cli-exit.txt");
   const powershell = (script, options) => run("powershell.exe", ["-NoProfile", "-EncodedCommand", encoded(script)], { env, ...options });
   const cli = (args) => powershell(`& ${quotePS(path.join(repo, "reach.cmd"))} ${args.map(quotePS).join(" ")}; exit $LASTEXITCODE`);
   const stopInConsole = () => new Promise((resolve, reject) => {
@@ -211,43 +230,69 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
         report.cases.push({ id: "local-cli-cleanup", status: stopped.ok ? "PASS" : "FAIL", evidence: { interactiveCLI: true, confirmationPromptAnswered: stopped.confirmed }, ...(stopped.ok ? {} : { error: stopped.output }) });
         if (!stopped.ok) throw Error(`Acceptance Reach CLI cleanup failed: ${stopped.output}`);
       }
+      fs.rmSync(consoleHold, { force: true });
       fs.rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
     } catch (error) {
       if (!report.cases.some((one) => one.id === "local-cli-cleanup" && one.status === "FAIL"))
         report.cases.push({ id: "local-cli-cleanup", status: "FAIL", error: redact(error.message) });
       throw Error(redact(error.message));
     } finally {
+      // Also release the owned visible cmd after a cleanup assertion fails.
+      // Absence of this file remains observable after the fixture is removed.
+      fs.rmSync(consoleHold, { force: true });
       finalize();
     }
   });
   await caseTest("real-visible-console-local-cli", async () => {
+    assert.ok(path.isAbsolute(temp) && !report.localFixture.shortNameAlias, "the actual fixture must have an absolute long path");
     const before = await cli(["status"]);
     assert.ok(before.ok, before.error);
     assert.match(before.stdout, /^Reach isn't running\./, "never start a second Reach; unreadable process inventories are not sufficient");
     const script = path.join(temp, "start-local.cmd");
     // The one-shot launcher exits before Reach inventories its real parents.
     // The long-running cmd has a visible native console; stdout stays there.
+    fs.writeFileSync(consoleHold, "Owned disposable console lease.\n");
     fs.writeFileSync(script, ["@echo off", "title Reach real acceptance", "ping -n 5 127.0.0.1 >nul",
-      `call "${path.join(repo, "reach.cmd")}" --local --no-stay-awake --folder "${shared}"`, ""].join("\r\n"));
+      `call "${path.join(repo, "reach.cmd")}" --local --no-stay-awake --folder "${shared}"`,
+      'set "REACH_ACCEPTANCE_CLI_EXIT=%ERRORLEVEL%"',
+      `> "${cliExitFile}" echo %REACH_ACCEPTANCE_CLI_EXIT%`,
+      // Keep the native buffer available after a genuine CLI refusal/crash.
+      // Only the numeric exit marker is redirected; Reach still sees a TTY.
+      'echo Reach acceptance CLI exited with code %REACH_ACCEPTANCE_CLI_EXIT%.',
+      "for /l %%i in (1,1,300) do (",
+      `  if not exist "${consoleHold}" exit /b %REACH_ACCEPTANCE_CLI_EXIT%`,
+      "  ping -n 2 127.0.0.1 >nul", ")", "exit /b %REACH_ACCEPTANCE_CLI_EXIT%", ""].join("\r\n"));
     const opened = await powershell(`$p = Start-Process -FilePath $env:ComSpec -ArgumentList ${quotePS(`/d /s /c ""${script}""`)} -WorkingDirectory ${quotePS(temp)} -WindowStyle Normal -PassThru; $p.Id`);
     assert.ok(opened.ok, opened.error);
     startedLocal = true;
     const consolePid = Number(opened.stdout.trim());
     assert.ok(Number.isInteger(consolePid) && consolePid > 0);
-    let last = "";
+    const startup = report.localCliStartup = { consolePid, readAttempts: 0, lastReadableConsoleTail: "", lastReaderError: "", cliExitCode: null };
+    const observedExit = () => {
+      if (!fs.existsSync(cliExitFile)) return;
+      const value = fs.readFileSync(cliExitFile, "utf8").trim();
+      assert.match(value, /^-?\d{1,10}$/, "the owned CLI exit marker must contain only an exit code");
+      startup.cliExitCode = Number(value);
+      throw Error(`The real CLI exited (${startup.cliExitCode}) before its visible local startup completed.`);
+    };
     try {
       await until(async () => {
+        startup.readAttempts++;
         const read = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "test", "acceptance", "read-windows-console.ps1"), "-ConsoleProcessId", String(consolePid)], { env });
-        if (!read.ok) { last = read.error; return false; }
+        if (!read.ok) { startup.lastReaderError = consoleDiagnostic(read.error); observedExit(); return false; }
         const buffer = lastJSON(read.stdout);
         assert.equal(buffer.visible, true);
-        last = buffer.text;
-        origin = /http:\/\/127\.0\.0\.1:\d+/.exec(last)?.[0];
-        const paired = /Pairing\s+code:\s*(\d{4})\s*(\d{4})/i.exec(last);
+        startup.lastReadableAt = new Date().toISOString();
+        startup.lastReadableConsoleTail = consoleDiagnostic(buffer.text);
+        observedExit();
+        origin = /http:\/\/127\.0\.0\.1:\d+/.exec(buffer.text)?.[0];
+        const paired = /Pairing\s+code:\s*(\d{4})\s*(\d{4})/i.exec(buffer.text);
         if (paired) code = paired[1] + paired[2];
         return origin && code;
       }, "the real visible CLI's local URL and pairing code", 300000);
-    } catch (error) { throw Error(`${error.message} Console: ${redact(last).slice(-2000)}`); }
+    } catch (error) {
+      throw Error(`${error.message} Last readable console: ${startup.lastReadableConsoleTail || "[none captured]"}. Last native reader error: ${startup.lastReaderError || "[none]"}`);
+    } finally { write(); }
     const status = await cli(["status"]);
     assert.ok(status.ok, status.error);
     assert.match(status.stdout, /in a terminal window/);
