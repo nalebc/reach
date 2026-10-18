@@ -113,6 +113,8 @@ export async function tailnetFetch(
   const body = ["GET", "HEAD"].includes(request.method)
     ? null
     : new Uint8Array(await request.arrayBuffer());
+  // Body preparation can outlast cancellation; never dispatch that write.
+  if (signal.aborted) throw abortError(signal);
   const headers: string[] = [];
   request.headers.forEach((value, key) => headers.push(key, value));
   const call = node.fetch({
