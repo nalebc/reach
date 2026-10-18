@@ -413,7 +413,7 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
   browser.on("Network.loadingFailed", ({ requestId, errorText, canceled, blockedReason }, from) => {
     if (from !== tab.sessionId || !asked.has(requestId)) return;
     const request = asked.get(requestId);
-    request.failed = /^net::ERR_[A-Z0-9_]+$/.test(errorText || "") ? errorText : "request failed";
+    request.failed = /^net::ERR_[A-Z0-9_]{1,48}$/.test(errorText || "") ? errorText : "request failed";
     request.cancelled = !!canceled;
     if (/^[a-zA-Z-]{1,64}$/.test(blockedReason || "")) request.blockedReason = blockedReason;
   });
@@ -503,7 +503,7 @@ const PAGE_TRACE = `(() => {
   const KEY = "journey.trace";
   const at = () => Math.round(performance.timeOrigin + performance.now()) % 1000000;
   const read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || "[]"); } catch { return []; } };
-  const add = (entry) => { try { const all = read(); all.push(at() + " " + entry); sessionStorage.setItem(KEY, JSON.stringify(all.slice(-40))); } catch {} };
+  const add = (entry) => { try { const all = read(); all.push(at() + " " + entry.slice(0, 240)); sessionStorage.setItem(KEY, JSON.stringify(all.slice(-40))); } catch {} };
   const label = (el) => {
     const b = el && el.closest ? el.closest("button, a, [role=button], [role=tab], [role=menuitem], li, dialog, nav, header, main") || el : el;
     if (!b || !b.tagName) return String(b);
@@ -574,32 +574,40 @@ function phonePage(t, tab, { name, origin }) {
         const shown = await text().catch(() => "");
         const found = await why().catch(() => "");
         const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
-        const did = await tab.evaluate(`(() => { try { return JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch { return []; } })()`).catch(() => []);
+        const observed = await tab.evaluate(`(() => {
+          let trace = []; try { trace = JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch {}
+          const input = document.querySelector("input.pair-code");
+          const button = input?.closest("form")?.querySelector("button");
+          const viewport = visualViewport;
+          return { trace, state: { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
+            pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
+            submitDisabled: button?.disabled ?? null,
+            activeTag: document.activeElement?.tagName?.slice(0, 48) || null,
+            viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null } };
+        })()`).catch(() => ({ trace: [], state: null }));
+        const did = observed.trace;
         // Node's reporter can buffer the assertion until this file ends. Keep
         // bounded evidence beside the screenshot even if the job ends first.
         // Record API paths/statuses and input length, never bodies, headers,
         // field values, URL queries or full browser diagnostics.
-        const state = await tab.evaluate(`(() => {
-          const input = document.querySelector("input.pair-code");
-          const form = input?.closest("form");
-          const button = form?.querySelector("button");
-          const viewport = visualViewport;
-          return { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
-            pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
-            submitDisabled: button?.disabled ?? null,
-            activeTag: document.activeElement?.tagName || null,
-            viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null };
-        })()`).catch(() => null);
-        if (file) {
-          try {
-            fs.writeFileSync(file.replace(/\.png$/, ".json"), JSON.stringify({
-              step: description.slice(0, 160), state,
-              requests: (page.requests?.() || []).slice(-15),
-              gestures: did.filter((entry) => /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30),
-              taps: tapped.slice(-6),
-            }, null, 2) + "\n");
-          } catch { /* Preserve the original assertion if evidence cannot be written. */ }
-        }
+        const bounded = (value, max) => typeof value === "string" ? value.slice(0, max) : null;
+        const numbers = (values, max) => Array.isArray(values) ? values.slice(0, max).map((value) => Number.isFinite(value) ? value : null) : null;
+        try {
+          fs.mkdirSync(reports, { recursive: true });
+          fs.writeFileSync(file ? file.replace(/\.png$/, ".json") : path.join(reports, `${label}-failed-step.json`), JSON.stringify({
+            step: description.slice(0, 160), state: observed.state,
+            requests: (page.requests?.() || []).slice(-15).map((request) => ({
+              at: request.at, method: bounded(request.method, 16), path: bounded(request.path, 240),
+              status: request.status, failed: bounded(request.failed, 64), cancelled: !!request.cancelled,
+              blockedReason: bounded(request.blockedReason, 64),
+            })),
+            gestures: did.filter((entry) => typeof entry === "string" && /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30).map((entry) => entry.slice(0, 256)),
+            taps: tapped.slice(-6).map((tap) => ({
+              meant: bounded(tap.meant, 160), x: tap.x, y: tap.y,
+              hit: bounded(tap.hit, 40), viewport: numbers(tap.viewport, 8), observationFailed: !!tap.error,
+            })),
+          }, null, 2) + "\n");
+        } catch { /* Preserve the original assertion if evidence cannot be written. */ }
         assert.fail(
           `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nIt did: ${JSON.stringify(did)}\nTapped: ${JSON.stringify(tapped.slice(-6))}\nScreenshot: ${file}`,
         );
