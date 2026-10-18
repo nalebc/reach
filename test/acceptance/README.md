@@ -46,12 +46,29 @@ standard-user GUI or device parity. They are separate from the Codex account
 probe. The lane does not enroll a
 Tailscale device, sign a provider in, run provider inference, or validate a phone.
 The local case cannot qualify private Tailscale or Funnel behavior.
-The disposable state uses measured canonical long paths, recorded in the report.
+The disposable state, shared files and console script use measured canonical
+long paths under one production-created private stage beneath the actual
+UserProfile known folder, recorded in the report. The production bootstrap
+validates this parent. Runner TEMP is unused; its parent permissions are not
+changed. The shared fixture stays outside AppData's private-path exclusions.
+The local CLI runs byte-identical built package members, its Windows launcher,
+and the actual installed dependencies copied into a production-created private
+profile stage. Every new file is written from bytes and rehashed; the artifact
+contains no source tree and does not rebuild. The report includes package and
+lockfile hashes and a full source/destination SHA-256 manifest. The shared Actions
+checkout ACL is unchanged, and the production code-tree trust check still runs.
+This fixture is a built artifact probe, not an npm-global install or retained
+profile upgrade test.
 If the actual CLI exits, its owned console retains the real buffer within the
 existing startup bound, then cleanup releases it. Failure evidence retains the
 numeric CLI exit code, native console-reader API/error, and at most 3,000
 characters of redacted text with URLs and QR graphics removed. Reach stdout is
 never redirected; visible-console and real CLI startup assertions stay required.
+After the real interactive stop/status checks, cleanup pins the console's
+process handle, checks its captured creation time, releases its lease, and waits up
+to ten seconds for that exact process to exit before removing only the owned
+artifact and state. Cleanup failure leaves those files for disposable VM cleanup;
+it never kills a possibly reused PID or deletes sibling private stages.
 
 Run the **Real Windows acceptance (partial qualification)** pull-request workflow,
 or dispatch it after GitHub has registered the workflow on the default branch.

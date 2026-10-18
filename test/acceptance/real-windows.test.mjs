@@ -8,6 +8,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { loadPty, releaseExitedPty } from "../../server/pty-helper.mjs";
+import { accountSid } from "../../server/windows-private-folder.mjs";
+import { createWindowsPrivateStage } from "../../server/windows-private-stage.mjs";
+import { browserPrivatePaths, isBrowserPrivatePath } from "../../server/browser-private-paths.mjs";
+import { copyPrivateAcceptanceArtifact } from "./private-artifact.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const exec = promisify(execFile);
@@ -167,25 +171,17 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     return { report: "codex-standard-user.json", harnessReport: "codex-standard-user-harness.json", actualToken: report.standardUserCodex.token };
   }, "actual standard local Windows account, loaded profile, dedicated acceptance desktop");
 
-  // Windows TEMP can use an 8.3 alias (RUNNER~1). Hand production the actual
-  // long fixture path; its security checks must continue to reject aliases.
-  const tempParent = fs.realpathSync.native(os.tmpdir());
-  const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(tempParent, "reach-real-acceptance-")));
-  const shared = path.join(temp, "shared");
-  fs.mkdirSync(shared);
-  fs.writeFileSync(path.join(shared, "acceptance.txt"), "real Windows read\n");
-  const env = { ...process.env, REACH_HOME: path.join(temp, "state"), REACH_DATA: path.join(temp, "data"), REACH_SCREEN: "1" };
+  // Runner TEMP and the Actions checkout may have shared ancestry. Put all
+  // owned work and code beneath a production-created private profile stage.
+  const env = { ...process.env, REACH_SCREEN: "1" };
   delete env.NODE_OPTIONS;
   delete env.NODE_TEST_CONTEXT;
-  report.localFixture = { suppliedTempDirectory: os.tmpdir(), canonicalTempDirectory: tempParent,
-    directory: temp, reachHome: env.REACH_HOME, reachData: env.REACH_DATA, shortNameAlias: /~\d/.test(temp) };
-  const consoleHold = path.join(temp, "keep-console-open");
-  const cliExitFile = path.join(temp, "local-cli-exit.txt");
+  let fixtureStage, temp, shared, consoleHold, cliExitFile, artifact, ownedConsole;
   const powershell = (script, options) => run("powershell.exe", ["-NoProfile", "-EncodedCommand", encoded(script)], { env, ...options });
-  const cli = (args) => powershell(`& ${quotePS(path.join(repo, "reach.cmd"))} ${args.map(quotePS).join(" ")}; exit $LASTEXITCODE`);
+  const cli = (args) => powershell(`& ${quotePS(path.join(artifact.dir, "reach.cmd"))} ${args.map(quotePS).join(" ")}; exit $LASTEXITCODE`);
   const stopInConsole = () => new Promise((resolve, reject) => {
     const term = loadPty().spawn(process.env.ComSpec, ["/d", "/c", "reach.cmd", "stop"], {
-      cwd: repo, env, cols: 180, rows: 50, name: "xterm-256color", useConptyDll: true,
+      cwd: artifact.dir, env, cols: 180, rows: 50, name: "xterm-256color", useConptyDll: true,
     });
     let output = "", answered = false;
     const timer = setTimeout(() => {
@@ -218,6 +214,8 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     return { status: response.status, body: await response.json() };
   };
   t.after(async () => {
+    const evidence = { interactiveCLI: startedLocal, confirmationPromptAnswered: false, consoleReleased: false, ownedConsoleExited: !ownedConsole, artifactRemoved: false, stateRemoved: false };
+    let failure;
     try {
       if (terminalId && token) await request(`/api/terminals/${encodeURIComponent(terminalId)}`, { method: "DELETE" }).catch(() => {});
       if (startedLocal) {
@@ -227,24 +225,98 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
           assert.ok(after.ok, after.error);
           assert.match(after.stdout, /^Reach isn't running\./, "the real CLI must confirm its owned acceptance Reach stopped");
         }
-        report.cases.push({ id: "local-cli-cleanup", status: stopped.ok ? "PASS" : "FAIL", evidence: { interactiveCLI: true, confirmationPromptAnswered: stopped.confirmed }, ...(stopped.ok ? {} : { error: stopped.output }) });
+        evidence.confirmationPromptAnswered = stopped.confirmed;
         if (!stopped.ok) throw Error(`Acceptance Reach CLI cleanup failed: ${stopped.output}`);
       }
-      fs.rmSync(consoleHold, { force: true });
-      fs.rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
-    } catch (error) {
-      if (!report.cases.some((one) => one.id === "local-cli-cleanup" && one.status === "FAIL"))
-        report.cases.push({ id: "local-cli-cleanup", status: "FAIL", error: redact(error.message) });
-      throw Error(redact(error.message));
-    } finally {
-      // Also release the owned visible cmd after a cleanup assertion fails.
-      // Absence of this file remains observable after the fixture is removed.
-      fs.rmSync(consoleHold, { force: true });
+    } catch (error) { failure = error; }
+    try {
+      // Release this exact visible cmd before removing its working directory.
+      // Pin its process handle, verify the captured creation time, then wait;
+      // never kill a PID that may have been reused by an unrelated process.
+      if (ownedConsole) {
+        const closed = await powershell(`$ErrorActionPreference = 'Stop'
+$lease = ${quotePS(consoleHold)}
+$p = $null
+try {
+  try { $p = [Diagnostics.Process]::GetProcessById(${ownedConsole.pid}); [void]$p.Handle }
+  catch [ArgumentException] { [IO.File]::Delete($lease); @{ status = 'already-exited' } | ConvertTo-Json -Compress; exit 0 }
+  if ($p.StartTime.ToUniversalTime().Ticks.ToString() -cne ${quotePS(ownedConsole.startedTicks)}) { throw 'Owned console identity changed.' }
+  [IO.File]::Delete($lease)
+  if (-not $p.WaitForExit(10000)) { throw 'Owned console did not exit after lease release.' }
+  @{ status = 'exited' } | ConvertTo-Json -Compress
+} finally { if ($null -ne $p) { $p.Dispose() } }`, { timeout: 15000 });
+        assert.ok(closed.ok, closed.error);
+        evidence.ownedConsoleExit = lastJSON(closed.stdout).status;
+        assert.ok(["already-exited", "exited"].includes(evidence.ownedConsoleExit));
+        evidence.ownedConsoleExited = true;
+      } else if (consoleHold) fs.rmSync(consoleHold, { force: true });
+      evidence.consoleReleased = !consoleHold || !fs.existsSync(consoleHold);
+      // A failed stop/exit leaves the owned fixture for VM disposal, rather
+      // than removing executable code beneath a potentially live process.
+      if (!failure) {
+        if (artifact) fs.rmSync(artifact.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+        evidence.artifactRemoved = !artifact || !fs.existsSync(artifact.dir);
+        if (fixtureStage) fs.rmSync(fixtureStage.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+        evidence.stateRemoved = !fixtureStage || !fs.existsSync(fixtureStage.dir);
+      }
+    } catch (error) { failure ||= error; } finally {
+      if (consoleHold) fs.rmSync(consoleHold, { force: true });
+      evidence.consoleReleased = !consoleHold || !fs.existsSync(consoleHold);
+      report.cases.push({ id: "local-cli-cleanup", status: failure ? "FAIL" : "PASS", evidence, ...(failure ? { error: redact(failure.message) } : {}) });
       finalize();
     }
+    if (failure) throw Error(redact(failure.message));
   });
   await caseTest("real-visible-console-local-cli", async () => {
+    // The hosted D:\a checkout can be writable by other accounts. Exercise
+    // the unchanged code-tree guard on new byte-identical package files in
+    // a real atomically private profile stage; never loosen the checkout ACL.
+    const identity = await run(path.join(env.SystemRoot, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { env });
+    assert.ok(identity.ok, identity.error);
+    const sid = accountSid(identity.stdout);
+    assert.ok(sid, "the actual artifact owner SID must be known");
+    // AppData and the default helper container are intentionally private to
+    // Files/scripts. Use the token's actual profile for this shared project;
+    // the production stage bootstrap still verifies the entire parent chain.
+    const profileResult = await powershell("[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)))");
+    assert.ok(profileResult.ok, profileResult.error);
+    const profile = fs.realpathSync.native(Buffer.from(profileResult.stdout.trim(), "base64").toString("utf8"));
+    fixtureStage = await createWindowsPrivateStage({ sid, env, parent: profile });
+    temp = fs.realpathSync.native(fixtureStage.dir);
+    shared = path.join(temp, "shared");
+    artifact = { dir: path.join(temp, "artifact") };
+    fs.mkdirSync(shared); fs.mkdirSync(artifact.dir);
+    fs.writeFileSync(path.join(shared, "acceptance.txt"), "real Windows read\n");
+    env.REACH_HOME = path.join(temp, "state");
+    env.REACH_DATA = path.join(temp, "data");
+    consoleHold = path.join(temp, "keep-console-open");
+    cliExitFile = path.join(temp, "local-cli-exit.txt");
+    report.localFixture = { placement: "new production-private stage under actual UserProfile; runner TEMP and AppData are unused",
+      suppliedTempDirectory: os.tmpdir(), directory: temp, reachHome: env.REACH_HOME, reachData: env.REACH_DATA, shortNameAlias: /~\d/.test(temp) };
     assert.ok(path.isAbsolute(temp) && !report.localFixture.shortNameAlias, "the actual fixture must have an absolute long path");
+    assert.equal(isBrowserPrivatePath(shared, browserPrivatePaths({ dataDir: env.REACH_DATA }, { home: profile, appRoot: artifact.dir, env })), false,
+      "the disposable shared project must be outside production private-path exclusions");
+    assert.ok(path.isAbsolute(process.env.npm_execpath || ""), "the guarded npm CLI path is required");
+    const packed = await run(process.execPath, [process.env.npm_execpath, "pack", "--dry-run", "--ignore-scripts", "--json"], { cwd: repo, env });
+    assert.ok(packed.ok, packed.error);
+    const packages = JSON.parse(packed.stdout.trim());
+    assert.equal(packages.length, 1);
+    const current = JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8"));
+    assert.equal(packages[0].name, current.name);
+    assert.equal(packages[0].version, current.version);
+    const copied = copyPrivateAcceptanceArtifact({ source: repo, destination: artifact.dir,
+      members: [...packages[0].files.map(entry => entry.path), "reach.cmd", "package-lock.json", "node_modules"] });
+    for (const required of ["reach.cmd", "package.json", "package-lock.json", "bin/reach.mjs", "server/index.mjs", "scripts/bootstrap.mjs", "dist/index.html", "dist/agent.mjs"])
+      assert.ok(copied.manifest.some(entry => entry.file === required), `the built artifact must include ${required}`);
+    assert.equal(fs.existsSync(path.join(artifact.dir, "src")), false, "execute the built package path, not a rebuilding checkout");
+    fs.writeFileSync(path.join(reportDir, "local-artifact-manifest.json"), JSON.stringify(copied.manifest));
+    report.localFixture.artifact = { directory: artifact.dir, source: repo, package: current.name, version: current.version,
+      mode: "byte-identical built package members plus real installed dependencies and Windows launcher; not an npm-global install or upgrade",
+      sourceAndDestinationHashesEqual: true, manifest: "local-artifact-manifest.json", manifestSha256: copied.manifestSha256,
+      files: copied.files, bytes: copied.bytes,
+      packageJsonSha256: copied.manifest.find(entry => entry.file === "package.json").sha256,
+      packageLockSha256: copied.manifest.find(entry => entry.file === "package-lock.json").sha256 };
+    write();
     const before = await cli(["status"]);
     assert.ok(before.ok, before.error);
     assert.match(before.stdout, /^Reach isn't running\./, "never start a second Reach; unreadable process inventories are not sufficient");
@@ -253,7 +325,7 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     // The long-running cmd has a visible native console; stdout stays there.
     fs.writeFileSync(consoleHold, "Owned disposable console lease.\n");
     fs.writeFileSync(script, ["@echo off", "title Reach real acceptance", "ping -n 5 127.0.0.1 >nul",
-      `call "${path.join(repo, "reach.cmd")}" --local --no-stay-awake --folder "${shared}"`,
+      `call "${path.join(artifact.dir, "reach.cmd")}" --local --no-stay-awake --folder "${shared}"`,
       'set "REACH_ACCEPTANCE_CLI_EXIT=%ERRORLEVEL%"',
       `> "${cliExitFile}" echo %REACH_ACCEPTANCE_CLI_EXIT%`,
       // Keep the native buffer available after a genuine CLI refusal/crash.
@@ -262,11 +334,14 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
       "for /l %%i in (1,1,300) do (",
       `  if not exist "${consoleHold}" exit /b %REACH_ACCEPTANCE_CLI_EXIT%`,
       "  ping -n 2 127.0.0.1 >nul", ")", "exit /b %REACH_ACCEPTANCE_CLI_EXIT%", ""].join("\r\n"));
-    const opened = await powershell(`$p = Start-Process -FilePath $env:ComSpec -ArgumentList ${quotePS(`/d /s /c ""${script}""`)} -WorkingDirectory ${quotePS(temp)} -WindowStyle Normal -PassThru; $p.Id`);
+    const opened = await powershell(`$p = Start-Process -FilePath $env:ComSpec -ArgumentList ${quotePS(`/d /s /c ""${script}""`)} -WorkingDirectory ${quotePS(temp)} -WindowStyle Normal -PassThru; @{ pid = $p.Id; startedTicks = $p.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress`);
     assert.ok(opened.ok, opened.error);
     startedLocal = true;
-    const consolePid = Number(opened.stdout.trim());
+    const launchedConsole = lastJSON(opened.stdout);
+    const consolePid = launchedConsole.pid;
     assert.ok(Number.isInteger(consolePid) && consolePid > 0);
+    assert.match(launchedConsole.startedTicks, /^\d{15,20}$/);
+    ownedConsole = launchedConsole;
     const startup = report.localCliStartup = { consolePid, readAttempts: 0, lastReadableConsoleTail: "", lastReaderError: "", cliExitCode: null };
     const observedExit = () => {
       if (!fs.existsSync(cliExitFile)) return;
