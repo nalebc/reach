@@ -38,6 +38,7 @@ import {
   LoaderCircle,
   Ellipsis,
   Package,
+  Pencil,
   Plus,
   Presentation,
   RefreshCw,
@@ -64,6 +65,15 @@ import {
   whenMissing,
   type FileKind,
 } from "./file-kinds";
+import {
+  byteLength,
+  EDIT_LIMIT,
+  editable,
+  forEditing,
+  forSaving,
+  type Editable,
+} from "./file-edit";
+import { computerWord } from "./pause";
 import { preparedFile, useFileShare } from "./useFileShare";
 import {
   agentLabel,
@@ -1276,6 +1286,14 @@ export default function Files({
           sendToAgent={
             canSendToAgent ? () => setSendingTo([preview]) : undefined
           }
+          canEdit={canWrite}
+          saved={() => {
+            // Share and Download would otherwise hand over the copy fetched
+            // before the edit: a fresh one is fetched for the next tap.
+            sharer.forget(preview);
+            sharer.warm(preview);
+            refresh();
+          }}
         />
       )}
     </div>
@@ -1505,6 +1523,18 @@ const remember = (key: string, blob: Blob) => {
     total -= b.size;
   }
 };
+// A text file being edited: the draft, the text it started from (with "\n"
+// endings, as a text box has them), the hash the save is checked against,
+// and the line ending the file gets back.
+type Edit = {
+  draft: string;
+  base: string;
+  sha256: string;
+  ending: "\n" | "\r\n";
+};
+// Unsaved edits of a preview that closed without Cancel (a back swipe,
+// another page): opening the file again brings them back.
+const unsaved = new Map<string, Edit>();
 
 function Viewer({
   peer,
@@ -1519,6 +1549,8 @@ function Viewer({
   close,
   unzip,
   sendToAgent,
+  canEdit,
+  saved,
 }: {
   peer: Peer;
   peers: Peer[];
@@ -1532,25 +1564,66 @@ function Viewer({
   close: () => void;
   unzip?: () => void;
   sendToAgent?: () => void;
+  canEdit: boolean;
+  saved: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const kind = fileKind(file);
   const mode = previewMode(file, peer.platform);
+  const word = computerWord(peer.platform);
   const [text, setText] = useState(""),
+    [sha256, setSha256] = useState(""),
     [image, setImage] = useState(""),
     [pdf, setPdf] = useState<Blob | null>(null),
     [source, setSource] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
+    [loads, setLoads] = useState(0),
     [copied, setCopied] = useState(false),
     [target, setTarget] = useState(""),
     [sendError, setSendError] = useState(""),
-    [sending, setSending] = useState(false);
+    [sending, setSending] = useState(false),
+    [shown, setShown] = useState({ size: file.size, modified: file.modified }),
+    [editableAs, setEditableAs] = useState<Editable | null>(null),
+    [edit, setEdit] = useState<Edit | null>(null),
+    [saving, setSaving] = useState(false),
+    [saveError, setSaveError] = useState(""),
+    [conflict, setConflict] = useState(false);
+  const dirty = !!edit && edit.draft !== edit.base;
+  const draftKey = JSON.stringify([peer.url, peer.token, root, file.path]);
+  const editing = useRef(edit);
+  editing.current = edit;
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
     return () => element?.close();
   }, []);
+  // Closed with unsaved edits, by anything but Cancel or a confirmed close.
+  useEffect(
+    () => () => {
+      const left = editing.current;
+      if (left && left.draft !== left.base) unsaved.set(draftKey, left);
+    },
+    [draftKey],
+  );
+  // Closing the page asks first while there are unsaved edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const ask = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", ask);
+    return () => window.removeEventListener("beforeunload", ask);
+  }, [dirty]);
+  // Whether the text read can go back exactly (file-edit.ts), worked out
+  // before Edit is tapped so the editor opens within the tap.
+  useEffect(() => {
+    setEditableAs(null);
+    if (!canEdit || mode !== "text" || loading || error || !sha256) return;
+    let live = true;
+    void editable(text, sha256).then((answer) => live && setEditableAs(answer));
+    return () => {
+      live = false;
+    };
+  }, [canEdit, mode, loading, error, text, sha256]);
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 1600);
@@ -1566,10 +1639,10 @@ function Viewer({
     sharer.warm(file);
   }, [peer.url, peer.token, root, file.path, file.modified, file.size, mode]);
   // The write happens inside the tap: phones refuse clipboard writes after it.
-  const copy = () => {
+  const copy = (value = text) => {
     const fallback = () => {
       const area = document.createElement("textarea");
-      area.value = text;
+      area.value = value;
       area.setAttribute("readonly", "");
       area.style.position = "fixed";
       area.style.opacity = "0";
@@ -1582,18 +1655,23 @@ function Viewer({
       else toast("Couldn’t copy. Select the text to copy it instead.");
     };
     if (!navigator.clipboard?.writeText) return fallback();
-    navigator.clipboard.writeText(text).then(() => setCopied(true), fallback);
+    navigator.clipboard.writeText(value).then(() => setCopied(true), fallback);
   };
   const shareState = sharer.state(file);
   useEffect(() => {
     const controller = new AbortController();
     let url = "";
     setText("");
+    setSha256("");
     setImage("");
     setPdf(null);
     setSource(false);
     setError("");
     setLoading(true);
+    setShown({ size: file.size, modified: file.modified });
+    setEdit(null);
+    setSaveError("");
+    setConflict(false);
     const maximum = mode === "pdf" ? MAX_PDF_PREVIEW : MAX_IMAGE_PREVIEW;
     const tooLarge = () =>
       new Error(
@@ -1642,6 +1720,14 @@ function Viewer({
           );
           if (controller.signal.aborted) return;
           setText(r.text);
+          // Only /api/files/text's answer can be written back.
+          if (mode === "text") setSha256(r.sha256 || "");
+          const kept = unsaved.get(draftKey);
+          if (kept && canEdit && mode === "text") {
+            unsaved.delete(draftKey);
+            setEdit(kept);
+            toast("Your unsaved changes are back.");
+          }
         } else
           throw new Error(`Download to open this ${nouns[kind] || "file"}.`);
       } catch (e) {
@@ -1669,7 +1755,101 @@ function Viewer({
     file.modified,
     file.size,
     mode,
+    loads,
   ]);
+  const startEdit = () => {
+    if (!editableAs) return;
+    if ("problem" in editableAs) return toast(editableAs.problem);
+    const base = forEditing(text);
+    setSaveError("");
+    setConflict(false);
+    setEdit({ draft: base, base, sha256, ending: editableAs.ending });
+  };
+  const discard = () =>
+    !dirty || confirm(`Discard your changes to ${file.name}?`);
+  const stopEditing = () => {
+    if (!discard()) return;
+    editing.current = null;
+    setEdit(null);
+    setSaveError("");
+    setConflict(false);
+  };
+  // Every way out of the preview: the chevron, Escape, Android's back, a tap
+  // outside it. A save still under way keeps its draft for next time.
+  const leave = () => {
+    if (!saving) {
+      if (!discard()) return;
+      editing.current = null;
+    }
+    close();
+  };
+  // The file as it is now, after a conflict: what was typed is set aside.
+  const reload = () => {
+    if (!discard()) return;
+    editing.current = null;
+    setLoads((n) => n + 1);
+  };
+  const save = async () => {
+    if (!edit || saving) return;
+    const sent = forSaving(edit.draft, edit.ending);
+    if (byteLength(sent) > EDIT_LIMIT)
+      return setSaveError(
+        "Reach saves text files up to 128 KB. Shorten the text, or download the file to edit it.",
+      );
+    const where = `/api/files/text?${new URLSearchParams({ root: String(root), path: file.path })}`;
+    const done = (hash: string) => {
+      unsaved.delete(draftKey);
+      editing.current = null;
+      setText(sent);
+      setSha256(hash);
+      setEdit(null);
+      setShown({ size: byteLength(sent), modified: new Date().toISOString() });
+      saved();
+      toast(`Saved ${file.name}`);
+    };
+    setSaving(true);
+    setSaveError("");
+    setConflict(false);
+    try {
+      // Sent once per tap, never again by itself: a save whose answer is lost
+      // may still have been written.
+      const r = await request<{ sha256: string }>(peer, where, {
+        method: "PUT",
+        body: JSON.stringify({ text: sent, sha256: edit.sha256 }),
+      });
+      done(r.sha256);
+    } catch (e) {
+      let failure = e as Error & { status?: number };
+      if (failure.status === 409) {
+        // The file isn't the one the edit started from. It may hold this
+        // very text (an earlier save whose answer was lost): then it's
+        // saved. Otherwise someone else changed it: never written over.
+        try {
+          const now = await request<{ text: string; sha256: string }>(
+            peer,
+            where,
+          );
+          if (now.text === sent && now.sha256) return done(now.sha256);
+          return setConflict(true);
+        } catch (again) {
+          failure = again as typeof failure;
+          if (failure.status !== 404)
+            return setSaveError(
+              `Couldn’t check the file on your ${word}. Try saving again.`,
+            );
+        }
+      }
+      setSaveError(
+        failure.status === 413
+          ? "Reach saves text files up to 128 KB. Shorten the text, or download the file to edit it."
+          : failure.status === 404
+            ? `This file was moved or deleted on your ${word}. Copy your text to keep it.`
+            : failure.message,
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
   const others = peers.filter((p) => p.id !== peer.id);
   return (
     <dialog
@@ -1678,69 +1858,132 @@ function Viewer({
       aria-label={file.name}
       onCancel={(e) => {
         e.preventDefault();
-        close();
+        leave();
       }}
-      onClick={(e) => e.target === e.currentTarget && close()}
+      // Closed by the browser itself (Android's back pressed again, which
+      // the page can't stop): the preview goes too, keeping any draft. Not
+      // a close it has since reopened from (StrictMode's second mount).
+      onClose={() => !dialog.current?.open && close()}
+      onClick={(e) => e.target === e.currentTarget && leave()}
     >
       <div className="file-viewer-inner">
         <header>
           <button
             className="files-tool"
             aria-label="Close preview"
-            onClick={close}
+            onClick={leave}
           >
             <ChevronLeft size={24} />
           </button>
           <div className="file-viewer-title">
             <strong>{file.name}</strong>
             <small>
-              {bytes(file.size)} · {friendlyDate(file.modified)}
+              {edit
+                ? saving
+                  ? "Saving…"
+                  : dirty
+                    ? "Unsaved changes"
+                    : "Editing"
+                : `${bytes(shown.size)} · ${friendlyDate(shown.modified)}`}
             </small>
           </div>
-          {!loading && !error && !image && !pdf && text && (
-            <button
-              className={`files-tool ${copied ? "is-done" : ""}`}
-              aria-label={copied ? "Copied" : "Copy text"}
-              onClick={copy}
-            >
-              {copied ? <Check size={19} /> : <Copy size={18} />}
-            </button>
-          )}
-          {sharer.available(file) && (
-            <button
-              className={`files-tool ${shareState === "armed" ? "is-ready" : ""}`}
-              aria-label={
-                shareState === "armed"
-                  ? `Tap to share ${file.name}`
-                  : `Share ${file.name}`
-              }
-              onClick={() => sharer.share(file)}
-            >
-              {shareState === "preparing" ? (
-                <LoaderCircle size={18} className="spin" />
-              ) : (
-                <Share2 size={19} />
+          {edit ? (
+            <>
+              <button
+                className="files-tool files-select-tool"
+                disabled={saving}
+                onClick={stopEditing}
+              >
+                Cancel
+              </button>
+              <button
+                className="files-tool files-select-tool is-primary"
+                disabled={!dirty || saving}
+                onClick={save}
+              >
+                {saving && <LoaderCircle size={15} className="spin" />}
+                Save
+              </button>
+            </>
+          ) : (
+            <>
+              {canEdit && mode === "text" && !loading && !error && sha256 && (
+                <button
+                  className="files-tool"
+                  aria-label={`Edit ${file.name}`}
+                  disabled={!editableAs}
+                  onClick={startEdit}
+                >
+                  <Pencil size={18} />
+                </button>
               )}
-            </button>
+              {!loading && !error && !image && !pdf && text && (
+                <button
+                  className={`files-tool ${copied ? "is-done" : ""}`}
+                  aria-label={copied ? "Copied" : "Copy text"}
+                  onClick={() => copy()}
+                >
+                  {copied ? <Check size={19} /> : <Copy size={18} />}
+                </button>
+              )}
+              {sharer.available(file) && (
+                <button
+                  className={`files-tool ${shareState === "armed" ? "is-ready" : ""}`}
+                  aria-label={
+                    shareState === "armed"
+                      ? `Tap to share ${file.name}`
+                      : `Share ${file.name}`
+                  }
+                  onClick={() => sharer.share(file)}
+                >
+                  {shareState === "preparing" ? (
+                    <LoaderCircle size={18} className="spin" />
+                  ) : (
+                    <Share2 size={19} />
+                  )}
+                </button>
+              )}
+              {sendToAgent && (
+                <button
+                  className="files-tool"
+                  aria-label={`Send ${file.name} to an agent`}
+                  onClick={sendToAgent}
+                >
+                  <SendHorizontal size={19} />
+                </button>
+              )}
+              <button
+                className="files-tool"
+                aria-label={`Download ${file.name}`}
+                onClick={download}
+              >
+                <Download size={19} />
+              </button>
+            </>
           )}
-          {sendToAgent && (
-            <button
-              className="files-tool"
-              aria-label={`Send ${file.name} to an agent`}
-              onClick={sendToAgent}
-            >
-              <SendHorizontal size={19} />
-            </button>
-          )}
-          <button
-            className="files-tool"
-            aria-label={`Download ${file.name}`}
-            onClick={download}
-          >
-            <Download size={19} />
-          </button>
         </header>
-        {!loading && !error && text && isMarkdown(file.name) && (
+        {edit && (conflict || saveError) && (
+          <div className="file-editor-note" role="alert">
+            <p>
+              {conflict
+                ? `This file changed on your ${word} since you started editing. Copy your text, then reload to edit the new version.`
+                : saveError}
+            </p>
+            <button
+              className="button secondary small"
+              onClick={() => copy(edit.draft)}
+            >
+              {copied ? <Check size={15} /> : <Copy size={15} />}
+              {copied ? "Copied" : "Copy my text"}
+            </button>
+            {conflict && (
+              <button className="button secondary small" onClick={reload}>
+                <RefreshCw size={15} /> Reload
+              </button>
+            )}
+          </div>
+        )}
+        {!edit && !loading && !error && text && isMarkdown(file.name) && (
           <div
             className="file-format-toolbar"
             role="group"
@@ -1783,6 +2026,21 @@ function Viewer({
                 <Download size={15} /> Download
               </button>
             </div>
+          ) : edit ? (
+            <textarea
+              className="file-editor"
+              aria-label={`${file.name} text`}
+              value={edit.draft}
+              readOnly={saving}
+              onChange={(e) => {
+                const draft = e.target.value;
+                setEdit((now) => now && { ...now, draft });
+              }}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+            />
           ) : image ? (
             <img src={image} alt={file.name} />
           ) : pdf ? (
@@ -1817,7 +2075,7 @@ function Viewer({
             <pre>{text || "(Empty file)"}</pre>
           )}
         </div>
-        {others.length > 0 && (
+        {others.length > 0 && !edit && (
           <footer className="file-viewer-send">
             <select
               aria-label="Destination computer"
