@@ -333,9 +333,10 @@ export async function startComputer(t) {
   if (windows) {
     // These desktop journeys model a phone on this PC's private tailnet.
     // Their Tailscale stand-in has no Windows service, so browser sign-in
-    // stays off. Request that labeled fallback instead of waiting for the
-    // automatic private QR that Reach deliberately no longer prints.
-    await reach.until(/Type private for its private QR/, 120000);
+    // stays off. Wait for the input prompt before requesting the private
+    // fallback; no automatic QR is allowed on this unavailable ingress path.
+    await reach.until(/Press Enter for a new pairing code\. Type pause to pause\. Ctrl\+C stops sharing and Reach\./, 120000);
+    assert.match(reach.output(), /The private QR needs the Tailscale app on this computer's network/);
     assert.doesNotMatch(reach.output(), /Pairing code:/);
     reach.answer("private");
   }
