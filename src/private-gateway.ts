@@ -25,20 +25,38 @@ export function privateGatewayRoute({ origin, fetch: fetcher, now = Date.now, ev
     if (!response.ok) throw Object.assign(Error("The private connection refused this request."), { status: response.status });
     return response.json();
   };
+  const reachable = async (endpoint: string) => {
+    try { return (await read(`${endpoint}/api/health`))?.product === "Reach"; }
+    catch (error) {
+      const status = (error as { status?: number })?.status;
+      if (status && status !== 503) throw error;
+      return false;
+    }
+  };
   const check = async () => {
     try {
       const audience = new URL(origin);
       if (audience.protocol !== "https:" || !audience.hostname.endsWith(".ts.net")) return origin;
-      if (!privateOrigin) {
-        const config = parseStartConfig(await read(`${origin}/reach-start.json`));
-        if (!config || new URL(config.origin).hostname !== audience.hostname) return origin;
-        privateOrigin = config.origin;
-      }
-      if (privateOrigin === origin) return origin;
-      const health = await read(`${privateOrigin}/api/health`);
       // Runtime instance IDs change on a normal Reach restart. Authorization
       // remains the unchanged signed grant, checked by the private gateway.
-      return health?.product === "Reach" ? privateOrigin : origin;
+      const previous = privateOrigin;
+      if (previous && previous !== origin && await reachable(previous)) return previous;
+      // Reach may select another private port after a restart. Refresh only
+      // after availability loss; a healthy cached path does not depend on the
+      // public bootstrap. A reachable policy/auth/rate refusal still throws.
+      let metadata;
+      try { metadata = await read(`${origin}/reach-start.json`); }
+      catch {
+        // The asset door can close while a known signing key still reaches
+        // its gateway, including after a reload with no cached discovery.
+        // Public metadata is optional; gateway authorization stays separate.
+        // A private health refusal already threw above and is not caught here.
+        return origin;
+      }
+      const config = parseStartConfig(metadata);
+      privateOrigin = config && new URL(config.origin).hostname === audience.hostname ? config.origin : "";
+      if (privateOrigin && privateOrigin !== origin && privateOrigin !== previous && await reachable(privateOrigin)) return privateOrigin;
+      return origin;
     } catch (error) {
       // A reachable private policy/auth/rate refusal is authoritative. Only
       // network loss or the credential-free availability pause allows public.
