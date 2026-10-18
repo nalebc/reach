@@ -1,0 +1,80 @@
+{
+  "repository": "https://github.com/nalebc/reach",
+  "date": "2026-10-18",
+  "purpose": "Preserve and validate the five open launch PRs together; track unfinished Windows work separately.",
+  "base": "8ba922e38b8e723ecb87bda2a616e49c9f7f9fc1",
+  "integrationMergeCommit": "1cdd2e016c74f59011d4d121cc64c0e50d517fb9",
+  "sources": [
+    { "pr": 67, "head": "62ad7060151d2f516ddc2638cef6303f75e13f08", "scope": "Text file editing and terminal clipboard paste" },
+    { "pr": 68, "head": "d165b16fd9f4164dd485895765c6ff5bc209e424", "scope": "Private gateway recovery and cancellation before mutation dispatch" },
+    { "pr": 69, "head": "806ba55d00a093b3b098ec164199ebcf75fbd9a6", "scope": "Real Windows ARM64 vendor architecture validation" },
+    { "pr": 70, "head": "5af5ed0dc470e99b3db57dbfb57827cbfba44688", "scope": "Actionable source-checkout update guidance" },
+    { "pr": 71, "head": "0098158b7fb1afeae6b88d25ff20144a9c4aabe7", "scope": "Accept legitimate OWNER RIGHTS entries without bypassing owner checks" }
+  ],
+  "preservation": {
+    "method": "Separate non-fast-forward merges retaining each original source head as an ancestor",
+    "allFiveSourceHeadsAreAncestors": true,
+    "disjointFilesIdenticalToSourcePR": 38,
+    "sharedFile": ".github/scripts/run-tests.mjs",
+    "sharedFileResolution": "Retains file-editor-ui, terminal-paste-ui, source-update-guidance and windows-owner-rights selection, including the native serial lane",
+    "originalPRs": "Remain open; no original source branch deleted",
+    "main": "No main merge or release performed by this reconciliation"
+  },
+  "combinedValidation": {
+    "executionHost": "macOS, Node 24.21.0",
+    "entrypoint": "Guarded npm run test:file, concurrency 2",
+    "files": [
+      "test/file-editor-ui.test.mjs",
+      "test/terminal-paste-ui.test.mjs",
+      "test/terminal-keys.test.mjs",
+      "test/private-gateway.test.mjs",
+      "test/funnel-agent-cors.test.mjs",
+      "test/tailnet-transport.test.mjs",
+      "test/agent-transport-recovery.test.mjs",
+      "test/source-update-guidance.test.mjs",
+      "test/windows-private-folder.test.mjs",
+      "test/ci-policy.test.mjs"
+    ],
+    "passed": 129,
+    "failed": 0,
+    "skipped": 0,
+    "browserBoundary": "Actual Chrome against local HTTPS production gateways, CORS and recovery; controlled routing/admission fixtures, not an authenticated real-tailnet handoff",
+    "otherChecks": "UI/model/unit checks; running Windows-path tests on macOS does not constitute Windows OS validation",
+    "build": "npm run build passed",
+    "initialSandboxAttempt": "105 passed, 24 failed because sandbox denied local listeners (EPERM); unchanged focused suite passed with loopback permitted",
+    "combinedPRCI": "Required; individual PR checks do not qualify this combined head"
+  },
+  "unfinishedWork": [
+    {
+      "branch": "codex/windows-existing-state",
+      "head": "576818ffc2e41b57087b2e7fc002b22c87781be7",
+      "kind": "Evidence only, intentionally failing baseline",
+      "status": "Four legacy broad-read child ACL cases reproduce refusal on actual x64 and ARM64 NTFS; do not merge stale diagnostic oracles as fixes"
+    },
+    {
+      "branch": "codex/windows-state-normalization",
+      "checkpoint": "24262356cbd1a8401a4a0b54268968fd4c03a056",
+      "kind": "Pending production repair, fresh helper staging and hook hardening",
+      "status": "Native component runs fail during initial bootstrap before compilation/subcases; further integration and hook changes remain under review and require actual Windows validation"
+    },
+    {
+      "branch": "codex/windows-upgrade-acceptance",
+      "checkpoint": "afce63461694d196320a50eab4f7ab439aec320e",
+      "kind": "Pending genuine standard-user installed npm upgrade validation",
+      "status": "Real standard-user profile and npm 0.3.1 installation verified; console fixture failed before URL/QR or 0.3.3 validation. Interactive desktop correction pending validation. Prior failures retained"
+    }
+  ],
+  "releaseBlockers": [
+    "Friend's exact folder ACL is unavailable; controlled reproductions do not establish their precise cause",
+    "Windows existing-state repair and genuine retained-profile installed upgrade qualification remain unfinished",
+    "Configured Tailscale owner sign-in and browser QR onboarding are not qualified by local-only launches",
+    "Authenticated real private-to-public-to-private handoff, sleep/network recovery and physical iPhone/iPad/Android use cases remain unvalidated"
+  ],
+  "historicalInventory": {
+    "totalPRsBeforeIntegrationPR": 71,
+    "open": 5,
+    "merged": 25,
+    "closedUnmerged": 41,
+    "policy": "Closed historical PRs are inventoried separately; closure is not proof that every change was merged, and old snapshots or dependency proposals are not silently resurrected"
+  }
+}
