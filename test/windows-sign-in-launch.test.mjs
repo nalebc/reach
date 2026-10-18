@@ -241,7 +241,7 @@ test("Windows set up with your account: a keyed private route and a foreground F
 test("Windows shows a private QR while waiting for a publicly reachable browser page, then adds its browser QR", asWindows, async (t) => {
   const { seen, started } = keyedReach(t, {
     ready: /Type a device request code to approve/,
-    browserCheck: `(() => { let checks = 0; return async () => ++checks >= 2 ? { ready: true } : { ready: false, reason: "Public DNS is still publishing." }; })()`,
+    browserCheck: `async () => (await import("node:fs")).existsSync((await import("node:path")).join(process.env.HOME, "browser-ready")) ? { ready: true } : { ready: false, reason: "Public DNS is still publishing." }`,
   });
   const reach = await started;
   const text = reach.output();
@@ -251,17 +251,26 @@ test("Windows shows a private QR while waiting for a publicly reachable browser 
   assert.match(text, /Your phone's Tailscale app must be on this computer's Tailscale network/);
   const stateFile = path.join(seen.root, ".reach/host-status.json");
   assert.equal(JSON.parse(fs.readFileSync(stateFile)).browserLink.ready, false);
+  const privateQr = `https://${HOST}:8443`;
+  const privateCount = scanTerminalQRs(reach.output()).filter((link) => link === privateQr).length;
   reach.stdin.write("private\n");
-  await until(() => /Your phone's Tailscale app must be on this computer's Tailscale network/.test(reach.output()) && /▄|█/.test(reach.output()), "private fallback for a phone already on this tailnet");
+  await until(() => scanTerminalQRs(reach.output()).filter((link) => link === privateQr).length > privateCount,
+    "the newly requested private QR for a phone already on this tailnet");
   assert.match(reach.output(), /Your phone's Tailscale app must be on this computer's Tailscale network/);
   assert.match(reach.output(), /▄|█/, "a private QR is still available when explicitly requested");
-  await until(() => /browser connection is ready/.test(reach.output()), "public publication to recover");
+  // Hold publication until initial/private-command observations have finished,
+  // rather than letting the monitor's next poll race a slow test controller.
+  fs.writeFileSync(path.join(reach.home, "browser-ready"), "ready");
+  // Readiness text precedes the QR's stdout bytes. Wait for the complete,
+  // decoded public QR, independently of a requested private reprint's order.
+  await until(() => scanTerminalQRs(reach.output()).includes(`https://${HOST}`), "the complete browser QR after public publication recovers");
+  assert.match(reach.output(), /browser connection is ready/);
   assert.ok(reach.output().includes(`Open on your phone: https://${HOST}\n`));
   assert.match(reach.output(), /▄|█/);
   const recovered = JSON.parse(fs.readFileSync(stateFile));
   assert.equal(recovered.browserLink.ready, true);
   assert.equal(recovered.link, `https://${HOST}`);
-  assert.equal(scanTerminalQRs(reach.output()).at(-1), `https://${HOST}`);
+  assert.ok(scanTerminalQRs(reach.output()).includes(`https://${HOST}`));
 });
 
 for (const funnelEnable of ["wait", "exit"]) {
