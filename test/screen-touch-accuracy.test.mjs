@@ -31,6 +31,7 @@ test("native finger targeting and click events preserve exact coordinates and re
   const source = await fs.readFile(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
   const geometry = source.split("// BEGIN TOUCH GEOMETRY")[1].split("// END TOUCH GEOMETRY")[0];
   const mouse = source.split("// BEGIN DESKTOP MOUSE")[1].split("// END DESKTOP MOUSE")[0];
+  const keyLayout = source.split("// BEGIN KEY LAYOUT")[1].split("// END KEY LAYOUT")[0];
   const inputSource = "final class Input:" + source.split("final class Input:")[1].split("@main struct DesktopInput")[0];
   // Substitute just the local cursor read, so the real Input.action runs
   // without observing the user's mouse. Mouse emission is injected below.
@@ -38,7 +39,7 @@ test("native finger targeting and click events preserve exact coordinates and re
   const input = inputSource.replaceAll("CGEvent(source: nil)?.location", "Optional(fixtureCursor)");
   const file = path.join(folder, "main.swift"), binary = path.join(folder, "geometry");
   const resolver = "func touchPoint" + source.split("func touchPoint")[1].split("  func windowOf")[0];
-  await fs.writeFile(file, `import AppKit\nimport ApplicationServices\n${geometry}\n` + String.raw`
+  await fs.writeFile(file, `import AppKit\nimport ApplicationServices\nimport Carbon\n${geometry}\n` + String.raw`
 func control(_ x: Double, _ y: Double, _ w: Double = 20, _ h: Double = 20, _ enabled: Bool = true) -> TouchCandidate {
   TouchCandidate(frame: CGRect(x: x, y: y, width: w, height: h), enabled: enabled)
 }
@@ -117,7 +118,7 @@ overlay = node("AXGroup", displayBounds)
 attributes[number(root)][kAXChildrenAttribute] = [button!] as NSArray
 attributes[number(button)][kAXWindowAttribute] = root
 attributes[number(button)][kAXParentAttribute] = root
-` + `${mouse}\n${input}\nfinal class TouchFixture { let display: CGDirectDisplayID = 1\n${resolver}\n}\n` + String.raw`
+` + `${mouse}\n${keyLayout}\n${input}\nfinal class TouchFixture { let display: CGDirectDisplayID = 1\n${resolver}\n}\n` + String.raw`
 let fixture = TouchFixture(), tolerance: [String: Any] = ["x": 10.0 / 999, "y": 10.0 / 499]
 precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "live tree recovers a nearby button")
 precondition(fixture.touchPoint(CGPoint(x: 110, y: 100), tolerance) == CGPoint(x: 110, y: 100), "direct hit preserved")

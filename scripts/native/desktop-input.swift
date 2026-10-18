@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import Foundation
 
 // BEGIN TOUCH GEOMETRY
@@ -143,10 +144,88 @@ final class DesktopMouse {
 }
 // END DESKTOP MOUSE
 
+// BEGIN KEY LAYOUT
+// Letters and digits press the key that types them on the Mac's current
+// keyboard layout, not the US key in that place: on AZERTY the US Q key
+// types "a", so ⌘A went out as ⌘Q (quit), ⌘Z as ⌘W and "a" as "q". With ⌘
+// held a layout can type other letters (Dvorak – QWERTY ⌘, Cyrillic, Greek):
+// shortcuts read that layer. Never the keypad: AZERTY's keypad 1 is its only
+// unshifted "1". What the layout doesn't type keeps its US key.
+final class KeyLayout {
+  // What a key code types on a layout, with Carbon modifiers (cmdKey, shiftKey).
+  typealias Translate = (_ code: UInt16, _ modifiers: Int) -> String?
+  static func find(_ key: String, _ modifiers: Int, near us: CGKeyCode,
+    _ translate: Translate) -> CGKeyCode?
+  {
+    func types(_ code: UInt16) -> Bool { translate(code, modifiers)?.lowercased() == key }
+    if types(us) { return us }
+    return (UInt16(0)..<128).first { !(65...92).contains($0) && types($0) }
+  }
+  // The key for a letter or digit, and whether it needs Shift; nil keeps
+  // the US key.
+  static func resolve(_ key: String, _ flags: CGEventFlags, us: CGKeyCode,
+    _ translate: Translate) -> (CGKeyCode, Bool)?
+  {
+    let command = flags.contains(.maskCommand)
+    if let code = find(key, command ? cmdKey : 0, near: us, translate) { return (code, false) }
+    // Digits keep their keys on every layout; AZERTY types them with Shift.
+    // Only plain typing adds it: ⌘1 there is the same key without Shift.
+    guard flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty,
+      "0123456789".contains(key), let code = find(key, shiftKey, near: us, translate)
+    else { return nil }
+    return (code, true)
+  }
+  // UCKeyTranslate over a layout's own data, without dead keys.
+  static func translator(_ source: TISInputSource) -> Translate? {
+    guard let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+      return nil
+    }
+    let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+    let kind = UInt32(LMGetKbdType())
+    return { code, modifiers in
+      withExtendedLifetime(source) {
+        guard let bytes = CFDataGetBytePtr(data) else { return nil }
+        var dead: UInt32 = 0, length = 0
+        var text = [UniChar](repeating: 0, count: 4)
+        let status = UCKeyTranslate(
+          UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self), code,
+          UInt16(kUCKeyActionDown), UInt32(modifiers >> 8) & 0xFF, kind,
+          OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, text.count, &length, &text)
+        return status == noErr ? String(utf16CodeUnits: text, count: length) : nil
+      }
+    }
+  }
+  // Looked up once per layout: the source changes when the owner switches.
+  private var source = ""
+  private var known: [String: (CGKeyCode, Bool)?] = [:]
+  func key(_ key: String, _ flags: CGEventFlags, us: CGKeyCode) -> (CGKeyCode, Bool)? {
+    guard key.count == 1, "abcdefghijklmnopqrstuvwxyz0123456789".contains(key) else { return nil }
+    // This helper never runs its loop otherwise: a layout switch since the
+    // last key gets in here.
+    CFRunLoopRunInMode(.defaultMode, 0, false)
+    guard let current = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+      let id = TISGetInputSourceProperty(current, kTISPropertyInputSourceID)
+    else { return nil }
+    let layout = "\(Unmanaged<CFString>.fromOpaque(id).takeUnretainedValue()) \(LMGetKbdType())"
+    if layout != source {
+      source = layout
+      known = [:]
+    }
+    let plain = flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty
+    let entry = "\(key) \(flags.contains(.maskCommand)) \(plain)"
+    if let found = known[entry] { return found }
+    let found = KeyLayout.translator(current).flatMap { KeyLayout.resolve(key, flags, us: us, $0) }
+    known[entry] = .some(found)
+    return found
+  }
+}
+// END KEY LAYOUT
+
 final class Input: @unchecked Sendable {
   let lock = NSLock()
   let source = CGEventSource(stateID: .hidSystemState)
   lazy var mouse = DesktopMouse(source: source, point: CGEvent(source: nil)?.location ?? .zero)
+  let layout = KeyLayout()
   var currentFlags: CGEventFlags = []
   var last = Date()
   let display: CGDirectDisplayID
@@ -942,8 +1021,13 @@ final class Input: @unchecked Sendable {
         "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109,
         "f11": 103, "f12": 111,
       ]
-      guard let code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
-      let flags = flags(p)
+      guard var code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
+      var flags = flags(p)
+      // The key that types this letter or digit on the Mac's own layout.
+      if let typed = layout.key(key, flags, us: code) {
+        code = typed.0
+        if typed.1 { flags.insert(.maskShift) }
+      }
       // Press modifiers as real keys: system shortcuts (⌘Tab, Mission Control,
       // switching desktops) ignore modifiers carried only as event flags.
       var active: CGEventFlags = []
