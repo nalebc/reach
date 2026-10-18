@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { JSDOM } from "jsdom";
-import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
+import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate, iosPairingState } from "./helpers/ios-page-evidence.mjs";
 
 const probe = "/__simulator_disposable";
 function request(evidence, path, status = 200) {
@@ -52,6 +52,8 @@ test("early JavaScript beacons distinguish module and runtime errors before auto
   dom.window.fetch = async (path, init) => { calls.push({ path, method: init.method }); evidence.event(JSON.parse(init.body)); };
   try {
     dom.window.eval(iosPageDiagnosticScript(probe + "/evidence"));
+    assert.equal(dom.window.__reachIosSmokePairingState().nativeBridge, false);
+    assert.equal(dom.window.__reachIosSmokePairingState().formPresent, false);
     const script = dom.window.document.createElement("script");
     script.src = "/assets/module.js?credential=must-not-record";
     dom.window.document.head.append(script);
@@ -99,6 +101,30 @@ test("diagnostic error messages redact URL credentials, query strings and bearer
   evidence.event({ kind: "error", message: "Failed https://user:password@isolated.test/assets/app.js?token=secret#fragment with Bearer private-value" });
   const entry = evidence.snapshot().browser[0];
   assert.equal(entry.message, "Failed https://isolated.test/assets/app.js with Bearer [redacted]");
+});
+
+test("pairing failure state records only booleans and a category, without validating or exposing the synthetic form", () => {
+  const dom = new JSDOM('<form><input type="url" required><input class="pair-code" required><input value="private name"><div class="error" role="alert"></div><button disabled>Connecting…</button></form>');
+  try {
+    const { document } = dom.window;
+    document.querySelector('input[type="url"]').value = "https://user:password@isolated.test/?credential=must-not-record";
+    document.querySelector("input.pair-code").value = "12345678";
+    document.querySelector(".error").textContent = "Can’t reach this computer. Keep Reach running and your computer awake. private error text";
+    let invalid = 0;
+    document.addEventListener("invalid", () => invalid++, true);
+    const state = iosPairingState(document, { nativePromise() {} });
+    assert.deepEqual(state, { nativeBridge: true, addressPresent: true, addressHasValue: true, addressValid: true,
+      pairingPresent: true, pairingHasValue: true, pairingLengthValid: true, formPresent: true, formValid: true,
+      formBusy: true, errorCategory: "unreachable" });
+    document.querySelector('input[type="url"]').value = "not a url";
+    assert.equal(iosPairingState(document).formValid, false);
+    assert.equal(invalid, 0, "diagnostics must not dispatch validation events");
+    assert.doesNotMatch(JSON.stringify(state), /user|password|isolated|credential|must-not-record|12345678|private/);
+    for (const [text, category] of [["That pairing code is incorrect or expired.", "pairing-code"], ["Too many attempts.", "rate-limit"], ["unexpected private text", "other"], ["", "none"]]) {
+      document.querySelector(".error").textContent = text;
+      assert.equal(iosPairingState(document).errorCategory, category);
+    }
+  } finally { dom.window.close(); }
 });
 
 const observedAssets = [
