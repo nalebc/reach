@@ -194,5 +194,13 @@
     "closedDependencies": "Older dependency proposals retained separately; no blind resurrection."
   },
   "nativeRepairScope": "Object-based subtraction of recognized broad READ grants on validated owned objects. Preexisting/newly observed aliases refuse before that object is changed. Immediate identity/linkcount/descriptor recheck is not an atomic forest transaction, does not revoke historical open handles, and cannot fence all trusted-owner activity between final check and kernel mutation. Late concurrent refusals may leave earlier objects stricter. No added rights/owner/bytes changes.",
-  "codeqlReview": "docs/benchmarks/codeql-review-2026-10-18.json; no rule/severity gate disabled. Final CodeQL analysis remains required."
+  "codeqlReview": "docs/benchmarks/codeql-review-2026-10-18.json; no rule/severity gate disabled. Final CodeQL analysis remains required.",
+  "snapshotScope": "Source/history reconciliation snapshot. Final exact-head validation runs, current results and closure verification are linked in PR72 and its retained artifacts; this JSON is not a live CI dashboard.",
+  "finalLocalValidation": {
+    "lockfileInstall": "npm ci PASS;363packages audited,0 vulnerabilities",
+    "build": "npm run build:release PASS, including actual updated Tailscale1.104.1 WASM build,141 bundled dependency notices and current release assets",
+    "focused": "25 guarded focused files selected,concurrency2; result recorded in PR body and retained final-all-combined-focused-tests.log",
+    "nativeWindows": "New exact combined-head x64/ARM proof required; Mac skips are not Windows qualification",
+    "notices": "Generated THIRD_PARTY_NOTICES.md updated to exact dependency-lock digest"
+  }
 }
