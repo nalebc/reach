@@ -625,6 +625,38 @@ async function stressRun(t, kind) {
       report.scenarios.push({ name, scrolls: scrolls.length, clicks: clicks.length });
     }
 
+    // 10. More letters at once than the input queue holds (a held key, an
+    // app or keyboard inserting letter by letter): what reaches the
+    // computer, and whether control survives.
+    if (process.env.REACH_TEST_SCREEN_OVERFLOW === "1") {
+      const name = "queue overflow";
+      await ensureControl(name);
+      await keyboardClosed();
+      await tapAt(rec.share(rec.regions.field, 0.9, 0.5));
+      await sleep(900);
+      if (!(await typing()).focused) await keyboardButton();
+      const start = rec.field();
+      await trace();
+      const burst = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      for (const ch of burst) await tab.send("Input.insertText", { text: ch });
+      const timeline = [];
+      for (let i = 0; i < 40; i++) {
+        const st = await status();
+        timeline.push(`${i * 250}ms control=${st.control} caption="${st.caption}" shown="${st.shown}" focused=${(await typing()).focused}`);
+        await sleep(250);
+      }
+      const log = await trace();
+      const got = rec.field().slice(start.length);
+      const closes = log.filter((e) => e.dir === "close" || e.dir === "open");
+      const refused = log.filter((e) => e.dir === "in" && (e.m?.type === "error" || e.m?.ok === false)).map((e) => e.m.error);
+      const sent = log.filter((e) => e.dir === "out").map((e) => `${e.m.action?.type}${e.m.action?.text ? ":" + e.m.action.text : ""}${e.m.action?.delete ? "-" + e.m.action.delete : ""}`);
+      const acks = log.filter((e) => e.dir === "in" && e.m?.type === "ack").length;
+      if (got !== burst) problem(name, `${burst.length} letters typed at once: the computer got ${got.length}`, { got, closes, refused: [...new Set(refused)], sentCount: sent.length, sent: sent.slice(0, 80), acks, fieldNow: rec.field(), timeline: [...new Set(timeline.map((l) => l.replace(/^\d+ms /, "")))] });
+      const after = await status();
+      if (!after.control) problem(name, "control ended after the burst", { after, timeline });
+      report.scenarios.push({ name, got, timeline });
+    }
+
     // 9. A real Terminal: tap into it, the keyboard opens, typing and keys arrive as bytes.
     {
       const name = "terminal";
