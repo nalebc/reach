@@ -587,7 +587,7 @@ test("the peer check against a real LocalSystem service: Tailscale's own child c
     fs.writeFileSync(plantedFile, "planted synthetic state\n");
     const ownerSet = await icacls(plantedFile, "/setowner", `*${sids.reachci2}`, "/Q");
     assert.equal(ownerSet.code, 0, ownerSet.stdout + ownerSet.stderr);
-    const actualOwner = await pwsh(`[IO.File]::GetAccessControl('${plantedFile}').GetOwner([System.Security.Principal.SecurityIdentifier]).Value`);
+    const actualOwner = await pwsh(`(Get-Acl -LiteralPath '${plantedFile}' -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]).Value`);
     assert.equal(actualOwner.code, 0, actualOwner.stderr);
     assert.equal(actualOwner.stdout.trim(), sids.reachci2);
     const planted = await check(own, path.join(reachciResults, "planted.json"), ownState, ownQuick);
