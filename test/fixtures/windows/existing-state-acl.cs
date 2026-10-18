@@ -39,8 +39,11 @@ static class ExistingStateAcl {
     if (folder) Directory.SetAccessControl(target, (DirectorySecurity)acl);
     else File.SetAccessControl(target, (FileSecurity)acl);
   }
-  static void Setup(string root, string mode, string foreign) {
+  static void RequireRoot(string root) {
     if (!Directory.Exists(root) || !Path.GetFileName(root).StartsWith("reach-existing-state-")) throw new Exception("Not a generated fixture root.");
+  }
+  static void Setup(string root, string mode, string foreign) {
+    RequireRoot(root);
     Private(root, true);
     string outside = Path.Combine(root, "outside");
     Directory.CreateDirectory(outside);
@@ -63,7 +66,7 @@ static class ExistingStateAcl {
     else if (mode == "owner-rights-file" || mode == "foreign-owner-rights") Add(file, false, "S-1-3-4", false, PropagationFlags.None);
     else if (mode == "owner-rights-directory") Add(history, true, "S-1-3-4", false, PropagationFlags.None);
     else if (mode == "creator-owner") Add(history, true, "S-1-3-0", false, PropagationFlags.InheritOnly);
-    else if (mode == "creator-owner-applicable") Add(file, false, "S-1-3-0", false, PropagationFlags.None);
+    else if (mode == "creator-owner-materialized") Add(file, false, "S-1-3-0", false, PropagationFlags.None);
     else if (mode == "foreign-ace") Add(file, false, foreign, false, PropagationFlags.None);
   }
   static Dictionary<string, object> Entry(string target) {
@@ -109,6 +112,10 @@ static class ExistingStateAcl {
       }
       if (args.Length < 2) throw new Exception("Missing fixture arguments.");
       if (args[0] == "setup") Setup(args[1], args[2], args.Length > 3 ? args[3] : "");
+      else if (args[0] == "owner-rights") {
+        RequireRoot(args[1]);
+        Add(Path.Combine(args[1], "state", "history", "legacy.json"), false, "S-1-3-4", false, PropagationFlags.None);
+      }
       else if (args[0] != "snapshot") throw new Exception("Unknown fixture operation.");
       Console.WriteLine(Json.Serialize(Snapshot(args[1])));
       return 0;

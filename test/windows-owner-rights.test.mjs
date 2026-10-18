@@ -61,7 +61,7 @@ test("actual Windows OWNER RIGHTS uses the validated object owner", {
     ["fresh", true], ["private", true], ["creator-owner", true],
     ["owner-rights-file", true], ["owner-rights-directory", true],
     ["foreign-owner-rights", false, /belongs to another account/],
-    ["creator-owner-applicable", false, /can be read or changed/],
+    ["creator-owner-materialized", true],
     ["foreign-ace", false, /can be read or changed/], ["junction", false, /link or junction/],
   ];
   for (const [mode, expected, refusal] of cases) await t.test(mode, { timeout: 120000 }, async () => {
@@ -73,7 +73,12 @@ test("actual Windows OWNER RIGHTS uses the validated object owner", {
     const state = path.join(generated, "state"), data = path.join(state, "quick"), nativeDir = path.join(state, "native");
     const legacy = path.join(state, "history", "legacy.json");
     const foreignOwner = mode === "foreign-owner" || mode === "foreign-owner-rights";
-    if (foreignOwner) await run(path.win32.join(system, "icacls.exe"), [legacy, "/setowner", `*${foreignSid}`, "/Q"]);
+    if (foreignOwner) {
+      await run(path.win32.join(system, "icacls.exe"), [legacy, "/setowner", `*${foreignSid}`, "/Q"]);
+      // Actual Windows owner reassignment removed the old OWNER RIGHTS ACE.
+      // Re-add it after that operation and verify owner and ACE together.
+      await run(fixture, ["owner-rights", generated]);
+    }
     if (mode === "junction") {
       item.junction = path.join(state, "outside-link");
       await fs.symlink(path.join(generated, "outside"), item.junction, "junction");
@@ -90,7 +95,15 @@ test("actual Windows OWNER RIGHTS uses the validated object owner", {
         assert.equal(ownerRights.owner, foreignOwner ? foreignSid : currentSid);
         assert.ok(ownerRights.rules.some(rule => rule.sid === "S-1-3-4" && rule.type === "Allow" && !rule.inherited && rule.propagation === "None"), "actual explicit OWNER RIGHTS read ACE exists before production");
       }
-      if (mode === "creator-owner-applicable") assert.ok(old.rules.some(rule => rule.sid === "S-1-3-0" && rule.type === "Allow" && rule.propagation === "None"), "actual applicable CreatorOwner ACE exists before production");
+      if (mode === "creator-owner-materialized") {
+        // Both real Windows architectures materialized an applicable
+        // CreatorOwner template into the current owner's explicit read ACE.
+        // This does not exercise an unmaterialized applicable CO policy case.
+        assert.ok(!old.rules.some(rule => rule.sid === "S-1-3-0"));
+        assert.ok(old.rules.some(rule => rule.sid === currentSid && rule.type === "Allow" && !rule.inherited && (rule.rights & 0x1200a9) === 0x1200a9));
+        const trusted = new Set([currentSid, "S-1-5-18", "S-1-5-32-544"]);
+        assert.ok(old.rules.every(rule => rule.type !== "Allow" || trusted.has(rule.sid)), "materialization granted no foreign or broad access");
+      }
       if (mode === "foreign-ace") assert.ok(old.rules.some(rule => rule.sid === foreignSid && rule.type === "Allow" && !rule.inherited), "actual foreign-account read ACE exists before production");
     }
     item.result = await ensurePrivateFolders({ protect: [state, data], check: [], nativeDir, helpers: [] });
