@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -23,6 +23,22 @@ import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 // never reach a Reach that really runs on this computer.
 const AS_WINDOWS = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
 const UNREAD = /^Reach couldn't read this PC's process list \(Windows' C# compiler isn't on this PC\), so it only knows the Reach run from this folder\.\n/;
+
+// These cases exercise an installed artifact's lifecycle. Prepare its
+// immutable private byte-copy once, with a separate bounded setup budget;
+// every Reach launch, status, stop and cleanup remains inside its case.
+let privateInstall;
+before(async (t) => {
+  const started = performance.now();
+  let ready = false;
+  t.diagnostic(JSON.stringify({ fixturePhase: "private-install:start", elapsedMs: 0 }));
+  try {
+    privateInstall = await privateWindowsInstall();
+    ready = true;
+  } finally {
+    if (!t.signal.aborted) t.diagnostic(JSON.stringify({ fixturePhase: "private-install:finished", ready, elapsedMs: Math.round(performance.now() - started) }));
+  }
+}, { timeout: 60000 });
 
 // Synthetic process/task dependencies and a disposable filesystem exercise
 // the real stop controller; this does not qualify Windows token behavior.
@@ -59,9 +75,9 @@ test("modeled Windows stop inventory: another fixture's background starter stays
 const modeledPrivateFolders = process.platform === "win32" ? "" : `privateFolders: async () => ({ ok: true, helper: () => async () => { throw Error("Windows native helpers unavailable in this modeled host"); } })`;
 
 async function windowsReach(t, phase = () => {}) {
-  phase("private-install:start");
-  const install = await privateWindowsInstall();
-  phase("private-install:finished");
+  const install = privateInstall;
+  assert.notEqual(install, undefined, "the bounded private artifact setup completed");
+  phase("private-artifact:ready");
   const dir = fs.mkdtempSync(path.join(install?.work || os.tmpdir(), "reach-as-windows-"));
   const state = path.join(dir, "state");
   fs.mkdirSync(path.join(dir, "share"));
@@ -222,7 +238,8 @@ const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`
 function windowsTailscaleReach(t, { serve, record, savedPort } = {}) {
   const seen = {};
   const started = (async () => {
-    const install = await privateWindowsInstall();
+    const install = privateInstall;
+    assert.notEqual(install, undefined, "the bounded private artifact setup completed");
     const fixtureRoot = install ? fs.mkdtempSync(path.join(install.work, "reach-clean-")) : undefined;
     return startCleanReach(t, {
       ...(install ? { fixtureRoot, packageRoot: install.root } : {}),
