@@ -15,7 +15,8 @@
 //
 // state: the folder and everything in it (up to 20,000 entries) owned by the
 //   account, SYSTEM or Administrators; no allowed access for anyone else
-//   (inherit-only CREATOR OWNER and OWNER RIGHTS aside); no links/junctions.
+//   (inherit-only CREATOR OWNER and rights for the checked owner aside);
+//   no links/junctions.
 // code: the folder, its bin, scripts, scripts\native, server, dist and
 //   node_modules folders, and everything under bin, scripts and server (up to
 //   5,000): nobody but the account, SYSTEM, Administrators or TrustedInstaller
@@ -108,7 +109,9 @@ static class PrivateFolder {
       if (rule.AccessControlType != AccessControlType.Allow) continue;
       string sid = rule.IdentityReference.Value;
       if (Trusted(sid, account, code)) continue;
-      if ((sid == CreatorOwner || sid == OwnerRights) && (rule.PropagationFlags & PropagationFlags.InheritOnly) != 0) continue;
+      // OWNER RIGHTS denotes this object's owner, already checked above.
+      if (sid == OwnerRights) continue;
+      if (sid == CreatorOwner && (rule.PropagationFlags & PropagationFlags.InheritOnly) != 0) continue;
       int rights = (int)rule.FileSystemRights;
       if (code ? (rights & WriteRights) != 0 : rights != 0) throw new Open("ace");
     }
