@@ -443,11 +443,15 @@ async function signIn(page, computer) {
     // The page asks by itself, then shows the code to type into Reach.
     const code = await page.see(() => document.querySelector(".approval-code")?.textContent?.trim(), "the code to type on the computer", 60000);
     assert.match(code, /^[a-f0-9]{8}$/);
+    await page.skipIntro();
     computer.reach.answer(code);
   } else {
     await page.see(/Pairing code/, "the pairing code form", 60000);
     // How to get a fresh code, as this computer gives one.
     await page.see(/For a fresh one, run (reach|\.\/reach|\.\\reach\.cmd) pair on your computer\./, "how to get a fresh code");
+    // The form is already mounted underneath the first-time scene. Wait for
+    // that scene to finish before a real finger can reach the pairing form.
+    await page.skipIntro();
     await page.shot("connect");
     await page.fill("input.pair-code", computer.pairing);
     await page.tap("Connect computer");
@@ -646,7 +650,13 @@ function phonePage(t, tab, { name, origin }) {
     if (!el) return null;
     el.scrollIntoView({ block: "center", inline: "center" });
     const r = el.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    // Being mounted and styled visible does not mean a finger can reach it.
+    // Wait within this tap's existing budget; never send a tap to an overlay
+    // or replay an action after it disappears.
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !el.contains(hit)) return null;
+    return { x, y };
   })()`;
   const touch = async (x, y) => {
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
