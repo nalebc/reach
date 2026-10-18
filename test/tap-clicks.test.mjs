@@ -187,11 +187,16 @@ test("a double-tap's second click may carry its pairing tolerance, validated lik
     create: async () => ({ async send(action) { helped.push(action); return { ok: true, clickState: 2 }; }, stop() {} }),
   });
   const message = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
+  // Waits by the clock, not by turns: Windows' timers tick every ~15 ms.
+  const until = async (check) => {
+    for (const end = Date.now() + 10000; !check() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(check(), `the computer said: ${JSON.stringify(ws.sent)}`);
+  };
   message({ type: "auth", token: "T", display: "primary" });
-  for (let i = 0; i < 200 && !ws.sent.some((m) => m.type === "ready"); i++) await new Promise((r) => setTimeout(r, 5));
+  await until(() => ws.sent.some((m) => m.type === "ready"));
   message({ type: "input", id: 1, action: { ...second, pair: { x: 0.03, y: 0.05 } } });
-  for (let i = 0; i < 200 && !ws.sent.some((m) => m.type === "ack"); i++) await new Promise((r) => setTimeout(r, 5));
-  assert.deepEqual(helped.at(-1), { ...second, pair: { x: 0.03, y: 0.05 } });
+  await until(() => ws.sent.some((m) => m.type === "ack" || m.type === "error"));
+  assert.deepEqual(helped.at(-1), { ...second, pair: { x: 0.03, y: 0.05 } }, JSON.stringify(ws.sent));
   ws.readyState = 3;
   ws.emit("close", 1000);
 });
