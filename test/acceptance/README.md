@@ -47,8 +47,10 @@ probe. The lane does not enroll a
 Tailscale device, sign a provider in, run provider inference, or validate a phone.
 The local case cannot qualify private Tailscale or Funnel behavior.
 The disposable state, shared files and console script use measured canonical
-long paths under one production-created private profile stage, recorded in the
-report. Runner TEMP is unused; its parent permissions are not changed.
+long paths under one production-created private stage beneath the actual
+UserProfile known folder, recorded in the report. The production bootstrap
+validates this parent. Runner TEMP is unused; its parent permissions are not
+changed. The shared fixture stays outside AppData's private-path exclusions.
 The local CLI runs byte-identical built package members, its Windows launcher,
 and the actual installed dependencies copied into a production-created private
 profile stage. Every new file is written from bytes and rehashed; the artifact

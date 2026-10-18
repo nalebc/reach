@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { loadPty, releaseExitedPty } from "../../server/pty-helper.mjs";
 import { accountSid } from "../../server/windows-private-folder.mjs";
 import { createWindowsPrivateStage } from "../../server/windows-private-stage.mjs";
+import { browserPrivatePaths, isBrowserPrivatePath } from "../../server/browser-private-paths.mjs";
 import { copyPrivateAcceptanceArtifact } from "./private-artifact.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -274,7 +275,13 @@ try {
     assert.ok(identity.ok, identity.error);
     const sid = accountSid(identity.stdout);
     assert.ok(sid, "the actual artifact owner SID must be known");
-    fixtureStage = await createWindowsPrivateStage({ sid, env });
+    // AppData and the default helper container are intentionally private to
+    // Files/scripts. Use the token's actual profile for this shared project;
+    // the production stage bootstrap still verifies the entire parent chain.
+    const profileResult = await powershell("[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)))");
+    assert.ok(profileResult.ok, profileResult.error);
+    const profile = fs.realpathSync.native(Buffer.from(profileResult.stdout.trim(), "base64").toString("utf8"));
+    fixtureStage = await createWindowsPrivateStage({ sid, env, parent: profile });
     temp = fs.realpathSync.native(fixtureStage.dir);
     shared = path.join(temp, "shared");
     artifact = { dir: path.join(temp, "artifact") };
@@ -284,9 +291,11 @@ try {
     env.REACH_DATA = path.join(temp, "data");
     consoleHold = path.join(temp, "keep-console-open");
     cliExitFile = path.join(temp, "local-cli-exit.txt");
-    report.localFixture = { placement: "new production-private profile stage; runner TEMP is unused",
+    report.localFixture = { placement: "new production-private stage under actual UserProfile; runner TEMP and AppData are unused",
       suppliedTempDirectory: os.tmpdir(), directory: temp, reachHome: env.REACH_HOME, reachData: env.REACH_DATA, shortNameAlias: /~\d/.test(temp) };
     assert.ok(path.isAbsolute(temp) && !report.localFixture.shortNameAlias, "the actual fixture must have an absolute long path");
+    assert.equal(isBrowserPrivatePath(shared, browserPrivatePaths({ dataDir: env.REACH_DATA }, { home: profile, appRoot: artifact.dir, env })), false,
+      "the disposable shared project must be outside production private-path exclusions");
     assert.ok(path.isAbsolute(process.env.npm_execpath || ""), "the guarded npm CLI path is required");
     const packed = await run(process.execPath, [process.env.npm_execpath, "pack", "--dry-run", "--ignore-scripts", "--json"], { cwd: repo, env });
     assert.ok(packed.ok, packed.error);
