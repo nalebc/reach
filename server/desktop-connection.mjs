@@ -3,6 +3,7 @@ import { streamOptions, inputAction } from "./desktop-protocol.mjs";
 import { fail } from "./core.mjs";
 import { actsAsOwner } from "./screen.mjs";
 import { refuseGuest } from "./windows-guest-screen.mjs";
+import { identityHold } from "./identity-hold.mjs";
 // One control connection per phone. A new one from it takes over from the
 // one before: the phone made it to replace that one (a stalled old one,
 // busy with a slow action and not yet 3 s silent, turned every reconnect
@@ -46,6 +47,9 @@ export function desktopConnection(
     platform = process.platform,
     // A Windows PC's guests' pictures (server/windows-guest-screen.mjs).
     guestScreen = null,
+    // How long Tailscale's word may come late (auth.interruption) before
+    // the connection ends, retryable: held meanwhile, nothing runs.
+    holdFor = 5000,
   },
 ) {
   let token,
@@ -117,10 +121,11 @@ export function desktopConnection(
     let result;
     try {
       try {
-        authorize();
+        await verified();
       } catch (e) {
         return close(e.message, e?.retryable === true);
       }
+      if (closed || parked || current !== epoch) return;
       try {
         result = await look(action, true);
       } catch (e) {
@@ -135,10 +140,11 @@ export function desktopConnection(
     if (closed || parked || current !== epoch || ws.readyState !== 1) return;
     let client;
     try {
-      client = authorize();
+      client = await verified();
     } catch (e) {
       return close(e.message, e?.retryable === true);
     }
+    if (closed || parked || current !== epoch || ws.readyState !== 1) return;
     control.acquire(client, true);
     ws.send(JSON.stringify({ type: "ack", id, ...result }));
   };
@@ -265,7 +271,7 @@ export function desktopConnection(
       if (closed || ws.readyState !== 1) return;
       initial = await helper.send({ type: "heartbeat" });
       if (closed || ws.readyState !== 1) return;
-      authorize();
+      await verified();
     }
     lastId = 0;
     doneId = 0;
@@ -289,14 +295,18 @@ export function desktopConnection(
   };
   // Parked, the connection still answers to its device and to pause; only
   // the lease is not asked for.
+  const hold = identityHold({ within: holdFor, recheck: () => auth.recheck?.() });
   const authorize = (lease = true) => {
     const client = auth.verify(token);
     if (!client) {
       // Not refused, just not confirmed yet (Tailscale's word on the phone
-      // or on this Mac is late): the phone reconnects and is checked afresh.
+      // or on this Mac is late): held a moment (held: nothing runs, the
+      // phone's input waits), then the phone reconnects and is checked
+      // afresh.
       const interruption = auth.interruption?.(token);
-      if (interruption) throw Object.assign(fail(503, interruption), { retryable: true });
-    }
+      if (interruption)
+        throw Object.assign(fail(503, interruption), { retryable: true, held: hold.hold(interruption) });
+    } else hold.clear();
     if (
       !client ||
       !config.screen ||
@@ -318,11 +328,23 @@ export function desktopConnection(
     else if (control.paused) throw fail(423, "Desktop control ended.");
     return client;
   };
+  // Allowed now, or once a held check passes (never on a stale identity);
+  // over with the hold.
+  const verified = async (lease = true) => {
+    for (;;) {
+      try {
+        return authorize(lease);
+      } catch (e) {
+        if (!e?.held || closed) throw e;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
   const readyForInput = async () => {
     await control.waitForInputStop?.();
     if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
     // A grant, pause or identity can change while the old native helper exits.
-    return authorize();
+    return verified();
   };
   const drain = async () => {
     if (busy || closed) return;
@@ -334,6 +356,12 @@ export function desktopConnection(
         let result;
         try {
           const client = await readyForInput();
+          // Control stopped while it waited (a hold, an old helper's exit):
+          // it doesn't run for a control that has ended.
+          if (current !== epoch) {
+            item.reject?.(fail(403, "Desktop control ended."));
+            continue;
+          }
           // A touch-down's "is there a field here?" never holds up the tap
           // queued behind it: the phone falls back to its field map.
           if (
@@ -407,7 +435,9 @@ export function desktopConnection(
           );
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
           if (current !== epoch) continue;
-          authorize();
+          // Done: acknowledged once it's confirmed (held, the answer waits).
+          await verified();
+          if (current !== epoch) continue;
         } catch (e) {
           if (current !== epoch && !closed) continue;
           item.reject?.(e);
@@ -450,7 +480,8 @@ export function desktopConnection(
         else if (fields && !scanning && Date.now() - scannedAt > 1000)
           void scan(true);
       } catch (e) {
-        close(e.message, e?.retryable === true);
+        // Held: what's queued waits; the hold's end closes it.
+        if (!e?.held) close(e.message, e?.retryable === true);
       }
     }
   }, 500);
@@ -469,16 +500,18 @@ export function desktopConnection(
           throw fail(401, "Authenticate first.");
         starting = true;
         token = message.token;
-        const client = authorize();
+        // Signed in: a hold (if Tailscale's word is late) bounds the wait now.
+        clearTimeout(deadline);
+        const client = await verified();
+        if (closed) return;
         register(client.id, ws);
         ws.clientId = client.id;
         // Back within the grace: the lease is this connection's again.
         control.keep?.(client.id);
-        clearTimeout(deadline);
         const options = streamOptions({ display: message.display });
         // Which display this control is on: an agent waits only for its own.
         ws.reachDisplay = options.display;
-        authorize();
+        await verified();
         if (create === DesktopInput.create) {
           const displays = await desktopDisplays(config);
           if (
@@ -498,7 +531,8 @@ export function desktopConnection(
         // Probe authorization without generating any OS input.
         const initial = await helper.send({ type: "heartbeat" });
         if (closed || ws.readyState !== 1) { stopInput(helper); return; }
-        authorize();
+        await verified();
+        if (closed) return;
         starting = false;
         await ready(initial);
         if (scanner)
@@ -516,7 +550,8 @@ export function desktopConnection(
       // first): resumed at once, no new helper.
       if (message.type === "resume") {
         if (!helper || starting) throw fail(409, "Wait for desktop input to be ready.");
-        authorize();
+        await verified();
+        if (closed) return;
         clearTimeout(parkTimer);
         parked = ws.parked = false;
         starting = true;
@@ -534,7 +569,12 @@ export function desktopConnection(
           ws.send(JSON.stringify({ type: "ack", id: message.id, ok: false, error: "Desktop control is off." }));
         return;
       }
-      authorize();
+      try {
+        authorize();
+      } catch (e) {
+        // Held: taken in turn, it runs only once confirmed.
+        if (!e?.held) throw e;
+      }
       lastSeen = Date.now();
       if (!helper || starting)
         throw fail(409, "Wait for desktop input to be ready.");

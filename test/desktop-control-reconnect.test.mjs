@@ -31,7 +31,9 @@ const socket = () =>
   });
 const phone = { id: "phone", name: "Phone", scopes: ["admin", "screen"] };
 
-function mac({ grace = 400 } = {}) {
+// holdFor: how long Tailscale's word may come late before the connection
+// ends (held meanwhile: desktop-identity-hold.test.mjs). Short here.
+function mac({ grace = 400, holdFor = 100 } = {}) {
   const control = new ScreenControl();
   const connections = new Map();
   const state = { client: phone, interruption: "", creates: 0 };
@@ -55,6 +57,7 @@ function mac({ grace = 400 } = {}) {
         return true;
       },
       grace,
+      holdFor,
     });
     const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
     send({ type: "auth", token: "T", display: "1" });

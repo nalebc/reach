@@ -6,6 +6,7 @@ import { windowsNativeSource, windowsVideoChoice, WindowsVideoSource } from "./w
 import { powershellFile } from "./powershell.mjs";
 import { fail } from "./core.mjs";
 import { privateViewRefusal, refuseGuest } from "./windows-guest-screen.mjs";
+import { gone, settled } from "./identity-hold.mjs";
 export { privateWindows, privateViewRefusal };
 // Why the live screen failed, in Reach's window on the computer too: the
 // phone may only show "Connecting…", and a person at the computer can act on
@@ -124,9 +125,14 @@ export class RemoteScreenHub {
       if (options.format === "jpeg") options.fps = Math.min(options.fps, 20);
       if (!mayViewDisplay(options.display))
         throw fail(403, "This display isn't shared with you.");
+      // Held a moment (Tailscale's word late): its answer is waited for.
+      const allowed = await settled(
+        authorize,
+        () => this.viewers.get(ws) === reservation && ws.readyState === 1,
+      );
       if (
         this.viewers.get(ws) !== reservation ||
-        !authorize() ||
+        allowed !== true ||
         ws.readyState !== 1
       ) {
         this.remove(ws);
@@ -185,7 +191,9 @@ export class RemoteScreenHub {
       // reused): checked again with every frame, refused with a reason.
       const display = options.display;
       group.add(ws, () => {
-        if (!authorize()) return false;
+        const allowed = authorize();
+        // Held (null) or gone, as it said.
+        if (!allowed) return allowed;
         if (mayViewDisplay(display)) return true;
         if (ws.readyState === 1) {
           ws.send(
@@ -308,7 +316,7 @@ export class RemoteBroadcast {
     try {
       const factory = await this.prepare();
       if (generation !== this.generation || !this.viewers.size) return;
-      for (const [ws, v] of this.viewers) if (!v.authorize()) this.remove(ws);
+      for (const [ws, v] of this.viewers) if (gone(v.authorize())) this.remove(ws);
       if (!this.viewers.size) return;
       this.source = factory();
       const tick = async () => {
@@ -318,10 +326,14 @@ export class RemoteBroadcast {
           const ready = [];
           let key = false;
           for (const [ws, v] of this.viewers) {
-            if (!v.authorize() || ws.readyState !== 1) {
+            const allowed = v.authorize();
+            if (gone(allowed) || ws.readyState !== 1) {
               this.remove(ws);
               continue;
             }
+            // Held (Tailscale's word late): no frame for it until it's
+            // confirmed; frames the others get meanwhile mean a keyframe.
+            if (!allowed) continue;
             const first = v.pending.values().next().value;
             if (first && Date.now() - first > 10000) {
               this.fail(ws, "Screen viewer stopped responding.");
