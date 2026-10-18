@@ -23,7 +23,7 @@ export const suites = {
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
-    "windows-desktop-input-native",
+    "windows-desktop-input-native", "windows-desktop-input",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
