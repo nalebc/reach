@@ -14,6 +14,10 @@ modify access to acceptance output/scratch only. Cleanup removes its grants,
 account, and owned processes; it does not change an existing user's credentials.
 Account/process harness failure is reported separately from Codex compatibility.
 An observed incompatible endpoint or failed `thread/list` is a failure.
+The lane also compiles the actual native socket helper and checks real NTFS
+ACL and junction denials without changing the tested endpoint permissions.
+Those negative checks do not establish connected foreign-user or elevated-peer
+rejection; the separate real Codex probe establishes the permitted peer path.
 The report retains the installed vendor's `app-server --help` and
 `app-server daemon --help`, exact reported endpoint path, and allowlisted
 `lstat`/`stat` kind/size metadata. It never reads endpoint/rendezvous contents.

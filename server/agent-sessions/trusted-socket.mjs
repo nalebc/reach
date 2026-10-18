@@ -14,14 +14,17 @@ import { PIPE, pipeOwner } from "../windows-owners.mjs";
 // check that wanted the socket itself refused it, so Codex vanished from the
 // phone.
 //
-// Windows has no socket files, only named pipes in one namespace any account
-// can name: the rule there is the pipe's own (audit #17, Oct 12). It was made
+// Windows named pipes live in one namespace any account can name: the rule
+// here is the pipe's own (audit #17, Oct 12). It was made
 // by you, Windows or an administrator; the process serving it runs as you;
 // and no other account may serve it too (a new instance answering in its
 // place) or change who may. What Windows won't say isn't refused: a Mac's
 // check can't fail that way, and chats stay in sync across the agent's app,
 // its CLI and Reach (owner, Oct 12). Only a pipe known to be another
 // account's is; one that couldn't be checked is said once in Reach's window.
+// Codex's Windows shared daemon also supports AF_UNIX. Its directory and
+// connected peer are checked together by windows-codex-socket.mjs and its
+// native helper; the named-pipe policy below is not used for that transport.
 const MAX_LINKS = 8;
 const reasons = {
   missing: "it isn't there",

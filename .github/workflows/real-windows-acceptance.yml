@@ -30,6 +30,14 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./test/acceptance/install-windows-vendors.ps1
+      - name: Real Windows socket directory and junction security checks
+        id: native_socket
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
+          if ($LASTEXITCODE) { exit 1 }
+          npm run test:file -- --test-timeout=180000 test/windows-codex-socket-native.test.mjs
       - name: Real processes, visible CLI console, browser and local HTTP
         id: probes
         if: ${{ !cancelled() }}
@@ -38,14 +46,13 @@ jobs:
           REACH_REAL_WINDOWS_ACCEPTANCE: "1"
           REACH_ACCEPTANCE_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
-          if ($LASTEXITCODE) { exit 1 }
           npm run test:file -- --test-timeout=900000 --test-concurrency=1 test/acceptance/real-windows.test.mjs
       - name: Record incomplete qualification if prerequisites prevented the probes
         if: always()
         shell: pwsh
         env:
           PROBE_OUTCOME: ${{ steps.probes.outcome }}
+          NATIVE_SOCKET_OUTCOME: ${{ steps.native_socket.outcome }}
         run: |
           $reportDir = Join-Path $env:GITHUB_WORKSPACE 'reports\real-windows-acceptance'
           New-Item -ItemType Directory -Force $reportDir | Out-Null
@@ -59,15 +66,19 @@ jobs:
             $report | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $reportDir 'acceptance.json')
             '## Real Windows acceptance: FAIL' | Out-File $env:GITHUB_STEP_SUMMARY -Append
             '**Overall real-device qualification is incomplete.** Windows probes did not complete. Authenticated Tailscale/Funnel/recovery, provider inference, and physical iPhone/iPad/Android remain BLOCKED.' | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          } elseif ($env:PROBE_OUTCOME -ne 'success') {
+          } elseif ($env:PROBE_OUTCOME -ne 'success' -or $env:NATIVE_SOCKET_OUTCOME -ne 'success') {
             $report = Get-Content (Join-Path $reportDir 'acceptance.json') -Raw | ConvertFrom-Json
             $report.overall = 'FAIL'
             foreach ($case in $report.cases) {
               if ($case.status -eq 'RUNNING') { $case.status = 'FAIL' }
             }
             $report | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $reportDir 'acceptance.json')
-            'The Windows probe process failed or was interrupted. The acceptance artifact is marked FAIL; overall real-device qualification remains incomplete.' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            'A Windows native-security or acceptance probe failed or was interrupted. The acceptance artifact is marked FAIL; overall real-device qualification remains incomplete.' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           }
+          $report = Get-Content (Join-Path $reportDir 'acceptance.json') -Raw | ConvertFrom-Json
+          $nativeStatus = if ($env:NATIVE_SOCKET_OUTCOME -eq 'success') { 'PASS' } else { 'FAIL' }
+          $report.cases = @($report.cases) + @(@{ id = 'real-windows-socket-directory-security'; status = $nativeStatus; evidence = 'Actual Windows NTFS ACL/junction APIs and native helper compilation; see the dedicated workflow step. Connected-peer success is the separate real Codex case.' })
+          $report | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $reportDir 'acceptance.json')
       - name: Preserve only redacted acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
