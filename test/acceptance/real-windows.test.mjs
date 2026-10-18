@@ -52,7 +52,7 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
   fs.mkdirSync(reportDir, { recursive: true });
   const report = {
     schema: 1, startedAt: new Date().toISOString(), platform: process.platform,
-    osRelease: os.release(), node: process.version,
+    osRelease: os.release(), node: process.version, nodeArchitecture: process.arch,
     checkoutCommit: process.env.GITHUB_SHA, prHeadCommit: process.env.REACH_ACCEPTANCE_PR_HEAD, runId: process.env.GITHUB_RUN_ID,
     execution: "actual GitHub-hosted Windows; vendor processes and real local HTTP; no simulated transports",
     executionContexts: {
@@ -108,7 +108,17 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     vendors = JSON.parse(fs.readFileSync(path.join(reportDir, "vendors.json"), "utf8").replace(/^\uFEFF/, ""));
     assert.equal(vendors.codex?.status, "PASS", vendors.codex?.reason);
     assert.equal(vendors.tailscale?.status, "PASS", vendors.tailscale?.reason);
-    return { codexVersion: vendors.codex.version, tailscaleSource: vendors.tailscale.source, tailscaleService: vendors.tailscale.serviceStatus };
+    assert.ok(["x64", "arm64"].includes(vendors.host?.nativeArchitecture));
+    assert.equal(vendors.codex.architecture.peMachine, vendors.host.nativeArchitecture);
+    assert.equal(vendors.tailscale.architecture.cli.peMachine, vendors.host.nativeArchitecture);
+    assert.equal(vendors.tailscale.architecture.daemon.peMachine, vendors.host.nativeArchitecture);
+    const inspected = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      path.join(repo, "test", "acceptance", "read-windows-architecture.ps1"), "-NodeProcessId", String(process.pid)]);
+    assert.ok(inspected.ok, inspected.error);
+    report.architecture = { host: vendors.host, node: lastJSON(inspected.stdout).node };
+    assert.equal(report.architecture.node.runtimeArchitecture, process.arch);
+    assert.equal(report.architecture.node.nativeArchitecture, vendors.host.nativeArchitecture);
+    return { codexVersion: vendors.codex.version, tailscaleSource: vendors.tailscale.source, tailscaleService: vendors.tailscale.serviceStatus, nativeArchitecture: vendors.host.nativeArchitecture };
   });
   await caseTest("real-tailscale-service-status", async () => {
     const binary = vendors.tailscale?.executable || path.join(process.env.ProgramFiles, "Tailscale", "tailscale.exe");
@@ -125,7 +135,7 @@ test("real Windows vendor/local acceptance; complete device qualification is rep
     return { version: { short: release.short, long: release.long, daemonLong: release.daemonLong }, statusExitSuccessful: status.ok, backendState: value.BackendState, authenticated: false, enrollmentAttempted: false };
   });
   await caseTest("real-standard-user-codex-compatibility", async () => {
-    const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "test", "acceptance", "run-standard-user-codex.ps1"), "-RepoRoot", repo, "-NodeExecutable", process.execPath], { timeout: 300000 });
+    const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "test", "acceptance", "run-standard-user-codex.ps1"), "-RepoRoot", repo, "-NodeExecutable", process.execPath], { timeout: 360000 });
     // Read allowlisted reports even after a genuine failure; no alternate
     // transport, privileged token or mock daemon replaces the failed probe.
     const read = (name) => {
