@@ -113,7 +113,7 @@ async function launchRun(options, root, ownPrivateFolders) {
   // Windows' keyed route: its key is taken out of a crash's words too, once
   // there is one.
   let crashRedact = (text) => text;
-  installCrashGuard({ dataDir, supervised, redact: (text) => crashRedact(text) });
+  const removeCrashGuard = installCrashGuard({ dataDir, supervised, redact: (text) => crashRedact(text) });
   const httpsPort = options.httpsPort || readHttpsPort(root) || 8443;
   const routeFile = path.join(privateDir, "serve-owner.json");
   const funnelFile = path.join(privateDir, "funnel-owner.json");
@@ -161,9 +161,9 @@ async function launchRun(options, root, ownPrivateFolders) {
   // the sandbox around
   // their commands and files (scripts/native/sandbox.cs) and the agent desktop
   // (scripts/native/agent-desktop.cs), so neither owner-token helper can be
-  // swapped by another user of the PC. A folder that isn't private turns
-  // agents' screen, files and commands off with the reason; a build failure
-  // refuses those, never sign-in. `privateFolders` is a code-only option
+  // swapped by another user of the PC. An unsafe state folder stops startup
+  // before authentication state or listeners can exist. A later optional
+  // helper build failure refuses that feature. `privateFolders` is a code-only option
   // (tests), never read from argv.
   let folders = null;
   if (process.platform === "win32") {
@@ -192,6 +192,12 @@ async function launchRun(options, root, ownPrivateFolders) {
       // cached executables after a folder refusal either.
       const unregister = registerWindowsBuildDirectory({ roots: [privateDir, dataDir, nativeDir], refusal: windowsHelpersOff });
       ownPrivateFolders({ dispose: async () => { unregister(); } });
+      // Pairing creates a plaintext current code. Continuing with the same
+      // refused state and clearing its Tailscale owner would expose an auth
+      // fallback through files whose privacy has not been established.
+      // Do not let the crash reporter create files there on this refusal.
+      removeCrashGuard();
+      throw Object.assign(Error(folders.reason || folders.problem || "Reach couldn't check who can use its folders on this PC."), { code: "EPRIVATEFOLDERS", status: 503 });
     }
   }
   if (preferences) {
