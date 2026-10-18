@@ -129,13 +129,16 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   let reach, browser, ingressPort;
   const ingressKey = newIngressKey();
   const tls = https.createServer(certificate, (req, res) => {
-    seen.push({ method: req.method, path: req.url, site: req.headers["sec-fetch-site"], origin: req.headers.origin, host: req.headers.host });
+    const observation = { method: req.method, path: req.url, site: req.headers["sec-fetch-site"], origin: req.headers.origin, host: req.headers.host,
+      requestedMethod: req.headers["access-control-request-method"], requestedHeaders: req.headers["access-control-request-headers"], requestedPrivateNetwork: req.headers["access-control-request-private-network"] };
+    seen.push(observation);
+    res.once("finish", () => { observation.status = res.statusCode; observation.headers = res.getHeaders(); });
     if (req.url !== "/agent-gateway") { res.writeHead(404); return res.end(); }
     const proxy = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method,
       headers: { ...req.headers, host: "localhost", "x-forwarded-host": req.headers.host, "x-forwarded-for": "100.64.0.20" } }, response => {
       res.writeHead(response.statusCode, response.headers); response.pipe(res);
     });
-    proxy.on("error", error => res.destroy(error)); req.pipe(proxy);
+    proxy.on("error", error => { observation.proxyError = error.message; res.destroy(error); }); req.pipe(proxy);
   });
   await new Promise((resolve, reject) => { tls.once("error", reject); tls.listen(0, "127.0.0.1", resolve); });
   t.after(async () => {
@@ -176,6 +179,9 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     catch (error) { if (!/Invalid PermissionDescriptor|Unknown permission|Unrecognized permission/i.test(error.message)) throw error; }
   }
   const tab = await openTab(browser);
+  const networkFailures = [];
+  browser.on("Network.loadingFailed", (event, session) => { if (session === tab.sessionId) networkFailures.push(event); });
+  await tab.send("Network.enable");
   // Fulfill the inert bootstrap document (and refuse its favicon) without
   // touching any public listener at its real HTTPS origin.
   // Private API requests use actual Chrome CORS + loopback TLS + Reach's
@@ -191,7 +197,7 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   const fetchSigned = (envelope) => tab.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(`${privateOrigin}/agent-gateway`)}, { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", "Reach-Key": ${JSON.stringify(key.thumbprint)} }, body: ${JSON.stringify(JSON.stringify(envelope))} });
     return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())), headers: Object.fromEntries(response.headers) };
-  })()`).catch(error => { t.diagnostic(JSON.stringify({ seen, browserProblems: tab.problems })); throw error; });
+  })()`).catch(error => { t.diagnostic(JSON.stringify({ chrome: version.product, seen, networkFailures, browserProblems: tab.problems })); throw error; });
   const device = await fetchSigned(request(key, token));
   assert.equal(device.status, 200);
   assert.equal(JSON.parse(Buffer.from(device.bytes).toString()).access.kind, "agent");
@@ -214,6 +220,6 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   assert.equal((await fetchSigned(request(key, token))).status, 401);
   assert.ok(seen.some(item => item.method === "OPTIONS" && item.site === "same-site"));
   assert.ok(seen.filter(item => item.method === "POST").every(item => item.site === "same-site" && item.origin === ORIGIN && item.host === new URL(privateOrigin).host));
-  t.diagnostic(JSON.stringify({ chrome: version.product, hostPlatform: process.platform, preflights: seen.filter(item => item.method === "OPTIONS").length,
+  t.diagnostic(JSON.stringify({ chrome: version.product, hostPlatform: process.platform, options: seen.filter(item => item.method === "OPTIONS"), preflights: seen.filter(item => item.method === "OPTIONS").length,
     signedPosts: seen.filter(item => item.method === "POST").length, transport: "real browser/TLS/Windows keyed ingress/inner middleware", mocked: "tailscaled peer check, desktop image, DNS mapping, bootstrap page; fixture-only local network permission" }));
 });

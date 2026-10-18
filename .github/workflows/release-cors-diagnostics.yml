@@ -1,0 +1,39 @@
+name: Release browser failure diagnostics
+on:
+  push:
+    branches: [codex/release-cors-diagnostics-20261018]
+permissions:
+  contents: read
+jobs:
+  real-linux-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - name: Real Chrome preflight and network diagnostics, stop at first failure
+        run: |
+          mkdir -p reports
+          python3 - <<'PY'
+          import pathlib, subprocess, sys
+          for iteration in range(1, 21):
+              print('Diagnostic iteration', iteration, flush=True)
+              result = subprocess.run(['npm', 'run', 'test:file', '--', 'test/funnel-agent-cors.test.mjs'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              pathlib.Path(f'reports/cors-{iteration:02}.log').write_text(result.stdout)
+              print(result.stdout, flush=True)
+              if result.returncode:
+                  sys.exit(result.returncode)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: real-linux-cors-diagnostics
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
