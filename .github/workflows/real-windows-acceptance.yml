@@ -80,7 +80,7 @@ jobs:
           $nativeEvidence = if ($nativeStatus -eq 'PASS') {
             'All six actual native NTFS ACL/junction assertions passed; see the dedicated step. Connected-peer success is the separate real Codex case.'
           } else {
-            'Native security setup or assertions failed; inspect the dedicated step. No native denial assertion pass is claimed.'
+            'Native security step failed or was interrupted. See the dedicated step for actual setup, assertion and cleanup results.'
           }
           $report.cases = @($report.cases) + @(@{ id = 'real-windows-socket-directory-security'; status = $nativeStatus; evidence = $nativeEvidence })
           $report | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $reportDir 'acceptance.json')

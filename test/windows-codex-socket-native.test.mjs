@@ -19,10 +19,28 @@ test("native Windows Codex bridge refuses real unsafe NTFS rendezvous directorie
   timeout: 120000,
 }, async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "rcx-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const system = path.win32.join(systemRoot(), "System32");
+  let sid = "";
+  t.after(async () => {
+    // Only after every attempted assertion/snapshot: undo the deliberately
+    // restrictive ACL on our own disposable readonly directory. Its lack of
+    // DELETE permission otherwise prevents Windows from removing the fixture.
+    // The hook is registered before setup so partial failures clean up too.
+    const readonly = path.join(root, "readonly");
+    const entry = await fs.lstat(readonly).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (entry) {
+      assert.ok(entry.isDirectory() && !entry.isSymbolicLink(), "restore only the generated readonly fixture directory");
+      assert.match(sid, /^S-1-5-21-/u);
+      await exec(path.win32.join(system, "icacls.exe"), [readonly, "/grant:r", `*${sid}:(OI)(CI)F`, "/Q"],
+        { windowsHide: true, env: windowsHelperEnv(), timeout: 10000, maxBuffer: 65536 });
+    }
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
   const { stdout } = await exec(path.win32.join(system, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { windowsHide: true, timeout: 10000 });
-  const sid = accountSid(stdout);
+  sid = accountSid(stdout);
   assert.match(sid, /^S-1-5-21-/u);
   const helper = await windowsHelper("codex-socket", { dir: root, fresh: true });
   assertUnchanged(helper.file, helper.sha256);
