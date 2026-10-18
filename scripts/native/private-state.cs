@@ -3,6 +3,12 @@
 // Windows' five known broad grants. Owners, bytes, unknown grants and code are
 // never changed. The whole bounded forest is preflighted before its first ACL
 // change. All inspection and changes use the same retained no-follow handles.
+// This is object-based subtraction, not an atomic forest transaction. Sharing
+// modes do not exclude hardlink creation by the trusted current owner. Recheck
+// identity, link count and descriptor immediately before each change; a later
+// concurrent refusal may leave earlier objects with stricter ACLs. This does
+// not revoke previously granted handles or promise to fence trusted-owner
+// activity between the last check and SetSecurityInfo.
 //
 // private-state.exe <current account SID> <state directory>...
 // One line: ok, or open <root-index> <reason> <base64 UTF-8 exact path>.
@@ -337,6 +343,9 @@ static class PrivateState {
   static void Update(Entry entry) {
     Budget();
     if (entry.After == null) return;
+    // Do not rely on a metadata handle's sharing mode as a hardlink fence.
+    // A newly observed alias must refuse before this object's ACL is changed.
+    if (Identity(Information(entry.Handle, entry.Path, entry.Directory)) != entry.Identity) Fail("changed", entry.Path);
     if (!Equal(Bytes(Security(entry.Handle, entry.Path)), entry.Before)) Fail("changed", entry.Path);
     GCHandle pinned = GCHandle.Alloc(entry.After, GCHandleType.Pinned);
     try {
