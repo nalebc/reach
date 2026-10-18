@@ -74,7 +74,11 @@
     "privateRealWindowsAcceptanceFixture": "8117145c0c875b6db3a94db908312f9b6cb57e8a",
     "realAcceptanceProfileProjectParent": "a4c73ac9774c3256a5d1bdff34641bab33ccc295",
     "privateWindowsLifecycleFixtures": "d7c9eedcb4c8e02061ea3d07ea9f39bf5f9e2c23",
-    "lifecycleProfileProjectParent": "2229fc8648daa04217a68822f276ad4c6d723a02"
+    "lifecycleProfileProjectParent": "2229fc8648daa04217a68822f276ad4c6d723a02",
+    "descriptorValidatedSourceCopy": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+    "powerShell7OwnerFixture": "c5bcf64ce451f7a4ffa71ab1f60cbf63b695ec3b",
+    "boundedNativeWindowDiagnostics": "229b193be82e98d78da00606ca4670d49aefe1ee",
+    "boundedIosPairingHopDiagnostics": "26db4204fe646463ab5119398d3254727b2a5f28"
   },
   "preservation": {
     "allRecordedHeadsAreAncestors": true,
@@ -294,5 +298,91 @@
       "Explicit shared/Windows selection for artifact copy controls; no required test removed"
     ],
     "actualWindowsAfterCorrections": "Pending publication and exact-head validation; no passing native fixture claim"
+  },
+  "followupEvidence": {
+    "snapshotOf": "Local integration cd692025e7ee7137ceb9472f8a21450a5b948124; not a live checks dashboard or a final-head check result.",
+    "required2f608c4": {
+      "workflow": "https://github.com/nalebc/reach/actions/runs/39166624387",
+      "passed": [
+        "Linux Node22",
+        "Linux Node24",
+        "macOS ARM",
+        "CodeQL/security"
+      ],
+      "failed": [
+        "Windows service-peer fixture uses .NET API unavailable in PowerShell7",
+        "iOS simulator paired-workspace timeout; request arrived then closed without a finished reply"
+      ],
+      "stillRunning": [
+        "macOS Intel"
+      ]
+    },
+    "windowsPeerCorrection": {
+      "head": "c5bcf64ce451f7a4ffa71ab1f60cbf63b695ec3b",
+      "run": "https://github.com/nalebc/reach/actions/runs/39168380908",
+      "pass": 19,
+      "fail": 0,
+      "skip": 0,
+      "execution": "Actual x64 Windows Server2025, Node22.23.3, Restricted script policy. Native foreign-owner/privacy assertions and all three artifact copier controls completed. Synthetic Tailscale-shaped service admission is a controlled transport; final signed MSI service identity also ran.",
+      "change": "One-line Get-Acl read-only compatibility correction; no production permission change."
+    },
+    "armConsoleDiagnostics": {
+      "head": "229b193be82e98d78da00606ca4670d49aefe1ee",
+      "run": "https://github.com/nalebc/reach/actions/runs/39167755250",
+      "pass": 123,
+      "fail": 0,
+      "skip": 0,
+      "visibilityAssertionUnchanged": true,
+      "observedConsoleDuringWork": false,
+      "positiveConsoleControlSeen": true,
+      "originalFailure": "Run39165734293 visible wsl.exe console remains unattributed. It did not recur. No production cause or fix is claimed.",
+      "newEvidence": "Bounded hidden native process queries after recording the window event; optional separate report records phases, process identities and redacted flags. Original WinEvent stream and oracle remain unchanged."
+    },
+    "realWindowsLocalAcceptance": {
+      "head": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "x64": "https://github.com/nalebc/reach/actions/runs/39166624261",
+      "arm64": "https://github.com/nalebc/reach/actions/runs/39166896955",
+      "each": {
+        "localPass": 10,
+        "networkProviderPhysicalBlocked": 11,
+        "standardUserCodexPass": 5
+      },
+      "execution": "Actual OS, CPU-matching official vendors, genuine standard medium-token/profile Codex, visible local CLI, Chrome, pairing/files, ConPTY file creation and native JPEG capture. Hosted local GUI/files/screen probes are administrative. No authenticated real network, provider inference, physical client, screen input or retained-profile npm upgrade qualification."
+    },
+    "iosBaseline": {
+      "head": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "result": "Unchanged guarded fixture passed one test with all eight native checks on a new disposable simulator.",
+      "runtime": "Actual simctl iOS26.4, Xcode26.4, Node24.21; different from CI. User agent is not runtime identification.",
+      "limitation": "This does not reproduce or explain the CI pairing failure and does not qualify a physical device.",
+      "diagnosticChange": "Per-hop times, request/response byte counts and boolean/category form state only; no headers, body values, storage or credentials. All original timeouts/assertions and no replay preserved."
+    },
+    "integratedGuardedLocal": {
+      "head": "cd692025e7ee7137ceb9472f8a21450a5b948124",
+      "files": 6,
+      "pass": 38,
+      "fail": 0,
+      "skip": 2,
+      "scope": "Actual localhost HTTP and filesystem controls; JSDOM diagnostics/policy modeled checks. Windows native peer/window cases skipped on Mac; their independent actual-OS runs above cover their respective source."
+    },
+    "releaseQualification": "INCOMPLETE. Required final-head checks, retained-profile upgrade, configured owner/browser QR, authenticated private-fallback-private recovery and physical clients remain required. No release or main merge.",
+    "iosInstrumented": {
+      "head": "26db4204fe646463ab5119398d3254727b2a5f28",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "nativeAssertions": 8,
+      "durationSeconds": 107.65,
+      "selectedRuntime": "iOS26.4, Xcode26.4, Node24.21",
+      "pairHop": {
+        "requestBodyComplete": true,
+        "upstreamStatus": 200,
+        "responseComplete": true,
+        "clientWritableFinished": true
+      },
+      "assetFailures": 0,
+      "disposableSimulatorDeleted": true,
+      "preexistingSimulatorsUnchanged": true,
+      "scope": "Validates diagnostic instrumentation preserves native checks on this actual simulator/runtime; not a reproduction or fix of CI failure, authenticated real-network proof or physical-device validation."
+    }
   }
 }

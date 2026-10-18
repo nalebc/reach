@@ -40,9 +40,45 @@
       ],
       "reviewGuidance": "https://codeql.github.com/codeql-query-help/javascript/js-http-to-file-access/",
       "limitations": "This finding disposition covers these six retained SARIF sources only. It is not a blanket declassification of arbitrary network data, state paths or commands."
+    },
+    {
+      "alerts": [
+        332
+      ],
+      "rule": "js/file-system-race",
+      "analysisHead": "3660ff1c7e1de6282d87afe117b3f815ee409472",
+      "commit": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "disposition": "Corrected fixture source copy: open read-only, validate the opened descriptor as a regular file with matching identity, size and nanosecond change stamps before reading, read that descriptor only, validate again and close before destination creation. The exact final real-filesystem replacement test gives two passes and one failure against3660ff1, and all three pass after correction. All three controls also passed actual x64 Windows contracts and selected runs; final copier executed real acceptance package/dependency files on x64 and ARM64."
+    },
+    {
+      "alerts": [
+        333
+      ],
+      "rule": "js/file-system-race",
+      "analysisHead": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "disposition": "Individually reviewed bounded false positive at the read-only fixture open. The query recognizes the preceding path check/open pair but does not model subsequent descriptor validation. No bytes are read until the opened identity/change stamps match; the same descriptor is read and rechecked. Open does not create, truncate, write or change ACLs. Actual replacement is refused. No rule or source suppression was added.",
+      "review": "Root and independent Windows endpoint audit; API disposition verified dismissed/false positive at2026-10-18T21:24:44Z, after the actual Windows contracts step passed.",
+      "primarySources": [
+        "https://github.com/nodejs/node/blob/v22.23.3/deps/uv/src/win/fs.c#L413",
+        "https://github.com/github/codeql/blob/main/javascript/ql/src/Security/CWE-367/FileSystemRace.ql#L103"
+      ],
+      "limitations": [
+        "This is a controlled CI source-byte copier, not a production hostile-source reader boundary.",
+        "No source provenance, immutable tree snapshot or held ancestor/no-reparse walker is claimed.",
+        "Windows can resolve reparse targets during the read-only open; opening itself may have OS, remote or device side effects. No zero-side-effect claim."
+      ]
     }
   ],
   "checksUnchanged": true,
   "ruleSetsUnchanged": true,
-  "severityPolicyUnchanged": true
+  "severityPolicyUnchanged": true,
+  "followupReview": {
+    "head": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+    "workflow": "https://github.com/nalebc/reach/actions/runs/39166624284",
+    "CodeQL": "PASS",
+    "reviewThreads": 9,
+    "unresolvedThreads": 0,
+    "paginationComplete": true,
+    "scope": "Snapshot only; subsequent commit checks remain required."
+  }
 }
