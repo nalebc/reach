@@ -8,6 +8,44 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-10-18
+
+Early access: includes the Windows QR and Codex connection fixes prepared for
+0.3.2. That candidate was not published because its tag checks caught an
+intermittent browser-test failure; the `v0.3.2` tag remains unchanged.
+
+### Fixed
+
+- The real-browser CORS fixture uses an embedded favicon and ends bootstrap
+  interception before making signed private requests. Controlled tests on real
+  Linux Chrome 155 reproduced cancellation with the original bootstrap, while
+  both corrected variants passed 20 consecutive runs. The same origin, host,
+  permission, signature, replay, pause and revocation assertions remain enforced.
+- Show the verified private Tailscale QR while public browser setup waits for
+  Funnel approval or DNS, with the phone's Tailscale-app requirement explained.
+  The public QR still waits for verified DNS and HTTPS readiness.
+- Support Codex's Windows AF_UNIX control socket through a native bridge that
+  validates the endpoint directory and the connected peer's Windows account and
+  elevation. Existing named pipes remain supported; actions with an unknown
+  result are not automatically replayed.
+
+### Validation and limits
+
+- The release tag runs Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
+  the iOS simulator, security checks and installed npm/portable artifacts.
+- Real Windows Server 2025 testing verified the Codex connection under a standard
+  account and six native NTFS ACL/junction checks. Native desktop capture, clicks,
+  typing, UI Automation and video also passed; local GUI smoke used the hosted
+  administrator account, so standard-user GUI parity remains unverified.
+- Windows QR/networking regression tests use simulated Tailscale identities and
+  responses. Physical Windows PCs, Windows 10/11 hardware, authenticated private
+  → public → private handoffs, sleep/network changes, full signed-in provider
+  coding tasks and physical iPhone/iPad/Android acceptance remain incomplete.
+  Simulator and browser emulation results do not establish physical-device behavior.
+- npm users can update with `reach update`; source installs use `v0.3.3`.
+  Keep the existing `.reach` state or configured external state folders and
+  restart through the CLI. Restarting ends terminals and live screens.
+
 ## [0.3.2] — 2026-10-18
 
 Early access: fixes for Windows phone setup and shared Codex sessions.

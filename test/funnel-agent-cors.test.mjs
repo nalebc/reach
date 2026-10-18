@@ -176,18 +176,22 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     catch (error) { if (!/Invalid PermissionDescriptor|Unknown permission|Unrecognized permission/i.test(error.message)) throw error; }
   }
   const tab = await openTab(browser);
-  // Fulfill the inert bootstrap document (and refuse its favicon) without
+  // Fulfill the inert bootstrap document without a favicon network request or
   // touching any public listener at its real HTTPS origin.
   // Private API requests use actual Chrome CORS + loopback TLS + Reach's
   // gateway/inner Express middleware; no CORS or fetch-site flags disabled.
   browser.on("Fetch.requestPaused", (event, session) => {
     if (session === tab.sessionId) void tab.send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: event.request.url === `${ORIGIN}/` ? 200 : 404,
-      responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Disposable CORS fixture</title>").toString("base64") })
+      responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from('<!doctype html><title>Disposable CORS fixture</title><link rel="icon" href="data:,">').toString("base64") })
       .catch(error => t.diagnostic(`Disposable bootstrap ended: ${error.message}`));
   });
   await tab.send("Fetch.enable", { patterns: [{ urlPattern: `${ORIGIN}/*`, requestStage: "Request" }] });
   await tab.navigate(`${ORIGIN}/`);
   assert.equal(await tab.evaluate("location.origin"), ORIGIN);
+  // Interception is only for bootstrap. Chrome 155 can cancel an otherwise
+  // valid preflighted fetch while this interception machinery is active.
+  // Exercise the private API through the browser's ordinary network path.
+  await tab.send("Fetch.disable");
   const fetchSigned = (envelope) => tab.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(`${privateOrigin}/agent-gateway`)}, { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", "Reach-Key": ${JSON.stringify(key.thumbprint)} }, body: ${JSON.stringify(JSON.stringify(envelope))} });
     return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())), headers: Object.fromEntries(response.headers) };
