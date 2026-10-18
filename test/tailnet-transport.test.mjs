@@ -134,6 +134,7 @@ test("fetch through the node returns a real streaming Response", async () => {
   assert.equal(response.url, "https://mac.t.ts.net:8443/api/x");
   assert.equal(response.headers.get("etag"), '"v1"');
   assert.deepEqual(await response.json(), { a: 1 });
+  assert.equal(node.calls.length, 1, "the mutation is dispatched once");
   const sent = node.calls[0];
   assert.equal(sent.method, "POST");
   assert.equal(sent.redirect, "error");
@@ -144,6 +145,41 @@ test("fetch through the node returns a real streaming Response", async () => {
   assert.equal(headers.authorization, "Bearer t");
   assert.equal(headers.range, "bytes=4-");
   assert.deepEqual(h.log, ["read", "read", "read"]);
+});
+
+test("fetch: a mutation aborted during streaming request body preparation is never dispatched", async () => {
+  // Request, body consumption and cancellation are real browser-compatible
+  // primitives. Only the Go/WASM dispatch boundary is controlled here; this
+  // does not qualify authenticated tailnet or physical-device behavior.
+  const node = fakeNode();
+  node.respond = (request, resolve) => resolve(head(204, []));
+  const controller = new AbortController();
+  const reason = new DOMException("Cancelled while preparing the write.", "AbortError");
+  let bodyController, beganReading;
+  const reading = new Promise((resolve) => { beganReading = resolve; });
+  const body = new ReadableStream({
+    start(controller) { bodyController = controller; },
+    pull() { beganReading(); },
+  });
+  const request = new Request("https://mac.t.ts.net:8443/api/write", {
+    method: "POST",
+    body,
+    duplex: "half",
+    signal: controller.signal,
+  });
+  const pending = transport.tailnetFetch(node, request).then(
+    (response) => ({ response }),
+    (error) => ({ error }),
+  );
+  await reading;
+  assert.equal(node.calls.length, 0, "the open body keeps dispatch pending");
+  controller.abort(reason);
+  bodyController.enqueue(new TextEncoder().encode("write these bytes"));
+  bodyController.close();
+  const outcome = await pending;
+  await outcome.response?.body?.cancel();
+  assert.equal(node.calls.length, 0, "cancellation during preparation must prevent the write");
+  assert.equal(outcome.error, reason, "preserve the caller's exact cancellation reason");
 });
 
 test("fetch: empty bodies, failures and aborts behave like the browser's", async () => {
