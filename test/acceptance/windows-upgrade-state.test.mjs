@@ -127,7 +127,7 @@ test("real installed Windows 0.3.1 to 0.3.3 upgrade preserves and protects defau
     }
   });
   if (!await check("actual-standard-user-default-profile", async (one) => {
-    for (const key of Object.keys(process.env)) assert.ok(!/^REACH_TEST_|^REACH_(?:HOME|DATA|TAILSCALE|CODEX)$|^HOME$|^CODEX_HOME$|^NODE_OPTIONS$/i.test(key), `no profile/production override (${key})`);
+    for (const key of Object.keys(process.env)) assert.ok(!/^REACH_TEST_|^REACH_(?:HOME|DATA|TAILSCALE|CODEX)$|^CODEX_HOME$|^NODE_OPTIONS$/i.test(key), `no profile/production override (${key})`);
     const inspected = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "test", "acceptance", "read-process-token.ps1"), "-TargetProcessId", String(process.pid)]);
     assert.ok(inspected.ok, inspected.error);
     const token = json(inspected.stdout);
@@ -137,6 +137,12 @@ test("real installed Windows 0.3.1 to 0.3.3 upgrade preserves and protects defau
     assert.equal(token.integritySid, "S-1-16-8192"); assert.equal(token.profileHiveLoaded, true);
     for (const directory of [token.userProfile, token.nativeProfileDirectory, token.profileListDirectory]) assert.equal(path.resolve(directory).toLowerCase(), path.resolve(os.homedir()).toLowerCase());
     assert.notEqual(path.resolve(os.homedir()).toLowerCase(), path.resolve(process.env.REACH_ACCEPTANCE_RUNNER_PROFILE).toLowerCase());
+    // npm itself exports HOME to lifecycle scripts. Never set/delete it here:
+    // require its observed value to match the independently verified profile.
+    token.npmHomeEnvironment = process.env.HOME ?? null;
+    report.token = token; one.evidence = token; write();
+    assert.ok(typeof token.npmHomeEnvironment === "string" && path.isAbsolute(token.npmHomeEnvironment), "npm HOME must be an absolute path");
+    assert.equal(path.resolve(token.npmHomeEnvironment).toLowerCase(), path.resolve(token.nativeProfileDirectory).toLowerCase(), "npm HOME must match the actual worker token's native Windows profile");
     assert.equal(fs.existsSync(state), false, "the genuine new account must start without old Reach state");
     sid = token.userSid; report.token = token; report.defaultStatePath = state;
     fs.mkdirSync(shared, { recursive: true });
