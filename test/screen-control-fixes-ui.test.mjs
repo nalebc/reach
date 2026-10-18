@@ -105,6 +105,26 @@ test("iOS's swallowed second tap still double-clicks, once, at the first tap's p
   await t.view.unmount();
 });
 
+test("a dblclick after two delivered taps that weren't a pair adds nothing; a tap the page answered late still clicks", async () => {
+  const s = await surface();
+  await tap(s, 300, 200);
+  await tap(s, 700, 300);
+  mouse(s.canvas, "dblclick", 700, 300);
+  await settle(10);
+  assert.deepEqual(s.of("click").map((c) => c.clickState), [1, 1]);
+  await s.view.unmount();
+  // The page busy for longer than a hold while the finger rests: the hold's
+  // timer couldn't run, the finger lifted; it's still a tap, never nothing.
+  const t = await surface();
+  pointer(t, "pointerdown", 300, 200);
+  for (const end = Date.now() + 450; Date.now() < end; );
+  pointer(t, "pointerup", 300, 200);
+  await settle(20);
+  assert.equal(t.of("click").length, 1);
+  assert.deepEqual(t.sent.filter((a) => a.type === "down" || a.type === "up"), []);
+  await t.view.unmount();
+});
+
 test("a resting finger that wobbles clicks where it went down; a moving one drags", async () => {
   const s = await surface();
   pointer(s, "pointerdown", 300, 200);

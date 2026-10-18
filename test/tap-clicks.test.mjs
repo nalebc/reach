@@ -195,3 +195,17 @@ test("a double-tap's second click may carry its pairing tolerance, validated lik
   ws.readyState = 3;
   ws.emit("close", 1000);
 });
+test("a double-tap is the same spot on the glass, even when the picture moved between the two taps", () => {
+  const clicks = new TapClicks();
+  const first = clicks.next(point, 0, "touch", image, { x: 120, y: 340 });
+  // The first tap opened the keyboard; the view made room for it: the same
+  // spot on the glass now shows a point well above the first.
+  const second = clicks.next({ x: 0.3, y: 0.1 }, 150, "touch", image, { x: 122, y: 341 });
+  assert.equal(second.clickState, 2);
+  assert.equal(second.clickId, first.clickId);
+  assert.deepEqual(second.point, point, "the pair goes where the finger first aimed");
+  // Two spots on the glass: two taps.
+  const other = new TapClicks();
+  other.next(point, 0, "touch", image, { x: 120, y: 340 });
+  assert.equal(other.next(point, 150, "touch", image, { x: 160, y: 340 }).clickState, 1);
+});

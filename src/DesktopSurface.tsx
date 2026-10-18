@@ -151,6 +151,9 @@ export default function DesktopSurface({
   // When a finger last touched the picture, and its last single tap: a
   // phone's late mouse events and double-click belong to these.
   const lastTouch = useRef(-Infinity);
+  // When the last finger taps ended: a dblclick after two of them was
+  // already a pair of taps.
+  const tapEnds = useRef<number[]>([]);
   const lastTap = useRef<{ clickId: number; point: Point; touch?: Touch; image: { width: number; height: number }; at: number } | null>(null);
   const cursorRef = useRef<Point>({ x: 0.5, y: 0.5 });
   // A finger on the picture: the zoom pill steps aside meanwhile.
@@ -1070,9 +1073,9 @@ export default function DesktopSurface({
       flushScroll();
       if (!pointers.current.size) fling(g.multiple ? g.mid : g.last);
     }
-    const tapped =
-      !g.held && !g.multiple && !g.moved && event.button === 0 &&
-      (performance.now() - g.at < HOLD_MS || !canControl);
+    // Not held, not moved: a tap however long the finger rested (a busy
+    // page can run this after HOLD_MS before the hold's own timer).
+    const tapped = !g.held && !g.multiple && !g.moved && event.button === 0;
     const point = tapped && !g.stopper && mode !== "pan"
       ? mode === "trackpad" ? cursorRef.current
         : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY)
@@ -1081,9 +1084,13 @@ export default function DesktopSurface({
     const box = event.pointerType === "touch" ? g.image
       : image && screenImageRect(image.getBoundingClientRect(), image.width, image.height);
     const sequence = tapped && !g.stopper && mode !== "pan" && canControl && doubleClick && clickMode === "left" && box
-      ? tapClicks.current.next(point, performance.now(), event.pointerType, box)
+      ? tapClicks.current.next(point, performance.now(), event.pointerType, box,
+        event.pointerType === "touch" ? g.clientStart : undefined)
       : undefined;
-    if (event.pointerType === "touch") lastTouch.current = performance.now();
+    if (event.pointerType === "touch") {
+      lastTouch.current = performance.now();
+      if (tapped) tapEnds.current = [...tapEnds.current.filter((t) => lastTouch.current - t < SYNTHETIC_MS), lastTouch.current];
+    }
     lastTap.current = sequence?.clickState === 1 && event.pointerType === "touch" && point && box
       ? { clickId: sequence.clickId, point, touch: g.touch, image: { width: box.width, height: box.height }, at: performance.now() }
       : null;
@@ -1148,7 +1155,7 @@ export default function DesktopSurface({
             acknowledged: false,
             keepTyping,
           };
-        tap(point, false, g.touch, sequence);
+        tap(sequence?.point ?? point, false, g.touch, sequence);
         activateField();
       }
     }
@@ -1213,7 +1220,8 @@ export default function DesktopSurface({
         onDoubleClick={() => {
           const first = lastTap.current;
           lastTap.current = null;
-          if (!first || !canControl || !doubleClick || clickMode !== "left" ||
+          const taps = tapEnds.current.filter((t) => performance.now() - t < SYNTHETIC_MS).length;
+          if (!first || taps !== 1 || !canControl || !doubleClick || clickMode !== "left" ||
             performance.now() - first.at > DOUBLE_TAP_MS + 300 || performance.now() - lastTouch.current > SYNTHETIC_MS)
             return;
           tapClicks.current.reset();
