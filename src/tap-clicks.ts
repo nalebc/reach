@@ -46,8 +46,10 @@ export class TapClicks {
             (point.y - previous.point.y) * Math.max(image.height, previous.image.height),
           )
         : Infinity;
+    // The same spot on the glass, or on the computer's picture (the finger
+    // followed it): either is a pair.
     const distance = onGlass && point
-      ? Math.hypot(client!.x - previous!.client!.x, client!.y - previous!.client!.y)
+      ? Math.min(remote, Math.hypot(client!.x - previous!.client!.x, client!.y - previous!.client!.y))
       : remote;
     // Fingers tolerate a little drift; mouse and pen remain precise. Compare
     // remote points in CSS pixels, using the larger image when it resizes so

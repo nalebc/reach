@@ -204,8 +204,15 @@ test("a double-tap is the same spot on the glass, even when the picture moved be
   assert.equal(second.clickState, 2);
   assert.equal(second.clickId, first.clickId);
   assert.deepEqual(second.point, point, "the pair goes where the finger first aimed");
-  // Two spots on the glass: two taps.
+  // Two spots on the glass showing two targets: two taps.
   const other = new TapClicks();
   other.next(point, 0, "touch", image, { x: 120, y: 340 });
-  assert.equal(other.next(point, 150, "touch", image, { x: 160, y: 340 }).clickState, 1);
+  assert.equal(other.next({ x: 0.4, y: 0.4 }, 150, "touch", image, { x: 160, y: 340 }).clickState, 1);
+});
+test("a finger that followed the moved picture to the same target is a pair too", () => {
+  const clicks = new TapClicks();
+  clicks.next(point, 0, "touch", image, { x: 120, y: 340 });
+  const second = clicks.next(point, 150, "touch", image, { x: 120, y: 300 });
+  assert.equal(second.clickState, 2);
+  assert.deepEqual(second.point, point);
 });
