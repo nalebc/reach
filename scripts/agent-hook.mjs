@@ -17,9 +17,10 @@
 // try (a restart may have moved it) and the pipe's server is checked to be
 // this account's own process (trusted-socket.mjs pipeServedByMe) before any
 // request is sent or any answer trusted; anything unsure prints nothing, so
-// another account can't hand Claude Code a forged "allow". The helper that
-// does the check is never compiled here: if Reach hasn't built it yet, the
-// hook steps aside.
+// another account can't hand Claude Code a forged "allow". The hook builds
+// its own checker once, in a freshly private directory, and pins its hash
+// in memory. A matching old EXE/hash pair is not evidence of a trusted build.
+// Preparation must fit the existing away/restart budget or the hook steps aside.
 // Any other agent (an old Codex entry) steps aside at once.
 import net from "node:net";
 
@@ -29,7 +30,19 @@ const pipeDirAt = argv.indexOf("--pipe-dir");
 const windows = pipeDirAt >= 0;
 const dataDir = windows ? argv[pipeDirAt + 1] : null;
 const socketPath = windows ? null : argv[1];
-const stepAside = () => process.exit(0);
+let privateStage = null, finishing = false, activeCheck = null;
+const stepAside = () => {
+  if (finishing) return;
+  finishing = true;
+  activeCheck?.abort();
+  if (!privateStage || !winDeps?.rm) return process.exit(0);
+  // Only our fresh stage, never the reserved container or any old cache.
+  // Cleanup is best effort and cannot hold Claude's own dialog open.
+  const timer = setTimeout(() => process.exit(0), 500);
+  winDeps.rm(privateStage, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })
+    .catch(() => {})
+    .finally(() => { clearTimeout(timer); process.exit(0); });
+};
 // REACH_HOOK_RETRY_MS, REACH_HOOK_AWAY_MS: tests only (Claude Code's settings never set them).
 const ms = (name, fallback) => (/^\d+$/.test(process.env[name] || "") ? Number(process.env[name]) : fallback);
 const retryFor = ms("REACH_HOOK_RETRY_MS", 3 * 60 * 1000);
@@ -41,27 +54,56 @@ if (agent !== "claude" || (windows ? !dataDir : !socketPath)) stepAside();
 // isn't built, or anything is unsure — the hook then waits or steps aside,
 // never trusting an unverified server. Its modules load only here, so the
 // Mac's path stays small and quick.
-let winDeps = null;
-async function windowsEndpoint() {
+let winDeps = null, freshVerifier = null;
+async function windowsEndpoint(deadline) {
+  const controller = new AbortController();
+  activeCheck = controller;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0 || finishing) return null;
+  const timer = setTimeout(() => { controller.abort(); stepAside(); }, remaining);
   try {
     if (!winDeps)
       winDeps = {
         readAgentAskPipe: (await import("../server/agent-sessions/agent-asks.mjs")).readAgentAskPipe,
         pipeOwner: (await import("../server/windows-owners.mjs")).pipeOwner,
         pipeServedByMe: (await import("../server/agent-sessions/trusted-socket.mjs")).pipeServedByMe,
-        builtWindowsHelper: (await import("../server/desktop-native.mjs")).builtWindowsHelper,
+        windowsHelper: (await import("../server/desktop-native.mjs")).windowsHelper,
+        createStage: (await import("../server/windows-private-stage.mjs")).createWindowsPrivateStage,
+        accountSid: (await import("../server/windows-private-folder.mjs")).accountSid,
+        windowsPath: (await import("../server/app-identity.mjs")).windowsPath,
+        path: (await import("node:path")).win32,
+        exec: (await import("node:util")).promisify((await import("node:child_process")).execFile),
+        rm: (await import("node:fs/promises")).rm,
       };
+    if (controller.signal.aborted || finishing) return null;
     const pipe = winDeps.readAgentAskPipe(dataDir);
     if (!pipe) return null;
-    const build = (kind, { dir }) => {
-      const found = winDeps.builtWindowsHelper(kind, { dir });
-      if (!found) throw new Error("Reach hasn't built the pipe-owner check yet.");
-      return found;
+    const run = (file, args, options) => winDeps.exec(file, args, { ...options, signal: controller.signal });
+    if (!freshVerifier) freshVerifier = (async () => {
+      const system = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir ?? process.env.WINDIR;
+      if (!winDeps.windowsPath(system)) throw Error("Windows folder is unknown.");
+      const { stdout } = await run(winDeps.path.join(system, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { timeout: 10000, windowsHide: true });
+      const sid = winDeps.accountSid(stdout);
+      if (!sid) throw Error("Windows account is unknown.");
+      const stage = await winDeps.createStage({ sid, run });
+      privateStage = stage.dir;
+      if (controller.signal.aborted || finishing) throw Error("Hook preparation expired.");
+      return winDeps.windowsHelper("owners", { dir: stage.dir, fresh: true, signal: controller.signal });
+    })();
+    // A failed preparation is retained too: polling must not compile/login
+    // again. Claude's native dialog remains the fallback for this process.
+    const build = kind => {
+      if (kind !== "owners") throw Error("Unexpected hook helper.");
+      return freshVerifier;
     };
-    const seen = await winDeps.pipeOwner(pipe, { dataDir, build });
+    const seen = await winDeps.pipeOwner(pipe, { dataDir, build, run });
+    if (controller.signal.aborted || finishing) return null;
     return winDeps.pipeServedByMe(seen) ? pipe : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
+    if (activeCheck === controller) activeCheck = null;
   }
 }
 
@@ -89,8 +131,11 @@ process.stdin.on("end", () => {
     setTimeout(() => ask(true), 1000);
   };
   const ask = async (again) => {
-    const endpoint = windows ? await windowsEndpoint() : socketPath;
+    const deadline = started + (connected ? retryFor : awayFor);
+    const endpoint = windows ? await windowsEndpoint(deadline) : socketPath;
+    if (finishing) return;
     if (!endpoint) return soon();
+    if (windows && Date.now() >= deadline) return stepAside();
     const socket = net.createConnection(endpoint);
     let reply = "";
     let over = false;
@@ -136,7 +181,7 @@ process.stdin.on("end", () => {
       const decision = answer?.decision || null;
       if (!decision) return stepAside();
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } }), () =>
-        process.exit(0),
+        stepAside(),
       );
     });
   };

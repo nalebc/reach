@@ -6,7 +6,16 @@ import { windowsPath } from "./app-identity.mjs";
 
 const exec = promisify(execFile);
 const ACCOUNT = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
-const refuse = () => Object.assign(Error("Reach couldn't prepare a private helper folder on this Windows PC."), { code: "EPRIVATESTAGE" });
+const refuse = (stage = { phase: "validate", reason: "input" }) => Object.assign(Error("Reach couldn't prepare a private helper folder on this Windows PC."), { code: "EPRIVATESTAGE", stage });
+const PHASES = "token|leaf|parent|path|volume|ancestors|descriptor-build|container|stage-create|stage-check|ancestor-recheck|output";
+const REASONS = "account|leaf|path|reparse|descriptor|owner|ancestor-access|stage-acl|profile|volume|depth|exists|not-empty|changed|exception";
+const diagnostic = new RegExp(`^reach-private-stage-refused (${PHASES}) (${REASONS}) ([A-Za-z][A-Za-z0-9_.-]{0,119}) ([A-Za-z][A-Za-z0-9_.-]{0,119}) ([A-Za-z][A-Za-z0-9_.-]{0,119}) ([0-9]{1,5})$`, "m");
+function commandRefusal(error) {
+  const match = diagnostic.exec(String(error?.stderr || ""));
+  if (match) return refuse({ phase: match[1], reason: match[2], exception: match[3], innerException: match[4], id: match[5], line: Number(match[6]) });
+  const reason = ["ABORT_ERR", "ETIMEDOUT", "ENOENT", "EACCES", "EPERM"].includes(error?.code) ? error.code : "unknown";
+  return refuse({ phase: "command", reason });
+}
 
 // No script file, execution-policy change, Add-Type or compilation is needed
 // to establish the first private build directory. In particular, neither an
@@ -18,14 +27,18 @@ const bootstrap = String.raw`
 $ErrorActionPreference = 'Stop'
 $PSModuleAutoLoadingPreference = 'None'
 Set-StrictMode -Version 2.0
+$phase = 'token'
 try {
   $account = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   if ($account -notmatch '\AS-1-5-21-\d+-\d+-\d+-\d+\z' -or $account -cne $env:REACH_PRIVATE_STAGE_SID) { throw 'account' }
+  $phase = 'leaf'
   $leaf = $env:REACH_PRIVATE_STAGE_LEAF
   if ($leaf -cnotmatch '\Areach-private-stage-[0-9a-f]{32}\z') { throw 'leaf' }
+  $phase = 'parent'
   $stageParent = $env:REACH_PRIVATE_STAGE_PARENT
-  if ([string]::IsNullOrEmpty($stageParent)) {
-    $stageParent = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+  $defaultParent = [string]::IsNullOrEmpty($stageParent)
+  if ($defaultParent) {
+    $stageParent = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
   }
   $trusted = @{}
   foreach ($value in @($account, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')) { $trusted[$value] = $true }
@@ -95,8 +108,10 @@ try {
     if ($wanted.Count -ne 0) { throw 'stage-acl' }
   }
 
+  $phase = 'path'
   AssertLocalPath $stageParent
   if ($stageParent.Length -le 3) { throw 'profile' }
+  $phase = 'volume'
   $driveRoot = [IO.Path]::GetPathRoot($stageParent)
   $drive = [IO.DriveInfo]::new($driveRoot)
   if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -cne 'NTFS') { throw 'volume' }
@@ -108,13 +123,10 @@ try {
     $chain.Add($current)
     if ($chain.Count -gt 128) { throw 'depth' }
   }
+  $phase = 'ancestors'
   $before = @{}
   foreach ($component in $chain) { $before[$component] = AssertAncestor $component ($component -ceq $stageParent) }
-  $stage = [IO.Path]::Combine($stageParent, $leaf)
-  AssertLocalPath $stage
-  # CreateDirectory returns an existing directory too. Do not rely on its
-  # success as proof of freshness, or ever reuse an old directory/cache.
-  if ([IO.Directory]::Exists($stage) -or [IO.File]::Exists($stage)) { throw 'exists' }
+  $phase = 'descriptor-build'
   $private = [System.Security.AccessControl.DirectorySecurity]::new()
   $private.SetOwner([System.Security.Principal.SecurityIdentifier]::new($account))
   $private.SetAccessRuleProtection($true, $false)
@@ -124,18 +136,55 @@ try {
     $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, [System.Security.AccessControl.FileSystemRights]::FullControl, $children, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
     $private.AddAccessRule($rule)
   }
+  if ($defaultParent) {
+    $phase = 'container'
+    # A static reserved container lets every restricted Reach job protect
+    # stages belonging to other hook processes as well as its own launch.
+    # Never normalize an existing container or trust creation as freshness.
+    $container = [IO.Path]::Combine($stageParent, 'Reach')
+    AssertLocalPath $container
+    if (-not [IO.Directory]::Exists($container) -and -not [IO.File]::Exists($container)) {
+      [void][IO.Directory]::CreateDirectory($container, $private)
+      AssertPrivateStage $container
+    }
+    $before[$container] = AssertAncestor $container $true
+    $chain.Add($container)
+    $stageParent = $container
+  }
+  $phase = 'stage-create'
+  $stage = [IO.Path]::Combine($stageParent, $leaf)
+  AssertLocalPath $stage
+  # CreateDirectory returns an existing directory too. Do not rely on its
+  # success as proof of freshness, or ever reuse an old directory/cache.
+  if ([IO.Directory]::Exists($stage) -or [IO.File]::Exists($stage)) { throw 'exists' }
   [void][IO.Directory]::CreateDirectory($stage, $private)
+  $phase = 'stage-check'
   AssertPrivateStage $stage
   if ([IO.Directory]::GetFileSystemEntries($stage).Length -ne 0) { throw 'not-empty' }
+  $phase = 'ancestor-recheck'
   foreach ($component in $chain) {
     $after = AssertAncestor $component ($component -ceq $stageParent)
     if ($after -cne $before[$component]) { throw 'changed' }
   }
   AssertPrivateStage $stage
+  $phase = 'output'
   [Console]::Out.WriteLine('reach-private-stage ' + $account + ' ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($stage)))
   exit 0
 } catch {
-  [Console]::Error.WriteLine('reach-private-stage-refused')
+  # Diagnostics identify only the fixed phase/category and exception class,
+  # never its message, stack, descriptor, token, profile or path contents.
+  $reason = 'exception'
+  if (@('account', 'leaf', 'path', 'reparse', 'descriptor', 'owner', 'ancestor-access', 'stage-acl', 'profile', 'volume', 'depth', 'exists', 'not-empty', 'changed') -ccontains $_.Exception.Message) { $reason = $_.Exception.Message }
+  $kind = $_.Exception.GetType().FullName
+  $inner = 'none'
+  if ($null -ne $_.Exception.InnerException) { $inner = $_.Exception.InnerException.GetType().FullName }
+  $id = [string]$_.FullyQualifiedErrorId
+  if ($kind -cnotmatch '\A[A-Za-z][A-Za-z0-9_.-]{0,119}\z') { $kind = 'unknown' }
+  if ($inner -cnotmatch '\A[A-Za-z][A-Za-z0-9_.-]{0,119}\z') { $inner = 'unknown' }
+  if ($id -cnotmatch '\A[A-Za-z][A-Za-z0-9_.-]{0,119}\z') { $id = 'unknown' }
+  $line = 0
+  if ($null -ne $_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber -ge 0 -and $_.InvocationInfo.ScriptLineNumber -le 99999) { $line = $_.InvocationInfo.ScriptLineNumber }
+  [Console]::Error.WriteLine('reach-private-stage-refused ' + $phase + ' ' + $reason + ' ' + $kind + ' ' + $inner + ' ' + $id + ' ' + $line)
   exit 1
 }
 `;
@@ -152,7 +201,7 @@ export async function createWindowsPrivateStage({ sid, env = process.env, run = 
         timeout: 15000, maxBuffer: 65536, windowsHide: true,
         env: { ...env, REACH_PRIVATE_STAGE_SID: sid, REACH_PRIVATE_STAGE_PARENT: parent ?? "", REACH_PRIVATE_STAGE_LEAF: leaf },
       }));
-  } catch { throw refuse(); }
+  } catch (error) { throw commandRefusal(error); }
   const match = /^reach-private-stage (S-1-5-21-\d+-\d+-\d+-\d+) ([A-Za-z0-9+/]+={0,2})$/.exec(String(stdout || "").trim());
   if (!match || match[1] !== sid) throw refuse();
   let dir;
@@ -162,5 +211,9 @@ export async function createWindowsPrivateStage({ sid, env = process.env, run = 
     dir = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch { throw refuse(); }
   if (!windowsPath(dir) || path.win32.basename(dir) !== leaf || (parent !== undefined && path.win32.dirname(dir) !== parent)) throw refuse();
-  return { dir, sid };
+  // Only the default, verified reserved container protects sibling hook and
+  // Codex stages. An explicit test parent must never privatize all of Home.
+  const privateRoot = path.win32.dirname(dir);
+  if (parent === undefined && path.win32.basename(privateRoot) !== "Reach") throw refuse();
+  return { dir, sid, ...(parent === undefined ? { privateRoot } : {}) };
 }

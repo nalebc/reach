@@ -4,9 +4,11 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createAgentAsks, newAgentAskPipe, readAgentAskPipe } from "../server/agent-sessions/agent-asks.mjs";
 import { pipeServedByMe } from "../server/agent-sessions/trusted-socket.mjs";
 import {
@@ -35,6 +37,120 @@ const until = async (check, ms = 5000) => {
   for (const end = Date.now() + ms; !check() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 10));
   return check();
 };
+
+// Black-box hook process and real Node IPC, with Windows compiler/token/pipe
+// ownership results modeled by an ESM loader. This is not NTFS or Windows
+// execution evidence; the opt-in native case below covers the actual helper.
+async function modeledHook(t, { mode = "ok", answer, away = 2200, retry = 4500 } = {}) {
+  const dir = folder(t), audit = path.join(dir, "audit.jsonl"), fresh = path.join(dir, "stage", "owners.exe");
+  const cached = path.join(dir, "planted-owners.exe"), pipe = newAgentAskPipe();
+  fs.writeFileSync(cached, "planted executable");
+  const config = { dir, audit, fresh, cached, pipe, mode };
+  const fake = path.join(dir, "fake.mjs");
+  fs.writeFileSync(fake, `
+    import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto'; import { promisify } from 'node:util';
+    const c = JSON.parse(process.env.REACH_HOOK_MODEL);
+    const sid = 'S-1-5-21-1-2-3-1001', logon = 'S-1-5-5-0-99';
+    const note = (event, details = {}) => fs.appendFileSync(c.audit, JSON.stringify({event,...details})+'\\n');
+    const digest = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    export const readAgentAskPipe = () => c.pipe;
+    export const windowsBuildDirectory = dir => dir;
+    export const accountSid = () => c.mode === 'bad-sid' ? '' : sid;
+    export async function createWindowsPrivateStage({sid: asked}) {
+      note('stage', {sid:asked});
+      if(c.mode === 'stage-fail') throw Error('private stage refused');
+      fs.mkdirSync(path.dirname(c.fresh), {recursive:true}); return {dir:path.dirname(c.fresh),sid:asked};
+    }
+    export function builtWindowsHelper() { note('cached-lookup'); return {file:c.cached,sha256:digest(c.cached)}; }
+    export async function windowsHelper(kind, options) {
+      note('compile', {kind,dir:options.dir,fresh:options.fresh});
+      if(c.mode === 'compile-fail') throw Error('compiler refused');
+      if(c.mode === 'compile-stall') return new Promise((resolve,reject) => {
+        const stop=()=>{ note('aborted'); reject(Error('aborted')); };
+        if(options.signal?.aborted) stop(); else options.signal?.addEventListener('abort',stop,{once:true});
+      });
+      fs.writeFileSync(c.fresh, 'fresh compiled verifier'); return {file:c.fresh,sha256:digest(c.fresh)};
+    }
+    export function assertUnchanged(file, sha256) { if(digest(file)!==sha256) { note('changed'); throw Error('changed'); } }
+    export function execFile() { throw Error('use promisified invocation'); }
+    execFile[promisify.custom] = async (file,args,options) => {
+      if(file.endsWith('\\\\whoami.exe')) { note('whoami',{file,args}); return {stdout:'"PC\\\\owner","'+sid+'"\\r\\n',stderr:''}; }
+      note('execute',{file,args});
+      return {stdout:JSON.stringify({self:sid,owner:sid,user:c.mode==='foreign'? 'S-1-5-21-1-2-3-1002':sid,logon:[logon],serves:[sid,'S-1-5-18','S-1-5-32-544',logon]}),stderr:''};
+    };
+  `);
+  const loader = path.join(dir, "loader.mjs");
+  fs.writeFileSync(loader, `
+    import {pathToFileURL} from 'node:url';
+    const fake = pathToFileURL(${JSON.stringify(fake)}).href;
+    export async function resolve(specifier, context, next) {
+      if(specifier === 'node:child_process' || /\\/(?:desktop-native|windows-private-stage|windows-private-folder|agent-asks)\\.mjs$/.test(specifier)) return {url:fake,shortCircuit:true};
+      return next(specifier,context);
+    }
+  `);
+  const register = path.join(dir, "register.mjs");
+  fs.writeFileSync(register, `import {register} from 'node:module'; register(${JSON.stringify(pathToFileURL(loader).href)}, import.meta.url);`);
+  const requests = [], sockets = new Set();
+  const server = net.createServer(socket => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket));
+    let raw = "";
+    socket.on("data", chunk => {
+      raw += chunk;
+      if (!raw.includes("\n")) return;
+      requests.push(JSON.parse(raw.slice(0, raw.indexOf("\n")))); raw = "";
+      const response = answer ? answer(requests.length, config) : {decision:{behavior:"allow"}};
+      socket.end(`${JSON.stringify(response)}\n`);
+    });
+    socket.on("error", () => {});
+  });
+  server.listen(pipe); await once(server, "listening");
+  const child = spawn(process.execPath, ["--import", register, fileURLToPath(new URL("../scripts/agent-hook.mjs", import.meta.url)), "claude", "--pipe-dir", dir], {
+    env: {...process.env, SystemRoot: "C:\\Windows", REACH_HOOK_MODEL:JSON.stringify(config), REACH_HOOK_AWAY_MS:String(away), REACH_HOOK_RETRY_MS:String(retry)},
+    stdio:["pipe","pipe","pipe"],
+  });
+  let output = "", error = "";
+  child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => error += chunk);
+  const timer = setTimeout(() => child.kill("SIGKILL"), 8000);
+  t.after(() => { clearTimeout(timer); child.kill(); for(const socket of sockets) socket.destroy(); server.close(); });
+  child.stdin.end(JSON.stringify({hook_event_name:"PermissionRequest",session_id:SESSION,tool_name:"Bash",tool_input:{command:"echo fixture"}}));
+  const [code, signal] = await once(child, "close");
+  clearTimeout(timer); for(const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve));
+  let events = []; try { events = fs.readFileSync(audit,"utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch(error) { if(error.code!=="ENOENT") throw error; }
+  return {code,signal,output,error,events,requests,config};
+}
+
+test("modeled Windows hook ignores a planted EXE/hash pair and pins one fresh verifier across retries", {timeout:12000}, async t => {
+  const got = await modeledHook(t, {answer:n => n===1 ? {retry:true} : {decision:{behavior:"allow"}}});
+  assert.equal(got.code,0,got.error); assert.equal(got.signal,null,got.error);
+  assert.equal(JSON.parse(got.output).hookSpecificOutput.decision.behavior,"allow");
+  assert.equal(got.requests.length,2); assert.equal(got.requests[1].again,true);
+  assert.equal(got.events.filter(e => e.event==="compile").length,1,"one fresh compile per hook process");
+  assert.equal(got.events.filter(e => e.event==="stage").length,1);
+  assert.equal(got.events.filter(e => e.event==="whoami").length,1);
+  assert.deepEqual(got.events.filter(e => e.event==="execute").map(e => e.file),[got.config.fresh,got.config.fresh]);
+  assert.ok(got.events.some(e => e.event==="compile" && e.kind==="owners" && e.fresh===true));
+  assert.ok(!got.events.some(e => e.event==="cached-lookup"),"a matching historical EXE/hash pair is never authority");
+});
+
+test("modeled Windows hook refuses a verifier changed after its first answer without rebuilding or trusting a cache", {timeout:12000}, async t => {
+  const got = await modeledHook(t, {retry:2400,answer:(_n,c) => { fs.writeFileSync(c.fresh,"replaced after compile"); return {retry:true}; }});
+  assert.equal(got.code,0,got.error); assert.equal(got.output,""); assert.equal(got.requests.length,1);
+  assert.equal(got.events.filter(e => e.event==="compile").length,1);
+  assert.equal(got.events.filter(e => e.event==="execute").length,1);
+  assert.ok(got.events.some(e => e.event==="changed"));
+  assert.ok(!got.events.some(e => e.event==="cached-lookup"));
+});
+
+for (const mode of ["bad-sid","stage-fail","compile-fail","foreign","compile-stall"]) {
+  test(`modeled Windows hook leaves the native dialog in charge after ${mode}`, {timeout:12000}, async t => {
+    const got = await modeledHook(t,{mode,away:120,retry:120});
+    assert.equal(got.code,0,got.error); assert.equal(got.signal,null,got.error); assert.equal(got.output,"");
+    assert.equal(got.requests.length,0,"an unverified endpoint receives no request");
+    assert.ok(!got.events.some(e => e.event==="cached-lookup"));
+    assert.ok(got.events.filter(e => e.event==="compile").length<=1,"failure retries do not recompile");
+    if(mode==="compile-stall") assert.ok(got.events.some(e => e.event==="aborted"),"the existing away budget cancels a stalled compiler");
+  });
+}
 
 // --- Installing the hook on Windows (provable on any computer: the commands
 // are built for win32 and written into a settings file, no pipe needed) ---
@@ -216,4 +332,66 @@ test("on real Windows, the hook trusts a pipe Reach's own Node serves and refuse
   });
   const shared = await pipeOwner(`\\\\.\\pipe\\${name}`, { dataDir: dir, build });
   assert.equal(pipeServedByMe(shared), false, "a pipe any account may serve is not trusted");
+});
+
+test("on hosted Windows the actual hook ignores a forged matching owners cache and uses its own freshly built pipe verifier", {
+  skip: !(windows && process.env.REACH_TEST_WINDOWS_DESKTOP === "1" && process.env.CI === "true"
+    && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted") && "disposable GitHub-hosted Windows runner only",
+  timeout:300000,
+}, async t => {
+  const {windowsHelper,builtWindowsHelper,cscCandidates} = await import("../server/desktop-native.mjs");
+  const {accountSid} = await import("../server/windows-private-folder.mjs");
+  const run = promisify(execFile), dir = folder(t), marker = path.join(dir,"planted-executed.txt");
+  const report = {schema:1,head:process.env.GITHUB_SHA || null,actualWindows:true,physicalDevice:false,node:process.version,
+    scope:"Actual hook, fresh PowerShell/C# bootstrap and Node named pipe; controlled disposable forged cache, no Claude account or phone"};
+  t.after(() => { fs.mkdirSync("reports",{recursive:true}); fs.writeFileSync("reports/windows-hook-fresh-verifier.json",JSON.stringify(report,null,2)); });
+  const system = path.win32.join(process.env.SystemRoot,"System32");
+  const sid = accountSid((await run(path.win32.join(system,"whoami.exe"),["/user","/fo","csv","/nh"],{timeout:10000,windowsHide:true})).stdout);
+  assert.match(sid,/^S-1-5-21-/);
+  const original = await windowsHelper("owners",{dir});
+  const source = path.join(dir,"planted.cs");
+  fs.writeFileSync(source,`using System; using System.IO;
+    static class PlantedOwners { static void Main() {
+      File.WriteAllText(Environment.GetEnvironmentVariable("REACH_TEST_HOOK_CACHE_MARKER"),"executed");
+      Console.WriteLine(Environment.GetEnvironmentVariable("REACH_TEST_HOOK_FORGED_OWNER"));
+    } }`);
+  const compiler = cscCandidates().find(file => fs.existsSync(file));
+  assert.ok(compiler,"Windows Framework compiler is present");
+  await run(compiler,["/nologo","/noconfig","/target:exe","/platform:anycpu",`/out:${original.file}`,source],{timeout:60000,windowsHide:true});
+  const forgedDigest = crypto.createHash("sha256").update(fs.readFileSync(original.file)).digest("hex");
+  fs.writeFileSync(original.file.replace(/\.exe$/,".sha256"),`${forgedDigest}\n`);
+  assert.deepEqual(builtWindowsHelper("owners",{dir}),{file:original.file,sha256:forgedDigest},"fixture has a matching forged historical EXE/hash pair");
+  report.plantedMatchingCache = true;
+
+  const pipe = newAgentAskPipe(), sockets = new Set(), requests = [];
+  const server = net.createServer(socket => {
+    sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); socket.on("error",()=>{});
+    let raw = "";
+    socket.on("data",chunk => {
+      raw += chunk;
+      if(!raw.includes("\n")) return;
+      requests.push(JSON.parse(raw.slice(0,raw.indexOf("\n"))));
+      socket.end(`${JSON.stringify({decision:{behavior:"allow"}})}\n`);
+    });
+  });
+  server.listen(pipe); await once(server,"listening");
+  t.after(() => { for(const socket of sockets) socket.destroy(); server.close(); });
+  fs.writeFileSync(path.join(dir,"agent-hook-pipe"),`${pipe.slice("\\\\.\\pipe\\".length)}\n`);
+  assert.equal(readAgentAskPipe(dir),pipe,"the actual hook metadata names the controlled pipe");
+  const env = {...process.env,REACH_TEST_HOOK_CACHE_MARKER:marker,REACH_TEST_HOOK_FORGED_OWNER:JSON.stringify({self:sid,owner:sid,user:sid,logon:[],serves:[sid]})};
+  delete env.REACH_HOOK_AWAY_MS; delete env.REACH_HOOK_RETRY_MS;
+  const child = spawn(process.execPath,[fileURLToPath(new URL("../scripts/agent-hook.mjs",import.meta.url)),"claude","--pipe-dir",dir],{env,stdio:["pipe","pipe","pipe"]});
+  let output = "", error = "";
+  child.stdout.on("data",chunk => output += chunk); child.stderr.on("data",chunk => error += chunk);
+  const timer = setTimeout(()=>child.kill("SIGKILL"),15000);
+  t.after(()=>{clearTimeout(timer);child.kill();});
+  const started = Date.now();
+  child.stdin.end(JSON.stringify({hook_event_name:"PermissionRequest",session_id:SESSION,tool_name:"Bash",tool_input:{command:"echo fixture"}}));
+  const [code,signal] = await once(child,"close"); clearTimeout(timer);
+  Object.assign(report,{elapsedMs:Date.now()-started,code,signal,requests:requests.length,error});
+  assert.equal(code,0,error); assert.equal(signal,null,error);
+  assert.equal(requests.length,1,"the fresh real checker authorizes this account's Node pipe within the unchanged hook budget");
+  assert.equal(JSON.parse(output).hookSpecificOutput.decision.behavior,"allow");
+  await assert.rejects(fs.promises.readFile(marker),{code:"ENOENT"},"the forged historical helper never executes");
+  report.plantedExecuted = false; report.passed = true;
 });

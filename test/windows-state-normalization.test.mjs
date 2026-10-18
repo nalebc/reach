@@ -4,9 +4,9 @@ import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { accountSid } from "../server/windows-private-folder.mjs";
+import { accountSid, ensurePrivateFolders } from "../server/windows-private-folder.mjs";
 import { assertUnchanged, cscCandidates, windowsHelper } from "../server/desktop-native.mjs";
 import { createWindowsPrivateStage } from "../server/windows-private-stage.mjs";
 
@@ -24,7 +24,7 @@ test("actual Windows retained-handle state normalization", {
   const powershell = path.win32.join(system, "WindowsPowerShell", "v1.0", "powershell.exe");
   const report = { schema: 1, head: process.env.GITHUB_SHA || null, actualWindows: true, physicalDevice: false, node: process.version,
     scope: "Controlled actual NTFS component regression; not an installed upgrade or authenticated browser acceptance",
-    production: Object.fromEntries(["scripts/native/private-state.cs", "scripts/native/private-folder.cs", "server/windows-private-stage.mjs"].map(file =>
+    production: Object.fromEntries(["scripts/native/private-state.cs", "scripts/native/private-folder.cs", "server/windows-private-stage.mjs", "server/windows-private-folder.mjs", "server/desktop-native.mjs"].map(file =>
       [file, crypto.createHash("sha256").update(readFileSync(file)).digest("hex")])), cases: [] };
   const run = async (file, args, options = {}) => {
     try { return await exec(file, args, { timeout: 120000, maxBuffer: 4 << 20, windowsHide: true, ...options }); }
@@ -48,7 +48,12 @@ test("actual Windows retained-handle state normalization", {
     } catch (error) { report.cleanup = { ok: false, message: error.message }; throw error; }
     finally { await fs.mkdir("reports", { recursive: true }); await fs.writeFile("reports/windows-state-normalization.json", `${JSON.stringify(report, null, 2)}\n`); }
   });
-  const stage = await createWindowsPrivateStage({ sid });
+  let stage;
+  try { stage = await createWindowsPrivateStage({ sid }); }
+  catch (error) {
+    report.setupFailure = { boundary: "initial-private-stage", code: error.code || null, stage: error.stage || null };
+    throw error;
+  }
   stages.push(stage.dir); report.stage = stage;
   const core = await windowsHelper("private-state", { dir: stage.dir, fresh: true });
   const checker = await windowsHelper("private-folder", { dir: stage.dir, fresh: true });
@@ -58,6 +63,12 @@ test("actual Windows retained-handle state normalization", {
   await run(compiler, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", `/out:${fixture}`,
     `/reference:${path.join(path.dirname(compiler), "System.dll")}`, `/reference:${path.join(path.dirname(compiler), "System.Web.Extensions.dll")}`,
     path.resolve("test/fixtures/windows/existing-state-acl.cs")]);
+  const handles = path.join(stage.dir, "state-handles.exe");
+  await run(compiler, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/main:PrivateStateHandles", `/out:${handles}`,
+    `/reference:${path.join(path.dirname(compiler), "System.dll")}`, path.resolve("scripts/native/private-state.cs"), path.resolve("test/fixtures/windows/private-state-handles.cs")]);
+  const planted = path.join(stage.dir, "planted-helper.exe");
+  await run(compiler, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", `/out:${planted}`,
+    `/reference:${path.join(path.dirname(compiler), "System.dll")}`, path.resolve("test/fixtures/windows/planted-state-helper.cs")]);
   const password = `${crypto.randomBytes(24).toString("hex")}Aa1!`;
   await run(path.win32.join(system, "net.exe"), ["user", user, password, "/add", "/Y"]); createdUser = true;
   const foreignSid = (await run(fixture, ["sid", user])).stdout.trim();
@@ -151,5 +162,116 @@ test("actual Windows retained-handle state normalization", {
       assert.equal(item.after.entries.find(candidate => candidate.path === entry.path)?.sddl, entry.sddl, "outside target ACL untouched");
     item.bytesPreserved = true;
     console.log(`${mode}: ${item.answer}`);
+  });
+  for (const mode of ["repair", "private", "directory"]) await t.test(`actual held ${mode} handle`, async () => {
+    const generated = await fs.mkdtemp(path.join(root, "reach-existing-state-"));
+    await run(fixture, ["setup", generated, mode === "repair" ? "file-explicit" : "private", foreignSid]);
+    const history = path.join(generated, "state", "history"), legacy = path.join(history, "legacy.json"), outsideLink = path.join(generated, "outside", "attempted-link");
+    const item = { mode: `held-${mode}`, before: await snapshot(generated) }; report.cases.push(item);
+    const child = spawn(handles, [mode, history], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "", errors = "";
+    child.stderr.on("data", data => { errors += data; });
+    const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal })); });
+    const ready = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error(`handle fixture did not reach its barrier: ${output} ${errors}`)), 20000);
+      child.stdout.on("data", data => { output += data; if (output === "held\r\n" || output === "held\n") { clearTimeout(timer); resolve(); } });
+      exited.then(value => { clearTimeout(timer); reject(Error(`handle fixture ended before barrier: ${JSON.stringify(value)} ${errors}`)); }, reject);
+    });
+    try {
+      await ready;
+      if (mode === "repair") {
+        await assert.rejects(fs.link(legacy, outsideLink), "actual NO-sharing repair-file handle blocks CreateHardLink");
+        assert.equal(await fs.stat(outsideLink).then(() => true, () => false), false);
+        item.hardlinkBlocked = true;
+      } else if (mode === "private") {
+        const ownerWriter = await fs.open(legacy, "a");
+        await ownerWriter.write("Owner's current log write.\n"); await ownerWriter.close();
+        item.ownerWriterAllowed = true;
+      } else {
+        await assert.rejects(fs.rename(history, `${history}-moved`), "actual retained directory handle blocks replacement before a junction swap");
+        assert.equal((await fs.lstat(history)).isDirectory(), true);
+        item.directoryReplacementBlocked = true;
+      }
+      child.stdin.end("release\n");
+      assert.deepEqual(await exited, { code: 0, signal: null }, errors);
+      if (mode === "repair") {
+        await fs.link(legacy, outsideLink); await fs.unlink(outsideLink);
+        item.hardlinkSucceedsAfterRelease = true;
+      } else if (mode === "directory") {
+        await fs.rename(history, `${history}-moved`); await fs.rename(`${history}-moved`, history);
+        item.directoryRenameSucceedsAfterRelease = true;
+      }
+    } finally { child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy(); child.kill(); await exited.catch(() => {}); }
+    item.after = await snapshot(generated);
+    for (const entry of item.before.entries) assert.equal(item.after.entries.find(candidate => candidate.path === entry.path)?.sddl, entry.sddl, "handle probe changes no ACL");
+    item.passed = true;
+  });
+  await t.test("actual foreign token cannot write or swap checked state, and loses broad read after repair", async () => {
+    const generated = await fs.mkdtemp(path.join(root, "reach-existing-state-"));
+    await run(fixture, ["setup", generated, "file-explicit", foreignSid]);
+    const item = { mode: "actual-foreign-token", before: await snapshot(generated) }; report.cases.push(item);
+    const attempt = async () => JSON.parse((await run(fixture, ["foreign-attempt", generated, foreignSid], {
+      env: { ...process.env, REACH_ACL_FIXTURE_USER: user, REACH_ACL_FIXTURE_PASSWORD: password },
+    })).stdout);
+    item.actorBefore = await attempt();
+    assert.equal(item.actorBefore.sid, foreignSid);
+    assert.equal(item.actorBefore.administratorToken, false);
+    assert.deepEqual(item.actorBefore.read, { ok: true, error: 0 }, "actual other account may read the synthetic broad-read legacy file");
+    assert.deepEqual(item.actorBefore.write, { ok: false, error: 5 }, "that account cannot write it");
+    assert.deepEqual(item.actorBefore.rename, { ok: false, error: 5 }, "that account cannot swap the checked state parent");
+    const state = path.join(generated, "state");
+    assert.equal((await run(core.file, [sid, state, path.join(state, "quick")])).stdout.trim(), "ok");
+    item.actorAfter = await attempt();
+    assert.deepEqual(item.actorAfter.read, { ok: false, error: 5 }, "new foreign read opens are refused after repair");
+    assert.deepEqual(item.actorAfter.write, { ok: false, error: 5 });
+    assert.deepEqual(item.actorAfter.rename, { ok: false, error: 5 });
+    item.after = await snapshot(generated);
+    assert.equal(await check(state, path.join(state, "quick")), "ok");
+    item.passed = true;
+  });
+  for (const mode of ["fresh", "file-protected", "directory-protected", "planted-cache", "unsafe-code"]) await t.test(`actual ensurePrivateFolders ${mode}`, async (t) => {
+    const generated = await fs.mkdtemp(path.join(root, "reach-existing-state-"));
+    await run(fixture, ["setup", generated, mode === "planted-cache" || mode === "unsafe-code" ? "private" : mode, foreignSid]);
+    const state = path.join(generated, "state"), data = path.join(state, "quick"), nativeDir = path.join(state, "native");
+    let oldHelper;
+    if (mode === "planted-cache") {
+      // Obtain the real production cache filename, then forge both old bytes
+      // and their sidecar hash. This setup never executes the old program.
+      oldHelper = await windowsHelper("owners", { dir: nativeDir });
+      await fs.copyFile(planted, oldHelper.file);
+      await fs.writeFile(oldHelper.file.replace(/\.exe$/, ".sha256"), `${crypto.createHash("sha256").update(await fs.readFile(planted)).digest("hex")}\n`);
+    }
+    const code = path.join(generated, "outside");
+    if (mode === "unsafe-code") await run(path.win32.join(system, "icacls.exe"), [code, "/grant", "*S-1-1-0:(OI)(CI)M", "/Q"]);
+    const item = { mode: `ensure-${mode}`, before: await snapshot(generated) }; report.cases.push(item);
+    // Actual defaults: no replacement platform, whoami, run, build, stage,
+    // compiler, ACL checker or normalizer is supplied.
+    const secured = await ensurePrivateFolders({ protect: [state, data], check: mode === "unsafe-code" ? [code] : [], nativeDir, helpers: ["owners"] });
+    item.result = secured;
+    if (secured.ok) { stages.push(secured.nativeDir); t.after(secured.dispose); }
+    assert.equal(secured.ok, mode !== "unsafe-code", JSON.stringify(secured));
+    if (secured.ok) {
+      assert.equal(await check(state, data, secured.nativeDir), "ok");
+      assert.equal((await fs.stat(state)).isDirectory(), true); assert.equal((await fs.stat(data)).isDirectory(), true);
+      secured.activate();
+      const current = await windowsHelper("owners", { dir: data });
+      assert.equal(path.dirname(current.file), secured.nativeDir);
+      assertUnchanged(current.file, current.sha256);
+      // Execute the genuine fresh verifier against a deliberately nonexistent
+      // disposable pipe. The forged historical program would leave a marker
+      // and cannot produce the actual verifier's JSON response.
+      const response = (await run(current.file, ["pipe", `\\\\.\\pipe\\reach-no-such-state-test-${crypto.randomBytes(8).toString("hex")}`])).stdout.trim();
+      assert.equal(typeof JSON.parse(response), "object");
+      if (oldHelper) {
+        assert.notEqual(current.file, oldHelper.file);
+        assert.equal(await fs.stat(path.join(nativeDir, "planted-helper-ran.txt")).then(() => true, () => false), false);
+        assert.deepEqual(await fs.readFile(oldHelper.file), await fs.readFile(planted), "old state bytes remain preserved");
+        item.plantedProgramNotExecuted = true;
+      }
+    } else assert.match(secured.problem, /can be changed by other people/);
+    item.after = await snapshot(generated);
+    if (mode === "unsafe-code") for (const entry of item.before.entries)
+      assert.equal(item.after.entries.find(candidate => candidate.path === entry.path)?.sddl, entry.sddl, "unsafe code refuses before any state ACL mutation");
+    item.passed = true;
   });
 });

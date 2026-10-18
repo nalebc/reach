@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
-import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assertUnchanged, windowsHelper } from "./desktop-native.mjs";
+import { assertUnchanged, registerWindowsBuildDirectory, windowsHelper } from "./desktop-native.mjs";
 import { windowsPath } from "./app-identity.mjs";
+import { createWindowsPrivateStage } from "./windows-private-stage.mjs";
 const exec = promisify(execFile);
 
 // Reach's folders on Windows, made as private as 0700 makes them on a Mac
@@ -18,15 +18,13 @@ const exec = promisify(execFile);
 // nobody else can read or change them, nor change Reach's code. Anything it
 // can't confirm is refused, with the folder named.
 //
-// `protect`: Reach's state and data folders, tightened every time.
+// `protect`: Reach's state and data folders. A retained-handle native preflight
+// repairs only recognized broad READ grants in simple allow-only ACLs.
 // `check`: Reach's code, never changed, only checked.
-// `nativeDir`: where the helpers are built (inside a `protect` folder).
-// `helpers`: helpers built there (cached, by hash), checked with the rest.
+// `nativeDir`: the old helper directory, covered by state verification, never
+// used as build input or output. A matching old EXE/digest is not provenance.
+// `helpers`: helpers compiled fresh into an atomically private new stage.
 const ACCOUNT = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
-const SYSTEM = "S-1-5-18", ADMINISTRATORS = "S-1-5-32-544";
-// Windows can materialize its default broad grants as explicit ACEs on a
-// newly created folder. Removing inheritance alone then leaves them intact.
-const BROAD_READERS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-15-2-1", "S-1-15-2-2"];
 const CHECKER = "private-folder";
 const OFF = "so browser sign-in stays off.";
 const UNCHECKED = "Reach couldn't check who can use its folders on this PC";
@@ -42,6 +40,15 @@ const PROBLEMS = {
   limit: "holds too many files to check",
   missing: "isn't there",
   error: "couldn't be checked",
+  hardlink: "has more than one name on this PC (a hard link)",
+  ancestor: "can be changed by other people on this PC",
+  write: "has sharing permissions that allow changes by other people; Reach couldn't safely change them automatically",
+  deny: "has sharing and deny rules that Reach couldn't safely change automatically",
+  complex: "has permissions Reach couldn't safely check or change automatically",
+  access: "doesn't allow Reach to safely make its permissions private",
+  sharing: "is in use by another program, so Reach couldn't check it safely",
+  changed: "changed while Reach checked it",
+  path: "isn't a canonical local NTFS path Reach can safely check",
 };
 const systemFolder = (env) => {
   const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR;
@@ -61,6 +68,7 @@ export async function ensurePrivateFolders({
   helpers = [],
   run = exec,
   build = windowsHelper,
+  createStage = createWindowsPrivateStage,
   platform = process.platform,
   env = process.env,
 } = {}) {
@@ -74,54 +82,87 @@ export async function ensurePrivateFolders({
     sid = accountSid(stdout);
   } catch {}
   if (!sid) return refused("Reach couldn't tell which Windows account it runs as");
-  // SIDs only, never names (localized): SYSTEM, Administrators and this
-  // account, nothing inherited; what's inside takes the same. Only the exit
-  // code is read.
-  for (const dir of protect) {
-    try {
-      mkdirSync(dir, { recursive: true });
-      await run(
-        path.win32.join(system, "icacls.exe"),
-        [dir, "/inheritance:r", "/remove:g", ...BROAD_READERS.map(value => `*${value}`),
-          "/grant:r", `*${SYSTEM}:(OI)(CI)F`, `*${ADMINISTRATORS}:(OI)(CI)F`, `*${sid}:(OI)(CI)F`, "/Q"],
-        { timeout: 60000, windowsHide: true },
-      );
-    } catch {
-      return refused(`Reach couldn't make its folder ${dir} private to your Windows account`);
-    }
-  }
-  const built = {};
-  let checker;
+  let stage;
+  // This bootstrap runs BEFORE any state mutation or compilation. It does
+  // not load an old helper, compile interop, follow a junction or trust a
+  // cached digest to establish the first private directory.
   try {
-    for (const kind of helpers) built[kind] = await build(kind, { dir: nativeDir });
-    // Compiled now, every time: a file put in the folder while it was still
-    // open is never what runs.
-    checker = await build(CHECKER, { dir: nativeDir, fresh: true });
-    const older = new RegExp(`^reach-${CHECKER}-[0-9a-f]{12}-[0-9a-f]{8}\\.exe$`);
-    for (const name of await fs.readdir(nativeDir).catch(() => []))
-      if (older.test(name) && name !== path.basename(checker.file))
-        await fs.rm(path.join(nativeDir, name), { force: true }).catch(() => {});
+    stage = await createStage({ sid, env, run });
   } catch (error) {
-    return refused(`Reach couldn't prepare its folder check (${error.message})`);
+    return { ...refused("Reach couldn't prepare a private helper folder on this Windows PC"), ...(error.stage ? { stage: error.stage } : {}) };
   }
-  const files = Object.values(built).map((helper) => helper.file);
-  const listed = [...protect, ...check, ...files];
-  let said = "";
-  try {
+  const built = new Map();
+  let closed = false, verified = false, unregister = null, checker;
+  const dispose = async () => {
+    if (closed) return;
+    closed = true;
+    unregister?.();
+    await fs.rm(stage.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  };
+  const fail = async result => {
+    await dispose().catch(() => {});
+    return result;
+  };
+  const readCheck = async ({ state = [], code = [], files = [] } = {}) => {
+    const listed = [...state.map(file => ({ file })), ...code.map(file => ({ file, code: true })), ...files.map(file => ({ file, helper: true }))];
     assertUnchanged(checker.file, checker.sha256);
-    const { stdout } = await run(checker.file, [sid, "state", ...protect, "code", ...check, "file", ...files], { timeout: 120000, maxBuffer: 65536, windowsHide: true });
-    said = String(stdout).split(/\r?\n/)[0].trim();
-  } catch {
-    return refused(UNCHECKED);
+    const { stdout } = await run(checker.file, [sid, "state", ...state, "code", ...code, "file", ...files], { timeout: 120000, maxBuffer: 65536, windowsHide: true });
+    const said = String(stdout).trim();
+    if (said === "ok") return null;
+    const match = /^open (\d{1,5}) (ace|owner|reparse|limit|missing|error)$/.exec(said);
+    const item = match && listed[Number(match[1])];
+    if (!item) return refused(UNCHECKED);
+    const what = item.helper ? "Reach's helper" : "Reach's folder";
+    const problem = item.code && match[2] === "ace" ? "can be changed by other people on this PC" : PROBLEMS[match[2]];
+    return refused(`${what} ${item.file} ${problem}`, item.code ? "Move it into your user folder, or install Reach with npm." : "");
+  };
+  const helper = async kind => {
+    if (closed) throw Error("Reach's private helper folder has closed.");
+    if (!built.has(kind)) built.set(kind, (async () => {
+      if (verified) {
+        const problem = await readCheck({ state: [stage.dir] });
+        if (problem) throw Error(problem.problem);
+      }
+      const result = await build(kind, { dir: stage.dir, fresh: true });
+      if (closed) throw Error("Reach's private helper folder has closed.");
+      assertUnchanged(result.file, result.sha256);
+      return result;
+    })().catch(error => { built.delete(kind); throw error; }));
+    const result = await built.get(kind);
+    assertUnchanged(result.file, result.sha256);
+    return result;
+  };
+  try {
+    checker = await helper(CHECKER);
+    // Code remains read-only, and an insecure installation is refused before
+    // any existing state descriptor is changed.
+    const initial = await readCheck({ state: [stage.dir], code: check });
+    if (initial) return await fail(initial);
+    const normalizer = await helper("private-state");
+    assertUnchanged(normalizer.file, normalizer.sha256);
+    const { stdout } = await run(normalizer.file, [sid, ...protect], { timeout: 120000, maxBuffer: 65536, windowsHide: true });
+    const said = String(stdout).trim();
+    if (said !== "ok") {
+      const match = /^open (\d{1,2}) (ace|owner|reparse|limit|missing|error|hardlink|ancestor|write|deny|complex|access|sharing|changed|path) ([A-Za-z0-9+/]+={0,2})$/.exec(said);
+      if (!match || Number(match[1]) >= protect.length) return await fail(refused(UNCHECKED));
+      const bytes = Buffer.from(match[3], "base64");
+      if (bytes.toString("base64") !== match[3]) return await fail(refused(UNCHECKED));
+      const file = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (!windowsPath(file) && !/^[A-Za-z]:\\$/.test(file)) return await fail(refused(UNCHECKED));
+      return await fail(refused(`Reach's folder ${file} ${PROBLEMS[match[2]]}`));
+    }
+    const files = [];
+    for (const kind of helpers) files.push((await helper(kind)).file);
+    const final = await readCheck({ state: [...protect, stage.dir], code: check, files });
+    if (final) return await fail(final);
+    verified = true;
+    return { ok: true, sid, nativeDir: stage.dir, privatePaths: [...new Set([stage.privateRoot, stage.dir].filter(Boolean))], dispose,
+      activate: () => {
+        if (closed) throw Error("Reach's private helper folder has closed.");
+        unregister ||= registerWindowsBuildDirectory({ roots: [...protect, nativeDir], dir: stage.dir });
+      },
+      helper: kind => () => helper(kind) };
+  } catch (error) {
+    return await fail(refused(error?.code === "ECHANGED" ? UNCHECKED : `Reach couldn't prepare its folder check (${error.message})`));
   }
-  if (said === "ok") return { ok: true, sid, helper: (kind) => async () => built[kind] };
-  const open = /^open (\d{1,5}) (ace|owner|reparse|limit|missing|error)$/.exec(said);
-  const index = open ? Number(open[1]) : -1;
-  if (!(index >= 0 && index < listed.length)) return refused(UNCHECKED);
-  const code = index >= protect.length && index < protect.length + check.length;
-  const what = index >= protect.length + check.length ? "Reach's helper" : "Reach's folder";
-  // Reach's code may be read by anyone (an installed program is); only a
-  // change by someone else counts there.
-  const problem = code && open[2] === "ace" ? "can be changed by other people on this PC" : PROBLEMS[open[2]];
-  return refused(`${what} ${listed[index]} ${problem}`, code ? "Move it into your user folder, or install Reach with npm." : "");
 }

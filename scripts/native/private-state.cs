@@ -36,6 +36,7 @@ static class PrivateState {
   static readonly Dictionary<string, Entry> Identities = new Dictionary<string, Entry>(StringComparer.Ordinal);
   static readonly Dictionary<string, Entry> Paths = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
   static readonly Stopwatch Clock = Stopwatch.StartNew();
+  static long DescriptorBytes;
   static string Me;
   static int RootIndex;
   static string CurrentPath;
@@ -183,8 +184,12 @@ static class PrivateState {
     return path;
   }
   static string FinalPath(IntPtr handle, string expected) {
-    var buffer = new StringBuilder(32768);
+    var buffer = new StringBuilder(512);
     uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+    if (length >= buffer.Capacity && length < 32768) {
+      buffer = new StringBuilder((int)length + 1);
+      length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+    }
     if (length == 0 || length >= buffer.Capacity) Fail("path", expected);
     string found = buffer.ToString();
     if (!found.StartsWith("\\\\?\\", StringComparison.Ordinal) || found.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase)) Fail("path", expected);
@@ -257,6 +262,8 @@ static class PrivateState {
       if (Identities.ContainsKey(identity)) Fail("changed", path);
       var raw = Security(handle, path);
       byte[] before = Bytes(raw), after = Plan(raw, path, root);
+      DescriptorBytes += before.Length + (after == null ? 0 : after.Length);
+      if (DescriptorBytes > 32 * 1024 * 1024) Fail("limit", path);
       if (after != null && !writable) Fail("access", path);
       if (after != null && !directory) {
         CloseHandle(handle); handle = IntPtr.Zero;

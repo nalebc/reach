@@ -19,7 +19,9 @@ test("actual Windows OWNER RIGHTS uses the validated object owner", {
   skip: enabled ? false : "disposable GitHub-hosted Windows runner only",
   timeout: 300000,
 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-existing-state-"));
+  // Canonicalize the OS-owned fixture base before creating anything. The
+  // native guard deliberately refuses a caller-supplied RUNNER~1 alias.
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "reach-existing-state-"));
   const report = { schema: 1, head: process.env.GITHUB_SHA || null, actualWindows: true, physicalDevice: false, node: process.version,
     production: Object.fromEntries(["server/windows-private-folder.mjs", "scripts/native/private-folder.cs"].map(file => [file, crypto.createHash("sha256").update(readFileSync(file)).digest("hex")])), cases: [] };
   const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");

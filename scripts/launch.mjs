@@ -15,7 +15,6 @@ import {
 } from "../server/tailscale-auth.mjs";
 import { createTailscaledPeerCheck } from "../server/tailscaled-peer.mjs";
 import { ensurePrivateFolders } from "../server/windows-private-folder.mjs";
-import { windowsHelper } from "../server/desktop-native.mjs";
 import {
   describeApproval,
   decideApproval,
@@ -37,7 +36,7 @@ import {
   recordedRouteOwned,
 } from "./persistent-serve.mjs";
 import { keepAwake, stayAwakeMode } from "./stay-awake.mjs";
-import { windowsBinary } from "../server/desktop-native.mjs";
+import { registerWindowsBuildDirectory, windowsBinary } from "../server/desktop-native.mjs";
 import { computerWord } from "../server/computer-word.mjs";
 import { createReach } from "../server/index.mjs";
 import { sweepScreenHelpers } from "../server/screen-stream.mjs";
@@ -73,6 +72,17 @@ const UNANSWERED = "Reach's check of Tailscale's connections kept failing to ans
 const HOUR = 3600000;
 
 export async function launch(options, root) {
+  let privateFolders;
+  try {
+    return await launchRun(options, root, folders => { privateFolders = folders; });
+  } finally {
+    // This also covers preparation failures before createReach exists. On a
+    // normal stop, launchRun has already closed the server and all helpers.
+    await privateFolders?.dispose?.().catch(error => console.warn(`Reach: couldn't remove its private helper folder (${error.code || error.message}).`));
+  }
+}
+
+async function launchRun(options, root, ownPrivateFolders) {
   // Reach's window carries its name on Windows too: the window agents'
   // presets know as Reach's (docs/WINDOWS_AGENT_PARITY.md, Decisions).
   if (process.platform === "win32" && process.stdout.isTTY) process.title = "Reach";
@@ -92,7 +102,9 @@ export async function launch(options, root) {
   };
   const privateDir = stateDir(root);
   const dataDir = process.env.REACH_DATA || path.join(privateDir, "quick");
-  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  // Windows' native preflight atomically creates missing protected roots.
+  // A path-based recursive mkdir here could follow an unchecked junction.
+  if (process.platform !== "win32") fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   // An error nothing caught: said, kept, and Reach exits so ./reach (or the
   // background service) starts it again (server/crash-guard.mjs).
   // Set by ./reach for this run only, not handed on to terminals and agents.
@@ -145,7 +157,8 @@ export async function launch(options, root) {
   // "Reach's folders"), whether or not browser sign-in is set up: Windows
   // ignores 0700. Its keyed route's peer check is built there too. The
   // helpers that act for agents are built only in that folder, once it's
-  // confirmed private, on first use and cached by hash: the sandbox around
+  // confirmed private, on first use from this process's private new stage:
+  // the sandbox around
   // their commands and files (scripts/native/sandbox.cs) and the agent desktop
   // (scripts/native/agent-desktop.cs), so neither owner-token helper can be
   // swapped by another user of the PC. A folder that isn't private turns
@@ -162,14 +175,24 @@ export async function launch(options, root) {
       helpers: keyedDoor ? ["tailscaled-peer"] : [],
     });
     if (folders.ok) {
-      windowsSandboxHelper = options.windowsSandboxHelper || (() => windowsHelper("sandbox", { dir: nativeDir }));
-      windowsDesktopHelper = options.windowsDesktopHelper || (() => windowsHelper("agent-desktop", { dir: nativeDir }));
+      ownPrivateFolders({ dispose: async () => {
+        await peerCheck?.close();
+        await folders.dispose?.();
+      } });
+      folders.activate?.();
+      windowsSandboxHelper = options.windowsSandboxHelper || folders.helper("sandbox");
+      windowsDesktopHelper = options.windowsDesktopHelper || folders.helper("agent-desktop");
       // Guests' live screen: Windows' video helper with the agent desktop's
       // window rules built in, there too, as it hides what agents never see
       // (server/windows-guest-screen.mjs).
-      windowsGuestScreenHelper = options.windowsGuestScreenHelper || (() => windowsHelper("screen-video", { dir: nativeDir }));
-    } else
+      windowsGuestScreenHelper = options.windowsGuestScreenHelper || folders.helper("screen-video");
+    } else {
       windowsHelpersOff = `${folders.problem || "Reach couldn't check who can use its folders on this PC"}, so agents can't use this PC's screen, files or commands yet.${folders.advice ? ` ${folders.advice}` : ""}`;
+      // Owner desktop/process helpers must not fall through to historical
+      // cached executables after a folder refusal either.
+      const unregister = registerWindowsBuildDirectory({ roots: [privateDir, dataDir, nativeDir], refusal: windowsHelpersOff });
+      ownPrivateFolders({ dispose: async () => { unregister(); } });
+    }
   }
   if (preferences) {
     const status = await tailscaleJson(["status", "--json"]);
@@ -270,7 +293,7 @@ export async function launch(options, root) {
     ...(windowsDesktopHelper ? { windowsDesktopHelper } : {}),
     ...(windowsGuestScreenHelper ? { windowsGuestScreenHelper } : {}),
     ...(windowsHelpersOff ? { windowsHelpersOff } : {}),
-    privatePaths: [privateDir],
+    privatePaths: [privateDir, ...(folders?.privatePaths || [])],
     // Logs kept beside Reach's data, trimmed while it runs (server/tidy.mjs).
     tidy: { logFiles: [path.join(privateDir, "setup.log")], logDirs: [path.join(privateDir, "logs")] },
     // Policies live with Reach's state, never inside an installed package.
