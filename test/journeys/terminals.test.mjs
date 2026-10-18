@@ -10,6 +10,29 @@ import { startComputer, phone, skip, word, needsDesktop, macInUse, desktopTurn, 
 // appeared on a tester's laptop, which stand-ins had let pass.
 const screenText = () => document.querySelector(".terminal-screen .xterm-rows")?.innerText || "";
 
+// CDP carries the clipboard text and expected answer as data. Keep them out
+// of generated JavaScript, including the predicates that inspect the paste.
+async function terminalClipboard(page, answer) {
+  const { result, exceptionDetails } = await page.tab.send("Runtime.evaluate", { expression: "globalThis" });
+  assert.equal(exceptionDetails, undefined, "the phone's execution context is available");
+  assert.ok(result.objectId, "the phone's global object is available");
+  try {
+    const written = await page.tab.send("Runtime.callFunctionOn", {
+      objectId: result.objectId,
+      functionDeclaration: `function(command, answer) {
+        this.__reachTerminalClipboard = { command, answer };
+        return this.navigator.clipboard.writeText(command);
+      }`,
+      arguments: [{ value: `echo ${answer}` }, { value: answer }],
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    assert.equal(written.exceptionDetails, undefined, "the phone's clipboard write succeeded");
+  } finally {
+    await page.tab.send("Runtime.releaseObject", { objectId: result.objectId });
+  }
+}
+
 test(`Terminals: a terminal opened from the phone runs on this ${word} and answers what's typed`, { skip, timeout: 240000 }, async (t) => {
   const computer = await startComputer(t);
   const page = await phone(t, computer);
@@ -34,11 +57,11 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   // (once the person lets the browser) and the shell gets it as typed.
   const pasted = marker("pasted");
   await page.grant(["clipboardReadWrite", "clipboardSanitizedWrite"]);
-  await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(`echo ${pasted}`)})`);
+  await terminalClipboard(page, pasted);
   await page.tap(`.terminal-key-row button[aria-label="Paste"]`, "Paste");
-  await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(${JSON.stringify(`echo ${pasted}`)})` }, "the pasted line", 30000);
+  await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(globalThis.__reachTerminalClipboard.command)` }, "the pasted line", 30000);
   await page.key("Enter");
-  await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(${JSON.stringify(pasted)})` }, "the shell's answer to the pasted line", 60000);
+  await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(globalThis.__reachTerminalClipboard.answer)` }, "the shell's answer to the pasted line", 60000);
   await page.shot("terminal-pasted");
 });
 
@@ -74,11 +97,11 @@ test(
     // Pasted from the phone onto the window's line, then sent with Enter.
     const pasted = marker("pasted");
     await page.grant(["clipboardReadWrite", "clipboardSanitizedWrite"]);
-    await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(`echo ${pasted}`)})`);
+    await terminalClipboard(page, pasted);
     await page.tap(`.terminal-key-row button[aria-label="Paste"]`, "Paste");
-    await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(${JSON.stringify(`echo ${pasted}`)})` }, "the pasted line", 30000);
+    await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(globalThis.__reachTerminalClipboard.command)` }, "the pasted line", 30000);
     await page.key("Enter");
-    await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(${JSON.stringify(pasted)})` }, "the window's answer to the pasted line", 60000);
+    await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(globalThis.__reachTerminalClipboard.answer)` }, "the window's answer to the pasted line", 60000);
     assert.equal(await window.open(), true, "still open on the computer");
     // Closed from the phone: asked first, then gone from the list and from
     // the computer.
