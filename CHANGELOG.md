@@ -8,6 +8,17 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Edit text files from Files: Edit in a text or code file's preview opens it in
+  a full-screen editor, and Save writes it back to the computer. Saves send the
+  hash of the version read, so a file changed on the computer meanwhile is never
+  written over; the draft stays to copy. Windows line endings (`\r\n`) are kept.
+  Files over 128 KB, files that aren't UTF-8 text and files with mixed line
+  endings stay view-only and say why. Edit appears only with access that can
+  change files. Unsaved edits ask before closing and come back if the preview
+  closes another way.
+
 ## [0.3.3] — 2026-10-18
 
 Early access: includes the Windows QR and Codex connection fixes prepared for
