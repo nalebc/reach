@@ -58,8 +58,10 @@ test("modeled Windows stop inventory: another fixture's background starter stays
 // native preflight. A genuine Windows run uses production checks unchanged.
 const modeledPrivateFolders = process.platform === "win32" ? "" : `privateFolders: async () => ({ ok: true, helper: () => async () => { throw Error("Windows native helpers unavailable in this modeled host"); } })`;
 
-async function windowsReach(t) {
+async function windowsReach(t, phase = () => {}) {
+  phase("private-install:start");
   const install = await privateWindowsInstall();
+  phase("private-install:finished");
   const dir = fs.mkdtempSync(path.join(install?.work || os.tmpdir(), "reach-as-windows-"));
   const state = path.join(dir, "state");
   fs.mkdirSync(path.join(dir, "share"));
@@ -73,27 +75,38 @@ async function windowsReach(t) {
     `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(path.join(dir, "share"))}], port: 0, ${modeledPrivateFolders} }, ${JSON.stringify(dir)}); console.log("REACH ENDED");\n`,
   );
   const child = spawn(process.execPath, ["--import", AS_WINDOWS, path.join(dir, "scripts", "bootstrap.mjs")], { env, stdio: ["pipe", "pipe", "pipe"] });
+  phase("launch:spawned");
+  child.once("exit", (exitCode, signalCode) => phase("child:exit", { exitCode, signalCode }));
+  child.once("close", (exitCode, signalCode) => phase("child:close", { exitCode, signalCode }));
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
   // "close", not "exit": only then has all it printed arrived here.
   const exited = once(child, "close");
   t.after(async () => {
+    phase("cleanup:start", { exitCode: child.exitCode, signalCode: child.signalCode }, true);
     if (child.exitCode === null && child.signalCode === null) {
+      phase("cleanup-kill:start", {}, true);
       child.kill("SIGKILL");
+      phase("cleanup-close:start", {}, true);
       await exited;
+      phase("cleanup-close:finished", { exitCode: child.exitCode, signalCode: child.signalCode }, true);
     }
+    phase("cleanup-remove:start", {}, true);
     fs.rmSync(dir, { recursive: true, force: true });
+    phase("cleanup-remove:finished", {}, true);
   });
   const statusFile = path.join(state, "host-status.json");
   // Ready once it both noted itself and printed its pairing code. The file
   // and the pipe are separate channels: the file can be seen before the
   // printed lines arrive here (macOS), so wait for the line we assert too.
   const ready = async () => {
+    phase("launch-ready:start");
     for (const until = Date.now() + 20000; !fs.existsSync(statusFile) || !/Pairing code: \d{4} \d{4}/.test(output); ) {
       if (child.exitCode !== null || Date.now() > until) throw Error(`Reach did not start:\n${output}`);
       await new Promise((r) => setTimeout(r, 50));
     }
+    phase("launch-ready:finished");
   };
   return { dir, state, env, child, exited, statusFile, ready, packageRoot: install?.root || process.cwd(), output: () => output };
 }
@@ -106,17 +119,28 @@ const status = (env, packageRoot) =>
   );
 
 test("Windows, wired: status names the running Reach; stop asks it through its file and it stops itself", { timeout: 60000 }, async (t) => {
-  const reach = await windowsReach(t);
+  // Bounded phase names/times only: no paths, account data or pairing output.
+  // Keep the last awaited phase on timeout as well as on normal completion.
+  const started = performance.now();
+  let lastPhase = "start", inventoryCalls = 0;
+  const phase = (name, details = {}, duringCleanup = false) => {
+    lastPhase = name;
+    if (duringCleanup || !t.signal.aborted) t.diagnostic(JSON.stringify({ wiredPhase: name, elapsedMs: Math.round(performance.now() - started), ...details }));
+  };
+  t.after(() => t.diagnostic(JSON.stringify({ wiredPhase: "cleanup", lastPhase, inventoryCalls, elapsedMs: Math.round(performance.now() - started) })));
+  const reach = await windowsReach(t, (name, ...args) => phase(`first:${name}`, ...args));
   await reach.ready();
   // A Windows Reach approves phones with a pairing code (T23).
   assert.match(reach.output(), /Pairing code: \d{4} \d{4}/);
   const host = JSON.parse(fs.readFileSync(reach.statusFile, "utf8"));
   assert.equal(host.pid, reach.child.pid);
   assert.ok(Number.isFinite(host.startedAt), "it says when it started");
-  const other = process.platform === "win32" ? await windowsReach(t) : null;
+  const other = process.platform === "win32" ? await windowsReach(t, (name, ...args) => phase(`second:${name}`, ...args)) : null;
   if (other) await other.ready();
   // `.\reach.cmd status`, through the real launcher: the Mac's lines.
+  phase("status-before:start");
   const said = await status(reach.env, reach.packageRoot);
+  phase("status-before:finished");
   assert.equal(UNREAD.test(said), process.platform !== "win32", said);
   // A real Windows runner runs two test files at once: another test's Reach
   // may be listed too; this one's lines are among them.
@@ -131,6 +155,13 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   const killed = [];
   const { windowsReaches } = await import("../scripts/instances.mjs");
   const { windowsProcesses } = await import("../server/windows-processes.mjs");
+  const list = async () => {
+    const call = ++inventoryCalls;
+    if (call <= 4) phase(`inventory-${call}:start`);
+    try { return await windowsProcesses({ nativeDir: path.join(reach.state, "native") }); }
+    finally { if (call <= 4) phase(`inventory-${call}:finished`); }
+  };
+  phase("stop:start");
   const result = await stopReach(reach.dir, {
     platform: "win32",
     yes: true,
@@ -140,25 +171,31 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
     launchctl: () => "",
     windows: {
       task: foregroundTask,
+      list,
       taskkill: (pid) => killed.push(pid),
       // What it left running may be ended; never the Reach itself.
       end: (pid) => pid === reach.child.pid && killed.push(pid),
       // This test's Reach only, never another on this computer.
       reaches: async () => {
-        const found = await windowsReaches({ root: reach.dir, state: reach.state, list: () => windowsProcesses({ nativeDir: path.join(reach.state, "native") }) });
+        const found = await windowsReaches({ root: reach.dir, state: reach.state, list });
         return scopeWindowsStop(found, reach.child.pid);
       },
     },
   });
-  const [code] = await reach.exited;
+  phase("stop:finished");
   assert.equal(result.stopped, 1);
+  phase("child-close:start");
+  const [code] = await reach.exited;
+  phase("child-close:finished");
   assert.deepEqual(killed, [], "it stopped itself; nothing was ended");
   assert.equal(code, 0, "stopped as Ctrl+C stops it");
   assert.match(reach.output(), /REACH ENDED/);
   assert.equal(fs.existsSync(reach.statusFile), false, "its status goes with it");
   assert.equal(fs.existsSync(path.join(reach.state, "stop-request.json")), false);
   // And now it isn't running, as status says.
+  phase("status-after:start");
   const endedStatus = await status(reach.env, reach.packageRoot);
+  phase("status-after:finished");
   if (process.platform === "win32") {
     // Status is PC-wide. Concurrent lifecycle tests may still have their
     // own instances; this command must stop only its fixture, as above.
