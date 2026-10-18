@@ -9,8 +9,60 @@ import { assertUnchanged, windowsHelper } from "../server/desktop-native.mjs";
 import { accountSid } from "../server/windows-private-folder.mjs";
 import { windowsHelperEnv, systemRoot } from "../server/windows-helper-launch.mjs";
 import { COLD_START_MS, cleanPowerShellEnv, powershellFile } from "../server/powershell.mjs";
+import { createWindowsPrivateStage } from "../server/windows-private-stage.mjs";
+import { openWindowsCodexSocket } from "../server/agent-sessions/windows-codex-socket.mjs";
 
 const exec = promisify(execFile);
+
+test("actual Windows Codex preparation creates absent Reach state roots before refusing a missing endpoint", {
+  skip: !(process.platform === "win32" && process.env.CI === "true" && process.env.GITHUB_ACTIONS === "true"
+    && process.env.RUNNER_ENVIRONMENT === "github-hosted") && "disposable GitHub-hosted Windows runner only",
+  timeout:120000,
+},async t => {
+  const system=path.win32.join(systemRoot(),"System32"), powershell=path.win32.join(system,"WindowsPowerShell","v1.0","powershell.exe");
+  const env={...process.env};cleanPowerShellEnv(env);
+  const run=(file,args,options={})=>exec(file,args,{windowsHide:true,timeout:COLD_START_MS,maxBuffer:65536,...options});
+  const profile=(await run(powershell,["-NoProfile","-NonInteractive","-Command","[Console]::Out.WriteLine([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))"],{env})).stdout.trim();
+  assert.ok(path.win32.isAbsolute(profile) && !/~\d/.test(profile),"use the actual canonical long profile path");
+  const root=await fs.mkdtemp(path.join(profile,"rcf-")), dataDir=path.join(root,"reach-state"), nested=path.join(dataDir,"codex-socket-native"), endpointDir=path.join(root,"endpoint");
+  let checkerStage;
+  const report={schema:1,head:process.env.GITHUB_SHA||null,node:process.version,arch:process.arch,release:os.release(),actualWindows:true,physicalDevice:false,
+    scope:"Fresh production Codex helper preparation against disposable absent Reach state; missing endpoint only, no real Codex or owner .codex access",phase:"setup"};
+  t.after(async()=>{
+    try {
+      if(checkerStage)await fs.rm(checkerStage.dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+      await fs.rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+    } finally {
+      await fs.mkdir("reports",{recursive:true});await fs.writeFile("reports/windows-codex-fresh-state.json",JSON.stringify(report,null,2));
+    }
+  });
+  const sid=accountSid((await run(path.win32.join(system,"whoami.exe"),["/user","/fo","csv","/nh"])).stdout);assert.match(sid,/^S-1-5-21-/u);
+  await fs.mkdir(endpointDir);
+  const setPrivate=String.raw`$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+    $acl=[Security.AccessControl.DirectorySecurity]::new(); $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false);
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow));
+    [IO.Directory]::SetAccessControl($env:REACH_TEST_CODEX_ENDPOINT,$acl)`;
+  await run(powershell,["-NoProfile","-NonInteractive","-Command",setPrivate],{env:{...env,REACH_TEST_CODEX_ENDPOINT:endpointDir}});
+  const before=(await run(path.win32.join(system,"icacls.exe"),[endpointDir])).stdout;
+  await assert.rejects(fs.access(dataDir),{code:"ENOENT"});await assert.rejects(fs.access(nested),{code:"ENOENT"});
+  report.phase="production-prepare";
+  await assert.rejects(openWindowsCodexSocket(path.join(endpointDir,"s"),{dataDir}),error=>{
+    report.preparationResult={code:error.code,status:error.status,...(error.prepareCode?{prepareCode:error.prepareCode}:{}),...(error.prepareStatus?{prepareStatus:error.prepareStatus}:{}),...(error.stage?{stage:error.stage}:{})};
+    assert.equal(error.code,"CODEX_SOCKET_REFUSED","real preparation must succeed before the intentionally absent endpoint is refused");
+    assert.equal(error.status,503);return true;
+  });
+  report.phase="independent-check";
+  assert.ok((await fs.lstat(dataDir)).isDirectory());assert.ok((await fs.lstat(nested)).isDirectory());
+  checkerStage=await createWindowsPrivateStage({sid});
+  const checker=await windowsHelper("private-folder",{dir:checkerStage.dir,fresh:true});assertUnchanged(checker.file,checker.sha256);
+  assert.equal((await run(checker.file,[sid,"state",dataDir,nested])).stdout.trim(),"ok","an independently fresh checker accepts both newly created state roots");
+  const after=(await run(path.win32.join(system,"icacls.exe"),[endpointDir])).stdout;
+  assert.equal(after,before,"Codex endpoint ACL is inspected read-only, never normalized");
+  assert.deepEqual(await fs.readdir(endpointDir),[],"preparation creates no endpoint or Codex data");
+  report.phase="passed";report.createdStateRoots=2;report.endpointAclUnchanged=true;
+  // The default helper stays private for this process. Do not enumerate or
+  // delete unknown sibling stages just to tidy a regression fixture.
+});
 // These are actual Windows filesystem/security API checks, without injected
 // ACL answers or a fabricated platform. They are not actual Codex peer or
 // browser/device validation. Other operating systems explicitly skip them.
