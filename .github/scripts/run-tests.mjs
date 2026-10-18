@@ -23,6 +23,9 @@ export const suites = {
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
+    // The app-in-front read beside the input queue, on the scanner, and a
+    // phone's new control connection taking over from its old one (Oct 18).
+    "desktop-context-scanner", "desktop-control-takeover",
     "windows-desktop-input-native", "windows-desktop-input",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
@@ -40,6 +43,9 @@ export const suites = {
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    // The host guard refreshing ahead, and live connections held through a
+    // lapse of Tailscale's word instead of closed (Oct 18).
+    "browser-host-guard", "host-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.

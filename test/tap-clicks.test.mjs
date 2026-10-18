@@ -145,3 +145,53 @@ test("the shared input protocol carries a single physical click for each half of
       /Invalid click sequence/,
     );
 });
+test("a double-tap's second click may carry its pairing tolerance, validated like a touch's and passed on whole", async () => {
+  const second = { type: "click", ...point, button: "left", count: 1, clickId: 7, clickState: 2 };
+  assert.deepEqual(
+    inputAction({ ...second, pair: { x: 0.02, y: 0.1, extra: true } }),
+    { ...second, pair: { x: 0.02, y: 0.1 } },
+    "only x and y go on to the helper",
+  );
+  assert.equal(inputAction(second).pair, undefined, "none asked, none sent");
+  for (const pair of [null, 0, {}, { x: 0, y: 0.02 }, { x: 0.02, y: -0.01 }, { x: 0.11, y: 0.02 },
+    { x: 0.02, y: Infinity }, { x: "0.02", y: 0.02 }, { x: NaN, y: 0.02 }])
+    assert.throws(() => inputAction({ ...second, pair }), /Invalid double-tap tolerance/, JSON.stringify(pair));
+  // Only on the second click of an explicit left double-tap.
+  for (const changes of [
+    { clickState: 1 },
+    { clickId: undefined, clickState: undefined },
+    { type: "down", clickId: undefined, clickState: undefined },
+    { button: "right", clickId: undefined, clickState: undefined },
+  ])
+    assert.throws(
+      () => inputAction({ ...second, ...changes, pair: { x: 0.02, y: 0.02 } }),
+      /Invalid (double-tap tolerance|click sequence)/,
+      JSON.stringify(changes),
+    );
+  assert.throws(() => inputAction({ ...second, clickState: 1, pair: { x: 0.02, y: 0.02 } }), /Invalid double-tap tolerance/);
+  // The control connection hands it to the computer's helper unchanged.
+  const { EventEmitter } = await import("node:events");
+  const { desktopConnection } = await import("../server/desktop-connection.mjs");
+  const { ScreenControl } = await import("../server/screen.mjs");
+  const owner = { id: "owner", scopes: ["admin", "screen"] };
+  const control = new ScreenControl();
+  control.acquire(owner, true);
+  const helped = [];
+  const ws = Object.assign(new EventEmitter(), {
+    readyState: 1, sent: [],
+    send(m) { this.sent.push(JSON.parse(m)); },
+    close() { this.readyState = 2; },
+  });
+  desktopConnection(ws, {
+    config: { screen: true }, auth: { verify: () => owner }, control, scanner: null,
+    create: async () => ({ async send(action) { helped.push(action); return { ok: true, clickState: 2 }; }, stop() {} }),
+  });
+  const message = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
+  message({ type: "auth", token: "T", display: "primary" });
+  for (let i = 0; i < 200 && !ws.sent.some((m) => m.type === "ready"); i++) await new Promise((r) => setTimeout(r, 5));
+  message({ type: "input", id: 1, action: { ...second, pair: { x: 0.03, y: 0.05 } } });
+  for (let i = 0; i < 200 && !ws.sent.some((m) => m.type === "ack"); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(helped.at(-1), { ...second, pair: { x: 0.03, y: 0.05 } });
+  ws.readyState = 3;
+  ws.emit("close", 1000);
+});

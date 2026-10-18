@@ -119,7 +119,8 @@ import { createNotificationActions, notificationPush, admissionNotification, pus
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
 import { DesktopInput, desktopBinary, desktopDisplays, windowsBinary } from "./desktop-native.mjs";
 import { prepareOwners } from "./windows-owners.mjs";
-import { desktopConnection } from "./desktop-connection.mjs";
+import { desktopConnection, takeOver } from "./desktop-connection.mjs";
+import { identityHold, settled } from "./identity-hold.mjs";
 import { ScreenBroadcast, createScreenSource, hostAppName, sweepScreenHelpers } from "./screen-stream.mjs";
 import { watchInterface } from "./live-interface.mjs";
 import { restartRequests } from "./restart-requests.mjs";
@@ -447,8 +448,26 @@ export async function createReach(overrides = {}) {
       return `Checking this ${computerWord(process.platform)}'s connection. Reconnecting…`;
     return "";
   };
+  // How long a live connection is held for Tailscale's word (transientDenial)
+  // before it ends, retryable (server/identity-hold.mjs).
+  const holdMs = overrides.identityHoldMs ?? 5000;
+  // Tailscale's word again for a held connection: the phone's (its whois),
+  // and this computer's while an agent has app access (a lookup already on
+  // its way is shared). It refuses nothing itself: the connection's own
+  // checks decide, on the fresh answer.
+  const recheck = async (req) => {
+    if (!(req.reachIdentity?.validUntil > Date.now())) {
+      const identity = await resolveIdentity(req);
+      if (identity) req.reachIdentity = identity;
+    }
+    if (browserHostGuard.isActive()) await browserHostGuard.refresh();
+  };
+  const holdFor = (req) => identityHold({ within: holdMs, recheck: () => recheck(req) });
   // Refresh long-running requests/sockets; cached CLI lookups are shared by node.
-  const trackIdentity = (req, end) => {
+  // holds: a live connection that holds itself while Tailscale's word on
+  // this computer is late (its own checks, transientDenial): not ended for
+  // that here; a refusal on a fresh answer still ends it.
+  const trackIdentity = (req, end, { holds = false } = {}) => {
     if (!config.tailscaleOwner || funnelRequests.has(req)) return () => {};
     let busy = false;
     const timer = setInterval(async () => {
@@ -458,10 +477,15 @@ export async function createReach(overrides = {}) {
         req.reachIdentity = await resolveIdentity(req);
         if (!req.reachIdentity) end();
         if (browserHostGuard.isActive()) {
-          await browserHostGuard.refresh();
+          try {
+            await browserHostGuard.refresh();
+          } catch (error) {
+            if (!holds) throw error;
+          }
           const token = req.headers.authorization?.replace(/^Bearer /, "") || req.reachCredential;
           // A live connection not signed in yet is checked when it is.
-          if (token || !req.headers.upgrade) browserHostGuard.assertRequest(req, verify(req, token));
+          if ((token || !req.headers.upgrade) && !(holds && !browserHostGuard.fresh()))
+            browserHostGuard.assertRequest(req, verify(req, token));
         }
       } catch {
         req.reachIdentity = null;
@@ -5345,7 +5369,10 @@ export async function createReach(overrides = {}) {
   };
   server.on("upgrade", upgrade);
   wss.on("connection", (ws, req) => {
-    const cleanupIdentity = trackIdentity(req, () => ws.terminate());
+    // Every live connection but presence holds itself through a lapse.
+    const cleanupIdentity = trackIdentity(req, () => ws.terminate(), {
+      holds: req.url !== "/ws/presence",
+    });
     ws.once("close", cleanupIdentity);
     if (req.url === "/ws/presence") {
       presenceConnection(ws, {
@@ -5487,7 +5514,9 @@ export async function createReach(overrides = {}) {
         auth: {
           verify: (token) => verify(req, token),
           interruption: (token) => transientDenial(req, token),
+          recheck: () => recheck(req),
         },
+        holdFor: holdMs,
         control: screenControl,
         create: overrides.desktopInputFactory,
         platform: overrides.platform || process.platform,
@@ -5499,22 +5528,8 @@ export async function createReach(overrides = {}) {
           // The same rule as watching it: every app on it must be theirs.
           !appThreads.ownsDisplay(display) ||
           displayAppsAllowed(client, display),
-        register: (id, socket) => {
-          // One control connection per phone; one on its way out (closed
-          // here to reconnect, or by the phone for the same reason) makes
-          // room for the one taking its place.
-          const current = inputConnections.get(id);
-          // A parked one (control off) gives way to the new one.
-          if (current && current.readyState === WebSocket.OPEN && !current.parked)
-            // Retryable: a reconnect can arrive a moment before the stalled
-            // connection it replaces is noticed here (3 s without a word).
-            throw Object.assign(
-              fail(409, "This device already has a control connection. Reconnecting…"),
-              { retryable: true },
-            );
-          current?.endControl?.("Desktop control reconnecting…", true);
-          inputConnections.set(id, socket);
-        },
+        // One control connection per phone: a new one takes over.
+        register: (id, socket) => takeOver(inputConnections, id, socket),
         unregister: (id, socket) => {
           if (inputConnections.get(id) === socket) {
             inputConnections.delete(id);
@@ -5564,18 +5579,28 @@ export async function createReach(overrides = {}) {
           );
         }
       };
+      const hold = holdFor(req);
+      // true: send; null: held (Tailscale's word late), no frame goes out
+      // until a check passes again; false: ended (rejected).
       const authorized = () => {
+        if (ws.readyState !== WebSocket.OPEN) return false;
         const client = credential && verify(req, credential);
         if (!client) {
           const interruption = transientDenial(req, credential);
           if (interruption) {
-            console.warn(`Reach: screen stream reconnecting: ${interruption}`);
+            if (hold.hold(interruption)) return null;
+            // One line per lapse, not per frame.
+            console.warn(`Reach: screen stream reconnecting: ${interruption} (not confirmed in ${Math.round(hold.lapse.ms / 100) / 10} s)`);
+            hold.clear();
             reject(interruption, 503);
             return false;
           }
           reject("Screen access expired or was revoked.", 401);
           return false;
         }
+        const lapse = hold.clear();
+        if (lapse)
+          console.warn(`Reach: screen stream held ${Math.round(lapse.ms / 100) / 10} s, then went on: ${lapse.why}`);
         const appWindowOk =
           ws.appThread !== undefined &&
           appAllowed(client, threadApp(ws.appThread));
@@ -5606,7 +5631,11 @@ export async function createReach(overrides = {}) {
             if (message.type !== "auth" || typeof message.token !== "string")
               throw fail(401, "Authenticate first.");
             const client = verify(req, message.token);
-            if (!client) throw fail(401, "Pair this device again.");
+            // Tailscale's word late as it opens: tried again, not refused.
+            if (!client) {
+              const interruption = transientDenial(req, message.token);
+              throw interruption ? fail(503, interruption) : fail(401, "Pair this device again.");
+            }
             // A whole display needs screen access; one app's window needs
             // that app (an invitation can be limited to chosen apps).
             const appWindow =
@@ -5667,7 +5696,9 @@ export async function createReach(overrides = {}) {
               );
             }
           } else {
-            if (!authorized()) return;
+            // Held, its acks still count (they free frames, which go out
+            // only once it's confirmed).
+            if (authorized() === false) return;
             // Why the phone's video changed (decoder trouble): for the log.
             if (message.type === "diagnostic") {
               const now = Date.now();
@@ -5736,13 +5767,20 @@ export async function createReach(overrides = {}) {
         if (!config.screen) return "Turn on screen viewing first.";
         return "";
       };
+      const hold = holdFor(req);
+      // true: play; null: held (Tailscale's word late), nothing plays until
+      // a check passes again; false: ended (rejected).
       const authorized = () => {
+        if (ws.readyState !== WebSocket.OPEN) return false;
         const client = credential && verify(req, credential);
         if (!client) {
           const interruption = transientDenial(req, credential);
+          if (interruption && hold.hold(interruption)) return null;
+          hold.clear();
           reject(interruption || "Sound access expired or was revoked.", interruption ? 503 : 401);
           return false;
         }
+        hold.clear();
         const refused = refusal(client);
         if (refused) {
           reject(refused);
@@ -5769,7 +5807,11 @@ export async function createReach(overrides = {}) {
             if (message.type !== "auth" || typeof message.token !== "string")
               throw fail(401, "Authenticate first.");
             const client = verify(req, message.token);
-            if (!client) throw fail(401, "Pair this device again.");
+            // Tailscale's word late as it opens: tried again, not refused.
+            if (!client) {
+              const interruption = transientDenial(req, message.token);
+              throw interruption ? fail(503, interruption) : fail(401, "Pair this device again.");
+            }
             const refused = refusal(client);
             if (refused) throw fail(403, refused);
             notPaused();
@@ -5784,9 +5826,11 @@ export async function createReach(overrides = {}) {
             ws.clientId = client.id;
             expires(client);
             clearTimeout(deadline);
-            if (authorized()) screenSound.add(ws, authorized);
+            if ((await settled(authorized, () => ws.readyState === WebSocket.OPEN)) === true)
+              screenSound.add(ws, authorized);
           } else {
-            if (!authorized()) return;
+            // Held, its acks still count.
+            if (authorized() === false) return;
             if (message.type !== "ack") throw fail(400, "Unsupported sound message.");
             screenSound.ack(ws, message.seq);
           }
@@ -5805,6 +5849,24 @@ export async function createReach(overrides = {}) {
 
     let session, listener, credential;
     let authorizedAt = 0;
+    const hold = holdFor(req);
+    // What a held terminal had to show, and what its phone typed meanwhile:
+    // sent and written in order once a check passes, never before; dropped
+    // with the connection if none does (the phone's reconnect gets the
+    // screen as it is).
+    let heldOutput = [],
+      heldBytes = 0,
+      heldInput = [];
+    const resume = () => {
+      const output = heldOutput,
+        input = heldInput;
+      heldOutput = [];
+      heldBytes = 0;
+      heldInput = [];
+      for (const data of output) send(data);
+      for (const buffer of input) handle(buffer);
+    };
+    // true: go on; null: held (Tailscale's word late); false: closed.
     const stillAuthorized = () => {
       if (!credential) return true;
       // The credential file is re-read at most once a second.
@@ -5817,11 +5879,16 @@ export async function createReach(overrides = {}) {
           client.agentRoots.some((root) => within(root, session.cwd)))
       ) {
         authorizedAt = Date.now();
+        if (hold.clear()) resume();
         return true;
       }
       // The phone's terminal reconnects on any close but 4001 (Sessions.tsx).
-      if (!client && transientDenial(req, credential))
-        ws.close(1012, "Checking the connection");
+      const interruption = !client && transientDenial(req, credential);
+      if (interruption && hold.hold(interruption)) return null;
+      hold.clear();
+      heldOutput = [];
+      heldInput = [];
+      if (interruption) ws.close(1012, "Checking the connection");
       else ws.close(4001, "Access revoked or expired");
       return false;
     };
@@ -5840,7 +5907,16 @@ export async function createReach(overrides = {}) {
     liveness.unref();
     const deadline = setTimeout(() => ws.terminate(), 5000);
     const send = (data) => {
-      if (ws.readyState === WebSocket.OPEN && stillAuthorized()) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const allowed = stillAuthorized();
+      if (allowed === null) {
+        // Held: kept, up to what a phone catches up on.
+        heldBytes += JSON.stringify(data).length;
+        if (heldBytes > 2 * 1024 * 1024) ws.close(4008, "Reconnect to catch up");
+        else heldOutput.push(data);
+        return;
+      }
+      if (allowed) {
         if (ws.bufferedAmount > 2 * 1024 * 1024) {
           ws.close(4008, "Reconnect to catch up");
           return;
@@ -5849,13 +5925,28 @@ export async function createReach(overrides = {}) {
       }
     };
     ws.on("message", (buffer) => {
+      const allowed = stillAuthorized();
+      if (allowed === null) {
+        // Held: written once it's confirmed, in order.
+        if (heldInput.length >= 256) ws.close(4008, "Reconnect to catch up");
+        else heldInput.push(buffer);
+        return;
+      }
+      if (allowed) handle(buffer);
+    });
+    const handle = (buffer) => {
       try {
-        if (!stillAuthorized()) return;
         const msg = JSON.parse(buffer.toString());
         if (!session) {
           if (msg.type !== "auth") throw fail(401, "Authenticate first.");
           const client = verify(req, msg.token);
-          if (!client) throw fail(401, "Pair this device again.");
+          // Tailscale's word late as it opens: tried again, not refused.
+          if (!client) {
+            const interruption = transientDenial(req, msg.token);
+            throw interruption
+              ? Object.assign(fail(503, interruption), { retryable: true })
+              : fail(401, "Pair this device again.");
+          }
           if (!client.scopes?.includes("terminal"))
             throw fail(403, "Terminal access is not granted.");
           ws.clientId = client.id;
@@ -5893,9 +5984,10 @@ export async function createReach(overrides = {}) {
           session.proc.resize(msg.cols, msg.rows);
       } catch (e) {
         send({ type: "error", error: e.message });
-        ws.close(4001, "Invalid request");
+        if (e.retryable) ws.close(1012, "Checking the connection");
+        else ws.close(4001, "Invalid request");
       }
-    });
+    };
     ws.on("close", () => {
       clearTimeout(deadline);
       clearInterval(expiryCheck);
@@ -6230,6 +6322,7 @@ export async function createReach(overrides = {}) {
       remoteScreens.stop("Reach is shutting down.", true);
       appScreens.stop("Reach is shutting down.", true);
       screenSound.stop("Reach is shutting down.", true);
+      browserHostGuard.stop?.();
       // Requests still running (a phone's download, a long poll) get a
       // moment to finish, then their connections are cut: quitting never
       // waits on a phone.
