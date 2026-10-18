@@ -206,9 +206,7 @@ export class RemoteScreenHub {
     }
   }
   ack(ws, id, keyframe = false) {
-    const group = this.viewers.get(ws);
-    group?.ack?.(ws, id);
-    if (keyframe && group?.viewers.get(ws)) group.viewers.get(ws).key = true;
+    this.viewers.get(ws)?.ack?.(ws, id, keyframe);
   }
   remove(ws) {
     this.viewers.get(ws)?.remove?.(ws);
@@ -260,6 +258,11 @@ export class RemoteBroadcast {
       authorize,
       pending: new Map(),
       key: true,
+      // The last frame this viewer got, and the last keyframe: a viewer
+      // that missed frames the others got needs a keyframe; one that missed
+      // none (alone, waiting on its acks) goes on with the next delta.
+      last: 0,
+      keySent: 0,
       rtt: 0,
       blocked: false,
       bytes: 0,
@@ -268,7 +271,7 @@ export class RemoteBroadcast {
     });
     if (this.viewers.size === 1) void this.start();
   }
-  ack(ws, id) {
+  ack(ws, id, keyframe = false) {
     const viewer = this.viewers.get(ws);
     if (!viewer || !Number.isInteger(id) || !viewer.pending.has(id))
       throw fail(400, "Invalid frame acknowledgment.");
@@ -276,6 +279,10 @@ export class RemoteBroadcast {
     viewer.rtt = viewer.rtt ? viewer.rtt * 0.8 + elapsed * 0.2 : elapsed;
     for (const seq of viewer.pending.keys())
       if (seq <= id) viewer.pending.delete(seq);
+    // A decoder starting over asks for a keyframe with every delta already
+    // on its way (src/useRemoteScreen.ts): a keyframe sent after one of
+    // them answers it, so only a frame after the last keyframe asks again.
+    if (keyframe && id > viewer.keySent) viewer.key = true;
   }
   remove(ws) {
     // Not (or no longer) watching here: nothing to stop, and an empty
@@ -320,11 +327,14 @@ export class RemoteBroadcast {
               this.fail(ws, "Screen viewer stopped responding.");
               continue;
             }
+            // Waiting on its acks: skipped this frame. Alone, nothing was
+            // sent without it and the next delta follows on; frames the
+            // others got meanwhile are why it needs a keyframe below.
             if (v.pending.size >= 6 || ws.bufferedAmount > 256 * 1024) {
-              v.key = true;
               v.blocked = true;
               continue;
             }
+            if (v.last < this.sequence) v.key = true;
             ready.push([ws, v]);
             key ||= v.key;
           }
@@ -386,7 +396,11 @@ export class RemoteBroadcast {
                 if (!v.authorize() || ws.readyState !== 1) continue;
                 // A viewer waiting for a keyframe keeps asking until one went
                 // out: a delta frame can't start its decoder.
-                if (keyframe) v.key = false;
+                if (keyframe) {
+                  v.key = false;
+                  v.keySent = seq;
+                }
+                v.last = seq;
                 v.pending.set(seq, Date.now());
                 ws.send(packet);
                 v.bytes += packet.length;

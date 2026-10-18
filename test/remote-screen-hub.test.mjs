@@ -68,6 +68,102 @@ test("a frame clears a viewer's keyframe request only when it was a keyframe", a
   assert.deepEqual(commands.slice(0, 3), ["key", "key", "frame"]);
 });
 
+// A source answering one frame at a time, as the test says: what the group
+// asked for ("key" or "frame") and the frame it gets back.
+const stepped = () => {
+  const asks = [];
+  const group = new RemoteBroadcast(
+    async () => () => ({ next: (c) => new Promise((resolve) => asks.push({ c, resolve })), stop() {} }),
+    { fps: 60, format: "h264", quality: "high", bitrate: 1e6 },
+  );
+  const frame = async (key = false) => {
+    await until(() => asks.length > 0);
+    const ask = asks.shift();
+    ask.resolve(video(key));
+    // Sent once the group's tick goes on past the answer.
+    await new Promise((r) => setTimeout(r, 0));
+    return ask.c;
+  };
+  return { group, asks, frame };
+};
+const seqs = (ws) => binary(ws).map((b) => b.readUInt32BE(0));
+
+test("a lone viewer waiting on its acks goes on with the next delta: nothing was sent without it", async () => {
+  const { group, asks, frame } = stepped();
+  const ws = socket();
+  group.add(ws, () => true);
+  assert.equal(await frame(true), "key");
+  for (let n = 0; n < 5; n++) assert.equal(await frame(), "frame");
+  // Six frames unanswered: it waits, and the encoder isn't asked anything.
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(asks.length, 0);
+  assert.equal(group.viewers.get(ws).key, false, "a stall alone asks for no keyframe");
+  group.ack(ws, 6);
+  assert.equal(await frame(), "frame", "a 120 ms round trip no longer costs a keyframe per stall");
+  group.remove(ws);
+});
+
+test("a viewer skipped while another got frames starts again from a keyframe", async () => {
+  const { group, frame } = stepped();
+  const slow = socket(), fast = socket();
+  group.add(slow, () => true);
+  group.add(fast, () => true);
+  assert.equal(await frame(true), "key");
+  group.ack(fast, 1);
+  for (let n = 2; n <= 6; n++) {
+    assert.equal(await frame(), "frame");
+    group.ack(fast, n);
+  }
+  // The slow one has six waiting: the fast one alone gets frame 7.
+  assert.equal(await frame(), "frame");
+  assert.deepEqual(seqs(slow), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(seqs(fast), [1, 2, 3, 4, 5, 6, 7]);
+  group.ack(fast, 7);
+  group.ack(slow, 6);
+  // It missed frame 7: a delta after it couldn't be decoded.
+  assert.equal(await frame(true), "key");
+  assert.deepEqual(seqs(slow), [1, 2, 3, 4, 5, 6, 8]);
+  group.remove(slow);
+  group.remove(fast);
+});
+
+test("keyframe requests for frames sent before the last keyframe don't ask for another", async () => {
+  const { group, frame } = stepped();
+  const ws = socket();
+  group.add(ws, () => true);
+  assert.equal(await frame(true), "key");
+  for (let n = 0; n < 3; n++) assert.equal(await frame(), "frame");
+  // The phone's decoder restarted at frame 2: it asks with each delta
+  // already on its way (src/useRemoteScreen.ts acks them keyframe: true).
+  group.ack(ws, 2, true);
+  assert.equal(await frame(true), "key");
+  group.ack(ws, 3, true);
+  group.ack(ws, 4, true);
+  assert.equal(group.viewers.get(ws).key, false, "frames 3 and 4 went out before keyframe 5");
+  assert.equal(await frame(), "frame");
+  // A frame after the keyframe asking again is a new request.
+  group.ack(ws, 6, true);
+  assert.equal(await frame(true), "key");
+  // Through the hub too (its ack goes to the group).
+  const hub = new RemoteScreenHub({}, async () => () => ({ next: async () => video(false), stop() {} }));
+  const viewer = socket();
+  await hub.add(viewer, () => true, { display: "1", format: "h264" });
+  await until(() => binary(viewer).length >= 2);
+  const [joined] = hub.groups.values();
+  const v = joined.viewers.get(viewer);
+  // As if its last frame so far had been a keyframe.
+  const sent = seqs(viewer).at(-1);
+  v.key = false;
+  v.keySent = sent;
+  hub.ack(viewer, seqs(viewer)[0], true);
+  assert.equal(v.key, false);
+  await until(() => seqs(viewer).at(-1) > sent);
+  hub.ack(viewer, seqs(viewer).at(-1), true);
+  assert.equal(v.key, true);
+  hub.remove(viewer);
+  group.remove(ws);
+});
+
 test("a stale group never frees the key a newer group holds, and empties once", async () => {
   let stops = 0;
   const hub = new RemoteScreenHub({}, async () => () => ({
