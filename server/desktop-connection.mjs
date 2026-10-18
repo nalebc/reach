@@ -108,6 +108,19 @@ export function desktopConnection(
   // Actions that let go of something held. (A key press lets go of its own
   // modifiers in the same helper call, so there's no separate key-up.)
   const releases = new Set(["up", "release"]);
+  // Typing: each piece follows the one before it (a type-edit's deletes
+  // count what came before). One dropped late, the rest of that typing
+  // drops too, until the phone does something else (a tap, a scroll, a
+  // heartbeat once it has every answer): "password" never arrives as
+  // "sword", and the computer's text never drifts from the phone's.
+  const typing = new Set(["text", "type-edit", "key"]);
+  const typingLate =
+    "Typing was too slow to reach the computer. Nothing after it was typed — type it again.";
+  let typingLost = false,
+    // A button down dropped late: its drag's moves and its up go with it
+    // (nothing went down to let go of). Ups of buttons that went down
+    // always run.
+    downLost = null;
   const stopInput = (input) => {
     if (!input) return;
     // Retirement is independent of the grant: even a revoked/expired phone
@@ -144,6 +157,8 @@ export function desktopConnection(
     if (closed || !helper || starting) return close();
     parked = ws.parked = true;
     epoch++;
+    typingLost = false;
+    downLost = null;
     clearTimeout(scanTimer);
     for (const item of queue) item.reject?.(fail(403, "Desktop control ended."));
     queue.length = 0;
@@ -173,6 +188,8 @@ export function desktopConnection(
     }
     lastId = 0;
     doneId = 0;
+    typingLost = false;
+    downLost = null;
     lastSeen = Date.now();
     ws.send(
       JSON.stringify({
@@ -247,22 +264,55 @@ export function desktopConnection(
               ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
             continue;
           }
-          // Letting go (a button up, release) always runs, however late:
-          // dropped, it would leave the Mac's mouse button held down.
-          if (Date.now() - item.at > 1000 && !releases.has(item.action.type)) {
-            // A move or scroll that waited too long is let go (the next one
-            // stands for it); a click or key never runs late.
-            if (["move", "scroll"].includes(item.action.type)) {
-              item.resolve?.({ ok: true, skipped: true });
-              if (item.id !== undefined && !closed && ws.readyState === 1)
-                ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
-              continue;
-            }
-            // Only that action is dropped, and the phone is told; control stays.
-            const late = fail(408, "That action waited too long and was dropped. Try again.");
+          const { type } = item.action;
+          const skip = () => {
+            item.resolve?.({ ok: true, skipped: true });
+            if (item.id !== undefined && !closed && ws.readyState === 1)
+              ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
+          };
+          const drop = (message) => {
+            const late = fail(408, message);
             item.reject?.(late);
             if (item.id !== undefined && !closed && ws.readyState === 1)
               ws.send(JSON.stringify({ type: "ack", id: item.id, ok: false, error: late.message }));
+          };
+          // Something else than typing (the app-in-front poll aside, which
+          // comes on its own timer): typing after it is the phone's anew.
+          if (!typing.has(type) && type !== "context") typingLost = false;
+          if (typingLost && typing.has(type)) {
+            drop(typingLate);
+            continue;
+          }
+          if (downLost) {
+            if (type === "move") {
+              skip();
+              continue;
+            }
+            if (type === "up" && (item.action.button ?? "left") === downLost) {
+              downLost = null;
+              skip();
+              continue;
+            }
+            downLost = null;
+          }
+          // Letting go (a button up, release) always runs, however late:
+          // dropped, it would leave the Mac's mouse button held down.
+          if (Date.now() - item.at > 1000 && !releases.has(type)) {
+            // A move or scroll that waited too long is let go (the next one
+            // stands for it); a click or key never runs late.
+            if (["move", "scroll"].includes(type)) {
+              skip();
+              continue;
+            }
+            // Only that action is dropped (with what depends on it), and
+            // the phone is told; control stays.
+            if (typing.has(type)) {
+              typingLost = true;
+              drop(typingLate);
+              continue;
+            }
+            if (type === "down") downLost = item.action.button ?? "left";
+            drop("That action waited too long and was dropped. Try again.");
             continue;
           }
           // A password manager's copied secret stays on the computer for
