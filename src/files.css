@@ -1237,6 +1237,49 @@ input.files-switch[type="checkbox"]:focus-visible {
 .hljs-deletion {
   color: #e9a7a7;
 }
+/* Editing: the text fills the preview, set like the code view. (Touch
+   screens get 16px for every field, identity.css.) */
+.file-editor {
+  place-self: stretch;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 16px 18px calc(env(safe-area-inset-bottom) + 16px);
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  background: #101619;
+  color: #dbe6dd;
+  font:
+    14px/1.65 "SFMono-Regular",
+    Consolas,
+    monospace;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  caret-color: #b9efd4;
+}
+.file-editor[readonly] {
+  color: #a9b8ad;
+}
+.file-editor-note {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #d3ead21a;
+  background: #2a1b1a;
+  color: #f4c7c2;
+  font-size: 13px;
+}
+.file-editor-note p {
+  flex-basis: 100%;
+  margin: 0;
+  line-height: 1.45;
+}
 .file-viewer-empty {
   display: grid;
   justify-items: center;

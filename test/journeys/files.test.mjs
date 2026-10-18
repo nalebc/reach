@@ -31,12 +31,17 @@ function hiddenAtTop() {
 }
 const names = () => [...document.querySelectorAll(".file-main .file-name")].map((n) => n.innerText.trim());
 
-test(`Files: the phone browses this ${word}'s home and its drive, previews a text file, and downloads it whole`, { skip, timeout: 240000 }, async (t) => {
+test(`Files: the phone browses this ${word}'s home and its drive, previews a text file, downloads it whole, and edits another`, { skip, timeout: 240000 }, async (t) => {
   const computer = await startComputer(t);
   const note = `${marker("note")}\nA second line, with an accent: déjà vu ✓\n`;
   const file = path.join(computer.reach.home, "Journey notes.txt");
   fs.writeFileSync(file, note);
   t.after(() => fs.rmSync(file, { force: true }));
+  // Windows line endings, which a browser's text box reads as "\n".
+  const ini = `[${marker("settings")}]\r\nname = déjà vu ✓\r\n`;
+  const settings = path.join(computer.reach.home, "Journey settings.ini");
+  fs.writeFileSync(settings, ini);
+  t.after(() => fs.rmSync(settings, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
   await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
@@ -61,6 +66,29 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
     download = page.downloads().find((d) => d.name === "Journey notes.txt" && d.state === "completed");
   assert.ok(download, `the download finished: ${JSON.stringify(page.downloads())}`);
   assert.equal(fs.readFileSync(download.file, "utf8"), note, "the phone has the file byte for byte");
+  await page.tap(`button[aria-label="Close preview"]`, "Close preview");
+  // Edited on the phone and saved: the computer's file holds what was typed,
+  // byte for byte, every line still ending in "\r\n", the new one too.
+  await page.tap({ selector: "button.file-main", text: "Journey settings.ini" }, "the settings file");
+  await page.see(
+    () => document.querySelector('dialog.file-viewer[aria-label="Journey settings.ini"] .file-viewer-body pre')?.innerText,
+    "the settings file, previewed",
+    30000,
+  );
+  await page.tap(`button[aria-label="Edit Journey settings.ini"]`, "Edit");
+  await page.tap("textarea.file-editor", "the file's text");
+  await page.evaluate(`(() => { const el = document.querySelector("textarea.file-editor"); el.focus(); el.setSelectionRange(el.value.length, el.value.length); })()`);
+  await page.type("color = green");
+  await page.key("Enter");
+  await page.shot("editing");
+  await page.tap({ selector: "dialog.file-viewer header button", text: "Save" }, "Save");
+  await page.see(
+    () => !document.querySelector("textarea.file-editor") && document.querySelector("dialog.file-viewer .file-viewer-body pre")?.innerText.includes("color = green"),
+    "the saved text, previewed",
+    30000,
+  );
+  assert.equal(fs.readFileSync(settings, "utf8"), `${ini}color = green\r\n`, "the computer's file, as typed, its line endings kept");
+  await page.shot("edited");
   await page.tap(`button[aria-label="Close preview"]`, "Close preview");
   // The whole computer, one tap away.
   await page.tap("button.files-title.is-switch", "the folder switch");

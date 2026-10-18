@@ -8,6 +8,29 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Edit text files from Files: Edit in a text or code file's preview opens it in
+  a full-screen editor, and Save writes it back to the computer. Saves send the
+  hash of the version read, so a file changed on the computer meanwhile is never
+  written over; the draft stays to copy. Windows line endings (`\r\n`) are kept.
+  Files over 128 KB, files that aren't UTF-8 text and files with mixed line
+  endings stay view-only and say why. Edit appears only with access that can
+  change files. Unsaved edits ask before closing and come back if the preview
+  closes another way.
+- Paste into terminals from the phone: a Paste key in the terminal's key row
+  sends the phone's clipboard, in terminals Reach started and in the Mac's or
+  PC's own terminal tabs. Where the phone won't share its clipboard, a small
+  box takes the phone's own paste. A paste whose line breaks would run commands
+  asks first, unless the program takes pastes whole (bracketed paste). Control
+  characters are removed, and a terminal that isn't connected says so instead
+  of keeping the paste for later.
+
+### Fixed
+
+- Terminal input longer than 32,768 characters (a large paste, from the phone
+  or a computer's keyboard) arrives whole, in pieces, instead of being dropped.
+
 ## [0.3.3] — 2026-10-18
 
 Early access: includes the Windows QR and Codex connection fixes prepared for
