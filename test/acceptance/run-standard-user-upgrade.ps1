@@ -28,7 +28,7 @@ try {
     $accountPassword = [Convert]::ToBase64String($bytes) + 'Aa1!'
     [Array]::Clear($bytes, 0, $bytes.Length)
     $securePassword = ConvertTo-SecureString $accountPassword -AsPlainText -Force
-    $localAccount = New-LocalUser -Name $account -Password $securePassword -AccountNeverExpires -UserMayNotChangePassword -Description 'Disposable Reach installed-upgrade acceptance account'
+    $localAccount = New-LocalUser -Name $account -Password $securePassword -AccountNeverExpires -UserMayNotChangePassword -Description 'Disposable Reach upgrade acceptance account'
     $created = $true
     $sid = $localAccount.SID.Value
     if (-not @(Get-LocalGroupMember -SID 'S-1-5-32-545' | Where-Object { $_.SID.Value -eq $sid }).Count) { Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $localAccount }
