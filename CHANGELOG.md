@@ -8,6 +8,46 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-10-18
+
+Early access: fixes for Windows phone setup and shared Codex sessions.
+
+### Fixed
+
+- Show the verified private Tailscale QR automatically while public browser
+  setup waits for Funnel approval or DNS. The message explains that this link
+  needs the phone's Tailscale app. The public browser QR still waits for verified
+  DNS and HTTPS readiness; owner APIs and WebSockets stay private.
+- Connect to Codex's Windows AF_UNIX control socket instead of rejecting it as
+  an invalid named pipe. The native bridge validates the protected endpoint
+  directory and the connected peer's Windows account and elevation before
+  relaying data. Existing named-pipe connections remain supported. Interrupted
+  actions with an unknown result are not replayed automatically.
+- Retain bounded simulator launch diagnostics for iOS CI failures. QR and Windows
+  console regressions now wait for complete output and the current startup
+  prompt without weakening their pairing or approval checks.
+
+### Validation and limits
+
+- [PR #64](https://github.com/nalebc/reach/pull/64) passed all 22 checks before
+  merge, covering Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
+  the iOS simulator, security scans and installed npm/portable artifacts.
+  The release tag reruns checks on the exact versioned candidate.
+- Real GitHub Windows Server 2025 testing reproduced the original Codex failure
+  and verified the fix with official Codex 0.163.0 under a standard local account,
+  including initialize and thread listing. Six real NTFS ACL/junction assertions
+  also passed. Separate native desktop checks exercised capture, clicks, typing,
+  UI Automation and video. Local GUI smoke checks used the hosted administrator
+  account; standard-user GUI parity and full provider coding tasks are unverified.
+- Windows QR/networking regression tests use simulated Tailscale identities and
+  responses. Real authenticated private → public → private handoffs, physical
+  Windows PCs, Windows 10/11 hardware behavior, sleep/network changes and physical
+  iPhone/iPad/Android acceptance remain incomplete. Simulator and mobile browser
+  emulation results do not establish physical-device behavior.
+- npm users can update with `reach update`; source installs use `v0.3.2`.
+  Keep the existing `.reach` state or configured external state folders and
+  restart through the CLI. Restarting ends terminals and live screens.
+
 ## [0.3.1] — 2026-10-17
 
 Early access: private connections recover automatically across supported hosts
