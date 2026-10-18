@@ -71,6 +71,18 @@ test("shortcut API rejects guests and scoped agents and dispatches owner actions
     ttlSeconds: 60,
   });
   const guest = reach.auth.redeemGuest(invite.invitation);
+  const fullGuests = [undefined, 1].map((fullControlVersion) => {
+    const invitation = reach.auth.inviteGuest({
+      name: "Full guest",
+      full: true,
+      ...(fullControlVersion === undefined ? {} : { fullControlVersion }),
+      ttlSeconds: 60,
+    });
+    const client = reach.auth.redeemGuest(invitation.invitation);
+    assert.equal(client.kind, "guest");
+    assert.ok(client.scopes.includes("admin") && client.scopes.includes("apps"));
+    return client;
+  });
   const call = (token, body) =>
     fetch(url, {
       method: body ? "POST" : "GET",
@@ -81,7 +93,14 @@ test("shortcut API rejects guests and scoped agents and dispatches owner actions
       body: body ? JSON.stringify(body) : undefined,
     });
   try {
-    for (const token of [agent.token, guest.token]) {
+    for (const token of [agent.token, guest.token, ...fullGuests.map((client) => client.token)]) {
+      const deniedSave = await fetch(url + "/custom", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Denied", type: "website", url: "https://example.com" }),
+      });
+      assert.equal(deniedSave.status, 403, "owner shortcuts require a paired device, even with full guest scopes");
+      assert.deepEqual(calls, [], "a refused shortcut request launches nothing");
       assert.equal(
         (
           await fetch(

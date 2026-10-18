@@ -4608,6 +4608,7 @@ export async function createReach(overrides = {}) {
     );
     if (
       res.destroyed ||
+      client?.kind !== "device" ||
       !client?.scopes.includes("admin") ||
       !client.scopes.includes("apps")
     )
