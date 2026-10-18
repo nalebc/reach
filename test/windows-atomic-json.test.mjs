@@ -122,7 +122,7 @@ test("actual Windows NTFS atomic JSON survives a transient held destination and 
     productionSha256:crypto.createHash("sha256").update(fs.readFileSync("server/core.mjs")).digest("hex"),
     fixtureSha256:crypto.createHash("sha256").update(fs.readFileSync(sourceFile)).digest("hex"),cases:[]};
   t.after(()=>{fs.mkdirSync("reports",{recursive:true});fs.writeFileSync("reports/windows-atomic-json.json",JSON.stringify(report,null,2));});
-  await promisify(execFile)(compiler,["/nologo","/noconfig","/target:exe","/platform:anycpu",`/out:${binary}`,path.resolve(sourceFile)],{timeout:60000,windowsHide:true});
+  await promisify(execFile)(compiler,["/nologo","/noconfig","/target:exe","/platform:anycpu",`/reference:${path.join(path.dirname(compiler),"System.dll")}`,`/out:${binary}`,path.resolve(sourceFile)],{timeout:60000,windowsHide:true});
   for(const releaseOnError of [true,false]) await t.test(releaseOnError?"release after actual refusal":"held through retry budget",async sub => {
     const caseDir = fs.mkdtempSync(path.join(dir,"case-")), file = path.join(caseDir,"pairing-window.json"), release = path.join(caseDir,"release-barrier");
     const old = contents({until:1000}), next = {until:2000,complete:["one","two"]}; fs.writeFileSync(file,old);
