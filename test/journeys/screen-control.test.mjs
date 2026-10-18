@@ -282,8 +282,9 @@ async function stressRun(t, kind) {
       const name = "double-tap with finger drift";
       await ensureControl(name);
       const outcomes = [];
-      for (const drift of [1, 2, 3, 5, 7]) {
+      for (const drift of [0, 1, 2, 3, 5, 7]) {
         await keyboardClosed();
+        await trace();
         const before = rec.events().length;
         const p = await where(rec.share(rec.regions.text, 0.3, 0.12));
         await touchDown(p.x, p.y);
@@ -298,8 +299,14 @@ async function stressRun(t, kind) {
         const ev = rec.events().slice(before);
         const downs = ev.filter((e) => e.kind === "mouse" && e.type === 1).map((e) => e.count);
         const selected = ev.filter((e) => e.kind === "selection").at(-1)?.selected;
-        outcomes.push({ drift, downs, selected });
-        if (JSON.stringify(downs) !== "[1,2]") problem(name, `a double-tap ${drift} px apart didn't arrive as a double-click`, { drift, downs, selected });
+        // What the phone asked for and what the computer did with it.
+        const log = await trace();
+        const clicks = log.filter((e) => e.dir === "out" && e.m?.action?.type === "click").map((e) => {
+          const ack = log.find((a) => a.dir === "in" && a.m?.type === "ack" && a.m.id === e.m.id)?.m;
+          return { asked: e.m.action.clickState, did: ack?.clickState, retargeted: ack?.retargeted, x: +(e.m.action.x * rec.display.width).toFixed(1), y: +(e.m.action.y * rec.display.height).toFixed(1), landedX: ack?.point ? +(ack.point.x * rec.display.width).toFixed(1) : null };
+        });
+        outcomes.push({ drift, downs, selected, clicks });
+        if (JSON.stringify(downs) !== "[1,2]") problem(name, `a double-tap ${drift} px apart didn't arrive as a double-click`, { drift, downs, selected, clicks });
       }
       report.scenarios.push({ name, outcomes, acks: ackStats(await trace()) });
     }

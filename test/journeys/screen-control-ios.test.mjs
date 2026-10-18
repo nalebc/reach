@@ -93,8 +93,18 @@ function loopbackDoor(fake, origin, trace) {
       const lines = Object.entries(rewrite(req, to)).flatMap(([k, v]) => (Array.isArray(v) ? v.map((one) => `${k}: ${one}`) : [`${k}: ${v}`]));
       upstream.write(`${req.method} ${req.url} HTTP/1.1\r\n${lines.join("\r\n")}\r\n\r\n`);
       if (head?.length) upstream.write(head);
-      upstream.pipe(client);
-      client.pipe(upstream);
+      // A tailnet's latency, each way (REACH_TEST_IOS_WS_DELAY ms): equal
+      // delays keep every frame in order.
+      const delay = Number(process.env.REACH_TEST_IOS_WS_DELAY || 0);
+      if (!delay) {
+        upstream.pipe(client);
+        client.pipe(upstream);
+        return;
+      }
+      upstream.on("data", (c) => setTimeout(() => client.writable && client.write(c), delay));
+      client.on("data", (c) => setTimeout(() => upstream.writable && upstream.write(c), delay));
+      upstream.on("end", () => setTimeout(() => client.end(), delay));
+      client.on("end", () => setTimeout(() => upstream.end(), delay));
     });
   });
   return { server, close: () => { for (const s of open) s.destroy(); return new Promise((r) => server.close(r)); } };
