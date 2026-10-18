@@ -119,13 +119,24 @@ static class WindowWatch {
   static string CommandFlags(IntPtr process) {
     int needed;
     NtQueryInformationProcess(process, 60, IntPtr.Zero, 0, out needed);
-    if (needed <= 0 || needed > 1 << 20) return "null";
-    IntPtr buffer = Marshal.AllocHGlobal(needed);
+    int headerBytes = IntPtr.Size * 2, capacity = needed;
+    if (capacity < headerBytes || capacity > 1 << 20) return "null";
+    IntPtr buffer = Marshal.AllocHGlobal(capacity);
     try {
-      if (NtQueryInformationProcess(process, 60, buffer, needed, out needed) != 0) return "null";
+      int returned;
+      if (NtQueryInformationProcess(process, 60, buffer, capacity, out returned) != 0 || returned < headerBytes || returned > capacity) return "null";
       int length = (ushort)Marshal.ReadInt16(buffer);
+      int maximum = (ushort)Marshal.ReadInt16(buffer, 2);
       IntPtr text = Marshal.ReadIntPtr(buffer, IntPtr.Size);
-      if (text == IntPtr.Zero || length == 0) return "null";
+      if (text == IntPtr.Zero || length == 0 || (length & 1) != 0 || length > maximum) return "null";
+      // UNICODE_STRING's pointer is native-width and must name bytes inside
+      // this original allocation. Subtract after ordering; never overflow an
+      // address by adding the returned length to an unchecked pointer.
+      ulong first = IntPtr.Size == 4 ? (uint)buffer.ToInt32() : (ulong)buffer.ToInt64();
+      ulong address = IntPtr.Size == 4 ? (uint)text.ToInt32() : (ulong)text.ToInt64();
+      if (address < first || (address & 1) != 0) return "null";
+      ulong offset = address - first;
+      if (offset < (ulong)headerBytes || offset > (ulong)capacity || (ulong)length > (ulong)capacity - offset) return "null";
       int count;
       IntPtr argv = CommandLineToArgvW(Marshal.PtrToStringUni(text, length / 2), out count);
       if (argv == IntPtr.Zero) return "null";
