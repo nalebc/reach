@@ -95,6 +95,12 @@ async function stressRun(t, kind) {
     const computer = await startComputer(t);
     const dir = fs.mkdtempSync(path.join(computer.reach.temp, "control-"));
     const rec = await recorder(t, dir);
+    // Where this test may tap, and the window its typing must go to: its
+    // own, never anything else on a Mac someone owns (Oct 18: a tap meant
+    // to step away from the test's terminal hit the Dock, and the typing
+    // that followed went into the owner's app).
+    let zone = (at) => rec.contains(at);
+    let front = () => rec.front();
     const page = await phone(t, computer, { kind });
     const tab = page.tab;
     // From the page's start: the input socket's frames and every focus.
@@ -111,15 +117,40 @@ async function stressRun(t, kind) {
     await sleep(1500);
 
     const trace = () => page.evaluate("window.__sc.splice(0)");
+    // Every point on the picture this test touches: inside its own window,
+    // and only while nobody is at the Mac.
     const where = async (at) => {
+      guard();
+      if (!zone(at)) throw new Error(`Refusing to touch outside the test's own windows: ${JSON.stringify(at)}`);
       const p = await page.evaluate(place(at));
       assert.ok(p, "the live picture");
       return p;
     };
-    const touchDown = (x, y) => tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    const touchDown = (x, y) => {
+      guard();
+      return tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    };
     const touchUp = () => tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    // Someone at the Mac: stop, nothing more is sent.
+    const guard = () => {
+      const busy = macInUse();
+      if (busy) throw new Error(`Stopped, nothing more sent: ${busy}`);
+    };
+    let checkedFront = 0;
+    // Each keystroke: nobody at the Mac, and the test's window in front.
+    const typeSend = async (method, params) => {
+      guard();
+      if (Date.now() - checkedFront > 1500) {
+        if (!(await front())) throw new Error("The test's own window isn't in front: stopped, nothing typed.");
+        checkedFront = Date.now();
+      }
+      if (method) await tab.send(method, params);
+    };
     // A person's tap: down, about 90 ms, up.
     const tapAt = async (at, hold = 90) => {
+      guard();
+      if (!zone(at)) throw new Error(`Refusing to tap outside the test's own windows: ${JSON.stringify(at)}`);
+      checkedFront = 0;
       const p = await where(at);
       await touchDown(p.x, p.y);
       await sleep(hold);
@@ -181,7 +212,7 @@ async function stressRun(t, kind) {
       Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
     })[k];
     const pressKey = async (k) => {
-      await tab.send("Input.dispatchKeyEvent", { type: "keyDown", ...keyFor(k) });
+      await typeSend("Input.dispatchKeyEvent", { type: "keyDown", ...keyFor(k) });
       await tab.send("Input.dispatchKeyEvent", { type: "keyUp", ...keyFor(k), text: undefined });
     };
     const ackStats = (log) => {
@@ -418,7 +449,7 @@ async function stressRun(t, kind) {
         // Type one letter to prove it reaches the field.
         if (o.opened) {
           const beforeField = rec.field();
-          await tab.send("Input.insertText", { text: "x" });
+          await typeSend("Input.insertText", { text: "x" });
           const typed = await until(async () => ({ ok: rec.field() === beforeField + "x", now: rec.field() }), 3000);
           if (!typed?.ok) problem(name, "letter typed after the keyboard opened didn't arrive", { round, before: beforeField, now: typed?.now });
         }
@@ -447,7 +478,7 @@ async function stressRun(t, kind) {
       await sleep(400);
       const paced = " hello world";
       for (const ch of paced) {
-        await tab.send("Input.insertText", { text: ch });
+        await typeSend("Input.insertText", { text: ch });
         await sleep(110);
       }
       await pressKey("Backspace");
@@ -455,7 +486,7 @@ async function stressRun(t, kind) {
       await pressKey("Backspace");
       await sleep(110);
       for (const ch of "LD café naïve ü – “ok” ’ 😀 ✓") {
-        await tab.send("Input.insertText", { text: ch });
+        await typeSend("Input.insertText", { text: ch });
         await sleep(110);
       }
       await pressKey("Enter");
@@ -463,7 +494,7 @@ async function stressRun(t, kind) {
       const fast = "The quick brown fox jumps over the lazy dog";
       // A fast typist: 25 letters a second.
       for (const ch of fast) {
-        await tab.send("Input.insertText", { text: ch });
+        await typeSend("Input.insertText", { text: ch });
         await sleep(40);
       }
       const expected = start + " hello worLD café naïve ü – “ok” ’ 😀 ✓\n" + fast;
@@ -486,7 +517,7 @@ async function stressRun(t, kind) {
         await sleep(800);
       }
       const burst = "0123456789abcdefghijklmnopqrstuvwxyzABCD";
-      for (const ch of burst) await tab.send("Input.insertText", { text: ch });
+      for (const ch of burst) await typeSend("Input.insertText", { text: ch });
       const got = await until(async () => ({ ok: rec.text() === start + burst, now: rec.text() }), 15000);
       const log = await trace();
       const drops = log.filter((e) => e.dir === "in" && e.m?.type === "ack" && e.m.ok === false);
@@ -506,6 +537,7 @@ async function stressRun(t, kind) {
         if (!(await typing()).focused) await keyboardButton();
       }
       const before = rec.events().length;
+      await typeSend(null);
       await page.evaluate(`(() => { const el = document.activeElement; const dt = new DataTransfer(); dt.setData("text/plain", "first line\\nsecond line"); el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); })()`);
       const expected = start + "first line\nsecond line";
       const got = await until(async () => ({ ok: rec.text() === expected, now: rec.text() }), 8000);
@@ -529,14 +561,14 @@ async function stressRun(t, kind) {
       const words = ["hello", "wrold", "again"];
       for (const [i, word] of words.entries()) {
         for (let n = 1; n <= word.length; n++) {
-          await tab.send("Input.imeSetComposition", { text: word.slice(0, n), selectionStart: n, selectionEnd: n });
+          await typeSend("Input.imeSetComposition", { text: word.slice(0, n), selectionStart: n, selectionEnd: n });
           await sleep(60);
         }
         // Autocorrect: the composed "wrold" is committed as "world".
-        await tab.send("Input.insertText", { text: word === "wrold" ? "world" : word });
+        await typeSend("Input.insertText", { text: word === "wrold" ? "world" : word });
         await sleep(80);
         if (i < words.length - 1) {
-          await tab.send("Input.insertText", { text: " " });
+          await typeSend("Input.insertText", { text: " " });
           await sleep(80);
         }
       }
@@ -565,7 +597,7 @@ async function stressRun(t, kind) {
           problem(name, "keyboard didn't open", { round, ...s });
           continue;
         }
-        await tab.send("Input.insertText", { text: String(round % 10) });
+        await typeSend("Input.insertText", { text: String(round % 10) });
         const got = await until(async () => ({ ok: rec.field().length === before.length + 1, now: rec.field() }), 3000);
         if (!got?.ok) {
           failures++;
@@ -645,7 +677,7 @@ async function stressRun(t, kind) {
       const start = rec.field();
       await trace();
       const burst = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-      for (const ch of burst) await tab.send("Input.insertText", { text: ch });
+      for (const ch of burst) await typeSend("Input.insertText", { text: ch });
       const timeline = [];
       for (let i = 0; i < 40; i++) {
         const st = await status();
@@ -673,13 +705,21 @@ async function stressRun(t, kind) {
       const term = await rawTerminal(t, dir);
       const [l, top, r, bottom] = term.bounds;
       const d = rec.display;
+      zone = (p) => p.x * d.width >= l && p.x * d.width <= r && p.y * d.height >= top && p.y * d.height <= bottom;
+      front = () => term.front();
       const at = { x: (l + (r - l) * 0.5) / d.width, y: (top + (bottom - top) * 0.6) / d.height };
       await sleep(1500);
       const outcomes = [];
       for (let round = 0; round < ROUNDS; round++) {
         if (round) {
-          // Away from the terminal and back.
-          await tapAt({ x: 0.97, y: 0.97 });
+          // Away from the terminal and back: the keyboard put away on the
+          // phone itself (its bar), never a click elsewhere on the Mac.
+          const off = await page.evaluate(`(() => { const b = document.querySelector('[aria-label="Screen controls"] button[aria-label="Dismiss phone keyboard"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          if (off) {
+            await touchDown(off.x, off.y);
+            await sleep(80);
+            await touchUp();
+          }
           await sleep(800);
         }
         await trace();
@@ -699,17 +739,17 @@ async function stressRun(t, kind) {
       if (!(await typing()).focused && !(await keyboardButton())) problem(name, "no way to open the keyboard for the terminal", await typing());
       const start = term.bytes().length;
       for (const ch of "echo hi") {
-        await tab.send("Input.insertText", { text: ch });
+        await typeSend("Input.insertText", { text: ch });
         await sleep(90);
       }
       await pressKey("Backspace");
       await sleep(90);
-      await tab.send("Input.insertText", { text: "I" });
+      await typeSend("Input.insertText", { text: "I" });
       await sleep(90);
       await pressKey("Enter");
       await sleep(90);
       const burst = "ls -la /tmp && echo done";
-      for (const ch of burst) await tab.send("Input.insertText", { text: ch });
+      for (const ch of burst) await typeSend("Input.insertText", { text: ch });
       const want = Buffer.from("echo hi" + term.backspace + "I" + term.enter + burst);
       const got = await until(async () => {
         const b = term.bytes().subarray(start);

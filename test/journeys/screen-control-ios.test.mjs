@@ -181,7 +181,14 @@ test(
     const rec = await recorder(t, dir);
     const report = { scenarios: [], problems: [], trace: [] };
     let door, url;
-    let term = null, done = false;
+    let term = null, done = false, checkedFront = 0;
+    // Where the XCUITest may tap and type: this test's own windows only, and
+    // only while nobody is at the Mac (it asks before each tap and keystroke).
+    const zone = (at) => {
+      if (!term) return rec.contains(at);
+      const [l, top, r, bottom] = term.bounds, d = rec.display;
+      return at.x * d.width >= l && at.x * d.width <= r && at.y * d.height >= top && at.y * d.height <= bottom;
+    };
     const answered = new Set();
     const oracle = http.createServer(async (req, res) => {
       const body = await new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { r(JSON.parse(b || "{}")); } catch { r({}); } }); });
@@ -198,6 +205,16 @@ test(
           return reply({});
         }
         if (route === "/start") return reply({ url });
+        if (route === "/guard") {
+          const busy = macInUse();
+          if (busy) return reply({ ok: false, why: busy });
+          if (Number.isFinite(body.x) && !zone(body)) return reply({ ok: false, why: `outside the test's own windows: ${body.x},${body.y}` });
+          if (body.typing && Date.now() - checkedFront > 1500) {
+            if (!(await (term ? term.front() : rec.front()))) return reply({ ok: false, why: "the test's own window isn't in front" });
+            checkedFront = Date.now();
+          }
+          return reply({ ok: true });
+        }
         if (route === "/approve") {
           // The device request this Safari made, as Reach's terminal says it.
           for (const end = Date.now() + 90000; Date.now() < end; await sleep(250)) {

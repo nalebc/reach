@@ -12,6 +12,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const windows = process.platform === "win32";
 export const INITIAL_TEXT = "alpha bravo charlie delta echo foxtrot";
 
+// Which process owns the window in front (Windows): its id, or 0.
+const WINDOWS_FRONT = `
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class ReachRecorderFront {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+}
+'@
+$pid0 = 0; [ReachRecorderFront]::GetWindowThreadProcessId([ReachRecorderFront]::GetForegroundWindow(), [ref]$pid0) | Out-Null; $pid0
+`;
+const frontPid = async () =>
+  Number((await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_FRONT, "utf16le").toString("base64")], { windowsHide: true, timeout: 30000 })).stdout.trim()) || 0;
+const frontMacApp = async () =>
+  (await run("/usr/bin/osascript", ["-e", 'tell application "System Events" to get name of first application process whose frontmost is true'], { timeout: 15000 })).stdout.trim();
+
 // The Windows recorder: the Mac one's regions and events, in WinForms, DPI
 // aware so its pixels are the ones Reach streams.
 const WINDOWS_RECORDER = `
@@ -125,8 +141,15 @@ export async function recorder(t, dir) {
         }
       })
       .filter(Boolean);
+  // The recorder's own rectangle: the only place its scenarios may tap.
+  const r = Object.values(ready.regions);
+  const left = Math.min(...r.map((v) => v.x)), top = Math.min(...r.map((v) => v.y));
+  const right = Math.max(...r.map((v) => v.x + v.width)), bottom = Math.max(...r.map((v) => v.y + v.height));
   return {
     stop,
+    // Is the recorder the window in front (typing goes to it, nowhere else)?
+    front: async () => (windows ? (await frontPid()) === child.pid : (await frontMacApp()) === "input-recorder"),
+    contains: (at) => at.x * width >= left && at.x * width <= right && at.y * height >= top && at.y * height <= bottom,
     regions: ready.regions,
     display: ready.display,
     share,
@@ -185,7 +208,7 @@ export async function rawTerminal(t, dir) {
     for (const end = Date.now() + 60000; !fs.existsSync(ready); await sleep(100)) if (Date.now() > end) throw Error("The console didn't open.");
     await sleep(300);
     const bounds = fs.readFileSync(ready, "utf8").split(",").map(Number);
-    return { file, bounds, bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\b" };
+    return { file, bounds, bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\b", front: async () => (await frontPid()) === pid };
   }
   const tell = async (body) => (await run("/usr/bin/osascript", ["-e", `tell application "Terminal"\n${body}\nend tell`], { timeout: 30000 })).stdout.trim();
   const tty = await tell(`activate\nset t to do script "stty raw -echo; exec cat > '${file}'"\nset custom title of t to "reach-screen-control"\nreturn tty of t`);
@@ -196,5 +219,8 @@ export async function rawTerminal(t, dir) {
   await tell(each("set bounds of w to {200, 140, 1000, 640}\nset index of w to 1\nreturn"));
   await sleep(500);
   const bounds = (await tell(each("return bounds of w"))).split(/,\s*/).map(Number);
-  return { file, bounds, bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\x7f" };
+  // Terminal in front, and this test's window in front of Terminal's.
+  const front = async () =>
+    (await frontMacApp()) === "Terminal" && (await tell("return tty of selected tab of front window").catch(() => "")) === tty;
+  return { file, bounds, bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\x7f", front };
 }
