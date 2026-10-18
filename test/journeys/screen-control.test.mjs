@@ -20,7 +20,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Long and it takes this computer's desktop: only when asked (on Windows,
 // the real-desktop runs that list this file).
 const stress = process.env.REACH_TEST_SCREEN_STRESS === "1" || (windows && process.env.REACH_TEST_WINDOWS_DESKTOP === "1") ? false : "set REACH_TEST_SCREEN_STRESS=1";
-const KINDS = (process.env.REACH_TEST_SCREEN_PHONES || (windows ? "iPhone Android" : "iPhone Android iPad")).split(/\s+/).filter(Boolean);
+const KINDS = (process.env.REACH_TEST_SCREEN_PHONES || (windows ? "iPhone" : "iPhone Android iPad")).split(/\s+/).filter(Boolean);
 const ROUNDS = Number(process.env.REACH_TEST_SCREEN_ROUNDS || (windows ? 1 : 3));
 
 const TRACE = `(() => {
@@ -133,6 +133,16 @@ async function stressRun(t, kind) {
         viewer: !!document.querySelector(".screen-typing"), tapToType: !!document.querySelector(".tap-to-type"),
         caption: document.querySelector(".simple-screen-caption")?.innerText || "", feedback: document.querySelector(".screen-feedback, .screen-gesture-feedback")?.innerText || "" };
     })()`);
+    // The bar's keyboard button, as a person opens the keyboard when a tap didn't.
+    const keyboardButton = async () => {
+      const b = await page.evaluate(`(() => { const b = document.querySelector('.tap-to-type') || document.querySelector('[aria-label="Screen controls"] button[aria-label="Open phone keyboard"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!b) return false;
+      await touchDown(b.x, b.y);
+      await sleep(80);
+      await touchUp();
+      await sleep(700);
+      return (await typing()).focused;
+    };
     const status = () => page.evaluate(`(() => ({
       control: !!document.querySelector('[aria-label="Screen controls"] button[aria-pressed="true"]'),
       caption: document.querySelector(".simple-screen-caption")?.innerText || "",
@@ -423,7 +433,10 @@ async function stressRun(t, kind) {
         const s = await typing();
         return { ...s, ok: s.focused && s.viewer };
       }, 2500);
-      if (!opened?.ok) problem(name, "keyboard didn't open on the text view", opened);
+      if (!opened?.ok) {
+        problem(name, "keyboard didn't open on the text view", opened);
+        if (!(await keyboardButton())) problem(name, "the keyboard button didn't open the keyboard either", await typing());
+      }
       await sleep(400);
       const paced = " hello world";
       for (const ch of paced) {
@@ -473,6 +486,27 @@ async function stressRun(t, kind) {
       const phone = await status();
       if (!got?.ok) problem(name, "burst differs from what reached the Mac", { got: got?.now.slice(start.length), phone, turnedDown: drops.length, errors: [...new Set(drops.map((d) => d.m.error))], closes: log.filter((e) => e.dir === "close") });
       report.scenarios.push({ name, ok: !!got?.ok, acks: ackStats(log), phone });
+    }
+
+    // 5b2. Pasting two lines from the phone's keyboard: a line break, never
+    // a shortcut (Ctrl+Enter sends mail and posts messages).
+    {
+      const name = "multiline paste";
+      const start = rec.text();
+      if (!(await typing()).focused) {
+        await tapAt(rec.share(rec.regions.text, 0.95, 0.9));
+        await sleep(800);
+        if (!(await typing()).focused) await keyboardButton();
+      }
+      const before = rec.events().length;
+      await page.evaluate(`(() => { const el = document.activeElement; const dt = new DataTransfer(); dt.setData("text/plain", "first line\\nsecond line"); el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); })()`);
+      const expected = start + "first line\nsecond line";
+      const got = await until(async () => ({ ok: rec.text() === expected, now: rec.text() }), 8000);
+      const keys = rec.events().slice(before).filter((e) => e.kind === "key");
+      const shortcuts = keys.filter((e) => (windows ? (e.mods & 0x20000) !== 0 : (e.mods & (1 << 18)) !== 0 || (e.mods & (1 << 20)) !== 0));
+      if (!got?.ok) problem(name, "pasted lines differ from what reached the computer", { expected: expected.slice(start.length), got: got?.now.slice(start.length) });
+      if (shortcuts.length) problem(name, "the paste's line break arrived as a shortcut", { keys: shortcuts.slice(0, 4) });
+      report.scenarios.push({ name, ok: !!got?.ok, keys: keys.length });
     }
 
     // 5c. Typing as Android's keyboard does: each word composed letter by
@@ -623,16 +657,7 @@ async function stressRun(t, kind) {
         if (!o.opened) problem(name, "keyboard didn't open on a tap into Terminal", o);
       }
       // Type regardless (the Type button if the tap didn't open it).
-      const state = await typing();
-      if (!state.focused) {
-        const button = await page.evaluate(`(() => { const b = document.querySelector(".tap-to-type") || [...document.querySelectorAll("button")].find((b) => /^(Type|Keyboard)$/i.test(b.getAttribute("aria-label") || b.innerText.trim())); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-        if (button) {
-          await touchDown(button.x, button.y);
-          await sleep(80);
-          await touchUp();
-          await sleep(800);
-        } else problem(name, "no way to open the keyboard for Terminal", state);
-      }
+      if (!(await typing()).focused && !(await keyboardButton())) problem(name, "no way to open the keyboard for the terminal", await typing());
       const start = term.bytes().length;
       for (const ch of "echo hi") {
         await tab.send("Input.insertText", { text: ch });
