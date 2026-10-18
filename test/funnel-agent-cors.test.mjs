@@ -180,6 +180,7 @@ test("real Chrome reads private signed responses and metadata through Reach's or
     catch (error) { if (!/Invalid PermissionDescriptor|Unknown permission|Unrecognized permission/i.test(error.message)) throw error; }
   }
   const tab = await openTab(browser);
+  const diagnosticVariant = process.env.REACH_TEST_CORS_VARIANT || "original";
   const networkFailures = [], browserTrace = [];
   browser.on("Network.loadingFailed", (event, session) => { if (session === tab.sessionId) networkFailures.push(event); });
   for (const name of ["Page.frameNavigated", "Page.frameStartedLoading", "Page.frameStoppedLoading", "Page.loadEventFired", "Runtime.executionContextsCleared"])
@@ -198,16 +199,17 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   browser.on("Fetch.requestPaused", (event, session) => {
     if (session === tab.sessionId) browserTrace.push({ event: "intercept", at: Date.now(), requestId: event.requestId, url: event.request.url, method: event.request.method });
     if (session === tab.sessionId) void tab.send("Fetch.fulfillRequest", { requestId: event.requestId, responseCode: event.request.url === `${ORIGIN}/` ? 200 : 404,
-      responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Disposable CORS fixture</title>").toString("base64") })
+      responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from(`<!doctype html><title>Disposable CORS fixture</title>${diagnosticVariant === "original" ? "" : '<link rel="icon" href="data:,">'}`).toString("base64") })
       .catch(error => t.diagnostic(`Disposable bootstrap ended: ${error.message}`));
   });
   await tab.send("Fetch.enable", { patterns: [{ urlPattern: `${ORIGIN}/*`, requestStage: "Request" }] });
   await tab.navigate(`${ORIGIN}/`);
   assert.equal(await tab.evaluate("location.origin"), ORIGIN);
+  if (diagnosticVariant === "interception-off") await tab.send("Fetch.disable");
   const fetchSigned = (envelope) => tab.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(`${privateOrigin}/agent-gateway`)}, { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", "Reach-Key": ${JSON.stringify(key.thumbprint)} }, body: ${JSON.stringify(JSON.stringify(envelope))} });
     return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())), headers: Object.fromEntries(response.headers) };
-  })()`).catch(error => { t.diagnostic(JSON.stringify({ chrome: version.product, seen, networkFailures, browserTrace, browserProblems: tab.problems })); throw error; });
+  })()`).catch(error => { t.diagnostic(JSON.stringify({ diagnosticVariant, chrome: version.product, seen, networkFailures, browserTrace, browserProblems: tab.problems })); throw error; });
   const device = await fetchSigned(request(key, token));
   assert.equal(device.status, 200);
   assert.equal(JSON.parse(Buffer.from(device.bytes).toString()).access.kind, "agent");
@@ -230,6 +232,6 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   assert.equal((await fetchSigned(request(key, token))).status, 401);
   assert.ok(seen.some(item => item.method === "OPTIONS" && item.site === "same-site"));
   assert.ok(seen.filter(item => item.method === "POST").every(item => item.site === "same-site" && item.origin === ORIGIN && item.host === new URL(privateOrigin).host));
-  t.diagnostic(JSON.stringify({ chrome: version.product, hostPlatform: process.platform, options: seen.filter(item => item.method === "OPTIONS"), preflights: seen.filter(item => item.method === "OPTIONS").length,
+  t.diagnostic(JSON.stringify({ diagnosticVariant, chrome: version.product, hostPlatform: process.platform, options: seen.filter(item => item.method === "OPTIONS"), preflights: seen.filter(item => item.method === "OPTIONS").length,
     signedPosts: seen.filter(item => item.method === "POST").length, transport: "real browser/TLS/Windows keyed ingress/inner middleware", mocked: "tailscaled peer check, desktop image, DNS mapping, bootstrap page; fixture-only local network permission" }));
 });

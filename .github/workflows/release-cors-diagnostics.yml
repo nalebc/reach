@@ -8,6 +8,12 @@ jobs:
   real-linux-browser:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [original, icon-only, interception-off]
+    env:
+      REACH_TEST_CORS_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -33,7 +39,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: real-linux-cors-diagnostics
+          name: real-linux-cors-diagnostics-${{ matrix.variant }}
           path: reports/
           if-no-files-found: error
           retention-days: 7
