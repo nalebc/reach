@@ -253,6 +253,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       fill(pairing, code);
       await new Promise(resolve => setTimeout(resolve, 100));
       pairing.closest("form").requestSubmit();
+      note("pairing-submitted");
       const peer = await wait(() => {
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
@@ -294,7 +295,10 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       native("Share", "share", { files: [written.uri] }).catch(() => {});
     } catch (error) {
       note("test-failed");
-      await fetch(probe + "/result", { method: "POST", body: JSON.stringify({ ok: false, checks, error: error.message }) });
+      let pairingState;
+      try { pairingState = window.__reachIosSmokePairingState?.(); } catch {}
+      await fetch(probe + "/result", { method: "POST", body: JSON.stringify({ ok: false, checks, error: error.message,
+        ...(pairingState ? { pairingState } : {}) }) });
     }
   }.toString()})(${JSON.stringify({ code, probe, downloadOrigin })});`;
 
