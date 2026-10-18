@@ -100,6 +100,32 @@ test("a new control connection from the same phone takes over from a busy old on
   assert.equal(w.control.holder(), null);
 });
 
+test("a new connection refused before it can go on (a bad display) leaves the old one and its lease alone", async () => {
+  const w = world();
+  const first = w.connect();
+  await until(() => ready(first));
+  const bad = Object.assign(new EventEmitter(), {
+    readyState: 1, sent: [], send(line) { this.sent.push(JSON.parse(line)); },
+    close(code) { this.closedWith = { code }; this.readyState = 2; },
+  });
+  desktopConnection(bad, {
+    config: { screen: true }, auth: { verify: () => phone }, control: w.control, scanner: null,
+    create: async () => assert.fail("no helper for a refused connection"),
+    register: (id, socket) => takeOver(w.connections, id, socket),
+    unregister: (id, socket) => { if (w.connections.get(id) !== socket) return false; w.connections.delete(id); return true; },
+  });
+  bad.emit("message", Buffer.from(JSON.stringify({ type: "auth", token: "T", display: "not a display" })), false);
+  await until(() => bad.closedWith);
+  assert.equal(bad.closedWith.code, 4001);
+  bad.readyState = 3;
+  bad.emit("close", 4001);
+  assert.equal(first.closedWith, undefined, "the old one goes on");
+  assert.equal(w.connections.get("phone"), first);
+  assert.equal(w.control.holder()?.clientId, "phone");
+  first.end(1000);
+  w.children[0].finish();
+});
+
 test("a close without a code is a drop (grace); 1000 lets go at once; Stop ends control on its own", async () => {
   for (const [code, kept] of [[1005, true], [4002, true], [1006, true], [1000, false]]) {
     const w = world();

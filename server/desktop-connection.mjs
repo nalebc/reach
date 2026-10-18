@@ -506,14 +506,9 @@ export function desktopConnection(
         clearTimeout(deadline);
         const client = await verified();
         if (closed) return;
-        register(client.id, ws);
-        ws.clientId = client.id;
-        // Back within the grace: the lease is this connection's again.
-        control.keep?.(client.id);
         const options = streamOptions({ display: message.display });
         // Which display this control is on: an agent waits only for its own.
         ws.reachDisplay = options.display;
-        await verified();
         if (create === DesktopInput.create) {
           const displays = await desktopDisplays(config);
           if (
@@ -522,6 +517,14 @@ export function desktopConnection(
           )
             throw fail(400, "Display unavailable.");
         }
+        await verified();
+        if (closed) return;
+        // A connection that can go on takes over from this phone's last one
+        // (one refused here leaves that one, and its lease, alone).
+        register(client.id, ws);
+        ws.clientId = client.id;
+        // Back within the grace: the lease is this connection's again.
+        control.keep?.(client.id);
         await readyForInput();
         helper = await create(config, options.display);
         if (closed || ws.readyState !== 1) {
