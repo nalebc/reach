@@ -1,9 +1,24 @@
 # Real Windows acceptance
 
-This lane runs only on a disposable GitHub-hosted `windows-2025` runner. It
-installs the published official Codex CLI and a signed official Tailscale MSI,
-records their versions/provenance, asks the actual Codex daemon for its endpoint,
-and calls Reach's production Codex daemon client without injected dependencies.
+The pull-request lane runs on a disposable GitHub-hosted `windows-2025` runner.
+The existing **Windows validation** workflow also offers an explicit
+`real_vendors: true` mode on `windows-11-arm`, `windows-2025` or `windows-2022`.
+That mode replaces the selected test names with the six actual native security
+checks and this same complete vendor/local probe sequence. Installation failure
+stops dependent probes and remains a failed run. No credentials are requested.
+Both lanes install the published official Codex CLI and a signed official
+Tailscale MSI, record their versions/provenance, ask the actual Codex daemon for
+its endpoint, and call Reach's production Codex daemon client without injected
+dependencies.
+The MSI and installed vendor PE machines must match the native Windows CPU
+reported by `IsWow64Process2`, rather than an emulated shell's environment.
+Reports retain the actual OS version and Node architecture, vendor PE headers,
+and live process architecture for the Tailscale service, Codex daemon and
+Reach's connected native helper. AnyCPU helper compilation does not imply
+native execution: the live helper's emulation state is reported explicitly.
+The added live architecture inspection has a 60-second limit. Its containing
+standard-user test, npm process, launcher and parent wait each gain those same
+60 seconds; existing vendor, daemon-start and RPC deadlines stay unchanged.
 Codex runs under a real new standard local Windows account, launched through
 `CreateProcessWithLogonW(LOGON_WITH_PROFILE)` on a dedicated private test desktop.
 Its random password remains in the launcher process's memory. The worker verifies
@@ -34,6 +49,9 @@ The local case cannot qualify private Tailscale or Funnel behavior.
 
 Run the **Real Windows acceptance (partial qualification)** pull-request workflow,
 or dispatch it after GitHub has registered the workflow on the default branch.
+For the opt-in ARM64 vendor lane, dispatch **Windows validation** with
+`runner: windows-11-arm` and `real_vendors: true`, pinned to the reviewed source
+branch or release tag. The ordinary selected-tests mode stays unchanged.
 The guarded test command used by the workflow is:
 
 ```powershell

@@ -36,12 +36,12 @@ async function endpointMetadata(endpoint) {
 
 test("real Codex and Reach daemon client under a genuine standard Windows account", {
   skip: !optedIn && "requires the real disposable standard-user Windows harness",
-  timeout: 165000,
+  timeout: 225000,
 }, async (t) => {
   const reportPath = process.env.REACH_ACCEPTANCE_CODEX_REPORT;
   assert.ok(reportPath && path.isAbsolute(reportPath));
   const report = {
-    schema: 1, startedAt: new Date().toISOString(), platform: process.platform, osRelease: os.release(), node: process.version,
+    schema: 1, startedAt: new Date().toISOString(), platform: process.platform, osRelease: os.release(), node: process.version, nodeArchitecture: process.arch,
     checkoutCommit: process.env.REACH_ACCEPTANCE_CHECKOUT_COMMIT, prHeadCommit: process.env.REACH_ACCEPTANCE_PR_HEAD,
     execution: "real standard local account, LOGON_WITH_PROFILE, private test desktop; actual Codex CLI and unchanged Reach daemon client",
     scope: "local daemon compatibility only; no standard-user GUI/device parity or provider inference is claimed",
@@ -93,9 +93,9 @@ test("real Codex and Reach daemon client under a genuine standard Windows accoun
     return state;
   });
   if (!verifiedContext) return; // The actual failed context subtest keeps the test/run failed.
-  let codex;
+  let codex, vendors, daemonPid;
   await check("official-codex-discovery-version-and-help", async () => {
-    const vendors = JSON.parse(fs.readFileSync(process.env.REACH_ACCEPTANCE_VENDOR_REPORT, "utf8").replace(/^\uFEFF/, ""));
+    vendors = JSON.parse(fs.readFileSync(process.env.REACH_ACCEPTANCE_VENDOR_REPORT, "utf8").replace(/^\uFEFF/, ""));
     assert.equal(vendors.codex.status, "PASS");
     codex = await findCodexExecutable();
     assert.ok(codex, "production discovery must find the official installed CLI");
@@ -119,6 +119,8 @@ test("real Codex and Reach daemon client under a genuine standard Windows accoun
     assert.ok(started.ok, started.error);
     const status = lastJSON(started.stdout);
     assert.equal(typeof status.socketPath, "string");
+    assert.ok(Number.isInteger(status.pid) && status.pid > 0, "the real vendor must report its daemon PID");
+    daemonPid = status.pid;
     const endpoint = { socketPath: status.socketPath, startStatusShape: shape(status), metadata: await endpointMetadata(status.socketPath) };
     report.endpoint = endpoint;
     write();
@@ -129,14 +131,39 @@ test("real Codex and Reach daemon client under a genuine standard Windows accoun
     } else report.daemonVersion = { error: version.error };
     return endpoint;
   });
-  await check("reach-zero-injection-standard-user-initialize-and-thread-list", async () => {
-    // No platform/process/transport/owner overrides and no alternate endpoint.
-    // An unsupported real endpoint is an actual FAIL, never pass/skip.
-    const daemon = createCodexDaemon();
-    try {
+  // Keep this actual connection alive while Windows inspects the production
+  // helper child. Architecture evidence never supplies a transport dependency.
+  const daemon = createCodexDaemon();
+  let initialized = false;
+  try {
+    await check("reach-zero-injection-standard-user-initialize-and-thread-list", async () => {
+      // No platform/process/transport/owner overrides and no alternate endpoint.
+      // An unsupported real endpoint is an actual FAIL, never pass/skip.
       const threads = await daemon.rpc("thread/list", { limit: 1 });
       assert.ok(Array.isArray(threads.data));
+      initialized = true;
       return { initialized: true, threadsReturned: threads.data.length, compatibility: await daemon.compatibility(), providerInferenceAttempted: false };
-    } finally { daemon.close(); }
-  });
+    });
+    if (initialized) await check("actual-live-codex-and-helper-architecture", async () => {
+      const inspected = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        path.join(repo, "test", "acceptance", "read-windows-architecture.ps1"),
+        "-NodeProcessId", String(process.pid), "-VendorProcessId", String(daemonPid),
+        "-CodexHelperDirectory", path.join(os.homedir(), ".reach", "codex-socket-native")], 60000);
+      assert.ok(inspected.ok, inspected.error);
+      const actual = lastJSON(inspected.stdout);
+      report.architecture = actual;
+      const native = vendors.host.nativeArchitecture;
+      assert.equal(actual.node.processId, process.pid);
+      assert.equal(actual.node.runtimeArchitecture, process.arch);
+      assert.equal(actual.node.nativeArchitecture, native);
+      assert.equal(actual.codexDaemon.processId, daemonPid);
+      assert.equal(actual.codexDaemon.runtimeArchitecture, native, "actual Codex must match the native CPU");
+      assert.equal(actual.codexDaemon.emulated, false);
+      assert.equal(actual.codexHelpers.length, 1);
+      assert.equal(actual.codexHelpers[0].nativeArchitecture, native);
+      // AnyCPU helpers may run under a Windows CLR emulation path. Record
+      // IsWow64Process2's actual result; never infer native execution from IL.
+      return actual;
+    });
+  } finally { daemon.close(); }
 });
