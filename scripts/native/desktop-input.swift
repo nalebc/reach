@@ -199,7 +199,10 @@ final class KeyLayout {
   private var source = ""
   private var known: [String: (CGKeyCode, Bool)?] = [:]
   func key(_ key: String, _ flags: CGEventFlags, us: CGKeyCode) -> (CGKeyCode, Bool)? {
-    guard key.count == 1, "abcdefghijklmnopqrstuvwxyz0123456789".contains(key) else { return nil }
+    // Text Input Sources answer on the main thread only (newer macOS asserts
+    // elsewhere): off it, the US key.
+    guard key.count == 1, "abcdefghijklmnopqrstuvwxyz0123456789".contains(key), Thread.isMainThread
+    else { return nil }
     // This helper never runs its loop otherwise: a layout switch since the
     // last key gets in here.
     CFRunLoopRunInMode(.defaultMode, 0, false)
