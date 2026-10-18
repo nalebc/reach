@@ -585,7 +585,7 @@ function phonePage(t, tab, { name, origin }) {
             activeTag: document.activeElement?.tagName?.slice(0, 48) || null,
             viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null } };
         })()`).catch(() => ({ trace: [], state: null }));
-        const did = observed.trace;
+        const did = Array.isArray(observed?.trace) ? observed.trace : [];
         // Node's reporter can buffer the assertion until this file ends. Keep
         // bounded evidence beside the screenshot even if the job ends first.
         // Record API paths/statuses and input length, never bodies, headers,
