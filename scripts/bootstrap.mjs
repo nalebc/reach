@@ -357,13 +357,14 @@ async function update() {
   const { PACKAGE, installCommand, latestRelease, reachInstall } = await import("../server/reach-updates.mjs");
   const { compareVersions } = await import("../server/versions.mjs");
   const install = reachInstall(root);
+  if (install.source) {
+    const { sourceUpdateGuidance } = await import("../server/reach-updates.mjs");
+    console.log(await sourceUpdateGuidance(root, { command, version: install.version }));
+    return;
+  }
   // Windows: the version you confirmed on the phone, handed to this window by
   // the Reach it updates (server/reach-updates.mjs). Asked nothing more.
   const confirmed = process.platform === "win32" ? await confirmedUpdate() : null;
-  if (install.source) {
-    console.log(`This is a source checkout. Move it to the newest release with git fetch --tags and git checkout v<version> (https://github.com/nalebc/reach/releases), then run ${command} restart: Reach rebuilds, and its agents follow by themselves.`);
-    return;
-  }
   if (install.reason === "portable") return console.log(install.manual);
   let found;
   if (confirmed) {

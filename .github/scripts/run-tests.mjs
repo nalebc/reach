@@ -38,7 +38,7 @@ export const suites = {
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
-    "agent-compatibility", "reach-version", "agent-watch",
+    "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
