@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { copyPrivateAcceptanceArtifact } from "./private-artifact.mjs";
+import { copyPrivateAcceptanceArtifact } from "./acceptance/private-artifact.mjs";
 
 const fixture = t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-artifact-copy-"));

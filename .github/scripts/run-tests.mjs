@@ -65,7 +65,7 @@ export const suites = {
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
-    "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "windows-oracle",
+    "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "private-artifact", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
     "face-join", "fleet",

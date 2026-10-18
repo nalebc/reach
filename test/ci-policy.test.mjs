@@ -95,6 +95,7 @@ test("Windows CI retains the atomic JSON sharing regression beside installed pai
   assert.ok(suites.windows.includes("windows-atomic-json"), "transient and permanent state-write refusals need Windows execution");
   assert.ok(suites.windows.includes("qr-onboarding-e2e"), "the installed pairing flow remains required");
   assert.ok(testFiles("windows").includes(path.join("test","windows-atomic-json.test.mjs")));
+  assert.ok(testFiles("windows").includes(path.join("test", "private-artifact.test.mjs")), "fresh artifact copy controls must execute on Windows too");
 });
 
 test("the CI runner executes guarded npm tests, writes both reports, and propagates failures", t => {
