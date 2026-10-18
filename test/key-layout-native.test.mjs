@@ -10,7 +10,9 @@ import { spawnSync } from "node:child_process";
 // for ⌘A and ⌘W for ⌘Z. These read layouts only: no input source is ever
 // selected, nothing is typed and no event is posted.
 const read = () => fs.readFile(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
-const block = (source) => source.split("// BEGIN KEY LAYOUT")[1].split("// END KEY LAYOUT")[0];
+// The block after its BEGIN line: the agent helpers' copies name their source there.
+const block = (source) => source.split("// BEGIN KEY LAYOUT")[1].split("\n").slice(1).join("\n").split("// END KEY LAYOUT")[0];
+const helper = (name) => fs.readFile(new URL(`../scripts/native/${name}.swift`, import.meta.url), "utf8");
 async function run(t, name, swift) {
   const folder = await fs.mkdtemp(path.join(os.tmpdir(), `reach-${name}-`));
   t.after(() => fs.rm(folder, { recursive: true, force: true }));
@@ -174,6 +176,12 @@ for key in us.keys {
   }
 }
 precondition(lookup.key("enter", [], us: 36) == nil && lookup.key("f1", [], us: 122) == nil)
+// Text Input Sources answer on the main thread only: off it, the US key.
+var offMain: (CGKeyCode, Bool)?? = nil
+let done = DispatchSemaphore(value: 0)
+Thread { offMain = .some(lookup.key("a", [], us: 0)); done.signal() }.start()
+done.wait()
+precondition(offMain != nil && offMain! == nil, "off the main thread, the US key")
 print("current layout passed")
 `);
   assert.match(stdout, /fixture layouts passed/);
@@ -240,4 +248,29 @@ for key in us.keys { precondition(press(key).code == Int64(us[key]!), "US \(key)
 print("key actions passed")
 `);
   assert.match(stdout, /key actions passed/);
+});
+
+// Agents' keys go through the same lookup: one copy per binary, identical,
+// used for the key each helper posts. The behaviour is the block's, checked
+// above through desktop-input's copy.
+test("the agent helpers carry the same key layout block and post the key it finds", async () => {
+  const desktop = block(await read());
+  for (const name of ["agent-input", "agent-desktop"]) {
+    const source = await helper(name);
+    assert.match(source, /^import Carbon$/m, name);
+    assert.match(source, /\/\/ BEGIN KEY LAYOUT — the same as desktop-input\.swift's \(one per binary\)\./, name);
+    assert.equal(block(source), desktop, `${name}: the same KEY LAYOUT block as desktop-input.swift`);
+    assert.match(source, /^let keyLayout = KeyLayout\(\)$/m, name);
+  }
+  const input = (await helper("agent-input")).split('case "key":')[1].split("case \"menu\":")[0];
+  assert.match(input, /guard let name = r\["key"\] as\? String, var code = keyCodes\[name\]/);
+  assert.match(input, /if let typed = keyLayout\.key\(name, flags, us: code\) \{\s*code = typed\.0\s*if typed\.1 \{ flags\.insert\(\.maskShift\) \}\s*\}\s*post\(app\.processIdentifier, key: code, flags: flags\)/);
+  const desktopKey = (await helper("agent-desktop")).split('  case "key":')[1].split("  default:")[0];
+  // The owner's rules judge the key asked for, before the layout's key is found.
+  const looked = desktopKey.indexOf("keyLayout.key(name, shortcut, us: code)");
+  for (const check of ["hostsReach(", "isBrowser(", "secureKeyAllowed(", "moneyKeyReason("])
+    assert.ok(desktopKey.indexOf(check) >= 0 && desktopKey.indexOf(check) < looked, `${check} before the layout lookup`);
+  assert.match(desktopKey, /if let typed = keyLayout\.key\(name, shortcut, us: code\) \{\s*key = typed\.0\s*if typed\.1 \{ pressed\.insert\(\.maskShift\) \}\s*\}/);
+  assert.match(desktopKey, /CGEvent\(keyboardEventSource: source, virtualKey: key, keyDown: down\)\s*event\?\.flags = pressed\s*post\(event\)/);
+  assert.doesNotMatch(desktopKey, /virtualKey: code/);
 });

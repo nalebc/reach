@@ -127,6 +127,10 @@ final class CGEvent {
   func keyboardSetUnicodeString(stringLength: Int, unicodeString: [UInt16]) {}
 }
 func post(_ event: CGEvent?, pause: UInt32 = 0) { if event != nil { events += 1 } }
+// The layout's own key for a letter or digit (test/key-layout-native.test.mjs):
+// the US keys here.
+final class KeyLayout { func key(_ key: String, _ flags: CGEventFlags, us: CGKeyCode) -> (CGKeyCode, Bool)? { nil } }
+let keyLayout = KeyLayout()
 `;
     const harness = String.raw`
 var failures = [String]()
