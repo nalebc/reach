@@ -124,7 +124,10 @@ test("Annex B parser preserves split start codes and complete access units", () 
   assert.deepEqual(frames[0], first);
   assert.deepEqual(frames[1], second);
 });
-test("video backpressure stays bounded and recovers slow viewers with a keyframe", async () => {
+// Alone, a viewer waiting on its acks missed nothing: it resumes with the
+// next frame, no keyframe (one per stall cost ~31% of the bytes at a 120 ms
+// round trip). One that missed frames others got: remote-screen-hub.test.mjs.
+test("video backpressure stays bounded and a lone slow viewer resumes without a keyframe", async () => {
   const commands = [];
   let stopped = false;
   const broadcaster = new RemoteBroadcast(
@@ -156,7 +159,7 @@ test("video backpressure stays bounded and recovers slow viewers with a keyframe
   assert.throws(() => broadcaster.ack(ws, 999));
   broadcaster.ack(ws, seq);
   await until(() => packets.length > 6);
-  assert.equal(commands[6], "key");
+  assert.equal(commands[6], "frame");
   broadcaster.remove(ws);
   assert.equal(stopped, true);
 });
