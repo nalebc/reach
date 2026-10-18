@@ -422,6 +422,10 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     if (one) one.state = state;
   });
   page.downloads = () => got;
+  // A permission the phone's browser asks the person for (reading the
+  // clipboard), given as they would give it.
+  page.grant = (permissions) =>
+    browser.send("Browser.grantPermissions", { origin: computer.origin, permissions });
   await page.open("/");
   await signIn(page, computer);
   return page;

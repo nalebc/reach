@@ -30,6 +30,16 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   const shown = await page.evaluate(`(${screenText})()`);
   assert.ok(shown.replace(/\n/g, "").includes(`echo ${echo}`), shown);
   await page.shot("terminal-answered");
+  // Pasted from the phone: Paste in the key row reads the phone's clipboard
+  // (once the person lets the browser) and the shell gets it as typed.
+  const pasted = marker("pasted");
+  await page.grant(["clipboardReadWrite", "clipboardSanitizedWrite"]);
+  await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(`echo ${pasted}`)})`);
+  await page.tap(`.terminal-key-row button[aria-label="Paste"]`, "Paste");
+  await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(${JSON.stringify(`echo ${pasted}`)})` }, "the pasted line", 30000);
+  await page.key("Enter");
+  await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(${JSON.stringify(pasted)})` }, "the shell's answer to the pasted line", 60000);
+  await page.shot("terminal-pasted");
 });
 
 test(
@@ -61,6 +71,14 @@ test(
     // Typed into the window on the computer, its answer read back.
     await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(${JSON.stringify(echo)})` }, "the window's answer", 60000);
     await page.shot("typed-into");
+    // Pasted from the phone onto the window's line, then sent with Enter.
+    const pasted = marker("pasted");
+    await page.grant(["clipboardReadWrite", "clipboardSanitizedWrite"]);
+    await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(`echo ${pasted}`)})`);
+    await page.tap(`.terminal-key-row button[aria-label="Paste"]`, "Paste");
+    await page.see({ js: `(${screenText})().replace(/\\n/g, "").includes(${JSON.stringify(`echo ${pasted}`)})` }, "the pasted line", 30000);
+    await page.key("Enter");
+    await page.see({ js: `(${screenText})().split("\\n").map((l) => l.trim()).includes(${JSON.stringify(pasted)})` }, "the window's answer to the pasted line", 60000);
     assert.equal(await window.open(), true, "still open on the computer");
     // Closed from the phone: asked first, then gone from the list and from
     // the computer.

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { CornerDownLeft } from "lucide-react";
+import { ClipboardPaste, CornerDownLeft } from "lucide-react";
 import { Peer, post, request } from "./api";
 import type { MacTerminal } from "./DesktopTerminals";
 import { computerWord } from "./pause";
 import "./key-row.css";
+import { pastable, pasteQuestion } from "./terminal-keys";
+import { usePhonePaste } from "./TerminalPaste";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
   altArrowWords,
@@ -54,6 +56,7 @@ export default function MacTerminalView({
     writeSnapshot(term, snapshot.current.replace(/\r?\n/g, "\r\n") + pending.current);
   };
   const submit = useRef(async () => {});
+  const pasteText = useRef((_text: string) => {});
   useEffect(() => {
     if (!mount.current) return;
     let stopped = false,
@@ -200,6 +203,13 @@ export default function MacTerminalView({
         draw();
       });
     };
+    pasteText.current = (text) => {
+      if (/[\r\n]/.test(text)) pasteLines(text.split(/\r\n|\r|\n/));
+      else {
+        pending.current += text.replace(/[\x00-\x1f\x7f]/g, "");
+        draw();
+      }
+    };
     const input = term.onData((data) => {
       if (data.length > 1 && /[\r\n]/.test(data) && !/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/.test(data))
         pasteLines(data.split(/\r\n|\r|\n/));
@@ -242,6 +252,14 @@ export default function MacTerminalView({
       terminal.current = null;
     };
   }, [peer.url, peer.token, tab.id]);
+  // Each line of a paste runs as its own command here, so one with a line
+  // break asks first.
+  const phonePaste = usePhonePaste((text) => {
+    const clean = pastable(text);
+    const question = pasteQuestion(clean);
+    if (question && !confirm(question)) return;
+    pasteText.current(clean);
+  }, setHint);
   useEffect(() => {
     if (!hint) return;
     const timer = setTimeout(() => setHint(""), 3500);
@@ -256,10 +274,19 @@ export default function MacTerminalView({
         onClick={() => terminal.current?.focus()}
       />
       {history.reading && <button className="terminal-latest" onClick={history.latest}>↓ Latest output</button>}
+      {phonePaste.box}
       <div className="key-row terminal-key-row mac-line" role="toolbar" aria-label="Terminal keys">
         <span className="terminal-line-hint">
           {hint || `Type, then Enter sends the line to this ${desktopTabWord(tab.provider, peer.platform)}.`}
         </span>
+        <button
+          aria-label="Paste"
+          onPointerDown={(event) => event.preventDefault()}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={phonePaste.paste}
+        >
+          <ClipboardPaste size={16} />
+        </button>
         <button
           aria-label="Enter"
           onPointerDown={(event) => event.preventDefault()}
