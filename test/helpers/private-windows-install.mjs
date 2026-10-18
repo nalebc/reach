@@ -25,7 +25,13 @@ export function privateWindowsInstall() {
   return installed ||= (async () => {
     const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
     const sid = accountSid((await exec(path.join(system, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { windowsHide: true, timeout: 10000 })).stdout);
-    const stage = await createWindowsPrivateStage({ sid });
+    const profile = await fs.realpath((await exec(path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.WriteLine([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))"],
+      { windowsHide: true, timeout: 10000 })).stdout.trim());
+    // The default LocalAppData/Reach container is intentionally excluded from
+    // grants. A test project/share belongs under the validated real profile,
+    // with the same production ancestry and atomic private-stage checks.
+    const stage = await createWindowsPrivateStage({ sid, parent: profile });
     stageDirectory = stage.dir;
     const root = path.join(stage.dir, "package"), work = path.join(stage.dir, "work");
     await fs.mkdir(root);
