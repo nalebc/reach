@@ -9,6 +9,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { cleanPreload } from "./clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST } from "./fake-tailscale.mjs";
+import { privateWindowsInstall } from "./private-windows-install.mjs";
+import { copyPrivateAcceptanceArtifact } from "../acceptance/private-artifact.mjs";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const identity = (name, user = 42) => ({
@@ -52,33 +54,45 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
   if (source && process.platform !== "linux")
     throw Error("The cold source-install harness runs only on Linux, with fake Tailscale; it must not discover a host's Tailscale app.");
   const windows = process.platform === "win32";
+  const nativeInstall = windows && real ? await privateWindowsInstall() : null;
   // Point at a clean npm install to run the same cases against the actual
   // release artifact; otherwise use the current checkout's package files.
-  const packageRoot = path.resolve(source ? "." : process.env.REACH_TEST_PACKAGE || ".");
+  const packageRoot = path.resolve(source ? "." : process.env.REACH_TEST_PACKAGE || nativeInstall?.root || ".");
   const packageRequire = createRequire(path.join(packageRoot, "package.json"));
   const dependencies = path.dirname(path.dirname(packageRequire.resolve("express/package.json")));
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "reach-first-install-"));
+  const temp = await fs.mkdtemp(path.join(nativeInstall?.work || os.tmpdir(), "reach-first-install-"));
   const app = path.join(temp, "package"), home = path.join(temp, "home");
   const state = path.join(home, ".reach"), shared = path.join(home, "shared");
   await fs.mkdir(shared, { recursive: true });
   await fs.mkdir(app);
   await fs.writeFile(path.join(shared, "welcome.txt"), "First installation works.");
-  for (const name of ["bin", "scripts", "server"])
-    await fs.cp(path.join(packageRoot, name), path.join(app, name), { recursive: true });
-  if (source) {
-    for (const name of ["reach", "src", "public", "index.html", "start.html", "agent.html", "tsconfig.json", "vite.config.mjs", "package-lock.json"])
-      await fs.cp(path.join(packageRoot, name), path.join(app, name), { recursive: true });
-    await fs.mkdir(path.join(app, "tailnet"));
-    for (const name of ["main.go", "go.mod", "go.sum"])
-      await fs.copyFile(path.join(packageRoot, "tailnet", name), path.join(app, "tailnet", name));
+  if (nativeInstall) {
+    // Native Windows checks the actual code tree. Keep its npm shape (no
+    // src) with fresh bytes under a private profile parent, not junctions
+    // back to the shared Actions checkout or copied checkout descriptors.
+    copyPrivateAcceptanceArtifact({ source: packageRoot, destination: app,
+      members: ["bin", "scripts", "server", "dist", "tailnet", "package.json"] });
+    const modules = path.join(app, "node_modules");
+    await fs.mkdir(modules);
+    copyPrivateAcceptanceArtifact({ source: dependencies, destination: modules, members: await fs.readdir(dependencies) });
   } else {
-    // Windows links folders as junctions, which need no privilege.
-    const folder = windows ? "junction" : "dir";
-    for (const name of ["dist", "tailnet"])
-      await fs.symlink(path.join(packageRoot, name), path.join(app, name), folder);
-    await fs.symlink(dependencies, path.join(app, "node_modules"), folder);
+    for (const name of ["bin", "scripts", "server"])
+      await fs.cp(path.join(packageRoot, name), path.join(app, name), { recursive: true });
+    if (source) {
+      for (const name of ["reach", "src", "public", "index.html", "start.html", "agent.html", "tsconfig.json", "vite.config.mjs", "package-lock.json"])
+        await fs.cp(path.join(packageRoot, name), path.join(app, name), { recursive: true });
+      await fs.mkdir(path.join(app, "tailnet"));
+      for (const name of ["main.go", "go.mod", "go.sum"])
+        await fs.copyFile(path.join(packageRoot, "tailnet", name), path.join(app, "tailnet", name));
+    } else {
+      // Modeled Windows links folders as junctions, which need no privilege.
+      const folder = windows ? "junction" : "dir";
+      for (const name of ["dist", "tailnet"])
+        await fs.symlink(path.join(packageRoot, name), path.join(app, name), folder);
+      await fs.symlink(dependencies, path.join(app, "node_modules"), folder);
+    }
+    await fs.copyFile(path.join(packageRoot, "package.json"), path.join(app, "package.json"));
   }
-  await fs.copyFile(path.join(packageRoot, "package.json"), path.join(app, "package.json"));
   const fake = await fakeTailscale(temp, { ...tailscale, setup: status, funnelDenied, identities: {
     "100.64.0.21": identity("phone-app"),
     "100.64.0.22": identity("phone-browser"),
@@ -230,7 +244,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
   t.after(async () => {
     await stop();
     // The linked folders go first, as links: never what they point at.
-    if (!source) for (const name of ["dist", "tailnet", "node_modules"]) await fs.rm(path.join(app, name), { force: true }).catch(() => {});
+    if (!source && !nativeInstall) for (const name of ["dist", "tailnet", "node_modules"]) await fs.rm(path.join(app, name), { force: true }).catch(() => {});
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method } = {}) => {
