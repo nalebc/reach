@@ -220,6 +220,10 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   // Windows helpers are compiled with the PC's own csc.exe: built and run for real there.
   assert.match(ci, /test\/windows-native-build\.test\.mjs/);
+  // The fresh hook verifier is gated on the native lane's environment.
+  // Selection in the shared Windows suite alone would silently skip it.
+  for (const name of ["windows-owner-rights", "windows-state-normalization", "windows-claude-hooks"])
+    assert.ok(ci.includes(`test/${name}.test.mjs`), `${name} must execute in the Restricted native lane`);
   for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
