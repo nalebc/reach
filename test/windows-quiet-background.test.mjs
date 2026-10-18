@@ -2,19 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { backgroundService } from "../scripts/background-service.mjs";
 import { windowsTask } from "../scripts/windows-task.mjs";
 import { setupStamp } from "../scripts/setup-stamp.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
 import { windowsFixture } from "./helpers/windows-fixtures.mjs";
+import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 
 // Background mode on a real Windows PC (workstreams K and L): the real
-// Reach, from this checkout (CI's build, its setup stamp written as
-// bootstrap writes it), run by its Scheduled Task in this session with no
+// Reach, from a private byte-copy of this checkout's CI build (its setup
+// stamp written as bootstrap writes it), run by its Scheduled Task with no
 // window, then asked for what makes it start console programs (Explorer's
 // file icons and an owner's command through PowerShell, a command ended at
 // its deadline with taskkill, a terminal). A WinEvent hook
@@ -22,7 +21,6 @@ import { windowsFixture } from "./helpers/windows-fixtures.mjs";
 // shows, even one that flashes: none may be a console's, nor any of the
 // task's programs'. Local mode: no Tailscale here.
 const onWindows = { skip: process.platform !== "win32" && "a real Windows PC", timeout: 300000 };
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check, what, ms = 120000) => {
   for (const end = Date.now() + ms; ; await sleep(250)) {
@@ -41,9 +39,10 @@ const sessionOf = (pid) =>
     }));
 
 test("Windows background mode: the task's Reach and the console programs it starts show no window, not even for a moment", onWindows, async (t) => {
+  const { root: repo, work } = await privateWindowsInstall();
   const stamp = setupStamp(repo);
   assert.ok(stamp.agent && fs.existsSync(path.join(repo, "dist", "index.html")), "a built checkout (npm run build:release)");
-  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-quiet-")));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(work, "reach-quiet-")));
   const state = path.join(base, "state");
   const share = path.join(base, "share");
   fs.mkdirSync(state);

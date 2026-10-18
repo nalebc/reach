@@ -94,11 +94,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `pair: false` leaves the phone out (Tailscale mode has no pairing code).
 // `launchCode`: more launch options, as source evaluated in Reach's process
 // (code-only options such as a stand-in peer check), `prepare` may add some.
+// `fixtureRoot`: a caller-owned empty temporary root, for real Windows cases
+// whose install/work tree must live under a freshly private directory.
 export async function startCleanReach(
   t,
-  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true, launchCode = "", packageRoot = process.cwd() } = {},
+  { args = {}, env: extra = {}, prepare, preloads = [], ready = /Pairing code: \d{4} \d{4}/, pair = true, launchCode = "", packageRoot = process.cwd(), fixtureRoot } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-clean-"));
+  const root = fixtureRoot || await fs.mkdtemp(path.join(os.tmpdir(), "reach-clean-"));
   const home = path.join(root, "home");
   const bin = path.join(root, "bin");
   await fs.mkdir(home);
@@ -126,6 +128,13 @@ export async function startCleanReach(
     for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
     env.Path = ["System32", "", "System32\\Wbem", "System32\\WindowsPowerShell\\v1.0"].map((dir) => path.win32.join(windows, dir)).join(";");
     env.USERPROFILE = home;
+    if (fixtureRoot) {
+      // Keep KnownFolder probes in the same private, disposable profile.
+      env.LOCALAPPDATA = path.join(home, "AppData", "Local");
+      env.APPDATA = path.join(home, "AppData", "Roaming");
+      await fs.mkdir(env.LOCALAPPDATA, { recursive: true });
+      await fs.mkdir(env.APPDATA, { recursive: true });
+    }
   }
   const entry = pathToFileURL(path.resolve(packageRoot, "scripts/launch.mjs")).href;
   const child = spawn(
