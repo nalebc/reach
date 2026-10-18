@@ -19,7 +19,7 @@ export const suites = {
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.
-    "qr-onboarding-e2e",
+    "qr-onboarding-e2e", "windows-atomic-json",
     // Shared phone gestures must also run against Windows' input contract.
     "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",

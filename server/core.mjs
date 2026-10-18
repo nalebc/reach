@@ -80,8 +80,42 @@ export function sameHash(a, b) {
 export function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${id()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  const json = JSON.stringify(value, null, 2);
+  let ownTemporary = false;
+  try {
+    // Exclusive creation also makes failure cleanup specific to this write.
+    const fd = fs.openSync(tmp, "wx", 0o600);
+    ownTemporary = true;
+    let writeError;
+    try { fs.writeFileSync(fd, json); } catch (error) { writeError = error; }
+    try { fs.closeSync(fd); } catch (error) { writeError ||= error; }
+    if (writeError) throw writeError;
+    // Windows may briefly refuse replacement while a reader/scanner holds
+    // the destination without delete sharing. Retry only this same prepared
+    // rename: no new JSON, action replay or unlink of the old destination.
+    const delays = process.platform === "win32" ? [10, 20, 40, 80, 100] : [];
+    let pause;
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(tmp, file); break; }
+      catch (error) {
+        if (attempt >= delays.length || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+        pause ||= new Int32Array(new SharedArrayBuffer(4));
+        Atomics.wait(pause, 0, 0, delays[attempt]);
+      }
+    }
+  } catch (error) {
+    if (ownTemporary) {
+      try { fs.unlinkSync(tmp); }
+      catch (cleanupError) {
+        // Preserve the operation's original failure, including when Windows
+        // also refuses temporary-file cleanup. Never remove the destination.
+        if (cleanupError.code !== "ENOENT") {
+          try { error.cleanupError = cleanupError; } catch { /* Preserve a non-extensible original error. */ }
+        }
+      }
+    }
+    throw error;
+  }
 }
 export function loadJson(file, fallback) {
   try {

@@ -72,9 +72,9 @@ export async function pairRunningHost(
   } catch {
     /* no one address: the private one */
   }
-  if (one) openPairingWindow(dataDir);
-  if (process.platform === "win32" && host.tailscaleApproval) {
-    openPairingWindow(dataDir);
+  const browserApproval = process.platform === "win32" && host.tailscaleApproval;
+  if (one || browserApproval) openPairingWindow(dataDir);
+  if (browserApproval) {
     const browser = one ? await browserCheck(one, host.instance) : { ready: false, reason: host.browserLink?.reason || "Reach is still preparing the public browser link." };
     if (!browser.ready) throw Error(`${browser.reason} Keep Reach's terminal open; its phone QR appears when the browser connection is ready.`);
   }
