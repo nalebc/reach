@@ -10,7 +10,7 @@
 // git. Nothing published yet is "no release", not an error.
 import fs from "node:fs";
 import path from "node:path";
-import { spawn as spawnChild } from "node:child_process";
+import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { compareVersions, parseVersion } from "./versions.mjs";
 import { boundedResponseText } from "./http-response.mjs";
 
@@ -101,6 +101,59 @@ export async function latestRelease({ name = PACKAGE, fetch: get = globalThis.fe
   } catch {
     return { state: "offline" };
   }
+}
+
+// Git checkouts need a published Git tag, which need not be npm's dist-tag.
+export async function latestSourceRelease({ fetch: get = globalThis.fetch, timeoutMs = 8000, maxBytes = 64 * 1024 } = {}) {
+  try {
+    const res = await get("https://api.github.com/repos/nalebc/reach/releases/latest", {
+      signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers: { accept: "application/vnd.github+json" },
+    });
+    if (res.status === 404) return { state: "unpublished" };
+    if (!res.ok) return { state: "offline" };
+    const release = JSON.parse(await boundedResponseText(res, maxBytes));
+    const version = parseVersion(release?.tag_name)?.text;
+    if (!version || release.tag_name !== `v${version}` || release.draft !== false || release.prerelease !== false || typeof release.published_at !== "string" || !Number.isFinite(Date.parse(release.published_at)))
+      return { state: "offline" };
+    return { state: "found", version, tag: release.tag_name };
+  } catch {
+    return { state: "offline" };
+  }
+}
+
+// Source installs stay under the owner's control. Only read Git's status;
+// never fetch, switch, stash or restart while explaining how to update.
+export async function sourceUpdateGuidance(root, {
+  version,
+  command = process.platform === "win32" ? ".\\reach.cmd" : "./reach",
+  release = latestSourceRelease,
+  status = () => execFileSync("git", ["--no-optional-locks", "-C", root, "status", "--porcelain", "--untracked-files=normal"], {
+    encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  }),
+} = {}) {
+  const lines = ["Reach was not updated.", "This copy was installed from Git. Update it with Git.", ""];
+  let changes = null;
+  try { changes = status().trim().length > 0; } catch { /* don't suggest switching an unchecked folder */ }
+  let found;
+  try { found = await release(); } catch { found = { state: "offline" }; }
+  const latest = found?.state === "found" ? parseVersion(found.version)?.text : null;
+  const tag = latest && found.tag === `v${latest}` ? found.tag : null;
+  if (tag) lines.push(`Latest published release: ${latest}`);
+  else lines.push(found?.state === "unpublished" ? "No Reach release is published yet." : "Couldn't check the latest release. Check https://github.com/nalebc/reach/releases");
+  const current = parseVersion(version)?.text;
+  if (current) lines.push(`This checkout reports: ${current}`);
+  lines.push("");
+  if (changes !== false) {
+    lines.push(changes ? "Local changes found. Save or commit them before switching releases." : "Couldn't check for local changes. Check this folder before switching releases.",
+      "Review them: git status --short", `Then run ${command} update again for the release commands.`);
+  } else if (tag) {
+    lines.push("To run that release, use these commands from this folder. Continue only if each command succeeds:",
+      `  git fetch https://github.com/nalebc/reach.git tag ${tag}`,
+      `  git switch --detach refs/tags/${tag}`,
+      `  ${command} restart`, "",
+      "Restart ends Reach's terminals and live screens. Phones reload, and supported agent clients refresh their tools on their next use.");
+  }
+  return lines.join("\n");
 }
 
 // Windows can't replace the files of a Reach that runs (its folder is its
