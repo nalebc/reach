@@ -46,7 +46,9 @@ final class DesktopMouse {
   private(set) var held: CGMouseButton?
   private var number: Int64 = 0
   private var clickState = 1
-  private var previousClick: (id: Int, point: CGPoint, at: Date)?
+  // The first tap of a pair: where it asked for (before touch assist) and
+  // where it landed.
+  private var previousClick: (id: Int, asked: CGPoint, point: CGPoint, at: Date)?
   init(source: CGEventSource?, point: CGPoint, emit: @escaping (CGEvent) -> Void = {
     $0.post(tap: .cghidEventTap)
   }) {
@@ -92,22 +94,43 @@ final class DesktopMouse {
     held = nil
   }
   func forgetClick() { previousClick = nil }
-  // A rapid pair is two physical clicks total. Click state 2 never changes
-  // the second tap's location: its live hit target still decides what receives it.
+  // The phone pairs two taps up to its own radius apart (pair, in display
+  // points, never under 4). A finger drifts between them, and touch assist
+  // may have moved the first: compare where both asked for, and the second
+  // lands exactly where the first did.
+  func paired(_ asked: CGPoint, id: Int?, state: Int, pair: CGSize) -> CGPoint? {
+    guard state == 2, let id, let previous = previousClick, previous.id == id,
+      Date().timeIntervalSince(previous.at) < 2,
+      abs(asked.x - previous.asked.x) <= max(4, pair.width),
+      abs(asked.y - previous.asked.y) <= max(4, pair.height)
+    else { return nil }
+    return previous.point
+  }
+  // A rapid pair is two physical clicks total. Without the phone's pair
+  // radius, click state 2 never changes the second tap's location: its live
+  // hit target still decides what receives it.
   func click(at next: CGPoint, button: CGMouseButton, count: Int = 1,
-    id: Int? = nil, state: Int = 1) -> (CGPoint, Int)
+    id: Int? = nil, state: Int = 1, asked: CGPoint? = nil, pair: CGSize? = nil) -> (CGPoint, Int)
   {
     let previous = previousClick
-    let continuing = count == 1 && button == .left && state == 2 && id != nil
-      && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
-      && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
-    let landed = next
+    let single = count == 1 && button == .left
+    var landed = next, continuing = false
+    if let pair {
+      if single, let first = paired(asked ?? next, id: id, state: state, pair: pair) {
+        landed = first
+        continuing = true
+      }
+    } else {
+      continuing = single && state == 2 && id != nil
+        && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
+        && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
+    }
     for index in 1...count {
       down(at: landed, button: button, count: continuing ? 2 : index)
       up(at: landed)
     }
-    if count == 1 && button == .left && state == 1, let id {
-      previousClick = (id, landed, Date())
+    if single && state == 1, let id {
+      previousClick = (id, asked ?? next, landed, Date())
     }
     return (landed, continuing ? 2 : count)
   }
@@ -826,7 +849,21 @@ final class Input: @unchecked Sendable {
         y: bounds.minY + y * max(0, bounds.height - 1))
       let requested = point
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
-      if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
+      let clickId = p["clickId"] as? Int, clickState = p["clickState"] as? Int ?? 1
+      // The phone's pairing radius for a second tap, as fractions of the
+      // display (0 < v <= 0.1); anything else keeps the old pairing.
+      var pair: CGSize?
+      if type == "click", let r = p["pair"] as? [String: Any], let px = r["x"] as? Double,
+        let py = r["y"] as? Double, px.isFinite, py.isFinite, px > 0, py > 0, px <= 0.1, py <= 0.1
+      {
+        pair = CGSize(width: px * max(0, bounds.width - 1), height: py * max(0, bounds.height - 1))
+      }
+      // A second tap that continues its pair lands where the first did:
+      // touch assist has nothing to decide, so it isn't asked.
+      let continues = pair.flatMap {
+        mouse.paired(requested, id: clickId, state: clickState, pair: $0)
+      } != nil
+      if type == "click", button == .left, !continues, let tolerance = p["touch"] as? [String: Any] {
         point = touchPoint(point, tolerance)
       }
       // A local mouse may have moved between gestures. Held drags keep
@@ -842,8 +879,8 @@ final class Input: @unchecked Sendable {
       if type == "up" { mouse.up(at: point); currentFlags = [] }
       if type == "click" {
         let (landed, state) = mouse.click(at: point, button: button,
-          count: p["count"] as? Int ?? 1, id: p["clickId"] as? Int,
-          state: p["clickState"] as? Int ?? 1)
+          count: p["count"] as? Int ?? 1, id: clickId, state: clickState,
+          asked: requested, pair: pair)
         currentFlags = []
         return ["clickState": state, "retargeted": landed != requested, "point": [
           "x": min(1, max(0, (landed.x - bounds.minX) / max(1, bounds.width - 1))),

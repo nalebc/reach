@@ -103,7 +103,9 @@ func AXUIElementCopyMultipleAttributeValues(_ element: AXUIElement, _ names: CFA
   out = (names as! [String]).map { values[$0] ?? NSNull() } as CFArray
   return .success
 }
+var hits = 0
 func AXUIElementCopyElementAtPosition(_ system: AXUIElement, _ x: Float, _ y: Float, _ out: inout AXUIElement?) -> AXError {
+  hits += 1
   if x >= 104 && x <= 124 && y >= 90 && y <= 110 { out = cover ? overlay : button }
   else { out = root }
   return .success
@@ -178,6 +180,53 @@ _ = try! input.action(["type": "down", "x": 0.3, "y": 0.4])
 _ = try! input.action(["type": "move", "x": 0.6, "y": 0.2])
 _ = try! input.action(["type": "up", "x": 0.6, "y": 0.2])
 checkClick(click(miss), at)
+// The second tap of a pair, with the phone's pairing radius: compared with
+// where the first asked for, it lands exactly where the first landed (touch
+// assist moved that one onto the button), with click state 2, and touch
+// assist isn't asked again.
+attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: true)
+let pairing: [String: Any] = ["x": 8.0 / 999, "y": 8.0 / 499]
+func tap(_ x: Double, _ y: Double, id: Int, state: Int, pair: [String: Any]? = nil) -> [String: Any] {
+  events = []
+  var action: [String: Any] = ["type": "click", "x": x / 999, "y": y / 499, "button": "left",
+    "count": 1, "touch": tolerance, "clickId": id, "clickState": state]
+  if let pair { action["pair"] = pair }
+  return try! input.action(action)
+}
+func landed(_ result: [String: Any], _ expected: CGPoint, state: Int) {
+  let presses = events.filter { $0.type != .mouseMoved }
+  precondition(presses.map { $0.type } == [.leftMouseDown, .leftMouseUp])
+  precondition(events.allSatisfy { abs($0.location.x - expected.x) < 1e-9 && abs($0.location.y - expected.y) < 1e-9 },
+    "landed at \(events.map { $0.location }), not \(expected)")
+  precondition(presses.allSatisfy { field($0, .mouseEventClickState) == Int64(state) })
+  let decoded = try! JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: result)) as! [String: Any]
+  precondition(decoded["clickState"] as? Int == state)
+  let ack = decoded["point"] as! [String: Double]
+  precondition(abs(ack["x"]! - expected.x / 999) < 1e-10 && abs(ack["y"]! - expected.y / 499) < 1e-10)
+}
+landed(tap(100, 100, id: 41, state: 1), CGPoint(x: 106, y: 100), state: 1)
+hits = 0
+let second = tap(103, 106, id: 41, state: 2, pair: pairing)
+landed(second, CGPoint(x: 106, y: 100), state: 2)
+precondition(second["retargeted"] as? Bool == true)
+precondition(hits == 0, "touch assist isn't asked for a tap that continues its pair")
+// Without the radius, today's rule: the drifted tap is assisted on its own
+// (to 106,106), 6 points from where the first landed, and clicks alone.
+landed(tap(100, 100, id: 42, state: 1), CGPoint(x: 106, y: 100), state: 1)
+landed(tap(103, 106, id: 42, state: 2), CGPoint(x: 106, y: 106), state: 1)
+// Beyond the radius, or another pair: a click of its own, assisted as usual.
+landed(tap(300, 300, id: 43, state: 1), CGPoint(x: 300, y: 300), state: 1)
+hits = 0
+landed(tap(309, 300, id: 43, state: 2, pair: pairing), CGPoint(x: 309, y: 300), state: 1)
+precondition(hits > 0)
+landed(tap(300, 300, id: 44, state: 1), CGPoint(x: 300, y: 300), state: 1)
+landed(tap(302, 302, id: 45, state: 2, pair: pairing), CGPoint(x: 302, y: 302), state: 1)
+// A radius out of bounds is ignored: today's rule, the tap's own point.
+for wrong: [String: Any] in [["x": 0.5, "y": 0.01], ["x": 0, "y": 0.01], ["x": "8", "y": 0.01], [:]] {
+  landed(tap(300, 300, id: 46, state: 1), CGPoint(x: 300, y: 300), state: 1)
+  landed(tap(302, 302, id: 46, state: 2, pair: wrong), CGPoint(x: 302, y: 302), state: 2)
+}
+print("paired taps passed")
 // Frame pixel density does not enter this calculation: Quartz receives
 // display points, including exact corners and fractional coordinates.
 displayBounds = CGRect(x: -1440, y: 120, width: 1440, height: 900)
@@ -213,5 +262,6 @@ print("focused child input fixtures passed")
   assert.match(checked.stdout, /touch geometry passed/);
   assert.match(checked.stdout, /live target fixtures passed/);
   assert.match(checked.stdout, /native click coordinates passed/);
+  assert.match(checked.stdout, /paired taps passed/);
   assert.match(checked.stdout, /focused child input fixtures passed/);
 });
