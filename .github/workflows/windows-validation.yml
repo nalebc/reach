@@ -49,6 +49,13 @@ jobs:
         if: ${{ inputs.real_vendors }}
         shell: pwsh
         run: ./test/acceptance/install-windows-vendors.ps1
+      - name: Verify the disposable runner has a usable desktop
+        id: desktop_preflight
+        run: node .github/scripts/prepare-windows-desktop.mjs --if-needed
+        env:
+          REACH_CI_DESKTOP_PREFLIGHT: "1"
+          REACH_CI_DESKTOP_REQUIRED: ${{ inputs.real_vendors && '1' || '0' }}
+          TESTS: ${{ inputs.tests }}
       - name: Real Windows socket directory and junction security checks
         id: native_socket
         if: ${{ inputs.real_vendors && !cancelled() }}
@@ -59,7 +66,7 @@ jobs:
           npm run test:file -- --test-timeout=180000 test/windows-codex-socket-native.test.mjs
       - name: Real standard-user Codex and visible-console local acceptance
         id: probes
-        if: ${{ inputs.real_vendors && !cancelled() && steps.vendors.outcome == 'success' }}
+        if: ${{ inputs.real_vendors && !cancelled() && steps.desktop_preflight.outcome == 'success' && steps.vendors.outcome == 'success' }}
         shell: pwsh
         env:
           REACH_REAL_WINDOWS_ACCEPTANCE: "1"
@@ -73,7 +80,7 @@ jobs:
           NATIVE_SOCKET_OUTCOME: ${{ steps.native_socket.outcome }}
         run: ./test/acceptance/finalize-windows-report.ps1
       - name: Chosen tests under a normal PC's script policy
-        if: ${{ !inputs.real_vendors }}
+        if: ${{ !inputs.real_vendors && steps.desktop_preflight.outcome == 'success' }}
         # PowerShell 7 (this step's shell) keeps its own policy; Reach's
         # helpers run in Windows PowerShell, which gets the Restricted one.
         shell: pwsh
