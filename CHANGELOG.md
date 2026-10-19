@@ -54,6 +54,8 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 
 ### Validation and limits
 
+- Simulator checks require native background and resume events; app-launcher
+  completion alone does not establish those transitions.
 - Release checks run Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
   the iOS simulator, security scans and installed npm/portable artifacts. Windows
   ARM64 native validation is recorded separately from the required x64 lane.
