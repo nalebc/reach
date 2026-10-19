@@ -8,9 +8,11 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-10-19
+## [0.4.1] — 2026-10-19
 
 Early access: file editing, clipboard paste and Windows setup improvements.
+Includes the changes prepared for the unpublished 0.4.0 candidate, whose tag
+remains unchanged after its validation failed.
 
 ### Added
 
@@ -32,6 +34,10 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 
 ### Fixed
 
+- Recover screen audio using media arrival timing and buffered frames, avoiding
+  repeated drains without waiting for an extra whole packet batch. Initial
+  buffering stays at 100 ms and the recovery target stays capped at 400 ms.
+  Intentional silence and discarded old audio reset the timing history.
 - Keep a mobile navigation tap on its intended destination when device details
   add tabs while the finger is down. Cancelled gestures and removed destinations
   do not navigate; keyboard and assistive clicks retain their explicit target.
@@ -83,13 +89,21 @@ Early access: file editing, clipboard paste and Windows setup improvements.
   transitions, standard-user GUI parity and full signed-in provider tasks remain
   unqualified. An AppContainer control refusal leaves its escape checks unrun;
   a passing parent does not prove those assertions executed.
+- Disposable Windows test browsers join a kernel-owned process job before
+  starting, so an exited parent cannot leave descendants holding their pipes
+  and temporary profile. Cleanup requires proof that the owned job is empty.
 - An additional hosted macOS 26/iOS 26.4.1 cold boot timed out before Reach
   installation, leaving that environment unqualified. The matching 26.2 run
   completed all eight native checks after two initial launch timeouts.
   Simulator startup stability and the earlier hangs' cause remain unproven.
-- npm installs update with `reach update`; source installs use `v0.4.0`. Keep
+- npm installs update with `reach update`; source installs use `v0.4.1`. Keep
   existing Reach state and restart through the CLI. Restarting ends terminals
   and live screens; invited agents obtain compatible runtime updates from Reach.
+
+## [0.4.0] — 2026-10-19 (unpublished)
+
+The tag did not pass release validation and was not published. Its changes
+continue in 0.4.1; the original tag remains unchanged.
 
 ## [0.3.3] — 2026-10-18
 

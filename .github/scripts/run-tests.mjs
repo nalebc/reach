@@ -1,5 +1,6 @@
-// All test execution goes through npm's guarded test:file entrypoint. This
-// wrapper makes Windows selection explicit and keeps machine-readable reports.
+// npm owns suite orchestration. Start guarded Node directly so Windows' npm
+// script shell never receives the full file list and its 8 KiB command limit.
+// This wrapper makes Windows selection explicit and keeps machine-readable reports.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +56,7 @@ export const suites = {
     // On Windows CI all journey files run once in the serial native step, including
     // their real browser startup; the concurrent contract lane defers them.
     "journeys/home", "journeys/terminals", "journeys/terminal-paste-target", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
-    "journeys/access", "journeys/pause", "headless-chrome-lifecycle", "journey-native-diagnostics", "windows-ci-desktop-preflight",
+    "journeys/access", "journeys/pause", "headless-chrome-lifecycle", "windows-browser-lifetime-native", "journey-native-diagnostics", "windows-ci-desktop-preflight",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
@@ -146,7 +147,7 @@ export const suites = {
     "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
     "desktop-terminals", "terminal-titles", "terminal-list-ui",
     // Hearing the computer beside its screen (Oct 13): the shared part.
-    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "tone-stability",
+    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "sound-worklet-recovery", "sound-worklet-cadence", "sound-packet-batch", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
     // Workstream C, the Windows sandbox (docs/parity/C-sandbox.md). The unit
@@ -197,7 +198,7 @@ export async function run(suite) {
   if (suite === "native" && process.platform !== "darwin") throw Error("The native security suite requires macOS; a skipped suite is not a pass.");
   const files = testFiles(suite);
   fs.mkdirSync("reports", { recursive: true });
-  const args = [process.env.npm_execpath, "run", "test:file", "--",
+  const args = ["--import", new URL("../../test/helpers/runaway-guard.mjs", import.meta.url).href, "--test",
     "--test-timeout=180000", `--test-concurrency=${suite === "native" ? 1 : 2}`,
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=junit", `--test-reporter-destination=reports/${suite}.xml`,

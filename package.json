@@ -1,6 +1,6 @@
 {
   "name": "@nalebc/reach",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Your devices, within reach. A private mobile workspace for your computers.",
   "license": "MIT",
@@ -56,6 +56,7 @@
     "test:ci": "node .github/scripts/run-tests.mjs all",
     "test:ci:windows": "node .github/scripts/run-tests.mjs windows",
     "test:ci:native": "node .github/scripts/run-tests.mjs native",
+    "test:ci:regression-baseline": "node .github/scripts/native-regression-baseline.mjs",
     "test:ci:installed": "node .github/scripts/test-installed-package.mjs"
   },
   "dependencies": {

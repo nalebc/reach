@@ -1,0 +1,66 @@
+name: Native recovery regressions
+# The same cases also run in required CI. This focused read-only workflow
+# preserves archived-code observations separately from current requirements.
+on:
+  push:
+    branches: [validation/native-recovery-0.4.1]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, scenario: windows-lifetime }
+          - { os: windows-11-arm, scenario: windows-lifetime }
+          - { os: windows-2025, scenario: audio-batch }
+          - { os: windows-11-arm, scenario: audio-batch }
+          - { os: macos-15, scenario: audio-batch }
+          - { os: macos-15-intel, scenario: audio-batch }
+          - { os: windows-2025, scenario: current }
+          - { os: windows-11-arm, scenario: current }
+          - { os: macos-15, scenario: current }
+          - { os: macos-15-intel, scenario: current }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      REACH_TEST_WINDOWS_DESKTOP: "1"
+      REACH_TEST_SOUND_CHROME: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+        id: install
+      - name: Observe archived code with the original assertions
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.scenario != 'current' }}
+        # Each baseline has its own machine: a stalled or rejected original
+        # cannot overlap another diagnostic or the current implementation.
+        env:
+          BASELINE_SCENARIO: ${{ matrix.scenario }}
+        run: npm run test:ci:regression-baseline -- "$BASELINE_SCENARIO"
+        shell: bash
+      - name: Current lifecycle, worklet and real browser/helper regressions
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.scenario == 'current' }}
+        run: |
+          node -e "require('node:fs').mkdirSync('reports', { recursive: true })"
+          npm run test:file -- --test-timeout=300000 --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/native-regressions.xml test/ci-policy.test.mjs test/headless-chrome-lifecycle.test.mjs test/windows-browser-lifetime-native.test.mjs test/sound-worklet.test.mjs test/sound-worklet-recovery.test.mjs test/sound-worklet-cadence.test.mjs test/sound-packet-batch.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs
+      - name: Preserve original failures and current results without overwriting either
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-recovery-${{ matrix.os }}-${{ matrix.scenario }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14
