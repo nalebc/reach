@@ -182,9 +182,7 @@ export const suites = {
 
 export function testFiles(suite, root = process.cwd()) {
   const names = suite === "all"
-    // DIAGNOSTIC CANARY ONLY: retain the full runner's preparation and bounds,
-    // but select this one fixture. This branch is not release qualification.
-    ? ["agent-watch.test.mjs"]
+    ? fs.readdirSync(path.join(root, "test")).filter(name => name.endsWith(".test.mjs")).sort()
     : suites[suite]?.map(name => `${name}.test.mjs`);
   if (!names?.length) throw Error(`Unknown or empty CI test suite: ${suite}`);
   return names.map(name => {

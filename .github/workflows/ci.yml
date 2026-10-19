@@ -1,5 +1,5 @@
-name: Intel watcher diagnostic
-# Manual scoped canary only; excluded from release-candidate ancestry.
+name: Intel complete guarded suite with watcher diagnostics
+# Manual complete Intel guarded-suite diagnostic; excluded from release-candidate ancestry.
 on:
   workflow_dispatch:
 permissions:
@@ -30,7 +30,7 @@ jobs:
       - run: ./reach --help
       - run: npm run build:release
         id: release_build
-      - name: Scoped watcher diagnostics and modeled controls (not full qualification)
+      - name: Complete Intel guarded suite with watcher diagnostics (not full release qualification)
         if: ${{ !cancelled() && steps.release_build.outcome == 'success' }}
         run: npm run test:ci
         env:
