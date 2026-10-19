@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { windowsBinary } from "./desktop-native.mjs";
+import { windowsBinary, windowsBuildDirectory } from "./desktop-native.mjs";
 
 const exec = promisify(execFile);
 
@@ -60,7 +60,7 @@ export async function windowsProcesses({ run = exec, nativeDir = folder, build =
   // reads this list instead (one helper line in a file).
   if (process.env.REACH_TEST_WINDOWS_PROCESSES) return parseProcesses(fs.readFileSync(process.env.REACH_TEST_WINDOWS_PROCESSES, "utf8"));
   if (!nativeDir) throw new Error("Reach's folder for its helpers isn't known here.");
-  fs.mkdirSync(nativeDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(windowsBuildDirectory(nativeDir), { recursive: true, mode: 0o700 });
   const file = await build({ dataDir: nativeDir }, "processes", { dir: nativeDir, platform, signal });
   const { stdout } = await run(file, [], { timeout: 15000, maxBuffer: 64 << 20, windowsHide: true, ...(signal ? { signal } : {}) });
   return parseProcesses(stdout);

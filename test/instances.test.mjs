@@ -182,6 +182,54 @@ test("reach status tells what really runs, with its link", { skip: process.platf
   assert.equal(stateOf("/src/reach", () => true), "/src/reach/.reach");
 });
 
+test("runtime status belongs to the observed process on every supported host", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-runtime-pid-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "host-status.json");
+  const saved = { link: "https://fixture.invalid", origin: "https://private.invalid:8443",
+    routes: { private: { up: true, since: 1, interruptions: 2 }, public: { open: true, since: 1 } },
+    awake: { mode: "always", active: true }, signInOff: "from an earlier run",
+    browserLink: { ready: false, reason: "from an earlier run" } };
+  for (const platform of [undefined, "darwin", "linux", "win32"]) {
+    const host = { pid: 7000, root: dir, tty: "ttys003", app: "", ...(platform && { platform }) };
+    const runtime = h => runtimeOf(h, { state: () => dir });
+    const started = new Map([[host.pid, Date.parse("2026-10-18T18:00:00Z")]]);
+    const text = () => statusText([host], { runtime, started, now: Date.parse("2026-10-18T19:00:00Z") });
+    for (const pid of [6000, undefined, "7000"]) {
+      fs.writeFileSync(file, JSON.stringify({ ...saved, ...(pid !== undefined && { pid }) }));
+      assert.deepEqual(runtime(host), {}, `${platform || "POSIX discovery"}: stale, absent or differently typed PID is not this run`);
+      const output = text();
+      assert.match(output, platform === "win32" ? /^Reach: running in a terminal window \(process 7000\), since / : /^Reach: running in a Terminal window \(ttys003\), since /);
+      assert.doesNotMatch(output, /Link:|Private link|Browser link|Private route:|Public link:|Sleep prevention:|Browser sign-in|fixture\.invalid|private\.invalid/);
+    }
+    fs.writeFileSync(file, JSON.stringify({ ...saved, pid: host.pid }));
+    assert.deepEqual(runtime(host), { ...saved, pid: host.pid }, "matching PID retains this process's runtime fields");
+    assert.match(text(), /Private link \(same Tailscale network\): https:\/\/private\.invalid:8443/);
+    assert.match(text(), /Private route: up/);
+    assert.match(text(), /Public link: on/);
+    assert.match(text(), /Sleep prevention: always · active/);
+    fs.unlinkSync(file);
+    assert.deepEqual(runtime(host), {}, "a missing status file does not hide the observed process");
+    assert.match(text(), /^Reach: running /);
+  }
+});
+
+test("runtime status requires a positive safe-integer observed process identity", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-runtime-identity-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "host-status.json");
+  const saved = { link: "https://fixture.invalid", routes: { public: { open: true } }, awake: { active: true } };
+  for (const platform of [undefined, "darwin", "linux", "win32"]) {
+    for (const pid of [undefined, null, 0, -1, 1.5, "7000", Number.MAX_SAFE_INTEGER + 1, true]) {
+      const identity = pid === undefined ? {} : { pid };
+      fs.writeFileSync(file, JSON.stringify({ ...saved, ...identity }));
+      const host = { root: dir, tty: "ttys003", ...(platform && { platform }), ...identity };
+      assert.deepEqual(runtimeOf(host, { state: () => dir }), {},
+        `${platform || "POSIX discovery"}: equally invalid observed and saved PID ${String(pid)} cannot identify this run`);
+    }
+  }
+});
+
 test("a Reach handing itself to the background service doesn't stop that service from starting", () => {
   // First-run setup picks background mode: ./reach installs the service and
   // stays open until the phone connects. The service must start anyway.

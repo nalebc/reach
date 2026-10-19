@@ -91,6 +91,13 @@ test("CI test selection never silently loses a renamed required platform test", 
   for (const suite of Object.keys(suites)) assert.equal(testFiles(suite).length, suites[suite].length);
 });
 
+test("Windows CI retains the atomic JSON sharing regression beside installed pairing", () => {
+  assert.ok(suites.windows.includes("windows-atomic-json"), "transient and permanent state-write refusals need Windows execution");
+  assert.ok(suites.windows.includes("qr-onboarding-e2e"), "the installed pairing flow remains required");
+  assert.ok(testFiles("windows").includes(path.join("test","windows-atomic-json.test.mjs")));
+  assert.ok(testFiles("windows").includes(path.join("test", "private-artifact.test.mjs")), "fresh artifact copy controls must execute on Windows too");
+});
+
 test("the CI runner executes guarded npm tests, writes both reports, and propagates failures", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-runner-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -214,6 +221,10 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   // Windows helpers are compiled with the PC's own csc.exe: built and run for real there.
   assert.match(ci, /test\/windows-native-build\.test\.mjs/);
+  // The fresh hook verifier is gated on the native lane's environment.
+  // Selection in the shared Windows suite alone would silently skip it.
+  for (const name of ["windows-owner-rights", "windows-state-normalization", "windows-claude-hooks"])
+    assert.ok(ci.includes(`test/${name}.test.mjs`), `${name} must execute in the Restricted native lane`);
   for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
@@ -222,6 +233,17 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   assert.match(ci, /test\/windows-sandbox-e2e\.test\.mjs/);
   assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
+});
+
+test("Windows CI runs both terminal journey files in the serial native lane", () => {
+  const native = workflow("ci").jobs.verify.steps.find(step => step.run?.includes("test/journeys/terminals.test.mjs"));
+  assert.ok(native, "the actual native lane must retain the original terminal journeys");
+  for (const name of ["journeys/terminals", "journeys/terminal-paste-target"]) {
+    assert.ok(suites.windows.includes(name), `${name} must remain in the Windows selection`);
+    assert.ok(native.run.includes(`test/${name}.test.mjs`), `${name} must execute in the native lane`);
+  }
+  assert.equal(native.env.REACH_TEST_WINDOWS_DESKTOP, "1");
+  assert.match(native.run, /(?:^|\s)--test-concurrency=1(?:\s|$)/, "native files stay serial");
 });
 
 test("Windows CI covers shared phone navigation, agent workspace privacy, updates, gesture accuracy, accelerated scrolling and native input sequences", () => {
@@ -251,7 +273,12 @@ test("default Windows QR onboarding is required in source CI and the installed-a
   assert.ok(ci.jobs.verify.strategy.matrix.include.some(entry => entry.os.startsWith("windows-")));
   const installed = ci.jobs.verify.steps.find(step => step.run === "npm run test:ci:installed");
   assert.ok(installed, "the built package must be installed and exercised");
-  assert.equal(installed.if, undefined, "Windows cannot be excluded from the installed QR gate");
+  assert.equal(installed.if, "${{ !cancelled() && steps.package_build.outcome == 'success' }}",
+    "every platform must run the installed QR gate once its package exists, including after another test phase failed");
+  assert.equal(ci.jobs.verify.steps.find(step => step.id === "package_build")?.run, "npm run package",
+    "the prerequisite must be the actual package build");
+  assert.equal(ci.jobs.verify.steps.find(step => step.run?.includes("package-candidate.mjs"))?.if, "${{ success() }}",
+    "failed phases must still prevent release candidate handoff");
   const runner = fs.readFileSync(new URL("../.github/scripts/test-installed-package.mjs", import.meta.url), "utf8");
   assert.match(runner, /test\/qr-onboarding-e2e\.test\.mjs/);
   assert.match(runner, /REACH_TEST_PACKAGE: path\.join\(temp, "node_modules", "@nalebc", "reach"\)/);

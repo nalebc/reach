@@ -17,7 +17,11 @@ const files = names.map((name) => {
 fs.mkdirSync("reports", { recursive: true });
 // Console installation cases have their own 600 s bounds; the containing
 // file also includes first-start, Ctrl+C and crash/relaunch cases.
-const fileTimeout = names.includes("windows-console") ? 900000 : 300000;
+// The installed upgrade retains one actual standard-user profile through two
+// published npm installs and CLI starts/stops, then separate native ACL cases.
+// Each install/start/check/stop is bounded inside that explicitly selected file.
+const fileTimeout = names.includes("acceptance/windows-upgrade-state") ? 1200000
+  : names.includes("windows-console") ? 900000 : 300000;
 const result = spawnSync(process.execPath, [
   process.env.npm_execpath || require_npm(),
   "run", "test:file", "--",

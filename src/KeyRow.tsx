@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ClipboardPaste,
   CornerDownLeft,
 } from "lucide-react";
 import "./key-row.css";
@@ -15,12 +16,15 @@ export type RowKey =
 // in the terminal, on Screen and in apps on the phone. The modifier is
 // sticky: tap it, then a letter or a key (ctrl in a terminal, ⌘ on a Mac).
 // Pressing a key never takes focus, so the phone keyboard stays open.
+// `onPaste`: a Paste key, where the screen above takes no paste of its own
+// (a terminal's).
 export default function KeyRow({
   label,
   modifier,
   armed,
   onArm,
   onKey,
+  onPaste,
   className = "",
 }: {
   label: string;
@@ -28,6 +32,7 @@ export default function KeyRow({
   armed: boolean;
   onArm: (armed: boolean) => void;
   onKey: (key: RowKey) => void;
+  onPaste?: () => void;
   className?: string;
 }) {
   const keep = (event: PointerEvent | MouseEvent) => event.preventDefault();
@@ -43,6 +48,11 @@ export default function KeyRow({
       aria-label={label}
       data-immersive-keep
     >
+      {onPaste && (
+        <button {...press} aria-label="Paste" onClick={onPaste}>
+          <ClipboardPaste size={16} />
+        </button>
+      )}
       <button {...press} onClick={() => onKey("escape")}>
         esc
       </button>

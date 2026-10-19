@@ -4,7 +4,7 @@ export class Terminal {
   constructor() {
     Terminal.instances.push(this);
     this.written = [];
-    this.modes = { applicationCursorKeysMode: false };
+    this.modes = { applicationCursorKeysMode: false, bracketedPasteMode: false };
     this.cols = 80;
     this.rows = 24;
     this.buffer = { active: { baseY: 0, viewportY: 0, type: "normal" } };
@@ -32,6 +32,12 @@ export class Terminal {
   // What typing on the phone keyboard does: the terminal hears it.
   type(data) {
     for (const listener of this.listeners ?? []) listener(data);
+  }
+  // xterm 6's paste (browser/Clipboard.ts): line breaks become Return, and
+  // the text is bracketed when the program asked (ESC [?2004h).
+  paste(text) {
+    const data = text.replace(/\r?\n/g, "\r");
+    this.type(this.modes.bracketedPasteMode ? `\x1b[200~${data}\x1b[201~` : data);
   }
   attachCustomKeyEventHandler() {}
   dispose() {}

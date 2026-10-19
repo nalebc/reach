@@ -311,6 +311,33 @@ test("device approvals expire, require a local decision and claimant secret, and
   }
 });
 
+test("a mismatched stored approval ID cannot issue access or overwrite another receipt", async () => {
+  const root = await temp();
+  const auth = createAuth(getConfig({ dataDir: root, tailscaleOwner: owner }));
+  const store = approvalStore(root);
+  try {
+    const first = store.request(identity, "First phone", owner);
+    const other = store.request({ ...identity, nodeId: "nOtherReceipt" }, "Other phone", owner);
+    const firstFile = path.join(root, "device-requests", `${first.id}.json`);
+    const otherFile = path.join(root, "device-requests", `${other.id}.json`);
+    const originalOther = await fs.readFile(otherFile);
+    const altered = { ...JSON.parse(await fs.readFile(firstFile, "utf8")), id: other.id };
+    await fs.writeFile(firstFile, JSON.stringify(altered));
+    assert.throws(() => store.pending(first.id, first.secret, identity, owner), (error) => error.status === 403);
+    store.decide(first.id, "approve");
+    const originalFirst = await fs.readFile(firstFile);
+    for (const action of [
+      () => store.pending(first.id, first.secret, identity, owner),
+      () => store.poll(first.id, first.secret, identity, owner, auth),
+    ]) assert.throws(action, (error) => error.status === 403);
+    assert.equal(auth.list().length, 0, "no credential is issued from a misbound receipt");
+    assert.deepEqual(await fs.readFile(firstFile), originalFirst);
+    assert.deepEqual(await fs.readFile(otherFile), originalOther, "the other device's record stays intact");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("identity resolution refuses ordinary TCP headers, tagged owners and expired nodes", async () => {
   let lookups = 0;
   const resolve = createIdentityResolver({

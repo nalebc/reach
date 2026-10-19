@@ -1,6 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { windowsBinary } from "./desktop-native.mjs";
+import { windowsBinary, windowsBuildDirectory } from "./desktop-native.mjs";
 import { NativeScreenSource } from "./screen-stream.mjs";
 const exec = promisify(execFile);
 // The live screen on Windows comes, best first, as H.264 from Windows itself
@@ -26,9 +26,14 @@ export function windowsNativeVideo(
   config,
   { build = (c) => windowsBinary(c, "screen-video"), run = exec, now = Date.now } = {},
 ) {
+  let directory;
+  // Independent callers retain the existing PC-wide probe cache. A running
+  // launch binds executable reuse to its active private stage instead.
+  try { directory = windowsBuildDirectory(config.dataDir, null); }
+  catch (error) { return Promise.resolve({ ok: false, why: error.message }); }
   const held = ownProbe;
-  if (held && (!held.result || held.result.ok || now() - held.at < MISS_MS)) return held.promise;
-  const probe = { result: null, at: now() };
+  if (held && held.directory === directory && (!held.result || held.result.ok || now() - held.at < MISS_MS)) return held.promise;
+  const probe = { result: null, at: now(), directory };
   probe.promise = (async () => {
     let file;
     try {
@@ -80,7 +85,7 @@ function probeWhy(error) {
 // gets FFmpeg or still images, and hears why; asked again a few minutes later.
 export function windowsNativeVideoFailed(why, { now = Date.now } = {}) {
   const result = { ok: false, why: String(why || "Windows' H.264 encoder stopped.").slice(0, 300) };
-  ownProbe = { result, at: now(), promise: Promise.resolve(result) };
+  ownProbe = { result, at: now(), promise: Promise.resolve(result), directory: ownProbe?.directory ?? null };
 }
 // Forgets what was found (tests).
 export function forgetWindowsVideo() {

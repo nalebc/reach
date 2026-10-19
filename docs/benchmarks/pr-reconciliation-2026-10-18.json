@@ -1,0 +1,388 @@
+{
+  "repository": "https://github.com/nalebc/reach",
+  "date": "2026-10-18",
+  "singlePR": 72,
+  "purpose": "One PR containing every remaining launch workstream, with original source history retained.",
+  "baseAfterUserMerged68": "a5ba044b1853f9eee937444112aeaa712f01e415",
+  "integrationMergeCommit": "2f03f359b7564c5864049985a6a7ac46f25e0d2c",
+  "sources": [
+    {
+      "pr": 67,
+      "head": "62ad7060151d2f516ddc2638cef6303f75e13f08",
+      "scope": "Text file editing and terminal paste"
+    },
+    {
+      "pr": 68,
+      "head": "d165b16fd9f4164dd485895765c6ff5bc209e424",
+      "scope": "Private gateway recovery and cancelled writes; merged by user"
+    },
+    {
+      "pr": 69,
+      "head": "63d00e0e5554c74bb8dcb1af72054739eb8eb9f9",
+      "scope": "Windows ARM64 vendor validation, including latest main merge"
+    },
+    {
+      "pr": 70,
+      "head": "5af5ed0dc470e99b3db57dbfb57827cbfba44688",
+      "scope": "Source checkout update guidance"
+    },
+    {
+      "pr": 71,
+      "head": "0098158b7fb1afeae6b88d25ff20144a9c4aabe7",
+      "scope": "Legitimate OWNER RIGHTS after owner validation"
+    },
+    {
+      "pr": 73,
+      "head": "fca508b5f317896d0b879d7257c6241c325f311a",
+      "scope": "Genuine standard-user retained-profile npm upgrade harness"
+    },
+    {
+      "pr": 74,
+      "head": "53dbe55ac5c2aaec903eb5fe3b20b59e8998bc72",
+      "scope": "Narrow state repair, fresh helpers, fail-closed startup and observed Windows bootstrap fixes"
+    },
+    {
+      "pr": 75,
+      "head": "03590662ea8477d66659e8766f988e91064d1173",
+      "scope": "New Dependabot Tailscale1.104.1 module update; exact source retained"
+    },
+    {
+      "pr": 76,
+      "head": "c983f89a3f87c0516f2646b373db67d3b4b526c7",
+      "scope": "New Dependabot npm lockfile updates: Capacitor8.5.3,Express5.3,Lucide1.55,Prettier3.9.10"
+    },
+    {
+      "pr": 77,
+      "head": "cc286b0dbb08a052e3c7950eaadb5bfae764a1d4",
+      "scope": "New Dependabot official action pins; provenance reviewed, no checks/selectors/timeouts weakened"
+    }
+  ],
+  "additionalPreservedCommits": {
+    "atomicNativeBaseline": "163273b0edeb9b33e55139c7eebd48c309854b2f",
+    "correctedTestOnlyBaseline": "6f1a3fd3ae96805b69520355a596230f04ea29ab",
+    "atomicReplacementAndPairingDedupFix": "7c2e20c0a7f49b22793cd7de63cd56047e3e1f6f",
+    "nativeStateFixtureCompilerReference": "88736d1b749b466e950454556a4127f5865f4571",
+    "foreignHardlinkDiagnostic": "8297637a346404023f12c330b6f9e5a62e382162",
+    "boundedNativeHardlinkRecheck": "72a07e2ebb100e543287694c564513b493bc69a4",
+    "codexFreshStateAndStageArchitectureFixture": "943182b85e4ec5a5c2f8ea4cf02d0910c68c1293",
+    "visibleConsoleCanonicalFixture": "7c7b3f561608b7d12644b9f3e5a79a738d25d9d9",
+    "structuredTerminalClipboardJourney": "c180ad3dc2c22b781e61ba5b100a42e88d8e6496",
+    "approvalReceiptBinding": "de54665787ff7ae66239c759c1028a7800f3f0ad",
+    "pairedOwnerShortcutGate": "0fa82303b0d9ada5a94b58cf2f2c1d5a14f2b1aa",
+    "legalDownloadFilenameAssertion": "df212b0c69c9f33bd9ed98a2bcfc1bc38e2d74a2",
+    "freshByteArtifactCopier": "880ca6465efb15c5f49110dea208e9dd9fb0ad81",
+    "privateRealWindowsAcceptanceFixture": "8117145c0c875b6db3a94db908312f9b6cb57e8a",
+    "realAcceptanceProfileProjectParent": "a4c73ac9774c3256a5d1bdff34641bab33ccc295",
+    "privateWindowsLifecycleFixtures": "d7c9eedcb4c8e02061ea3d07ea9f39bf5f9e2c23",
+    "lifecycleProfileProjectParent": "2229fc8648daa04217a68822f276ad4c6d723a02",
+    "descriptorValidatedSourceCopy": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+    "powerShell7OwnerFixture": "c5bcf64ce451f7a4ffa71ab1f60cbf63b695ec3b",
+    "boundedNativeWindowDiagnostics": "229b193be82e98d78da00606ca4670d49aefe1ee",
+    "boundedIosPairingHopDiagnostics": "26db4204fe646463ab5119398d3254727b2a5f28"
+  },
+  "preservation": {
+    "allRecordedHeadsAreAncestors": true,
+    "sourceBranchesDeleted": false,
+    "supersessionPolicy": "All nine superseded PRs closed only after exact source-head ancestry was verified against published PR72. The user merged68. No source branch deleted by this work.",
+    "fixtureConflictResolution": "Retained all original fixture operations and the corrected OWNER RIGHTS controls, then the expanded native fixture superset from74. No old diagnostic false-positive oracle is restored.",
+    "testSelection": "Union retained; fresh hook/native/atomic regressions remain required. Fresh artifact filesystem controls moved to the normal shared test directory and explicitly selected for Windows CI.",
+    "closedSupersededPRs": [
+      67,
+      69,
+      70,
+      71,
+      73,
+      74,
+      75,
+      76,
+      77
+    ],
+    "onlyOpenPR": 72,
+    "obsoleteWorkflowCancellation": "Superseded PR workflow cancellations independently verified completed/cancelled, including force cancellation after a normal request did not complete. Current required checks remain; failures retained."
+  },
+  "combinedValidation": {
+    "head": "7b29c07a88f098b29d5522faea5d679ea1c65cf3",
+    "host": "macOS,Node24.21.0",
+    "entrypoint": "guarded npm run test:file,concurrency2",
+    "files": [
+      "test/file-editor-ui.test.mjs",
+      "test/terminal-paste-ui.test.mjs",
+      "test/terminal-keys.test.mjs",
+      "test/private-gateway.test.mjs",
+      "test/funnel-agent-cors.test.mjs",
+      "test/tailnet-transport.test.mjs",
+      "test/agent-transport-recovery.test.mjs",
+      "test/source-update-guidance.test.mjs",
+      "test/windows-private-folder.test.mjs",
+      "test/ci-policy.test.mjs",
+      "test/windows-atomic-json.test.mjs",
+      "test/windows-claude-hooks.test.mjs",
+      "test/browser-private-paths.test.mjs",
+      "test/windows-native-build.test.mjs",
+      "test/windows-processes.test.mjs",
+      "test/windows-video.test.mjs",
+      "test/windows-sign-in-launch.test.mjs",
+      "test/credential-lock.test.mjs",
+      "test/pairing-window.test.mjs",
+      "test/security.test.mjs",
+      "test/tailscale-auth.test.mjs",
+      "test/app-shortcuts.test.mjs",
+      "test/guest-access.test.mjs",
+      "test/windows-codex-socket.test.mjs",
+      "test/windows-codex-socket-native.test.mjs"
+    ],
+    "tests": 275,
+    "passed": 268,
+    "failed": 0,
+    "skipped": 7,
+    "skipMeaning": "Native Windows-only cases; not Windows proof",
+    "build": "npm ci and npm run build:release PASS,including actual updated Tailscale WASM/notices/assets",
+    "realBrowserScope": "Actual Chrome local HTTPS/CORS/recovery with controlled routing/admission; not authenticated real-tailnet or physical-device handoff",
+    "actualWindows": {
+      "runs": {
+        "x64": 39163956076,
+        "arm64": 39163964147
+      },
+      "bothTotals": {
+        "tests": 107,
+        "passed": 105,
+        "failed": 0,
+        "skipped": 2
+      },
+      "skips": "Two live private-ingress network cases on Windows",
+      "bothNormalizationCases": 34,
+      "bothHeldRepair": "Trusted-owner alias created while handle held; production Update refuses hardlink; ACL/bytes preserved",
+      "bothFreshCodexRoots": "Actual preparation succeeds; only expected missing endpoint refusal remains",
+      "scope": "Controlled NTFS/native/HTTP component cases,not installed upgrade or authenticated real route/device acceptance"
+    }
+  },
+  "retainedFailureEvidence": [
+    {
+      "runs": [
+        39153093792,
+        39153099831
+      ],
+      "classification": "Actual x64/ARM released-source baseline:4legacy broad-read child ACL failures; not friend-specific ACL proof"
+    },
+    {
+      "runs": [
+        39156491394,
+        39156497607
+      ],
+      "classification": "Initial bootstrap failed; zero native normalization cases executed; original wrapper discarded cause"
+    },
+    {
+      "runs": [
+        39158881612,
+        39158888578
+      ],
+      "classification": "Actual x64/ARM bootstrap InvalidCastException at AceFlags bitwise line53; zero normalization subcases. Numeric casts and modeled hook import URL corrected without changing ACL masks"
+    },
+    {
+      "runs": [
+        39158895386
+      ],
+      "classification": "Native atomic fixture compilation failed for missing System.dll; zero NTFS cases executed. Explicit fixture reference corrected; not native RED"
+    },
+    {
+      "runs": [
+        39157738867
+      ],
+      "classification": "Standard-user upgrade harness failed at credential-process-launch-and-wait, before worker/product report; visible disposable desktop preparation and exact cleanup passed. No0.3.3upgrade/QR pass claimed"
+    },
+    {
+      "runs": [
+        39160457031,
+        39160464249
+      ],
+      "head": "b37e45d0b0993e3e01ae1609a5235c9619db62cc",
+      "classification": "Combined actual x64 and ARM64 independently:44PASS1FAIL0skip each; state-handles fixture CS0246 missing System.Core.dll,0of33 normalization subcases executed on either architecture. Actual bootstrap, production helper builds,9 OWNER RIGHTS cases, fresh hook and atomic file cases passed on both. Test-only88736d1 adds the same framework reference used by production, with no assertion or ACL-mask change."
+    },
+    {
+      "runs": [
+        39161280348,
+        39161290322
+      ],
+      "head": "744f0aacac1a2bb18af04ac6c5a5a19d4eac2c4f",
+      "classification": "Actual x64/ARM76PASS2FAIL0skip each; Windows allowed trusted current owner to create a hardlink while metadata handle was held. Original OS-exclusion assertion disproven; no passing repair claim."
+    },
+    {
+      "runs": [
+        39162279073
+      ],
+      "head": "8297637a346404023f12c330b6f9e5a62e382162",
+      "classification": "Actual x64 diagnostic,35tests33PASS2FAIL0skip,34native cases reached. Genuine read-only foreign account owns/writes independent destination but CreateHardLinkW denies5 both before/held; trusted-owner RED retained. Source SD/bytes and cleanup passed. Final required foreign denial and trusted-owner Update barrier pending both architectures."
+    },
+    {
+      "run": 39163892847,
+      "head": "7b29c07a88f098b29d5522faea5d679ea1c65cf3",
+      "classification": "Completed full checks:Linux22/24 each5013PASS7FAIL210SKIP;macOSARM5061PASS7FAIL163SKIP;Windows1974PASS9FAIL105SKIP. Common failures:download filename quote assertion plus existing modeled Windows launch fixtures newly reaching private-folder preflight. Windows adds actual forced-stop path and quiet background startup. Correct fixture placement/model labeling without weakening production. Intel full run remains separate."
+    },
+    {
+      "run": 39163892822,
+      "head": "7b29c07a88f098b29d5522faea5d679ea1c65cf3",
+      "classification": "Actual standard-user Codex all5worker casesPASS,real profile/medium token/daemon init/thread-list/strict process architecture; native socket security8PASS. Later visible CLI correctly refuses writable shared checkout; dependent browser/files/terminal/screen blocked; held console causedEBUSY cleanup. Private artifact/whole fixture plus exact console wait correction remains to be executed on Windows."
+    }
+  ],
+  "releaseQualification": "BLOCKED: final corrected-fixture platform checks,retained-profile installed upgrade,configured owner browser QR,authenticated real handoff and physical clients incomplete. Actual native repair component proof on both Windows architectures passed on7b29. No release performed.",
+  "historicalInventory": {
+    "initialPRs": 71,
+    "allInitialHeadsArchivedAndBundleVerified": true,
+    "recentClosedAudit": "42/43/44 preserved via39 squash;59/60 via58 reconciliation;62 via63. No missing patch found in scoped tree/blob/patch-ID audit.",
+    "closedDependencies": "Older proposals retained; reviewed new75-77 updates included without blind resurrection.",
+    "allPublicPRHeadsAtLatestSnapshot": 77,
+    "all77HeadsArchivedAndBundleVerified": true
+  },
+  "nativeRepairScope": "Object-based subtraction of recognized broad READ grants on validated owned objects. Preexisting/newly observed aliases refuse before that object is changed. Immediate identity/linkcount/descriptor recheck is not an atomic forest transaction, does not revoke historical open handles, and cannot fence all trusted-owner activity between final check and kernel mutation. Late concurrent refusals may leave earlier objects stricter. No added rights/owner/bytes changes.",
+  "codeqlReview": "docs/benchmarks/codeql-review-2026-10-18.json. All7 PR72 review threads are resolved; current7b29CodeQL checksPASS. Individual JSON persistence false-positive disposition reviewed; no rule/severity/filter/required gate disabled. New exact-head analysis remains required.",
+  "snapshotScope": "Source/history reconciliation snapshot. Final exact-head validation runs, current results and closure verification are linked in PR72 and its retained artifacts; this JSON is not a live CI dashboard.",
+  "finalLocalValidation": {
+    "lockfileInstall": "npm ci PASS;363packages audited,0 vulnerabilities",
+    "build": "npm run build:release PASS, including actual updated Tailscale1.104.1 WASM build,141 bundled dependency notices and current release assets",
+    "focused": "25files,268PASS0FAIL7WindowsSKIP at7b29; post7bfixture6files,33PASS0FAIL3OSSKIP",
+    "nativeWindows": "Actual7b29x64/ARM selected component runs each105PASS0FAIL2live-networkSKIP; final fixture corrections require actual Windows execution",
+    "notices": "Generated THIRD_PARTY_NOTICES.md updated to exact dependency-lock digest"
+  },
+  "priorCombinedValidation": {
+    "host": "macOS, Node24.21.0",
+    "entrypoint": "Guarded npm run test:file, concurrency2",
+    "files": [
+      "test/file-editor-ui.test.mjs",
+      "test/terminal-paste-ui.test.mjs",
+      "test/terminal-keys.test.mjs",
+      "test/private-gateway.test.mjs",
+      "test/funnel-agent-cors.test.mjs",
+      "test/tailnet-transport.test.mjs",
+      "test/agent-transport-recovery.test.mjs",
+      "test/source-update-guidance.test.mjs",
+      "test/windows-private-folder.test.mjs",
+      "test/ci-policy.test.mjs",
+      "test/windows-atomic-json.test.mjs",
+      "test/windows-claude-hooks.test.mjs",
+      "test/browser-private-paths.test.mjs",
+      "test/windows-native-build.test.mjs",
+      "test/windows-processes.test.mjs",
+      "test/windows-video.test.mjs",
+      "test/windows-sign-in-launch.test.mjs",
+      "test/credential-lock.test.mjs",
+      "test/pairing-window.test.mjs",
+      "test/security.test.mjs"
+    ],
+    "tests": 234,
+    "passed": 229,
+    "failed": 0,
+    "skipped": 5,
+    "skipMeaning": "Native Windows-only cases; not Windows proof",
+    "realBrowserScope": "Actual Chrome HTTPS/CORS/recovery with controlled routing and admission; not authenticated real-tailnet/physical-device handoff",
+    "windowsScope": "Portable modeled checks and disposable launch/filesystem tests with controlled Windows predicates; native OS evidence is separate",
+    "build": "npm run build PASS",
+    "CI": "744f0aa actual x64/ARM:76PASS2FAIL(parent+one held-hardlink child)0skip,all33normalization cases executed. Immediate production recheck and stronger actual Retain/Update barrier now added; final exact combined validation with new dependencies pending.",
+    "priorValidationHead": "b37e45d0b0993e3e01ae1609a5235c9619db62cc"
+  },
+  "post7bFixtureCorrections": {
+    "sourceHeadBeforeThisSnapshot": "52124b0b1a93de7811248c5cc0f566558247a7a6",
+    "productionChanges": false,
+    "guardedLocal": {
+      "files": 6,
+      "tests": 36,
+      "passed": 33,
+      "failed": 0,
+      "skipped": 3
+    },
+    "skipMeaning": "Actual Windows acceptance,forced-stop process inventory and Scheduled Task/window checks; Mac modeled Windows/Tailscale is not native proof",
+    "changes": [
+      "Accept both complete legal filename forms after HTTP dependency update; all bytes/range/authority/private-path checks retained",
+      "Use fresh byte-verified private artifacts and work/state under actual managed Windows UserProfile,with unchanged production parent/code/state checks",
+      "Keep shared project outside reserved AppData/helper storage; keep product exclusions",
+      "Release owned console lease and verify exact owned process exits before deleting fixture; no arbitrary kill",
+      "Explicit shared/Windows selection for artifact copy controls; no required test removed"
+    ],
+    "actualWindowsAfterCorrections": "Pending publication and exact-head validation; no passing native fixture claim"
+  },
+  "followupEvidence": {
+    "snapshotOf": "Local integration cd692025e7ee7137ceb9472f8a21450a5b948124; not a live checks dashboard or a final-head check result.",
+    "required2f608c4": {
+      "workflow": "https://github.com/nalebc/reach/actions/runs/39166624387",
+      "passed": [
+        "Linux Node22",
+        "Linux Node24",
+        "macOS ARM",
+        "CodeQL/security"
+      ],
+      "failed": [
+        "Windows service-peer fixture uses .NET API unavailable in PowerShell7",
+        "iOS simulator paired-workspace timeout; request arrived then closed without a finished reply"
+      ],
+      "stillRunning": [
+        "macOS Intel"
+      ]
+    },
+    "windowsPeerCorrection": {
+      "head": "c5bcf64ce451f7a4ffa71ab1f60cbf63b695ec3b",
+      "run": "https://github.com/nalebc/reach/actions/runs/39168380908",
+      "pass": 19,
+      "fail": 0,
+      "skip": 0,
+      "execution": "Actual x64 Windows Server2025, Node22.23.3, Restricted script policy. Native foreign-owner/privacy assertions and all three artifact copier controls completed. Synthetic Tailscale-shaped service admission is a controlled transport; final signed MSI service identity also ran.",
+      "change": "One-line Get-Acl read-only compatibility correction; no production permission change."
+    },
+    "armConsoleDiagnostics": {
+      "head": "229b193be82e98d78da00606ca4670d49aefe1ee",
+      "run": "https://github.com/nalebc/reach/actions/runs/39167755250",
+      "pass": 123,
+      "fail": 0,
+      "skip": 0,
+      "visibilityAssertionUnchanged": true,
+      "observedConsoleDuringWork": false,
+      "positiveConsoleControlSeen": true,
+      "originalFailure": "Run39165734293 visible wsl.exe console remains unattributed. It did not recur. No production cause or fix is claimed.",
+      "newEvidence": "Bounded hidden native process queries after recording the window event; optional separate report records phases, process identities and redacted flags. Original WinEvent stream and oracle remain unchanged."
+    },
+    "realWindowsLocalAcceptance": {
+      "head": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "x64": "https://github.com/nalebc/reach/actions/runs/39166624261",
+      "arm64": "https://github.com/nalebc/reach/actions/runs/39166896955",
+      "each": {
+        "localPass": 10,
+        "networkProviderPhysicalBlocked": 11,
+        "standardUserCodexPass": 5
+      },
+      "execution": "Actual OS, CPU-matching official vendors, genuine standard medium-token/profile Codex, visible local CLI, Chrome, pairing/files, ConPTY file creation and native JPEG capture. Hosted local GUI/files/screen probes are administrative. No authenticated real network, provider inference, physical client, screen input or retained-profile npm upgrade qualification."
+    },
+    "iosBaseline": {
+      "head": "2f608c438d26826728fbf4efae3d9db4db4f984e",
+      "result": "Unchanged guarded fixture passed one test with all eight native checks on a new disposable simulator.",
+      "runtime": "Actual simctl iOS26.4, Xcode26.4, Node24.21; different from CI. User agent is not runtime identification.",
+      "limitation": "This does not reproduce or explain the CI pairing failure and does not qualify a physical device.",
+      "diagnosticChange": "Per-hop times, request/response byte counts and boolean/category form state only; no headers, body values, storage or credentials. All original timeouts/assertions and no replay preserved."
+    },
+    "integratedGuardedLocal": {
+      "head": "cd692025e7ee7137ceb9472f8a21450a5b948124",
+      "files": 6,
+      "pass": 38,
+      "fail": 0,
+      "skip": 2,
+      "scope": "Actual localhost HTTP and filesystem controls; JSDOM diagnostics/policy modeled checks. Windows native peer/window cases skipped on Mac; their independent actual-OS runs above cover their respective source."
+    },
+    "releaseQualification": "INCOMPLETE. Required final-head checks, retained-profile upgrade, configured owner/browser QR, authenticated private-fallback-private recovery and physical clients remain required. No release or main merge.",
+    "iosInstrumented": {
+      "head": "26db4204fe646463ab5119398d3254727b2a5f28",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "nativeAssertions": 8,
+      "durationSeconds": 107.65,
+      "selectedRuntime": "iOS26.4, Xcode26.4, Node24.21",
+      "pairHop": {
+        "requestBodyComplete": true,
+        "upstreamStatus": 200,
+        "responseComplete": true,
+        "clientWritableFinished": true
+      },
+      "assetFailures": 0,
+      "disposableSimulatorDeleted": true,
+      "preexistingSimulatorsUnchanged": true,
+      "scope": "Validates diagnostic instrumentation preserves native checks on this actual simulator/runtime; not a reproduction or fix of CI failure, authenticated real-network proof or physical-device validation."
+    }
+  }
+}

@@ -17,15 +17,17 @@ const place = (at) => `(() => {
 })()`;
 const orange = ({ r, g, b }) => r > 190 && g > 80 && g < 190 && b < 100 && r > g + 40;
 const green = ({ r, g, b }) => g > 130 && g > r + 40 && g > b + 40;
-async function showing(page, at, check, what, ms) {
+async function showing(page, target, check, what, ms) {
   let last;
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 250))) {
-    const spot = await page.evaluate(place(at));
+    const spot = await page.evaluate(place(target.aside));
     if (!spot) continue;
     last = { ...spot, ...(await page.pixel(spot.x, spot.y)) };
     if (check(last)) return last;
   }
-  const file = await page.shot(`failed-${what}`);
+  let file;
+  try { file = await page.shot(`failed-${what}`); } catch {}
+  await page.recordFailure(what, file, { sample: last, target: target.snapshot() });
   assert.fail(`The phone never showed ${what}: last ${JSON.stringify(last)}. Screenshot: ${file}`);
 }
 
@@ -70,15 +72,15 @@ test(
     // Resume, where the screen would be: the picture and control again.
     await page.tap({ selector: ".paused-cover button", text: "Resume" }, "Resume");
     await page.see({ js: place(target.aside) }, "the live screen again", 120000);
-    await showing(page, target.aside, orange, "the target window on the phone's picture", 60000);
+    await showing(page, target, orange, "the target window on the phone's picture", 60000);
     await page.tap(`[aria-label="Screen controls"] button[aria-label="Control"]`, "Control");
     await page.see(() => document.querySelector('[aria-label="Screen controls"] button[aria-pressed="true"]'), "control on", 30000);
     await page.see(() => !/Connecting controls|View only/.test(document.querySelector(".simple-screen-caption")?.innerText || ""), "controls connected", 30000);
-    await showing(page, target.aside, orange, "the window, still there", 10000);
+    await showing(page, target, orange, "the window, still there", 10000);
     const where = await page.evaluate(place(target.at));
     await page.touch(where.x, where.y);
     markInput();
-    await showing(page, target.aside, green, "the window turned green on the phone's picture", 30000);
+    await showing(page, target, green, "the window turned green on the phone's picture", 30000);
     assert.equal(target.clicks(), 1, "one click reached the window once resumed, read on the computer");
     await page.shot("resumed");
   },

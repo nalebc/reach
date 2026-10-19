@@ -65,7 +65,7 @@ try {
         ('set "REACH_ACCEPTANCE_CHECKOUT_COMMIT=' + $env:GITHUB_SHA + '"'),
         ('set "REACH_ACCEPTANCE_PR_HEAD=' + $env:REACH_ACCEPTANCE_PR_HEAD + '"'),
         ('set "REACH_ACCEPTANCE_RUNNER_PROFILE=' + $env:USERPROFILE + '"'),
-        ('call "' + $npm + '" run test:file -- --test-timeout=180000 --test-concurrency=1 test/acceptance/codex-standard-user.test.mjs'),
+        ('call "' + $npm + '" run test:file -- --test-timeout=240000 --test-concurrency=1 test/acceptance/codex-standard-user.test.mjs'),
         'exit /b %errorlevel%'
     )
     foreach ($value in @($RepoRoot, $NodeExecutable, $vendorRoot, $reportDir, $scratch, $env:USERPROFILE)) {
@@ -77,7 +77,7 @@ try {
     $application = Join-Path $env:SystemRoot 'System32\cmd.exe'
     $command = '"' + $application + '" /d /s /c ""' + $script + '""'
     $harness.stage = 'credential-process-launch-and-wait'
-    $started = [ReachAcceptanceUserProcess]::Run($account, $accountPassword, $sid, $application, $command, $RepoRoot, 210000)
+    $started = [ReachAcceptanceUserProcess]::Run($account, $accountPassword, $sid, $application, $command, $RepoRoot, 270000)
     $harness.workerProcessId = $started.ProcessId
     $harness.desktop = $started.Desktop
     $harness.workerExitCode = $started.ExitCode

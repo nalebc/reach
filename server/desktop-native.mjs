@@ -25,6 +25,33 @@ const FRAMEWORKS = ["Framework64", "Framework"];
 const REFERENCES = ["System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll",
   "WPF\\UIAutomationClient.dll", "WPF\\UIAutomationTypes.dll", "WPF\\WindowsBase.dll"];
 const CSC_FLAGS = ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", "/debug-", "/codepage:65001", "/utf8output"];
+// Installed only after the Windows state check succeeds. Launch-owned builds
+// for those roots use one newly created private staging directory and only
+// this process's build/hash records, never a historical EXE plus digest note.
+// Independent CLI/hook processes do not inherit this in-memory trust record.
+const privateWindowsBuilds = new Set();
+const buildRoot = (value) => path.win32.isAbsolute(value)
+  ? path.win32.resolve(value).toLowerCase() : path.resolve(value);
+const privateWindowsBuildFor = (dir) => {
+  if (!dir) return null;
+  const key = buildRoot(dir);
+  for (const context of [...privateWindowsBuilds].reverse())
+    if (context.roots.some((root) => key === root || key.startsWith(`${root}${path.win32.isAbsolute(root) ? "\\" : path.sep}`))) return context;
+  return null;
+};
+const allowedWindowsBuild = (dir) => {
+  const context = privateWindowsBuildFor(dir);
+  if (context?.refusal) throw fail(503, context.refusal);
+  return context;
+};
+export const windowsBuildDirectory = (dir, fallback = dir) => allowedWindowsBuild(dir)?.dir || fallback;
+export function registerWindowsBuildDirectory({ roots, dir, refusal }) {
+  if (!Array.isArray(roots) || !roots.length || roots.some((root) => typeof root !== "string" || !root)
+    || (!(typeof dir === "string" && dir) && !(typeof refusal === "string" && refusal))) throw Error("A verified Windows build directory or refusal is required.");
+  const context = { roots: [...new Set([...roots, ...(dir ? [dir] : [])].map(buildRoot))], dir, refusal, builds: new Map() };
+  privateWindowsBuilds.add(context);
+  return () => privateWindowsBuilds.delete(context);
+}
 // What one helper uses beyond those, so the rest aren't rebuilt for it:
 // Windows' own speech recognizer for voice memos (agent-sessions/voice.mjs).
 // Each is looked for beside WPF's assemblies, then in the assembly cache
@@ -85,9 +112,13 @@ function helperPlan(kind, { dir, target = "exe", fresh = false } = {}) {
 // A helper for a security check (windowsHelper), resolved without ever
 // compiling: its path and noted SHA-256 when it's already built in `dir` and
 // the note matches the file, else null. For a short-lived child like the
-// permission hook (scripts/agent-hook.mjs), which must never run csc: it
-// steps aside when Reach's server hasn't built the helper yet.
+// callers that explicitly need legacy build discovery. Security boundaries
+// use a freshly compiled helper and an in-memory digest; the Claude hook
+// establishes its own private stage rather than authorizing this disk cache.
 export function builtWindowsHelper(kind, { dir, exists = existsSync } = {}) {
+  // A refused launch never consults old bytes/notes. An active stage uses
+  // only its build provider's in-memory records, not this legacy discovery.
+  if (allowedWindowsBuild(dir)) return null;
   if (!dir || typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) return null;
   let file;
   try {
@@ -110,11 +141,25 @@ export function builtWindowsHelper(kind, { dir, exists = existsSync } = {}) {
 /** A Windows helper built from scripts/native/<kind>.cs into the data folder (or `dir`), named by its source's hash: its path. */
 // `target: "winexe"`: a Windows program with no console window of its own
 // (the background task's starter); every other helper is a console program.
-export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe", rename } = {}) {
+export async function windowsBinary(config, kind, { signal, run = exec, exists = existsSync, env = process.env, platform = process.platform, dir = config.dataDir, fresh = false, rebuild = () => false, target = "exe", rename, _privateBuild = false } = {}) {
   signal?.throwIfAborted();
   if (platform !== "win32") throw fail(501, "Windows helpers are built on Windows.");
   if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind)) throw fail(400, "Unknown helper.");
   if (!["exe", "winexe"].includes(target)) throw fail(400, "Unknown helper.");
+  const context = !_privateBuild && allowedWindowsBuild(dir);
+  if (context) {
+    // Preserve source/flags/manifest invalidation even within this process.
+    const key = path.basename(helperPlan(kind, { dir: context.dir, target }).file);
+    if (!context.builds.has(key)) context.builds.set(key, (async () => {
+      const file = await windowsBinary(config, kind, { signal, run, exists, env, platform,
+        dir: context.dir, fresh: true, target, rename, _privateBuild: true });
+      return { file, sha256: await sha256Of(file) };
+    })().catch((error) => { context.builds.delete(key); throw error; }));
+    const built = await context.builds.get(key);
+    signal?.throwIfAborted();
+    assertUnchanged(built.file, built.sha256);
+    return built.file;
+  }
   // Its source and how it's built name it (helperPlan): any change to either
   // rebuilds it. `fresh` gives it a name no file has yet, never a cached build
   // (a checker compiled every launch: server/windows-private-folder.mjs).
@@ -163,7 +208,8 @@ const sha256Of = async (file) => crypto.createHash("sha256").update(await fs.rea
 // { file, sha256 }: what spawnVerified checks before every start.
 export async function windowsHelper(kind, { dir, fresh = false, ...options } = {}) {
   if (!dir) throw Error("A helper for a security check is built only in Reach's private folder.");
-  await fs.mkdir(dir, { recursive: true });
+  const context = allowedWindowsBuild(dir);
+  await fs.mkdir(context?.dir || dir, { recursive: true });
   const noteOf = (file) => file.replace(/\.exe$/, ".sha256");
   const noted = (file) => {
     try {
@@ -175,7 +221,7 @@ export async function windowsHelper(kind, { dir, fresh = false, ...options } = {
   const hashed = (file) => crypto.createHash("sha256").update(readFileSync(file)).digest("hex");
   const file = await windowsBinary({ dataDir: dir }, kind, { ...options, dir, fresh, rebuild: (cached) => !noted(cached) || noted(cached) !== hashed(cached) });
   const sha256 = await sha256Of(file);
-  if (!fresh && noted(file) !== sha256) await fs.writeFile(noteOf(file), `${sha256}\n`, { mode: 0o600 });
+  if (!fresh && !context && noted(file) !== sha256) await fs.writeFile(noteOf(file), `${sha256}\n`, { mode: 0o600 });
   return { file, sha256 };
 }
 // Run only while the file still has the hash Reach noted when it built it: a

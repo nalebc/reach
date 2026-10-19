@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { createAgentWatch } from "../server/agent-sessions/agent-watch.mjs";
 
 // News the moment an agent's app writes it: the Codex app's databases (its
-// queue, its history) and Claude Code's transcripts, each burst told once.
+// queue, its history) and Claude Code's transcripts, as callbacks arrive.
 const ID = "11111111-2222-4333-8444-555555555555";
 // A file watch can take seconds to report on a loaded runner; success
 // still returns the moment it's seen.
@@ -16,10 +16,114 @@ const until = async (check, ms = 15000) => {
   return false;
 };
 
-async function nativeBurst() {
+// Causality, not a model of debounce timers: a queue notification covers all
+// recognized callbacks observed since the previous notification. OS callback
+// delivery may span several windows even when the three writes were together.
+function queueDeliveryOracle() {
+  const violations = new Set();
+  let generation = 0, covered = 0, queueNews = 0, active = null;
+  return {
+    deliver(recognized, callback) {
+      const previous = active;
+      const delivery = { recognized, generation: recognized ? ++generation : generation, synchronous: 0, correct: 0 };
+      active = delivery;
+      try { callback(); }
+      finally {
+        if (recognized && delivery.generation === 1 && delivery.correct !== 1)
+          violations.add("first-queue-not-once-before-return");
+        active = previous;
+      }
+    },
+    news(value) {
+      if (value?.kind !== "queue") return;
+      queueNews++;
+      const correct = value.agent === "codex" && Object.keys(value).length === 2;
+      if (!correct) violations.add("wrong-queue-source");
+      if (active) {
+        if (++active.synchronous > 1) violations.add("multiple-queue-news-in-one-callback");
+        if (!active.recognized) violations.add("queue-inside-unrelated-callback");
+        else if (correct) active.correct++;
+      }
+      if (generation <= covered) violations.add("queue-without-new-callback");
+      covered = generation;
+    },
+    report() { return { recognizedCallbacks: generation, coveredGeneration: covered, queueNews, violations: [...violations] }; },
+  };
+}
+
+// Fixed categories and numeric fixture metadata, never provider paths/content.
+function burstTrace() {
+  const start = performance.now(), startWallMs = Date.now(), limit = 128;
+  const events = [], counters = Object.fromEntries(["stage", "append", "native-enter", "native-exit", "news", "fixture"].map(kind => [kind, { count: 0, maxGapMs: 0, lastMs: null }]));
+  let overwritten = 0;
+  return {
+    record(kind, values = {}, at = performance.now()) {
+      if (!Object.hasOwn(counters, kind)) return;
+      const event = { kind, tMs: at - start };
+      for (const key of ["stage", "write", "size", "mtimeMs", "exists", "unavailable", "deliveryID", "activeDeliveryID"]) {
+        if (typeof values[key] === "number" && Number.isFinite(values[key])) event[key] = values[key];
+      }
+      if (values.activeDeliveryID === null) event.activeDeliveryID = null;
+      for (const [key, allowed] of [
+        ["eventType", ["change", "rename", "other"]],
+        ["root", ["codex", "claude", "other"]],
+        ["category", ["probe", "queue", "history", "transcript", "other"]],
+        ["agent", ["codex", "claude", "gemini", "other"]],
+        ["newsKind", ["queue", "history", "settings", "rollout", "status", "app", "projects", "other"]],
+      ]) if (Object.hasOwn(values, key)) event[key] = allowed.includes(values[key]) ? values[key] : "other";
+      const counter = counters[kind];
+      if (counter.lastMs !== null) counter.maxGapMs = Math.max(counter.maxGapMs, event.tMs - counter.lastMs);
+      counter.lastMs = event.tMs;
+      counter.count++;
+      if (events.length === limit) { events.shift(); overwritten++; }
+      events.push(event);
+    },
+    report() { return { startWallMs, limit, overwritten, counters: structuredClone(counters), events: structuredClone(events) }; },
+  };
+}
+
+function retainBurst(t, report) {
+  if (process.env.CI !== "true" && process.env.REACH_TEST_WATCH_REPORT !== "1") return;
+  fs.mkdirSync("reports", { recursive: true });
+  fs.appendFileSync(path.join("reports", "agent-watch-bursts.jsonl"), JSON.stringify(report) + "\n");
+  t.diagnostic(JSON.stringify(report));
+}
+
+test("burst reports use only the fixed destination with the CI or opt-in gate", t => {
+  const before = { CI: process.env.CI, REACH_TEST_WATCH_REPORT: process.env.REACH_TEST_WATCH_REPORT };
+  t.after(() => {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const writes = [];
+  t.mock.method(fs, "mkdirSync", () => {});
+  t.mock.method(fs, "appendFileSync", file => writes.push(file));
+  const context = { diagnostic() {} }, report = { schema: 1, mode: "modeled-report-gate" };
+  process.env.CI = "false";
+  process.env.REACH_TEST_WATCH_REPORT = "/arbitrary/report/path";
+  retainBurst(context, report);
+  assert.deepEqual(writes, [], "a path-shaped environment value cannot opt in or redirect reports");
+  process.env.REACH_TEST_WATCH_REPORT = "1";
+  retainBurst(context, report);
+  process.env.CI = "true";
+  process.env.REACH_TEST_WATCH_REPORT = "/another/arbitrary/path";
+  retainBurst(context, report);
+  assert.deepEqual(writes, [path.join("reports", "agent-watch-bursts.jsonl"), path.join("reports", "agent-watch-bursts.jsonl")]);
+});
+
+async function nativeBurst(t, mode = "native") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));
   const codexHome = path.join(root, "codex");
   const claudeProjects = path.join(root, "claude");
+  const trace = burstTrace(), oracle = queueDeliveryOracle(), queueFile = path.join(codexHome, "queue_1.sqlite-wal");
+  let stage = 0, nextDeliveryID = 0, activeDeliveryID = null;
+  const queueMetadata = () => {
+    try { const stat = fs.statSync(queueFile); return { exists: 1, size: stat.size, mtimeMs: stat.mtimeMs }; }
+    catch { return { exists: 0, unavailable: 1 }; }
+  };
+  trace.record("stage", { stage });
   fs.mkdirSync(codexHome);
   fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
   // fs.watch returning does not acknowledge native event registration.
@@ -28,8 +132,23 @@ async function nativeBurst() {
   const probe = ".reach-watch-ready", registered = new Set();
   const nativeWatch = fs.watch;
   fs.watch = (dir, options, listener) => nativeWatch(dir, options, (event, file) => {
-    if (String(file || "") === probe) registered.add(dir);
-    listener(event, file);
+    const enteredAt = performance.now(), deliveryID = ++nextDeliveryID, previousDeliveryID = activeDeliveryID;
+    activeDeliveryID = deliveryID;
+    const name = String(file || ""), metadata = {
+      deliveryID,
+      eventType: event, root: dir === codexHome ? "codex" : dir === claudeProjects ? "claude" : "other",
+      category: name === probe ? "probe" : name === "queue_1.sqlite-wal" ? "queue" : name === "thread_history_1.sqlite-wal" ? "history" : path.basename(name) === `${ID}.jsonl` ? "transcript" : "other",
+    };
+    trace.record("native-enter", metadata, enteredAt);
+    try {
+      oracle.deliver(dir === codexHome && name === "queue_1.sqlite-wal", () => {
+        if (name === probe) registered.add(dir);
+        listener(event, file);
+      });
+    } finally {
+      trace.record("native-exit", metadata);
+      activeDeliveryID = previousDeliveryID;
+    }
   });
   // Isolate every provider root: native Claude activity must not enter this
   // fixture through the registry/app-record defaults on the test machine.
@@ -42,7 +161,11 @@ async function nativeBurst() {
     debounceMs: 40,
   });
   const news = [];
-  watch.onChange((n) => news.push(n));
+  watch.onChange((n) => {
+    oracle.news(n);
+    trace.record("news", { agent: n.agent, newsKind: n.kind, activeDeliveryID });
+    news.push(n);
+  });
   try {
     // Readiness consumes the existing queue-news budget; a missing or dead
     // native watcher still fails within 15 seconds.
@@ -53,19 +176,33 @@ async function nativeBurst() {
       await until(() => registered.size === roots.length, Math.min(20, Math.max(0, queueDeadline - Date.now())));
     }
     assert.equal(registered.size, roots.length, "native fixture watchers acknowledge registration");
+    trace.record("stage", { stage: ++stage });
     for (const dir of roots) fs.rmSync(path.join(dir, probe), { force: true });
-    // Codex's queue, written three times in a row: said at once, not after
-    // a wait, and once more at most for the rest of the burst.
-    for (let i = 0; i < 3; i++) fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
+    // Three writes do not guarantee one native callback window. The first
+    // recognized callback must be told before return; every later news must
+    // cover newer delivered callbacks, with no spontaneous/duplicate news.
+    for (let i = 0; i < 3; i++) {
+      fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
+      const completedAt = performance.now();
+      trace.record("append", { write: i }, completedAt);
+    }
+    // Metadata sampling is outside the three writes and native callback path.
+    trace.record("fixture", { stage: 1, ...queueMetadata() });
+    trace.record("stage", { stage: ++stage });
     assert.ok(await until(() => news.some((n) => n.kind === "queue"), Math.max(0, queueDeadline - Date.now())), "queue news");
+    trace.record("stage", { stage: ++stage });
     await new Promise((r) => setTimeout(r, 150));
-    assert.ok(news.filter((n) => n.agent === "codex" && n.kind === "queue").length <= 2);
+    assert.ok(oracle.report().recognizedCallbacks > 0, "the native queue callback was delivered");
+    assert.deepEqual(oracle.report().violations, [], "queue news follows recognized callback causality");
+    trace.record("stage", { stage: ++stage });
     // Its history.
     fs.appendFileSync(path.join(codexHome, "thread_history_1.sqlite-wal"), "y");
     assert.ok(await until(() => news.some((n) => n.agent === "codex" && n.kind === "history")), "history news");
+    trace.record("stage", { stage: ++stage });
     // A Claude Code transcript, with its session id.
     fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
     assert.ok(await until(() => news.some((n) => n.agent === "claude" && n.id === ID)), "Claude news");
+    trace.record("stage", { stage: ++stage });
     // Let the recognized write's trailing notification finish before testing unrelated files.
     await new Promise((r) => setTimeout(r, 150));
     // Anything else is no news.
@@ -74,13 +211,22 @@ async function nativeBurst() {
     fs.writeFileSync(path.join(claudeProjects, "-work-app", "notes.txt"), "z");
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(news.length, before);
+    assert.deepEqual(oracle.report().violations, [], "later fixture activity cannot create queue news without its callback");
+    trace.record("stage", { stage: ++stage });
   } finally {
-    fs.watch = nativeWatch;
-    watch.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    // Sampling is outside the measured writes and callback path, before the
+    // original cleanup. A failed assertion retains the same bounded trace.
+    try {
+      trace.record("fixture", { stage: 2, ...queueMetadata() });
+      retainBurst(t, { schema: 1, mode, stage, debounceMs: 40, node: process.versions.node, platform: process.platform, architecture: process.arch, oracle: oracle.report(), ...trace.report() });
+    } finally {
+      fs.watch = nativeWatch;
+      watch.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 }
-test("a write to the Codex app's queue or history, or to a Claude Code transcript, is news at once; once per burst", nativeBurst);
+test("native queue callbacks produce immediate news without duplicates; history and Claude writes are news", nativeBurst);
 
 test("the first native burst waits for registration instead of losing its only notification", async t => {
   // A native watcher may return before its event source is registered. This
@@ -106,7 +252,106 @@ test("the first native burst waits for registration instead of losing its only n
     const original = fs[method];
     t.mock.method(fs, method, (file, ...args) => { const result = original(file, ...args); notify(file); return result; });
   }
-  await nativeBurst();
+  await nativeBurst(t, "modeled-registration");
+});
+
+for (const spread of [false, true]) {
+  test(`[modeled delivery, not native timing] three queue callbacks ${spread ? "span debounce windows" : "arrive together"}`, t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const callbacks = new Map(), news = [], delivered = [], oracle = queueDeliveryOracle();
+    let modelMs = 0, deliveryID = 0, activeDeliveryID = null;
+    const watcher = createAgentWatch({
+      codexHome: "/c", claudeProjects: "/p", claudeSessions: "/s", claudeAppRecords: "/r", geminiHome: "/g", debounceMs: 40,
+      watch: (dir, _options, listener) => (callbacks.set(dir, listener), { close() {} }),
+    });
+    t.after(() => watcher.close());
+    watcher.onChange(n => {
+      oracle.news(n);
+      news.push({ modelMs, activeDeliveryID, agent: n.agent, kind: n.kind });
+    });
+    const advance = ms => { modelMs += ms; t.mock.timers.tick(ms); };
+    const callback = () => {
+      activeDeliveryID = ++deliveryID;
+      delivered.push({ phase: "enter", modelMs, deliveryID });
+      try { oracle.deliver(true, () => callbacks.get("/c")("change", "queue_1.sqlite-wal")); }
+      finally { delivered.push({ phase: "exit", modelMs, deliveryID }); activeDeliveryID = null; }
+    };
+    callback();
+    assert.equal(news.length, 1, "the first delivered callback is told immediately");
+    if (spread) {
+      advance(20); callback();
+      assert.equal(news.length, 1);
+      advance(20);
+      assert.equal(news.length, 2, "one trailing notification for the first delivery window");
+      advance(20); callback();
+      assert.equal(news.length, 2);
+      advance(20);
+      assert.equal(news.length, 3, "a later delivery window may legitimately emit again");
+    } else {
+      callback(); callback();
+      assert.equal(news.length, 1);
+      advance(39);
+      assert.equal(news.length, 1);
+      advance(1);
+      assert.equal(news.length, 2, "the synchronous delivered burst is told exactly twice");
+    }
+    advance(40);
+    assert.equal(news.length, spread ? 3 : 2, "no extra notification after that delivery window becomes quiet");
+    assert.deepEqual(news.map(n => n.activeDeliveryID), spread ? [1, null, null] : [1, null], "only the leading news is emitted inside modeled callback delivery");
+    assert.deepEqual(oracle.report(), { recognizedCallbacks: 3, coveredGeneration: 3, queueNews: spread ? 3 : 2, violations: [] }, "both legal delivery patterns satisfy the same causal oracle");
+    retainBurst(t, { schema: 1, mode: spread ? "modeled-spread" : "modeled-together", debounceMs: 40, oracle: oracle.report(), delivered, news });
+  });
+}
+
+const queueNews = { agent: "codex", kind: "queue" };
+for (const control of [
+  { name: "duplicate synchronous news", expected: ["multiple-queue-news-in-one-callback", "queue-without-new-callback", "first-queue-not-once-before-return"],
+    drive: oracle => oracle.deliver(true, () => { oracle.news(queueNews); oracle.news(queueNews); }) },
+  { name: "spontaneous news before any recognized callback", expected: ["queue-without-new-callback"],
+    drive: oracle => oracle.news(queueNews) },
+  { name: "first news delayed until after callback return", expected: ["first-queue-not-once-before-return"],
+    drive: oracle => { oracle.deliver(true, () => {}); oracle.news(queueNews); } },
+  { name: "queue news inside an unrelated callback despite a pending generation", expected: ["queue-inside-unrelated-callback"],
+    drive: oracle => {
+      oracle.deliver(true, () => oracle.news(queueNews));
+      oracle.deliver(true, () => {});
+      oracle.deliver(false, () => oracle.news(queueNews));
+    } },
+  { name: "a different agent's queue as the first response", expected: ["wrong-queue-source", "first-queue-not-once-before-return"],
+    drive: oracle => oracle.deliver(true, () => oracle.news({ agent: "claude", kind: "queue" })) },
+  { name: "duplicate trailing news after all pending callbacks are covered", expected: ["queue-without-new-callback"],
+    drive: oracle => {
+      oracle.deliver(true, () => oracle.news(queueNews));
+      oracle.deliver(true, () => {});
+      oracle.deliver(true, () => {});
+      oracle.news(queueNews);
+      assert.equal(oracle.report().coveredGeneration, 3, "one news covers every callback already observed");
+      oracle.news(queueNews);
+    } },
+]) {
+  test(`[modeled oracle control] rejects ${control.name}`, () => {
+    const oracle = queueDeliveryOracle();
+    control.drive(oracle);
+    assert.deepEqual(oracle.report().violations.sort(), [...control.expected].sort());
+  });
+}
+
+test("native burst metadata and oracle violations are bounded and cannot retain paths or contents", () => {
+  const trace = burstTrace(), secret = "PRIVATE_FIXTURE_MARKER_DO_NOT_RETAIN";
+  for (let i = 0; i < 1000; i++) trace.record("native-enter", { eventType: secret, category: secret, path: secret, content: secret, size: i, mtimeMs: Infinity });
+  trace.record(secret, { size: 1 });
+  const report = trace.report();
+  assert.equal(report.events.length, 128);
+  assert.equal(report.counters["native-enter"].count, 1000);
+  assert.equal(report.overwritten, 872);
+  assert.equal(report.events.at(-1).size, 999);
+  assert.ok(Number.isFinite(report.counters["native-enter"].maxGapMs));
+  assert.ok(!JSON.stringify(report).includes(secret));
+  assert.ok(report.events.every(event => !Object.hasOwn(event, "mtimeMs")));
+  const oracle = queueDeliveryOracle();
+  for (let i = 0; i < 1000; i++) oracle.news({ agent: secret, kind: "queue", path: secret, content: secret });
+  assert.deepEqual(oracle.report().violations, ["wrong-queue-source", "queue-without-new-callback"]);
+  assert.ok(!JSON.stringify(oracle.report()).includes(secret));
 });
 
 test("an agent that isn't installed is simply not watched", () => {

@@ -8,6 +8,89 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-19
+
+Early access: file editing, clipboard paste and Windows setup improvements.
+
+### Added
+
+- Edit text files from Files: Edit in a text or code file's preview opens it in
+  a full-screen editor, and Save writes it back to the computer. Saves send the
+  hash of the version read, so a file changed on the computer meanwhile is never
+  written over; the draft stays to copy. Windows line endings (`\r\n`) are kept.
+  Files over 128 KB, files that aren't UTF-8 text and files with mixed line
+  endings stay view-only and say why. Edit appears only with access that can
+  change files. Unsaved edits ask before closing and come back if the preview
+  closes another way.
+- Paste into terminals from the phone: a Paste key in the terminal's key row
+  sends the phone's clipboard, in terminals Reach started and in the Mac's or
+  PC's own terminal tabs. Where the phone won't share its clipboard, a small
+  box takes the phone's own paste. A paste whose line breaks would run commands
+  asks first, unless the program takes pastes whole (bracketed paste). Control
+  characters are removed, and a terminal that isn't connected says so instead
+  of keeping the paste for later.
+
+### Fixed
+
+- Keep a mobile navigation tap on its intended destination when device details
+  add tabs while the finger is down. Cancelled gestures and removed destinations
+  do not navigate; keyboard and assistive clicks retain their explicit target.
+- Keep a pending clipboard read bound to its original terminal and access.
+  Switching terminals or computers, changing access, or closing the view drops
+  the old read, including a switch away and back.
+- Parse a terminal's saved output before enabling input after connecting.
+  Old device-query replies no longer reach the live shell, and terminal queries
+  leave the phone's Ctrl key armed for the next typed character. Live queries
+  still receive their normal replies.
+- Preserve a newer unsaved file draft when an earlier preview's save completes
+  after it closes. A confirmed save clears only the draft it saved.
+- Keep unsent file and manual-paste drafts across verified, already approved
+  private handoffs and late computer-metadata updates. Saves and pastes still
+  require a fresh explicit action using the current connection's credentials.
+- Keep manual paste text when its terminal is disconnected or its command
+  confirmation is declined, so a known-unsent draft can be copied or submitted
+  explicitly later.
+- Terminal input longer than 32,768 characters (a large paste, from the phone
+  or a computer's keyboard) arrives whole, in pieces, instead of being dropped.
+- Recognize Windows' same-owner `OWNER RIGHTS` folder permissions and narrowly
+  repair the legacy same-owner read grants created by Reach. Foreign ownership,
+  broad write access, junctions, hard links and unsafe helper caches remain refused.
+- Keep Windows setup and source-checkout update instructions actionable, and
+  isolate native helpers from writable checkout files and stale cached builds.
+- Show only the current Reach process's link and route status, preventing stale
+  readiness left by an earlier run from appearing during startup.
+- Read Windows' app catalog and file icons through the existing native shell
+  helper, and launch validated app IDs directly, avoiding PowerShell cold-start
+  failures while preserving operation deadlines and unknown-action handling.
+- Recheck access and pause state after app discovery or helper preparation,
+  immediately before opening an app on either Mac or Windows.
+- Bound app-launch requests by the authenticated device's identity, preserving
+  separate budgets for other devices and refusing excess work before dispatch.
+- Validate macOS runtime library inspection before granting isolated scripts
+  access to their runtime files; a confirmed read-only inspection timeout has
+  one bounded retry for the whole dependency graph.
+
+### Validation and limits
+
+- Simulator checks pin Xcode 26.2 and iOS 26.2 together and require native
+  background and resume events; app-launcher completion alone does not
+  establish those transitions.
+- Release checks run Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
+  the iOS simulator, security scans and installed npm/portable artifacts. Windows
+  ARM64 native validation is recorded separately from the required x64 lane.
+- Hosted browser/OS tests use controlled files, routes and synthetic audio.
+  Physical iPhone/iPad/Android, authenticated private → public → private network
+  transitions, standard-user GUI parity and full signed-in provider tasks remain
+  unqualified. An AppContainer control refusal leaves its escape checks unrun;
+  a passing parent does not prove those assertions executed.
+- An additional hosted macOS 26/iOS 26.4.1 cold boot timed out before Reach
+  installation, leaving that environment unqualified. The matching 26.2 run
+  completed all eight native checks after two initial launch timeouts.
+  Simulator startup stability and the earlier hangs' cause remain unproven.
+- npm installs update with `reach update`; source installs use `v0.4.0`. Keep
+  existing Reach state and restart through the CLI. Restarting ends terminals
+  and live screens; invited agents obtain compatible runtime updates from Reach.
+
 ## [0.3.3] — 2026-10-18
 
 Early access: includes the Windows QR and Codex connection fixes prepared for

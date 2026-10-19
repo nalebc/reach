@@ -47,11 +47,36 @@ export function createIosPageEvidence({ now = Date.now, started = now(), maxRequ
   };
 }
 
+// The disposable page's failure state only: no input values, error text,
+// storage, names, URLs or credentials leave the page through this observer.
+export function iosPairingState(doc, native) {
+  const pairing = doc.querySelector("input.pair-code");
+  const form = pairing?.closest("form");
+  const address = form?.querySelector('input[type="url"]') || doc.querySelector('input[type="url"]');
+  const error = form?.querySelector('.error[role="alert"]')?.textContent || "";
+  let errorCategory = error.trim() ? "other" : "none";
+  if (/can[’']t reach|could not connect|couldn[’']t connect|connect tailscale|didn[’']t answer/i.test(error)) errorCategory = "unreachable";
+  else if (/pairing code.*incorrect|code.*expired|code.*incorrect/i.test(error)) errorCategory = "pairing-code";
+  else if (/too many attempts/i.test(error)) errorCategory = "rate-limit";
+  // Read validity properties only: checkValidity() would dispatch invalid
+  // events and turn this diagnostic into another interaction with the form.
+  return {
+    nativeBridge: typeof native?.nativePromise === "function",
+    addressPresent: !!address, addressHasValue: !!address?.value,
+    addressValid: address?.validity?.valid === true,
+    pairingPresent: !!pairing, pairingHasValue: !!pairing?.value,
+    pairingLengthValid: typeof pairing?.value === "string" && /^\d{8}$/.test(pairing.value.replace(/\s/g, "")),
+    formPresent: !!form,
+    formValid: !!form && [...form.querySelectorAll("input, textarea, select")].every(input => input.validity.valid),
+    formBusy: !!form?.querySelector("button:disabled"), errorCategory,
+  };
+}
+
 // A classic same-origin script runs before the application's module. If that
 // module cannot load or throws, its evidence doesn't depend on React or the
 // later automated pairing script starting successfully.
 export function iosPageDiagnosticScript(endpoint) {
-  return `(${function observe(endpoint) {
+  return `(${function observe(endpoint, pairingState) {
     const send = value => {
       const body = JSON.stringify({ ...value,
         ...(typeof value.message === "string" ? { message: value.message.slice(0, 500) } : {}),
@@ -60,6 +85,7 @@ export function iosPageDiagnosticScript(endpoint) {
       try { void fetch(endpoint, { method: "POST", body }).catch(() => {}); } catch {}
     };
     window.__reachIosSmokeEvidence = send;
+    window.__reachIosSmokePairingState = () => pairingState(document, window.Capacitor);
     send({ kind: "diagnostic-script" });
     document.addEventListener("DOMContentLoaded", () => send({ kind: "DOMContentLoaded" }), { once: true });
     window.addEventListener("load", () => send({ kind: "load" }), { once: true });
@@ -72,7 +98,7 @@ export function iosPageDiagnosticScript(endpoint) {
     }, true);
     window.addEventListener("unhandledrejection", event => send({ kind: "unhandledrejection",
       name: event.reason?.name || "Error", message: String(event.reason?.message || event.reason || "") }));
-  }.toString()})(${JSON.stringify(endpoint)});`;
+  }.toString()})(${JSON.stringify(endpoint)}, ${iosPairingState.toString()});`;
 }
 
 export function instrumentIosPage(html, probe) {

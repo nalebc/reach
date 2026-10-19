@@ -2,19 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { backgroundService } from "../scripts/background-service.mjs";
 import { windowsTask } from "../scripts/windows-task.mjs";
 import { setupStamp } from "../scripts/setup-stamp.mjs";
 import { windowsProcesses } from "../server/windows-processes.mjs";
 import { windowsFixture } from "./helpers/windows-fixtures.mjs";
+import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 
 // Background mode on a real Windows PC (workstreams K and L): the real
-// Reach, from this checkout (CI's build, its setup stamp written as
-// bootstrap writes it), run by its Scheduled Task in this session with no
+// Reach, from a private byte-copy of this checkout's CI build (its setup
+// stamp written as bootstrap writes it), run by its Scheduled Task with no
 // window, then asked for what makes it start console programs (Explorer's
 // file icons and an owner's command through PowerShell, a command ended at
 // its deadline with taskkill, a terminal). A WinEvent hook
@@ -22,7 +21,6 @@ import { windowsFixture } from "./helpers/windows-fixtures.mjs";
 // shows, even one that flashes: none may be a console's, nor any of the
 // task's programs'. Local mode: no Tailscale here.
 const onWindows = { skip: process.platform !== "win32" && "a real Windows PC", timeout: 300000 };
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check, what, ms = 120000) => {
   for (const end = Date.now() + ms; ; await sleep(250)) {
@@ -41,9 +39,10 @@ const sessionOf = (pid) =>
     }));
 
 test("Windows background mode: the task's Reach and the console programs it starts show no window, not even for a moment", onWindows, async (t) => {
+  const { root: repo, work } = await privateWindowsInstall();
   const stamp = setupStamp(repo);
   assert.ok(stamp.agent && fs.existsSync(path.join(repo, "dist", "index.html")), "a built checkout (npm run build:release)");
-  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-quiet-")));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(work, "reach-quiet-")));
   const state = path.join(base, "state");
   const share = path.join(base, "share");
   fs.mkdirSync(state);
@@ -56,12 +55,39 @@ test("Windows background mode: the task's Reach and the console programs it star
   // Every window shown from here on.
   const watch = path.join(base, "windows.jsonl");
   const stop = path.join(base, "stop-watching");
+  // Retained even on failure: correlate a visible window with the operation
+  // underway, and queued native process identities instead of guessing
+  // that a missing descendant in the polling tree means an unrelated process.
+  const phases = [];
+  const phase = (name) => phases.push({ name, at: Date.now() });
+  const events = () => (fs.existsSync(watch) ? fs.readFileSync(watch, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+  // Optional evidence uses a separate stream so it cannot change or interrupt
+  // parsing of the visibility events. Its final line may still be appending.
+  const evidence = () => {
+    try { return fs.readFileSync(watch + ".processes", "utf8").split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line)); }
+    catch { return []; }
+  };
+  const context = { platform: process.platform, arch: process.arch, testPid: process.pid };
   const watcher = spawn(await windowsFixture("window-watch"), [watch, stop], { stdio: "ignore", windowsHide: true });
+  context.watcherPid = watcher.pid;
   let watching = true;
   t.after(async () => {
     watching = false;
     fs.writeFileSync(stop, "");
+    if (watcher.exitCode === null && watcher.signalCode === null)
+      await Promise.race([new Promise((resolve) => watcher.once("exit", resolve)), sleep(1500)]);
     watcher.kill();
+    try {
+      fs.mkdirSync("reports", { recursive: true });
+      // No raw process command lines. Native diagnostics retain only fixed
+      // flags and redact all argument values. Window titles are not needed
+      // for attribution; keep only this fixture's known control title.
+      const retained = events().map((event) => typeof event.title === "string"
+        ? { ...event, title: event.title === "Reach test window" ? event.title : "<redacted>" } : event);
+      fs.writeFileSync("reports/windows-quiet-background.json", JSON.stringify({ schema: 1, context, phases, events: retained, processEvidence: evidence() }, null, 2));
+    } catch {
+      t.diagnostic("The optional quiet-background process evidence could not be retained.");
+    }
     try {
       await backgroundService({ command: "uninstall" }, repo, { platform: "win32", env, task, print: () => {} });
     } catch {}
@@ -71,7 +97,6 @@ test("Windows background mode: the task's Reach and the console programs it star
     await sleep(1500);
     fs.rmSync(base, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   });
-  const events = () => (fs.existsSync(watch) ? fs.readFileSync(watch, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   await until(() => events().some((e) => e.watching), "the watcher hooked in", 30000);
   // Its process list's helper, built before anything is timed.
   await windowsProcesses({ nativeDir });
@@ -86,6 +111,7 @@ test("Windows background mode: the task's Reach and the console programs it star
     }
   })();
 
+  phase("background-install-start");
   await backgroundService({ command: "install", local: true, folders: [share], httpsPort: 8443 }, repo, {
     platform: "win32",
     env,
@@ -94,6 +120,7 @@ test("Windows background mode: the task's Reach and the console programs it star
     allocatePort: async () => port,
     print: () => {},
   });
+  phase("background-install-returned");
   const origin = `http://127.0.0.1:${port}`;
   const logs = () => ["companion.log", "companion-error.log"].map((name) => {
     try {
@@ -112,6 +139,8 @@ test("Windows background mode: the task's Reach and the console programs it star
     throw Error(`${error.message}\n${logs()}`);
   });
   const host = JSON.parse(fs.readFileSync(path.join(state, "host-status.json"), "utf8"));
+  context.reachPid = host.pid;
+  phase("health-ready");
   assert.equal(host.service, true, "it runs as the background task's");
   // The watcher sees this desktop's windows: the task's Reach must be on it.
   const sessions = { reach: await sessionOf(host.pid), watcher: await sessionOf(watcher.pid) };
@@ -126,20 +155,26 @@ test("Windows background mode: the task's Reach and the console programs it star
     return { status: response.status, json: await response.json().catch(() => null) };
   };
   // What starts console programs.
+  phase("icons-start");
   const icons = await api("GET", "/api/files/icons?types=folder,pdf,txt");
   assert.equal(icons.status, 200, JSON.stringify(icons.json));
+  phase("jobs-start");
   const job = await api("POST", "/api/jobs", { root: 0, path: "", command: "Write-Output 'quiet'" });
   assert.equal(job.status, 202, JSON.stringify(job.json));
   const slow = await api("POST", "/api/jobs", { root: 0, path: "", command: "Start-Sleep 30", timeoutMs: 1000 });
   assert.equal(slow.status, 202, JSON.stringify(slow.json));
   await until(async () => ["completed", "failed", "timed_out", "cancelled"].includes((await api("GET", `/api/jobs/${job.json.id}`)).json?.status), "the command done", 60000);
   await until(async () => (await api("GET", `/api/jobs/${slow.json.id}`)).json?.status === "timed_out", "the slow command ended at its deadline", 60000);
+  phase("terminal-start");
   const terminal = await api("POST", "/api/terminals", { root: 0, path: "" });
+  phase("terminal-returned");
   t.diagnostic(`terminal: ${terminal.status}`);
   await sleep(5000);
   watching = false;
   await tree;
   const during = events();
+  const processEvidence = evidence();
+  phase("observation-ended");
   // The watch itself, checked: a console window opened on purpose is seen.
   execFile(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", '"start "Reach test window" cmd.exe /d /c ping -n 4 127.0.0.1 >nul"'], { windowsVerbatimArguments: true, windowsHide: true }, () => {});
   const control = await until(() => events().slice(during.length).find((e) => e.shown && CONSOLES.test(e.class)), "the watcher seeing a console window opened on purpose", 30000);
@@ -164,6 +199,7 @@ test("Windows background mode: the task's Reach and the console programs it star
   assert.ok(ran.some((image) => /^powershell\.exe$/i.test(image)), "console programs ran under it");
   const shown = during.filter((e) => e.shown);
   t.diagnostic(`windows shown meanwhile: ${JSON.stringify(shown.map(({ pid, class: kind, title }) => ({ pid, kind, title, image: seen.get(pid)?.image })))}`);
+  t.diagnostic(`visible window process evidence: ${JSON.stringify(processEvidence)}`);
   const mine = during.find((e) => e.session !== undefined && e.pid === undefined);
   t.diagnostic(`watcher's session ${mine?.session}`);
   assert.deepEqual(shown.filter((e) => ours.has(e.pid) || CONSOLES.test(e.class)), [], "no window from the task's programs, and no console window at all");

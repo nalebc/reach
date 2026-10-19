@@ -485,6 +485,90 @@ test("a held button is let go when the helper's input ends, and when Reach's pro
 });
 
 
+// Only fixed metadata from this synthetic fill may survive a failure. A raw
+// reply, error or candidate can carry field text, including a vault value.
+const fillReasons = new Map([
+  ["The Windows PC couldn't do that.", "native-exception"],
+  ["Windows UI Automation isn't available to Reach on this PC.", "uia-unavailable"],
+  ['No field named "Notes" is on screen. Describe the screen.', "notes-missing"],
+  ['No field named "Password" is on screen. Describe the screen.', "password-missing"],
+  ["Nothing is in front.", "no-front-window"],
+  ["Nothing is ready for typing.", "no-typing-target"],
+  ["The focused app could not be verified. Look again before typing or pressing a key.", "focus-unverified"],
+  ["The focused app changed while it was checked. Look again before typing or pressing a key.", "focus-changed"],
+  ["The window at this point changed while it was checked. Look again.", "point-changed"],
+  ["The app at this point could not be verified. Look again and retry.", "point-unverified"],
+  ["That control is out of view. Scroll to it first.", "control-out-of-view"],
+  ["Another app's window now covers that control. Describe the screen again.", "other-app-covers-control"],
+  ["A dialog or menu now covers that control. Describe the screen again and answer it first.", "dialog-covers-control"],
+  ["That's not one of the apps this agent may use.", "app-not-allowed"],
+  ["That window belongs to a program Reach can't identify. The agent leaves it alone.", "identity-unverified"],
+  ["That holds passwords or controls who may use this Windows PC. It stays closed to the agent.", "protected-window"],
+  ["That's a password field. Use the Password box so the password stays hidden.", "plain-text-at-password"],
+  ["A window running as administrator is in front on the PC. Windows hides the keyboard from Reach while it is, so the agent waits until the owner switches away from it.", "elevated-front"],
+  ["An administrator prompt, the lock screen or the sign-in screen is up on the PC. The agent waits; the owner answers it at the PC.", "secure-desktop"],
+  ["Reach is running as administrator (or User Account Control is off). Agents act only from a standard Reach session.", "elevated-helper"],
+  ["That window runs as administrator. Windows keeps other programs' clicks and keys out of it, so the agent leaves it to you at the PC.", "elevated-target"],
+  ["A key or button is held down on the PC. The agent's input would mix with it. Try again in a moment.", "held-input"],
+  ["Windows refused the input. Look at the screen before trying again.", "input-refused"],
+]);
+function fillDiagnostic(reply, log, elapsedMs) {
+  const object = reply !== null && typeof reply === "object" && !Array.isArray(reply) ? reply : {};
+  const error = typeof object.error === "string" ? object.error : "";
+  let reason = fillReasons.get(error) || (error ? "other" : "none");
+  if (/^\d+ fields match "Notes"\. Choose one of the returned refs\.$/.test(error)) reason = "notes-ambiguous";
+  if (/^\d+ fields match "Password"\. Choose one of the returned refs\.$/.test(error)) reason = "password-ambiguous";
+  const fixture = typeof log === "string" ? log : "";
+  return {
+    schema: 1, attempt: 1,
+    replyType: reply === null ? "null" : Array.isArray(reply) ? "array" : typeof reply,
+    okPresent: Object.hasOwn(object, "ok"), ok: typeof object.ok === "boolean" ? object.ok : null,
+    kind: ["blocked", "paused", "retry", "invalid", "unavailable"].includes(object.kind) ? object.kind : Object.hasOwn(object, "kind") ? "other" : "absent",
+    errorPresent: Object.hasOwn(object, "error"), reason,
+    // The native catch-all deliberately exposes no exception type or message.
+    nativeExceptionCategory: reason === "native-exception" ? "generic" : "not-exposed",
+    candidateCount: Array.isArray(object.candidates) ? Math.min(8, object.candidates.length) : null,
+    filledCount: Array.isArray(object.filled) ? Math.min(12, object.filled.length) : null,
+    elapsedMs: Number.isFinite(elapsedMs) ? Math.max(0, Math.min(300000, Math.round(elapsedMs))) : null,
+    fixtureLogAvailable: typeof log === "string",
+    notesChanged: /^text /m.test(fixture), notesWritten: fixture.includes("text filled"),
+    secretChanged: /^secret \d+$/m.test(fixture), secretLengthMatched: /^secret 14$/m.test(fixture),
+  };
+}
+
+test("UI Automation fill diagnostics keep refusal evidence without field values", () => {
+  const privateText = "private-probe-value-must-not-be-retained";
+  const reply = { kind: "retry", error: 'No field named "Password" is on screen. Describe the screen.',
+    candidates: Array.from({ length: 20 }, () => ({ name: privateText, value: privateText })),
+    text: privateText, stack: privateText };
+  const evidence = fillDiagnostic(reply, `text filled\ntext ${privateText}\nsecret 3\n`, 42.3);
+  assert.equal(evidence.okPresent, false);
+  assert.equal(evidence.ok, null);
+  assert.equal(evidence.kind, "retry");
+  assert.equal(evidence.reason, "password-missing");
+  assert.equal(evidence.candidateCount, 8);
+  assert.deepEqual([evidence.notesChanged, evidence.notesWritten, evidence.secretChanged, evidence.secretLengthMatched], [true, true, true, false]);
+  const serialized = JSON.stringify(evidence);
+  assert.ok(serialized.length < 700);
+  assert.ok(!serialized.includes(privateText));
+  // The exact strict failure must retain the safe reason in its assertion.
+  assert.throws(() => assert.equal(reply.ok, true, serialized), error => {
+    assert.ok(error.message.includes('"reason":"password-missing"'));
+    assert.ok(!error.message.includes(privateText));
+    return true;
+  });
+  const unknown = fillDiagnostic({ kind: privateText, error: privateText, filled: Array(30).fill(privateText), exceptionType: privateText }, "", Infinity);
+  assert.deepEqual([unknown.kind, unknown.reason, unknown.filledCount, unknown.elapsedMs], ["other", "other", 12, null]);
+  assert.ok(!JSON.stringify(unknown).includes(privateText));
+});
+
+test("UI Automation fill diagnostics distinguish generic native exceptions and completed fixture writes", () => {
+  const evidence = fillDiagnostic({ kind: "unavailable", error: "The Windows PC couldn't do that." }, "text filled\nsecret 14\n", 12);
+  assert.deepEqual([evidence.reason, evidence.nativeExceptionCategory, evidence.notesWritten, evidence.secretLengthMatched], ["native-exception", "generic", true, true]);
+  const absent = fillDiagnostic(undefined, undefined, 0);
+  assert.deepEqual([absent.replyType, absent.okPresent, absent.kind, absent.reason, absent.fixtureLogAvailable, absent.notesChanged, absent.secretChanged], ["undefined", false, "absent", "none", false, false, false]);
+});
+
 test("UI Automation: the window's controls by role, a press and a fill by name, find, read, windows, menus, wait-change and focus", { skip, timeout: 300000 }, async (t) => {
   const target = await window(t, "controls", "Sample controls target", "FF8C00", [40, 40, 600, 420], "medium");
   const vault = await window(t, "vault3", "Password Manager", "1E50FF", [660, 40, 300, 220], "medium");
@@ -511,7 +595,18 @@ test("UI Automation: the window's controls by role, a press and a fill by name, 
   assert.equal((await h.send({ op: "act", action: { type: "press", name: "Mark" } })).ok, true);
   await until(() => /^button$/m.test(target.log()), "pressed by name");
   // fill: the notes and, from the vault, the password
-  assert.equal((await h.send({ op: "act", action: { type: "fill", fields: [{ label: "Notes", text: "filled" }, { label: "Password", text: "hunter2-secret", secret: true }] } })).ok, true);
+  const fillStarted = performance.now();
+  let filled, fillEvidence;
+  try {
+    filled = await h.send({ op: "act", action: { type: "fill", fields: [{ label: "Notes", text: "filled" }, { label: "Password", text: "hunter2-secret", secret: true }] } });
+  } finally {
+    let fixtureLog;
+    try { fixtureLog = target.log(); } catch { /* A diagnostic read cannot replace the fill result. */ }
+    fillEvidence = fillDiagnostic(filled, fixtureLog, performance.now() - fillStarted);
+    note({ uiaFill: fillEvidence });
+    t.diagnostic(JSON.stringify({ uiaFill: fillEvidence }));
+  }
+  assert.equal(filled.ok, true, JSON.stringify(fillEvidence));
   await until(() => target.log().includes("text filled") && /^secret 14$/m.test(target.log()), "both fields filled");
   // the vault value is nowhere the agent reads
   const again = await h.send({ op: "elements" });

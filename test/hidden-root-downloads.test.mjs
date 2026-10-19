@@ -40,7 +40,7 @@ test("ordinary downloads under a hidden shared-root ancestor retain contents and
     const response = await f.call(route);
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "shared fixture bytes");
-    assert.match(response.headers.get("content-disposition"), /attachment; filename="ordinary.txt"/);
+    assert.match(response.headers.get("content-disposition"), /^attachment; filename=(?:ordinary\.txt|"ordinary\.txt")$/);
     const range = await f.call(route, f.owner.token, { Range: "bytes=0-5" });
     assert.equal(range.status, 206);
     assert.equal(await range.text(), "shared");

@@ -4608,6 +4608,7 @@ export async function createReach(overrides = {}) {
     );
     if (
       res.destroyed ||
+      client?.kind !== "device" ||
       !client?.scopes.includes("admin") ||
       !client.scopes.includes("apps")
     )
@@ -4662,9 +4663,23 @@ export async function createReach(overrides = {}) {
     shortcutOwner(req, res);
     res.set("Cache-Control", "no-store").json(result);
   });
-  app.post("/api/apps/launch", async (req, res) => {
-    notPaused();
-    const result = await launchApp(req.body?.id);
+  // Authenticate before allocating a budget; changing IP headers never gives
+  // the same credential another opportunity to launch a physical app.
+  const appLaunchStore = new MemoryStore();
+  const appLaunchLimit = rateLimit({
+    windowMs: 60_000, limit: 30, store: appLaunchStore,
+    keyGenerator: req => {
+      if (!req.client?.id) throw fail(401, "Approve this device first.");
+      return req.client.id;
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "app-launch", statusCode: 429,
+    message: { error: "Too many app launch requests. Try again in one minute." },
+  });
+  app.post("/api/apps/launch", appLaunchLimit, async (req, res) => {
+    const authorize = () => { req.reauthorize(); notPaused(); };
+    authorize();
+    const result = await (overrides.appLaunch || launchApp)(req.body?.id, { authorize });
     record("app", `Opened ${result.name}`);
     res.json(result);
   });
@@ -6193,6 +6208,7 @@ export async function createReach(overrides = {}) {
     },
     async close() {
       warming.abort();
+      appLaunchStore.shutdown();
       maintenanceStore.shutdown();
       codingTaskCreateStore.shutdown();
       codingTaskReadStore.shutdown();

@@ -31,12 +31,17 @@ function hiddenAtTop() {
 }
 const names = () => [...document.querySelectorAll(".file-main .file-name")].map((n) => n.innerText.trim());
 
-test(`Files: the phone browses this ${word}'s home and its drive, previews a text file, and downloads it whole`, { skip, timeout: 240000 }, async (t) => {
+test(`Files: the phone browses this ${word}'s home and its drive, previews a text file, downloads it whole, and edits another`, { skip, timeout: 240000 }, async (t) => {
   const computer = await startComputer(t);
   const note = `${marker("note")}\nA second line, with an accent: déjà vu ✓\n`;
   const file = path.join(computer.reach.home, "Journey notes.txt");
   fs.writeFileSync(file, note);
   t.after(() => fs.rmSync(file, { force: true }));
+  // Windows line endings, which a browser's text box reads as "\n".
+  const ini = `[${marker("settings")}]\r\nname = déjà vu ✓\r\n`;
+  const settings = path.join(computer.reach.home, "Journey settings.ini");
+  fs.writeFileSync(settings, ini);
+  t.after(() => fs.rmSync(settings, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
   await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
@@ -62,6 +67,29 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   assert.ok(download, `the download finished: ${JSON.stringify(page.downloads())}`);
   assert.equal(fs.readFileSync(download.file, "utf8"), note, "the phone has the file byte for byte");
   await page.tap(`button[aria-label="Close preview"]`, "Close preview");
+  // Edited on the phone and saved: the computer's file holds what was typed,
+  // byte for byte, every line still ending in "\r\n", the new one too.
+  await page.tap({ selector: "button.file-main", text: "Journey settings.ini" }, "the settings file");
+  await page.see(
+    () => document.querySelector('dialog.file-viewer[aria-label="Journey settings.ini"] .file-viewer-body pre')?.innerText,
+    "the settings file, previewed",
+    30000,
+  );
+  await page.tap(`button[aria-label="Edit Journey settings.ini"]`, "Edit");
+  await page.tap("textarea.file-editor", "the file's text");
+  await page.evaluate(`(() => { const el = document.querySelector("textarea.file-editor"); el.focus(); el.setSelectionRange(el.value.length, el.value.length); })()`);
+  await page.type("color = green");
+  await page.key("Enter");
+  await page.shot("editing");
+  await page.tap({ selector: "dialog.file-viewer header button", text: "Save" }, "Save");
+  await page.see(
+    () => !document.querySelector("textarea.file-editor") && document.querySelector("dialog.file-viewer .file-viewer-body pre")?.innerText.includes("color = green"),
+    "the saved text, previewed",
+    30000,
+  );
+  assert.equal(fs.readFileSync(settings, "utf8"), `${ini}color = green\r\n`, "the computer's file, as typed, its line endings kept");
+  await page.shot("edited");
+  await page.tap(`button[aria-label="Close preview"]`, "Close preview");
   // The whole computer, one tap away.
   await page.tap("button.files-title.is-switch", "the folder switch");
   await page.tap({ selector: `[aria-label="Locations"] button`, text: drive }, drive);
@@ -84,4 +112,57 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
     assert.ok(hidden.length > 0, "the drive's top has something its file browser hides");
     assert.deepEqual(hidden.filter((name) => listed.includes(name)), []);
   });
+});
+
+test("Files: a late save acknowledgement preserves a newer draft after the preview reopens", { skip, timeout: 240000 }, async (t) => {
+  const computer = await startComputer(t);
+  const name = "Journey late save.txt";
+  const file = path.join(computer.reach.home, name);
+  fs.writeFileSync(file, "original\r\n");
+  t.after(() => fs.rmSync(file, { force: true }));
+  const page = await phone(t, computer);
+  await page.skipIntro();
+  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
+  await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files");
+  await page.tap({ selector: "button.file-main", text: name }, "the draft file");
+  await page.tap(`button[aria-label="Edit ${name}"]`, "Edit");
+  await page.fill("textarea.file-editor", "first save\n");
+  // The request and disk write are real. Hold only delivery of its completed
+  // response to the app, so another preview can be opened before it settles.
+  // dialog.close() below models the browser closing a modal without Cancel;
+  // this is real Chrome, not a physical phone's back gesture or real Tailscale.
+  await page.evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    window.__lateFileSave = { calls: 0, ready: false, delivered: false };
+    window.fetch = async (...args) => {
+      const response = await fetch(...args);
+      if (new URL(typeof args[0] === "string" ? args[0] : args[0].url, location.href).pathname === "/api/files/text"
+          && args[1]?.method === "PUT") {
+        const held = window.__lateFileSave;
+        held.calls++;
+        held.ready = true;
+        await new Promise(resolve => { held.release = resolve; });
+        held.delivered = true;
+      }
+      return response;
+    };
+  })()`);
+  t.after(() => page.evaluate("window.__lateFileSave?.release?.()").catch(() => {}));
+  await page.tap({ selector: "dialog.file-viewer header button", text: "Save" }, "Save");
+  await page.see(() => window.__lateFileSave.ready, "the real write completed, its response held", 30000);
+  assert.equal(fs.readFileSync(file, "utf8"), "first save\r\n");
+  await page.tap(`button[aria-label="Close preview"]`, "close while saving");
+  await page.tap({ selector: "button.file-main", text: name }, "reopen the draft file");
+  await page.see(() => document.querySelector("textarea.file-editor")?.value === "first save\n", "the pending draft is restored");
+  await page.fill("textarea.file-editor", "newer unsaved draft\n");
+  await page.evaluate('document.querySelector("dialog.file-viewer").close()');
+  await page.see(() => !document.querySelector("dialog.file-viewer"), "the browser closed the newer preview");
+  await page.evaluate("window.__lateFileSave.release()");
+  await page.see(() => window.__lateFileSave.delivered, "the first response is released");
+  await page.see(() => document.body.innerText.includes("Saved Journey late save.txt"), "the original save is acknowledged");
+  await page.tap({ selector: "button.file-main", text: name }, "reopen after the old acknowledgement");
+  await page.see(() => document.querySelector("textarea.file-editor")?.value === "newer unsaved draft\n", "the newer draft is still present");
+  assert.equal(await page.evaluate("window.__lateFileSave.calls"), 1, "only the original save was sent");
+  assert.equal(fs.readFileSync(file, "utf8"), "first save\r\n", "the newer draft remains unsent");
+  await page.shot("late-save-newer-draft-preserved");
 });

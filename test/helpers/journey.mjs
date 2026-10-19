@@ -13,6 +13,7 @@ import { firstInstall, setupMenu } from "./first-install.mjs";
 import { HOST } from "./fake-tailscale.mjs";
 import { findChrome, launchChrome, openTab, testCertificate } from "./headless-chrome.mjs";
 import { computerWord } from "../../server/computer-word.mjs";
+import { safeNativeCall, safeFailureExtra } from "./journey-native-diagnostics.mjs";
 
 // The user journeys (test/journeys): the actual phone interface, in a real
 // browser, against a real Reach on this computer, page by page, exactly as
@@ -144,11 +145,19 @@ export async function clickTarget(t, dir) {
   for (const end = Date.now() + 60000; !fs.existsSync(`${out}.ready`); await sleep(100))
     if (Date.now() > end || child.exitCode !== null) throw Error("The click target didn't open.");
   const [x, y, width, height, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
+  const readyAt = Date.now();
+  const clicks = () => (fs.existsSync(`${out}.clicks`) ? Number(fs.readFileSync(`${out}.clicks`, "utf8")) : 0);
   return {
     at: { x: x / width, y: y / height },
     // Inside it, away from its middle (where the pointer ends up).
     aside: { x: (x + w / 4) / width, y: (y + h / 4) / height },
-    clicks: () => (fs.existsSync(`${out}.clicks`) ? Number(fs.readFileSync(`${out}.clicks`, "utf8")) : 0),
+    clicks,
+    snapshot: () => {
+      let count = null;
+      try { const value = clicks(); if (Number.isFinite(value)) count = value; } catch {}
+      return { ageMs: Date.now() - readyAt, alive: child.exitCode === null && child.signalCode === null,
+        exitCode: child.exitCode, signalCode: child.signalCode, clicks: count, lifetimeMs: 120000 };
+    },
   };
 }
 
@@ -401,16 +410,33 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
   });
   // What the page asked the computer, for a failed step's message.
   await tab.send("Network.enable");
-  const asked = new Map();
+  const asked = new Map(), failed = new Map();
+  const failedRequest = (requestId, request) => {
+    failed.set(requestId, request);
+    if (failed.size > 20) failed.delete(failed.keys().next().value);
+  };
   browser.on("Network.requestWillBeSent", ({ requestId, request }, from) => {
     if (from !== tab.sessionId || !/\/(api|ws)\//.test(request.url)) return;
     asked.set(requestId, { at: Date.now(), method: request.method, path: new URL(request.url).pathname });
     if (asked.size > 60) asked.delete(asked.keys().next().value);
   });
   browser.on("Network.responseReceived", ({ requestId, response }, from) => {
-    if (from === tab.sessionId && asked.has(requestId)) asked.get(requestId).status = response.status;
+    if (from !== tab.sessionId || !asked.has(requestId)) return;
+    const request = asked.get(requestId);
+    request.status = response.status;
+    if (response.status >= 400) failedRequest(requestId, request);
+  });
+  browser.on("Network.loadingFailed", ({ requestId, errorText, canceled, blockedReason }, from) => {
+    if (from !== tab.sessionId || !asked.has(requestId)) return;
+    const request = asked.get(requestId);
+    request.failed = /^net::ERR_[A-Z0-9_]{1,48}$/.test(errorText || "") ? errorText : "request failed";
+    request.cancelled = !!canceled;
+    if (/^[a-zA-Z-]{1,64}$/.test(blockedReason || "")) request.blockedReason = blockedReason;
+    failedRequest(requestId, request);
   });
   page.requests = () => [...asked.values()];
+  page.failedRequests = () => [...failed.values()];
+  page.nativeCalls = computer.reach.nativeCalls;
   // What the phone downloads lands in a folder of this test's own:
   // [{ name, state, file }], `state` "completed" once all of it is there.
   const downloads = fs.mkdtempSync(path.join(computer.reach.temp, "downloads-"));
@@ -422,6 +448,10 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     if (one) one.state = state;
   });
   page.downloads = () => got;
+  // A permission the phone's browser asks the person for (reading the
+  // clipboard), given as they would give it.
+  page.grant = (permissions) =>
+    browser.send("Browser.grantPermissions", { origin: computer.origin, permissions });
   await page.open("/");
   await signIn(page, computer);
   return page;
@@ -432,16 +462,26 @@ async function signIn(page, computer) {
     // The page asks by itself, then shows the code to type into Reach.
     const code = await page.see(() => document.querySelector(".approval-code")?.textContent?.trim(), "the code to type on the computer", 60000);
     assert.match(code, /^[a-f0-9]{8}$/);
+    await page.skipIntro();
     computer.reach.answer(code);
   } else {
     await page.see(/Pairing code/, "the pairing code form", 60000);
     // How to get a fresh code, as this computer gives one.
     await page.see(/For a fresh one, run (reach|\.\/reach|\.\\reach\.cmd) pair on your computer\./, "how to get a fresh code");
+    // The form is already mounted underneath the first-time scene. Wait for
+    // that scene to finish before a real finger can reach the pairing form.
+    await page.skipIntro();
     await page.shot("connect");
     await page.fill("input.pair-code", computer.pairing);
     await page.tap("Connect computer");
   }
-  await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code"), "signed in, past the connect page", 60000);
+  // Leaving Connect can precede the first authenticated /api/device response.
+  // These journeys approve an owner: Chat appears only once those details are
+  // loaded. Measure navigation after that, so the bar cannot expand between
+  // measuring a button and dispatching touchStart to its old coordinate.
+  // MobileNav's separate native-touch test exercises changes during a press.
+  await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code") &&
+    document.querySelector('nav.mobile-nav button[aria-label="Chat"]'), "signed in, with the approved computer's details", 60000);
 }
 
 // The colour a PNG shows at its middle: { r, g, b } (8-bit RGB or RGBA,
@@ -492,7 +532,7 @@ const PAGE_TRACE = `(() => {
   const KEY = "journey.trace";
   const at = () => Math.round(performance.timeOrigin + performance.now()) % 1000000;
   const read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || "[]"); } catch { return []; } };
-  const add = (entry) => { try { const all = read(); all.push(at() + " " + entry); sessionStorage.setItem(KEY, JSON.stringify(all.slice(-40))); } catch {} };
+  const add = (entry) => { try { const all = read(); all.push(at() + " " + entry.slice(0, 240)); sessionStorage.setItem(KEY, JSON.stringify(all.slice(-40))); } catch {} };
   const label = (el) => {
     const b = el && el.closest ? el.closest("button, a, [role=button], [role=tab], [role=menuitem], li, dialog, nav, header, main") || el : el;
     if (!b || !b.tagName) return String(b);
@@ -501,6 +541,12 @@ const PAGE_TRACE = `(() => {
   };
   add("load " + location.pathname + location.search);
   addEventListener("click", (e) => add("click " + (e.isTrusted ? "" : "(script) ") + label(e.target) + " at " + Math.round(e.clientX) + "," + Math.round(e.clientY)), true);
+  for (const type of ["pointerdown", "pointerup", "touchstart", "touchend"]) {
+    addEventListener(type, (e) => {
+      const point = e.changedTouches?.[0] || e;
+      add(type + " " + (e.isTrusted ? "" : "(script) ") + label(e.target) + " at " + Math.round(point.clientX) + "," + Math.round(point.clientY));
+    }, { capture: true, passive: true });
+  }
   addEventListener("popstate", (e) => add("popstate " + JSON.stringify(e.state && (e.state.page || e.state)).slice(0, 60)), true);
   for (const name of ["pushState", "replaceState"]) {
     const original = history[name];
@@ -531,6 +577,50 @@ function phonePage(t, tab, { name, origin }) {
     }
   };
   const text = () => tab.evaluate("document.body?.innerText || ''");
+  // Shared by text/DOM waits and screenshot-colour waits. Persist the same
+  // bounded evidence before either kind of assertion can be buffered.
+  const recordFailure = async (description, file, extra = {}) => {
+    const observed = await tab.evaluate(`(() => {
+      let trace = []; try { trace = JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch {}
+      const input = document.querySelector("input.pair-code");
+      const button = input?.closest("form")?.querySelector("button");
+      const viewport = visualViewport;
+      return { trace, state: { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
+        pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
+        submitDisabled: button?.disabled ?? null,
+        activeTag: document.activeElement?.tagName?.slice(0, 48) || null,
+        viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null } };
+    })()`).catch(() => ({ trace: [], state: null }));
+    const did = Array.isArray(observed?.trace) ? observed.trace : [];
+    const bounded = (value, max) => typeof value === "string" ? value.slice(0, max) : null;
+    const numbers = (values, max) => Array.isArray(values) ? values.slice(0, max).map((value) => Number.isFinite(value) ? value : null) : null;
+    const request = value => ({
+      at: value.at, method: bounded(value.method, 16), path: bounded(value.path, 240),
+      status: value.status, failed: bounded(value.failed, 64), cancelled: !!value.cancelled,
+      blockedReason: bounded(value.blockedReason, 64),
+    });
+    let nativeCalls = [];
+    try { const values = page.nativeCalls?.(); if (Array.isArray(values)) nativeCalls = values.slice(0, 32).map(safeNativeCall).filter(Boolean); } catch {}
+    // API paths/statuses and input length only: no bodies, headers, field
+    // values, URL queries, raw native/browser errors, or arbitrary extras.
+    try {
+      fs.mkdirSync(reports, { recursive: true });
+      fs.writeFileSync(file ? file.replace(/\.png$/, ".json") : path.join(reports, `${label}-failed-step.json`), JSON.stringify({
+        step: bounded(description, 160), state: observed?.state ?? null,
+        requests: (page.requests?.() || []).slice(-15).map(request),
+        // Retained separately: later successful health polls cannot evict
+        // the HTTP failure that caused an earlier Apps or icon lookup error.
+        failedRequests: (page.failedRequests?.() || []).slice(-20).map(request),
+        gestures: did.filter((entry) => typeof entry === "string" && /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30).map((entry) => entry.slice(0, 256)),
+        taps: tapped.slice(-6).map((tap) => ({
+          meant: bounded(tap.meant, 160), x: tap.x, y: tap.y,
+          hit: bounded(tap.hit, 40), viewport: numbers(tap.viewport, 8), observationFailed: !!tap.error,
+        })),
+        nativeCalls, ...safeFailureExtra(extra),
+      }, null, 2) + "\n");
+    } catch { /* Preserve the original assertion if evidence cannot be written. */ }
+    return did;
+  };
   // Until the page shows `what` (a pattern in its text, or a page function
   // that returns something); then that. Otherwise the step failed: what the
   // page showed and said, and its screenshot.
@@ -557,7 +647,7 @@ function phonePage(t, tab, { name, origin }) {
         const shown = await text().catch(() => "");
         const found = await why().catch(() => "");
         const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
-        const did = await tab.evaluate(`(() => { try { return JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch { return []; } })()`).catch(() => []);
+        const did = await recordFailure(description, file);
         assert.fail(
           `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nIt did: ${JSON.stringify(did)}\nTapped: ${JSON.stringify(tapped.slice(-6))}\nScreenshot: ${file}`,
         );
@@ -596,7 +686,13 @@ function phonePage(t, tab, { name, origin }) {
     if (!el) return null;
     el.scrollIntoView({ block: "center", inline: "center" });
     const r = el.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    // Being mounted and styled visible does not mean a finger can reach it.
+    // Wait within this tap's existing budget; never send a tap to an overlay
+    // or replay an action after it disappears.
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !el.contains(hit)) return null;
+    return { x, y };
   })()`;
   const touch = async (x, y) => {
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
@@ -629,6 +725,7 @@ function phonePage(t, tab, { name, origin }) {
     text,
     see,
     shot,
+    recordFailure,
     tap,
     touch,
     hold,

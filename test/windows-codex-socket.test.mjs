@@ -121,6 +121,21 @@ test("helper integrity is checked immediately before spawn, and cancellation nev
   assert.equal(calls.length, count + 1);
 });
 
+test("modeled private preparation failure preserves finite diagnostics without native messages or paths",async()=>{
+  const raw=String.raw`C:\Users\private-person\secret-token`;
+  const failure=Object.assign(Error(`native output ${raw}`),{code:"EPRIVATESTAGE",status:503,
+    stage:{phase:"ancestors",reason:"owner",exception:"System.InvalidCastException",innerException:"none",id:"InvalidCastException",line:53,stdout:raw},stderr:raw,stdout:raw});
+  await assert.rejects(openWindowsCodexSocket(local,{dataDir:"private-data",prepareHelper:async()=>{throw failure;},start:()=>assert.fail("preparation never reached spawn")}),error=>{
+    assert.equal(error.code,"CODEX_SOCKET_PREPARE");assert.equal(error.status,503);assert.equal(error.prepareCode,"EPRIVATESTAGE");assert.equal(error.prepareStatus,503);
+    assert.deepEqual(error.stage,{phase:"ancestors",reason:"owner",exception:"System.InvalidCastException",innerException:"none",id:"InvalidCastException",line:53});
+    assert.ok(!error.message.includes(raw));assert.ok(!JSON.stringify(error).includes(raw));assert.equal(error.cause,undefined);return true;
+  });
+  await assert.rejects(openWindowsCodexSocket(local,{prepareHelper:async()=>{throw Object.assign(Error(raw),{code:raw,status:99999,stage:{phase:raw,reason:raw,exception:raw,innerException:raw,id:raw,line:Infinity}});}}),error=>{
+    assert.equal(error.code,"CODEX_SOCKET_PREPARE");assert.equal(error.status,503);assert.equal(error.prepareCode,undefined);assert.equal(error.prepareStatus,undefined);
+    assert.ok(!JSON.stringify(error).includes(raw));assert.ok(!error.message.includes(raw));return true;
+  });
+});
+
 test("aborting a modeled pending or live helper shuts it down once", async () => {
   for (const ready of [false, true]) {
     const child = childModel(), controller = new AbortController();

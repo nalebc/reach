@@ -19,9 +19,9 @@ export const suites = {
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.
-    "qr-onboarding-e2e",
+    "qr-onboarding-e2e", "windows-atomic-json",
     // Shared phone gestures must also run against Windows' input contract.
-    "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+    "mobile-nav-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
     "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
@@ -31,10 +31,14 @@ export const suites = {
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
+    // Editing a text file in Files: hash, line endings, never written over.
+    "file-editor-ui",
+    // Pasting from the phone into a terminal: pieces, brackets, never resent.
+    "terminal-paste-ui", "terminal-snapshot-chrome-e2e",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
-    "agent-compatibility", "reach-version", "agent-watch",
+    "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
@@ -48,10 +52,10 @@ export const suites = {
     // Chrome against a real first install of Reach, page by page, ending in
     // the same visible result as on a Mac. What needs the PC's desktop (its
     // screen, input, windows) runs with REACH_TEST_WINDOWS_DESKTOP only.
-    // On Windows CI all eight run once in the serial native step, including
+    // On Windows CI all journey files run once in the serial native step, including
     // their real browser startup; the concurrent contract lane defers them.
-    "journeys/home", "journeys/terminals", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
-    "journeys/access", "journeys/pause", "headless-chrome-lifecycle",
+    "journeys/home", "journeys/terminals", "journeys/terminal-paste-target", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
+    "journeys/access", "journeys/pause", "headless-chrome-lifecycle", "journey-native-diagnostics", "windows-ci-desktop-preflight",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
     // Shared cross-agent archives and bounded context on macOS and Windows.
@@ -61,7 +65,7 @@ export const suites = {
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
-    "windows-route-audit", "windows-private-folder", "windows-oracle",
+    "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "private-artifact", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
     "face-join", "fleet",

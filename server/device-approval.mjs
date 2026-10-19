@@ -144,6 +144,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       if (
         !ownerIdentity(identity, owner) ||
         !r ||
+        r.id !== id ||
         !(r.expiresAt > now()) ||
         r.status !== "pending" ||
         typeof secret !== "string" ||
@@ -163,6 +164,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       if (
         !ownerIdentity(identity, owner) ||
         !r ||
+        r.id !== id ||
         !(r.expiresAt > now()) ||
         typeof secret !== "string" ||
         secret.length > 100 ||
@@ -175,13 +177,16 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         );
       if (r.status === "issuing")
         throw fail(401, "Approval was interrupted. Request approval again.");
-      const decision = loadJson(file(id) + ".decision", null);
+      // Bind subsequent writes to this server-issued record, after checking
+      // its exact ID, claimant secret and Tailscale identity above.
+      const recordFile = file(r.id);
+      const decision = loadJson(recordFile + ".decision", null);
       if (decision?.secretHash === r.secretHash && r.status === "pending") {
         r.status = decision.decision === "approve" ? "approved" : "denied";
         if (r.status === "approved") {
           // A crash between the credential and receipt writes must not mint
           // another credential on retry. Interruptions fail closed for reapproval.
-          atomicJson(file(id), { ...r, status: "issuing" });
+          atomicJson(recordFile, { ...r, status: "issuing" });
           const issued = auth.issue(r.name, ALL_SCOPES, "device", {
             tailscale: r.identity,
             nodeName: r.nodeName,
@@ -189,7 +194,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           });
           r.token = issued.token;
         }
-        atomicJson(file(id), r);
+        atomicJson(recordFile, r);
       }
       if (r.status === "approved" && !auth.verify(r.token, identity))
         throw fail(401, "Device access was revoked. Request approval again.");

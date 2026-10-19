@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,7 +9,8 @@ import { once } from "node:events";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, sessionAlive, HOST } from "./helpers/fake-tailscale.mjs";
-import { onlyReach } from "./helpers/windows-stop.mjs";
+import { foregroundTask, onlyReach, scopeWindowsStop } from "./helpers/windows-stop.mjs";
+import { privateWindowsInstall } from "./helpers/private-windows-install.mjs";
 
 // First-run matrix H20, wired end to end: a real Reach that takes its Windows
 // paths (test/helpers/as-windows.mjs), `.\reach.cmd status` naming it, and
@@ -23,64 +24,139 @@ import { onlyReach } from "./helpers/windows-stop.mjs";
 const AS_WINDOWS = pathToFileURL(path.resolve("test/helpers/as-windows.mjs")).href;
 const UNREAD = /^Reach couldn't read this PC's process list \(Windows' C# compiler isn't on this PC\), so it only knows the Reach run from this folder\.\n/;
 
-function windowsReach(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-as-windows-"));
+// These cases exercise an installed artifact's lifecycle. Prepare its
+// immutable private byte-copy once, with a separate bounded setup budget;
+// every Reach launch, status, stop and cleanup remains inside its case.
+let privateInstall;
+before(async (t) => {
+  const started = performance.now();
+  let ready = false;
+  t.diagnostic(JSON.stringify({ fixturePhase: "private-install:start", elapsedMs: 0 }));
+  try {
+    privateInstall = await privateWindowsInstall();
+    ready = true;
+  } finally {
+    if (!t.signal.aborted) t.diagnostic(JSON.stringify({ fixturePhase: "private-install:finished", ready, elapsedMs: Math.round(performance.now() - started) }));
+  }
+}, { timeout: 60000 });
+
+// Synthetic process/task dependencies and a disposable filesystem exercise
+// the real stop controller; this does not qualify Windows token behavior.
+test("modeled Windows stop inventory: another fixture's background starter stays outside a foreground stop", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-stop-inventory-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const own = { pid: 4000001, startedAt: 1, image: "node.exe" };
+  const otherStarter = { pid: 4000002, startedAt: 2, image: "reach-background-0123456789ab.exe", commandLine: '"C:\\other\\reach-background-0123456789ab.exe"' };
+  const found = scopeWindowsStop({ hosts: [{ ...own, root, terminals: [], descendants: [] }], processes: [own, otherStarter], partial: "" }, own.pid);
+  const printed = [], taskCalls = [], ended = [];
+  let running = true;
+  const result = await stopReach(root, {
+    platform: "win32", yes: true, print: (line) => printed.push(line), state: () => root, wait: async () => {},
+    windows: {
+      env: {}, graceMs: 0, starterMs: 0, reaches: async () => found, list: async () => found.processes,
+      alive: (pid) => pid === own.pid && running,
+      end: (pid) => { ended.push(pid); running = false; },
+      task: {
+        state: () => ({ installed: false, ours: false }),
+        hold: () => taskCalls.push("hold"), end: () => taskCalls.push("end"),
+        release: () => taskCalls.push("release"), run: () => taskCalls.push("run"),
+      },
+    },
+  });
+  assert.deepEqual(printed, ["Stopped Reach."]);
+  assert.equal(result.service, false);
+  assert.deepEqual(taskCalls, []);
+  assert.deepEqual(ended, [own.pid]);
+  assert.equal(fs.existsSync(path.join(root, "stop-request.json")), false);
+});
+
+// Only the existing Windows-on-Mac/Linux model substitutes the unavailable
+// native preflight. A genuine Windows run uses production checks unchanged.
+const modeledPrivateFolders = process.platform === "win32" ? "" : `privateFolders: async () => ({ ok: true, helper: () => async () => { throw Error("Windows native helpers unavailable in this modeled host"); } })`;
+
+async function windowsReach(t, phase = () => {}) {
+  const install = privateInstall;
+  assert.notEqual(install, undefined, "the bounded private artifact setup completed");
+  phase("private-artifact:ready");
+  const dir = fs.mkdtempSync(path.join(install?.work || os.tmpdir(), "reach-as-windows-"));
   const state = path.join(dir, "state");
   fs.mkdirSync(path.join(dir, "share"));
   // This fixture invokes the source launcher as .\reach.cmd; a parent
   // Terminal opened through the global `reach` link must not change its hints.
   const env = { ...process.env, REACH_COMMAND: "", REACH_HOME: state, REACH_DATA: path.join(state, "quick") };
-  const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
+  const entry = pathToFileURL(path.resolve(install?.root || ".", "scripts/launch.mjs")).href;
   fs.mkdirSync(path.join(dir, "scripts"));
   fs.writeFileSync(
     path.join(dir, "scripts", "bootstrap.mjs"),
-    `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(path.join(dir, "share"))}], port: 0 }, ${JSON.stringify(dir)}); console.log("REACH ENDED");\n`,
+    `import { launch } from ${JSON.stringify(entry)}; await launch({ local: true, folders: [${JSON.stringify(path.join(dir, "share"))}], port: 0, ${modeledPrivateFolders} }, ${JSON.stringify(dir)}); console.log("REACH ENDED");\n`,
   );
   const child = spawn(process.execPath, ["--import", AS_WINDOWS, path.join(dir, "scripts", "bootstrap.mjs")], { env, stdio: ["pipe", "pipe", "pipe"] });
+  phase("launch:spawned");
+  child.once("exit", (exitCode, signalCode) => phase("child:exit", { exitCode, signalCode }));
+  child.once("close", (exitCode, signalCode) => phase("child:close", { exitCode, signalCode }));
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
   // "close", not "exit": only then has all it printed arrived here.
   const exited = once(child, "close");
   t.after(async () => {
+    phase("cleanup:start", { exitCode: child.exitCode, signalCode: child.signalCode }, true);
     if (child.exitCode === null && child.signalCode === null) {
+      phase("cleanup-kill:start", {}, true);
       child.kill("SIGKILL");
+      phase("cleanup-close:start", {}, true);
       await exited;
+      phase("cleanup-close:finished", { exitCode: child.exitCode, signalCode: child.signalCode }, true);
     }
+    phase("cleanup-remove:start", {}, true);
     fs.rmSync(dir, { recursive: true, force: true });
+    phase("cleanup-remove:finished", {}, true);
   });
   const statusFile = path.join(state, "host-status.json");
   // Ready once it both noted itself and printed its pairing code. The file
   // and the pipe are separate channels: the file can be seen before the
   // printed lines arrive here (macOS), so wait for the line we assert too.
   const ready = async () => {
+    phase("launch-ready:start");
     for (const until = Date.now() + 20000; !fs.existsSync(statusFile) || !/Pairing code: \d{4} \d{4}/.test(output); ) {
       if (child.exitCode !== null || Date.now() > until) throw Error(`Reach did not start:\n${output}`);
       await new Promise((r) => setTimeout(r, 50));
     }
+    phase("launch-ready:finished");
   };
-  return { dir, state, env, child, exited, statusFile, ready, output: () => output };
+  return { dir, state, env, child, exited, statusFile, ready, packageRoot: install?.root || process.cwd(), output: () => output };
 }
 
-const status = (env) =>
+const status = (env, packageRoot) =>
   new Promise((resolve, reject) =>
-    execFile(process.execPath, ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "status"], { env, timeout: 20000 }, (error, stdout, stderr) =>
+    execFile(process.execPath, ["--import", AS_WINDOWS, "scripts/bootstrap.mjs", "status"], { env, cwd: packageRoot, timeout: 20000 }, (error, stdout, stderr) =>
       error ? reject(Object.assign(error, { stderr })) : resolve(stdout.trim()),
     ),
   );
 
 test("Windows, wired: status names the running Reach; stop asks it through its file and it stops itself", { timeout: 60000 }, async (t) => {
-  const reach = windowsReach(t);
+  // Bounded phase names/times only: no paths, account data or pairing output.
+  // Keep the last awaited phase on timeout as well as on normal completion.
+  const started = performance.now();
+  let lastPhase = "start", inventoryCalls = 0;
+  const phase = (name, details = {}, duringCleanup = false) => {
+    lastPhase = name;
+    if (duringCleanup || !t.signal.aborted) t.diagnostic(JSON.stringify({ wiredPhase: name, elapsedMs: Math.round(performance.now() - started), ...details }));
+  };
+  t.after(() => t.diagnostic(JSON.stringify({ wiredPhase: "cleanup", lastPhase, inventoryCalls, elapsedMs: Math.round(performance.now() - started) })));
+  const reach = await windowsReach(t, (name, ...args) => phase(`first:${name}`, ...args));
   await reach.ready();
   // A Windows Reach approves phones with a pairing code (T23).
   assert.match(reach.output(), /Pairing code: \d{4} \d{4}/);
   const host = JSON.parse(fs.readFileSync(reach.statusFile, "utf8"));
   assert.equal(host.pid, reach.child.pid);
   assert.ok(Number.isFinite(host.startedAt), "it says when it started");
-  const other = process.platform === "win32" ? windowsReach(t) : null;
+  const other = process.platform === "win32" ? await windowsReach(t, (name, ...args) => phase(`second:${name}`, ...args)) : null;
   if (other) await other.ready();
   // `.\reach.cmd status`, through the real launcher: the Mac's lines.
-  const said = await status(reach.env);
+  phase("status-before:start");
+  const said = await status(reach.env, reach.packageRoot);
+  phase("status-before:finished");
   assert.equal(UNREAD.test(said), process.platform !== "win32", said);
   // A real Windows runner runs two test files at once: another test's Reach
   // may be listed too; this one's lines are among them.
@@ -95,6 +171,13 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
   const killed = [];
   const { windowsReaches } = await import("../scripts/instances.mjs");
   const { windowsProcesses } = await import("../server/windows-processes.mjs");
+  const list = async () => {
+    const call = ++inventoryCalls;
+    if (call <= 4) phase(`inventory-${call}:start`);
+    try { return await windowsProcesses({ nativeDir: path.join(reach.state, "native") }); }
+    finally { if (call <= 4) phase(`inventory-${call}:finished`); }
+  };
+  phase("stop:start");
   const result = await stopReach(reach.dir, {
     platform: "win32",
     yes: true,
@@ -103,25 +186,32 @@ test("Windows, wired: status names the running Reach; stop asks it through its f
     table: () => [],
     launchctl: () => "",
     windows: {
+      task: foregroundTask,
+      list,
       taskkill: (pid) => killed.push(pid),
       // What it left running may be ended; never the Reach itself.
       end: (pid) => pid === reach.child.pid && killed.push(pid),
       // This test's Reach only, never another on this computer.
       reaches: async () => {
-        const found = await windowsReaches({ root: reach.dir, state: reach.state, list: () => windowsProcesses({ nativeDir: path.join(reach.state, "native") }) });
-        return { ...found, hosts: found.hosts.filter((h) => h.pid === reach.child.pid) };
+        const found = await windowsReaches({ root: reach.dir, state: reach.state, list });
+        return scopeWindowsStop(found, reach.child.pid);
       },
     },
   });
-  const [code] = await reach.exited;
+  phase("stop:finished");
   assert.equal(result.stopped, 1);
+  phase("child-close:start");
+  const [code] = await reach.exited;
+  phase("child-close:finished");
   assert.deepEqual(killed, [], "it stopped itself; nothing was ended");
   assert.equal(code, 0, "stopped as Ctrl+C stops it");
   assert.match(reach.output(), /REACH ENDED/);
   assert.equal(fs.existsSync(reach.statusFile), false, "its status goes with it");
   assert.equal(fs.existsSync(path.join(reach.state, "stop-request.json")), false);
   // And now it isn't running, as status says.
-  const endedStatus = await status(reach.env);
+  phase("status-after:start");
+  const endedStatus = await status(reach.env, reach.packageRoot);
+  phase("status-after:finished");
   if (process.platform === "win32") {
     // Status is PC-wide. Concurrent lifecycle tests may still have their
     // own instances; this command must stop only its fixture, as above.
@@ -147,27 +237,34 @@ const backgroundRoute = (target) => ({ TCP: { 8443: { HTTPS: true } }, Web: { [`
 // `serve` and `record`: what an earlier Reach or another service left.
 function windowsTailscaleReach(t, { serve, record, savedPort } = {}) {
   const seen = {};
-  const started = startCleanReach(t, {
-    args: { local: false, stayAwake: false },
-    preloads: [AS_WINDOWS],
-    // The guidance is printed after the pairing code in a separate stdout
-    // write. Wait for the line we assert, not an earlier output chunk.
-    ready: /No public internet tunnel is enabled/,
-    pair: false,
-    prepare: async (root) => {
-      seen.root = root;
-      seen.fake = await fakeTailscale(root, serve ? { serve } : {});
-      if (record) {
-        fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
-        fs.writeFileSync(path.join(root, ".reach", "serve-owner.json"), JSON.stringify({ version: 1, ...record }));
-      }
-      if (savedPort) {
-        fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
-        fs.writeFileSync(path.join(root, ".reach/https-port.json"), JSON.stringify({ version: 1, port: savedPort }));
-      }
-      return { env: { REACH_TAILSCALE: seen.fake.cli }, preloads: [tailnetPreload(seen.fake.state)] };
-    },
-  });
+  const started = (async () => {
+    const install = privateInstall;
+    assert.notEqual(install, undefined, "the bounded private artifact setup completed");
+    const fixtureRoot = install ? fs.mkdtempSync(path.join(install.work, "reach-clean-")) : undefined;
+    return startCleanReach(t, {
+      ...(install ? { fixtureRoot, packageRoot: install.root } : {}),
+      launchCode: modeledPrivateFolders,
+      args: { local: false, stayAwake: false },
+      preloads: [AS_WINDOWS],
+      // The guidance is printed after the pairing code in a separate stdout
+      // write. Wait for the line we assert, not an earlier output chunk.
+      ready: /No public internet tunnel is enabled/,
+      pair: false,
+      prepare: async (root) => {
+        seen.root = root;
+        seen.fake = await fakeTailscale(root, serve ? { serve } : {});
+        if (record) {
+          fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
+          fs.writeFileSync(path.join(root, ".reach", "serve-owner.json"), JSON.stringify({ version: 1, ...record }));
+        }
+        if (savedPort) {
+          fs.mkdirSync(path.join(root, ".reach"), { recursive: true });
+          fs.writeFileSync(path.join(root, ".reach/https-port.json"), JSON.stringify({ version: 1, port: savedPort }));
+        }
+        return { env: { REACH_TAILSCALE: seen.fake.cli }, preloads: [tailnetPreload(seen.fake.state)] };
+      },
+    });
+  })();
   return { seen, started };
 }
 const until = async (check, what, ms = 10000) => {
@@ -227,7 +324,7 @@ test("Windows, Tailscale mode: the private link to its local address, and a pair
     state: () => path.join(seen.root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: (pid) => killed.push(pid), end: (pid) => killed.push(pid), reaches: onlyReach({ pid: reach.child.pid, root: seen.root }) },
+    windows: { task: foregroundTask, taskkill: (pid) => killed.push(pid), end: (pid) => killed.push(pid), reaches: onlyReach({ pid: reach.child.pid, root: seen.root }) },
   });
   const [code] = await reach.exited;
   assert.equal(result.stopped, 1);
@@ -262,7 +359,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "reach-no-request-"));
   t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
   const { windowsProcesses } = await import("../server/windows-processes.mjs");
-  const list = () => windowsProcesses({ nativeDir: path.join(elsewhere, "native") });
+  const list = async () => (await windowsProcesses({ nativeDir: path.join(elsewhere, "native") })).filter((entry) => entry.pid === reach.child.pid);
   const listed = (await list()).find((p) => p.pid === reach.child.pid);
   assert.ok(Number.isFinite(listed?.startedAt), "Windows' process list names it, with when it started");
   const said = [];
@@ -273,6 +370,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
     state: () => elsewhere,
     windows: {
       env: {},
+      task: foregroundTask,
       list,
       graceMs: 500,
       // This test's Reach only; what it started is left to Windows.
@@ -281,6 +379,7 @@ test("Windows, Tailscale mode: a Reach that doesn't stop by itself is ended outr
   });
   assert.equal(result.stopped, 1);
   assert.deepEqual(said, ["Stopped Reach."]);
+  assert.equal(result.service, false, "only the foreground fixture was stopped");
   const [code] = await reach.exited;
   assert.equal(code, 1, "ended outright");
   await routeGone(seen.fake, session);

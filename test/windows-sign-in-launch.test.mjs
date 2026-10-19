@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { stopReach } from "../scripts/stop.mjs";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST, SELF_IP } from "./helpers/fake-tailscale.mjs";
-import { onlyReach } from "./helpers/windows-stop.mjs";
+import { foregroundTask, onlyReach } from "./helpers/windows-stop.mjs";
 import { scanTerminalQRs } from "./helpers/scan-terminal-qr.mjs";
 
 // Windows' browser sign-in, wired end to end (docs/parity/D-public-door.md
@@ -145,7 +145,7 @@ const stop = (root, pid) =>
     state: () => path.join(root, ".reach"),
     table: () => [],
     launchctl: () => "",
-    windows: { taskkill: () => assert.fail("it stops itself"), end: () => assert.fail("it stops itself"), reaches: onlyReach({ pid, root }) },
+    windows: { task: foregroundTask, taskkill: () => assert.fail("it stops itself"), end: () => assert.fail("it stops itself"), reaches: onlyReach({ pid, root }) },
   });
 
 test("Windows set up with your account: a keyed private route and a foreground Funnel, browser sign-in, and a key nobody else sees", { ...asWindows, timeout: 180000 }, async (t) => {
@@ -308,7 +308,6 @@ for (const [name, options, why] of [
   ["Tailscale runs in userspace", { scenario: { TUN: false } }, /without its network adapter here \(userspace networking\)/],
   ["an older Tailscale daemon", { scenario: { daemonVersion: "1.90.0" } }, /Tailscale 1\.90\.0 is older than 1\.104; update Tailscale\./],
   ["an older Tailscale command line", { scenario: { cliVersion: "1.90.0" } }, /Tailscale's command line \(1\.90\.0\) is older than 1\.104/],
-  ["its folders can't be made private", { folders: "Reach's folder C:\\reach can be changed by other people on this PC, so browser sign-in stays off." }, /Reach's folder C:\\reach can be changed by other people on this PC/],
 ])
   test(`Windows set up with your account, ${name}: explains the browser failure without a private QR; no key, no Funnel`, asWindows, async (t) => {
     const { seen, started } = keyedReach(t, { ...options, ready: /No public internet tunnel is enabled/ });
@@ -327,6 +326,26 @@ for (const [name, options, why] of [
     assert.equal(status.tailscaleApproval, false);
     assert.match(status.signInOff, why);
   });
+
+for (const prefs of [true, false]) test(`Windows refuses startup before authentication state when folders are unsafe (${prefs ? "browser setup" : "pairing setup"})`, asWindows, async (t) => {
+  const reason = "Reach's controlled Windows state is not private.";
+  // The permission predicate is a deliberate stand-in; the child runs the
+  // actual launch/createReach/auth path and real disposable filesystem. A
+  // real Windows ACL qualification is a separate hosted native test.
+  const { seen, started } = keyedReach(t, { prefs, folders: reason,
+    ready: /No public internet tunnel is enabled|Error: Reach's controlled Windows state is not private\./ });
+  const reach = await started;
+  const state = path.join(seen.root, ".reach"), data = path.join(state, "quick");
+  assert.equal(fs.existsSync(data), false, "refused state must not create auth/device/pairing data");
+  for (const name of ["pairing.json", "clients.json", "device.json", "host.json", "pairing-window.json"])
+    assert.equal(fs.existsSync(path.join(data, name)), false, `${name} must not be created`);
+  assert.equal(fs.existsSync(path.join(state, "host-status.json")), false, "no running server is published");
+  assert.deepEqual(await seen.fake.sessions(), [], "no private/public forwarding listener is started");
+  assert.doesNotMatch(reach.output(), /Pairing code:|http:\/\/127\.0\.0\.1:\d+|Open on your phone:|Phones join with a pairing code/);
+  const [exitCode] = await reach.exited;
+  assert.notEqual(exitCode, 0, "folder refusal ends startup");
+  assert.ok(reach.output().includes(reason), "the exact original refusal is retained");
+});
 
 test("Windows without account settings: pairing codes and private helper folders, without a sign-in switch", asWindows, async (t) => {
   const { seen, started } = keyedReach(t, { prefs: false, ready: /No public internet tunnel is enabled/ });

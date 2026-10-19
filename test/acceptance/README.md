@@ -1,9 +1,24 @@
 # Real Windows acceptance
 
-This lane runs only on a disposable GitHub-hosted `windows-2025` runner. It
-installs the published official Codex CLI and a signed official Tailscale MSI,
-records their versions/provenance, asks the actual Codex daemon for its endpoint,
-and calls Reach's production Codex daemon client without injected dependencies.
+The pull-request lane runs on a disposable GitHub-hosted `windows-2025` runner.
+The existing **Windows validation** workflow also offers an explicit
+`real_vendors: true` mode on `windows-11-arm`, `windows-2025` or `windows-2022`.
+That mode replaces the selected test names with the six actual native security
+checks and this same complete vendor/local probe sequence. Installation failure
+stops dependent probes and remains a failed run. No credentials are requested.
+Both lanes install the published official Codex CLI and a signed official
+Tailscale MSI, record their versions/provenance, ask the actual Codex daemon for
+its endpoint, and call Reach's production Codex daemon client without injected
+dependencies.
+The MSI and installed vendor PE machines must match the native Windows CPU
+reported by `IsWow64Process2`, rather than an emulated shell's environment.
+Reports retain the actual OS version and Node architecture, vendor PE headers,
+and live process architecture for the Tailscale service, Codex daemon and
+Reach's connected native helper. AnyCPU helper compilation does not imply
+native execution: the live helper's emulation state is reported explicitly.
+The added live architecture inspection has a 60-second limit. Its containing
+standard-user test, npm process, launcher and parent wait each gain those same
+60 seconds; existing vendor, daemon-start and RPC deadlines stay unchanged.
 Codex runs under a real new standard local Windows account, launched through
 `CreateProcessWithLogonW(LOGON_WITH_PROFILE)` on a dedicated private test desktop.
 Its random password remains in the launcher process's memory. The worker verifies
@@ -31,9 +46,35 @@ standard-user GUI or device parity. They are separate from the Codex account
 probe. The lane does not enroll a
 Tailscale device, sign a provider in, run provider inference, or validate a phone.
 The local case cannot qualify private Tailscale or Funnel behavior.
+The disposable state, shared files and console script use measured canonical
+long paths under one production-created private stage beneath the actual
+UserProfile known folder, recorded in the report. The production bootstrap
+validates this parent. Runner TEMP is unused; its parent permissions are not
+changed. The shared fixture stays outside AppData's private-path exclusions.
+The local CLI runs byte-identical built package members, its Windows launcher,
+and the actual installed dependencies copied into a production-created private
+profile stage. Every new file is written from bytes and rehashed; the artifact
+contains no source tree and does not rebuild. The report includes package and
+lockfile hashes and a full source/destination SHA-256 manifest. The shared Actions
+checkout ACL is unchanged, and the production code-tree trust check still runs.
+This fixture is a built artifact probe, not an npm-global install or retained
+profile upgrade test.
+If the actual CLI exits, its owned console retains the real buffer within the
+existing startup bound, then cleanup releases it. Failure evidence retains the
+numeric CLI exit code, native console-reader API/error, and at most 3,000
+characters of redacted text with URLs and QR graphics removed. Reach stdout is
+never redirected; visible-console and real CLI startup assertions stay required.
+After the real interactive stop/status checks, cleanup pins the console's
+process handle, checks its captured creation time, releases its lease, and waits up
+to ten seconds for that exact process to exit before removing only the owned
+artifact and state. Cleanup failure leaves those files for disposable VM cleanup;
+it never kills a possibly reused PID or deletes sibling private stages.
 
 Run the **Real Windows acceptance (partial qualification)** pull-request workflow,
 or dispatch it after GitHub has registered the workflow on the default branch.
+For the opt-in ARM64 vendor lane, dispatch **Windows validation** with
+`runner: windows-11-arm` and `real_vendors: true`, pinned to the reviewed source
+branch or release tag. The ordinary selected-tests mode stays unchanged.
 The guarded test command used by the workflow is:
 
 ```powershell
