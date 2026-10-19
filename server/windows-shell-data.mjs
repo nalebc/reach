@@ -12,9 +12,11 @@ export const windowsShellFolder = () => shellFolder;
 // Windows PowerShell and compiling inline C# on every icon lookup exceeded
 // the first-call deadlines on a real ARM64 PC; the native operation keeps
 // those deadlines, independently of the normal shared helper build bound.
-async function shellData(args, { dataDir = shellFolder, build = windowsBinary, run = exec, ...options } = {}) {
+async function shellData(args, { dataDir = shellFolder, build = windowsBinary, run = exec, authorize = () => {}, ...options } = {}) {
   if (!dataDir) throw Object.assign(new Error("Reach's Windows shell data folder is not ready."), { status: 503 });
   const file = await build({ dataDir }, "app-icons");
+  // A cold build can outlive the grant: check again at actual dispatch.
+  authorize();
   return run(file, args, { ...options, windowsHide: true });
 }
 

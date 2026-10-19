@@ -11,6 +11,9 @@ import { readWindowsIcons } from "../server/app-icons.mjs";
 import { createLogos } from "../server/agent-sessions/logos.mjs";
 import { windowsBinary } from "../server/desktop-native.mjs";
 import { readWindowsApps, readWindowsFileTypeIcons, openWindowsApp } from "../server/windows-shell-data.mjs";
+import { launchApp } from "../server/platform.mjs";
+import { createReach } from "../server/index.mjs";
+import { ALL_SCOPES } from "../server/core.mjs";
 
 // App icons and the agents' logos on Windows (parity audit #28): the image
 // the shell draws for each app or program, from scripts/native/app-icons.cs,
@@ -102,6 +105,50 @@ test("shell data refuses malformed output and preserves a failed launch without 
     await assert.rejects(readWindowsFileTypeIcons(invalid, { ...options, run: async () => { throw Error("must not run"); } }), /valid file icon types/);
 });
 
+test("app opening reauthorizes after a held build before any physical dispatch", async () => {
+  for (const status of [401, 409, null]) {
+    let prepared, release;
+    const started = new Promise(resolve => { prepared = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const events = [];
+    let refusal = null;
+    const pending = openWindowsApp("an exact app ID", {
+      dataDir: "C:\\private",
+      build: async () => { events.push("preparing"); prepared(); await held; events.push("prepared"); return "owned.exe"; },
+      authorize: () => { events.push("authorize"); if (refusal) throw refusal; },
+      run: async (file, args) => { events.push("dispatch"); assert.equal(file, "owned.exe"); assert.deepEqual(args, ["open", "an exact app ID"]); return { stdout: "" }; },
+    });
+    await started;
+    assert.deepEqual(events, ["preparing"], "a held build cannot dispatch or satisfy the final authorization");
+    if (status) refusal = Object.assign(new Error(status === 401 ? "revoked" : "paused"), { status });
+    release();
+    if (refusal) await assert.rejects(pending, error => error === refusal);
+    else await pending;
+    assert.deepEqual(events, ["preparing", "prepared", "authorize", ...(status ? [] : ["dispatch"])], "denial makes no launch; success dispatches exactly once");
+  }
+});
+
+test("Mac app launching checks current access after catalog discovery and keeps exact IDs", async () => {
+  const app = { id: "/Applications/Fixture.app", name: "Fixture" };
+  let release, listed;
+  const ready = new Promise(resolve => { listed = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  let refusal = null, calls = 0;
+  const options = { platform: "darwin", listApps: async () => { listed(); await held; return [app]; },
+    authorize: () => { if (refusal) throw refusal; }, run: async () => { calls++; } };
+  const pending = launchApp(app.id, options);
+  await ready;
+  refusal = Object.assign(new Error("revoked during discovery"), { status: 401 });
+  release();
+  await assert.rejects(pending, error => error === refusal);
+  assert.equal(calls, 0);
+  refusal = null;
+  await assert.rejects(launchApp(app.id + " ", options), error => error.status === 404);
+  assert.equal(calls, 0, "an ID absent from the catalog cannot dispatch");
+  assert.deepEqual(await launchApp(app.id, options), { name: app.name });
+  assert.equal(calls, 1);
+});
+
 test("on a real Windows PC: Notepad's icon and a Start app's, drawn by Windows; nothing for what isn't there", { skip: process.platform !== "win32", timeout: 180000 }, async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-icons-"));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -140,4 +187,42 @@ test("on a real Windows PC: Notepad's icon and a Start app's, drawn by Windows; 
     assert.deepEqual(size(icons[1]), [64, 64]);
   } else t.diagnostic("Start lists no apps on this runner");
   assert.equal(icons.at(-1), null, "no file, no icon");
+});
+
+// Real HTTP authorization with controlled catalog/build/dispatch boundaries;
+// no Windows APIs or desktop actions run in these cases.
+test("HTTP app launch honors revocation and pause during native preparation", async t => {
+  for (const mode of ["revoked", "paused", "allowed"]) await t.test(mode, async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-app-launch-"));
+    let prepared, release, calls = 0;
+    const started = new Promise(resolve => { prepared = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const app = { id: "fixture.vendor!App", name: "Fixture" };
+    const reach = await createReach({ roots: [dir], dataDir: path.join(dir, "private"), appPlatform: "linux",
+      sweepScreenHelpers: () => {},
+      appLaunch: (id, options) => launchApp(id, { ...options, platform: "win32", listApps: async () => [app], windows: {
+        dataDir: dir, build: async () => { prepared(); await held; return "owned.exe"; },
+        run: async (_file, args) => { assert.deepEqual(args, ["open", app.id]); calls++; return { stdout: "" }; },
+      } }),
+    });
+    t.after(async () => { release(); await reach.close(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+    await new Promise(resolve => reach.server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${reach.server.address().port}`;
+    const owner = reach.auth.issue("owner", ALL_SCOPES), requester = reach.auth.issue("phone", ALL_SCOPES);
+    const call = (route, token, method, body) => fetch(base + route, { method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const pending = call("/api/apps/launch", requester.token, "POST", { id: app.id });
+    await started;
+    assert.equal(calls, 0);
+    if (mode === "revoked") assert.equal((await call(`/api/clients/${requester.clientId}`, owner.token, "DELETE")).status, 200);
+    if (mode === "paused") assert.equal((await call("/api/settings/pause", owner.token, "POST", { paused: true })).status, 200);
+    release();
+    const response = await pending;
+    assert.equal(response.status, mode === "revoked" ? 401 : mode === "paused" ? 423 : 200);
+    const body = await response.json();
+    if (mode === "allowed") assert.deepEqual(body, { name: app.name });
+    assert.equal(calls, mode === "allowed" ? 1 : 0, "only a still-authorized, unpaused request dispatches once");
+  });
 });

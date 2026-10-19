@@ -65,21 +65,22 @@ export const openLinkOnWindows = (url, { run = exec } = {}) =>
     windowsHide: true,
     env: { ...process.env, REACH_URL: url },
   });
-export async function launchApp(appId) {
+export async function launchApp(appId, { authorize = () => {}, listApps = apps, platform = process.platform, run = exec, windows = {} } = {}) {
   // apps() refreshes a list older than 30 s; an app installed since is found.
-  let app = (await apps()).find((a) => a.id === appId);
+  let app = (await listApps()).find((a) => a.id === appId);
   if (!app && appCacheAt) {
     appCacheAt = 0;
-    app = (await apps()).find((a) => a.id === appId);
+    app = (await listApps()).find((a) => a.id === appId);
   }
   if (!app)
     throw fail(404, "Choose an application from this computer’s app list.");
-  if (process.platform === "darwin")
-    await exec("/usr/bin/open", ["-a", app.id], options);
-  else if (process.platform === "win32")
+  if (platform === "darwin") {
+    authorize();
+    await run("/usr/bin/open", ["-a", app.id], options);
+  } else if (platform === "win32")
     // The same ShellExecute operation as Start-Process, without paying
     // Windows PowerShell's cold start. The validated ID remains data.
-    await openWindowsApp(app.id);
+    await openWindowsApp(app.id, { ...windows, authorize });
   else throw fail(501, "App launching is supported on Mac and Windows.");
   return { name: app.name };
 }

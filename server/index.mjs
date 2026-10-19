@@ -4664,8 +4664,9 @@ export async function createReach(overrides = {}) {
     res.set("Cache-Control", "no-store").json(result);
   });
   app.post("/api/apps/launch", async (req, res) => {
-    notPaused();
-    const result = await launchApp(req.body?.id);
+    const authorize = () => { req.reauthorize(); notPaused(); };
+    authorize();
+    const result = await (overrides.appLaunch || launchApp)(req.body?.id, { authorize });
     record("app", `Opened ${result.name}`);
     res.json(result);
   });
