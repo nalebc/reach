@@ -30,6 +30,11 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./test/acceptance/install-windows-vendors.ps1
+      - name: Verify the disposable runner has a usable desktop
+        id: desktop_preflight
+        run: node .github/scripts/prepare-windows-desktop.mjs
+        env:
+          REACH_CI_DESKTOP_PREFLIGHT: "1"
       - name: Real Windows socket directory and junction security checks
         id: native_socket
         if: ${{ !cancelled() }}
@@ -40,7 +45,7 @@ jobs:
           npm run test:file -- --test-timeout=180000 test/windows-codex-socket-native.test.mjs
       - name: Real processes, visible CLI console, browser and local HTTP
         id: probes
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.desktop_preflight.outcome == 'success' }}
         shell: pwsh
         env:
           REACH_REAL_WINDOWS_ACCEPTANCE: "1"
@@ -59,6 +64,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: real-windows-acceptance
-          path: reports/real-windows-acceptance/
+          path: |
+            reports/real-windows-acceptance/
+            reports/windows-desktop-preflight.json
           if-no-files-found: warn
           retention-days: 14

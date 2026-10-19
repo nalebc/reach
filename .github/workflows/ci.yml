@@ -138,6 +138,12 @@ jobs:
         shell: pwsh
       - run: npm run build:release
         id: release_build
+      - name: Verify the disposable Windows runner has a usable desktop
+        id: desktop_preflight
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
+        run: node .github/scripts/prepare-windows-desktop.mjs
+        env:
+          REACH_CI_DESKTOP_PREFLIGHT: "1"
       # Collect independent failures in one run. A failed phase still fails
       # this job; only a successful build may run the following test phases.
       # Cancellation stops them, and candidate handoff keeps success() below.
@@ -169,7 +175,7 @@ jobs:
         # private browser profiles, provider sign-in, or OS permission grants.
         run: npm run test:ci:native
       - name: Real Windows screen, clicks and typing under a normal PC's script policy
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && steps.desktop_preflight.outcome == 'success' && runner.os == 'Windows' }}
         # GitHub's runners allow every script; a normal PC refuses them
         # (Oct 11: a first Windows user's live screen never loaded). Set
         # Windows PowerShell's default policy, then list displays and capture
