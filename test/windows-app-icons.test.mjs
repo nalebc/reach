@@ -226,3 +226,46 @@ test("HTTP app launch honors revocation and pause during native preparation", as
     assert.equal(calls, mode === "allowed" ? 1 : 0, "only a still-authorized, unpaused request dispatches once");
   });
 });
+
+test("HTTP app launch limits each approved credential before controlled dispatch", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-app-launch-limit-"));
+  let dispatches = 0;
+  const reach = await createReach({ roots: [dir], dataDir: path.join(dir, "private"), appPlatform: "linux",
+    appLaunch: async (id, { authorize }) => { authorize(); assert.equal(id, "fixture.vendor!App"); dispatches++; return { name: "Fixture" }; },
+  });
+  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  await new Promise(resolve => reach.server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${reach.server.address().port}/api/apps/launch`;
+  const first = reach.auth.issue("first phone", ALL_SCOPES), second = reach.auth.issue("second phone", ALL_SCOPES);
+  const call = (token, index) => fetch(url, { method: "POST", headers: {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json",
+    "X-Forwarded-For": `100.64.0.${index}`, "X-Real-IP": `192.0.2.${index}`, Forwarded: `for=192.0.2.${index}`,
+  }, body: JSON.stringify({ id: "fixture.vendor!App" }) });
+  for (let index = 1; index <= 35; index++) {
+    const response = await call(index % 2 ? "invalid credential" : "", index);
+    assert.equal(response.status, 401, "authentication runs before allocating a launch budget");
+    assert.equal(response.headers.get("ratelimit"), null);
+    await response.json();
+  }
+  assert.equal(dispatches, 0, "unauthenticated requests never reach even the controlled dispatcher");
+  for (const [position, credential] of [first, second].entries()) {
+    for (let index = 1; index <= 30; index++) {
+      const response = await call(credential.token, index);
+      assert.equal(response.status, 200, "each approved credential has its own full budget despite prior unauthenticated traffic");
+      assert.deepEqual(await response.json(), { name: "Fixture" });
+    }
+    const before = dispatches;
+    for (const spoofedAddress of [31, 99]) {
+      const response = await call(credential.token, spoofedAddress);
+      assert.equal(response.status, 429, "changing forwarded/IP headers cannot reset the credential's exhausted budget");
+      assert.match(response.headers.get("content-type") || "", /application\/json/);
+      assert.deepEqual(await response.json(), { error: "Too many app launch requests. Try again in one minute." });
+      assert.match(response.headers.get("retry-after") || "", /^\d+$/);
+      assert.ok(Number(response.headers.get("retry-after")) >= 1 && Number(response.headers.get("retry-after")) <= 60);
+      assert.match(response.headers.get("ratelimit") || "", /app-launch.*r=0/);
+      assert.match(response.headers.get("ratelimit-policy") || "", /app-launch/);
+    }
+    assert.equal(dispatches, before, "over-budget requests do not dispatch");
+    assert.equal(dispatches, (position + 1) * 30, "the second approved credential gets a separate budget");
+  }
+});
