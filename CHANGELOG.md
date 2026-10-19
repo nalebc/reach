@@ -54,8 +54,9 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 
 ### Validation and limits
 
-- Simulator checks require native background and resume events; app-launcher
-  completion alone does not establish those transitions.
+- Simulator checks pin Xcode 26.2 and iOS 26.2 together and require native
+  background and resume events; app-launcher completion alone does not
+  establish those transitions.
 - Release checks run Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
   the iOS simulator, security scans and installed npm/portable artifacts. Windows
   ARM64 native validation is recorded separately from the required x64 lane.
@@ -64,6 +65,10 @@ Early access: file editing, clipboard paste and Windows setup improvements.
   transitions, standard-user GUI parity and full signed-in provider tasks remain
   unqualified. An AppContainer control refusal leaves its escape checks unrun;
   a passing parent does not prove those assertions executed.
+- An additional hosted macOS 26/iOS 26.4.1 cold boot timed out before Reach
+  installation, leaving that environment unqualified. The matching 26.2 run
+  completed all eight native checks after two initial launch timeouts.
+  Simulator startup stability and the earlier hangs' cause remain unproven.
 - npm installs update with `reach update`; source installs use `v0.4.0`. Keep
   existing Reach state and restart through the CLI. Restarting ends terminals
   and live screens; invited agents obtain compatible runtime updates from Reach.
