@@ -14,6 +14,7 @@ import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
 import { startIosHostDiagnostics } from "./helpers/ios-host-diagnostics.mjs";
+import { captureIosBoundary, iosComparisonRuntime, iosAppIdentity } from "./helpers/ios-toolchain-provenance.mjs";
 import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
 import { createIosProxyForwarder } from "./helpers/ios-proxy.mjs";
 
@@ -51,8 +52,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // outcome. A timeout ends the test before its report: cleanup then leaves
   // what it has.
   const started = Date.now(), phases = [], steps = [], requests = [];
-  let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, launchObservation, pageSeen = false, reported = false;
-  const hostObservation = startIosHostDiagnostics({ run, deadline: started + budget });
+  let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, launchObservation, runtimeChoice, installedCopy, pageSeen = false, reported = false;
+  const comparison = process.env.REACH_TEST_IOS_COMPARISON;
+  const hostObservation = startIosHostDiagnostics({ run, deadline: started + budget, captureDaemonFiles: !!comparison });
   void hostObservation.sample("before simulator setup");
   const pageEvidence = createIosPageEvidence({ started });
   const lifecycle = createIosLifecycleEvidence();
@@ -76,15 +78,16 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       if (attempt > 1 && beforeRetry) await beforeRetry(attempt);
       const allowed = Math.min(limit, left());
       const began = Date.now();
+      const capture = captureIosBoundary(name);
       try {
-        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress, requireProgress, captureLifecycle: name === "launch" });
+        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress, requireProgress, captureLifecycle: capture });
         steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: observation } : {}),
-          ...(result.commandEvidence ? { commandEvidence: result.commandEvidence } : {}) });
+          ...(capture ? commandFailureOutput(result) : {}) });
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
       } catch (error) {
         steps.push({ step: name, attempt, seconds: since(began), ok: false, error: error.message,
-          ...(name === "launch" ? commandFailureOutput(error) : {}) });
+          ...(capture ? commandFailureOutput(error) : {}) });
         tries.push(`attempt ${attempt} ${error.message} after ${since(began)} s`);
         process.stderr.write(`iOS simulator test:   ${name}: attempt ${attempt} of ${attempts} ${error.message} (${since(began)} s)\n`);
       }
@@ -99,7 +102,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       await hostObservation.sample("after original test body").catch(() => {});
       try {
         const saved = JSON.parse(await fs.readFile(output, "utf8"));
-        await fs.writeFile(output, JSON.stringify({ ...saved, launchObservation, hostObservation: hostObservation.snapshot() }, null, 2) + "\n");
+        await fs.writeFile(output, JSON.stringify({ ...saved, launchObservation, hostObservation: hostObservation.snapshot(),
+          toolchainComparison: { configuration: comparison, runtimeChoice, installedCopy } }, null, 2) + "\n");
       } catch { /* Best-effort diagnostics cannot replace the test outcome. */ }
     }
     if (output && !reported) {
@@ -114,7 +118,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const report = applyIosAssetGate(iosPageFailureReport({ error: failure, last, context: {
         phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageState,
         proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics,
-        launchObservation, hostObservation: hostObservation.snapshot(), physicalDevice: false } }), pageState);
+        launchObservation, hostObservation: hostObservation.snapshot(), toolchainComparison: { configuration: comparison, runtimeChoice, installedCopy }, physicalDevice: false } }), pageState);
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
@@ -330,6 +334,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const runtimes = JSON.parse((await sim("list runtimes", ["list", "runtimes", "-j"])).stdout).runtimes;
   const runtime = runtimes.filter(item => item.isAvailable && item.identifier.includes("iOS")
     && (!process.env.REACH_TEST_IOS_RUNTIME || item.version === process.env.REACH_TEST_IOS_RUNTIME)).at(-1);
+  runtimeChoice = iosComparisonRuntime(comparison, runtime);
   assert.ok(runtime, "an iOS simulator runtime is installed");
   runtimeVersion = runtime.version;
   // A fresh runner can still be building/scanning the runtime's shared cache
@@ -343,6 +348,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // The compact device keeps this cold-boot smoke within hosted runners'
   // memory budget; the same real pairing and native bridge assertions run.
   const type = phones.find(item => item.name === "iPhone SE (3rd generation)") || phones.find(item => item.name === "iPhone 16") || phones[0];
+  runtimeChoice = iosComparisonRuntime(comparison, runtime, type, true);
   assert.ok(type, "the selected runtime supports an installed iPhone device type");
   device = (await sim("create", ["create", `Reach isolated smoke ${nonce.slice(0, 6)}`, type.identifier, runtime.identifier])).stdout.trim();
   reached(`simulator created (iOS ${runtime.version}, ${type.name})`);
@@ -375,6 +381,13 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   await exec("/usr/libexec/PlistBuddy", ["-c", "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true", plist]);
   bundle = (await exec("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist])).stdout.trim();
   await exec("codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements,flags,runtime", "--generate-entitlement-der", app], { timeout: 30000 });
+  if (comparison) {
+    installedCopy = { pending: true };
+    // No awaited observer before install/launch. The copied executable is
+    // stable after the existing codesign and differs from the built input.
+    void iosAppIdentity(app, { deadline: Date.now() + 2000 }).then(value => Object.assign(installedCopy, { pending: false, ...value }),
+      error => Object.assign(installedCopy, { pending: false, unavailable: String(error.message).slice(0, 1000) }));
+  }
   reached("app copied and signed");
   // A slow install took 45 s; a slow launch hung past 90 s on the home
   // screen, the app never started (run 38279745481's screenshot, no requests).
@@ -443,7 +456,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
       pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version,
-      launchObservation, hostObservation: hostObservation.snapshot(), backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+      launchObservation, hostObservation: hostObservation.snapshot(), toolchainComparison: { configuration: comparison, runtimeChoice, installedCopy }, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });

@@ -10,6 +10,7 @@ import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput, startIosLaunchLogs, iosLaunchPredicate } from "./helpers/ios-diagnostics.mjs";
 import { startIosHostDiagnostics, iosHostPredicate } from "./helpers/ios-host-diagnostics.mjs";
+import { iosComparisonConfiguration, iosComparisonRuntime, iosFileIdentity, iosDaemonIdentities, collectIosToolchainProvenance, captureIosBoundary } from "./helpers/ios-toolchain-provenance.mjs";
 
 const device = "disposable-simulator", bundle = "test.reach.smoke";
 
@@ -428,17 +429,36 @@ test("expired host diagnostic budgets and observer failures remain evidence", as
   assert.equal(unavailable.snapshot().samples[0].processes.error, "snapshot unavailable");
 });
 
-test("diagnostic workflow retains both fresh machines and the unchanged required iOS job policy", async () => {
+test("toolchain comparison declares exactly six fresh machines and retains original native policy", async () => {
   const load = async name => parse(await fs.readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"));
   const diagnostic = await load("ios-launch-diagnostic"), required = (await load("ci")).jobs.ios;
-  assert.deepEqual(diagnostic.on, { push: { branches: ["validation/ios-launch-0.4.1"] }, workflow_dispatch: null });
+  assert.deepEqual(diagnostic.on, { push: { branches: ["validation/ios-toolchain-0.4.1"] }, workflow_dispatch: null });
   assert.deepEqual(diagnostic.permissions, { contents: "read" });
   assert.deepEqual(Object.keys(diagnostic.jobs), ["ios"]);
   const { strategy, ...job } = diagnostic.jobs.ios;
-  assert.deepEqual(strategy, { "fail-fast": false, matrix: { trial: [1, 2] } });
-  assert.equal(job.steps.at(-1).with.name, "tests-ios-launch-diagnostic-trial-${{ matrix.trial }}");
-  job.steps.at(-1).with.name = required.steps.at(-1).with.name;
-  assert.deepEqual(job, required, "the diagnostic lane keeps the same Xcode, build, signing, npm guard, test timeout and always-upload policy");
+  assert.equal(strategy["fail-fast"], false);
+  assert.deepEqual(strategy.matrix.trial, [1, 2]);
+  assert.deepEqual(strategy.matrix.configuration, [
+    { id: "A", os: "macos-15", simulator: "/Applications/Xcode_26.2.app/Contents/Developer" },
+    { id: "B", os: "macos-26", simulator: "/Applications/Xcode_26.2.app/Contents/Developer" },
+    { id: "C", os: "macos-26", simulator: "/Applications/Xcode_26.4.1.app/Contents/Developer" },
+  ]);
+  assert.deepEqual(Object.keys(strategy.matrix).sort(), ["configuration", "trial"]);
+  assert.equal(strategy.matrix.trial.length * strategy.matrix.configuration.length, 6);
+  assert.equal(job.env.DEVELOPER_DIR, required.env.DEVELOPER_DIR);
+  assert.equal(job.env.REACH_TEST_IOS_RUNTIME, "26.2");
+  assert.equal(job["timeout-minutes"], required["timeout-minutes"]);
+  const native = job.steps.find(step => step.run?.includes("test/ios-simulator.test.mjs"));
+  const baseline = required.steps.find(step => step.run?.includes("test/ios-simulator.test.mjs"));
+  assert.equal(native.run, baseline.run);
+  assert.deepEqual(native.env, { ...baseline.env, DEVELOPER_DIR: "${{ matrix.configuration.simulator }}" });
+  assert.deepEqual(job.steps.find(step => step.run?.startsWith("xcodebuild ")), required.steps.find(step => step.run?.startsWith("xcodebuild ")));
+  assert.equal(job.steps.filter(step => step.run?.includes("test/ios-simulator.test.mjs")).length, 1);
+  assert.equal(job.steps.at(-1).with.name, "tests-ios-toolchain-${{ matrix.configuration.id }}-trial-${{ matrix.trial }}");
+  assert.equal(job.steps.at(-1).if, "always()");
+  assert.equal(job.steps.at(-1).uses, required.steps.at(-1).uses);
+  assert.equal(job.steps.find(step => step.uses?.startsWith("actions/setup-node@")).with["node-version"], "22.23.2");
+  assert.doesNotMatch(JSON.stringify(job), /runFirstLaunch|downloadPlatform|shutdown all|continue-on-error/);
 });
 
 test("later simulator-service verbosity cannot erase all first-attempt evidence", async () => {
@@ -468,4 +488,72 @@ test("success-path host sampling is outside the original screenshot and final as
   const originalBody = source.slice(source.indexOf('  const reach = await startCleanReach'));
   assert.doesNotMatch(originalBody, /await hostObservation\.sample/);
   assert.match(originalBody, /assert\.equal\(report\.checks\.length, 8\)/);
+});
+
+test("runtime/device comparison preflight fails explicitly instead of changing the runtime or device", () => {
+  const type = { identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation", name: "iPhone SE (3rd generation)" };
+  const runtime = { isAvailable: true, identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-2", version: "26.2", buildversion: "23C54", supportedDeviceTypes: [type] };
+  for (const id of ["A", "B", "C"]) {
+    assert.equal(iosComparisonRuntime(id, runtime, type, true).build, "23C54");
+    assert.equal(iosComparisonConfiguration(id).buildVersion, "26.2");
+  }
+  for (const bad of [undefined, { ...runtime, version: "26.4.1" }, { ...runtime, buildversion: undefined }, { ...runtime, supportedDeviceTypes: [] }])
+    assert.throws(() => iosComparisonRuntime("C", bad), /UNQUALIFIED_IOS_SETUP/);
+  assert.throws(() => iosComparisonRuntime("C", runtime, undefined, true), /UNQUALIFIED_IOS_SETUP/);
+  assert.throws(() => iosComparisonRuntime("C", runtime, { identifier: "another-phone" }, true), /UNQUALIFIED_IOS_SETUP/);
+  assert.throws(() => iosComparisonConfiguration("fallback"), /UNQUALIFIED_IOS_SETUP/);
+  assert.equal(iosComparisonRuntime(undefined, undefined), undefined, "normal CI keeps its original selection policy");
+});
+
+test("tool preflight binds declared SDK/client/source and uses no simctl warmup", async () => {
+  for (const id of ["A", "B", "C"]) {
+    const cfg = iosComparisonConfiguration(id), calls = [], head = "a".repeat(40), tree = "b".repeat(40);
+    const run = async (file, args, limit) => {
+      calls.push({ file, args, limit });
+      let stdout;
+      if (file === "/usr/bin/sw_vers") stdout = cfg.hostMajor + ".7.9\n";
+      else if (file === "git") stdout = head + "\n" + tree + "\n";
+      else if (file === "/usr/libexec/PlistBuddy") stdout = "1234\n";
+      else if (args.includes("--show-sdk-version")) stdout = "26.2\n";
+      else if (args.includes("--show-sdk-path")) stdout = cfg.build + "/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.2.sdk\n";
+      else if (args.includes("--find")) stdout = cfg.simulator + "/usr/bin/simctl\n";
+      else stdout = args[0] === `DEVELOPER_DIR=${cfg.simulator}` ? `Xcode ${cfg.simulatorVersion}\nBuild version ${cfg.simulatorBuild}\n` : "Xcode 26.2\nBuild version 17C52\n";
+      return { stdout };
+    };
+    const options = { env: { REACH_TEST_IOS_COMPARISON: id, REACH_TEST_IOS_SOURCE_SHA: head }, run, arch: "arm64", identify: async file => ({ path: file, sha256: "c".repeat(64) }), isTool: async () => true };
+    const result = await collectIosToolchainProvenance(options);
+    assert.equal(result.head, head); assert.equal(result.tree, tree);
+    assert.ok(calls.every(call => call.limit > 0 && call.limit <= 10000));
+    assert.ok(calls.filter(call => call.args.includes("simctl")).every(call => call.args.at(-2) === "--find"), "only find the tool, never invoke a simulator in preflight");
+    assert.ok(result.limits.some(value => value.includes("Identical B/C")));
+    await assert.rejects(collectIosToolchainProvenance({ ...options, env: { ...options.env, REACH_TEST_IOS_SOURCE_SHA: tree } }), /checkout\/source binding differs/);
+    await assert.rejects(collectIosToolchainProvenance({ ...options, run: async () => { throw Error("tool missing"); } }), /tool missing/);
+    await assert.rejects(collectIosToolchainProvenance({ ...options, isTool: async () => false }), /declared tool is missing/);
+    await assert.rejects(collectIosToolchainProvenance({ ...options, run: async (...args) => args[1].includes("--show-sdk-version") ? { stdout: "26.4\n" } : run(...args) }), /build simulator SDK differs/);
+    await assert.rejects(collectIosToolchainProvenance({ ...options, run: async (...args) => args[1].includes("--find") ? { stdout: "/wrong/simctl\n" } : run(...args) }), /selected simctl path differs/);
+  }
+});
+
+test("normal-file hashes identify built and changed installed executables separately and reject nonfiles/oversize", async t => {
+  const dir = await diagnosticHome(t), file = path.join(dir, "App");
+  await fs.writeFile(file, "original executable");
+  const before = await iosFileIdentity(file);
+  await fs.writeFile(file, "existing codesign changed executable");
+  const after = await iosFileIdentity(file);
+  assert.notEqual(before.sha256, after.sha256);
+  await assert.rejects(iosFileIdentity(dir), /bounded normal file/);
+  await assert.rejects(iosFileIdentity(file, { maximum: 2 }), /bounded normal file/);
+  await assert.rejects(iosFileIdentity(file, { deadline: Date.now() - 1 }), /deadline exhausted/);
+  const rows = "1 1 S 00:01 0 12 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged\n2 1 S 00:01 0 12 /private/unrelated/simdiskimaged\n";
+  const observed = await iosDaemonIdentities(rows, {}, async target => ({ path: target, sha256: "d".repeat(64) }));
+  assert.equal(observed.length, 1); assert.ok(observed[0].path.startsWith("/Library/Developer/PrivateFrameworks/"));
+});
+
+test("only the declared existing startup boundaries gain lifecycle evidence and copied hashing cannot delay install", async () => {
+  for (const name of ["launch", "runtime shared cache ready", "bootstatus", "readiness (launchctl list in the device)", "stalled launch bootstatus", "stalled launch readiness"]) assert.equal(captureIosBoundary(name), true);
+  for (const name of ["screenshot", "install", "launch Settings", "reopen the app", "delete", "boot"]) assert.equal(captureIosBoundary(name), false);
+  const source = await fs.readFile(new URL("./ios-simulator.test.mjs", import.meta.url), "utf8");
+  const betweenSignAndInstall = source.slice(source.indexOf('await exec("codesign"'), source.indexOf('await sim("install"'));
+  assert.match(betweenSignAndInstall, /void iosAppIdentity/);
+  assert.doesNotMatch(betweenSignAndInstall, /await iosAppIdentity/);
 });

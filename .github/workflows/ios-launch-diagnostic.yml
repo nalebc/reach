@@ -1,7 +1,7 @@
 name: iOS launch diagnostics
 on:
   push:
-    branches: [validation/ios-launch-0.4.1]
+    branches: [validation/ios-toolchain-0.4.1]
   workflow_dispatch:
 
 permissions:
@@ -13,10 +13,23 @@ jobs:
       fail-fast: false
       matrix:
         trial: [1, 2]
-    runs-on: macos-15
+        configuration:
+          - id: A
+            os: macos-15
+            simulator: /Applications/Xcode_26.2.app/Contents/Developer
+          - id: B
+            os: macos-26
+            simulator: /Applications/Xcode_26.2.app/Contents/Developer
+          - id: C
+            os: macos-26
+            simulator: /Applications/Xcode_26.4.1.app/Contents/Developer
+    runs-on: ${{ matrix.configuration.os }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       REACH_TEST_IOS_RUNTIME: "26.2"
+      REACH_TEST_IOS_COMPARISON: ${{ matrix.configuration.id }}
+      REACH_TEST_IOS_SOURCE_SHA: ${{ github.sha }}
+      REACH_TEST_IOS_PROVENANCE: reports/ios-toolchain-provenance.json
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,27 +37,34 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 22.23.2
           package-manager-cache: false
       - run: npm ci
+      - name: Verify declared tools without simulator warmup
+        run: node --import ./test/helpers/runaway-guard.mjs test/helpers/ios-toolchain-provenance.mjs preflight
       - run: npm run build
       - run: npx --no-install cap sync ios
         env:
           REACH_APP_URL: https://computer.example.ts.net:8443
       - name: Build the simulator app with its local bundle identity
         run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
+      - name: Record original built app identity
+        run: node --import ./test/helpers/runaway-guard.mjs test/helpers/ios-toolchain-provenance.mjs built
+        env:
+          REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
       - name: Real iOS pairing, authenticated files and native transfer bridges
         run: |
           mkdir -p reports
           npm run test:file -- --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
         env:
+          DEVELOPER_DIR: ${{ matrix.configuration.simulator }}
           REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
           REACH_TEST_IOS_REPORT: reports/ios-simulator.json
       - name: Preserve simulator evidence even after a test failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: tests-ios-launch-diagnostic-trial-${{ matrix.trial }}
+          name: tests-ios-toolchain-${{ matrix.configuration.id }}-trial-${{ matrix.trial }}
           path: reports/
           if-no-files-found: warn
           retention-days: 14

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
+import { iosDaemonIdentities } from "./ios-toolchain-provenance.mjs";
 
 // Observations only: no launch, recovery, pressure generation or toolchain
 // change. These records test a hypothesis; absence does not establish a cause.
 export const iosHostPredicate = 'process == "simdiskimaged" OR (process == "kernel" AND eventMessage CONTAINS[c] "simdiskimaged")';
-export function startIosHostDiagnostics({ run, deadline, start = spawn, now = Date.now }) {
+export function startIosHostDiagnostics({ run, deadline, start = spawn, now = Date.now, captureDaemonFiles = false }) {
   const evidence = { scope: "host simdiskimaged and CoreSimulatorService process metadata; simdiskimaged unified log; vm_stat counters", startedAt: new Date(now()).toISOString(),
     logs: { command: "/usr/bin/log", args: ["stream", "--style", "compact", "--level", "info", "--predicate", iosHostPredicate], stdout: "", stderr: "", events: [], retentionUnits: "UTF-16 code units" }, samples: [] };
   const began = performance.now();
@@ -44,6 +45,7 @@ export function startIosHostDiagnostics({ run, deadline, start = spawn, now = Da
   const sample = async label => {
     if (evidence.samples.length >= 2) return;
     const allowed = Math.min(2000, deadline - now());
+    const sampleDeadline = Math.min(deadline, now() + allowed);
     const item = { label: String(label).slice(0, 80), at: new Date(now()).toISOString() };
     evidence.samples.push(item);
     if (!Number.isFinite(allowed) || allowed <= 0) { item.skipped = "No diagnostic time remains in the existing work budget."; return; }
@@ -60,6 +62,11 @@ export function startIosHostDiagnostics({ run, deadline, start = spawn, now = Da
         .filter(line => /(?:^|[\s/])(?:simdiskimaged|(?:com\.apple\.CoreSimulator\.)?CoreSimulatorService)$/.test(line.trim())).slice(0, 20).join("\n").slice(-8192)),
       capture("/usr/bin/vm_stat", [], value => String(value || "").slice(0, 8192)),
     ]);
+    if (captureDaemonFiles && item.processes.ok) {
+      // Initial sampling is non-blocking; final sampling is after the original
+      // test body. File observations never qualify the native assertions.
+      item.daemonFiles = await iosDaemonIdentities(item.processes.stdout, { deadline: sampleDeadline });
+    }
   };
   return { sample, stop, snapshot: () => evidence };
 }
