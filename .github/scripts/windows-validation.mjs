@@ -26,6 +26,8 @@ const result = spawnSync(process.execPath, [
   process.env.npm_execpath || require_npm(),
   "run", "test:file", "--",
   `--test-timeout=${fileTimeout}`, "--test-concurrency=1",
+  // Diagnostic canary only; excluded from the release candidate's ancestry.
+  "--test-name-pattern=^UI Automation:",
   "--test-reporter=spec", "--test-reporter-destination=stdout",
   "--test-reporter=junit", "--test-reporter-destination=reports/windows-validation.xml",
   ...files,
