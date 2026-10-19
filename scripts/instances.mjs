@@ -205,14 +205,13 @@ export function whereItRuns(host) {
 // Its saved state: a source folder keeps .reach inside; an npm install, ~/.reach.
 export const stateOf = (root, exists = fs.existsSync, env = process.env) => stateDir(root, { installed: !exists(path.join(root, "src/main.tsx")), env });
 
-// What its server reports while it runs: its link, and whether it keeps the Mac awake.
-// A Windows Reach's own file only (no ps to ask there): a file another run
-// left behind names another process.
+// What this observed process reports: another run can leave its status behind
+// after a crash or while the current Reach is still starting, on any host.
 export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
   if (!host.root) return {};
   try {
     const status = read(path.join(state(host.root), "host-status.json")) || {};
-    return host.platform === "win32" && status.pid !== host.pid ? {} : status;
+    return status.pid === host.pid ? status : {};
   } catch {
     return {};
   }
