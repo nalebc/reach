@@ -32,6 +32,9 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 
 ### Fixed
 
+- Keep a mobile navigation tap on its intended destination when device details
+  add tabs while the finger is down. Cancelled gestures and removed destinations
+  do not navigate; keyboard and assistive clicks retain their explicit target.
 - Keep a pending clipboard read bound to its original terminal and access.
   Switching terminals or computers, changing access, or closing the view drops
   the old read, including a switch away and back.

@@ -21,7 +21,7 @@ export const suites = {
     // Decode the emitted QR and follow it through a separate phone network.
     "qr-onboarding-e2e", "windows-atomic-json",
     // Shared phone gestures must also run against Windows' input contract.
-    "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
+    "mobile-nav-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
     "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
