@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { toneStability } from "./helpers/tone-stability.mjs";
+import { createToneTiming, observeToneSource } from "./helpers/tone-timing.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
@@ -47,11 +49,23 @@ async function buildPage(dir) {
     `import React from ${abs("node_modules/react/index.js")};
 import { createRoot } from ${abs("node_modules/react-dom/client.js")};
 import { useScreenSound } from ${abs("src/useScreenSound.ts")};
+import { createToneTiming, observeToneWebSockets, observeTonePort } from ${abs("test/helpers/tone-timing.mjs")};
+const timing = createToneTiming();
+window.__toneTiming = timing;
+let audio;
+const clock = () => ({ audioTime: audio?.currentTime, audioFrame: audio && Math.round(audio.currentTime * audio.sampleRate), rate: audio?.sampleRate });
+observeToneWebSockets(window, timing, clock);
+const observedPorts = new WeakSet();
 // An analyser after the worklet: what the phone's speaker would get; and
 // each time the worklet's queue ran dry on a late link ("late").
 window.__late = 0;
 const connect = AudioWorkletNode.prototype.connect;
 AudioWorkletNode.prototype.connect = function (destination, ...rest) {
+  audio = this.context;
+  if (!observedPorts.has(this.port)) {
+    observedPorts.add(this.port);
+    observeTonePort(this.port, timing, clock);
+  }
   this.port.onmessage = (event) => {
     if (event.data?.type === "late") window.__late++;
   };
@@ -69,6 +83,7 @@ window.__level = () => {
   a.getFloatTimeDomainData(d);
   return Math.sqrt(d.reduce((s, v) => s + v * v, 0) / d.length);
 };
+window.__sample = () => timing.sample(window.__level(), clock());
 const token = new URLSearchParams(location.search).get("token");
 function App() {
   const sound = useScreenSound({ id: "mac", name: "Mac", url: location.origin, token, platform: "darwin" }, true);
@@ -97,13 +112,49 @@ createRoot(document.getElementById("root")).render(React.createElement(App));
 test("in a real browser, the speaker plays the real helper's sound under Reach's own page policy", { skip, timeout: 300000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-sound-e2e-"));
   const undo = [];
+  const timing = createToneTiming();
+  const eventLoop = monitorEventLoopDelay({ resolution: 10 });
+  eventLoop.enable();
+  let tab, binary;
+  // Fixed numeric stages: build, policy, start/settle, steady, stop, complete.
+  let stage = 0, completed = 0;
+  const measurements = {};
+  const steady = [];
   t.after(async () => {
-    for (const step of undo.reverse()) await step().catch(() => {});
+    eventLoop.disable();
+    try {
+      // Keep this before all cleanup, including Chrome's own after hook. A
+      // failing assertion must retain the same bounded evidence as a pass.
+      let browserTiming;
+      try { browserTiming = await tab?.evaluate("window.__toneTiming?.snapshot()"); } catch {}
+      const ms = (ns) => Number.isFinite(ns) ? ns / 1e6 : 0;
+      const nodeEventLoop = {
+        count: eventLoop.count, meanMs: ms(eventLoop.mean), maxMs: ms(eventLoop.max),
+        p50Ms: ms(eventLoop.percentile(50)), p95Ms: ms(eventLoop.percentile(95)), p99Ms: ms(eventLoop.percentile(99)),
+      };
+      const helperTiming = timing.snapshot();
+      const report = {
+        host: process.platform, ...(binary ? { helper: path.basename(binary) } : {}),
+        ...measurements,
+        steadyLevels: steady.map((v) => Number.isFinite(v) ? Number(v.toFixed(3)) : null),
+        timing: { schema: 1, stage, completed, nodeEventLoop, helper: helperTiming, browser: browserTiming || null },
+      };
+      const summary = (snapshot) => Object.fromEntries(Object.entries(snapshot?.streams || {})
+        .filter(([, stream]) => stream.count)
+        .map(([kind, stream]) => [kind, { count: stream.count, maxGapMs: Number(stream.maxGapMs.toFixed(3)) }]));
+      t.diagnostic(`audio timing ${JSON.stringify({ stage, completed, nodeEventLoop, helper: summary(helperTiming), browser: summary(browserTiming) })}`);
+      await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
+      await fs.promises.writeFile(path.join(repo, "reports", "sound-chrome-e2e.json"), JSON.stringify(report, null, 2));
+    } catch {
+      t.diagnostic("audio timing report unavailable");
+    } finally {
+      for (const step of undo.reverse()) await step().catch(() => {});
+    }
   });
   undo.push(async () => fs.rmSync(dir, { recursive: true, force: true }));
   const page = await buildPage(dir);
   // The real helper, its tone on the clock as a capture's packets come.
-  const binary = process.platform === "win32"
+  binary = process.platform === "win32"
     ? await windowsBinary({ dataDir: dir }, "screen-sound")
     : await desktopBinary({ dataDir: dir }, "screen-sound");
   const reach = await createReach({
@@ -112,7 +163,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
     screen: true,
     // Its tailnet name, so its pages carry the policy a phone gets.
     publicOrigin: "https://mac-a.t.ts.net",
-    soundFactory: async () => (handlers) => new SoundSource(binary, ["--self-test", "30", "--live"], handlers),
+    soundFactory: async () => (handlers) => new SoundSource(binary, ["--self-test", "30", "--live"], observeToneSource(handlers, timing)),
   });
   undo.push(() => reach.close());
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -129,6 +180,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   assert.deepEqual(scripts, ["'self'", "'wasm-unsafe-eval'"],
     "private recovery permits WASM compilation; scripts and worklets stay same-origin without JavaScript eval or inline scripts");
   assert.doesNotMatch(policy, /127\.0\.0\.1/);
+  stage = 1;
   const owner = reach.auth.issue("owner", ALL_SCOPES);
   // The page's own address serves it with that policy; its sound socket
   // goes on to Reach as Tailscale Serve hands a phone's over.
@@ -158,7 +210,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   });
   const browser = await launchChrome(t, { args: ["--mute-audio", "--autoplay-policy=user-gesture-required"] });
   undo.push(() => browser.close());
-  const tab = await openTab(browser);
+  tab = await openTab(browser);
   await tab.navigate(`http://127.0.0.1:${server.address().port}/?token=${encodeURIComponent(owner.token)}`);
   const tap = async () => {
     const at = await tab.evaluate(`(() => { const r = document.querySelector("button").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -174,6 +226,8 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
       await new Promise((r) => setTimeout(r, 50));
     }
   };
+  eventLoop.reset();
+  stage = 2;
   const tapped = Date.now();
   await tap();
   await until(`window.__sound?.state === "on"`);
@@ -181,6 +235,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   // one channel by the analyser (12000 / 32768 / 2 ≈ 0.18).
   const level = await until(`window.__level() > 0.1 && window.__level()`, 5000);
   const heardIn = Date.now() - tapped;
+  Object.assign(measurements, { heardInMs: heardIn, firstLevel: Number(level.toFixed(3)) });
   assert.ok(level < 0.25, `level ${level}`);
   // Then steady for four seconds, after two to settle: the tone's level at
   // every look, but for one blip at most. A shared CI machine can stall the
@@ -188,21 +243,21 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   // again and again (a source slower than the clock, as the Oct 13 stand-in
   // was) still fails.
   await new Promise((r) => setTimeout(r, 2000));
+  stage = 3;
   const lateBefore = await tab.evaluate("window.__late");
-  const steady = [];
   for (let i = 0; i < 40; i++) {
-    steady.push(await tab.evaluate("window.__level()"));
+    steady.push(await tab.evaluate("window.__sample()"));
     await new Promise((r) => setTimeout(r, 100));
   }
   const late = (await tab.evaluate("window.__late")) - lateBefore;
   const stability = toneStability(steady, late);
+  Object.assign(measurements, { ranDry: late, blips: stability.blips });
   assert.ok(stability.passed, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times; blips ${stability.blips}`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
+  stage = 4;
   await tap();
   await until(`window.__sound?.state === "off"`);
-  await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
-  await fs.promises.writeFile(
-    path.join(repo, "reports", "sound-chrome-e2e.json"),
-    JSON.stringify({ host: process.platform, helper: path.basename(binary), heardInMs: heardIn, firstLevel: Number(level.toFixed(3)), steadyLevels: steady.map((v) => Number(v.toFixed(3))), ranDry: late, blips: stability.blips, phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product }, null, 2),
-  );
+  Object.assign(measurements, { phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product });
+  stage = 5;
+  completed = 1;
 });
