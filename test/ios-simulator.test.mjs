@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
+import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
 import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
 import { createIosProxyForwarder } from "./helpers/ios-proxy.mjs";
@@ -51,6 +52,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   const started = Date.now(), phases = [], steps = [], requests = [];
   let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, pageSeen = false, reported = false;
   const pageEvidence = createIosPageEvidence({ started });
+  const lifecycle = createIosLifecycleEvidence();
   const since = from => Math.round((Date.now() - from) / 100) / 10;
   const left = () => started + budget - Date.now();
   const reached = name => {
@@ -63,7 +65,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // launching a running app returns its pid, install replaces the same app.
   // Each retry waits 5 s longer than the last. The last failure names every
   // attempt; a step that never succeeds fails the test.
-  const sim = async (name, args, { limit = 60000, attempts = 1, progress, beforeRetry } = {}) => {
+  const sim = async (name, args, { limit = 60000, attempts = 1, progress, requireProgress = false, observation = "the app requested its test page", beforeRetry } = {}) => {
     const tries = [];
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, Math.min(5000 * (attempt - 1), Math.max(0, left() - 10000))));
@@ -72,8 +74,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const allowed = Math.min(limit, left());
       const began = Date.now();
       try {
-        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress });
-        steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: "the app requested its test page" } : {}) });
+        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress, requireProgress });
+        steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: observation } : {}) });
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
       } catch (error) {
@@ -94,7 +96,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const pageState = pageEvidence.snapshot();
       const report = applyIosAssetGate(iosPageFailureReport({ error: failure, last, context: {
         phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageState,
-        proxyEvidence: proxyForwarder?.snapshot(), runtime: runtimeVersion, diagnostics, physicalDevice: false } }), pageState);
+        proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics, physicalDevice: false } }), pageState);
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
@@ -158,6 +160,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       if (req.url.startsWith("/api/")) requests.push({ path: req.url.split("?")[0], status: res.statusCode });
     });
     if (req.url.split("?")[0] === "/api/files/content") {
+      lifecycle.beginDownload();
       noteDownload();
       await downloadAllowed;
       res.on("finish", noteResponse);
@@ -179,7 +182,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
           body += chunk;
           if (body.length > 4096) { res.writeHead(413).end(); return; }
         }
-        pageEvidence.event(JSON.parse(body));
+        const event = JSON.parse(body);
+        pageEvidence.event(event);
+        lifecycle.event(event?.kind);
         res.writeHead(204).end();
       } catch { res.writeHead(400).end(); }
       return;
@@ -221,7 +226,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   t.after(async () => { downloadProxy.closeAllConnections(); await new Promise(resolve => downloadProxy.close(resolve)); });
   const origin = `http://127.0.0.1:${proxy.address().port}`;
   const downloadOrigin = `https://127.0.0.1:${downloadProxy.address().port}`;
-  script = `(${async function run({ code, probe, downloadOrigin }) {
+  script = `(${async function run({ code, probe, downloadOrigin }, installLifecycle) {
     const checks = [];
     const note = kind => window.__reachIosSmokeEvidence?.({ kind });
     const wait = async (get, name, ms = 25000) => {
@@ -273,11 +278,13 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       check(atob(read.data) === "Native file bytes", "native filesystem write/read preserves bytes");
       const pending = await native("BackgroundTransfer", "finished");
       check(Array.isArray(pending.files) && pending.files.length === 0, "fresh native transfer session has no old files");
+      const lifecycle = installLifecycle(window.Capacitor, note);
       // The actual React workspace subscribes to transfers too. Completed
       // downloads are delivered to listeners instead of the pending queue.
       const completed = new Map(), failures = new Map();
       window.Capacitor.nativeCallback("BackgroundTransfer", "addListener", { eventName: "done" }, value => completed.set(value.id, value));
       window.Capacitor.nativeCallback("BackgroundTransfer", "addListener", { eventName: "failed" }, value => failures.set(value.id, value));
+      lifecycle.armDownload();
       const download = await native("BackgroundTransfer", "download", { url: downloadOrigin + "/api/files/content?root=0&path=simulator-proof.txt", name: "simulator-proof.txt", headers });
       note("waiting-native-download");
       const finished = await wait(async () => {
@@ -300,7 +307,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       await fetch(probe + "/result", { method: "POST", body: JSON.stringify({ ok: false, checks, error: error.message,
         ...(pairingState ? { pairingState } : {}) }) });
     }
-  }.toString()})(${JSON.stringify({ code, probe, downloadOrigin })});`;
+  }.toString()})(${JSON.stringify({ code, probe, downloadOrigin })}, ${installIosLifecycleProbe.toString()});`;
 
   const runtimes = JSON.parse((await sim("list runtimes", ["list", "runtimes", "-j"])).stdout).runtimes;
   const runtime = runtimes.filter(item => item.isAvailable && item.identifier.includes("iOS")
@@ -386,14 +393,25 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       reached("page paired and asked for the native download");
       // The newly created simulator has no user account. Opening its Settings
       // backgrounds only this test app; release the HTTPS response while away.
-      await simulatorStep("launch Settings", ["launch", device, "com.apple.Preferences"], { attempts: 2 });
+      // simctl can hang after switching apps. Require the App plugin's native
+      // didEnterBackground callback within the existing attempt deadline;
+      // command exit alone cannot release the held HTTPS response.
+      await simulatorStep("launch Settings", ["launch", device, "com.apple.Preferences"], {
+        attempts: 2, progress: lifecycle.background, requireProgress: true,
+        observation: "native App pause after the download request",
+      });
       reached("app in the background");
+      assert.equal(lifecycle.snapshot().activeAfterBackground, false, "the download response is released while the app is still backgrounded");
       backgroundedDuringDownload = true;
       allowDownload();
       await Promise.race([downloadResponded, result]);
       reached("download answered");
       await new Promise(resolve => setTimeout(resolve, 1500));
-      await simulatorStep("reopen the app", ["launch", device, bundle], { attempts: 2 });
+      assert.equal(lifecycle.snapshot().activeAfterBackground, false, "the app stays backgrounded until the explicit reopen");
+      await simulatorStep("reopen the app", ["launch", device, bundle], {
+        attempts: 2, progress: lifecycle.active, requireProgress: true,
+        observation: "native App active after backgrounding",
+      });
       reached("app reopened");
     }
     report = first.report || await result;
@@ -405,7 +423,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
-      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });

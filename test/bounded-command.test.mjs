@@ -8,6 +8,25 @@ test("a command's successful exit is enough without independent progress", async
   assert.equal(answer.observed, undefined);
 });
 
+test("a successful launcher cannot certify a required native transition without its evidence", async () => {
+  await assert.rejects(boundedCommand(process.execPath, ["-e", "process.stdout.write('launch requested')"], 500, {
+    progress: new Promise(() => {}), requireProgress: true,
+  }), /did not finish within 0.5 s/);
+});
+
+test("a launcher that already exited still waits for the required native evidence within its deadline", async () => {
+  let observe, settled = false;
+  const progress = new Promise(resolve => { observe = resolve; });
+  const answer = boundedCommand(process.execPath, ["-e", "process.stdout.write('launch requested')"], 5000, {
+    progress, requireProgress: true,
+  }).then(result => { settled = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(settled, false, "command exit alone cannot report a native background or resume");
+  observe();
+  const result = await answer;
+  assert.equal(result.observed, true);
+});
+
 test("an observed operation releases a stuck launcher and still reports how it completed", async () => {
   let observe;
   const progress = new Promise(resolve => { observe = resolve; });

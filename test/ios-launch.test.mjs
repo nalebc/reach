@@ -6,9 +6,57 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
+import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput, startIosLaunchLogs } from "./helpers/ios-diagnostics.mjs";
 
 const device = "disposable-simulator", bundle = "test.reach.smoke";
+
+test("only native background entry after arming and becoming active after pause report lifecycle progress", () => {
+  const listeners = new Map(), calls = [], events = [];
+  const lifecycle = installIosLifecycleProbe({ nativeCallback(plugin, method, options, callback) {
+    calls.push([plugin, method, options]);
+    listeners.set(options.eventName, callback);
+  } }, kind => events.push(kind));
+  assert.deepEqual(calls, [["App", "addListener", { eventName: "pause" }], ["App", "addListener", { eventName: "appStateChange" }]]);
+  listeners.get("pause")();
+  listeners.get("appStateChange")({ isActive: true });
+  assert.deepEqual(events, [], "initial launch or an earlier pause cannot certify the download transition");
+  lifecycle.armDownload();
+  for (const state of [undefined, { isActive: false }, { isActive: true }, { isActive: "true" }])
+    listeners.get("appStateChange")(state);
+  assert.deepEqual(events, [], "resigning active or foregrounding without pause is insufficient");
+  listeners.get("pause")({ token: "must never be retained" });
+  listeners.get("pause")();
+  listeners.get("appStateChange")({ isActive: false });
+  assert.deepEqual(events, ["native-backgrounded"]);
+  listeners.get("appStateChange")({ isActive: true, token: "must never be retained" });
+  listeners.get("appStateChange")({ isActive: true });
+  assert.deepEqual(events, ["native-backgrounded", "native-active"], "each native transition reports once, without payload data");
+});
+
+test("native lifecycle evidence requires download, pause and active in that order", async () => {
+  const lifecycle = createIosLifecycleEvidence();
+  let backgrounded = false, active = false;
+  lifecycle.background.then(() => { backgrounded = true; });
+  lifecycle.active.then(() => { active = true; });
+  for (const kind of ["native-backgrounded", "native-active", { kind: "native-backgrounded" }]) lifecycle.event(kind);
+  lifecycle.beginDownload();
+  lifecycle.event("native-active");
+  await Promise.resolve();
+  assert.equal(backgrounded, false);
+  assert.equal(active, false);
+  lifecycle.event("native-backgrounded");
+  await lifecycle.background;
+  assert.equal(backgrounded, true);
+  assert.equal(active, false);
+  const snapshot = lifecycle.snapshot();
+  snapshot.activeAfterBackground = true;
+  assert.equal(lifecycle.snapshot().activeAfterBackground, false);
+  lifecycle.event("native-active");
+  await lifecycle.active;
+  assert.equal(active, true);
+  assert.deepEqual(lifecycle.snapshot(), { downloadRequested: true, backgrounded: true, activeAfterBackground: true });
+});
 
 // No simulator or app is started. Commands model the observed iOS behavior:
 // openurl exits successfully at an Open/Cancel prompt without loading a page.
