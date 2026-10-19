@@ -55,7 +55,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.scenario == 'current' }}
         run: |
           node -e "require('node:fs').mkdirSync('reports', { recursive: true })"
-          npm run test:file -- --test-timeout=300000 --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/native-regressions.xml test/headless-chrome-lifecycle.test.mjs test/windows-browser-lifetime-native.test.mjs test/sound-worklet.test.mjs test/sound-worklet-recovery.test.mjs test/sound-worklet-cadence.test.mjs test/sound-packet-batch.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs
+          npm run test:file -- --test-timeout=300000 --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/native-regressions.xml test/ci-policy.test.mjs test/headless-chrome-lifecycle.test.mjs test/windows-browser-lifetime-native.test.mjs test/sound-worklet.test.mjs test/sound-worklet-recovery.test.mjs test/sound-worklet-cadence.test.mjs test/sound-packet-batch.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs
       - name: Preserve original failures and current results without overwriting either
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

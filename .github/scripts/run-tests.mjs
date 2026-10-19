@@ -1,5 +1,6 @@
-// All test execution goes through npm's guarded test:file entrypoint. This
-// wrapper makes Windows selection explicit and keeps machine-readable reports.
+// npm owns suite orchestration. Start guarded Node directly so Windows' npm
+// script shell never receives the full file list and its 8 KiB command limit.
+// This wrapper makes Windows selection explicit and keeps machine-readable reports.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -197,7 +198,7 @@ export async function run(suite) {
   if (suite === "native" && process.platform !== "darwin") throw Error("The native security suite requires macOS; a skipped suite is not a pass.");
   const files = testFiles(suite);
   fs.mkdirSync("reports", { recursive: true });
-  const args = [process.env.npm_execpath, "run", "test:file", "--",
+  const args = ["--import", new URL("../../test/helpers/runaway-guard.mjs", import.meta.url).href, "--test",
     "--test-timeout=180000", `--test-concurrency=${suite === "native" ? 1 : 2}`,
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=junit", `--test-reporter-destination=reports/${suite}.xml`,

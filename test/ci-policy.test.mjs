@@ -98,29 +98,52 @@ test("Windows CI retains the atomic JSON sharing regression beside installed pai
   assert.ok(testFiles("windows").includes(path.join("test", "private-artifact.test.mjs")), "fresh artifact copy controls must execute on Windows too");
 });
 
-test("the CI runner executes guarded npm tests, writes both reports, and propagates failures", t => {
+test("the CI runner passes a long file vector to guarded Node and aggregates failures and skips", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-runner-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "test"));
-  const runner = fileURLToPath(new URL("../.github/scripts/run-tests.mjs", import.meta.url));
+  const runner = new URL("../.github/scripts/run-tests.mjs", import.meta.url).href;
   const guard = new URL("./helpers/runaway-guard.mjs", import.meta.url).href;
+  const name = `guarded-${"x".repeat(120)}`;
+  const names = [...Array(80).fill(name), "tail"];
+  assert.ok(names.map(name => path.join("test", `${name}.test.mjs`)).join(" ").length > 8191,
+    "the real child argument vector must exceed cmd.exe's script limit");
+  fs.writeFileSync(path.join(root, "runner.mjs"), `
+    import { run, suites } from ${JSON.stringify(runner)};
+    suites.windows = ${JSON.stringify(names)};
+    await run("windows");
+  `);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: {
-    "test:file": `node --import ${JSON.stringify(guard)} --test`,
-    "test:ci": `node ${JSON.stringify(runner)} all`,
+    "test:file": "node -e \"throw Error('unexpected nested npm script shell')\"",
+    "test:ci": "node runner.mjs",
   } }));
-  const file = path.join(root, "test", "smoke.test.mjs");
+  fs.writeFileSync(path.join(root, "test", `${name}.test.mjs`), `
+    import test from 'node:test';
+    import assert from 'node:assert/strict';
+    test('guard is active in the real child', () => {
+      assert.equal(assert.equal.pageSafe, true);
+      assert.equal(process.execArgv[process.execArgv.indexOf('--import') + 1], ${JSON.stringify(guard)});
+    });
+  `);
+  const file = path.join(root, "test", "tail.test.mjs");
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT; // The nested runner needs its own reporters.
   const run = () => spawnSync(process.execPath, [process.env.npm_execpath, "run", "test:ci"], { cwd: root, env, encoding: "utf8", timeout: 20000 });
-  fs.writeFileSync(file, "import test from 'node:test'; test('fixture', () => {});\n");
+  const report = name => fs.readFileSync(path.join(root, "reports", `windows.${name}`), "utf8");
+  fs.writeFileSync(file, "import test from 'node:test'; test('tail fixture', () => {}); test.skip('expected fixture skip', () => {});\n");
   let result = run();
   assert.equal(result.status, 0, result.stderr + result.stdout);
-  assert.match(fs.readFileSync(path.join(root, "reports", "all.xml"), "utf8"), /testcase/);
-  assert.match(fs.readFileSync(path.join(root, "reports", "all.tap"), "utf8"), /ok 1 - fixture/);
-  fs.writeFileSync(file, "import test from 'node:test'; test('fixture', () => { throw Error('expected fixture failure'); });\n");
+  assert.match(report("xml"), /testcase/);
+  assert.match(report("tap"), /ok \d+ - tail fixture/);
+  assert.match(report("tap"), /# tests 3\n/);
+  assert.match(report("tap"), /# pass 2\n# fail 0\n# cancelled 0\n# skipped 1\n/);
+  fs.writeFileSync(file, "import test from 'node:test'; test('tail fixture', () => { throw Error('expected fixture failure'); }); test.skip('expected fixture skip', () => {});\n");
   result = run();
   assert.notEqual(result.status, 0);
-  assert.match(fs.readFileSync(path.join(root, "reports", "all.tap"), "utf8"), /not ok 1 - fixture/);
+  assert.match(report("xml"), /expected fixture failure/);
+  assert.match(report("tap"), /not ok \d+ - tail fixture/);
+  assert.match(report("tap"), /# tests 3\n/);
+  assert.match(report("tap"), /# pass 1\n# fail 1\n# cancelled 0\n# skipped 1\n/);
 });
 
 test("release handoff copies only the exact npm and portable bytes that passed installation smoke", t => {
@@ -172,10 +195,11 @@ test("release handoff copies only the exact npm and portable bytes that passed i
   assert.notEqual(run(receipt.commit).status, 0, "missing receipt cannot be treated as success");
 });
 
-test("CI execution uses the guarded npm entrypoint and publishing cannot run package scripts", () => {
-  const runner = fs.readFileSync(new URL("../.github/scripts/run-tests.mjs", import.meta.url), "utf8");
-  assert.match(runner, /npm_execpath, "run", "test:file", "--"/);
-  assert.doesNotMatch(runner, /["']--test["']/);
+test("CI orchestration uses npm and publishing cannot run package scripts", () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.scripts["test:ci"], "node .github/scripts/run-tests.mjs all");
+  assert.equal(pkg.scripts["test:ci:windows"], "node .github/scripts/run-tests.mjs windows");
+  assert.equal(pkg.scripts["test:ci:native"], "node .github/scripts/run-tests.mjs native");
   const ci = fs.readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   assert.match(ci, /merge_group:/);
   assert.doesNotMatch(ci, /continue-on-error:|secrets\.|pull_request_target:/);
