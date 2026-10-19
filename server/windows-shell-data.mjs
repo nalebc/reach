@@ -22,7 +22,7 @@ const text = (value) => {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw Error("Windows returned an invalid app catalog.");
   const bytes = Buffer.from(value, "base64");
   if (bytes.toString("base64") !== value) throw Error("Windows returned an invalid app catalog.");
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 };
 
 export async function readWindowsApps(options = {}) {

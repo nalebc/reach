@@ -39,6 +39,9 @@ Early access: file editing, clipboard paste and Windows setup improvements.
   broad write access, junctions, hard links and unsafe helper caches remain refused.
 - Keep Windows setup and source-checkout update instructions actionable, and
   isolate native helpers from writable checkout files and stale cached builds.
+- Read Windows' app catalog and file icons through the existing native shell
+  helper, and launch validated app IDs directly, avoiding PowerShell cold-start
+  failures while preserving operation deadlines and unknown-action handling.
 - Validate macOS runtime library inspection before granting isolated scripts
   access to their runtime files; a confirmed read-only inspection timeout has
   one bounded retry for the whole dependency graph.

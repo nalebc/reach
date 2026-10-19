@@ -72,7 +72,7 @@ test("the agents' logos on Windows: their apps found by name in Start's list; a 
 // Controlled subprocess boundary checks; these do not execute Windows APIs.
 test("shell data uses the verified shared helper with unchanged operation deadlines and lossless IDs", async () => {
   const calls = [], builds = [];
-  const rows = [["vendor.软件!App", "A name\twith\na new line"], ["{folder}\\a 'quoted' program.exe", "same name"]];
+  const rows = [["\uFEFFvendor.软件!App", "\uFEFFA name\twith\na new line"], ["{folder}\\a 'quoted' program.exe", "same name"]];
   const options = {
     dataDir: "C:\\private",
     build: async (config, kind) => { builds.push({ config, kind }); return "C:\\private\\reach-app-icons-123456789abc.exe"; },
