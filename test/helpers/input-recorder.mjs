@@ -21,10 +21,14 @@ public class ReachRecorderFront {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
 '@
-$pid0 = 0; [ReachRecorderFront]::GetWindowThreadProcessId([ReachRecorderFront]::GetForegroundWindow(), [ref]$pid0) | Out-Null; $pid0
+$front = [ReachRecorderFront]::GetForegroundWindow(); $pid0 = 0; [ReachRecorderFront]::GetWindowThreadProcessId($front, [ref]$pid0) | Out-Null
+"$pid0,$($front.ToInt64())"
 `;
-const frontPid = async () =>
-  Number((await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_FRONT, "utf16le").toString("base64")], { windowsHide: true, timeout: 30000 })).stdout.trim()) || 0;
+// The window in front: its process and its handle.
+const frontWindow = async () => {
+  const [pid, handle] = (await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_FRONT, "utf16le").toString("base64")], { windowsHide: true, timeout: 30000 })).stdout.trim().split(",").map(Number);
+  return { pid: pid || 0, handle: handle || 0 };
+};
 const frontMacApp = async () =>
   (await run("/usr/bin/osascript", ["-e", 'tell application "System Events" to get name of first application process whose frontmost is true'], { timeout: 15000 })).stdout.trim();
 
@@ -148,7 +152,7 @@ export async function recorder(t, dir) {
   return {
     stop,
     // Is the recorder the window in front (typing goes to it, nowhere else)?
-    front: async () => (windows ? (await frontPid()) === child.pid : (await frontMacApp()) === "input-recorder"),
+    front: async () => (windows ? (await frontWindow()).pid === child.pid : (await frontMacApp()) === "input-recorder"),
     contains: (at) => at.x * width >= left && at.x * width <= right && at.y * height >= top && at.y * height <= bottom,
     regions: ready.regions,
     display: ready.display,
@@ -183,7 +187,7 @@ $scale = [ReachRecorderConsole]::GetDpiForWindow($h) / 96.0
 Start-Sleep -Milliseconds 300
 $r = New-Object ReachRecorderConsole+RECT
 [ReachRecorderConsole]::GetWindowRect($h, [ref]$r) | Out-Null
-[IO.File]::WriteAllText('${ready}', "$($r.Left / $scale),$($r.Top / $scale),$($r.Right / $scale),$($r.Bottom / $scale)")
+[IO.File]::WriteAllText('${ready}', "$($r.Left / $scale),$($r.Top / $scale),$($r.Right / $scale),$($r.Bottom / $scale),$($h.ToInt64())")
 while ($true) { $k = [Console]::ReadKey($true); [IO.File]::AppendAllText('${file}', [string]$k.KeyChar) }
 `;
 
@@ -207,8 +211,9 @@ export async function rawTerminal(t, dir) {
     t.after(() => run("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }).catch(() => {}));
     for (const end = Date.now() + 60000; !fs.existsSync(ready); await sleep(100)) if (Date.now() > end) throw Error("The console didn't open.");
     await sleep(300);
-    const bounds = fs.readFileSync(ready, "utf8").split(",").map(Number);
-    return { file, bounds, bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\b", front: async () => (await frontPid()) === pid };
+    // The console's own window (its host's process isn't the one started).
+    const [left, top, right, bottom, handle] = fs.readFileSync(ready, "utf8").split(",").map(Number);
+    return { file, bounds: [left, top, right, bottom], bytes: () => fs.readFileSync(file), enter: "\r", backspace: "\b", front: async () => !!handle && (await frontWindow()).handle === handle };
   }
   const tell = async (body) => (await run("/usr/bin/osascript", ["-e", `tell application "Terminal"\n${body}\nend tell`], { timeout: 30000 })).stdout.trim();
   const tty = await tell(`activate\nset t to do script "stty raw -echo; exec cat > '${file}'"\nset custom title of t to "reach-screen-control"\nreturn tty of t`);

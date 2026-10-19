@@ -173,7 +173,8 @@ test("a double-tap's second click may carry its pairing tolerance, validated lik
   const { EventEmitter } = await import("node:events");
   const { desktopConnection } = await import("../server/desktop-connection.mjs");
   const { ScreenControl } = await import("../server/screen.mjs");
-  const owner = { id: "owner", scopes: ["admin", "screen"] };
+  // The owner's own phone (a device): a Windows PC lets only the owner control.
+  const owner = { id: "owner", kind: "device", scopes: ["admin", "screen"] };
   const control = new ScreenControl();
   control.acquire(owner, true);
   const helped = [];
