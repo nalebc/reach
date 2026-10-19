@@ -436,7 +436,9 @@ export function TerminalView({
   // The phone's clipboard, pasted as the terminal pastes (bracketed when the
   // program asks for it), so it arrives as typing would. Sent once, now:
   // never held for a later connection.
-  const phonePaste = usePhonePaste((text) => {
+  const phonePaste = usePhonePaste([
+    peer.id, peer.computerId, peer.url, peer.token, peer.sessionId, currentKey,
+  ], (text) => {
     const term = terminal.current;
     if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN)
       return toast("This terminal isn't connected. Paste again once it is.");

@@ -254,7 +254,9 @@ export default function MacTerminalView({
   }, [peer.url, peer.token, tab.id]);
   // Each line of a paste runs as its own command here, so one with a line
   // break asks first.
-  const phonePaste = usePhonePaste((text) => {
+  const phonePaste = usePhonePaste([
+    peer.id, peer.computerId, peer.url, peer.token, peer.sessionId, tab.id,
+  ], (text) => {
     const clean = pastable(text);
     const question = pasteQuestion(clean);
     if (question && !confirm(question)) return;

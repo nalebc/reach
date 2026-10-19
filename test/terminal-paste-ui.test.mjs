@@ -10,7 +10,7 @@ import { startDom, settle } from "./dom/harness.mjs";
 // socket. The browser's clipboard permission is in journeys/terminals.
 const peer = { id: "mac", name: "Mac", url: "https://reach.test", token: "t", platform: "darwin" };
 let dom, React, TerminalView, MacTerminalView, Terminal;
-let clipboard, toasts, asked, answer, lines;
+let clipboard, toasts, asked, answer, lines, desktopSends;
 class Socket {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -51,11 +51,14 @@ before(async () => {
     routes: {
       "/api/terminals/agents": () => ({ agents: [] }),
       "/api/terminals/desktop": () => ({ sessions: [], providers: [] }),
-      "/api/terminals/desktop/t1/send": (init) => {
-        lines.push(JSON.parse(init.body).text);
+      ...Object.fromEntries(["t1", "t2"].map((id) => [`/api/terminals/desktop/${id}/send`, (init, url) => {
+        const text = JSON.parse(init.body).text;
+        lines.push(text);
+        desktopSends.push({ id, origin: url.origin, text });
         return { ok: true };
-      },
+      }])),
       "/api/terminals/desktop/t1": () => new Promise(() => {}),
+      "/api/terminals/desktop/t2": () => new Promise(() => {}),
     },
   });
   globalThis.WebSocket = Socket;
@@ -77,6 +80,7 @@ beforeEach(() => {
   asked = [];
   answer = true;
   lines = [];
+  desktopSends = [];
   Socket.all = [];
   clipboard = { readText: async () => "" };
   globalThis.confirm = (question) => (asked.push(question), answer);
@@ -87,11 +91,12 @@ const pasteKey = (view) => view.container.querySelector('[aria-label="Paste"]');
 
 // A terminal Reach started on the computer, connected.
 async function reachTerminal({ connect = true } = {}) {
-  const view = await dom.render(
-    React.createElement(TerminalView, {
+  let setProps;
+  function Target() {
+    const [props, update] = React.useState({
       desktopTerminals: false,
       peer,
-      sessions: [{ id: "s1", name: "zsh", cwd: "/Users/me", status: "running" }],
+      sessions: ["s1", "s2"].map((id) => ({ id, name: "zsh", cwd: "/Users/me", status: "running" })),
       selected: "s1",
       onSelect() {},
       onNew() {},
@@ -100,16 +105,148 @@ async function reachTerminal({ connect = true } = {}) {
       source: "reach",
       setSource() {},
       onExit() {},
-    }),
-  );
+    });
+    setProps = update;
+    return React.createElement(TerminalView, props);
+  }
+  const view = await dom.render(React.createElement(Target));
   const socket = await dom.waitFor(() => Socket.all.at(-1));
   await dom.waitFor(() => socket.sent.some((m) => m.type === "auth"));
   if (connect) {
     socket.receive({ type: "snapshot", data: "$ ", status: "running", heartbeat: true });
     await settle();
   }
-  return { view, socket, term: Terminal.instances.at(-1) };
+  return { view, socket, term: Terminal.instances.at(-1),
+    change: async (next) => {
+      dom.update(() => setProps((previous) => ({ ...previous, ...next })));
+      await settle();
+      const current = Socket.all.at(-1);
+      await dom.waitFor(() => current.sent.some((m) => m.type === "auth"));
+      current.receive({ type: "snapshot", data: "$ ", status: "running", heartbeat: true });
+      await settle();
+      return current;
+    },
+  };
 }
+
+async function desktopTerminal() {
+  let setProps;
+  function Target() {
+    const [props, update] = React.useState({ peer, tab: { id: "t1", name: "zsh", provider: "terminal" }, onGone() {} });
+    setProps = update;
+    return React.createElement(MacTerminalView, props);
+  }
+  const view = await dom.render(React.createElement(Target));
+  return { view, change: async (next) => {
+    dom.update(() => setProps((previous) => ({ ...previous, ...next })));
+    await settle();
+  } };
+}
+
+const targets = [
+  { name: "terminal", reach: { selected: "s2" }, desktop: { tab: { id: "t2", name: "zsh", provider: "terminal" } } },
+  ...[
+    ["device identity", { id: "another-device" }],
+    ["computer identity", { computerId: "another-computer" }],
+    ["credential", { token: "replacement-credential" }],
+    ["address", { url: "https://other-reach.test" }],
+    ["grant session", { sessionId: "another-grant" }],
+  ].map(([name, change]) => ({ name, reach: { peer: { ...peer, ...change } }, desktop: { peer: { ...peer, ...change } } })),
+];
+
+// These delayed clipboard promises model a prompt remaining open during a
+// committed target change. No test reads or writes the OS/phone clipboard.
+for (const mode of ["reach", "desktop"]) {
+  const start = mode === "reach" ? reachTerminal : desktopTerminal;
+  for (const target of targets) {
+    for (const result of ["fulfilled", "rejected"]) {
+      test(`${mode}: a ${result} clipboard read is discarded after changing ${target.name}`, async (t) => {
+        let resolve, reject;
+        clipboard = { readText: () => new Promise((yes, no) => { resolve = yes; reject = no; }) };
+        const { view, change } = await start();
+        t.after(() => view.unmount());
+        tap(pasteKey(view));
+        await change(target[mode]);
+        if (result === "fulfilled") resolve("must stay with the original target\n");
+        else reject(new DOMException("Denied", "NotAllowedError"));
+        await settle();
+        assert.equal(Socket.all.map((s) => s.input).join(""), "", "no old read is sent on any shell socket");
+        assert.deepEqual(desktopSends, [], "no old read becomes a command in another desktop tab");
+        assert.deepEqual(asked, [], "a stale read cannot open a command confirmation");
+        assert.deepEqual(toasts, [], "a stale read cannot update the next target's message");
+        assert.equal(view.container.querySelector(".terminal-paste"), null, "a stale rejection cannot open fallback on the next target");
+      });
+    }
+  }
+  test(`${mode}: switching away and back invalidates the old read, while a fresh paste works once`, async (t) => {
+    let resolve;
+    clipboard = { readText: () => new Promise((yes) => { resolve = yes; }) };
+    const { view, change } = await start();
+    t.after(() => view.unmount());
+    tap(pasteKey(view));
+    await change(targets[0][mode]);
+    await change(mode === "reach" ? { selected: "s1" } : { tab: { id: "t1", name: "zsh", provider: "terminal" } });
+    resolve("old read must not return\n");
+    await settle();
+    assert.equal(Socket.all.map((s) => s.input).join(""), "");
+    assert.deepEqual(desktopSends, []);
+    assert.deepEqual(asked, []);
+    clipboard = { readText: async () => mode === "reach" ? "fresh paste" : "fresh paste\n" };
+    tap(pasteKey(view));
+    await dom.waitFor(() => mode === "reach" ? Socket.all.at(-1).input : desktopSends.length);
+    assert.equal(Socket.all.map((s) => s.input).join(""), mode === "reach" ? "fresh paste" : "");
+    assert.deepEqual(lines, mode === "desktop" ? ["fresh paste"] : []);
+  });
+  for (const result of ["fulfilled", "rejected", "empty"]) {
+    test(`${mode}: an unmounted target ignores a ${result} clipboard read`, async () => {
+      let resolve, reject;
+      clipboard = { readText: () => new Promise((yes, no) => { resolve = yes; reject = no; }) };
+      const { view } = await start();
+      tap(pasteKey(view));
+      await view.unmount();
+      if (result === "rejected") reject(new DOMException("Denied", "NotAllowedError"));
+      else resolve(result === "empty" ? "" : "must not prompt or send after unmount\n");
+      await settle();
+      assert.equal(Socket.all.map((s) => s.input).join(""), "");
+      assert.deepEqual(desktopSends, []);
+      assert.deepEqual(asked, []);
+      assert.deepEqual(toasts, []);
+      assert.equal(dom.document.querySelector(".terminal-paste"), null);
+    });
+  }
+  test(`${mode}: an open manual fallback is cleared with its old target`, async (t) => {
+    clipboard = undefined;
+    const { view, change } = await start();
+    t.after(() => view.unmount());
+    tap(pasteKey(view));
+    const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    dom.update(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "only for old target");
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await change(targets[0][mode]);
+    assert.equal(view.container.querySelector(".terminal-paste"), null);
+    tap(pasteKey(view));
+    const fresh = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    assert.equal(fresh.value, "", "old fallback text does not travel to a new target");
+    assert.equal(Socket.all.map((s) => s.input).join(""), "");
+    assert.deepEqual(desktopSends, []);
+  });
+}
+
+test("a pending clipboard paste cannot follow a switch to another Reach terminal", async (t) => {
+  let finish;
+  clipboard = { readText: () => new Promise((resolve) => { finish = resolve; }) };
+  const { view, socket: original, change } = await reachTerminal();
+  t.after(() => view.unmount());
+  tap(pasteKey(view));
+  const next = await change({ selected: "s2" });
+  finish("only for the original terminal");
+  await settle();
+  assert.equal(original.input, "", "the pending paste never reached the old terminal");
+  assert.equal(next.input, "", "the pending paste must not be redirected to the new terminal");
+  assert.deepEqual(toasts, []);
+});
 
 test("Paste sends the phone's clipboard to the shell, as the terminal pastes it", async () => {
   clipboard = { readText: async () => "echo pasted" };

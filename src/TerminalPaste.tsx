@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 // Paste from the phone into a terminal. A terminal's screen is drawn, not a
@@ -7,29 +7,47 @@ import { X } from "lucide-react";
 // over (no clipboard access here, or its Paste prompt dismissed or refused),
 // a small box above the keys takes the phone's own paste.
 export function usePhonePaste(
+  target: readonly unknown[],
   deliver: (text: string) => void,
   say: (message: string) => void,
 ) {
-  const [open, setOpen] = useState(false);
+  // A clipboard prompt can outlive this terminal. Each committed target
+  // gets a fresh lifetime, including a switch away and back to the same ID.
+  // Invalidate before the replacement terminal can receive input; merely
+  // comparing its current ID would accept an old A → B → A read.
+  const lifetime = useRef<object | null>(null);
+  const [open, setOpen] = useState<object | null>(null);
+  useLayoutEffect(() => {
+    const current = {};
+    lifetime.current = current;
+    setOpen(null);
+    return () => { lifetime.current = null; };
+  }, target);
   const paste = () => {
+    const current = lifetime.current;
+    if (!current) return;
+    const valid = () => lifetime.current === current;
     // Read inside the tap: phones refuse a clipboard read that comes later.
     let reading: Promise<string> | undefined;
     try {
       reading = navigator.clipboard?.readText?.();
     } catch {}
-    if (!reading) return setOpen(true);
+    if (!reading) return setOpen(current);
     reading.then(
-      (text) => (text ? deliver(text) : say("Nothing to paste on this phone")),
-      () => setOpen(true),
+      (text) => {
+        if (valid()) text ? deliver(text) : say("Nothing to paste on this phone");
+      },
+      () => { if (valid()) setOpen(current); },
     );
   };
-  const box = open ? (
+  const box = open && open === lifetime.current ? (
     <PasteBox
       onPaste={(text) => {
-        setOpen(false);
+        if (open !== lifetime.current) return;
+        setOpen(null);
         deliver(text);
       }}
-      onClose={() => setOpen(false)}
+      onClose={() => setOpen(null)}
     />
   ) : null;
   return { paste, box };
