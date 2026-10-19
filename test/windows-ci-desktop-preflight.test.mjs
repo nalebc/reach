@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
-import { assertDisposableWindows, desktopRequiredForSelection, lastDesktopCheckpoint } from "../.github/scripts/prepare-windows-desktop.mjs";
+import { assertDisposableWindows, desktopRequiredForSelection, desktopSourcePayload, lastDesktopCheckpoint } from "../.github/scripts/prepare-windows-desktop.mjs";
 
 const hosted = { SystemRoot: "C:\\Windows", GITHUB_ACTIONS: "true", CI: "true", RUNNER_ENVIRONMENT: "github-hosted",
   GITHUB_REPOSITORY: "nalebc/reach", REACH_CI_DESKTOP_PREFLIGHT: "1" };
@@ -42,6 +44,26 @@ test("CI desktop progress retains only the last exact allowlisted marker", () =>
   assert.equal(lastDesktopCheckpoint(`${marker}compiled\n${marker}secret-token`), "compiled");
 });
 
+test("the actual checked-in C# has one bounded payload across LF and CRLF filesystem checkouts", () => {
+  const source = fs.readFileSync(new URL("../.github/scripts/windows-desktop-preflight.cs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach-desktop-source-"));
+  try {
+    for (const [name, contents] of [["lf.cs", source], ["crlf.cs", source.replace(/\n/g, "\r\n")]]) {
+      const file = path.join(directory, name);
+      fs.writeFileSync(file, contents, { mode: 0o600 });
+      const payload = desktopSourcePayload(fs.readFileSync(file, "utf8"));
+      assert.equal(payload, source, `${name} keeps the same C# compiler input`);
+      assert.ok(payload.length <= 24000, `${name} retains the environment protocol cap`);
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("CI desktop source keeps the exact 24000-character payload limit", () => {
+  assert.equal(desktopSourcePayload("x".repeat(23999) + "\r\n").length, 24000);
+  for (const source of ["x".repeat(24001), "x".repeat(24000) + "\r\n"])
+    assert.throws(() => desktopSourcePayload(source), /bounded environment protocol/);
+});
+
 test("native Windows CI phases require desktop preflight success and preserve budgets and failure gates", () => {
   const workflow = (name) => parse(fs.readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"));
   for (const [name, job] of [["ci", "verify"], ["windows-validation", "windows"], ["real-windows-acceptance", "real-windows"]]) {
@@ -73,5 +95,5 @@ test("native Windows CI phases require desktop preflight success and preserve bu
   const wrapper = fs.readFileSync(new URL("../.github/scripts/prepare-windows-desktop.mjs", import.meta.url), "utf8");
   assert.match(wrapper, /timeout: 60000/);
   assert.doesNotMatch(wrapper, /ExecutionPolicy|Bypass/);
-  assert.ok(fs.readFileSync(new URL("../.github/scripts/windows-desktop-preflight.cs", import.meta.url), "utf8").length < 24000);
+  assert.ok(desktopSourcePayload(fs.readFileSync(new URL("../.github/scripts/windows-desktop-preflight.cs", import.meta.url), "utf8")).length <= 24000);
 });

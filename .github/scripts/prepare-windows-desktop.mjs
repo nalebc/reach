@@ -32,6 +32,14 @@ export function lastDesktopCheckpoint(stderr) {
   return last;
 }
 
+export function desktopSourcePayload(source) {
+  // Compile the same canonical text when Windows checks out the source as CRLF.
+  // Bound the actual environment payload after normalizing its line endings.
+  const payload = source.replace(/\r\n/g, "\n");
+  if (payload.length > 24000) throw Error("Desktop preparation source exceeds its bounded environment protocol.");
+  return payload;
+}
+
 export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   assertDisposableWindows(); // Before filesystem writes, compilation or any OS mutation.
   const reportPath = fileURLToPath(new URL("../../reports/windows-desktop-preflight.json", import.meta.url));
@@ -45,8 +53,7 @@ export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   };
   if (ifNeeded && process.env.REACH_CI_DESKTOP_REQUIRED !== "1" && !desktopRequiredForSelection(process.env.TESTS))
     return retain({ schema: 1, required: false, ready: null, stage: "not-required" });
-  const source = fs.readFileSync(new URL("./windows-desktop-preflight.cs", import.meta.url), "utf8");
-  if (source.length > 24000) throw Error("Desktop preparation source exceeds its bounded environment protocol.");
+  const source = desktopSourcePayload(fs.readFileSync(new URL("./windows-desktop-preflight.cs", import.meta.url), "utf8"));
   const executable = path.win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   // Fixed command. Checked-in C# is passed as data, never interpolated with
   // runner paths, titles or process command lines. No execution-policy change.
