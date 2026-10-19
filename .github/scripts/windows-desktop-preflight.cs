@@ -18,6 +18,7 @@ using Microsoft.Win32;
 public static class ReachCiDesktop {
   delegate bool EnumProc(IntPtr window, IntPtr data);
   [StructLayout(LayoutKind.Sequential)] struct Point { public int X, Y; public Point(int x, int y) { X=x; Y=y; } }
+  [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left,Top,Right,Bottom; }
   [StructLayout(LayoutKind.Sequential)] struct MouseInput { public int X,Y; public uint Data,Flags,Time; public UIntPtr Extra; }
   [StructLayout(LayoutKind.Sequential)] struct KeyInput { public ushort Key,Scan; public uint Flags,Time; public UIntPtr Extra; }
   [StructLayout(LayoutKind.Explicit)] struct InputData { [FieldOffset(0)] public MouseInput Mouse; [FieldOffset(0)] public KeyInput Key; }
@@ -25,6 +26,9 @@ public static class ReachCiDesktop {
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
   [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
@@ -209,7 +213,41 @@ public static class ReachCiDesktop {
       return Map("before",before,"after",1);
     }
   }
-  static object Probe() {
+  static int[] Box(Rectangle value) { return new []{value.X,value.Y,value.Width,value.Height}; }
+  static object NativeBox(IntPtr window) {
+    Rect r;
+    return window!=IntPtr.Zero && GetWindowRect(window,out r) ? new []{r.Left,r.Top,r.Right-r.Left,r.Bottom-r.Top} : null;
+  }
+  static object ProbeWindow(IntPtr window, IntPtr form, IntPtr field) {
+    if(window==IntPtr.Zero) return Map("role","none","pid",0);
+    IntPtr root=GetAncestor(window,2); uint pid; GetWindowThreadProcessId(root,out pid);
+    IntPtr process=OpenProcess(0x1000,false,pid);
+    try { return Map("role",window==field ? "probe-field" : root==form ? "probe-form" : "other","pid",pid,
+      "image",process==IntPtr.Zero ? "unknown" : BaseName(Image(process)),"currentUserSession",process!=IntPtr.Zero && Mine(process),
+      "classCategory",ClassCategory(root),"titleCategory",TitleCategory(root)); }
+    finally { if(process!=IntPtr.Zero) CloseHandle(process); }
+  }
+  static object ProbeState(Form form, TextBox field, System.Drawing.Point? target) {
+    // Diagnostic failure must not replace the actual readiness result. Only
+    // numeric geometry and fixed window categories leave this process.
+    try {
+      IntPtr own=form.IsHandleCreated ? form.Handle : IntPtr.Zero;
+      IntPtr input=field.IsHandleCreated ? field.Handle : IntPtr.Zero;
+      System.Drawing.Point? current=input==IntPtr.Zero ? (System.Drawing.Point?)null : field.PointToScreen(new System.Drawing.Point(20,12));
+      return Map("formVisible",form.Visible,"nativeVisible",own!=IntPtr.Zero && IsWindowVisible(own),
+        "minimized",own!=IntPtr.Zero && IsIconic(own),"fieldVisible",field.Visible,"fieldFocused",field.Focused,
+        "formBounds",Box(form.Bounds),"formClientSize",new []{form.ClientSize.Width,form.ClientSize.Height},
+        "formNativeBounds",NativeBox(own),"fieldNativeBounds",NativeBox(input),"fieldClientSize",new []{field.ClientSize.Width,field.ClientSize.Height},
+        "targetClient",new []{20,12},"targetScreen",target.HasValue ? new []{target.Value.X,target.Value.Y} : null,
+        "currentTargetScreen",current.HasValue ? new []{current.Value.X,current.Value.Y} : null,
+        "windowDpi",own==IntPtr.Zero ? 0u : GetDpiForWindow(own),"primaryScreen",Screen.PrimaryScreen==null ? null : Box(Screen.PrimaryScreen.Bounds),
+        "virtualScreen",Box(SystemInformation.VirtualScreen),"foreground",ProbeWindow(GetForegroundWindow(),own,input),
+        "hit",target.HasValue ? ProbeWindow(WindowFromPoint(new Point(target.Value.X,target.Value.Y)),own,input) : null);
+    } catch { return Map("unavailable",true); }
+  }
+  static object Probe(Dictionary<string,object> report) {
+    var evidence=Map("hitTest",false,"foregroundMatches",false,"clicks",0,"typed",false,"screenPixel",false);
+    report["probe"]=evidence; // Retain partial evidence even when Probe throws.
     IntPtr desktop=OpenInputDesktop(0,false,1);
     Require(desktop!=IntPtr.Zero,"input-desktop");
     try {
@@ -223,16 +261,33 @@ public static class ReachCiDesktop {
       form.ShowInTaskbar=false; form.TopMost=true; form.BackColor=Color.FromArgb(240,130,30);
       field.Location=new System.Drawing.Point(20,20); field.Size=new Size(320,24); form.Controls.Add(field);
       int clicks=0; field.MouseDown+=delegate { clicks++; };
+      System.Drawing.Point? target=null;
       try {
+        IntPtr own=form.Handle;
+        evidence["beforeShow"]=ProbeState(form,field,target);
         form.Show(); form.Activate();
         System.Drawing.Point at=field.PointToScreen(new System.Drawing.Point(20,12));
-        var until=Stopwatch.StartNew(); bool hit=false;
+        target=at; evidence["afterShow"]=ProbeState(form,field,target);
+        // A hidden launcher can supply STARTUPINFO's show state on the first
+        // ShowWindow call. Restore only this fixture's HWND, then request its
+        // foreground normally; no thread attachment or global input bypass.
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow
+        evidence["showNormalPreviouslyVisible"]=ShowWindow(own,1); // SW_SHOWNORMAL
+        evidence["activationAccepted"]=SetForegroundWindow(own);
+        evidence["afterActivation"]=ProbeState(form,field,target);
+        var until=Stopwatch.StartNew(); bool hit=false,foreground=false;
+        Application.DoEvents();
+        at=field.PointToScreen(new System.Drawing.Point(20,12)); target=at;
+        evidence["afterLayout"]=ProbeState(form,field,target);
         while(until.ElapsedMilliseconds<5000) {
           Application.DoEvents();
-          hit=WindowFromPoint(new Point(at.X,at.Y))==field.Handle && GetAncestor(GetForegroundWindow(),2)==form.Handle;
-          if(hit) break; Thread.Sleep(50);
+          hit=WindowFromPoint(new Point(at.X,at.Y))==field.Handle;
+          foreground=GetAncestor(GetForegroundWindow(),2)==form.Handle;
+          if(hit && foreground) break; Thread.Sleep(50);
         }
+        evidence["hitTest"]=hit; evidence["foregroundMatches"]=foreground; evidence["hitWaitMs"]=until.ElapsedMilliseconds;
         Require(hit,"probe-hit-test");
+        Require(foreground,"probe-foreground");
         Cursor.Position=at;
         Require(WindowFromPoint(new Point(at.X,at.Y))==field.Handle,"probe-hit-changed");
         var down=new Input { Type=0,Data=new InputData { Mouse=new MouseInput { Flags=2 } } };
@@ -247,14 +302,20 @@ public static class ReachCiDesktop {
           Application.DoEvents();
         }
         Await(delegate { return field.Text=="reachci"; },2000,"probe-key-result");
+        evidence["typed"]=true;
         System.Drawing.Point pixel=form.PointToScreen(new System.Drawing.Point(180,110));
         using(var frame=new Bitmap(1,1)) using(var g=Graphics.FromImage(frame)) {
           g.CopyFromScreen(pixel,System.Drawing.Point.Empty,new Size(1,1));
           Color color=frame.GetPixel(0,0);
+          evidence["pixel"]=new int[]{color.R,color.G,color.B};
           Require(color.R>200 && color.G>80 && color.G<180 && color.B<80,"probe-screen-pixel");
         }
-        return Map("hitTest",true,"clicks",clicks,"typed",true,"screenPixel",true);
-      } finally { form.Close(); Cursor.Position=original; }
+        evidence["screenPixel"]=true;
+        return evidence;
+      } finally {
+        evidence["clicks"]=clicks; evidence["beforeDispose"]=ProbeState(form,field,target);
+        form.Close(); Cursor.Position=original;
+      }
     }
   }
   public static string Run() {
@@ -277,7 +338,7 @@ public static class ReachCiDesktop {
         clear=ClearWindows()==0 ? clear+1 : 0; Thread.Sleep(200);
       }
       Require(clear==3,"setup-remains");
-      Stage="desktop-probe"; report["probe"]=Probe();
+      Stage="desktop-probe"; report["probe"]=Probe(report);
       Stage="verification"; var after=PrivacyChoices(); report["privacyChoicesAfter"]=after;
       foreach(var pair in choices) Require(Object.Equals(pair.Value,after[pair.Key]),"privacy-choice-changed");
       report["privacyChoicesPreserved"]=true;
