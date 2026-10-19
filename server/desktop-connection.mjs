@@ -3,6 +3,19 @@ import { streamOptions, inputAction } from "./desktop-protocol.mjs";
 import { fail } from "./core.mjs";
 import { actsAsOwner } from "./screen.mjs";
 import { refuseGuest } from "./windows-guest-screen.mjs";
+import { identityHold } from "./identity-hold.mjs";
+// One control connection per phone. A new one from it takes over from the
+// one before: the phone made it to replace that one (a stalled old one,
+// busy with a slow action and not yet 3 s silent, turned every reconnect
+// away with 409 until the phone's tries ran out). The old one ends as
+// superseded, retryable, so its lease stays; its helper stops, which lets go
+// of anything it held, and the new one's helper starts only once it exited.
+export function takeOver(connections, id, socket) {
+  const current = connections.get(id);
+  if (current && current !== socket)
+    current.endControl?.("Desktop control moved to this device's newer connection.", true, true);
+  connections.set(id, socket);
+}
 export function desktopConnection(
   ws,
   {
@@ -34,6 +47,9 @@ export function desktopConnection(
     platform = process.platform,
     // A Windows PC's guests' pictures (server/windows-guest-screen.mjs).
     guestScreen = null,
+    // How long Tailscale's word may come late (auth.interruption) before
+    // the connection ends, retryable: held meanwhile, nothing runs.
+    holdFor = 5000,
   },
 ) {
   let token,
@@ -68,6 +84,72 @@ export function desktopConnection(
     scanTimer,
     scannedAt = 0,
     sent = "";
+  // The scanner answers one look at a time: field scans, and which app is
+  // in front (the phone asks every 2.5 s; a menu rebuild there walks up to
+  // 300 items, which on the input helper held up the clicks and keys behind
+  // it until they were dropped late or the helper timed out). A phone's
+  // read goes ahead of a scan waiting its turn.
+  const looks = [];
+  let looking = false,
+    // The phone's reads with the scanner now, within its input window.
+    reading = 0;
+  const look = (action, first = false) =>
+    new Promise((resolve, reject) => {
+      const item = { action, resolve, reject };
+      const at = first ? looks.findIndex((queued) => queued.action.type === "fields") : -1;
+      looks.splice(at < 0 ? looks.length : at, 0, item);
+      void nextLook();
+    });
+  const nextLook = async () => {
+    if (looking) return;
+    looking = true;
+    try {
+      while (looks.length) {
+        const { action, resolve, reject } = looks.shift();
+        if (!fields || closed) reject(fail(403, "Desktop control ended."));
+        else await fields.send(action).then(resolve, reject);
+      }
+    } finally {
+      looking = false;
+    }
+  };
+  // The scanner up and running (not stopped): it reads which app is in front.
+  const scannerUp = () => !!fields && fields.stopped !== true;
+  const answerLook = async (id, action) => {
+    const current = epoch;
+    reading++;
+    let result;
+    try {
+      try {
+        await verified(true, () => current === epoch);
+      } catch (e) {
+        if (current !== epoch) return;
+        return close(e.message, e?.retryable === true);
+      }
+      if (closed || parked || current !== epoch) return;
+      try {
+        result = await look(action, true);
+      } catch (e) {
+        // A read that fails costs only that read; control goes on.
+        if (!closed && current === epoch && ws.readyState === 1)
+          ws.send(JSON.stringify({ type: "ack", id, ok: false, error: e.message }));
+        return;
+      }
+    } finally {
+      reading--;
+    }
+    if (closed || parked || current !== epoch || ws.readyState !== 1) return;
+    let client;
+    try {
+      client = await verified(true, () => current === epoch);
+    } catch (e) {
+      if (current !== epoch) return;
+      return close(e.message, e?.retryable === true);
+    }
+    if (closed || parked || current !== epoch || ws.readyState !== 1) return;
+    control.acquire(client, true);
+    ws.send(JSON.stringify({ type: "ack", id, ...result }));
+  };
   const scan = async (cheap = false) => {
     if (!fields || closed || parked) return;
     if (scanning) {
@@ -77,7 +159,7 @@ export function desktopConnection(
     scanning = true;
     const after = doneId;
     try {
-      const result = await fields.send({ type: "fields", cheap });
+      const result = await look({ type: "fields", cheap });
       scannedAt = Date.now();
       if (closed || ws.readyState !== 1 || result.same || !Array.isArray(result.fields)) return;
       authorize();
@@ -108,6 +190,19 @@ export function desktopConnection(
   // Actions that let go of something held. (A key press lets go of its own
   // modifiers in the same helper call, so there's no separate key-up.)
   const releases = new Set(["up", "release"]);
+  // Typing: each piece follows the one before it (a type-edit's deletes
+  // count what came before). One dropped late, the rest of that typing
+  // drops too, until the phone does something else (a tap, a scroll, a
+  // heartbeat once it has every answer): "password" never arrives as
+  // "sword", and the computer's text never drifts from the phone's.
+  const typing = new Set(["text", "type-edit", "key"]);
+  const typingLate =
+    "Typing was too slow to reach the computer. Nothing after it was typed — type it again.";
+  let typingLost = false,
+    // A button down dropped late: its drag's moves and its up go with it
+    // (nothing went down to let go of). Ups of buttons that went down
+    // always run.
+    downLost = null;
   const stopInput = (input) => {
     if (!input) return;
     // Retirement is independent of the grant: even a revoked/expired phone
@@ -118,19 +213,26 @@ export function desktopConnection(
   // A retryable end (the connection, not the grant, is the trouble) closes
   // with 1012 and keeps the lease a moment; the phone reconnects quietly
   // (src/useDesktopInput.ts). Anything else is 4001: control is over.
-  const close = (message = "Desktop control ended.", retryable = false) => {
+  const close = (message = "Desktop control ended.", retryable = false, superseded = false) => {
     if (closed) return;
     closed = true;
     ended = retryable ? "retry" : "end";
     clearTimeout(parkTimer);
     clearTimeout(scanTimer);
     fields?.stop();
-    for (const item of queue) item.reject?.(fail(403, message));
-    queue.length = 0;
+    for (const item of [...queue, ...looks]) item.reject?.(fail(403, message));
+    queue.length = looks.length = 0;
     stopInput(helper);
     if (ws.readyState === 1) {
       ws.send(
-        JSON.stringify({ type: "error", error: message, ...(retryable && { retryable: true }) }),
+        JSON.stringify({
+          type: "error",
+          error: message,
+          ...(retryable && { retryable: true }),
+          // Another connection from this device has control now: this one
+          // ends quietly, neither reconnecting nor letting control go.
+          ...(superseded && { superseded: true }),
+        }),
       );
       if (retryable) ws.close(1012, "Desktop control reconnecting");
       else ws.close(4001, "Desktop control ended");
@@ -144,6 +246,8 @@ export function desktopConnection(
     if (closed || !helper || starting) return close();
     parked = ws.parked = true;
     epoch++;
+    typingLost = false;
+    downLost = null;
     clearTimeout(scanTimer);
     for (const item of queue) item.reject?.(fail(403, "Desktop control ended."));
     queue.length = 0;
@@ -169,10 +273,12 @@ export function desktopConnection(
       if (closed || ws.readyState !== 1) return;
       initial = await helper.send({ type: "heartbeat" });
       if (closed || ws.readyState !== 1) return;
-      authorize();
+      await verified();
     }
     lastId = 0;
     doneId = 0;
+    typingLost = false;
+    downLost = null;
     lastSeen = Date.now();
     ws.send(
       JSON.stringify({
@@ -189,16 +295,20 @@ export function desktopConnection(
       }),
     );
   };
+  const hold = identityHold({ within: holdFor, recheck: () => auth.recheck?.() });
   // Parked, the connection still answers to its device and to pause; only
   // the lease is not asked for.
   const authorize = (lease = true) => {
     const client = auth.verify(token);
     if (!client) {
       // Not refused, just not confirmed yet (Tailscale's word on the phone
-      // or on this Mac is late): the phone reconnects and is checked afresh.
+      // or on this Mac is late): held a moment (held: nothing runs, the
+      // phone's input waits), then the phone reconnects and is checked
+      // afresh.
       const interruption = auth.interruption?.(token);
-      if (interruption) throw Object.assign(fail(503, interruption), { retryable: true });
-    }
+      if (interruption)
+        throw Object.assign(fail(503, interruption), { retryable: true, held: hold.hold(interruption) });
+    } else hold.clear();
     if (
       !client ||
       !config.screen ||
@@ -220,11 +330,23 @@ export function desktopConnection(
     else if (control.paused) throw fail(423, "Desktop control ended.");
     return client;
   };
-  const readyForInput = async () => {
+  // Allowed now, or once a held check passes (never on a stale identity);
+  // over with the hold, or once it's no longer wanted (control stopped).
+  const verified = async (lease = true, wanted = () => true) => {
+    for (;;) {
+      try {
+        return authorize(lease);
+      } catch (e) {
+        if (!e?.held || closed || !wanted()) throw e;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+  const readyForInput = async (wanted) => {
     await control.waitForInputStop?.();
     if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
     // A grant, pause or identity can change while the old native helper exits.
-    return authorize();
+    return verified(true, wanted);
   };
   const drain = async () => {
     if (busy || closed) return;
@@ -235,7 +357,13 @@ export function desktopConnection(
         const current = epoch;
         let result;
         try {
-          const client = await readyForInput();
+          const client = await readyForInput(() => current === epoch);
+          // Control stopped while it waited (a hold, an old helper's exit):
+          // it doesn't run for a control that has ended.
+          if (current !== epoch) {
+            item.reject?.(fail(403, "Desktop control ended."));
+            continue;
+          }
           // A touch-down's "is there a field here?" never holds up the tap
           // queued behind it: the phone falls back to its field map.
           if (
@@ -247,22 +375,55 @@ export function desktopConnection(
               ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
             continue;
           }
-          // Letting go (a button up, release) always runs, however late:
-          // dropped, it would leave the Mac's mouse button held down.
-          if (Date.now() - item.at > 1000 && !releases.has(item.action.type)) {
-            // A move or scroll that waited too long is let go (the next one
-            // stands for it); a click or key never runs late.
-            if (["move", "scroll"].includes(item.action.type)) {
-              item.resolve?.({ ok: true, skipped: true });
-              if (item.id !== undefined && !closed && ws.readyState === 1)
-                ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
-              continue;
-            }
-            // Only that action is dropped, and the phone is told; control stays.
-            const late = fail(408, "That action waited too long and was dropped. Try again.");
+          const { type } = item.action;
+          const skip = () => {
+            item.resolve?.({ ok: true, skipped: true });
+            if (item.id !== undefined && !closed && ws.readyState === 1)
+              ws.send(JSON.stringify({ type: "ack", id: item.id, ok: true, skipped: true }));
+          };
+          const drop = (message) => {
+            const late = fail(408, message);
             item.reject?.(late);
             if (item.id !== undefined && !closed && ws.readyState === 1)
               ws.send(JSON.stringify({ type: "ack", id: item.id, ok: false, error: late.message }));
+          };
+          // Something else than typing (the app-in-front poll aside, which
+          // comes on its own timer): typing after it is the phone's anew.
+          if (!typing.has(type) && type !== "context") typingLost = false;
+          if (typingLost && typing.has(type)) {
+            drop(typingLate);
+            continue;
+          }
+          if (downLost) {
+            if (type === "move") {
+              skip();
+              continue;
+            }
+            if (type === "up" && (item.action.button ?? "left") === downLost) {
+              downLost = null;
+              skip();
+              continue;
+            }
+            downLost = null;
+          }
+          // Letting go (a button up, release) always runs, however late:
+          // dropped, it would leave the Mac's mouse button held down.
+          if (Date.now() - item.at > 1000 && !releases.has(type)) {
+            // A move or scroll that waited too long is let go (the next one
+            // stands for it); a click or key never runs late.
+            if (["move", "scroll"].includes(type)) {
+              skip();
+              continue;
+            }
+            // Only that action is dropped (with what depends on it), and
+            // the phone is told; control stays.
+            if (typing.has(type)) {
+              typingLost = true;
+              drop(typingLate);
+              continue;
+            }
+            if (type === "down") downLost = item.action.button ?? "left";
+            drop("That action waited too long and was dropped. Try again.");
             continue;
           }
           // A password manager's copied secret stays on the computer for
@@ -276,7 +437,9 @@ export function desktopConnection(
           );
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
           if (current !== epoch) continue;
-          authorize();
+          // Done: acknowledged once it's confirmed (held, the answer waits).
+          await verified(true, () => current === epoch);
+          if (current !== epoch) continue;
         } catch (e) {
           if (current !== epoch && !closed) continue;
           item.reject?.(e);
@@ -319,7 +482,8 @@ export function desktopConnection(
         else if (fields && !scanning && Date.now() - scannedAt > 1000)
           void scan(true);
       } catch (e) {
-        close(e.message, e?.retryable === true);
+        // Held: what's queued waits; the hold's end closes it.
+        if (!e?.held) close(e.message, e?.retryable === true);
       }
     }
   }, 500);
@@ -338,16 +502,13 @@ export function desktopConnection(
           throw fail(401, "Authenticate first.");
         starting = true;
         token = message.token;
-        const client = authorize();
-        register(client.id, ws);
-        ws.clientId = client.id;
-        // Back within the grace: the lease is this connection's again.
-        control.keep?.(client.id);
+        // Signed in: a hold (if Tailscale's word is late) bounds the wait now.
         clearTimeout(deadline);
+        const client = await verified();
+        if (closed) return;
         const options = streamOptions({ display: message.display });
         // Which display this control is on: an agent waits only for its own.
         ws.reachDisplay = options.display;
-        authorize();
         if (create === DesktopInput.create) {
           const displays = await desktopDisplays(config);
           if (
@@ -356,6 +517,14 @@ export function desktopConnection(
           )
             throw fail(400, "Display unavailable.");
         }
+        await verified();
+        if (closed) return;
+        // A connection that can go on takes over from this phone's last one
+        // (one refused here leaves that one, and its lease, alone).
+        register(client.id, ws);
+        ws.clientId = client.id;
+        // Back within the grace: the lease is this connection's again.
+        control.keep?.(client.id);
         await readyForInput();
         helper = await create(config, options.display);
         if (closed || ws.readyState !== 1) {
@@ -367,7 +536,8 @@ export function desktopConnection(
         // Probe authorization without generating any OS input.
         const initial = await helper.send({ type: "heartbeat" });
         if (closed || ws.readyState !== 1) { stopInput(helper); return; }
-        authorize();
+        await verified();
+        if (closed) return;
         starting = false;
         await ready(initial);
         if (scanner)
@@ -385,7 +555,8 @@ export function desktopConnection(
       // first): resumed at once, no new helper.
       if (message.type === "resume") {
         if (!helper || starting) throw fail(409, "Wait for desktop input to be ready.");
-        authorize();
+        await verified();
+        if (closed) return;
         clearTimeout(parkTimer);
         parked = ws.parked = false;
         starting = true;
@@ -403,7 +574,12 @@ export function desktopConnection(
           ws.send(JSON.stringify({ type: "ack", id: message.id, ok: false, error: "Desktop control is off." }));
         return;
       }
-      authorize();
+      try {
+        authorize();
+      } catch (e) {
+        // Held: taken in turn, it runs only once confirmed.
+        if (!e?.held) throw e;
+      }
       lastSeen = Date.now();
       if (!helper || starting)
         throw fail(409, "Wait for desktop input to be ready.");
@@ -416,7 +592,7 @@ export function desktopConnection(
         message.type !== "input" ||
         !Number.isSafeInteger(message.id) ||
         message.id <= lastId ||
-        queue.length >= 8
+        queue.length + reading >= 8
       )
         throw fail(400, "Invalid desktop input or full input window.");
       lastId = message.id;
@@ -426,6 +602,16 @@ export function desktopConnection(
       } catch (e) {
         // A bad action (text too long, an unknown key) fails alone; control stays.
         ws.send(JSON.stringify({ type: "ack", id: message.id, ok: false, error: e.message }));
+        return;
+      }
+      // Which app is in front: read by the scanner, beside the input queue,
+      // never ahead of (or behind) a click. Without one, the input helper
+      // reads it in turn. A menu press acts, so it stays in the queue; it
+      // walks the menu bar itself, no cache needed. A probe stays there too:
+      // the helper that types remembers the field it found under the finger
+      // (desktop-input.swift textTarget), which the focus after a tap uses.
+      if (action.type === "context" && scannerUp()) {
+        void answerLook(message.id, action);
         return;
       }
       // Only replace consecutive queued moves. Button and key order is preserved.
@@ -448,9 +634,9 @@ export function desktopConnection(
   });
   ws.on("close", (code) => {
     closed = true;
-    for (const item of queue)
+    for (const item of [...queue, ...looks])
       item.reject?.(fail(403, "Desktop control ended."));
-    queue.length = 0;
+    queue.length = looks.length = 0;
     clearTimeout(deadline);
     clearTimeout(parkTimer);
     clearTimeout(scanTimer);
@@ -459,10 +645,12 @@ export function desktopConnection(
     fields?.stop();
     if (ws.clientId && unregister(ws.clientId, ws) !== false) {
       // Over for good (revoked, expired, or the phone let go: a clean close,
-      // 1000 or one without a code): control ends now. Dropped (the link,
-      // 1006; a retryable end here; the phone closing to reconnect, 4002):
-      // the lease waits for it, up to the grace.
-      if (ended === "end" || code === 1000 || code === 1005 || !control.revokeLater)
+      // 1000): control ends now. Dropped (the link, 1006; a retryable end
+      // here; the phone closing to reconnect, 4002; one without a code,
+      // 1005, as a phone tearing a connection down to make the next sends):
+      // the lease waits for it, up to the grace. Stop on the phone ends
+      // control at once on its own (/api/screen/control, enabled: false).
+      if (ended === "end" || code === 1000 || !control.revokeLater)
         control.revoke(ws.clientId);
       else control.revokeLater(ws.clientId, grace);
     }

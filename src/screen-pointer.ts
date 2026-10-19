@@ -53,18 +53,21 @@ export function screenPoint(
   box: ScreenRect,
   naturalWidth: number,
   naturalHeight: number,
-  clampOutside = false,
+  // true: any point, clamped to the picture's edge; a number: only that many
+  // CSS pixels beyond it (a finger aiming at the menu bar or the Dock).
+  clampOutside: boolean | number = false,
 ) {
   if (![clientX, clientY].every(Number.isFinite)) return null;
   const image = screenImageRect(box, naturalWidth, naturalHeight);
   if (!image) return null;
   const { left, top, width, height } = image;
-  if (!clampOutside && (
-    clientX < left ||
-    clientX > left + width ||
-    clientY < top ||
-    clientY > top + height
-  ))
+  const margin = clampOutside === true ? Infinity : clampOutside || 0;
+  if (
+    clientX < left - margin ||
+    clientX > left + width + margin ||
+    clientY < top - margin ||
+    clientY > top + height + margin
+  )
     return null;
   return {
     x: Math.max(0, Math.min(1, (clientX - left) / width)),

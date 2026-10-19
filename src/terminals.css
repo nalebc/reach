@@ -101,12 +101,15 @@
 .terminal-screen {
   flex: 1;
   min-height: 0;
-  padding: 8px 4px 0 8px;
   overflow: hidden;
   overscroll-behavior: contain;
 }
+/* The margin goes on xterm's own element, never on its box: the fit addon
+   measures the box with its padding (everything is border-box here) and
+   took one row too many, the last one under the keys. */
 .terminal-screen .xterm {
   height: 100%;
+  padding: 8px 4px 2px 8px;
 }
 /* The key row itself is KeyRow (key-row.css), shared with Screen and apps. */
 .terminal-menu-scrim {

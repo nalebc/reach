@@ -14,7 +14,9 @@ export function useDesktopInput(
   peer: Peer,
   enabled: boolean,
   display: string,
-  onEnd: (message: string) => void,
+  // elsewhere: another window of this phone took control over (the
+  // computer kept it for that one); this one only stops.
+  onEnd: (message: string, elsewhere?: boolean) => void,
   // While the screen is open, a stopped control keeps its connection a
   // minute, parked on the Mac: Control again resumes on it at once.
   open = enabled,
@@ -61,6 +63,7 @@ export function useDesktopInput(
   // last input sent that could have moved them.
   const fieldMap = useRef<{ after: number; fields: Field[] } | null>(null);
   const lastChange = useRef(0);
+  const hostCursor = useRef<{ x: number; y: number; at: number } | null>(null);
   useEffect(() => {
     setReady(false);
     setTyping(false);
@@ -97,7 +100,7 @@ export function useDesktopInput(
         tries.current = 0;
         setReconnecting(false);
         setHeld(false);
-        socket.close();
+        socket.close(1000);
         return;
       }
       if (retryable && tries.current < 6) {
@@ -114,7 +117,7 @@ export function useDesktopInput(
       retry.current.reset();
       tries.current = 0;
       setReconnecting(false);
-      socket.close();
+      socket.close(1000);
       end.current(
         retryable
           ? `${message.replace(/\s*Reconnecting…$/u, "")} Try Control again.`
@@ -155,7 +158,7 @@ export function useDesktopInput(
     );
     socket.onopen = () => {
       if (stopped || failed) {
-        socket.close();
+        socket.close(1000);
         return;
       }
       clearTimeout(deadline);
@@ -170,6 +173,21 @@ export function useDesktopInput(
       try {
         const m = JSON.parse(event.data);
         if (m.type === "error") {
+          if (m.superseded === true) {
+            // Another window took this control over: let it be, quietly
+            // (no reconnect taking it back, nothing ending its control).
+            failed = true;
+            clearTimeout(deadline);
+            setReady(false);
+            setReconnecting(false);
+            queue?.close();
+            retry.current.reset();
+            tries.current = 0;
+            link.current = null;
+            socket.close(4002, "Superseded");
+            end.current("Control moved to your other window.", true);
+            return;
+          }
           // The Mac says whether this is the connection (back in a moment)
           // or the grant (over): older companions only ever meant the grant.
           stop(m.error, m.retryable === true);
@@ -243,7 +261,13 @@ export function useDesktopInput(
       );
     const heartbeat = setInterval(() => {
       if (queue?.idle)
-        void queue.enqueue({ type: "heartbeat" }).catch(() => {});
+        void queue.enqueue({ type: "heartbeat" }).then((result) => {
+          // Where the pointer really is (the computer's own mouse or an
+          // agent may have moved it): trackpad mode starts from there.
+          const c = (result as { cursor?: { x?: unknown; y?: unknown } } | null)?.cursor;
+          if (typeof c?.x === "number" && typeof c.y === "number" && c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1)
+            hostCursor.current = { x: c.x, y: c.y, at: performance.now() };
+        }, () => {});
       queue?.checkTimeout();
     }, 500);
     // The network is back, or the page is: try now, not after the wait.
@@ -261,7 +285,10 @@ export function useDesktopInput(
       clearTimeout(deadline);
       clearInterval(heartbeat);
       queue?.close();
-      socket.close();
+      // Replaced (another display, a new route, a retry) while control is
+      // on: 4002, the Mac keeps control for the next one. Off: let go.
+      if (on.current) socket.close(4002, "Reconnecting");
+      else socket.close(1000, "Control off");
       dispatcher.current = () =>
         Promise.reject(Error("Enable screen control first."));
     };
@@ -289,6 +316,8 @@ export function useDesktopInput(
       fieldMap.current = null;
     },
     initialCursor,
+    // The pointer where the computer last said it was, and when.
+    hostCursor: () => hostCursor.current,
     latency,
     send: (action: DesktopAction) => dispatcher.current(action),
   };

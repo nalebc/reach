@@ -47,3 +47,12 @@ test("the phone never rewrites text it already sent", async () => {
   assert.match(web, /spellCheck: false/);
   assert.match(web, /writingsuggestions: "false"/);
 });
+
+test("native Return clears both secure and ordinary contexts before advertising reset (source contract, no UIKit execution)", async () => {
+  const swift = await read("../ios/App/App/RemoteKeyboard.swift");
+  const normal = swift.slice(swift.indexOf('if text == "\\n"'), swift.indexOf('public func textViewDidChange'));
+  const secure = swift.slice(swift.indexOf('public func textFieldShouldReturn'), swift.indexOf('public func textFieldDidEndEditing'));
+  assert.match(normal, /textView\.text = ""[\s\S]*emit\(key: "enter", contextReset: true\)/);
+  assert.match(secure, /textField\.text = ""[\s\S]*emit\(key: "enter", contextReset: true\)/);
+  assert.match(swift, /notifyListeners\("key", data: \["key": key, "contextReset": contextReset\]\)/);
+});

@@ -168,7 +168,7 @@ test("a failed decoder is replaced on the same connection, from the next keyfram
   first.fails();
   const told = socket.sent.find((m) => m.type === "diagnostic");
   assert.match(told.text, /decoder restarted \(1 this minute\): Video decoder: Decoder failure/);
-  assert.match(told.text, /screen 1320×2868 avc1\.64002a · after 1 frames · on a delta/, "the log says what failed");
+  assert.match(told.text, /screen 1320×2868 avc1\.64002a · after 1 frames · 2 chunks since its keyframe, the last a delta · \d+ queued then/, "the log says what failed");
   socket.frame(3, delta);
   assert.equal(FakeDecoder.all.length, 2, "a new decoder");
   assert.deepEqual(socket.sent.at(-1), { type: "ack", id: 3, keyframe: true }, "asks for a keyframe");

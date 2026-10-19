@@ -1,4 +1,15 @@
 import type { ITerminalOptions, Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
+
+// The terminal fitted to its box, the newest line still in sight when the
+// reader was at it: a box that shrinks (the keyboard closing, a bar
+// growing) must never leave the prompt under the keys.
+export function fitKeepingLatest(fit: FitAddon, term: Terminal) {
+  const buffer = term.buffer.active;
+  const latest = buffer.viewportY >= buffer.baseY;
+  fit.fit();
+  if (latest) term.scrollToBottom();
+}
 
 // One look for every terminal view.
 export function terminalOptions(): ITerminalOptions {

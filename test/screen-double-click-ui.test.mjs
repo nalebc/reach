@@ -195,13 +195,20 @@ test("rapid taps on nearby controls stay at their own locations and do not prese
     [[0.3, 0.4, 1], [0.312, 0.4, 1]]);
   assert.deepEqual(repeats, [false, false]);
 });
-test("image movement maps the next tap to the visible target instead of the previous location", async () => {
+test("a double-tap is the same spot on the glass: the picture moving between the taps keeps the pair where it aimed", async () => {
+  // The first tap opened the keyboard and the view made room for it, faster
+  // than anyone aims anew (Oct 18: double-tapping a word in a text field
+  // clicked once there and once 87 pt above it).
   const s = await surface();
   await tap(s, 300, 200);
   s.canvas.getBoundingClientRect = () => ({ left: 0, top: 150, width: 1000, height: 500 });
   await tap(s, 300, 200);
   assert.deepEqual(s.clicks().map((a) => [a.x, a.y, a.clickState]),
-    [[0.3, 0.4, 1], [0.3, 0.1, 1]]);
+    [[0.3, 0.4, 1], [0.3, 0.4, 2]]);
+  // After the pair window, a tap goes to what the finger sees now.
+  await settle(400);
+  await tap(s, 300, 200);
+  assert.deepEqual(s.clicks().at(-1) && [s.clicks().at(-1).x, s.clicks().at(-1).y, s.clicks().at(-1).clickState], [0.3, 0.1, 1]);
 });
 test("touch double-taps keep both touchdown points through phone/tablet aspect ratios, letterboxing and Retina frames", async () => {
   for (const [width, height] of [[390, 844], [844, 390], [768, 1024], [1280, 720]]) {
