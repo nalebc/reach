@@ -1,0 +1,76 @@
+name: Artifact retry synthetic producer
+on:
+  workflow_call:
+    outputs:
+      artifact-id:
+        value: ${{ jobs.producer.outputs.artifact-id }}
+      artifact-digest:
+        value: ${{ jobs.producer.outputs.artifact-digest }}
+      receipt-sha256:
+        value: ${{ jobs.producer.outputs.receipt-sha256 }}
+permissions:
+  contents: read
+jobs:
+  producer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      receipt-sha256: ${{ steps.receipt.outputs.sha256 }}
+    steps:
+      - id: receipt
+        name: Emit one original synthetic receipt bound to this commit and run
+        run: |
+          node --input-type=module <<'PROBE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const env = process.env;
+          if (env.GITHUB_REPOSITORY !== 'nalebc/reach' || env.GITHUB_EVENT_NAME !== 'push' ||
+              env.GITHUB_REF !== 'refs/heads/validation/artifact-retry-20261019' ||
+              !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA) || !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID) ||
+              env.GITHUB_RUN_ATTEMPT !== '1') throw Error('Original producer must execute exactly on attempt 1 of the isolated probe.');
+          const receipt = {
+            schema: 1,
+            probe: 'reach-pinned-artifact-retry-20261019',
+            repository: env.GITHUB_REPOSITORY,
+            baseCommit: '6a82cb17043e27468d0c338ab5e4138dcaf68187',
+            commit: env.GITHUB_SHA,
+            ref: env.GITHUB_REF,
+            runId: env.GITHUB_RUN_ID,
+            producerAttempt: 1,
+          };
+          const bytes = `${JSON.stringify(receipt, null, 2)}\n`;
+          const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+          const directory = path.join(env.RUNNER_TEMP, 'artifact-retry-producer');
+          fs.mkdirSync(directory, { recursive: false });
+          fs.writeFileSync(path.join(directory, 'receipt.json'), bytes);
+          fs.writeFileSync(path.join(directory, 'SHA256SUMS'), `${sha256}  receipt.json\n`);
+          fs.appendFileSync(env.GITHUB_OUTPUT, `sha256=${sha256}\n`);
+          console.log(JSON.stringify({ ...receipt, receiptSha256: sha256 }));
+          PROBE
+      - id: upload
+        name: Preserve the original producer artifact once
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; identical release prepare pin
+        with:
+          name: reach-artifact-retry-original
+          path: ${{ runner.temp }}/artifact-retry-producer/*
+          archive: true
+          overwrite: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: Log original artifact identity
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          RECEIPT_SHA256: ${{ steps.receipt.outputs.sha256 }}
+        run: |
+          node --input-type=module <<'PROBE'
+          console.log(JSON.stringify({ schema: 1, commit: process.env.GITHUB_SHA,
+            runId: process.env.GITHUB_RUN_ID, producerAttempt: 1, artifactId: process.env.ARTIFACT_ID,
+            artifactDigest: process.env.ARTIFACT_DIGEST, receiptSha256: process.env.RECEIPT_SHA256,
+            scope: 'Synthetic artifact receipt; no Reach qualification.' }));
+          PROBE
