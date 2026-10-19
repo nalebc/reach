@@ -34,9 +34,10 @@ remains unchanged after its validation failed.
 
 ### Fixed
 
-- Refill screen audio for the packet delay actually observed after an underrun,
-  preventing playback from restarting into the next delivery gap. Initial
-  buffering stays at 100 ms and recovery stays capped at 400 ms.
+- Recover screen audio using media arrival timing and buffered frames, avoiding
+  repeated drains without waiting for an extra whole packet batch. Initial
+  buffering stays at 100 ms and the recovery target stays capped at 400 ms.
+  Intentional silence and discarded old audio reset the timing history.
 - Keep a mobile navigation tap on its intended destination when device details
   add tabs while the finger is down. Cancelled gestures and removed destinations
   do not navigate; keyboard and assistive clicks retain their explicit target.

@@ -65,11 +65,40 @@ async function fixtureCase(t, mode) {
   const binary = await windowsFixture("browser-lifetime", ["System.Web.Extensions.dll"]);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-browser-lifetime-"));
   const canaryFile = path.join(dir, "canary.json");
-  const canaryChild = spawn(binary, ["--canary", canaryFile], { stdio: "ignore", windowsHide: true });
+  const canaryBegan = performance.now();
+  let canaryChild;
+  let canarySpawned = false, canarySpawnError = null, canaryStderr = Buffer.alloc(0), canaryStderrBytes = 0, canaryStderrError = null;
+  let canaryReady = false, canaryReadinessElapsedMs = null;
+  const canaryEvents = [];
+  const canaryEvent = (kind, details = {}) => {
+    if (canaryEvents.length < 8) canaryEvents.push({ kind, ...details, elapsedMs: Math.round(performance.now() - canaryBegan) });
+  };
+  const canaryError = caught => {
+    canarySpawnError ||= { code: caught.code || null, errno: caught.errno ?? null, syscall: caught.syscall || null, message: caught.message.slice(0, 512) };
+    canaryEvent("error", { code: caught.code || null });
+  };
+  const startCanary = () => {
+    try { canaryChild = spawn(binary, ["--canary", canaryFile], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }); }
+    catch (caught) { canaryError(caught); throw caught; }
+    canaryChild.once("spawn", () => { canarySpawned = true; canaryEvent("spawn"); });
+    canaryChild.on("error", canaryError);
+    canaryChild.once("exit", (code, signal) => canaryEvent("exit", { code, signal }));
+    canaryChild.once("close", (code, signal) => canaryEvent("close", { code, signal }));
+    // EMFILE/ENFILE can return a ChildProcess without any stdio streams.
+    canaryChild.stderr?.on("data", chunk => {
+      canaryStderrBytes += chunk.length;
+      if (canaryStderr.length < 4096) canaryStderr = Buffer.concat([canaryStderr, chunk.subarray(0, 4096 - canaryStderr.length)]);
+    });
+    canaryChild.stderr?.on("error", caught => {
+      canaryStderrError = { code: caught.code || null, message: caught.message.slice(0, 512) };
+      canaryEvent("stderr-error", { code: caught.code || null });
+    });
+  };
   let canary, identities, browser, result, error, closeElapsedMs;
   let phase = "canary-start";
   try {
-    canary = await waitJSON(canaryFile);
+    try { startCanary(); canary = await waitJSON(canaryFile); canaryReady = true; }
+    finally { canaryReadinessElapsedMs = Math.round(performance.now() - canaryBegan); }
     assert.deepEqual(await probe(binary, canary), { alive: true, creationMatches: true });
     const state = path.join(dir, "browser.json");
     phase = "browser-launch";
@@ -93,6 +122,18 @@ async function fixtureCase(t, mode) {
     phase = "complete";
   } catch (caught) { error = caught; throw caught; }
   finally {
+    // Capture startup before any manual kill can replace the original exit
+    // state. This observes the existing five-second readiness bound unchanged.
+    const canaryStartup = {
+      pid: canaryChild?.pid ?? null, spawned: canarySpawned, spawnError: canarySpawnError,
+      exitCode: canaryChild?.exitCode ?? null, signalCode: canaryChild?.signalCode ?? null,
+      readiness: { boundMs: 5000, elapsedMs: canaryReadinessElapsedMs, ready: canaryReady },
+      observedElapsedMs: Math.round(performance.now() - canaryBegan),
+      events: canaryEvents.map(event => ({ ...event })),
+      stderrAvailable: Boolean(canaryChild?.stderr), stderrPrefix: canaryStderr.toString("utf8"), stderrBytes: canaryStderrBytes,
+      stderrRetainedBytes: canaryStderr.length, stderrTruncated: canaryStderrBytes > canaryStderr.length,
+      stderrError: canaryStderrError,
+    };
     const cleanupErrors = [];
     const beforeCleanup = [];
     for (const identity of [identities?.parent, identities?.descendant, canary].filter(Boolean)) {
@@ -104,13 +145,13 @@ async function fixtureCase(t, mode) {
     const cleanup = [];
     for (const identity of [identities?.parent, identities?.descendant, canary].filter(Boolean))
       await probe(binary, identity, true).then(state => cleanup.push({ identity, ...state }), caught => cleanupErrors.push(caught));
-    if (!canary) canaryChild.kill("SIGKILL");
+    if (!canary) canaryChild?.kill("SIGKILL");
     if (identities?.profile && path.basename(identities.profile).startsWith("reach-chrome-"))
       await fs.rm(identities.profile, { recursive: true, force: true }).catch(caught => cleanupErrors.push(caught));
     await fs.rm(dir, { recursive: true, force: true }).catch(caught => cleanupErrors.push(caught));
     try { await record(t, { mode, phase, closeElapsedMs, outcome: error || cleanupErrors.length ? "failed" : "passed", error: error?.message || null,
       identities: identities ? { parent: identities.parent, descendant: identities.descendant } : null,
-      canary: canary || null, beforeCleanup, cleanup, cleanupErrors: cleanupErrors.map(caught => caught.message),
+      canary: canary || null, canaryStartup, beforeCleanup, cleanup, cleanupErrors: cleanupErrors.map(caught => caught.message),
       lifetime: result || browser?.lifetime?.() || null }); }
     catch (caught) { cleanupErrors.push(caught); }
     if (cleanupErrors.length) {

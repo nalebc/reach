@@ -146,7 +146,7 @@ export const suites = {
     "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
     "desktop-terminals", "terminal-titles", "terminal-list-ui",
     // Hearing the computer beside its screen (Oct 13): the shared part.
-    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "sound-worklet-recovery", "sound-packet-batch", "tone-stability",
+    "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "sound-worklet-recovery", "sound-worklet-cadence", "sound-packet-batch", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).
     "openclaw-wizard",
     // Workstream C, the Windows sandbox (docs/parity/C-sandbox.md). The unit

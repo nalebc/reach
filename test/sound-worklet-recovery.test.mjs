@@ -41,7 +41,7 @@ for (const offset of [0, 128, 256, 512]) {
     }
     assert.equal(position, fixture.posts.length, "every captured post is delivered once");
     const steady = p.late.filter(e => e.frame >= fixture.sampleFrames[0] && e.frame <= fixture.sampleFrames.at(-1));
-    assert.equal(steady.length, 1, "the actual old cadence produced two drains; recovery must absorb the next batch gap");
+    assert.ok(steady.length <= 1, "the old cadence produced two drains; zero or one meets the original stability limit");
   });
 }
 for (const rate of [44100, 48000]) {
@@ -81,5 +81,35 @@ for (const rate of [44100, 48000]) {
     quiet.sound.port.onmessage({ data: { type: "quiet" } }); quiet.feed(0);
     for (let i = 0; i < Math.ceil(frames(100) / 128) + 1; i++) quiet.block();
     assert.equal(quiet.late.length, 0, "an empty sample message is not new sound after quiet");
+  });
+  test(`intentional quiet and clear wait for the full learned refill across a split arrival at ${rate}Hz`, () => {
+    for (const type of ["quiet", "clear"]) {
+      const p = playback(rate); drain(p);
+      p.sound.port.onmessage({ data: { type } });
+      p.state.currentTime += 1; p.feed(frames(120));
+      assert.ok(p.block().every(value => value === 0));
+      p.state.currentTime += 1;
+      assert.ok(p.block().every(value => value === 0), "elapsed idle time cannot replace missing media");
+      p.feed(frames(20));
+      assert.ok(p.block().some(value => value > 0), "the idle wait is not learned as delivery jitter");
+      assert.equal(p.late.length, 1);
+    }
+  });
+  test(`quiet keeps its queued tail when new media starts at ${rate}Hz`, () => {
+    const p = playback(rate); p.feed(frames(100)); p.block();
+    p.sound.port.onmessage({ data: { type: "quiet" } });
+    const tail = p.sound.count;
+    p.feed(frames(20));
+    assert.ok(p.block().some(value => value > 0));
+    assert.equal(p.sound.count, tail + frames(20) - 128, "retained tail and new media are both played");
+    assert.equal(p.late.length, 0);
+  });
+  test(`discarding a stopped ring's oldest media does not inflate its recovery delay at ${rate}Hz`, () => {
+    const p = playback(rate); drain(p);
+    p.state.currentTime += 1;
+    p.feed(frames(3000));
+    assert.equal(p.sound.count, frames(2000), "the media ring stays bounded");
+    assert.equal(p.sound.target, frames(140), "discarded media cannot become timing history");
+    assert.ok(p.block().some(value => value > 0));
   });
 }
