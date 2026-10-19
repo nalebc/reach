@@ -44,6 +44,8 @@ Early access: file editing, clipboard paste and Windows setup improvements.
   failures while preserving operation deadlines and unknown-action handling.
 - Recheck access and pause state after app discovery or helper preparation,
   immediately before opening an app on either Mac or Windows.
+- Bound app-launch requests by the authenticated device's identity, preserving
+  separate budgets for other devices and refusing excess work before dispatch.
 - Validate macOS runtime library inspection before granting isolated scripts
   access to their runtime files; a confirmed read-only inspection timeout has
   one bounded retry for the whole dependency graph.
