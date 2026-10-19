@@ -437,7 +437,10 @@ export function TerminalView({
   // program asks for it), so it arrives as typing would. Sent once, now:
   // never held for a later connection.
   const phonePaste = usePhonePaste([
-    peer.id, peer.computerId, peer.url, peer.token, peer.sessionId, currentKey,
+    peer.id, peer.computerId, peer.url, peer.token, peer.transport, peer.sessionId, currentKey,
+  ], [
+    peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]),
+    peer.id, peer.computerId, currentKey,
   ], (text) => {
     const term = terminal.current;
     if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN)

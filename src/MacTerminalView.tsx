@@ -255,7 +255,10 @@ export default function MacTerminalView({
   // Each line of a paste runs as its own command here, so one with a line
   // break asks first.
   const phonePaste = usePhonePaste([
-    peer.id, peer.computerId, peer.url, peer.token, peer.sessionId, tab.id,
+    peer.id, peer.computerId, peer.url, peer.token, peer.transport, peer.sessionId, tab.id,
+  ], [
+    peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]),
+    peer.id, peer.computerId, tab.id,
   ], (text) => {
     const clean = pastable(text);
     const question = pasteQuestion(clean);

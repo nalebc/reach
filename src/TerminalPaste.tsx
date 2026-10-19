@@ -7,7 +7,8 @@ import { X } from "lucide-react";
 // over (no clipboard access here, or its Paste prompt dismissed or refused),
 // a small box above the keys takes the phone's own paste.
 export function usePhonePaste(
-  target: readonly unknown[],
+  clipboardTarget: readonly unknown[],
+  draftTarget: readonly unknown[],
   deliver: (text: string) => void,
   say: (message: string) => void,
 ) {
@@ -16,34 +17,43 @@ export function usePhonePaste(
   // Invalidate before the replacement terminal can receive input; merely
   // comparing its current ID would accept an old A → B → A read.
   const lifetime = useRef<object | null>(null);
+  // Text already placed in the manual box is unsent work. A verified
+  // same-workspace handoff keeps it, while pending clipboard reads expire.
+  const draftLifetime = useRef<object | null>(null);
   const [open, setOpen] = useState<object | null>(null);
   useLayoutEffect(() => {
     const current = {};
     lifetime.current = current;
-    setOpen(null);
     return () => { lifetime.current = null; };
-  }, target);
+  }, clipboardTarget);
+  useLayoutEffect(() => {
+    const current = {};
+    draftLifetime.current = current;
+    setOpen(null);
+    return () => { draftLifetime.current = null; };
+  }, draftTarget);
   const paste = () => {
     const current = lifetime.current;
-    if (!current) return;
-    const valid = () => lifetime.current === current;
+    const draft = draftLifetime.current;
+    if (!current || !draft) return;
+    const valid = () => lifetime.current === current && draftLifetime.current === draft;
     // Read inside the tap: phones refuse a clipboard read that comes later.
     let reading: Promise<string> | undefined;
     try {
       reading = navigator.clipboard?.readText?.();
     } catch {}
-    if (!reading) return setOpen(current);
+    if (!reading) return setOpen(draft);
     reading.then(
       (text) => {
         if (valid()) text ? deliver(text) : say("Nothing to paste on this phone");
       },
-      () => { if (valid()) setOpen(current); },
+      () => { if (valid()) setOpen(draft); },
     );
   };
-  const box = open && open === lifetime.current ? (
+  const box = open && open === draftLifetime.current ? (
     <PasteBox
       onPaste={(text) => {
-        if (open !== lifetime.current) return;
+        if (open !== draftLifetime.current) return;
         setOpen(null);
         deliver(text);
       }}

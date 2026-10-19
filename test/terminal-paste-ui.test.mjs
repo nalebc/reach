@@ -54,7 +54,7 @@ before(async () => {
       ...Object.fromEntries(["t1", "t2"].map((id) => [`/api/terminals/desktop/${id}/send`, (init, url) => {
         const text = JSON.parse(init.body).text;
         lines.push(text);
-        desktopSends.push({ id, origin: url.origin, text });
+        desktopSends.push({ id, origin: url.origin, token: new Headers(init.headers).get("Authorization"), text });
         return { ok: true };
       }])),
       "/api/terminals/desktop/t1": () => new Promise(() => {}),
@@ -150,6 +150,7 @@ const targets = [
     ["computer identity", { computerId: "another-computer" }],
     ["credential", { token: "replacement-credential" }],
     ["address", { url: "https://other-reach.test" }],
+    ["transport", { transport: "funnel" }],
     ["grant session", { sessionId: "another-grant" }],
   ].map(([name, change]) => ({ name, reach: { peer: { ...peer, ...change } }, desktop: { peer: { ...peer, ...change } } })),
 ];
@@ -214,7 +215,7 @@ for (const mode of ["reach", "desktop"]) {
       assert.equal(dom.document.querySelector(".terminal-paste"), null);
     });
   }
-  test(`${mode}: an open manual fallback is cleared with its old target`, async (t) => {
+  for (const target of targets) test(`${mode}: an open manual fallback is cleared after changing ${target.name}`, async (t) => {
     clipboard = undefined;
     const { view, change } = await start();
     t.after(() => view.unmount());
@@ -224,7 +225,7 @@ for (const mode of ["reach", "desktop"]) {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "only for old target");
       box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     });
-    await change(targets[0][mode]);
+    await change(target[mode]);
     assert.equal(view.container.querySelector(".terminal-paste"), null);
     tap(pasteKey(view));
     const fresh = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
@@ -232,6 +233,105 @@ for (const mode of ["reach", "desktop"]) {
     assert.equal(Socket.all.map((s) => s.input).join(""), "");
     assert.deepEqual(desktopSends, []);
   });
+  test(`${mode}: a manual draft cannot return after switching away and back`, async (t) => {
+    clipboard = undefined;
+    const { view, change } = await start();
+    t.after(() => view.unmount());
+    tap(pasteKey(view));
+    const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    dom.update(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "old draft must not return");
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await change(targets[0][mode]);
+    await change(mode === "reach" ? { selected: "s1" } : { tab: { id: "t1", name: "zsh", provider: "terminal" } });
+    assert.equal(view.container.querySelector(".terminal-paste"), null);
+    tap(pasteKey(view));
+    const fresh = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    assert.equal(fresh.value, "");
+    assert.equal(Socket.all.map((s) => s.input).join(""), "");
+    assert.deepEqual(desktopSends, []);
+  });
+  for (const target of targets.slice(0, 3)) test(`${mode}: a workspace label cannot carry a manual draft to another ${target.name}`, async (t) => {
+    clipboard = undefined;
+    const { view, change } = await start();
+    t.after(() => view.unmount());
+    const workspaceKey = JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]);
+    await change({ peer: { ...peer, workspaceKey } });
+    tap(pasteKey(view));
+    const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    dom.update(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, "only for this device and terminal");
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    const next = target[mode];
+    await change({ ...next, ...(next.peer ? { peer: { ...next.peer, workspaceKey } } : {}) });
+    assert.equal(view.container.querySelector(".terminal-paste"), null);
+    tap(pasteKey(view));
+    const fresh = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    assert.equal(fresh.value, "");
+    assert.equal(Socket.all.map((s) => s.input).join(""), "");
+    assert.deepEqual(desktopSends, []);
+  });
+
+  for (const destination of ["browser", "native"]) for (const result of ["fulfilled", "rejected"]) {
+    test(`${mode}: verified private handoffs preserve a manual draft for ${destination}, while a ${result} old read is discarded`, async (t) => {
+      clipboard = undefined;
+      const { view, change } = await start();
+      t.after(() => view.unmount());
+      tap(pasteKey(view));
+      const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+      const draft = mode === "reach" ? "unsent manual draft" : "unsent manual draft\n";
+      dom.update(() => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, draft);
+        box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      let resolve, reject;
+      clipboard = { readText: () => new Promise((yes, no) => { resolve = yes; reject = no; }) };
+      tap(pasteKey(view));
+      // app-watch's successful same-device/scopes check adds the old peerKey
+      // on its first handoff. This starts without a workspaceKey, as App does.
+      const workspaceKey = JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]);
+      let currentPeer = { ...peer, workspaceKey, url: "https://reach.test:8443", token: "approved-browser-credential" };
+      await change({ peer: currentPeer });
+      assert.equal(view.container.querySelector(".terminal-paste textarea"), box, "the authorized fallback keeps the mounted draft");
+      assert.equal(box.value, draft);
+      if (destination === "native") {
+        currentPeer = { ...peer, workspaceKey };
+        await change({ peer: currentPeer });
+        assert.equal(view.container.querySelector(".terminal-paste textarea"), box, "returning to native preserves the same unsent draft");
+        assert.equal(box.value, draft);
+      }
+      if (result === "fulfilled") resolve("old clipboard read must never become a command\n");
+      else reject(new DOMException("Denied", "NotAllowedError"));
+      await settle();
+      assert.equal(view.container.querySelector(".terminal-paste textarea"), box);
+      assert.equal(box.value, draft);
+      assert.equal(Socket.all.map((s) => s.input).join(""), "", "a handoff or old result never dispatches the manual draft");
+      assert.deepEqual(desktopSends, []);
+      assert.deepEqual(asked, []);
+      assert.deepEqual(toasts, []);
+
+      // Submission is a new explicit action. It uses only the current,
+      // separately approved peer, never the old grant captured before handoff.
+      tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+      await dom.waitFor(() => mode === "reach" ? Socket.all.at(-1).input : desktopSends.length);
+      assert.equal(view.container.querySelector(".terminal-paste"), null);
+      if (mode === "reach") {
+        const latest = Socket.all.at(-1);
+        assert.equal(latest.input, draft);
+        assert.equal(latest.sent.find((m) => m.type === "auth").token, currentPeer.token);
+        assert.equal(new URL(latest.url).origin, currentPeer.url.replace("https:", "wss:"));
+        assert.equal(Socket.all.slice(0, -1).map((s) => s.input).join(""), "");
+      } else {
+        assert.deepEqual(desktopSends, [{ id: "t1", origin: currentPeer.url, token: `Bearer ${currentPeer.token}`, text: "unsent manual draft" }]);
+        assert.equal(asked.length, 1, "only the current explicit submit asks to run the line");
+      }
+      await settle();
+      assert.equal(Socket.all.map((s) => s.input).join(""), mode === "reach" ? draft : "");
+      assert.equal(desktopSends.length, mode === "desktop" ? 1 : 0, "no delayed result replays the submitted draft");
+    });
+  }
 }
 
 test("a pending clipboard paste cannot follow a switch to another Reach terminal", async (t) => {
