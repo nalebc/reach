@@ -18,7 +18,9 @@ static class BrowserJob {
   static readonly IntPtr Invalid = new IntPtr(-1);
 
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
-    public int cb; public string reserved, desktop, title;
+    // GetStartupInfo returns borrowed process-owned pointers. Managed string
+    // fields would make the out-struct marshaller free memory it does not own.
+    public int cb; public IntPtr reserved, desktop, title;
     public int x, y, width, height, cols, rows, fill, flags;
     public short show; public ushort reservedBytes;
     public IntPtr reservedHandles, stdin, stdout, stderr;
@@ -45,7 +47,7 @@ static class BrowserJob {
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool assigned);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string app, string command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX startup, out PROCESS_INFORMATION process);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string app, StringBuilder command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX startup, out PROCESS_INFORMATION process);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
@@ -114,7 +116,7 @@ static class BrowserJob {
       startup.info.reservedHandles = table; startup.info.reservedBytes = (ushort)(4 + 5 * (1 + IntPtr.Size));
       var command = new StringBuilder(); foreach (string arg in args) { if (command.Length > 0) command.Append(' '); command.Append(Quote(arg)); }
       stage = "create-suspended";
-      Check(CreateProcessW(args[0], command.ToString(), IntPtr.Zero, IntPtr.Zero, true,
+      Check(CreateProcessW(args[0], command, IntPtr.Zero, IntPtr.Zero, true,
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null, ref startup, out browser));
       stage = "assign"; Check(AssignProcessToJobObject(job, browser.process)); bool assigned; Check(IsProcessInJob(browser.process, job, out assigned) && assigned);
       long created, exited, kernel, user; Check(GetProcessTimes(browser.process, out created, out exited, out kernel, out user));

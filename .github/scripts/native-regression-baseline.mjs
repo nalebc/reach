@@ -1,5 +1,5 @@
-// Actual OS/browser diagnostic: prove the archived implementation fails for
-// the intended reason before testing today's implementation. This is not a
+// Actual OS/browser diagnostic: record archived behavior and identify an
+// original failure only when it is actually observed. This is not a
 // release pass, a physical network test, or permission to relax an assertion.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -32,6 +32,43 @@ const dir = path.join(root, "reports", "native-baseline");
 fs.mkdirSync(dir, { recursive: true });
 const archived = "6a82cb17043e27468d0c338ab5e4138dcaf68187";
 const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+const readLimit = 16 << 20;
+// Keep metadata and bounded reads on one owned descriptor. A size check on a
+// path followed by a second open could read a replacement file instead.
+function readDescriptor(fd) {
+  assert.ok(
+    fs.fstatSync(fd).isFile(),
+    "diagnostic input must be a regular file",
+  );
+  const buffer = Buffer.alloc(readLimit + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const count = fs.readSync(
+      fd,
+      buffer,
+      length,
+      buffer.length - length,
+      length,
+    );
+    if (!count) break;
+    length += count;
+  }
+  return {
+    bytes: Buffer.from(buffer.subarray(0, length)),
+    oversized: length > readLimit,
+  };
+}
+function readDiagnostic(file) {
+  const fd = fs.openSync(
+    file,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+  );
+  try {
+    return readDescriptor(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 const current = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: root,
   encoding: "utf8",
@@ -71,11 +108,11 @@ function baseline(file, digest, name) {
   return output;
 }
 
-async function expectedFailure(name, file, pattern, env, reportName, inspect) {
+async function observeOriginal(name, file, pattern, env, reportName, inspect) {
   const logs = ["stdout", "stderr"].map((kind) =>
     path.join(dir, `${name}.${kind}`),
   );
-  const fds = logs.map((file) => fs.openSync(file, "w"));
+  const fds = logs.map((file) => fs.openSync(file, "w+"));
   const args = [
     process.env.npm_execpath,
     "run",
@@ -93,17 +130,25 @@ async function expectedFailure(name, file, pattern, env, reportName, inspect) {
   const report = path.join(root, "reports", reportName);
   fs.rmSync(report, { force: true });
   const retainedReport = path.join(dir, `${name}.json`);
+  let retainedReportBytes;
   const preserveReport = () => {
-    if (!fs.existsSync(report)) return { present: false };
-    fs.copyFileSync(report, retainedReport);
-    const bytes = fs.statSync(retainedReport).size;
+    let captured;
+    try {
+      captured = readDiagnostic(report);
+    } catch (error) {
+      if (error.code === "ENOENT") return { present: false };
+      throw error;
+    }
+    retainedReportBytes = captured.bytes;
+    fs.writeFileSync(retainedReport, retainedReportBytes, { flag: "wx" });
     return {
       present: true,
       file: path.basename(retainedReport),
-      bytes,
-      ...(bytes < 16 << 20
-        ? { sha256: hash(fs.readFileSync(retainedReport)) }
-        : { oversized: true }),
+      bytes: retainedReportBytes.length,
+      sha256: hash(retainedReportBytes),
+      ...(captured.oversized
+        ? { oversized: true, retainedPrefixOnly: true }
+        : {}),
     };
   };
   let rawReport;
@@ -121,32 +166,42 @@ async function expectedFailure(name, file, pattern, env, reportName, inspect) {
     // Preserve even a rejected/partial original report before the current
     // implementation's unconditional GREEN step can write its normal name.
     rawReport = preserveReport();
-    assert.deepEqual(
-      result,
-      { code: 1, signal: null },
-      "the selected original case must actually fail",
+    assert.equal(result.signal, null);
+    assert.ok(
+      result.code === 1 || (name === "audio-batch" && result.code === 0),
+      "the actual selected case must complete with a recognized result",
     );
-    const text = logs
-      .map((file) => {
-        assert.ok(
-          fs.statSync(file).size < 16 << 20,
-          "bounded retained diagnostic output",
-        );
-        return fs.readFileSync(file, "utf8");
-      })
-      .join("\n");
+    const reproduced = result.code === 1;
+    const logBytes = fds.map((fd) => {
+      const captured = readDescriptor(fd);
+      assert.equal(
+        captured.oversized,
+        false,
+        "bounded retained diagnostic output",
+      );
+      return captured.bytes;
+    });
+    const text = logBytes.map((bytes) => bytes.toString("utf8")).join("\n");
     assert.doesNotMatch(
       text,
       /fixture cleanup failed|cancelledByParent|testTimeoutFailure/,
     );
-    const junit = fs.readFileSync(path.join(dir, `${name}.xml`), "utf8");
+    const junitInput = readDiagnostic(path.join(dir, `${name}.xml`));
+    assert.equal(junitInput.oversized, false);
+    const junit = junitInput.bytes.toString("utf8");
+    assert.equal(
+      [...junit.matchAll(/<testcase\b/g)].length,
+      1,
+      "exactly one selected original case must execute",
+    );
+    assert.doesNotMatch(junit, /<skipped\b/);
     const failures = [
       ...junit.matchAll(/<failure\b[^>]*\btype="([^"]+)"[^>]*>/g),
     ].map((match) => match[1]);
     assert.equal(
       failures.length,
-      1,
-      "only the selected original failure may be reported",
+      reproduced ? 1 : 0,
+      "only the selected original result may be reported",
     );
     assert.ok(
       !/<error\b|type="(?:cancelledByParent|testTimeoutFailure|uncaughtException|unhandledRejection)"/.test(
@@ -154,11 +209,12 @@ async function expectedFailure(name, file, pattern, env, reportName, inspect) {
       ),
     );
     if (name === "audio-batch") {
-      assert.deepEqual(
-        failures,
-        ["testCodeFailure"],
-        "Chrome cleanup cannot substitute for the audio assertion",
-      );
+      if (reproduced)
+        assert.deepEqual(
+          failures,
+          ["testCodeFailure"],
+          "Chrome cleanup cannot substitute for the audio assertion",
+        );
       // Node 22 can suppress a second after-hook rejection once the body has
       // failed. The current helper diagnoses every cleanup rejection itself.
       assert.doesNotMatch(
@@ -173,22 +229,26 @@ async function expectedFailure(name, file, pattern, env, reportName, inspect) {
       "the selected original case must retain its actual report",
     );
     assert.notEqual(rawReport.oversized, true);
-    const bytes = fs.readFileSync(retainedReport);
-    const evidence = JSON.parse(bytes);
-    inspect(evidence, text);
+    const evidence = JSON.parse(retainedReportBytes);
+    inspect(evidence, text, result.code);
     observations.push({
       name,
-      result: "EXPECTED_ORIGINAL_FAILURE_REPRODUCED",
+      result: reproduced
+        ? "EXPECTED_ORIGINAL_FAILURE_REPRODUCED"
+        : "ORIGINAL_PASSED_THIS_ENVIRONMENT",
+      reproduced,
+      currentImplementationQualified: false,
+      originalTestExitCode: result.code,
       durationMs: Date.now() - began,
       rawReport,
-      logs: logs.map((file) => ({
+      logs: logs.map((file, index) => ({
         file: path.basename(file),
-        sha256: hash(fs.readFileSync(file)),
+        sha256: hash(logBytes[index]),
       })),
     });
     save();
     console.log(
-      `${name}: expected original failure reproduced on ${process.platform}/${process.arch}`,
+      `${name}: ${reproduced ? "expected original failure reproduced" : "original passed this environment; failure not reproduced"} on ${process.platform}/${process.arch}`,
     );
   } catch (error) {
     try {
@@ -220,7 +280,7 @@ if (scenario === "windows-lifetime") {
     "fddf632b95a42ac541a4d25f0abeab914f1914cc7e1223f5b047157860409c97",
     "original-headless-chrome.mjs",
   );
-  await expectedFailure(
+  await observeOriginal(
     "windows-lifetime",
     "test/windows-browser-lifetime-native.test.mjs",
     "^Windows browser lifetime: parent exit cannot abandon inherited pipes and a locked profile$",
@@ -270,7 +330,7 @@ if (scenario === "audio-batch") {
     "6f02777932f43d5f6eb9239fc434ebe188f35afc253c77df573c9e27e0161982",
     "original-sound-worklet.js",
   );
-  await expectedFailure(
+  await observeOriginal(
     "audio-batch",
     "test/screen-sound-chrome-e2e.test.mjs",
     "^in a real browser, controlled seven-packet native batches stay steady under Reach's own page policy$",
@@ -280,7 +340,7 @@ if (scenario === "audio-batch") {
       REACH_TEST_WINDOWS_DESKTOP: "1",
     },
     "sound-chrome-batch-baseline-e2e.json",
-    (report, output) => {
+    (report, output, code) => {
       assert.equal(report.host, process.platform);
       assert.equal(report.scenario, "controlled-native-packet-delivery");
       assert.equal(report.worklet.kind, "verified-old-M-baseline");
@@ -292,13 +352,22 @@ if (scenario === "audio-batch") {
       assert.equal(report.worklet.servedSHA256, report.worklet.sha256);
       assert.ok(report.worklet.servedCount >= 1);
       assert.equal(report.steadyLevels.length, 40);
-      assert.equal(report.timing.stage, 3);
-      assert.equal(report.timing.completed, 0);
-      assert.ok(
-        report.ranDry > 1 || report.blips > 1,
-        "the actual tone stability assertion must fail",
-      );
-      assert.match(output, /ran dry \d+ times; blips \d+/);
+      if (code === 0) {
+        assert.equal(report.timing.stage, 5);
+        assert.equal(report.timing.completed, 1);
+        assert.ok(
+          report.ranDry <= 1 && report.blips <= 1,
+          "the original stability assertion completed in this environment",
+        );
+      } else {
+        assert.equal(report.timing.stage, 3);
+        assert.equal(report.timing.completed, 0);
+        assert.ok(
+          report.ranDry > 1 || report.blips > 1,
+          "only the intended tone stability failure establishes RED",
+        );
+        assert.match(output, /ran dry \d+ times; blips \d+/);
+      }
       assert.equal(report.delivery.physicalNetwork, false);
       assert.equal(report.delivery.batches.length, 1);
       const delivery = report.delivery.batches[0];

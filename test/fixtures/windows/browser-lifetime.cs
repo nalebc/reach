@@ -14,14 +14,16 @@ using Microsoft.Win32.SafeHandles;
 
 static class BrowserLifetime {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
-    public int cb; public string reserved, desktop, title;
+    // These strings belong to Windows, not the out-struct marshaller. Keep
+    // their borrowed pointers intact when reading or passing startup info.
+    public int cb; public IntPtr reserved, desktop, title;
     public int x, y, width, height, cols, rows, fill, flags;
     public short show; public ushort reservedBytes;
     public IntPtr reservedHandles, stdin, stdout, stderr;
   }
   [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process, thread; public int pid, tid; }
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern void GetStartupInfoW(out STARTUPINFO info);
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string app, string command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION process);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string app, StringBuilder command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION process);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
@@ -93,7 +95,7 @@ static class BrowserLifetime {
     var startup = inherited; startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
     string exe = Process.GetCurrentProcess().MainModule.FileName;
     string ready = state + ".holder-ready";
-    string command = Quote(exe) + " --hold " + Quote(Path.Combine(profile, "Default", "held")) + " " + Quote(ready);
+    var command = new StringBuilder(Quote(exe) + " --hold " + Quote(Path.Combine(profile, "Default", "held")) + " " + Quote(ready));
     PROCESS_INFORMATION holder;
     if (!CreateProcessW(exe, command, IntPtr.Zero, IntPtr.Zero, true, 0x08000400, IntPtr.Zero, null, ref startup, out holder)) throw new Win32Exception();
     object identities = new { parent = Identity(Process.GetCurrentProcess().Id, GetCurrentProcess()), descendant = Identity(holder.pid, holder.process), profile = profile };
