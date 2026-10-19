@@ -34,7 +34,7 @@ export const suites = {
     // Editing a text file in Files: hash, line endings, never written over.
     "file-editor-ui",
     // Pasting from the phone into a terminal: pieces, brackets, never resent.
-    "terminal-paste-ui",
+    "terminal-paste-ui", "terminal-snapshot-chrome-e2e",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",

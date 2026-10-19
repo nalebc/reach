@@ -129,6 +129,99 @@ async function reachTerminal({ connect = true } = {}) {
   };
 }
 
+// Controlled callbacks model xterm's asynchronous parser. Actual parser query
+// generation and the snapshot/live boundary also run in real Chrome in
+// terminal-snapshot-chrome-e2e.test.mjs; these isolate connection lifetime.
+function holdSnapshotCallbacks(term) {
+  const callbacks = [];
+  term.write = (data, done) => {
+    term.written.push(data);
+    callbacks.push(done);
+  };
+  return callbacks;
+}
+const isConnected = (view) => !view.container.querySelector(".status-dot").classList.contains("off");
+
+test("a parsing snapshot cannot send input or consume armed Ctrl before its callback", async (t) => {
+  const { view, socket, term } = await reachTerminal({ connect: false });
+  t.after(() => view.unmount());
+  const callbacks = holdSnapshotCallbacks(term);
+  socket.receive({ type: "snapshot", data: "historical output", heartbeat: true });
+  await settle();
+  assert.equal(isConnected(view), false, "connection is not ready while history is parsing");
+  tap([...view.container.querySelectorAll("button")].find(button => button.textContent === "ctrl"));
+  term.type("\x1b[?1;2c");
+  assert.equal(socket.input, "", "a historical parser reply cannot reach the shell");
+  assert.equal(view.container.querySelector('[aria-pressed="true"]')?.textContent, "ctrl");
+  assert.equal(typeof callbacks[0], "function", "snapshot has a parser completion boundary");
+  dom.update(() => callbacks[0]());
+  await settle();
+  assert.equal(isConnected(view), true);
+  dom.update(() => term.type("\x1b[?1;2c"));
+  assert.equal(socket.input, "\x1b[?1;2c", "a live query can answer after history is ready");
+  assert.equal(view.container.querySelector('[aria-pressed="true"]')?.textContent, "ctrl");
+  dom.update(() => term.type("c"));
+  assert.equal(socket.input, "\x1b[?1;2c\x03", "Ctrl still applies to the next actual typed key");
+});
+
+test("a snapshot completion after socket close cannot make that terminal connected", async (t) => {
+  const { view, socket, term } = await reachTerminal({ connect: false });
+  t.after(() => view.unmount());
+  const callbacks = holdSnapshotCallbacks(term);
+  socket.receive({ type: "snapshot", data: "old history", heartbeat: true });
+  socket.close();
+  socket.onclose({ code: 4001 });
+  assert.equal(typeof callbacks[0], "function");
+  dom.update(() => callbacks[0]());
+  await settle();
+  assert.equal(isConnected(view), false, "a closed socket's callback cannot report ready");
+  term.type("must not send");
+  assert.equal(socket.input, "");
+});
+
+test("an old snapshot callback cannot enable a replacement socket before its own history parses", async (t) => {
+  const { view, socket, term } = await reachTerminal({ connect: false });
+  t.after(() => view.unmount());
+  const callbacks = holdSnapshotCallbacks(term);
+  socket.receive({ type: "snapshot", data: "old history", heartbeat: true });
+  socket.close();
+  socket.onclose({ code: 1006 });
+  dom.update(() => window.dispatchEvent(new Event("online")));
+  const replacement = await dom.waitFor(() => Socket.all.at(-1) !== socket && Socket.all.at(-1));
+  await dom.waitFor(() => replacement.sent.some(message => message.type === "auth"));
+  replacement.receive({ type: "snapshot", data: "replacement history", heartbeat: true });
+  assert.equal(typeof callbacks[0], "function");
+  assert.equal(typeof callbacks[1], "function");
+  dom.update(() => callbacks[0]());
+  await settle();
+  term.type("must not be queued or sent");
+  assert.equal(isConnected(view), false);
+  assert.equal(replacement.input, "", "old completion cannot send into the replacement connection");
+  dom.update(() => callbacks[1]());
+  await settle();
+  assert.equal(isConnected(view), true);
+  term.type("current input");
+  assert.equal(replacement.input, "current input", "only fresh input is sent after current history is ready");
+  assert.equal(socket.input, "");
+});
+
+test("a snapshot completion after unmount cannot enable a newly mounted terminal", async (t) => {
+  const old = await reachTerminal({ connect: false });
+  const callbacks = holdSnapshotCallbacks(old.term);
+  old.socket.receive({ type: "snapshot", data: "unmounted history", heartbeat: true });
+  old.view.unmount();
+  const next = await reachTerminal({ connect: false });
+  t.after(() => next.view.unmount());
+  assert.equal(typeof callbacks[0], "function");
+  dom.update(() => callbacks[0]());
+  await settle();
+  old.term.type("old input");
+  next.term.type("not ready");
+  assert.equal(isConnected(next.view), false);
+  assert.equal(old.socket.input, "");
+  assert.equal(next.socket.input, "");
+});
+
 async function desktopTerminal() {
   let setProps;
   function Target() {

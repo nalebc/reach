@@ -344,12 +344,19 @@ export function TerminalView({
         }
         if (m.type === "snapshot") {
           heartbeatSupported = m.heartbeat === true;
+          connectedRef = false;
+          setConnected(false);
           term.reset();
-          term.write(m.data);
-          connectedRef = true;
-          retry.reset();
-          setConnected(true);
-          resize();
+          // History can contain terminal queries. xterm parses asynchronously:
+          // their replies must not become fresh input in the current shell.
+          // Live writes queued after this one still answer normally.
+          term.write(m.data, () => {
+            if (stopped || ws !== current || current.readyState !== WebSocket.OPEN) return;
+            connectedRef = true;
+            retry.reset();
+            setConnected(true);
+            resize();
+          });
         }
         if (m.type === "data") term.write(m.data);
         if (m.type === "exit") {
@@ -399,16 +406,16 @@ export function TerminalView({
     window.addEventListener("online", wake);
     document.addEventListener("visibilitychange", wake);
     const input = term.onData((typed) => {
+      if (stopped || !connectedRef || ws?.readyState !== WebSocket.OPEN) return;
       let data = typed;
       // Sticky Ctrl from the key row applies to the next typed character.
-      if (ctrlArmed.current) {
+      if (ctrlArmed.current && typed.length === 1) {
         data = controlKey(typed) ?? typed;
         ctrlArmed.current = false;
         setCtrl(false);
       }
-      if (ws?.readyState === WebSocket.OPEN && connectedRef)
-        for (const piece of inputPieces(data))
-          ws.send(JSON.stringify({ type: "input", data: piece }));
+      for (const piece of inputPieces(data))
+        ws.send(JSON.stringify({ type: "input", data: piece }));
     });
     const ro = new ResizeObserver(resize);
     ro.observe(mount.current);
