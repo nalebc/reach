@@ -34,9 +34,15 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 
 - Keep a pending clipboard read bound to its original terminal and access.
   Switching terminals or computers, changing access, or closing the view drops
-  the old read and any stale fallback prompt, including a switch away and back.
+  the old read, including a switch away and back.
 - Preserve a newer unsaved file draft when an earlier preview's save completes
   after it closes. A confirmed save clears only the draft it saved.
+- Keep unsent file and manual-paste drafts across verified, already approved
+  private handoffs and late computer-metadata updates. Saves and pastes still
+  require a fresh explicit action using the current connection's credentials.
+- Keep manual paste text when its terminal is disconnected or its command
+  confirmation is declined, so a known-unsent draft can be copied or submitted
+  explicitly later.
 - Terminal input longer than 32,768 characters (a large paste, from the phone
   or a computer's keyboard) arrives whole, in pieces, instead of being dropped.
 - Recognize Windows' same-owner `OWNER RIGHTS` folder permissions and narrowly
