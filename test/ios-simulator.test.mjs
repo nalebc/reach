@@ -13,6 +13,7 @@ import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
 import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
+import { startIosHostDiagnostics } from "./helpers/ios-host-diagnostics.mjs";
 import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
 import { createIosProxyForwarder } from "./helpers/ios-proxy.mjs";
 
@@ -50,7 +51,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // outcome. A timeout ends the test before its report: cleanup then leaves
   // what it has.
   const started = Date.now(), phases = [], steps = [], requests = [];
-  let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, pageSeen = false, reported = false;
+  let device, bundle, failure, runtimeVersion, ready, pageLimit, proxyForwarder, launchObservation, pageSeen = false, reported = false;
+  const hostObservation = startIosHostDiagnostics({ run, deadline: started + budget });
+  void hostObservation.sample("before simulator setup");
   const pageEvidence = createIosPageEvidence({ started });
   const lifecycle = createIosLifecycleEvidence();
   const since = from => Math.round((Date.now() - from) / 100) / 10;
@@ -74,8 +77,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const allowed = Math.min(limit, left());
       const began = Date.now();
       try {
-        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress, requireProgress });
-        steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: observation } : {}) });
+        const result = await run("xcrun", ["simctl", ...(typeof args === "function" ? args(attempt) : args)], allowed, { progress, requireProgress, captureLifecycle: name === "launch" });
+        steps.push({ step: name, attempt, seconds: since(began), ok: true, ...(result.observed ? { observed: observation } : {}),
+          ...(result.commandEvidence ? { commandEvidence: result.commandEvidence } : {}) });
         process.stderr.write(`iOS simulator test:   ${name}: ${since(began)} s${attempt > 1 ? ` (attempt ${attempt})` : ""}\n`);
         return result;
       } catch (error) {
@@ -88,15 +92,29 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
     throw Error(`simctl ${name} failed: ${tries.join("; ")}`);
   };
   t.after(async () => {
+    hostObservation.stop();
+    if (output && reported) {
+      // Run only after the original screenshot and final assertions (or their
+      // failure). A diagnostic sample must not delay those qualifying steps.
+      await hostObservation.sample("after original test body").catch(() => {});
+      try {
+        const saved = JSON.parse(await fs.readFile(output, "utf8"));
+        await fs.writeFile(output, JSON.stringify({ ...saved, launchObservation, hostObservation: hostObservation.snapshot() }, null, 2) + "\n");
+      } catch { /* Best-effort diagnostics cannot replace the test outcome. */ }
+    }
     if (output && !reported) {
       const last = phases.at(-1)?.phase || "nothing";
-      const diagnostics = await collectIosFailureDiagnostics({ device, bundle, deadline: started + budget, run })
-        .catch(error => ({ error: String(error.message).slice(0, 1000) }));
+      const [diagnostics] = await Promise.all([
+        collectIosFailureDiagnostics({ device, bundle, deadline: started + budget, run })
+          .catch(error => ({ error: String(error.message).slice(0, 1000) })),
+        hostObservation.sample("failure boundary").catch(() => {}),
+      ]);
       await fs.mkdir(path.dirname(output), { recursive: true });
       const pageState = pageEvidence.snapshot();
       const report = applyIosAssetGate(iosPageFailureReport({ error: failure, last, context: {
         phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageState,
-        proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics, physicalDevice: false } }), pageState);
+        proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics,
+        launchObservation, hostObservation: hostObservation.snapshot(), physicalDevice: false } }), pageState);
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
@@ -368,7 +386,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached }); }
+  try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached,
+    observeLogs: evidence => { launchObservation = evidence; } }); }
   catch (error) { failure = error.message; throw error; }
   reached("app launched");
   // The page's own time. A slow simulator opening Settings or reopening the
@@ -423,7 +442,8 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
-      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version,
+      launchObservation, hostObservation: hostObservation.snapshot(), backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });

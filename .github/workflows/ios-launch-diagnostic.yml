@@ -1,0 +1,50 @@
+name: iOS launch diagnostics
+on:
+  push:
+    branches: [validation/ios-launch-0.4.1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2]
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      REACH_TEST_IOS_RUNTIME: "26.2"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: npx --no-install cap sync ios
+        env:
+          REACH_APP_URL: https://computer.example.ts.net:8443
+      - name: Build the simulator app with its local bundle identity
+        run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
+      - name: Real iOS pairing, authenticated files and native transfer bridges
+        run: |
+          mkdir -p reports
+          npm run test:file -- --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
+        env:
+          REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
+          REACH_TEST_IOS_REPORT: reports/ios-simulator.json
+      - name: Preserve simulator evidence even after a test failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-ios-launch-diagnostic-trial-${{ matrix.trial }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14

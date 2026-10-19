@@ -3,7 +3,7 @@ import { startIosLaunchLogs } from "./ios-diagnostics.mjs";
 
 // Only the disposable simulator's first app launch and its one recovery
 // reboot. sim supplies the smoke test's bounded commands and total budget.
-export async function launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen, reached, startLogs = startIosLaunchLogs }) {
+export async function launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen, reached, startLogs = startIosLaunchLogs, observeLogs }) {
   // openurl can exit successfully at an "Open in Reach?" confirmation on the
   // home screen. Every attempt must launch the installed app directly.
   let logs = startLogs({ device, bundle });
@@ -28,5 +28,8 @@ export async function launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen
     },
   }); }
   catch (error) { logs.stop({ retain: true }); throw error; }
-  finally { logs.stop(); }
+  finally {
+    logs.stop();
+    try { observeLogs?.(logs.snapshot?.()); } catch { /* An observer cannot replace the launch outcome. */ }
+  }
 }

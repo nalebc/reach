@@ -7,14 +7,17 @@ import { spawn } from "node:child_process";
 const tail = (value, limit) => typeof value === "string" ? value.slice(-limit) : "";
 export const commandFailureOutput = error => ({
   stdout: tail(error?.stdout, 8192), stderr: tail(error?.stderr, 8192),
+  ...(error?.commandEvidence ? { commandEvidence: error.commandEvidence } : {}),
 });
 const failure = error => ({ error: String(error?.message || error).slice(0, 1000), ...commandFailureOutput(error) });
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const bundleId = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
 const launchLogs = new Map();
+export const iosLaunchPredicate = bundle => `eventMessage CONTAINS[c] "${bundle}" OR process IN {"launchd", "runningboardd", "SpringBoard", "installd", "lsd"}`;
 
 // Capture launch errors before a stalled simulator stops answering `log show`.
-// Scope both the device and predicate; never query the host's unified log.
+// Scope both the device and predicate. Host runtime observations are a separate,
+// explicitly narrow collector, never a host-wide bundle-string log query.
 // This observer does not launch/recover the app or decide whether it passed.
 export function startIosLaunchLogs({ device, bundle, start = spawn, limit = 570000 }) {
   if (!uuid.test(device || "") || !bundleId.test(bundle || "")) return { stop() {} };
@@ -22,22 +25,37 @@ export function startIosLaunchLogs({ device, bundle, start = spawn, limit = 5700
   const previous = launchLogs.get(key);
   launchLogs.delete(key);
   const evidence = { stdout: previous?.stdout || "", stderr: previous?.stderr || "", truncated: previous?.truncated || false,
-    captures: (previous?.captures || 0) + 1, ...(previous?.error ? { error: previous.error } : {}) };
+    captures: (previous?.captures || 0) + 1, sessions: (previous?.sessions || []).slice(-2), retentionUnits: "UTF-16 code units",
+    ...(previous?.error ? { error: previous.error } : {}) };
+  const began = performance.now(), session = { startedAt: new Date().toISOString(), events: [], stdoutFirst: "", stdoutTail: "", stderrTail: "", stdoutUnits: 0, stderrUnits: 0 };
+  evidence.sessions.push(session);
+  const record = (event, extra = {}) => {
+    if (session.events.length < 20) session.events.push({ event, elapsedMs: Math.round(performance.now() - began), ...extra });
+    else session.eventsTruncated = true;
+  };
   let child, timer, force, stopped = false;
   const append = (field, chunk, maximum) => {
     const value = String(chunk);
     evidence.truncated ||= evidence[field].length + value.length > maximum;
     evidence[field] = tail(evidence[field] + value, maximum);
+    // Three existing attempts at most: preserve an early prefix and late tail
+    // per stream, even if later service messages displace aggregate history.
+    session[`${field}Units`] += value.length;
+    if (field === "stdout") {
+      session.stdoutFirst += value.slice(0, Math.max(0, 8192 - session.stdoutFirst.length));
+      session.stdoutTail = tail(session.stdoutTail + value, 16384);
+    } else session.stderrTail = tail(session.stderrTail + value, 4096);
   };
   const stop = ({ retain = false, timedOut = false } = {}) => {
     if (!stopped) {
       stopped = true;
       clearTimeout(timer);
       evidence.stopped = true;
+      record("stop", { timedOut });
       if (timedOut) evidence.timedOut = true;
       if (child && child.exitCode === null && child.signalCode === null) {
-        try { child.kill("SIGTERM"); } catch (error) { evidence.error = String(error.message).slice(0, 1000); }
-        force = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* Diagnostic cleanup cannot change the launch result. */ } }, 5000);
+        try { record("kill-request", { signal: "SIGTERM" }); child.kill("SIGTERM"); } catch (error) { evidence.error = String(error.message).slice(0, 1000); }
+        force = setTimeout(() => { try { record("kill-request", { signal: "SIGKILL" }); child.kill("SIGKILL"); } catch { /* Diagnostic cleanup cannot change the launch result. */ } }, 5000);
         force.unref();
       }
       child?.stdout?.destroy();
@@ -46,20 +64,27 @@ export function startIosLaunchLogs({ device, bundle, start = spawn, limit = 5700
     if (retain) {
       // Only failed launches need later collection; bound even that cache.
       if (launchLogs.size >= 4) launchLogs.delete(launchLogs.keys().next().value);
-      launchLogs.set(key, { ...evidence });
+      launchLogs.set(key, evidence);
     }
   };
   try {
-    child = start("xcrun", ["simctl", "spawn", device, "log", "stream", "--style", "compact", "--level", "info",
-      "--predicate", `eventMessage CONTAINS[c] "${bundle}"`], { stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.setEncoding("utf8").on("data", chunk => append("stdout", chunk, 65536));
-    child.stderr.setEncoding("utf8").on("data", chunk => append("stderr", chunk, 8192));
-    child.on("error", error => { evidence.error = String(error.message).slice(0, 1000); stop(); });
-    child.on("close", (code, signal) => { clearTimeout(force); evidence.exitCode = code; evidence.signal = signal; stop(); });
+    session.command = "xcrun";
+    session.args = ["simctl", "spawn", device, "log", "stream", "--style", "compact", "--level", "info", "--predicate", iosLaunchPredicate(bundle)];
+    child = start(session.command, session.args, { stdio: ["ignore", "pipe", "pipe"] });
+    child.on("error", error => { evidence.error = String(error.message).slice(0, 1000); record("error", { error: evidence.error }); stop(); });
+    child.once("spawn", () => record("spawn", { pid: child.pid }));
+    child.once("exit", (code, signal) => record("exit", { code, signal }));
+    for (const [name, stream] of [["stdout", child.stdout], ["stderr", child.stderr]]) {
+      stream?.once("end", () => record(`${name}-end`));
+      stream?.once("close", () => record(`${name}-close`));
+    }
+    child.stdout?.setEncoding("utf8").on("data", chunk => append("stdout", chunk, 65536));
+    child.stderr?.setEncoding("utf8").on("data", chunk => append("stderr", chunk, 8192));
+    child.on("close", (code, signal) => { clearTimeout(force); evidence.exitCode = code; evidence.signal = signal; record("close", { code, signal }); stop(); });
     timer = setTimeout(() => stop({ timedOut: true }), Math.min(570000, Math.max(1, limit)));
     timer.unref();
   } catch (error) { evidence.error = String(error.message).slice(0, 1000); stop(); }
-  return { stop };
+  return { stop, snapshot: () => evidence };
 }
 
 // Read only UUID-scoped simulator folders, never the host's DiagnosticReports
@@ -135,9 +160,9 @@ export async function collectIosFailureDiagnostics({ device, bundle, deadline, r
   };
   let timer, timedOut = false;
   const commands = [
-    capture(["spawn", device, "log", "show", "--last", "10m", "--style", "compact", "--predicate", `eventMessage CONTAINS[c] "${bundle}"`], value => tail(value, 65536))
+    capture(["spawn", device, "log", "show", "--last", "10m", "--style", "compact", "--predicate", iosLaunchPredicate(bundle)], value => tail(value, 65536))
       .then(value => { result.logs = value; }),
-    capture(["spawn", device, "launchctl", "list"], value => tail(String(value || "").split("\n").filter(line => line.includes(bundle)).slice(0, 20).join("\n"), 8192))
+    capture(["spawn", device, "launchctl", "list"], value => tail(String(value || "").split("\n").filter(line => line.includes(bundle) || /SpringBoard|runningboard|launchservices|installd/i.test(line)).slice(0, 40).join("\n"), 8192))
       .then(value => { result.processes = value; }),
     capture(["appinfo", device, bundle], value => tail(value, 16384))
       .then(value => { result.installedApp = value; }),

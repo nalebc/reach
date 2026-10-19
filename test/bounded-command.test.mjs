@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { boundedCommand } from "./helpers/bounded-command.mjs";
 
 test("a command's successful exit is enough without independent progress", async () => {
@@ -55,6 +58,67 @@ test("failed command output has strict caps even when a final chunk crosses the 
     assert.match(error.message, /exited with 7/);
     assert.equal(error.stdout.length, 2 << 20);
     assert.equal(error.stderr.length, 1 << 16);
+    return true;
+  });
+});
+
+test("optional lifecycle evidence distinguishes exited launchers from a required progress deadline", async () => {
+  let evidence;
+  await assert.rejects(boundedCommand(process.execPath, ["-e", "process.stdout.write('requested')"], 700, {
+    captureLifecycle: true, requireProgress: true, progress: new Promise(() => {}),
+  }), error => {
+    evidence = error.commandEvidence;
+    assert.match(error.message, /did not finish within 0.7 s/);
+    assert.equal(error.stdout, "requested");
+    return true;
+  });
+  assert.equal(evidence.command, process.execPath);
+  assert.deepEqual(evidence.args, ["-e", "process.stdout.write('requested')"]);
+  assert.deepEqual(evidence.options, { stdio: ["ignore", "pipe", "pipe"], limitMs: 700, requireProgress: true, hasProgress: true });
+  assert.ok(evidence.events.some(event => event.event === "exit" && event.code === 0));
+  assert.ok(evidence.events.some(event => event.event === "close" && event.code === 0));
+  assert.ok(evidence.events.some(event => event.event === "deadline" && event.exitCode === 0));
+  assert.ok(!evidence.events.some(event => event.event === "kill-request"));
+  assert.equal(evidence.stdoutDecodedUtf8Bytes, 9);
+  assert.equal(evidence.outputRetention.units, "UTF-16 code units");
+});
+
+test("lifecycle evidence records child exit before inherited stdout pipes close", async t => {
+  // Real local child/pipe behavior only; no simulator. The grandchild inherits
+  // the launcher's pipes, as a service may. It has a finite natural lifetime
+  // and writes an owned completion marker; no PID is used for later control.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-command-pipes-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const marker = path.join(dir, "natural-completion");
+  const grandchild = `setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(marker)},'done')},2200)`;
+  const source = `const {spawn}=require('node:child_process'); const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore',process.stdout,process.stderr]}); console.log(c.pid); c.unref();`;
+  let problem, pid;
+  try {
+    await boundedCommand(process.execPath, ["-e", source], 1200, { captureLifecycle: true });
+    assert.fail("inherited pipes must hold close past the deadline");
+  } catch (error) { problem = error; pid = Number(error.stdout?.trim()); }
+  assert.match(problem.message, /did not finish within 1.2 s/);
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  const events = problem.commandEvidence.events;
+  const exit = events.find(event => event.event === "exit");
+  const deadline = events.find(event => event.event === "deadline");
+  assert.equal(exit.code, 0);
+  assert.equal(deadline.exitCode, 0);
+  assert.ok(exit.elapsedMs < deadline.elapsedMs);
+  assert.ok(!events.some(event => event.event === "close" && event.elapsedMs < deadline.elapsedMs));
+  const until = Date.now() + 5000;
+  let completed = false;
+  while (Date.now() < until) {
+    if (await fs.readFile(marker, "utf8").catch(() => "") === "done") { completed = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.equal(completed, true, "the fixture grandchild completes naturally without PID-based teardown");
+});
+
+test("failed process creation is retained as lifecycle evidence rather than an unhandled error", async () => {
+  await assert.rejects(boundedCommand(`${process.execPath}.reach-does-not-exist`, [], 1000, { captureLifecycle: true }), error => {
+    assert.equal(error.code, "ENOENT");
+    assert.ok(error.commandEvidence.events.some(event => event.event === "error"));
     return true;
   });
 });

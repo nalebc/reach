@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { parse } from "yaml";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
-import { collectIosFailureDiagnostics, commandFailureOutput, startIosLaunchLogs } from "./helpers/ios-diagnostics.mjs";
+import { collectIosFailureDiagnostics, commandFailureOutput, startIosLaunchLogs, iosLaunchPredicate } from "./helpers/ios-diagnostics.mjs";
+import { startIosHostDiagnostics, iosHostPredicate } from "./helpers/ios-host-diagnostics.mjs";
 
 const device = "disposable-simulator", bundle = "test.reach.smoke";
 
@@ -222,7 +224,7 @@ test("failure diagnostics query only the exact simulator and bundle within the e
       assert.ok(call.limit > 0 && call.limit <= Math.min(budget, 10000));
       assert.ok(!call.args.some(arg => ["all", "booted", "diagnose", "launch", "shutdown"].includes(arg)));
     }
-    assert.equal(calls.find(call => call.args.includes("log")).args.at(-1), `eventMessage CONTAINS[c] "${bundle}"`);
+    assert.equal(calls.find(call => call.args.includes("log")).args.at(-1), iosLaunchPredicate(bundle));
     assert.equal(result.logs.stdout.length, 65536);
     assert.equal(result.processes.stdout, `12\t0\tUIKitApplication:${bundle}`);
     assert.equal(result.installedApp.ok, true);
@@ -311,7 +313,7 @@ function logProcess() {
 test("live launch evidence is scoped, bounded and retained only for its failed launch", async t => {
   const home = await diagnosticHome(t), child = logProcess(), calls = [];
   const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: (...args) => { calls.push(args); return child; } });
-  assert.deepEqual(calls[0], ["xcrun", ["simctl", "spawn", diagnosticDevice, "log", "stream", "--style", "compact", "--level", "info", "--predicate", `eventMessage CONTAINS[c] "${bundle}"`], { stdio: ["ignore", "pipe", "pipe"] }]);
+  assert.deepEqual(calls[0], ["xcrun", ["simctl", "spawn", diagnosticDevice, "log", "stream", "--style", "compact", "--level", "info", "--predicate", iosLaunchPredicate(bundle)], { stdio: ["ignore", "pipe", "pipe"] }]);
   child.stdout.write("x".repeat(70000) + " exact launch error");
   child.stderr.write("e".repeat(9000));
   logs.stop({ retain: true });
@@ -323,6 +325,7 @@ test("live launch evidence is scoped, bounded and retained only for its failed l
   assert.equal(result.liveLogs.stderr.length, 8192);
   assert.equal(result.liveLogs.truncated, true);
   assert.equal(result.liveLogs.stopped, true);
+  assert.ok(result.liveLogs.sessions[0].events.some(event => event.event === "close"), "late observer close remains in the retained evidence object");
   const consumed = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
   assert.equal(consumed.liveLogs, undefined);
 });
@@ -360,4 +363,109 @@ test("a live log observer stops at its own bound without changing launch limits"
   assert.deepEqual(child.signals, ["SIGTERM"]);
   const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
   assert.equal(result.liveLogs.timedOut, true);
+});
+
+test("simulator service evidence includes launch services without widening the device selector", async t => {
+  const home = await diagnosticHome(t);
+  const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 1000,
+    run: async (command, args) => ({ stdout: args.includes("launchctl") ? `1\t0\tcom.apple.SpringBoard\n2\t0\tcom.apple.runningboardd\n3\t0\tunrelated.app\n` : "" }),
+  });
+  assert.match(result.processes.stdout, /SpringBoard/);
+  assert.match(result.processes.stdout, /runningboardd/);
+  assert.doesNotMatch(result.processes.stdout, /unrelated/);
+  for (const process of ["launchd", "runningboardd", "SpringBoard", "installd", "lsd"]) assert.ok(iosLaunchPredicate(bundle).includes(`"${process}"`));
+});
+
+test("launch observations survive success and an observer callback cannot replace the launch outcome", async () => {
+  const evidence = { sessions: [{ events: [{ event: "exit", code: 0 }] }] };
+  let observed;
+  const args = { device, bundle, sim: async () => ({ stdout: "started" }),
+    startLogs: () => ({ stop() {}, snapshot: () => evidence }) };
+  assert.deepEqual(await launchIosSmokeApp({ ...args, observeLogs: value => { observed = value; } }), { stdout: "started" });
+  assert.equal(observed, evidence);
+  assert.deepEqual(await launchIosSmokeApp({ ...args, observeLogs: () => { throw Error("observer failed"); } }), { stdout: "started" });
+});
+
+test("host runtime diagnostics are narrow, capped, bounded and cannot launch or generate pressure", async () => {
+  const child = logProcess(), calls = [], starts = [];
+  const host = startIosHostDiagnostics({ deadline: Date.now() + 10000, start: (...args) => { starts.push(args); return child; },
+    run: async (command, args, limit, options) => {
+      calls.push({ command, args, limit, options });
+      return { stdout: command === "/bin/ps" ? "1 0 S 00:01 0.0 12 /usr/libexec/simdiskimaged\n2 0 S 00:01 0.0 99 /private/user-secret-app\n3 0 S 00:01 0.0 12 /com.apple.CoreSimulator.CoreSimulatorService.xpc/Contents/MacOS/com.apple.CoreSimulator.CoreSimulatorService\n4 0 S 00:01 0.0 12 simdiskimaged\n" : "Mach Virtual Memory Statistics: " + "m".repeat(9000) };
+    },
+  });
+  assert.deepEqual(starts, [["/usr/bin/log", ["stream", "--style", "compact", "--level", "info", "--predicate", iosHostPredicate], { stdio: ["ignore", "pipe", "pipe"] }]]);
+  child.stdout.write("r".repeat(40000)); child.stderr.write("e".repeat(5000));
+  await host.sample("start"); await host.sample("finish"); await host.sample("ignored");
+  host.stop(); host.stop();
+  await Promise.resolve();
+  const value = host.snapshot();
+  assert.equal(value.samples.length, 2);
+  assert.equal(calls.length, 4);
+  for (const call of calls) { assert.ok(call.limit > 0 && call.limit <= 2000); assert.equal(call.options.captureLifecycle, true); }
+  assert.ok(calls.every(call => ["/bin/ps", "/usr/bin/vm_stat"].includes(call.command)));
+  assert.match(value.samples[0].processes.stdout, /simdiskimaged/);
+  assert.match(value.samples[0].processes.stdout, /com\.apple\.CoreSimulator\.CoreSimulatorService$/m);
+  assert.match(value.samples[0].processes.stdout, /12 simdiskimaged$/m);
+  assert.doesNotMatch(JSON.stringify(value), /user-secret-app/);
+  assert.equal(value.samples[0].memory.stdout.length, 8192);
+  assert.equal(value.logs.stdout.length, 32768); assert.equal(value.logs.stderr.length, 4096);
+  assert.equal(value.logs.truncated, true);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.ok(value.logs.events.some(event => event.event === "close"));
+});
+
+test("expired host diagnostic budgets and observer failures remain evidence", async () => {
+  const expired = startIosHostDiagnostics({ deadline: Date.now() - 1,
+    start: () => assert.fail("expired collector cannot start"), run: () => assert.fail("expired collector cannot sample") });
+  await expired.sample("expired"); expired.stop();
+  assert.ok(expired.snapshot().logs.skipped);
+  assert.ok(expired.snapshot().samples[0].skipped);
+  const unavailable = startIosHostDiagnostics({ deadline: Date.now() + 5000, start: () => { throw Error("host log unavailable"); },
+    run: async () => { throw Error("snapshot unavailable"); } });
+  await unavailable.sample("failed"); unavailable.stop();
+  assert.equal(unavailable.snapshot().logs.error, "host log unavailable");
+  assert.equal(unavailable.snapshot().samples[0].processes.error, "snapshot unavailable");
+});
+
+test("diagnostic workflow retains both fresh machines and the unchanged required iOS job policy", async () => {
+  const load = async name => parse(await fs.readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"));
+  const diagnostic = await load("ios-launch-diagnostic"), required = (await load("ci")).jobs.ios;
+  assert.deepEqual(diagnostic.on, { push: { branches: ["validation/ios-launch-0.4.1"] }, workflow_dispatch: null });
+  assert.deepEqual(diagnostic.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(diagnostic.jobs), ["ios"]);
+  const { strategy, ...job } = diagnostic.jobs.ios;
+  assert.deepEqual(strategy, { "fail-fast": false, matrix: { trial: [1, 2] } });
+  assert.equal(job.steps.at(-1).with.name, "tests-ios-launch-diagnostic-trial-${{ matrix.trial }}");
+  job.steps.at(-1).with.name = required.steps.at(-1).with.name;
+  assert.deepEqual(job, required, "the diagnostic lane keeps the same Xcode, build, signing, npm guard, test timeout and always-upload policy");
+});
+
+test("later simulator-service verbosity cannot erase all first-attempt evidence", async () => {
+  const first = logProcess();
+  const initial = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: () => first });
+  first.stdout.write("first-attempt-boundary\n" + "a".repeat(80000));
+  initial.stop({ retain: true });
+  const second = logProcess();
+  const retry = startIosLaunchLogs({ device: diagnosticDevice, bundle, start: () => second });
+  second.stdout.write("b".repeat(80000) + "second-attempt-tail");
+  retry.stop({ retain: true });
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.doesNotMatch(result.liveLogs.stdout, /first-attempt-boundary/);
+  const [a, b] = result.liveLogs.sessions;
+  assert.match(a.stdoutFirst, /^first-attempt-boundary/);
+  assert.equal(a.stdoutFirst.length, 8192);
+  assert.equal(a.stdoutTail.length, 16384);
+  assert.match(b.stdoutTail, /second-attempt-tail$/);
+  assert.ok(result.liveLogs.sessions.length <= 3);
+});
+
+test("success-path host sampling is outside the original screenshot and final assertions", async () => {
+  const source = await fs.readFile(new URL("./ios-simulator.test.mjs", import.meta.url), "utf8");
+  assert.ok(source.includes('t.after(async () => {'));
+  const beforeCleanupEnd = source.slice(source.indexOf('t.after(async () => {'), source.indexOf('  const reach = await startCleanReach'));
+  assert.match(beforeCleanupEnd, /hostObservation\.sample\("after original test body"\)/);
+  const originalBody = source.slice(source.indexOf('  const reach = await startCleanReach'));
+  assert.doesNotMatch(originalBody, /await hostObservation\.sample/);
+  assert.match(originalBody, /assert\.equal\(report\.checks\.length, 8\)/);
 });
