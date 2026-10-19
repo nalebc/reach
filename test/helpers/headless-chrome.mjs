@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { windowsBrowserProcess } from "./windows-browser-lifetime.mjs";
 
 const exec = promisify(execFile);
 
@@ -66,7 +67,13 @@ export async function testCertificate(dir, host) {
 // sessionId), on(method, listener), and close(). Closed after the test
 // (`t.after`); close it first yourself when something else waits for its
 // connections to end (a server's close()).
-export async function launchChrome(t, { binary = findChrome(), hosts = [], spki, args = [] } = {}) {
+async function launchBrowserProcess(binary, flags) {
+  if (process.platform === "win32") return windowsBrowserProcess(binary, flags);
+  const child = spawn(binary, flags, { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], detached: true });
+  return { child, async terminate() { process.kill(-child.pid, "SIGKILL"); } };
+}
+
+export async function launchChrome(t, { binary = findChrome(), hosts = [], spki, args = [], launchProcess = launchBrowserProcess } = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "reach-chrome-"));
   const flags = [
     "--headless=new",
@@ -88,18 +95,24 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
     ...args,
     "about:blank",
   ];
-  const child = spawn(binary, flags, {
-    stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    // A forced shutdown targets only this disposable browser's process group.
-    detached: process.platform !== "win32",
-  });
+  let owner;
+  try { owner = await launchProcess(binary, flags); }
+  catch (error) { await fs.promises.rm(profile, { recursive: true, force: true }); throw error; }
+  const child = owner.child;
+  const began = performance.now();
+  const processEvents = [];
+  child.once("exit", (code, signal) => processEvents.push({ kind: "exit", code, signal, elapsedMs: Math.round(performance.now() - began) }));
   let stderr = "";
   child.stderr.on("data", (c) => {
     if (stderr.length < 1 << 16) stderr += c;
   });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   let hasClosed = false;
-  const closed = new Promise(resolve => child.once("close", () => { hasClosed = true; resolve(); }));
+  const closed = new Promise(resolve => child.once("close", () => {
+    hasClosed = true;
+    processEvents.push({ kind: "close", elapsedMs: Math.round(performance.now() - began) });
+    resolve();
+  }));
   const toChrome = child.stdio[3],
     fromChrome = child.stdio[4];
   let next = 1,
@@ -155,38 +168,51 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       ]);
     } finally { clearTimeout(timer); }
   };
+  let profileRemoved = false;
+  const lifetime = () => ({
+    pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode,
+    hasClosed, profileRemoved, events: processEvents.map(event => ({ ...event })),
+    pipes: [child.stderr, toChrome, fromChrome].map(pipe => ({ ended: pipe.readableEnded === true, writableEnded: pipe.writableEnded === true, destroyed: pipe.destroyed === true })),
+    ...(owner.snapshot ? { ownedTree: owner.snapshot() } : {}),
+  });
   let closing;
   const close = () => closing ||= (async () => {
-    if (!hasClosed && child.pid) {
-      if (child.exitCode === null && child.signalCode === null) {
-        // Let Chrome stop its children and flush the throwaway profile before
-        // deleting it. A CDP reply alone is not proof that they have stopped.
-        void send("Browser.close", {}, undefined, 2000).catch(() => {});
-        await waitForClose(2000);
-      }
-      if (!hasClosed) {
-        let killError;
-        try {
-          if (process.platform === "win32") {
-            await new Promise((resolve, reject) => execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"],
-              { timeout: 2000, windowsHide: true }, error => error ? reject(error) : resolve()));
-          } else process.kill(-child.pid, "SIGKILL");
-        } catch (error) {
-          killError = error;
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    try {
+      if (!hasClosed && child.pid) {
+        if (child.exitCode === null && child.signalCode === null) {
+          // Let Chrome stop its children and flush the throwaway profile before
+          // deleting it. A CDP reply alone is not proof that they have stopped.
+          void send("Browser.close", {}, undefined, 2000).catch(() => {});
+          await waitForClose(2000);
         }
-        if (!await waitForClose(2000)) {
-          failPending(Error("Chrome shutdown timed out"));
-          for (const pipe of [child.stderr, toChrome, fromChrome]) pipe.destroy();
-          child.unref();
-          throw Error("Disposable Chrome did not close after bounded termination", { cause: killError });
+        if (!hasClosed) {
+          let killError;
+          try {
+            await owner.terminate(2000);
+          } catch (error) {
+            killError = error;
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          }
+          if (!await waitForClose(2000)) {
+            failPending(Error("Chrome shutdown timed out"));
+            for (const pipe of [child.stderr, toChrome, fromChrome]) pipe.destroy();
+            child.unref();
+            throw Error("Disposable Chrome did not close after bounded termination", { cause: killError });
+          }
         }
       }
+      // EOF from destroyed pipes is not proof of a stopped Windows tree. The
+      // broker must independently report zero kernel-owned processes and exit.
+      owner.assertStopped?.();
+      failPending(Error("Chrome closed"));
+      // Async retries allow any final filesystem work to settle. Sync removal
+      // blocks the test event loop while a killed browser's children can write.
+      await fs.promises.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      profileRemoved = true;
+    } catch (error) {
+      t.diagnostic?.(`Chrome lifetime ${JSON.stringify(lifetime())}`);
+      throw error;
     }
-    failPending(Error("Chrome closed"));
-    // Async retries allow any final filesystem work to settle. Sync removal
-    // blocks the test event loop while a killed browser's children can write.
-    await fs.promises.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   })();
   t.after(close);
   // Answers once it's up.
@@ -202,6 +228,7 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
       listeners.set(method, [...(listeners.get(method) || []), listener]);
     },
     close,
+    lifetime,
     stderr: () => stderr,
   };
 }

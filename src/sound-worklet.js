@@ -23,19 +23,36 @@ class ReachSound extends AudioWorkletProcessor {
     this.ramp = 1 / Math.round(sampleRate * 0.005);
     // The computer went silent: running dry then is no fault of the link.
     this.quiet = false;
+    this.recovering = false;
+    this.lastPacketAt = undefined;
     this.calmSince = currentTime;
     this.port.onmessage = ({ data }) => {
       if (data?.type === "samples") this.push(data.samples);
-      else if (data?.type === "quiet") this.quiet = true;
-      else if (data?.type === "clear") {
+      else if (data?.type === "quiet") {
+        this.quiet = true;
+        this.recovering = false;
+        this.lastPacketAt = undefined;
+      } else if (data?.type === "clear") {
         this.count = 0;
         this.playing = false;
+        this.recovering = false;
+        this.lastPacketAt = undefined;
       }
     };
   }
   push(samples) {
-    this.quiet = false;
     const frames = samples.length >> 1;
+    if (!frames) return;
+    // After a drain, refill for the delay actually observed between packets,
+    // plus one 20ms packet. Merely adding 40ms can resume into the next batch
+    // gap and drain again. Initial playback and intentional silence keep their
+    // existing queue; recovery still cannot exceed 400ms.
+    if (this.recovering && !this.quiet && this.lastPacketAt !== undefined) {
+      const gap = Math.max(0, currentTime - this.lastPacketAt);
+      this.target = Math.min(this.max, Math.max(this.target, Math.ceil(sampleRate * (gap + 0.02))));
+    }
+    this.lastPacketAt = currentTime;
+    this.quiet = false;
     for (let i = 0; i < frames; i++) {
       const at = (this.read + this.count) % this.size;
       this.left[at] = samples[2 * i];
@@ -68,6 +85,7 @@ class ReachSound extends AudioWorkletProcessor {
         return true;
       }
       this.playing = true;
+      this.recovering = false;
       this.gain = 0;
     }
     const have = Math.min(n, this.count);
@@ -84,6 +102,7 @@ class ReachSound extends AudioWorkletProcessor {
       left.fill(0, have);
       right.fill(0, have);
       this.playing = false;
+      this.recovering = !this.quiet;
       if (!this.quiet) {
         this.target = Math.min(this.max, this.target + Math.round(sampleRate * 0.04));
         this.port.postMessage({ type: "late", target: this.target / sampleRate });

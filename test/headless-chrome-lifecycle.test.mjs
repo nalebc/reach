@@ -1,17 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import childProcess, { execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { syncBuiltinESMExports } from "node:module";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
 import { launchChrome } from "./helpers/headless-chrome.mjs";
 
 // Model a browser whose parent exits before its inherited protocol pipes
 // close. No real Chrome, process group or operating-system signal is used.
-async function controlledBrowser(t, { closePipes = false, answerClose = true } = {}) {
+async function controlledBrowser(t, { closePipes = false, answerClose = true, confirmStopped = true } = {}) {
   const hooks = [], requests = [], terminations = [], child = new EventEmitter();
   const output = new PassThrough();
   let profile, exited = false, closed = false;
@@ -45,35 +44,27 @@ async function controlledBrowser(t, { closePipes = false, answerClose = true } =
   }), output];
   child.kill = () => { queueMicrotask(exit); return true; };
   child.unref = () => {};
-  t.mock.method(childProcess, "spawn", (_binary, flags) => {
+  const launchProcess = (_binary, flags) => {
     profile = flags.find(flag => flag.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
     fs.mkdirSync(path.join(profile, "Default"));
     fs.writeFileSync(path.join(profile, "Default", "active"), "owned browser state");
-    return child;
-  });
-  t.mock.method(process, "kill", (pid, signal) => {
-    assert.equal(pid, -child.pid, "only the disposable process group may be terminated");
-    assert.equal(signal, "SIGKILL");
-    terminations.push("group");
-    return child.kill(signal);
-  });
-  t.mock.method(childProcess, "execFile", (binary, args, options, callback) => {
-    assert.equal(binary, "taskkill");
-    assert.deepEqual(args, ["/pid", String(child.pid), "/t", "/f"]);
-    assert.equal(options.timeout, 2000);
-    terminations.push("tree");
-    child.kill("SIGKILL");
-    queueMicrotask(() => callback(null));
-  });
-  // Named built-in imports in the helper must use this controlled spawn.
-  syncBuiltinESMExports();
-  const browser = await launchChrome({ after: hook => hooks.push(hook) }, { binary: "controlled-browser" });
+    return {
+      child,
+      async terminate(limit) {
+        assert.equal(limit, 2000);
+        terminations.push(process.platform === "win32" ? "owned-job-model" : "group-model");
+        child.kill("SIGKILL");
+      },
+      assertStopped() { if (!confirmStopped) throw Error("controlled owned-tree confirmation missing"); },
+      snapshot: () => ({ owner: "modeled", confirmed: confirmStopped }),
+    };
+  };
+  const browser = await launchChrome({ after: hook => hooks.push(hook) }, { binary: "controlled-browser", launchProcess });
   return { browser, requests, terminations, profile, finish,
     async dispose() {
       exit(); finish();
       await Promise.allSettled(hooks.map(hook => hook()));
       t.mock.restoreAll();
-      syncBuiltinESMExports();
       fs.rmSync(profile, { recursive: true, force: true });
     },
   };
@@ -107,9 +98,19 @@ test("an unresponsive browser has a bounded owned-process fallback and retires u
     // real two-second deadline and reject earlier outstanding protocol work.
     await f.browser.close();
     await pending;
-    assert.deepEqual(f.terminations, [process.platform === "win32" ? "tree" : "group"]);
+    assert.deepEqual(f.terminations, [process.platform === "win32" ? "owned-job-model" : "group-model"]);
     await assert.rejects(fs.promises.stat(f.profile), { code: "ENOENT" });
     await assert.rejects(f.browser.send("After.close"), /Chrome exited/);
+  } finally { await f.dispose(); }
+});
+
+test("closed pipes cannot replace the owned-tree termination confirmation", { timeout: 5000 }, async t => {
+  const f = await controlledBrowser(t, { closePipes: true, confirmStopped: false });
+  try {
+    const first = f.browser.close();
+    await assert.rejects(first, /owned-tree confirmation missing/);
+    assert.equal(f.browser.close(), first, "the failed confirmation remains visible to every close caller");
+    assert.equal(await fs.promises.readFile(path.join(f.profile, "Default", "active"), "utf8"), "owned browser state");
   } finally { await f.dispose(); }
 });
 

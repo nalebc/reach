@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
+import { createHash } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { createReach } from "../server/index.mjs";
@@ -14,6 +15,7 @@ import { ALL_SCOPES } from "../server/core.mjs";
 import { desktopBinary, windowsBinary } from "../server/desktop-native.mjs";
 import { SoundSource } from "../server/screen-sound.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
+import { nativePacketBatches } from "./helpers/sound-packet-batch.mjs";
 
 // The computer's sound in a real browser engine, end to end: the real sound
 // helper (scripts/native/screen-sound.swift on a Mac, screen-sound.cs on a
@@ -40,7 +42,11 @@ const skip = !chrome
       ? process.env.REACH_TEST_WINDOWS_DESKTOP === "1" ? false : "the real-Windows lane runs it (it builds the PC's sound helper)"
       : "sound comes from a Mac or a Windows PC";
 
-async function buildPage(dir) {
+// The old M worklet can be selected for this test's controlled case only.
+// It is copied into the temporary build, never over the repository source.
+const baselineSHA256 = "6f02777932f43d5f6eb9239fc434ebe188f35afc253c77df573c9e27e0161982";
+const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
+async function buildPage(dir, { baseline } = {}) {
   const src = path.join(dir, "src");
   fs.mkdirSync(src);
   const abs = (p) => JSON.stringify(path.join(repo, p).split(path.sep).join("/"));
@@ -98,30 +104,60 @@ createRoot(document.getElementById("root")).render(React.createElement(App));
     `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module" src="./main.js"></script></body></html>`,
   );
   const out = path.join(dir, "page");
+  const workletBytes = fs.readFileSync(baseline || path.join(repo, "src/sound-worklet.js"));
+  const workletSHA256 = sha256(workletBytes);
+  let baselineCopy;
+  if (baseline) {
+    assert.equal(workletSHA256, baselineSHA256, "the test-only baseline must be the archived M worklet");
+    baselineCopy = path.join(dir, "baseline-sound-worklet.js");
+    fs.writeFileSync(baselineCopy, workletBytes);
+  }
   const { build } = await import("vite");
-  await build({
+  const result = await build({
     configFile: false,
     root: src,
     logLevel: "silent",
+    plugins: baseline ? [{
+      name: "test-only-verified-sound-worklet-baseline",
+      enforce: "pre",
+      resolveId(source, importer) {
+        const slash = value => value.split(path.sep).join("/");
+        if (source === "./sound-worklet.js?url&no-inline" && importer && slash(importer.split("?")[0]) === slash(path.join(repo, "src/useScreenSound.ts")))
+          return `${slash(baselineCopy)}?url&no-inline`;
+      },
+    }] : [],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: { outDir: out, emptyOutDir: true, target: "chrome100" },
   });
-  return out;
+  const assets = (Array.isArray(result) ? result : [result]).flatMap(bundle => bundle.output)
+    .filter(asset => asset.type === "asset" && sha256(asset.source) === workletSHA256);
+  assert.equal(assets.length, 1, "the page must emit the selected worklet's exact bytes as its own same-origin asset");
+  const asset = assets[0].fileName;
+  assert.equal(sha256(fs.readFileSync(path.join(out, asset))), workletSHA256);
+  return { page: out, worklet: { kind: baseline ? "verified-old-M-baseline" : "repository", sha256: workletSHA256, asset, assetSHA256: workletSHA256, servedCount: 0 } };
 }
 
-test("in a real browser, the speaker plays the real helper's sound under Reach's own page policy", { skip, timeout: 300000 }, async (t) => {
+async function soundInBrowser(t, { controlled = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-sound-e2e-"));
   const undo = [];
   const timing = createToneTiming();
   const eventLoop = monitorEventLoopDelay({ resolution: 10 });
   eventLoop.enable();
-  let tab, binary;
+  let tab, binary, worklet;
+  const batches = [];
+  const sources = [];
+  const baseline = controlled ? process.env.REACH_TEST_SOUND_WORKLET_BASELINE : undefined;
+  const reportName = controlled ? baseline ? "sound-chrome-batch-baseline-e2e.json" : "sound-chrome-batch-e2e.json" : "sound-chrome-e2e.json";
   // Fixed numeric stages: build, policy, start/settle, steady, stop, complete.
   let stage = 0, completed = 0;
   const measurements = {};
   const steady = [];
   t.after(async () => {
     eventLoop.disable();
+    // Flush the partial last batch only after measurement, and stop its timer
+    // even when the original stability assertion fails.
+    for (const source of sources) source.stop();
+    for (const batch of batches) batch.close();
     try {
       // Keep this before all cleanup, including Chrome's own after hook. A
       // failing assertion must retain the same bounded evidence as a pass.
@@ -134,7 +170,11 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
       };
       const helperTiming = timing.snapshot();
       const report = {
-        host: process.platform, ...(binary ? { helper: path.basename(binary) } : {}),
+        host: process.platform, arch: process.arch, osRelease: os.release(), node: process.version,
+        ...(binary ? { helper: path.basename(binary) } : {}),
+        scenario: controlled ? "controlled-native-packet-delivery" : "normal-native-packet-delivery",
+        worklet,
+        ...(controlled ? { delivery: { physicalNetwork: false, batches: batches.map(batch => batch.snapshot()) } } : {}),
         ...measurements,
         steadyLevels: steady.map((v) => Number.isFinite(v) ? Number(v.toFixed(3)) : null),
         timing: { schema: 1, stage, completed, nodeEventLoop, helper: helperTiming, browser: browserTiming || null },
@@ -144,7 +184,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
         .map(([kind, stream]) => [kind, { count: stream.count, maxGapMs: Number(stream.maxGapMs.toFixed(3)) }]));
       t.diagnostic(`audio timing ${JSON.stringify({ stage, completed, nodeEventLoop, helper: summary(helperTiming), browser: summary(browserTiming) })}`);
       await fs.promises.mkdir(path.join(repo, "reports"), { recursive: true });
-      await fs.promises.writeFile(path.join(repo, "reports", "sound-chrome-e2e.json"), JSON.stringify(report, null, 2));
+      await fs.promises.writeFile(path.join(repo, "reports", reportName), JSON.stringify(report, null, 2));
     } catch {
       t.diagnostic("audio timing report unavailable");
     } finally {
@@ -152,18 +192,33 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
     }
   });
   undo.push(async () => fs.rmSync(dir, { recursive: true, force: true }));
-  const page = await buildPage(dir);
+  const built = await buildPage(dir, { baseline });
+  const page = built.page;
+  worklet = built.worklet;
   // The real helper, its tone on the clock as a capture's packets come.
   binary = process.platform === "win32"
     ? await windowsBinary({ dataDir: dir }, "screen-sound")
     : await desktopBinary({ dataDir: dir }, "screen-sound");
+  Object.assign(measurements, {
+    helperSHA256: sha256(fs.readFileSync(binary)),
+    helperSourceSHA256: sha256(fs.readFileSync(path.join(repo, "scripts/native", process.platform === "win32" ? "screen-sound.cs" : "screen-sound.swift"))),
+  });
   const reach = await createReach({
     roots: [dir],
     dataDir: path.join(dir, "private"),
     screen: true,
     // Its tailnet name, so its pages carry the policy a phone gets.
     publicOrigin: "https://mac-a.t.ts.net",
-    soundFactory: async () => (handlers) => new SoundSource(binary, ["--self-test", "30", "--live"], observeToneSource(handlers, timing)),
+    soundFactory: async () => (handlers) => {
+      if (controlled) {
+        const batch = nativePacketBatches(handlers);
+        batches.push(batch);
+        handlers = batch.handlers;
+      }
+      const source = new SoundSource(binary, ["--self-test", "30", "--live"], observeToneSource(handlers, timing));
+      if (controlled) sources.push(source);
+      return source;
+    },
   });
   undo.push(() => reach.close());
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -177,6 +232,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   });
   const scripts = policy.split(";").map((part) => part.trim().split(/\s+/))
     .find(([directive]) => directive === "script-src")?.slice(1);
+  measurements.pagePolicy = policy;
   assert.deepEqual(scripts, ["'self'", "'wasm-unsafe-eval'"],
     "private recovery permits WASM compilation; scripts and worklets stay same-origin without JavaScript eval or inline scripts");
   assert.doesNotMatch(policy, /127\.0\.0\.1/);
@@ -190,7 +246,12 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
     if (!file.startsWith(page) || !fs.existsSync(file)) return res.writeHead(404).end();
     res.setHeader("Content-Security-Policy", policy);
     res.setHeader("Content-Type", /\.m?js$/.test(file) ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html");
-    res.end(fs.readFileSync(file));
+    const bytes = fs.readFileSync(file);
+    if (name === worklet.asset) {
+      worklet.servedCount++;
+      worklet.servedSHA256 = sha256(bytes);
+    }
+    res.end(bytes);
   });
   server.on("upgrade", (req, client, head) => {
     const upstream = net.connect(reachPort, "127.0.0.1", () => {
@@ -226,6 +287,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
       await new Promise((r) => setTimeout(r, 50));
     }
   };
+  Object.assign(measurements, { chrome: (await browser.send("Browser.getVersion")).product });
   eventLoop.reset();
   stage = 2;
   const tapped = Date.now();
@@ -237,12 +299,18 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   const heardIn = Date.now() - tapped;
   Object.assign(measurements, { heardInMs: heardIn, firstLevel: Number(level.toFixed(3)) });
   assert.ok(level < 0.25, `level ${level}`);
+  assert.ok(worklet.servedCount >= 1, "the real browser requested the selected same-origin worklet asset");
+  assert.equal(worklet.servedSHA256, worklet.sha256, "the real browser receives the bound worklet bytes");
   // Then steady for four seconds, after two to settle: the tone's level at
   // every look, but for one blip at most. A shared CI machine can stall the
   // page once (Oct 14, a macOS runner: one 40 ms gap); a queue that runs dry
   // again and again (a source slower than the clock, as the Oct 13 stand-in
   // was) still fails.
   await new Promise((r) => setTimeout(r, 2000));
+  if (controlled) {
+    assert.equal(batches.length, 1, "one real helper supplies this controlled route");
+    batches[0].start();
+  }
   stage = 3;
   const lateBefore = await tab.evaluate("window.__late");
   for (let i = 0; i < 40; i++) {
@@ -252,6 +320,16 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   const late = (await tab.evaluate("window.__late")) - lateBefore;
   const stability = toneStability(steady, late);
   Object.assign(measurements, { ranDry: late, blips: stability.blips });
+  if (controlled) {
+    batches[0].finish();
+    const delivery = batches[0].snapshot();
+    assert.deepEqual(delivery.violations, [], "controlled delivery retains the native 20ms packet format and bounded queue");
+    assert.equal(delivery.received, delivery.delivered, "every native packet is delivered exactly once in order");
+    assert.equal(delivery.receivedSHA256, delivery.deliveredSHA256, "all framed native PCM bytes reach SoundHub unchanged and in order");
+    assert.equal(delivery.pending, 0);
+    assert.equal(delivery.timerPending, false);
+    assert.ok(delivery.batches >= 20, "the steady window exercised repeated seven-packet batches");
+  }
   assert.ok(stability.passed, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times; blips ${stability.blips}`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
   stage = 4;
@@ -260,4 +338,7 @@ test("in a real browser, the speaker plays the real helper's sound under Reach's
   Object.assign(measurements, { phoneRate: await tab.evaluate("window.__rate"), chrome: (await browser.send("Browser.getVersion")).product });
   stage = 5;
   completed = 1;
-});
+}
+
+test("in a real browser, the speaker plays the real helper's sound under Reach's own page policy", { skip, timeout: 300000 }, soundInBrowser);
+test("in a real browser, controlled seven-packet native batches stay steady under Reach's own page policy", { skip, timeout: 300000 }, t => soundInBrowser(t, { controlled: true }));
