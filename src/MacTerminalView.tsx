@@ -10,6 +10,7 @@ import { useTerminalHistory } from "./useTerminalHistory";
 import {
   altArrowWords,
   disposeLater,
+  fitKeepingLatest,
   plainKeyboard,
   terminalOptions,
   terminalTouch,
@@ -217,7 +218,7 @@ export default function MacTerminalView({
     });
     const resize = () => {
       try {
-        fit.fit();
+        fitKeepingLatest(fit, term);
       } catch {}
     };
     const ro = new ResizeObserver(resize);

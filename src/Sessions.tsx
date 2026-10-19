@@ -15,6 +15,7 @@ import { useTerminalHistory } from "./useTerminalHistory";
 import {
   altArrowWords,
   disposeLater,
+  fitKeepingLatest,
   plainKeyboard,
   terminalOptions,
   terminalTouch,
@@ -290,7 +291,7 @@ export function TerminalView({
     const stopHistory = history.observe(term);
     const resize = () => {
       try {
-        fit.fit();
+        fitKeepingLatest(fit, term);
         if (ws?.readyState === WebSocket.OPEN && connectedRef)
           ws.send(
             JSON.stringify({
