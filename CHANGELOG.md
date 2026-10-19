@@ -8,7 +8,7 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-10-18
+## [0.4.0] — 2026-10-19
 
 Early access: file editing, clipboard paste and Windows setup improvements.
 
