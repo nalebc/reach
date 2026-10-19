@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
-import { assertDisposableWindows, desktopRequiredForSelection } from "../.github/scripts/prepare-windows-desktop.mjs";
+import { assertDisposableWindows, desktopRequiredForSelection, lastDesktopCheckpoint } from "../.github/scripts/prepare-windows-desktop.mjs";
 
 const hosted = { SystemRoot: "C:\\Windows", GITHUB_ACTIONS: "true", CI: "true", RUNNER_ENVIRONMENT: "github-hosted",
   GITHUB_REPOSITORY: "nalebc/reach", REACH_CI_DESKTOP_PREFLIGHT: "1" };
@@ -30,6 +30,16 @@ test("manual peer and ACL selections do not acquire a desktop dependency", () =>
     assert.equal(desktopRequiredForSelection(names), false, names);
   for (const names of ["journeys/home", "windows-console", "windows-terminals-native", "windows-desktop-e2e", "windows-owner-rights journeys/files", "new-native-file", ""])
     assert.equal(desktopRequiredForSelection(names), true, names);
+});
+
+test("CI desktop progress retains only the last exact allowlisted marker", () => {
+  const marker = "REACH_CI_DESKTOP_STAGE:";
+  assert.equal(lastDesktopCheckpoint(`${marker}compiled\r\nprivate stderr\n${marker}probe-show\n`), "probe-show");
+  for (const line of ["secret-token", `${marker}unknown`, `${marker}probe-show secret-token`,
+    ` ${marker}probe-show`, `${marker}probe-show\rsecret-token`, `${marker}probe-show/secret-token`,
+    `${marker}probe-show\u0000`, `${marker}probe-show `]) assert.equal(lastDesktopCheckpoint(line), null);
+  assert.equal(lastDesktopCheckpoint(undefined), null);
+  assert.equal(lastDesktopCheckpoint(`${marker}compiled\n${marker}secret-token`), "compiled");
 });
 
 test("native Windows CI phases require desktop preflight success and preserve budgets and failure gates", () => {

@@ -21,6 +21,17 @@ export function desktopRequiredForSelection(value = "") {
   return !names.length || names.some((name) => !independent.has(name));
 }
 
+export function lastDesktopCheckpoint(stderr) {
+  const names = new Set(["powershell-start", "compiled", "native-run", "known-setup", "probe-show", "probe-shown",
+    "probe-activate", "probe-activated", "probe-loop", "probe-click", "probe-type", "probe-pixel"]);
+  let last = null;
+  for (const line of String(stderr ?? "").slice(-128 * 1024).split(/\r?\n/)) {
+    const prefix = "REACH_CI_DESKTOP_STAGE:";
+    if (line.startsWith(prefix) && names.has(line.slice(prefix.length))) last = line.slice(prefix.length);
+  }
+  return last;
+}
+
 export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   assertDisposableWindows(); // Before filesystem writes, compilation or any OS mutation.
   const reportPath = fileURLToPath(new URL("../../reports/windows-desktop-preflight.json", import.meta.url));
@@ -39,7 +50,7 @@ export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   const executable = path.win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   // Fixed command. Checked-in C# is passed as data, never interpolated with
   // runner paths, titles or process command lines. No execution-policy change.
-  const command = "$ErrorActionPreference='Stop'; Add-Type -TypeDefinition $env:REACH_CI_DESKTOP_SOURCE -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Web.Extensions; [ReachCiDesktop]::Run()";
+  const command = "$ErrorActionPreference='Stop'; try { [Console]::Error.WriteLine('REACH_CI_DESKTOP_STAGE:powershell-start') } catch {}; Add-Type -TypeDefinition $env:REACH_CI_DESKTOP_SOURCE -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Web.Extensions; try { [Console]::Error.WriteLine('REACH_CI_DESKTOP_STAGE:compiled') } catch {}; [ReachCiDesktop]::Run()";
   let report;
   try {
     const output = execFileSync(executable, ["-NoProfile", "-NonInteractive", "-STA", "-Command", command], {
@@ -50,6 +61,7 @@ export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
     if (report.schema !== 1 || typeof report.ready !== "boolean") throw Error("Desktop preparation returned an invalid report.");
   } catch (error) {
     report = { schema: 1, ready: false, stage: "bootstrap", reason: error?.code === "ETIMEDOUT" ? "deadline" : "helper-failed",
+      checkpoint: lastDesktopCheckpoint(error?.stderr),
       compilerCodes: [...new Set(String(error?.stderr || "").match(/\bCS\d{4}\b/g) || [])].slice(0, 8) };
   }
   retain({ ...report, required: true });
