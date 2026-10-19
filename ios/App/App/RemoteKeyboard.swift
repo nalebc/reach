@@ -44,10 +44,19 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
       } else {
         let view = SinkTextView()
         view.delegate = self
-        view.autocorrectionType = .yes
-        view.autocapitalizationType = .sentences
-        view.spellCheckingType = .yes
+        // The phone must not rewrite what was already sent: an autocorrected,
+        // capitalised or curly-quoted word reaches the computer as deletions
+        // and new letters (`ls` became `Ls`, "fix" became “fix”). As the web
+        // keyboard (src/RemoteTyping.tsx).
+        view.autocorrectionType = .no
+        view.autocapitalizationType = .none
+        view.spellCheckingType = .no
+        view.smartQuotesType = .no
+        view.smartDashesType = .no
+        view.smartInsertDeleteType = .no
+        if #available(iOS 17.0, *) { view.inlinePredictionType = .no }
         view.onEmptyBackspace = { [weak self] in self?.emit(key: "backspace") }
+        view.onKey = { [weak self] key in self?.emit(key: key, contextReset: true) }
         self.textView = view
         input = view
       }
@@ -80,8 +89,8 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
     closing = false
   }
 
-  private func emit(key: String) {
-    notifyListeners("key", data: ["key": key])
+  private func emit(key: String, contextReset: Bool = false) {
+    notifyListeners("key", data: ["key": key, "contextReset": contextReset])
   }
 
   private func emit(value: String, reset: (String) -> Void) {
@@ -98,7 +107,10 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
     _ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String
   ) -> Bool {
     if text == "\n" {
-      emit(key: "enter")
+      // A new line starts a new context, as the computer's own: the next
+      // word is never diffed against the line before Return.
+      textView.text = ""
+      emit(key: "enter", contextReset: true)
       return false
     }
     return true
@@ -121,7 +133,8 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
   }
 
   public func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-    emit(key: "enter")
+    textField.text = ""
+    emit(key: "enter", contextReset: true)
     return false
   }
 
@@ -133,6 +146,33 @@ public class RemoteKeyboardPlugin: CAPPlugin, CAPBridgedPlugin, UITextViewDelega
 /// Backspace on an empty input still deletes on the computer.
 final class SinkTextView: UITextView {
   var onEmptyBackspace: (() -> Void)?
+  /// An iPad keyboard's arrows, Tab and Esc go to the computer, not to the
+  /// hidden local text.
+  var onKey: ((String) -> Void)?
+  override var keyCommands: [UIKeyCommand]? {
+    let keys: [(String, String)] = [
+      (UIKeyCommand.inputUpArrow, "up"), (UIKeyCommand.inputDownArrow, "down"),
+      (UIKeyCommand.inputLeftArrow, "left"), (UIKeyCommand.inputRightArrow, "right"),
+      (UIKeyCommand.inputEscape, "escape"), ("\t", "tab"),
+    ]
+    return keys.map { input, _ in
+      let command = UIKeyCommand(input: input, modifierFlags: [], action: #selector(remoteKey(_:)))
+      if #available(iOS 15.0, *) { command.wantsPriorityOverSystemBehavior = true }
+      return command
+    }
+  }
+  @objc private func remoteKey(_ command: UIKeyCommand) {
+    let names: [String: String] = [
+      UIKeyCommand.inputUpArrow: "up", UIKeyCommand.inputDownArrow: "down",
+      UIKeyCommand.inputLeftArrow: "left", UIKeyCommand.inputRightArrow: "right",
+      UIKeyCommand.inputEscape: "escape", "\t": "tab",
+    ]
+    if let input = command.input, let name = names[input] {
+      // A key starts a new context, as Return does.
+      text = ""
+      onKey?(name)
+    }
+  }
   // Remote text can exist even when the local context is empty. UIKit must
   // keep Delete enabled (including its repeat) in that state.
   override var hasText: Bool { true }

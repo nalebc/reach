@@ -153,6 +153,9 @@ export default function Screen({
         point?: { x: number; y: number };
         // Opened on the tap itself (the Mac said a field was there).
         opened?: boolean;
+        // A fresh helper cannot prove which old field received earlier input.
+        // Keep known-unsent input local until the user explicitly retargets it.
+        confirmAfterReconnect?: boolean;
       })
     | null
   >(null);
@@ -171,19 +174,21 @@ export default function Screen({
     // A new gesture makes an earlier click's focus reply obsolete, even
     // before finger-up. Keep a confirmed keyboard available for scrolling.
     typingCheck.current++;
-    if (typingRef.current?.pending) clearTyping();
+    if (typingRef.current?.pending && !typingRef.current.confirmAfterReconnect) clearTyping();
   };
   const viewer = useRef<HTMLElement>(null),
     intent = useRef(false),
     mounted = useRef(true);
-  const release = useCallback(() => {
+  // tell: say so to the computer too. Not when control went to this
+  // phone's other window: that would end its control.
+  const release = useCallback((tell = true) => {
     intent.current = false;
     typingEpoch.current++;
     setTypingTarget(null);
     setControl(false);
     setDrag(false);
     setPanel(null);
-    if (canControl)
+    if (canControl && tell)
       void post(peer, "/api/screen/control", { enabled: false }).catch(
         () => {},
       );
@@ -206,10 +211,10 @@ export default function Screen({
   }, [controlKey]);
   const controlBeforePause = useRef(false);
   const ended = useCallback(
-    (message: string) => {
+    (message: string, elsewhere?: boolean) => {
       if (isPausedMessage(message)) controlBeforePause.current = true;
       else setError(message);
-      release();
+      release(!elsewhere);
     },
     [release],
   );
@@ -290,6 +295,7 @@ export default function Screen({
   // Control is on and its connection is coming back: a tap waits a moment.
   const tapWaits = control && !input.ready && live && visible && stream.ready;
   const detectTyping = async (point: { x: number; y: number }) => {
+    if (typingRef.current?.confirmAfterReconnect) return;
     if (!input.typing) return;
     const epoch = typingEpoch.current;
     const check = ++typingCheck.current;
@@ -325,6 +331,43 @@ export default function Screen({
         clearTyping();
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
+  };
+  // Tab/Esc intentionally moves focus. A reconnect does not prove the old
+  // field survived: sending its known-unsent input needs an explicit action.
+  const rejoinTyping = async (confirmed = false) => {
+    const current = typingRef.current;
+    if (!current?.rejoin || (current.confirmAfterReconnect && !confirmed)) return;
+    const epoch = typingEpoch.current;
+    const check = ++typingCheck.current;
+    const at = current.confirmAfterReconnect || current.rejoin === true ? {} : current.rejoin;
+    const still = () => epoch === typingEpoch.current && check === typingCheck.current && mounted.current && typingRef.current?.rejoin === current.rejoin;
+    try {
+      let result = await send({ type: "focus", ...at });
+      for (const delay of [80, 160, 320]) {
+        if (!still() || (result.target?.editable && result.target.focus)) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (still()) result = await send({ type: "focus", ...at });
+      }
+      if (!still()) return;
+      if (result.target?.editable && result.target.focus)
+        setTypingTarget({ ...typingRef.current!, ...result.target, pending: false, rejoin: undefined, confirmAfterReconnect: false });
+      else if (current.confirmAfterReconnect)
+        setFeedback("Waiting typing kept on your phone · focus a text field, then send it");
+      else {
+        clearTyping();
+        setFeedback("The computer's text field changed · tap it to type");
+      }
+    } catch {
+      if (still() && input.ready) {
+        if (current.confirmAfterReconnect) setFeedback("Waiting typing kept on your phone · confirm the field again");
+        else clearTyping();
+      }
+    }
+  };
+  const retarget = () => {
+    const t = typingRef.current;
+    if (!t?.focus || t.confirmAfterReconnect) return;
+    setTypingTarget({ ...t, pending: true, rejoin: true, session: t.session ?? t.focus });
   };
   useEffect(() => {
     mounted.current = true;
@@ -387,8 +430,22 @@ export default function Screen({
     const timer = setTimeout(() => setFeedback(""), 4000);
     return () => clearTimeout(timer);
   }, [feedback]);
-  // Typing doesn't unmount when the picture goes stale: queued edits stay.
-  const typingAllowed = control && input.ready && live && visible;
+  // Typing doesn't unmount when the picture goes stale or controls blink
+  // (reconnecting): queued edits stay, the keyboard stays open.
+  const typingAllowed = control && (input.ready || input.reconnecting) && live && visible;
+  // Controls dropped while typing: hold the keystrokes and confirm the same
+  // field on the new connection (each connection has its own typing guard).
+  useEffect(() => {
+    if (input.ready) return;
+    typingCheck.current++;
+    const t = typingRef.current;
+    if (t?.focus && !t.pending)
+      setTypingTarget({ ...t, pending: true, rejoin: t.point ?? true, session: t.session ?? t.focus, confirmAfterReconnect: true });
+  }, [input.ready]);
+  useEffect(() => {
+    if (input.ready && typingTarget?.rejoin && !typingTarget.confirmAfterReconnect) void rejoinTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input.ready, typingTarget?.rejoin]);
   const typing = !!typingTarget && typingAllowed && !panel;
   const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
@@ -540,6 +597,7 @@ export default function Screen({
   // A tap on a text field opens the keyboard within that tap, no Type button:
   // the Mac said on touch-down that a field is there.
   const typeInField = (point: { x: number; y: number }, secure: boolean) => {
+    if (typingRef.current?.confirmAfterReconnect) return;
     flushSync(() => {
       typingEpoch.current++;
       setPanel(null);
@@ -894,6 +952,7 @@ export default function Screen({
             blocked={tapBlocked}
             waitForControl={tapWaits}
             initialCursor={input.initialCursor}
+            hostCursor={input.hostCursor}
             mode={mode}
             drag={drag}
             clickMode={clickMode}
@@ -906,6 +965,7 @@ export default function Screen({
               // Keep a confirmed editor for a repeat; every edit still
               // carries its native focus guard.
               const current = typingRef.current;
+              if (current?.confirmAfterReconnect) return true;
               if (repeat && current?.focus && !current.pending) {
                 flushSync(() => setTypingTarget({
                   ...current,
@@ -944,16 +1004,20 @@ export default function Screen({
             typingTarget &&
             (nativeKeyboard ? (
               <NativeRemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 send={send}
                 onClose={clearTyping}
                 onError={setError}
+                onRetarget={retarget}
+                reconnectPaused={typingTarget.confirmAfterReconnect}
               />
             ) : (
               <RemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
+                onRetarget={retarget}
+                reconnectPaused={typingTarget.confirmAfterReconnect}
                 keyRow={mobile}
                 modifier={device.platform === "darwin" ? "meta" : "control"}
                 editorRef={typingEditor}
@@ -971,7 +1035,7 @@ export default function Screen({
               // duplicate the keyboard field and key row, and reset the field
               // between keystrokes (each next letter then deleted the last).
               <TapToType
-                key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
+                key={`tap:${typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 onOpen={openKeyboard}
                 onPrepare={() => prepareKeyboard(typingEditor.current)}
               />
@@ -986,6 +1050,19 @@ export default function Screen({
             {caption && (
               <span className="simple-screen-caption" role="status">
                 {caption}
+              </span>
+            )}
+            {typingTarget?.confirmAfterReconnect && (
+              <span className="screen-agents-wait" role="status" data-immersive-keep>
+                <span>Typing paused · check what reached the computer</span>
+                <button
+                  type="button"
+                  disabled={!usable}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => void rejoinTyping(true)}
+                >
+                  Send waiting typing to current field
+                </button>
               </span>
             )}
             {/* One line at a time over the bar: the pill steps back while

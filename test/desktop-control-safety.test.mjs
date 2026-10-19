@@ -60,24 +60,87 @@ function connect({ client = owner, display = "primary", allowDisplay, slow = {},
 }
 
 test("a button up or release that waited behind a slow action still runs; a late click doesn't", async () => {
-  const c = connect({ slow: { click: 1100 } });
+  const c = connect({ slow: { click: 1100, down: 1100 } });
   await until(c.ready);
   c.input({ type: "click", x: 0.1, y: 0.1 }); // 1: holds the helper 1.1 s
   c.input({ type: "click", x: 0.2, y: 0.2 }); // 2: late, dropped
   c.input({ type: "down", x: 0.3, y: 0.3 }); // 3: late, dropped
-  c.input({ type: "up", x: 0.3, y: 0.3 }); // 4: late, still runs
-  c.input({ type: "release" }); // 5: late, still runs
-  await until(() => c.ack(5));
+  c.input({ type: "move", x: 0.4, y: 0.4 }); // 4: its drag: nothing is held, not moved
+  c.input({ type: "up", x: 0.4, y: 0.4 }); // 5: its up: nothing went down to let go of
+  c.input({ type: "release" }); // 6: late, still runs
+  await until(() => c.ack(6));
   assert.equal(c.ack(2).ok, false);
   assert.match(c.ack(2).error, /waited too long/);
   assert.equal(c.ack(3).ok, false);
-  assert.equal(c.ack(4).ok, true);
-  assert.equal(c.ack(5).ok, true);
+  assert.deepEqual(c.ack(4), { type: "ack", id: 4, ok: true, skipped: true });
+  assert.deepEqual(c.ack(5), { type: "ack", id: 5, ok: true, skipped: true });
+  assert.equal(c.ack(6).ok, true);
   assert.deepEqual(
     c.sent.map((a) => a.type),
-    ["heartbeat", "click", "up", "release"],
+    ["heartbeat", "click", "release"],
   );
+  // A button that did go down is let go, however late its up.
+  c.input({ type: "down", x: 0.5, y: 0.5 }); // 7: runs, holds the helper 1.1 s
+  c.input({ type: "move", x: 0.6, y: 0.6 }); // 8: late: the next one stands for it
+  c.input({ type: "up", x: 0.6, y: 0.6 }); // 9: late, still runs
+  await until(() => c.ack(9));
+  assert.equal(c.ack(7).ok, true);
+  assert.equal(c.ack(9).ok, true);
+  assert.equal(c.ack(9).skipped, undefined);
+  assert.deepEqual(c.sent.slice(3).map((a) => a.type), ["down", "up"]);
   assert.equal(c.ws.readyState, 1, "control stays");
+  c.end();
+});
+
+test("typing dropped late takes the rest of that typing with it: no holes, no drift", async () => {
+  const c = connect({ slow: { scroll: 1100 } });
+  await until(c.ready);
+  const typed = () => c.sent.filter((a) => ["text", "type-edit", "key"].includes(a.type));
+  c.input({ type: "scroll", dx: 0, dy: 5 }); // 1: holds the helper 1.1 s
+  for (const text of ["p", "a", "s", "s"]) c.input({ type: "text", text }); // 2-5: late
+  await until(() => c.ack(5));
+  // Sent before the phone heard: dropped, though not late themselves.
+  c.input({ type: "type-edit", focus: "f1", delete: 1, text: "sw" }); // 6
+  for (const text of ["o", "r", "d"]) c.input({ type: "text", text }); // 7-9
+  c.input({ type: "key", key: "enter" }); // 10
+  await until(() => c.ack(10));
+  for (let n = 2; n <= 10; n++) {
+    assert.equal(c.ack(n).ok, false, `${n}`);
+    assert.equal(c.ack(n).error, "Typing was too slow to reach the computer. Nothing after it was typed — type it again.");
+  }
+  assert.deepEqual(typed(), [], "nothing after the hole was typed");
+  // The app-in-front poll comes on its own timer: typing is still over.
+  c.input({ type: "context" }); // 11
+  c.input({ type: "text", text: "x" }); // 12
+  await until(() => c.ack(12));
+  assert.equal(c.ack(11).ok, true);
+  assert.equal(c.ack(12).ok, false);
+  // The phone did something else (a tap): typing is its own again.
+  c.input({ type: "click", x: 0.3, y: 0.3 }); // 13
+  c.input({ type: "text", text: "password" }); // 14
+  await until(() => c.ack(14));
+  assert.equal(c.ack(14).ok, true);
+  assert.deepEqual(typed(), [{ type: "text", text: "password" }]);
+  assert.equal(c.ws.readyState, 1, "control stays");
+  c.end();
+});
+
+test("a heartbeat (the phone has every answer) ends a dropped typing run; a late key starts one", async () => {
+  const c = connect({ slow: { scroll: 1100 } });
+  await until(c.ready);
+  c.input({ type: "scroll", dx: 0, dy: 5 }); // 1: holds the helper 1.1 s
+  c.input({ type: "key", key: "a", modifiers: ["meta"] }); // 2: late
+  c.input({ type: "text", text: "b" }); // 3
+  await until(() => c.ack(3));
+  c.input({ type: "heartbeat" }); // 4
+  c.input({ type: "text", text: "c" }); // 5
+  await until(() => c.ack(5));
+  assert.equal(c.ack(2).ok, false);
+  assert.match(c.ack(2).error, /^Typing was too slow/);
+  assert.equal(c.ack(3).ok, false);
+  assert.equal(c.ack(4).ok, true);
+  assert.equal(c.ack(5).ok, true);
+  assert.deepEqual(c.sent.filter((a) => ["text", "key"].includes(a.type)), [{ type: "text", text: "c" }]);
   c.end();
 });
 

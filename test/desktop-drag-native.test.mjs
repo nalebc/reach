@@ -18,7 +18,11 @@ test("Mac drag events position before pressing, carry movement deltas and pair t
   await fs.writeFile(file, "import CoreGraphics\nimport Foundation\n" + mouse + String.raw`
 var events: [CGEvent] = []
 let source = CGEventSource(stateID: .hidSystemState)
-let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: { events.append($0) })
+var times: [UInt64] = []
+let mouse = DesktopMouse(source: source, point: CGPoint(x: 800, y: 700), emit: {
+  events.append($0)
+  times.append(DispatchTime.now().uptimeNanoseconds)
+})
 func field(_ e: CGEvent, _ key: CGEventField) -> Int64 { e.getIntegerValueField(key) }
 mouse.down(at: CGPoint(x: 150, y: 200), button: .left)
 precondition(events.map { $0.type } == [.mouseMoved, .leftMouseDown])
@@ -84,6 +88,52 @@ precondition(neighbor.1 == 1 && neighbor.0 == CGPoint(x: 112, y: 100), "differen
 _ = mouse.click(at: CGPoint(x: 30, y: 40), button: .left, id: 8)
 mouse.forgetClick()
 precondition(mouse.click(at: CGPoint(x: 50, y: 60), button: .left, id: 8, state: 2).1 == 1)
+// With the phone's pair radius, the host compares where both taps asked
+// for (touch assist moved the first from 100,100 to 110,100) and lands the
+// second exactly where the first landed, never where the finger drifted.
+let radius = CGSize(width: 8, height: 8)
+events = []
+_ = mouse.click(at: CGPoint(x: 110, y: 100), button: .left, id: 9, asked: CGPoint(x: 100, y: 100))
+let drifted = mouse.click(at: CGPoint(x: 105, y: 106), button: .left, id: 9, state: 2,
+  asked: CGPoint(x: 105, y: 106), pair: radius)
+precondition(drifted == (CGPoint(x: 110, y: 100), 2), "a drifting second tap continues its pair")
+let doubled = events.filter { $0.type != .mouseMoved }
+precondition(doubled.map { field($0, .mouseEventClickState) } == [1, 1, 2, 2], "exactly two physical clicks")
+precondition(events.allSatisfy { $0.location == CGPoint(x: 110, y: 100) }, "no motion toward the drift")
+// The same drift without the radius keeps the old rule: compared with the
+// first's landed point, 5 points away, it is a click of its own.
+_ = mouse.click(at: CGPoint(x: 110, y: 100), button: .left, id: 15, asked: CGPoint(x: 100, y: 100))
+precondition(mouse.click(at: CGPoint(x: 105, y: 106), button: .left, id: 15, state: 2) == (CGPoint(x: 105, y: 106), 1))
+// Beyond the radius on either axis, another click id, or a forgotten first
+// tap: a click of its own at its own point.
+for (second, id) in [(CGPoint(x: 309, y: 300), 10), (CGPoint(x: 302, y: 309), 11)] {
+  _ = mouse.click(at: CGPoint(x: 300, y: 300), button: .left, id: id)
+  precondition(mouse.click(at: second, button: .left, id: id, state: 2, pair: radius) == (second, 1))
+}
+_ = mouse.click(at: CGPoint(x: 300, y: 300), button: .left, id: 12)
+precondition(mouse.click(at: CGPoint(x: 301, y: 300), button: .left, id: 13, state: 2, pair: radius).1 == 1)
+_ = mouse.click(at: CGPoint(x: 300, y: 300), button: .left, id: 16)
+mouse.forgetClick()
+precondition(mouse.click(at: CGPoint(x: 301, y: 300), button: .left, id: 16, state: 2, pair: radius).1 == 1)
+// A radius under 4 points still pairs within 4, as without one.
+_ = mouse.click(at: CGPoint(x: 300, y: 300), button: .left, id: 14)
+precondition(mouse.click(at: CGPoint(x: 304, y: 296), button: .left, id: 14, state: 2,
+  pair: CGSize(width: 1, height: 1)) == (CGPoint(x: 300, y: 300), 2))
+// A first tap only starts a pair: a state 1 click with a radius is a click.
+precondition(mouse.click(at: CGPoint(x: 301, y: 300), button: .left, id: 14, pair: radius) == (CGPoint(x: 301, y: 300), 1))
+// Each press of a click is held a few milliseconds before its release,
+// never as long as a slow tap.
+precondition(DesktopMouse.pressHold >= 1_000 && DesktopMouse.pressHold <= 20_000)
+for count in [1, 2] {
+  events = []; times = []
+  _ = mouse.click(at: CGPoint(x: 40, y: 50), button: .left, count: count)
+  let downs = events.indices.filter { events[$0].type == .leftMouseDown }
+  let ups = events.indices.filter { events[$0].type == .leftMouseUp }
+  precondition(downs.count == count && ups.count == count)
+  for (down, up) in zip(downs, ups) {
+    precondition(times[up] - times[down] >= UInt64(DesktopMouse.pressHold) * 1000, "held \(times[up] - times[down]) ns")
+  }
+}
 // A second press releases the first one where it was actually held.
 events = []
 mouse.down(at: CGPoint(x: 5, y: 10), button: .left)

@@ -99,9 +99,18 @@ export function inputAction(value) {
       (type !== "click" || button !== "left" || !touch ||
         ![touch.x, touch.y].every((n) => Number.isFinite(n) && n > 0 && n <= 0.1)))
       throw fail(400, "Invalid touch tolerance.");
+    // A double-tap's second tap: how far from the first it may land and
+    // still be its pair (the phone's pairing radius, in display fractions).
+    const pair = value.pair;
+    if (pair !== undefined &&
+      (type !== "click" || button !== "left" || count !== 1 || clickId === undefined ||
+        value.clickState !== 2 || !pair ||
+        ![pair.x, pair.y].every((n) => Number.isFinite(n) && n > 0 && n <= 0.1)))
+      throw fail(400, "Invalid double-tap tolerance.");
     return { type, x: value.x, y: value.y, button, count,
       ...(touch ? { touch: { x: touch.x, y: touch.y } } : {}),
-      ...(clickId !== undefined ? { clickId, clickState } : {}) };
+      ...(clickId !== undefined ? { clickId, clickState } : {}),
+      ...(pair ? { pair: { x: pair.x, y: pair.y } } : {}) };
   }
   if (type === "scroll") {
     const dx = value.dx ?? 0,

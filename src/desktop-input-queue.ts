@@ -7,6 +7,11 @@ export type TextTarget = {
   pending?: boolean;
   // Reset phone-only draft context after a remote caret/selection change.
   editRevision?: number;
+  // The typing session, kept while its field is confirmed again (after a
+  // reconnect, Tab or Esc): its keyboard stays open meanwhile.
+  session?: string;
+  // Confirming the same field again on a new connection: its point.
+  rejoin?: { x: number; y: number } | true;
 };
 export type InputResult = {
   ok?: boolean;
@@ -28,6 +33,25 @@ type Pending = {
 };
 // Pointer moves and scrolls: the newest one stands for those before it.
 const isMotion = (action: DesktopAction) => action.type === "move" || action.type === "scroll";
+const graphemes = (text: string) =>
+  Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (s) => s.segment);
+const bytes = (text: string) => new TextEncoder().encode(text).length;
+// Typing that hasn't left yet goes as one edit with the next: a burst of
+// letters can't fill the queue, and the computer types exactly the same.
+// An edit deletes its count of characters before the caret, then types.
+export function mergeTyping(a: DesktopAction, b: DesktopAction): DesktopAction | null {
+  if (a.focus !== b.focus) return null;
+  if (a.type === "text" && b.type === "text") {
+    const text = String(a.text) + String(b.text);
+    return bytes(text) <= 4000 ? { ...b, text } : null;
+  }
+  if (a.type !== "type-edit" || b.type !== "type-edit") return null;
+  const typed = graphemes(String(a.text)), removed = Number(b.delete);
+  const merged = removed <= typed.length
+    ? { delete: Number(a.delete), text: typed.slice(0, typed.length - removed).join("") + String(b.text) }
+    : { delete: Number(a.delete) + removed - typed.length, text: String(b.text) };
+  return merged.delete <= 256 && bytes(merged.text) <= 4000 ? { ...b, ...merged } : null;
+}
 // A small ordered window hides network RTT; the host still dispatches serially.
 export class DesktopInputQueue {
   private pending = new Map<number, Pending>();
@@ -74,6 +98,22 @@ export class DesktopInputQueue {
           this.flush();
           return;
         }
+      const last = this.queued.at(-1);
+      const merged = last && mergeTyping(last.action, action);
+      if (last && merged) {
+        const { resolve: first, reject: firstFailed } = last;
+        last.action = merged;
+        last.resolve = (result) => {
+          first(result);
+          resolve(result);
+        };
+        last.reject = (error) => {
+          firstFailed(error);
+          reject(error);
+        };
+        this.flush();
+        return;
+      }
       if (this.queued.length >= 32) {
         reject(Error("Too many pending actions."));
         this.fail("Desktop input queue filled. Reconnect.");
@@ -137,8 +177,10 @@ export class DesktopInputQueue {
     this.flush();
     return this.now() - item.sent;
   }
+  // Longer than the computer may hold input while it confirms this phone
+  // again (server/identity-hold.mjs, 5 s): a hold isn't a dead link.
   checkTimeout() {
-    if ([...this.pending.values()].some((p) => this.now() - p.sent > 3000))
+    if ([...this.pending.values()].some((p) => this.now() - p.sent > 6000))
       this.fail("Desktop input timed out.");
   }
   close() {

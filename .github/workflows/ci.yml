@@ -188,7 +188,7 @@ jobs:
         run: |
           powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
           if ($LASTEXITCODE) { exit 1 }
-          npm run test:file -- --test-timeout=900000 --test-concurrency=1 test/windows-console.test.mjs test/windows-terminals-native.test.mjs test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/windows-browser-lifetime-native.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/windows-screen-video-native.test.mjs test/windows-agent-desktop-native.test.mjs test/windows-browser-tools-native.test.mjs test/windows-sandbox-e2e.test.mjs test/windows-file-boundary-e2e.test.mjs test/windows-agent-e2e.test.mjs test/windows-sandbox-grants.test.mjs test/windows-owner-rights.test.mjs test/windows-state-normalization.test.mjs test/windows-claude-hooks.test.mjs test/mobile-nav-chrome-e2e.test.mjs test/journeys/home.test.mjs test/journeys/terminals.test.mjs test/journeys/terminal-paste-target.test.mjs test/journeys/files.test.mjs test/journeys/chat.test.mjs test/journeys/screen.test.mjs test/journeys/apps.test.mjs test/journeys/access.test.mjs test/journeys/pause.test.mjs
+          npm run test:file -- --test-timeout=900000 --test-concurrency=1 test/windows-console.test.mjs test/windows-terminals-native.test.mjs test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-desktop-input-native.test.mjs test/windows-native-build.test.mjs test/windows-browser-lifetime-native.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/windows-screen-video-native.test.mjs test/windows-agent-desktop-native.test.mjs test/windows-browser-tools-native.test.mjs test/windows-sandbox-e2e.test.mjs test/windows-file-boundary-e2e.test.mjs test/windows-agent-e2e.test.mjs test/windows-sandbox-grants.test.mjs test/windows-owner-rights.test.mjs test/windows-state-normalization.test.mjs test/windows-claude-hooks.test.mjs test/mobile-nav-chrome-e2e.test.mjs test/journeys/home.test.mjs test/journeys/terminals.test.mjs test/journeys/terminal-paste-target.test.mjs test/journeys/files.test.mjs test/journeys/chat.test.mjs test/journeys/screen.test.mjs test/journeys/apps.test.mjs test/journeys/access.test.mjs test/journeys/pause.test.mjs
         env:
           REACH_TEST_WINDOWS_DESKTOP: "1"
           CI: "true"
@@ -233,6 +233,54 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-${{ matrix.os }}-node${{ matrix.node }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+  screen-control:
+    name: Windows screen control (${{ matrix.phone }})
+    strategy:
+      fail-fast: false
+      matrix:
+        phone: [iPhone, iPad, Android]
+    runs-on: windows-2025
+    # Each profile keeps the source journey's existing 25-minute bound on
+    # its own disposable desktop, independent of the main native lane.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tailnet/go.mod
+          cache: false
+      - run: npm ci
+      - run: npm run build:release
+      - name: Verify the disposable Windows runner has a usable desktop
+        run: node .github/scripts/prepare-windows-desktop.mjs
+        env:
+          REACH_CI_DESKTOP_PREFLIGHT: "1"
+      - name: Screen input observed by native fixture windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force reports | Out-Null
+          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
+          if ($LASTEXITCODE) { exit 1 }
+          npm run test:file -- --test-timeout=1500000 --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/screen-control.xml test/journeys/screen-control.test.mjs
+        env:
+          REACH_TEST_WINDOWS_DESKTOP: "1"
+          REACH_TEST_SCREEN_PHONES: ${{ matrix.phone }}
+          REACH_TEST_SCREEN_OVERFLOW: "1"
+          CI: "true"
+      - name: Preserve each profile's evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-windows-screen-control-${{ matrix.phone }}
           path: reports/
           if-no-files-found: warn
           retention-days: 14
@@ -282,13 +330,13 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [privacy, workflows, go-security, audit, verify, ios, compatibility]
+    needs: [privacy, workflows, go-security, audit, verify, screen-control, ios, compatibility]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify ios compatibility
+      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify screen-control ios compatibility
         env:
           REACH_CI_NEEDS: ${{ toJSON(needs) }}

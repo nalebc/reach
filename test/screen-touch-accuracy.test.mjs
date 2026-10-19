@@ -31,6 +31,7 @@ test("native finger targeting and click events preserve exact coordinates and re
   const source = await fs.readFile(new URL("../scripts/native/desktop-input.swift", import.meta.url), "utf8");
   const geometry = source.split("// BEGIN TOUCH GEOMETRY")[1].split("// END TOUCH GEOMETRY")[0];
   const mouse = source.split("// BEGIN DESKTOP MOUSE")[1].split("// END DESKTOP MOUSE")[0];
+  const keyLayout = source.split("// BEGIN KEY LAYOUT")[1].split("// END KEY LAYOUT")[0];
   const inputSource = "final class Input:" + source.split("final class Input:")[1].split("@main struct DesktopInput")[0];
   // Substitute just the local cursor read, so the real Input.action runs
   // without observing the user's mouse. Mouse emission is injected below.
@@ -38,7 +39,7 @@ test("native finger targeting and click events preserve exact coordinates and re
   const input = inputSource.replaceAll("CGEvent(source: nil)?.location", "Optional(fixtureCursor)");
   const file = path.join(folder, "main.swift"), binary = path.join(folder, "geometry");
   const resolver = "func touchPoint" + source.split("func touchPoint")[1].split("  func windowOf")[0];
-  await fs.writeFile(file, `import AppKit\nimport ApplicationServices\n${geometry}\n` + String.raw`
+  await fs.writeFile(file, `import AppKit\nimport ApplicationServices\nimport Carbon\n${geometry}\n` + String.raw`
 func control(_ x: Double, _ y: Double, _ w: Double = 20, _ h: Double = 20, _ enabled: Bool = true) -> TouchCandidate {
   TouchCandidate(frame: CGRect(x: x, y: y, width: w, height: h), enabled: enabled)
 }
@@ -68,6 +69,7 @@ var displayBounds = CGRect(x: 0, y: 0, width: 1000, height: 500)
 var fixtureCursor = CGPoint(x: 800, y: 400)
 var root: AXUIElement!, button: AXUIElement!, overlay: AXUIElement!
 var cover = false, incomplete = false, slow = false
+var under: AXUIElement? // What a tap off the button hits, the window otherwise.
 func node(_ role: String, _ frame: CGRect, _ enabled: Bool = true) -> AXUIElement {
   let element = AXUIElementCreateApplication(pid_t(700000 + objects.count))
   var origin = frame.origin, size = frame.size
@@ -103,9 +105,11 @@ func AXUIElementCopyMultipleAttributeValues(_ element: AXUIElement, _ names: CFA
   out = (names as! [String]).map { values[$0] ?? NSNull() } as CFArray
   return .success
 }
+var hits = 0
 func AXUIElementCopyElementAtPosition(_ system: AXUIElement, _ x: Float, _ y: Float, _ out: inout AXUIElement?) -> AXError {
+  hits += 1
   if x >= 104 && x <= 124 && y >= 90 && y <= 110 { out = cover ? overlay : button }
-  else { out = root }
+  else { out = under ?? root }
   return .success
 }
 root = node("AXWindow", displayBounds)
@@ -114,7 +118,7 @@ overlay = node("AXGroup", displayBounds)
 attributes[number(root)][kAXChildrenAttribute] = [button!] as NSArray
 attributes[number(button)][kAXWindowAttribute] = root
 attributes[number(button)][kAXParentAttribute] = root
-` + `${mouse}\n${input}\nfinal class TouchFixture { let display: CGDirectDisplayID = 1\n${resolver}\n}\n` + String.raw`
+` + `${mouse}\n${keyLayout}\n${input}\nfinal class TouchFixture { let display: CGDirectDisplayID = 1\n${resolver}\n}\n` + String.raw`
 let fixture = TouchFixture(), tolerance: [String: Any] = ["x": 10.0 / 999, "y": 10.0 / 499]
 precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "live tree recovers a nearby button")
 precondition(fixture.touchPoint(CGPoint(x: 110, y: 100), tolerance) == CGPoint(x: 110, y: 100), "direct hit preserved")
@@ -127,6 +131,64 @@ precondition(fixture.touchPoint(at, tolerance) == at, "scan timeout falls back t
 slow = false
 attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: false)
 precondition(fixture.touchPoint(at, tolerance) == at, "disabled button cannot attract a miss")
+attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: true)
+// Only background moves. Text, an image, a cell or a row under the finger,
+// or anything else not background, keeps the exact point.
+func beside(_ role: String, _ frame: CGRect = CGRect(x: 60, y: 80, width: 43, height: 40)) -> AXUIElement {
+  let element = node(role, frame)
+  attributes[number(element)][kAXParentAttribute] = root
+  attributes[number(element)][kAXWindowAttribute] = root
+  return element
+}
+for role in ["AXStaticText", "AXImage", "AXCell", "AXRow", "AXList", "AXOutline", "AXHeading", "AXSlider"] {
+  under = beside(role)
+  precondition(fixture.touchPoint(at, tolerance) == at, "a tap on \(role) stays exact")
+}
+for role in ["AXGroup", "AXScrollArea", "AXWebArea", "AXSplitGroup", "AXToolbar", "AXLayoutArea", "AXUnknown"] {
+  under = beside(role)
+  precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "a tap on \(role) background moves")
+}
+// A role not read (in time) is no proof of background.
+under = beside("AXGroup")
+attributes[number(under!)][kAXRoleAttribute] = nil
+precondition(fixture.touchPoint(at, tolerance) == at, "an unreadable role stays exact")
+under = nil
+// Text fields are reached by exact hits only. One beside the tap never takes
+// it, and ranks like a disabled control: nearer than the button, or nearly
+// as near, the tap stays exact.
+let field = beside("AXTextField", CGRect(x: 80, y: 90, width: 18, height: 20))
+func place(_ element: AXUIElement, x: Double) {
+  var origin = CGPoint(x: x, y: 90)
+  attributes[number(element)][kAXPositionAttribute] = AXValueCreate(.cgPoint, &origin)!
+}
+attributes[number(root)][kAXChildrenAttribute] = [field] as NSArray
+precondition(fixture.touchPoint(at, tolerance) == at, "a field alone never attracts a miss")
+attributes[number(root)][kAXChildrenAttribute] = [button!, field] as NSArray
+precondition(fixture.touchPoint(at, tolerance) == at, "a nearer field keeps the button from taking the tap")
+place(field, x: 77)
+precondition(fixture.touchPoint(at, tolerance) == at, "a field nearly as near as the button")
+place(field, x: 74)
+precondition(fixture.touchPoint(at, tolerance) == CGPoint(x: 106, y: 100), "a field well behind the button")
+attributes[number(field)][kAXSubroleAttribute] = "AXSecureTextField" as NSString
+for role in ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"] {
+  attributes[number(field)][kAXRoleAttribute] = role as NSString
+  place(field, x: 80)
+  attributes[number(root)][kAXChildrenAttribute] = [field] as NSArray
+  precondition(fixture.touchPoint(at, tolerance) == at, "\(role) never attracts a miss")
+}
+// The tap from the report: on the window 16 pt above a field, at the
+// largest tolerance (44 pt), used to land 37 pt away inside it.
+let wide: [String: Any] = ["x": 44.0 / 999, "y": 44.0 / 499]
+var origin = CGPoint(x: 40, y: 116), size = CGSize(width: 300, height: 22)
+attributes[number(field)][kAXRoleAttribute] = "AXTextField" as NSString
+attributes[number(field)][kAXPositionAttribute] = AXValueCreate(.cgPoint, &origin)!
+attributes[number(field)][kAXSizeAttribute] = AXValueCreate(.cgSize, &size)!
+precondition(fixture.touchPoint(at, wide) == at, "a tap above a field stays above it")
+// An exact hit on the field still reaches it.
+under = field
+precondition(fixture.touchPoint(CGPoint(x: 100, y: 120), wide) == CGPoint(x: 100, y: 120))
+under = nil
+attributes[number(root)][kAXChildrenAttribute] = [button!] as NSArray
 print("live target fixtures passed")
 // Exercise the production normalized click -> targeting -> native down/up
 // path, including the pointer positioning recently added for Mac dragging.
@@ -178,6 +240,53 @@ _ = try! input.action(["type": "down", "x": 0.3, "y": 0.4])
 _ = try! input.action(["type": "move", "x": 0.6, "y": 0.2])
 _ = try! input.action(["type": "up", "x": 0.6, "y": 0.2])
 checkClick(click(miss), at)
+// The second tap of a pair, with the phone's pairing radius: compared with
+// where the first asked for, it lands exactly where the first landed (touch
+// assist moved that one onto the button), with click state 2, and touch
+// assist isn't asked again.
+attributes[number(button)][kAXEnabledAttribute] = NSNumber(value: true)
+let pairing: [String: Any] = ["x": 8.0 / 999, "y": 8.0 / 499]
+func tap(_ x: Double, _ y: Double, id: Int, state: Int, pair: [String: Any]? = nil) -> [String: Any] {
+  events = []
+  var action: [String: Any] = ["type": "click", "x": x / 999, "y": y / 499, "button": "left",
+    "count": 1, "touch": tolerance, "clickId": id, "clickState": state]
+  if let pair { action["pair"] = pair }
+  return try! input.action(action)
+}
+func landed(_ result: [String: Any], _ expected: CGPoint, state: Int) {
+  let presses = events.filter { $0.type != .mouseMoved }
+  precondition(presses.map { $0.type } == [.leftMouseDown, .leftMouseUp])
+  precondition(events.allSatisfy { abs($0.location.x - expected.x) < 1e-9 && abs($0.location.y - expected.y) < 1e-9 },
+    "landed at \(events.map { $0.location }), not \(expected)")
+  precondition(presses.allSatisfy { field($0, .mouseEventClickState) == Int64(state) })
+  let decoded = try! JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: result)) as! [String: Any]
+  precondition(decoded["clickState"] as? Int == state)
+  let ack = decoded["point"] as! [String: Double]
+  precondition(abs(ack["x"]! - expected.x / 999) < 1e-10 && abs(ack["y"]! - expected.y / 499) < 1e-10)
+}
+landed(tap(100, 100, id: 41, state: 1), CGPoint(x: 106, y: 100), state: 1)
+hits = 0
+let second = tap(103, 106, id: 41, state: 2, pair: pairing)
+landed(second, CGPoint(x: 106, y: 100), state: 2)
+precondition(second["retargeted"] as? Bool == true)
+precondition(hits == 0, "touch assist isn't asked for a tap that continues its pair")
+// Without the radius, today's rule: the drifted tap is assisted on its own
+// (to 106,106), 6 points from where the first landed, and clicks alone.
+landed(tap(100, 100, id: 42, state: 1), CGPoint(x: 106, y: 100), state: 1)
+landed(tap(103, 106, id: 42, state: 2), CGPoint(x: 106, y: 106), state: 1)
+// Beyond the radius, or another pair: a click of its own, assisted as usual.
+landed(tap(300, 300, id: 43, state: 1), CGPoint(x: 300, y: 300), state: 1)
+hits = 0
+landed(tap(309, 300, id: 43, state: 2, pair: pairing), CGPoint(x: 309, y: 300), state: 1)
+precondition(hits > 0)
+landed(tap(300, 300, id: 44, state: 1), CGPoint(x: 300, y: 300), state: 1)
+landed(tap(302, 302, id: 45, state: 2, pair: pairing), CGPoint(x: 302, y: 302), state: 1)
+// A radius out of bounds is ignored: today's rule, the tap's own point.
+for wrong: [String: Any] in [["x": 0.5, "y": 0.01], ["x": 0, "y": 0.01], ["x": "8", "y": 0.01], [:]] {
+  landed(tap(300, 300, id: 46, state: 1), CGPoint(x: 300, y: 300), state: 1)
+  landed(tap(302, 302, id: 46, state: 2, pair: wrong), CGPoint(x: 302, y: 302), state: 2)
+}
+print("paired taps passed")
 // Frame pixel density does not enter this calculation: Quartz receives
 // display points, including exact corners and fractional coordinates.
 displayBounds = CGRect(x: -1440, y: 120, width: 1440, height: 900)
@@ -213,5 +322,6 @@ print("focused child input fixtures passed")
   assert.match(checked.stdout, /touch geometry passed/);
   assert.match(checked.stdout, /live target fixtures passed/);
   assert.match(checked.stdout, /native click coordinates passed/);
+  assert.match(checked.stdout, /paired taps passed/);
   assert.match(checked.stdout, /focused child input fixtures passed/);
 });

@@ -8,6 +8,44 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-19
+
+Early-access candidate recovering screen-control work omitted from the
+unpublished 0.4.1 candidate. The earlier tags remain unchanged.
+
+### Fixed
+
+- Keep a terminal's last row and column inside its screen above the keys,
+  and keep following the newest output when its box is fitted again.
+- Recover live screen, sound, control and terminals through a brief identity
+  lookup interruption. Deliver nothing until access is confirmed again;
+  expiry, revocation and a closing connection still end delivery.
+- Keep touch double-clicks paired when a finger drifts or the picture moves,
+  prevent delayed synthetic taps from stealing the keyboard, and keep long
+  presses and typing ordered during reconnects.
+- Preserve known-unsent typing after reconnecting until the user confirms
+  the current field. Never replay typing whose delivery is unknown or send
+  a waiting draft automatically into a replacement field. Keep native secure
+  keyboard context synchronized with the phone after Return.
+- Read foreground-app context beside the input queue so a slow accessibility
+  scan cannot block clicks or keys. A newer authorized control connection can
+  replace its predecessor without taking control back from the new window.
+- Respect the current Mac keyboard layout for letter and digit keys. Improve
+  Windows Unicode typing, console field detection, elevation refusals, wheel
+  units and cold helper startup.
+- On partially accepted Windows keyboard input, release only the helper's
+  accepted unmatched key-down, then stop the uncertain typing sequence.
+- Request video keyframes when a viewer actually missed frames and disable
+  unsupported long-term references in the Mac encoder.
+
+### Validation
+
+- Restore the source branch's regression tests and include shared identity,
+  typing and terminal layout checks in Windows CI. Run the native Windows
+  input checks and screen-control journeys with iPhone, iPad and Android
+  browser profiles. These profiles simulate clients; they are not physical
+  device validation.
+
 ## [0.4.1] — 2026-10-19
 
 Early access: file editing, clipboard paste and Windows setup improvements.

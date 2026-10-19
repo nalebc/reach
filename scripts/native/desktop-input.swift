@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import Foundation
 
 // BEGIN TOUCH GEOMETRY
@@ -46,7 +47,9 @@ final class DesktopMouse {
   private(set) var held: CGMouseButton?
   private var number: Int64 = 0
   private var clickState = 1
-  private var previousClick: (id: Int, point: CGPoint, at: Date)?
+  // The first tap of a pair: where it asked for (before touch assist) and
+  // where it landed.
+  private var previousClick: (id: Int, asked: CGPoint, point: CGPoint, at: Date)?
   init(source: CGEventSource?, point: CGPoint, emit: @escaping (CGEvent) -> Void = {
     $0.post(tap: .cghidEventTap)
   }) {
@@ -92,32 +95,140 @@ final class DesktopMouse {
     held = nil
   }
   func forgetClick() { previousClick = nil }
-  // A rapid pair is two physical clicks total. Click state 2 never changes
-  // the second tap's location: its live hit target still decides what receives it.
+  // The phone pairs two taps up to its own radius apart (pair, in display
+  // points, never under 4). A finger drifts between them, and touch assist
+  // may have moved the first: compare where both asked for, and the second
+  // lands exactly where the first did.
+  func paired(_ asked: CGPoint, id: Int?, state: Int, pair: CGSize) -> CGPoint? {
+    guard state == 2, let id, let previous = previousClick, previous.id == id,
+      Date().timeIntervalSince(previous.at) < 2,
+      abs(asked.x - previous.asked.x) <= max(4, pair.width),
+      abs(asked.y - previous.asked.y) <= max(4, pair.height)
+    else { return nil }
+    return previous.point
+  }
+  // A rapid pair is two physical clicks total. Without the phone's pair
+  // radius, click state 2 never changes the second tap's location: its live
+  // hit target still decides what receives it.
   func click(at next: CGPoint, button: CGMouseButton, count: Int = 1,
-    id: Int? = nil, state: Int = 1) -> (CGPoint, Int)
+    id: Int? = nil, state: Int = 1, asked: CGPoint? = nil, pair: CGSize? = nil) -> (CGPoint, Int)
   {
     let previous = previousClick
-    let continuing = count == 1 && button == .left && state == 2 && id != nil
-      && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
-      && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
-    let landed = next
+    let single = count == 1 && button == .left
+    var landed = next, continuing = false
+    if let pair {
+      if single, let first = paired(asked ?? next, id: id, state: state, pair: pair) {
+        landed = first
+        continuing = true
+      }
+    } else {
+      continuing = single && state == 2 && id != nil
+        && previous?.id == id && Date().timeIntervalSince(previous!.at) < 2
+        && abs(next.x - previous!.point.x) <= 4 && abs(next.y - previous!.point.y) <= 4
+    }
     for index in 1...count {
       down(at: landed, button: button, count: continuing ? 2 : index)
+      // Held a moment, as a finger would: an app that reads the button
+      // state on the press otherwise finds it already up. Only clicks
+      // wait; typing never comes through here.
+      usleep(DesktopMouse.pressHold)
       up(at: landed)
     }
-    if count == 1 && button == .left && state == 1, let id {
-      previousClick = (id, landed, Date())
+    if single && state == 1, let id {
+      previousClick = (id, asked ?? next, landed, Date())
     }
     return (landed, continuing ? 2 : count)
   }
+  // 8 ms, far under a person's click; nothing waits after a release.
+  static let pressHold: useconds_t = 8_000
 }
 // END DESKTOP MOUSE
+
+// BEGIN KEY LAYOUT
+// Letters and digits press the key that types them on the Mac's current
+// keyboard layout, not the US key in that place: on AZERTY the US Q key
+// types "a", so ⌘A went out as ⌘Q (quit), ⌘Z as ⌘W and "a" as "q". With ⌘
+// held a layout can type other letters (Dvorak – QWERTY ⌘, Cyrillic, Greek):
+// shortcuts read that layer. Never the keypad: AZERTY's keypad 1 is its only
+// unshifted "1". What the layout doesn't type keeps its US key.
+final class KeyLayout {
+  // What a key code types on a layout, with Carbon modifiers (cmdKey, shiftKey).
+  typealias Translate = (_ code: UInt16, _ modifiers: Int) -> String?
+  static func find(_ key: String, _ modifiers: Int, near us: CGKeyCode,
+    _ translate: Translate) -> CGKeyCode?
+  {
+    func types(_ code: UInt16) -> Bool { translate(code, modifiers)?.lowercased() == key }
+    if types(us) { return us }
+    return (UInt16(0)..<128).first { !(65...92).contains($0) && types($0) }
+  }
+  // The key for a letter or digit, and whether it needs Shift; nil keeps
+  // the US key.
+  static func resolve(_ key: String, _ flags: CGEventFlags, us: CGKeyCode,
+    _ translate: Translate) -> (CGKeyCode, Bool)?
+  {
+    let command = flags.contains(.maskCommand)
+    if let code = find(key, command ? cmdKey : 0, near: us, translate) { return (code, false) }
+    // Digits keep their keys on every layout; AZERTY types them with Shift.
+    // Only plain typing adds it: ⌘1 there is the same key without Shift.
+    guard flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty,
+      "0123456789".contains(key), let code = find(key, shiftKey, near: us, translate)
+    else { return nil }
+    return (code, true)
+  }
+  // UCKeyTranslate over a layout's own data, without dead keys.
+  static func translator(_ source: TISInputSource) -> Translate? {
+    guard let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+      return nil
+    }
+    let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+    let kind = UInt32(LMGetKbdType())
+    return { code, modifiers in
+      withExtendedLifetime(source) {
+        guard let bytes = CFDataGetBytePtr(data) else { return nil }
+        var dead: UInt32 = 0, length = 0
+        var text = [UniChar](repeating: 0, count: 4)
+        let status = UCKeyTranslate(
+          UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self), code,
+          UInt16(kUCKeyActionDown), UInt32(modifiers >> 8) & 0xFF, kind,
+          OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, text.count, &length, &text)
+        return status == noErr ? String(utf16CodeUnits: text, count: length) : nil
+      }
+    }
+  }
+  // Looked up once per layout: the source changes when the owner switches.
+  private var source = ""
+  private var known: [String: (CGKeyCode, Bool)?] = [:]
+  func key(_ key: String, _ flags: CGEventFlags, us: CGKeyCode) -> (CGKeyCode, Bool)? {
+    // Text Input Sources answer on the main thread only (newer macOS asserts
+    // elsewhere): off it, the US key.
+    guard key.count == 1, "abcdefghijklmnopqrstuvwxyz0123456789".contains(key), Thread.isMainThread
+    else { return nil }
+    // This helper never runs its loop otherwise: a layout switch since the
+    // last key gets in here.
+    CFRunLoopRunInMode(.defaultMode, 0, false)
+    guard let current = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+      let id = TISGetInputSourceProperty(current, kTISPropertyInputSourceID)
+    else { return nil }
+    let layout = "\(Unmanaged<CFString>.fromOpaque(id).takeUnretainedValue()) \(LMGetKbdType())"
+    if layout != source {
+      source = layout
+      known = [:]
+    }
+    let plain = flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty
+    let entry = "\(key) \(flags.contains(.maskCommand)) \(plain)"
+    if let found = known[entry] { return found }
+    let found = KeyLayout.translator(current).flatMap { KeyLayout.resolve(key, flags, us: us, $0) }
+    known[entry] = .some(found)
+    return found
+  }
+}
+// END KEY LAYOUT
 
 final class Input: @unchecked Sendable {
   let lock = NSLock()
   let source = CGEventSource(stateID: .hidSystemState)
   lazy var mouse = DesktopMouse(source: source, point: CGEvent(source: nil)?.location ?? .zero)
+  let layout = KeyLayout()
   var currentFlags: CGEventFlags = []
   var last = Date()
   let display: CGDirectDisplayID
@@ -442,6 +553,11 @@ final class Input: @unchecked Sendable {
   // A near miss from a finger only. Read the live window under the tap,
   // bounded to 120 ms and 512 nodes. Incomplete/opaque trees keep the exact
   // point. No labels, text, screenshots, or cached target positions.
+  // Only a tap on background (a window, a group, a toolbar, a scroll area,
+  // a page) moves, and only onto a button-like control: text, an image, a
+  // row or a cell under the finger is what it meant. Text fields are reached
+  // by exact hits only: a tap 16 pt above one snapped 37 pt into it and
+  // opened the phone's keyboard.
   func touchPoint(_ at: CGPoint, _ tolerance: [String: Any]) -> CGPoint {
     guard let x = tolerance["x"] as? Double, let y = tolerance["y"] as? Double,
       x.isFinite, y.isFinite, x > 0, y > 0, x <= 0.1, y <= 0.1
@@ -456,24 +572,30 @@ final class Input: @unchecked Sendable {
       var value: CFTypeRef?
       return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
     }
-    let roles: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
-      "AXMenuButton", "AXLink", "AXMenuItem", "AXTab", "AXDisclosureTriangle",
-      "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    let controls: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+      "AXMenuButton", "AXLink", "AXMenuItem", "AXTab", "AXDisclosureTriangle"]
+    let fields: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+    let backgrounds: Set<String> = ["AXWindow", "AXGroup", "AXToolbar", "AXSplitGroup",
+      "AXScrollArea", "AXLayoutArea", "AXTabGroup", "AXSheet", "AXUnknown", "AXWebArea"]
     let system = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(system, 0.008)
     var hit: AXUIElement?
     guard AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit) == .success,
       let original = hit else { return at }
-    var current = original
-    // Preserve exact hits on a control or its text/icon descendants.
+    var current = original, leaf: String?
+    // Preserve exact hits on a control or a field, or their text/icon
+    // descendants. A role not read in time keeps the exact point too.
     for _ in 0..<6 where Date() < until {
-      if roles.contains(read(current, kAXRoleAttribute) as? String ?? "") { return at }
+      guard let role = read(current, kAXRoleAttribute) as? String else { return at }
+      if leaf == nil { leaf = role }
+      if controls.contains(role) || fields.contains(role) { return at }
       guard let parent = read(current, kAXParentAttribute),
         CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
       current = parent as! AXUIElement
     }
+    guard let leaf, backgrounds.contains(leaf) else { return at }
     let root: AXUIElement
-    if read(original, kAXRoleAttribute) as? String == "AXWindow" { root = original }
+    if leaf == "AXWindow" { root = original }
     else if let window = read(original, kAXWindowAttribute),
       CFGetTypeID(window) == AXUIElementGetTypeID() { root = window as! AXUIElement }
     else { return at }
@@ -499,8 +621,13 @@ final class Input: @unchecked Sendable {
         frame = CGRect(origin: origin, size: size).intersection(bounds)
       }
       if let frame, frame.width > 0, frame.height > 0, !frame.intersects(near) { continue }
-      if roles.contains(v[0] as? String ?? ""), let frame {
-        candidates.append(TouchCandidate(frame: frame, enabled: v[3] as? Bool ?? false))
+      // An element without a role leaves the scan incomplete.
+      guard let role = v[0] as? String else { return at }
+      // A field never attracts a miss, but ranks like a disabled control:
+      // a nearer field keeps a farther button from taking its tap.
+      if controls.contains(role) || fields.contains(role), let frame {
+        candidates.append(TouchCandidate(frame: frame,
+          enabled: !fields.contains(role) && (v[3] as? Bool ?? false)))
         elements.append(element)
         continue
       }
@@ -826,7 +953,21 @@ final class Input: @unchecked Sendable {
         y: bounds.minY + y * max(0, bounds.height - 1))
       let requested = point
       let button: CGMouseButton = p["button"] as? String == "right" ? .right : .left
-      if type == "click", button == .left, let tolerance = p["touch"] as? [String: Any] {
+      let clickId = p["clickId"] as? Int, clickState = p["clickState"] as? Int ?? 1
+      // The phone's pairing radius for a second tap, as fractions of the
+      // display (0 < v <= 0.1); anything else keeps the old pairing.
+      var pair: CGSize?
+      if type == "click", let r = p["pair"] as? [String: Any], let px = r["x"] as? Double,
+        let py = r["y"] as? Double, px.isFinite, py.isFinite, px > 0, py > 0, px <= 0.1, py <= 0.1
+      {
+        pair = CGSize(width: px * max(0, bounds.width - 1), height: py * max(0, bounds.height - 1))
+      }
+      // A second tap that continues its pair lands where the first did:
+      // touch assist has nothing to decide, so it isn't asked.
+      let continues = pair.flatMap {
+        mouse.paired(requested, id: clickId, state: clickState, pair: $0)
+      } != nil
+      if type == "click", button == .left, !continues, let tolerance = p["touch"] as? [String: Any] {
         point = touchPoint(point, tolerance)
       }
       // A local mouse may have moved between gestures. Held drags keep
@@ -842,8 +983,8 @@ final class Input: @unchecked Sendable {
       if type == "up" { mouse.up(at: point); currentFlags = [] }
       if type == "click" {
         let (landed, state) = mouse.click(at: point, button: button,
-          count: p["count"] as? Int ?? 1, id: p["clickId"] as? Int,
-          state: p["clickState"] as? Int ?? 1)
+          count: p["count"] as? Int ?? 1, id: clickId, state: clickState,
+          asked: requested, pair: pair)
         currentFlags = []
         return ["clickState": state, "retargeted": landed != requested, "point": [
           "x": min(1, max(0, (landed.x - bounds.minX) / max(1, bounds.width - 1))),
@@ -883,8 +1024,13 @@ final class Input: @unchecked Sendable {
         "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109,
         "f11": 103, "f12": 111,
       ]
-      guard let code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
-      let flags = flags(p)
+      guard var code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
+      var flags = flags(p)
+      // The key that types this letter or digit on the Mac's own layout.
+      if let typed = layout.key(key, flags, us: code) {
+        code = typed.0
+        if typed.1 { flags.insert(.maskShift) }
+      }
       // Press modifiers as real keys: system shortcuts (⌘Tab, Mission Control,
       // switching desktops) ignore modifiers carried only as event flags.
       var active: CGEventFlags = []

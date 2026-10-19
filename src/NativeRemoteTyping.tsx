@@ -1,31 +1,42 @@
 import { useEffect, useRef } from "react";
 import { typingEdit, typingTail } from "./typing-edit";
-import type {
-  DesktopAction,
-  InputResult,
-  TextTarget,
+import {
+  mergeTyping,
+  type DesktopAction,
+  type InputResult,
+  type TextTarget,
 } from "./desktop-input-queue";
 import { RemoteKeyboard } from "./remote-keyboard";
 
 // Native-app counterpart of RemoteTyping: the iPhone keyboard opens as soon as
 // a text field is detected on the computer, without waiting for another tap.
-// Edits use the same grapheme-safe diff, so autocorrect and emoji behave alike.
+// Edits use the same grapheme-safe diff, so emoji and accents behave alike.
 export default function NativeRemoteTyping({
   target,
   send,
   onClose,
   onError,
+  onRetarget,
+  reconnectPaused = false,
 }: {
   target: TextTarget;
   send: (action: DesktopAction) => Promise<InputResult>;
   onClose: () => void;
   onError: (message: string) => void;
+  // Tab or Esc can move the computer's focus: confirm the field again.
+  onRetarget?: () => void;
+  reconnectPaused?: boolean;
 }) {
-  const latest = useRef({ target, send, onClose, onError });
-  latest.current = { target, send, onClose, onError };
+  const latest = useRef({ target, send, onClose, onError, onRetarget });
+  latest.current = { target, send, onClose, onError, onRetarget };
   const queued = useRef<DesktopAction[]>([]);
   const active = useRef(false);
   const generation = useRef(0);
+  const wasReconnectPaused = useRef(false);
+  // Dispatched input has an unknown outcome when its old connection ends.
+  // It is never queued for replay; only subsequent, unsent edits wait here.
+  if (reconnectPaused && !wasReconnectPaused.current) generation.current++;
+  wasReconnectPaused.current = reconnectPaused;
   const revision = useRef(target.editRevision);
   const secure = !!target.secure;
   const dispatch = (action: DesktopAction) => {
@@ -33,6 +44,12 @@ export default function NativeRemoteTyping({
     const current = latest.current;
     const sentIn = generation.current;
     if (current.target.pending) {
+      const last = queued.current.at(-1);
+      const merged = last && mergeTyping(last, action);
+      if (merged) {
+        queued.current[queued.current.length - 1] = merged;
+        return;
+      }
       if (queued.current.length >= 32) {
         active.current = false;
         current.onError("Field confirmation took too long. Tap the field again.");
@@ -82,10 +99,14 @@ export default function NativeRemoteTyping({
           fail(error as Error);
         }
       }),
-      RemoteKeyboard.addListener("key", ({ key }) => {
+      RemoteKeyboard.addListener("key", ({ key, contextReset }) => {
         if (!valid) return;
-        if (key === "enter" || key === "backspace")
-          dispatch({ type: "key", key, modifiers: [] });
+        if (!["enter", "backspace", "tab", "escape", "up", "down", "left", "right"].includes(key)) return;
+        dispatch({ type: "key", key, modifiers: [] });
+        // Older installed shells retain their native context after Return.
+        // Reset the shadow only when the shell confirms it cleared that text.
+        if (contextReset === true) shadow = "";
+        if (key === "tab" || key === "escape") latest.current.onRetarget?.();
       }),
       RemoteKeyboard.addListener("closed", () => {
         if (valid) latest.current.onClose();

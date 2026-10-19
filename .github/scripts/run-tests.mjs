@@ -24,18 +24,23 @@ export const suites = {
     // Shared phone gestures must also run against Windows' input contract.
     "mobile-nav-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
-    "windows-desktop-input-native",
+    // The app-in-front read beside the input queue, on the scanner, and a
+    // phone's new control connection taking over from its old one (Oct 18).
+    "desktop-context-scanner", "desktop-control-takeover",
+    "windows-desktop-input-native", "windows-desktop-input",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
+    // Oct 18 screen control fixes: iOS's late taps, drags, typing bursts and reconnects.
+    "screen-control-fixes-ui", "screen-typing-reconnect-ui",
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
     // Editing a text file in Files: hash, line endings, never written over.
     "file-editor-ui",
     // Pasting from the phone into a terminal: pieces, brackets, never resent.
-    "terminal-paste-ui", "terminal-snapshot-chrome-e2e",
+    "terminal-paste-ui", "terminal-snapshot-chrome-e2e", "terminal-fit-chrome",
     "abort-polyfill", "upload-restart-ui", "background-transfer-ui", "transfer-cancel-ui",
     "file-download-race", "file-download-cleanup", "hidden-root-downloads", "transfers-server", "confined-file",
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
@@ -43,6 +48,9 @@ export const suites = {
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    // The host guard refreshing ahead, and live connections held through a
+    // lapse of Tailscale's word instead of closed (Oct 18).
+    "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
@@ -166,7 +174,7 @@ export const suites = {
     "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
   ],
   native: [
-    "agent-input", "browser-terminal-routes", "money-sites",
+    "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",
     "agent-claude-model-native", "agent-desktop-focus-native",
     "agent-desktop-pointer-native", "agent-desktop-policy-native",
     "agent-desktop-release-native", "agent-desktop-text-native",

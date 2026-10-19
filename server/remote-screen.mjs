@@ -6,6 +6,7 @@ import { windowsNativeSource, windowsVideoChoice, WindowsVideoSource } from "./w
 import { powershellFile } from "./powershell.mjs";
 import { fail } from "./core.mjs";
 import { privateViewRefusal, refuseGuest } from "./windows-guest-screen.mjs";
+import { gone, settled } from "./identity-hold.mjs";
 export { privateWindows, privateViewRefusal };
 // Why the live screen failed, in Reach's window on the computer too: the
 // phone may only show "Connecting…", and a person at the computer can act on
@@ -124,9 +125,14 @@ export class RemoteScreenHub {
       if (options.format === "jpeg") options.fps = Math.min(options.fps, 20);
       if (!mayViewDisplay(options.display))
         throw fail(403, "This display isn't shared with you.");
+      // Held a moment (Tailscale's word late): its answer is waited for.
+      const allowed = await settled(
+        authorize,
+        () => this.viewers.get(ws) === reservation && ws.readyState === 1,
+      );
       if (
         this.viewers.get(ws) !== reservation ||
-        !authorize() ||
+        allowed !== true ||
         ws.readyState !== 1
       ) {
         this.remove(ws);
@@ -185,7 +191,9 @@ export class RemoteScreenHub {
       // reused): checked again with every frame, refused with a reason.
       const display = options.display;
       group.add(ws, () => {
-        if (!authorize()) return false;
+        const allowed = authorize();
+        // Held (null) or gone, as it said.
+        if (!allowed) return allowed;
         if (mayViewDisplay(display)) return true;
         if (ws.readyState === 1) {
           ws.send(
@@ -206,9 +214,7 @@ export class RemoteScreenHub {
     }
   }
   ack(ws, id, keyframe = false) {
-    const group = this.viewers.get(ws);
-    group?.ack?.(ws, id);
-    if (keyframe && group?.viewers.get(ws)) group.viewers.get(ws).key = true;
+    this.viewers.get(ws)?.ack?.(ws, id, keyframe);
   }
   remove(ws) {
     this.viewers.get(ws)?.remove?.(ws);
@@ -260,6 +266,11 @@ export class RemoteBroadcast {
       authorize,
       pending: new Map(),
       key: true,
+      // The last frame this viewer got, and the last keyframe: a viewer
+      // that missed frames the others got needs a keyframe; one that missed
+      // none (alone, waiting on its acks) goes on with the next delta.
+      last: 0,
+      keySent: 0,
       rtt: 0,
       blocked: false,
       bytes: 0,
@@ -268,7 +279,7 @@ export class RemoteBroadcast {
     });
     if (this.viewers.size === 1) void this.start();
   }
-  ack(ws, id) {
+  ack(ws, id, keyframe = false) {
     const viewer = this.viewers.get(ws);
     if (!viewer || !Number.isInteger(id) || !viewer.pending.has(id))
       throw fail(400, "Invalid frame acknowledgment.");
@@ -276,6 +287,10 @@ export class RemoteBroadcast {
     viewer.rtt = viewer.rtt ? viewer.rtt * 0.8 + elapsed * 0.2 : elapsed;
     for (const seq of viewer.pending.keys())
       if (seq <= id) viewer.pending.delete(seq);
+    // A decoder starting over asks for a keyframe with every delta already
+    // on its way (src/useRemoteScreen.ts): a keyframe sent after one of
+    // them answers it, so only a frame after the last keyframe asks again.
+    if (keyframe && id > viewer.keySent) viewer.key = true;
   }
   remove(ws) {
     // Not (or no longer) watching here: nothing to stop, and an empty
@@ -301,7 +316,7 @@ export class RemoteBroadcast {
     try {
       const factory = await this.prepare();
       if (generation !== this.generation || !this.viewers.size) return;
-      for (const [ws, v] of this.viewers) if (!v.authorize()) this.remove(ws);
+      for (const [ws, v] of this.viewers) if (gone(v.authorize())) this.remove(ws);
       if (!this.viewers.size) return;
       this.source = factory();
       const tick = async () => {
@@ -311,20 +326,27 @@ export class RemoteBroadcast {
           const ready = [];
           let key = false;
           for (const [ws, v] of this.viewers) {
-            if (!v.authorize() || ws.readyState !== 1) {
+            const allowed = v.authorize();
+            if (gone(allowed) || ws.readyState !== 1) {
               this.remove(ws);
               continue;
             }
+            // Held (Tailscale's word late): no frame for it until it's
+            // confirmed; frames the others get meanwhile mean a keyframe.
+            if (!allowed) continue;
             const first = v.pending.values().next().value;
             if (first && Date.now() - first > 10000) {
               this.fail(ws, "Screen viewer stopped responding.");
               continue;
             }
+            // Waiting on its acks: skipped this frame. Alone, nothing was
+            // sent without it and the next delta follows on; frames the
+            // others got meanwhile are why it needs a keyframe below.
             if (v.pending.size >= 6 || ws.bufferedAmount > 256 * 1024) {
-              v.key = true;
               v.blocked = true;
               continue;
             }
+            if (v.last < this.sequence) v.key = true;
             ready.push([ws, v]);
             key ||= v.key;
           }
@@ -386,7 +408,11 @@ export class RemoteBroadcast {
                 if (!v.authorize() || ws.readyState !== 1) continue;
                 // A viewer waiting for a keyframe keeps asking until one went
                 // out: a delta frame can't start its decoder.
-                if (keyframe) v.key = false;
+                if (keyframe) {
+                  v.key = false;
+                  v.keySent = seq;
+                }
+                v.last = seq;
                 v.pending.set(seq, Date.now());
                 ws.send(packet);
                 v.bytes += packet.length;
