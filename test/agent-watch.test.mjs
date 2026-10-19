@@ -16,10 +16,57 @@ const until = async (check, ms = 15000) => {
   return false;
 };
 
-async function nativeBurst() {
+// DIAGNOSTIC CANARY ONLY: fixed fixture metadata, never provider paths/content.
+// The source assertions and delivery behavior below remain the AA5 baseline.
+function burstTrace() {
+  const start = performance.now(), startWallMs = Date.now(), limit = 128;
+  const events = [], counters = Object.fromEntries(["stage", "append", "native-enter", "native-exit", "news"].map(kind => [kind, { count: 0, maxGapMs: 0, lastMs: null }]));
+  let overwritten = 0;
+  return {
+    record(kind, values = {}, at = performance.now()) {
+      if (!Object.hasOwn(counters, kind)) return;
+      const event = { kind, tMs: at - start };
+      for (const key of ["stage", "write", "size", "mtimeMs", "exists", "unavailable", "deliveryID", "activeDeliveryID"]) {
+        if (typeof values[key] === "number" && Number.isFinite(values[key])) event[key] = values[key];
+      }
+      if (values.activeDeliveryID === null) event.activeDeliveryID = null;
+      for (const [key, allowed] of [
+        ["eventType", ["change", "rename", "other"]],
+        ["root", ["codex", "claude", "other"]],
+        ["category", ["probe", "queue", "history", "transcript", "other"]],
+        ["agent", ["codex", "claude", "gemini", "other"]],
+        ["newsKind", ["queue", "history", "settings", "rollout", "status", "app", "projects", "other"]],
+      ]) if (Object.hasOwn(values, key)) event[key] = allowed.includes(values[key]) ? values[key] : "other";
+      const counter = counters[kind];
+      if (counter.lastMs !== null) counter.maxGapMs = Math.max(counter.maxGapMs, event.tMs - counter.lastMs);
+      counter.lastMs = event.tMs;
+      counter.count++;
+      if (events.length === limit) { events.shift(); overwritten++; }
+      events.push(event);
+    },
+    report() { return { startWallMs, limit, overwritten, counters: structuredClone(counters), events: structuredClone(events) }; },
+  };
+}
+
+function retainBurst(t, report) {
+  if (process.env.REACH_TEST_WATCH_REPORT) {
+    fs.mkdirSync(path.dirname(process.env.REACH_TEST_WATCH_REPORT), { recursive: true });
+    fs.appendFileSync(process.env.REACH_TEST_WATCH_REPORT, JSON.stringify(report) + "\n");
+  }
+  t.diagnostic(JSON.stringify(report));
+}
+
+async function nativeBurst(t, mode = "native") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-watch-"));
   const codexHome = path.join(root, "codex");
   const claudeProjects = path.join(root, "claude");
+  const trace = burstTrace(), queueFile = path.join(codexHome, "queue_1.sqlite-wal");
+  let stage = 0, nextDeliveryID = 0, activeDeliveryID = null;
+  const queueMetadata = () => {
+    try { const stat = fs.statSync(queueFile); return { exists: 1, size: stat.size, mtimeMs: stat.mtimeMs }; }
+    catch { return { exists: 0, unavailable: 1 }; }
+  };
+  trace.record("stage", { stage });
   fs.mkdirSync(codexHome);
   fs.mkdirSync(path.join(claudeProjects, "-work-app"), { recursive: true });
   // fs.watch returning does not acknowledge native event registration.
@@ -28,8 +75,21 @@ async function nativeBurst() {
   const probe = ".reach-watch-ready", registered = new Set();
   const nativeWatch = fs.watch;
   fs.watch = (dir, options, listener) => nativeWatch(dir, options, (event, file) => {
-    if (String(file || "") === probe) registered.add(dir);
-    listener(event, file);
+    const enteredAt = performance.now(), deliveryID = ++nextDeliveryID, previousDeliveryID = activeDeliveryID;
+    activeDeliveryID = deliveryID;
+    const name = String(file || ""), metadata = {
+      deliveryID,
+      eventType: event, root: dir === codexHome ? "codex" : dir === claudeProjects ? "claude" : "other",
+      category: name === probe ? "probe" : name === "queue_1.sqlite-wal" ? "queue" : name === "thread_history_1.sqlite-wal" ? "history" : path.basename(name) === `${ID}.jsonl` ? "transcript" : "other",
+    };
+    trace.record("native-enter", metadata, enteredAt);
+    try {
+      if (String(file || "") === probe) registered.add(dir);
+      listener(event, file);
+    } finally {
+      trace.record("native-exit", { ...metadata, ...(dir === codexHome && name === "queue_1.sqlite-wal" ? queueMetadata() : {}) });
+      activeDeliveryID = previousDeliveryID;
+    }
   });
   // Isolate every provider root: native Claude activity must not enter this
   // fixture through the registry/app-record defaults on the test machine.
@@ -42,8 +102,21 @@ async function nativeBurst() {
     debounceMs: 40,
   });
   const news = [];
-  watch.onChange((n) => news.push(n));
-  try {
+  watch.onChange((n) => {
+    trace.record("news", { agent: n.agent, newsKind: n.kind, activeDeliveryID });
+    news.push(n);
+  });
+  // after() retains the trace before the original cleanup, even on assertion
+  // failure. This is evidence collection; it never repeats a measured write.
+  t.after(() => {
+    try { retainBurst(t, { schema: 1, mode, stage, debounceMs: 40, node: process.versions.node, ...trace.report() }); }
+    finally {
+      fs.watch = nativeWatch;
+      watch.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+  {
     // Readiness consumes the existing queue-news budget; a missing or dead
     // native watcher still fails within 15 seconds.
     const queueDeadline = Date.now() + 15000;
@@ -53,19 +126,29 @@ async function nativeBurst() {
       await until(() => registered.size === roots.length, Math.min(20, Math.max(0, queueDeadline - Date.now())));
     }
     assert.equal(registered.size, roots.length, "native fixture watchers acknowledge registration");
+    trace.record("stage", { stage: ++stage });
     for (const dir of roots) fs.rmSync(path.join(dir, probe), { force: true });
     // Codex's queue, written three times in a row: said at once, not after
     // a wait, and once more at most for the rest of the burst.
-    for (let i = 0; i < 3; i++) fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
+    for (let i = 0; i < 3; i++) {
+      fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
+      const completedAt = performance.now();
+      trace.record("append", { write: i, ...queueMetadata() }, completedAt);
+    }
+    trace.record("stage", { stage: ++stage });
     assert.ok(await until(() => news.some((n) => n.kind === "queue"), Math.max(0, queueDeadline - Date.now())), "queue news");
+    trace.record("stage", { stage: ++stage });
     await new Promise((r) => setTimeout(r, 150));
     assert.ok(news.filter((n) => n.agent === "codex" && n.kind === "queue").length <= 2);
+    trace.record("stage", { stage: ++stage });
     // Its history.
     fs.appendFileSync(path.join(codexHome, "thread_history_1.sqlite-wal"), "y");
     assert.ok(await until(() => news.some((n) => n.agent === "codex" && n.kind === "history")), "history news");
+    trace.record("stage", { stage: ++stage });
     // A Claude Code transcript, with its session id.
     fs.appendFileSync(path.join(claudeProjects, "-work-app", `${ID}.jsonl`), "{}\n");
     assert.ok(await until(() => news.some((n) => n.agent === "claude" && n.id === ID)), "Claude news");
+    trace.record("stage", { stage: ++stage });
     // Let the recognized write's trailing notification finish before testing unrelated files.
     await new Promise((r) => setTimeout(r, 150));
     // Anything else is no news.
@@ -74,10 +157,7 @@ async function nativeBurst() {
     fs.writeFileSync(path.join(claudeProjects, "-work-app", "notes.txt"), "z");
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(news.length, before);
-  } finally {
-    fs.watch = nativeWatch;
-    watch.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    trace.record("stage", { stage: ++stage });
   }
 }
 test("a write to the Codex app's queue or history, or to a Claude Code transcript, is news at once; once per burst", nativeBurst);
@@ -106,7 +186,65 @@ test("the first native burst waits for registration instead of losing its only n
     const original = fs[method];
     t.mock.method(fs, method, (file, ...args) => { const result = original(file, ...args); notify(file); return result; });
   }
-  await nativeBurst();
+  await nativeBurst(t, "modeled-registration");
+});
+
+for (const spread of [false, true]) {
+  test(`[modeled delivery, not native timing] three queue callbacks ${spread ? "span debounce windows" : "arrive together"}`, t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const callbacks = new Map(), news = [], delivered = [];
+    let modelMs = 0, deliveryID = 0, activeDeliveryID = null;
+    const watcher = createAgentWatch({
+      codexHome: "/c", claudeProjects: "/p", claudeSessions: "/s", claudeAppRecords: "/r", geminiHome: "/g", debounceMs: 40,
+      watch: (dir, _options, listener) => (callbacks.set(dir, listener), { close() {} }),
+    });
+    t.after(() => watcher.close());
+    watcher.onChange(n => news.push({ modelMs, activeDeliveryID, agent: n.agent, kind: n.kind }));
+    const advance = ms => { modelMs += ms; t.mock.timers.tick(ms); };
+    const callback = () => {
+      activeDeliveryID = ++deliveryID;
+      delivered.push({ phase: "enter", modelMs, deliveryID });
+      try { callbacks.get("/c")("change", "queue_1.sqlite-wal"); }
+      finally { delivered.push({ phase: "exit", modelMs, deliveryID }); activeDeliveryID = null; }
+    };
+    callback();
+    assert.equal(news.length, 1, "the first delivered callback is told immediately");
+    if (spread) {
+      advance(20); callback();
+      assert.equal(news.length, 1);
+      advance(20);
+      assert.equal(news.length, 2, "one trailing notification for the first delivery window");
+      advance(20); callback();
+      assert.equal(news.length, 2);
+      advance(20);
+      assert.equal(news.length, 3, "a later delivery window may legitimately emit again");
+    } else {
+      callback(); callback();
+      assert.equal(news.length, 1);
+      advance(39);
+      assert.equal(news.length, 1);
+      advance(1);
+      assert.equal(news.length, 2, "the synchronous delivered burst is told exactly twice");
+    }
+    advance(40);
+    assert.equal(news.length, spread ? 3 : 2, "no extra notification after that delivery window becomes quiet");
+    assert.deepEqual(news.map(n => n.activeDeliveryID), spread ? [1, null, null] : [1, null], "only the leading news is emitted inside modeled callback delivery");
+    retainBurst(t, { schema: 1, mode: spread ? "modeled-spread" : "modeled-together", debounceMs: 40, delivered, news });
+  });
+}
+
+test("[diagnostic only] native burst metadata is bounded and cannot retain paths or contents", () => {
+  const trace = burstTrace(), secret = "PRIVATE_FIXTURE_MARKER_DO_NOT_RETAIN";
+  for (let i = 0; i < 1000; i++) trace.record("native-enter", { eventType: secret, category: secret, path: secret, content: secret, size: i, mtimeMs: Infinity });
+  trace.record(secret, { size: 1 });
+  const report = trace.report();
+  assert.equal(report.events.length, 128);
+  assert.equal(report.counters["native-enter"].count, 1000);
+  assert.equal(report.overwritten, 872);
+  assert.equal(report.events.at(-1).size, 999);
+  assert.ok(Number.isFinite(report.counters["native-enter"].maxGapMs));
+  assert.ok(!JSON.stringify(report).includes(secret));
+  assert.ok(report.events.every(event => !Object.hasOwn(event, "mtimeMs")));
 });
 
 test("an agent that isn't installed is simply not watched", () => {

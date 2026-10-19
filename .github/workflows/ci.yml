@@ -1,121 +1,15 @@
-name: Verify Reach
-# No path filters: the stable required check must run for every proposed merge.
+name: Intel watcher diagnostic
+# Manual scoped canary only; excluded from release-candidate ancestry.
 on:
-  push:
-    branches: [main, "release/**"]
-  pull_request:
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
-  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  privacy:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          package-manager-cache: false
-      # Never inject repository secrets into contributor code, including PRs
-      # from branches in this repository. Private-identifier review is local.
-      - run: node scripts/check-release.mjs
-  workflows:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: tailnet/go.mod
-          cache: false
-      # Go's checksum database verifies this exact release and dependencies.
-      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - run: actionlint -color
-      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          version: 1.30.1
-          advanced-security: false
-          annotations: true
-          min-severity: low
-          persona: regular
-  go-security:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: tailnet/go.mod
-          cache: false
-      - name: gofmt
-        working-directory: tailnet
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "Run gofmt -w on: $unformatted" >&2
-            exit 1
-          fi
-      - name: go vet
-        working-directory: tailnet
-        run: go vet ./...
-        env:
-          GOOS: js
-          GOARCH: wasm
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-      - name: Check the shipped browser networking graph
-        working-directory: tailnet
-        run: govulncheck ./...
-        env:
-          GOOS: js
-          GOARCH: wasm
-  audit:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          package-manager-cache: false
-      # Build dependencies are part of the release supply chain too.
-      - run: npm audit --audit-level=moderate
-  verify:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            node: 22
-            suite: all
-          - os: ubuntu-24.04
-            node: 24
-            suite: all
-          - os: macos-15
-            node: 22
-            suite: all
-          - os: macos-15-intel
-            node: 22
-            suite: all
-          - os: windows-2025
-            node: 22
-            suite: windows
-    runs-on: ${{ matrix.os }}
+  intel-watch:
+    runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,171 +18,31 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22.23.2
           package-manager-cache: false
+      - name: Confirm the original Intel Node baseline
+        run: node -e 'if (process.versions.node !== "22.23.2" || process.arch !== "x64" || process.platform !== "darwin") process.exit(1)'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: tailnet/go.mod
           cache: false
       - run: npm ci
       - run: ./reach --help
-        if: runner.os != 'Windows'
-      - run: .\reach.cmd --help
-        if: runner.os == 'Windows'
-        shell: pwsh
       - run: npm run build:release
         id: release_build
-      - name: Verify the disposable Windows runner has a usable desktop
-        id: desktop_preflight
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
-        run: node .github/scripts/prepare-windows-desktop.mjs
-        env:
-          REACH_CI_DESKTOP_PREFLIGHT: "1"
-      # Collect independent failures in one run. A failed phase still fails
-      # this job; only a successful build may run the following test phases.
-      # Cancellation stops them, and candidate handoff keeps success() below.
-      - name: Full guarded suite
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.suite == 'all' }}
+      - name: Scoped watcher diagnostics and modeled controls (not full qualification)
+        if: ${{ !cancelled() && steps.release_build.outcome == 'success' }}
         run: npm run test:ci
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
-      - name: Windows contracts, HTTP, files and native terminals
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.suite == 'windows' }}
-        run: npm run test:ci:windows
-        env:
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
-      - name: Windows browser ingress against a LocalSystem service
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force"
-          if ($LASTEXITCODE) { exit 1 }
-          npm run test:file -- --test-timeout=300000 --test-concurrency=1 test/windows-tailscaled-peer.test.mjs
-        env:
-          REACH_TEST_WINDOWS_PEER: "1"
-      - name: Native policies, file/script sandboxes, generated video and PDF rendering
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && runner.os == 'macOS' }}
-        # Synthetic AX objects and inert input sinks. No actual global typing,
-        # private browser profiles, provider sign-in, or OS permission grants.
-        run: npm run test:ci:native
-      - name: Real Windows screen, clicks and typing under a normal PC's script policy
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && steps.desktop_preflight.outcome == 'success' && runner.os == 'Windows' }}
-        # GitHub's runners allow every script; a normal PC refuses them
-        # (Oct 11: a first Windows user's live screen never loaded). Set
-        # Windows PowerShell's default policy, then list displays and capture
-        # a real frame exactly as Reach does. PowerShell 7 (this step's shell)
-        # keeps its own policy; Reach's helpers run in Windows PowerShell.
-        # The user journeys (test/journeys) drive the phone interface against a
-        # real first install here, their desktop steps included; installing an
-        # agent from the internet stays in windows-validation.yml.
-        shell: pwsh
-        run: |
-          powershell.exe -NoProfile -Command "Set-ExecutionPolicy Restricted -Scope LocalMachine -Force; Set-ExecutionPolicy Restricted -Scope CurrentUser -Force; Get-ExecutionPolicy -List"
-          if ($LASTEXITCODE) { exit 1 }
-          npm run test:file -- --test-timeout=900000 --test-concurrency=1 test/windows-console.test.mjs test/windows-terminals-native.test.mjs test/windows-desktop-native.test.mjs test/windows-desktop-e2e.test.mjs test/windows-native-build.test.mjs test/screen-sound-native.test.mjs test/screen-sound-chrome-e2e.test.mjs test/windows-screen-video-native.test.mjs test/windows-agent-desktop-native.test.mjs test/windows-browser-tools-native.test.mjs test/windows-sandbox-e2e.test.mjs test/windows-file-boundary-e2e.test.mjs test/windows-agent-e2e.test.mjs test/windows-sandbox-grants.test.mjs test/windows-owner-rights.test.mjs test/windows-state-normalization.test.mjs test/windows-claude-hooks.test.mjs test/mobile-nav-chrome-e2e.test.mjs test/journeys/home.test.mjs test/journeys/terminals.test.mjs test/journeys/terminal-paste-target.test.mjs test/journeys/files.test.mjs test/journeys/chat.test.mjs test/journeys/screen.test.mjs test/journeys/apps.test.mjs test/journeys/access.test.mjs test/journeys/pause.test.mjs
-        env:
-          REACH_TEST_WINDOWS_DESKTOP: "1"
-          CI: "true"
-      - run: npm run package
-        id: package_build
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' }}
-      - run: npm run verify:package
-        if: ${{ !cancelled() && steps.package_build.outcome == 'success' }}
-      - name: QR scan and phone matrix against the installed npm artifact
-        if: ${{ !cancelled() && steps.package_build.outcome == 'success' }}
-        run: npm run test:ci:installed
-      - name: Cold source install without Node, npm, Go or Tailscale
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 22 }}
-        run: npm run test:file -- --test-timeout=240000 test/first-install-source.test.mjs
-        env:
-          REACH_TEST_SOURCE_INSTALL: "1"
-      - name: Record CLI and MCP transport timings using the same read-only fixture
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 22 }}
-        run: npm run test:file -- test/agent-transport-benchmark.test.mjs
-        env:
-          REACH_TEST_TRANSPORT_BENCHMARK: "1"
-          REACH_TRANSPORT_BENCHMARK_OUTPUT: reports/transport-benchmark.json
-      - name: npm 12 Linux install-script diagnostics and approved native rebuild
-        if: ${{ !cancelled() && steps.release_build.outcome == 'success' && matrix.os == 'ubuntu-24.04' && matrix.node == 24 }}
-        # The pinned npm release is the compatibility subject. It runs only
-        # on this disposable, read-only runner with no publishing authority.
-        run: | # zizmor: ignore[adhoc-packages]
-          npm install --global npm@12.2.0
-          npm run test:file -- --test-timeout=180000 test/npm12-install.test.mjs
-        env:
-          REACH_TEST_NPM12_INSTALL: "1"
-      - run: node .github/scripts/package-candidate.mjs
-        if: ${{ success() }}
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          REACH_TEST_WATCH_REPORT: reports/agent-watch-bursts.jsonl
+      - name: Preserve bounded evidence even after a failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: reach-${{ matrix.os }}-node${{ matrix.node }}
-          path: release/candidate/*
+          name: tests-intel-watch-aa5a2f5
+          path: reports/
           if-no-files-found: error
-          retention-days: 7
-      - name: Preserve reports even after a test failure
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: tests-${{ matrix.os }}-node${{ matrix.node }}
-          path: reports/
-          if-no-files-found: warn
           retention-days: 14
-  ios:
-    runs-on: macos-15
-    # Keep the build tools and installed simulator on one explicit generation.
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-      REACH_TEST_IOS_RUNTIME: "26.2"
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          package-manager-cache: false
-      - run: npm ci
-      - run: npm run build
-      - run: npx --no-install cap sync ios
-        env:
-          REACH_APP_URL: https://computer.example.ts.net:8443
-      - name: Build the simulator app with its local bundle identity
-        # Ad-hoc simulator signing needs no Apple account. URLSession's native
-        # background daemon requires the bundle identity omitted by NO signing.
-        run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
-      - name: Real iOS pairing, authenticated files and native transfer bridges
-        run: |
-          mkdir -p reports
-          npm run test:file -- --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
-        env:
-          REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
-          REACH_TEST_IOS_REPORT: reports/ios-simulator.json
-      - name: Preserve simulator evidence even after a test failure
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: tests-ios-simulator
-          path: reports/
-          if-no-files-found: warn
-          retention-days: 14
-  compatibility:
-    uses: ./.github/workflows/agent-compatibility.yml # zizmor: ignore[self-repository] same-commit reference; actionlint 1.7.12 does not yet parse the equivalent $/ syntax
-    permissions:
-      contents: read
-  required:
-    name: CI required
-    if: always()
-    needs: [privacy, workflows, go-security, audit, verify, ios, compatibility]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify ios compatibility
-        env:
-          REACH_CI_NEEDS: ${{ toJSON(needs) }}
