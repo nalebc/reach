@@ -1265,6 +1265,7 @@ export default function Files({
       )}
       {preview && (
         <Viewer
+          key={JSON.stringify([editWorkspace(peer), root, preview.path])}
           peer={peer}
           peers={peers}
           file={preview}
@@ -1535,6 +1536,21 @@ type Edit = {
 // Unsaved edits of a preview that closed without Cancel (a back swipe,
 // another page): opening the file again brings them back.
 const unsaved = new Map<string, Edit>();
+// Only a verified, already approved private handoff carries workspaceKey.
+// Keep drafts on that workspace; a replacement credential starts a new one.
+const editWorkspace = (peer: Peer) =>
+  JSON.stringify([
+    peer.id,
+    peer.computerId,
+    peer.workspaceKey ||
+      JSON.stringify([
+        peer.id,
+        peer.url,
+        peer.token,
+        peer.transport,
+        peer.sessionId,
+      ]),
+  ]);
 
 function Viewer({
   peer,
@@ -1590,7 +1606,7 @@ function Viewer({
     [saveError, setSaveError] = useState(""),
     [conflict, setConflict] = useState(false);
   const dirty = !!edit && edit.draft !== edit.base;
-  const draftKey = JSON.stringify([peer.url, peer.token, root, file.path]);
+  const draftKey = JSON.stringify([editWorkspace(peer), root, file.path]);
   const editing = useRef(edit);
   editing.current = edit;
   useEffect(() => {
@@ -1669,7 +1685,6 @@ function Viewer({
     setError("");
     setLoading(true);
     setShown({ size: file.size, modified: file.modified });
-    setEdit(null);
     setSaveError("");
     setConflict(false);
     const maximum = mode === "pdf" ? MAX_PDF_PREVIEW : MAX_IMAGE_PREVIEW;
@@ -1787,6 +1802,7 @@ function Viewer({
   const reload = () => {
     if (!discard()) return;
     editing.current = null;
+    setEdit(null);
     setLoads((n) => n + 1);
   };
   const save = async () => {

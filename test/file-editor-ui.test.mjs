@@ -12,6 +12,8 @@ let dom, React, Files;
 let name,
   disk,
   puts,
+  reads,
+  writes,
   listings,
   contents,
   toasts,
@@ -48,9 +50,18 @@ before(async () => {
         contents++;
         return new Response(disk);
       },
-      "/api/files/text": (init) => {
-        if ((init.method || "GET") === "GET")
+      "/api/files/text": (init, url) => {
+        if ((init.method || "GET") === "GET") {
+          reads.push({
+            url: url.href,
+            authorization: init.headers?.get?.("Authorization"),
+          });
           return answer?.read?.() ?? { text: disk, sha256: hash(disk) };
+        }
+        writes.push({
+          url: url.href,
+          authorization: init.headers?.get?.("Authorization"),
+        });
         const body = JSON.parse(init.body);
         puts.push(body);
         if (answer?.write) return answer.write(body);
@@ -75,6 +86,8 @@ before(async () => {
 after(() => dom?.close());
 beforeEach(() => {
   puts = [];
+  reads = [];
+  writes = [];
   listings = 0;
   contents = 0;
   toasts = [];
@@ -96,7 +109,7 @@ const status = (view) => $(view, ".file-viewer-title small").textContent;
 async function open(
   file,
   text,
-  { access, token = `editor-${++sequence}` } = {},
+  { access, token = `editor-${++sequence}`, control } = {},
 ) {
   name = file;
   if (text !== undefined) disk = text;
@@ -106,10 +119,14 @@ async function open(
     url: "https://editor.test",
     token,
   };
-  const view = await dom.render(
-    React.createElement(Files, {
-      peer,
-      peers: [peer],
+  function Workspace() {
+    const [current, setCurrent] = React.useState(peer);
+    if (control)
+      control.peer = (next) =>
+        dom.update(() => setCurrent((old) => ({ ...old, ...next })));
+    return React.createElement(Files, {
+      peer: current,
+      peers: [current],
       device: {
         name: peer.name,
         platform: "linux",
@@ -119,8 +136,9 @@ async function open(
       },
       onSession() {},
       toast: (message) => toasts.push(message),
-    }),
-  );
+    });
+  }
+  const view = await dom.render(React.createElement(Workspace));
   await openFile(view);
   return view;
 }
@@ -476,6 +494,114 @@ test("a confirmed save clears its own closed preview's draft", async (t) => {
     "saved while closed\n",
   );
   assert.equal(puts.length, 1);
+});
+
+test("a verified private handoff preserves the open file draft without writing it", async (t) => {
+  const token = `editor-handoff-${++sequence}`;
+  const control = {};
+  const view = await open("handoff.txt", "on disk\r\n", { token, control });
+  t.after(() => view.unmount());
+  const field = await startEditing(view);
+  await replaceText(field, "keep this private draft\n");
+  const workspaceKey = JSON.stringify([
+    "editor-fixture",
+    "https://editor.test",
+    token,
+    undefined,
+    undefined,
+  ]);
+  control.peer({
+    url: "https://editor.test:8444",
+    token: `${token}-approved-alternate`,
+    workspaceKey,
+  });
+  await dom.waitFor(() =>
+    reads.some((r) => r.url.startsWith("https://editor.test:8444/")),
+  );
+  await settle();
+  await dom.waitFor(() => !$(view, '[aria-label="Loading preview"]'));
+  assert.equal(
+    $(view, "textarea.file-editor")?.value,
+    "keep this private draft\n",
+  );
+  assert.equal(disk, "on disk\r\n");
+  assert.equal(puts.length, 0, "handoff never dispatches a write");
+  await save(view);
+  assert.equal(puts.length, 1, "only an explicit Save writes");
+  assert.equal(puts[0].sha256, hash("on disk\r\n"));
+  assert.equal(writes[0].authorization, `Bearer ${token}-approved-alternate`);
+  assert.ok(writes[0].url.startsWith("https://editor.test:8444/"));
+  assert.equal(disk, "keep this private draft\r\n");
+});
+
+test("a credential replacement without a verified handoff cannot inherit another workspace's draft", async (t) => {
+  const token = `editor-replacement-${++sequence}`;
+  const control = {};
+  const view = await open("separate.txt", "on disk\n", { token, control });
+  t.after(() => view.unmount());
+  await replaceText(
+    await startEditing(view),
+    "private to the original workspace\n",
+  );
+  control.peer({ token: `${token}-replacement` });
+  await dom.waitFor(() =>
+    reads.some((r) => r.authorization === `Bearer ${token}-replacement`),
+  );
+  await settle();
+  assert.equal($(view, "textarea.file-editor"), null);
+  assert.equal($(view, ".file-viewer-body pre")?.textContent, "on disk\n");
+  assert.equal(puts.length, 0);
+  control.peer({ token });
+  await dom.waitFor(() => $(view, "textarea.file-editor"));
+  assert.equal(
+    $(view, "textarea.file-editor").value,
+    "private to the original workspace\n",
+  );
+  assert.equal(
+    puts.length,
+    0,
+    "returning to the original workspace restores only its unsent draft",
+  );
+});
+
+test("a handoff keeps the draft's original hash when the computer file changed meanwhile", async (t) => {
+  const token = `editor-handoff-conflict-${++sequence}`;
+  const control = {};
+  const view = await open("handoff-conflict.txt", "original\n", {
+    token,
+    control,
+  });
+  t.after(() => view.unmount());
+  await replaceText(await startEditing(view), "my unsaved draft\n");
+  disk = "changed on the computer\n";
+  const workspaceKey = JSON.stringify([
+    "editor-fixture",
+    "https://editor.test",
+    token,
+    undefined,
+    undefined,
+  ]);
+  control.peer({
+    url: "https://editor.test:8444",
+    token: `${token}-approved`,
+    workspaceKey,
+  });
+  await dom.waitFor(() =>
+    reads.some((r) => r.url.startsWith("https://editor.test:8444/")),
+  );
+  await settle();
+  assert.equal($(view, "textarea.file-editor")?.value, "my unsaved draft\n");
+  assert.equal(puts.length, 0);
+  await save(view);
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].sha256, hash("original\n"));
+  assert.equal(
+    disk,
+    "changed on the computer\n",
+    "the newer file is not overwritten",
+  );
+  assert.equal($(view, "textarea.file-editor")?.value, "my unsaved draft\n");
+  assert.match($(view, ".file-editor-note").textContent, /changed/);
 });
 
 test("after a save, Share and Download use a fresh copy, not the one fetched before the edit", async () => {
