@@ -8,6 +8,10 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-18
+
+Early access: file editing, clipboard paste and Windows setup improvements.
+
 ### Added
 
 - Edit text files from Files: Edit in a text or code file's preview opens it in
@@ -30,6 +34,28 @@ release notes, so date the heading before tagging.
 
 - Terminal input longer than 32,768 characters (a large paste, from the phone
   or a computer's keyboard) arrives whole, in pieces, instead of being dropped.
+- Recognize Windows' same-owner `OWNER RIGHTS` folder permissions and narrowly
+  repair the legacy same-owner read grants created by Reach. Foreign ownership,
+  broad write access, junctions, hard links and unsafe helper caches remain refused.
+- Keep Windows setup and source-checkout update instructions actionable, and
+  isolate native helpers from writable checkout files and stale cached builds.
+- Validate macOS runtime library inspection before granting isolated scripts
+  access to their runtime files; a confirmed read-only inspection timeout has
+  one bounded retry for the whole dependency graph.
+
+### Validation and limits
+
+- Release checks run Linux Node 22/24, Apple Silicon and Intel macOS, Windows,
+  the iOS simulator, security scans and installed npm/portable artifacts. Windows
+  ARM64 native validation is recorded separately from the required x64 lane.
+- Hosted browser/OS tests use controlled files, routes and synthetic audio.
+  Physical iPhone/iPad/Android, authenticated private → public → private network
+  transitions, standard-user GUI parity and full signed-in provider tasks remain
+  unqualified. An AppContainer control refusal leaves its escape checks unrun;
+  a passing parent does not prove those assertions executed.
+- npm installs update with `reach update`; source installs use `v0.4.0`. Keep
+  existing Reach state and restart through the CLI. Restarting ends terminals
+  and live screens; invited agents obtain compatible runtime updates from Reach.
 
 ## [0.3.3] — 2026-10-18
 
