@@ -214,6 +214,22 @@ test("runtime status belongs to the observed process on every supported host", t
   }
 });
 
+test("runtime status requires a positive safe-integer observed process identity", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-runtime-identity-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "host-status.json");
+  const saved = { link: "https://fixture.invalid", routes: { public: { open: true } }, awake: { active: true } };
+  for (const platform of [undefined, "darwin", "linux", "win32"]) {
+    for (const pid of [undefined, null, 0, -1, 1.5, "7000", Number.MAX_SAFE_INTEGER + 1, true]) {
+      const identity = pid === undefined ? {} : { pid };
+      fs.writeFileSync(file, JSON.stringify({ ...saved, ...identity }));
+      const host = { root: dir, tty: "ttys003", ...(platform && { platform }), ...identity };
+      assert.deepEqual(runtimeOf(host, { state: () => dir }), {},
+        `${platform || "POSIX discovery"}: equally invalid observed and saved PID ${String(pid)} cannot identify this run`);
+    }
+  }
+});
+
 test("a Reach handing itself to the background service doesn't stop that service from starting", () => {
   // First-run setup picks background mode: ./reach installs the service and
   // stays open until the phone connects. The service must start anyway.

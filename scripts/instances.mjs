@@ -208,7 +208,7 @@ export const stateOf = (root, exists = fs.existsSync, env = process.env) => stat
 // What this observed process reports: another run can leave its status behind
 // after a crash or while the current Reach is still starting, on any host.
 export function runtimeOf(host, { state = stateOf, read = (f) => JSON.parse(fs.readFileSync(f, "utf8")) } = {}) {
-  if (!host.root) return {};
+  if (!host.root || !Number.isSafeInteger(host.pid) || host.pid <= 0) return {};
   try {
     const status = read(path.join(state(host.root), "host-status.json")) || {};
     return status.pid === host.pid ? status : {};
