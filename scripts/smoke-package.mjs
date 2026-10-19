@@ -34,7 +34,8 @@ try {
 const [pack] = JSON.parse(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", output]));
 const paths = pack.files.map((file) => file.path);
 for (const required of ["dist/index.html", "dist/start.html", "dist/agent.mjs", "tailnet/dist/tailnet.json", "scripts/native/input.swift",
-  "scripts/native/screen-sound.swift", "scripts/native/screen-sound.cs", "bin/reach.mjs", "docs/THIRD_PARTY_NOTICES.md"])
+  "scripts/native/screen-sound.swift", "scripts/native/screen-sound.cs", "scripts/native/app-icons.cs", "server/windows-shell-data.mjs",
+  "bin/reach.mjs", "docs/THIRD_PARTY_NOTICES.md"])
   assert.ok(paths.includes(required), `Missing from npm artifact: ${required}`);
 for (const file of paths)
   assert.ok(!/(^|\/)(?:\.reach|\.env|work|node_modules|test|ios)(?:\/|$)/.test(file), `Private or development file in artifact: ${file}`);

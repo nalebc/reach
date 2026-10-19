@@ -89,11 +89,14 @@ test("each platform asks its own file manager for icons", async () => {
   const windows = await readFileIcons(["docx", "file"], {
     platform: "win32",
     run,
+    windows: { dataDir: "C:\\private", build: async (config, kind) => {
+      assert.deepEqual(config, { dataDir: "C:\\private" });
+      assert.equal(kind, "app-icons");
+      return "C:\\private\\reach-app-icons-123456789abc.exe";
+    } },
   });
-  assert.equal(calls[1][0], "powershell.exe");
-  const script = Buffer.from(calls[1][1].at(-1), "base64").toString("utf16le");
-  assert.match(script, /^\$types = @\('docx','file'\)\n/);
-  assert.match(script, /SHGetFileInfo/);
+  assert.equal(calls[1][0], "C:\\private\\reach-app-icons-123456789abc.exe");
+  assert.deepEqual(calls[1][1], ["types", "docx", "file"]);
   assert.match(windows[0], /^data:image\/png/);
   assert.deepEqual(await readFileIcons(["pdf"], { platform: "freebsd", run }), [
     null,

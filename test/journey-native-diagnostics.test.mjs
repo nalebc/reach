@@ -10,6 +10,14 @@ import { journeyNativeTool, observeJourneyNativeExec, createNativeCallRecorder, 
 import { copyPrivateAcceptanceArtifact } from "./acceptance/private-artifact.mjs";
 
 test("journey diagnostics classify only the fixed app-catalog and file-icon commands", () => {
+  const native = "C:\\private\\reach-app-icons-123456789abc-deadbeef.exe";
+  assert.equal(journeyNativeTool(native, ["apps"]), "apps");
+  assert.equal(journeyNativeTool(native, ["types", "folder", "pdf"]), "file-icons");
+  assert.equal(journeyNativeTool(native, ["open", "private app ID"]), "app-open");
+  assert.equal(journeyNativeTool(native, ["types", "../private-value"]), null);
+  assert.equal(journeyNativeTool(native, ["apps", "private-value"]), null);
+  assert.equal(journeyNativeTool("reach-app-icons-untrusted.exe", ["apps"]), null);
+  assert.equal(journeyNativeTool("another.exe", ["types", "folder"]), null);
   const apps = ["-NoProfile", "-Command", "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress"];
   assert.equal(journeyNativeTool("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", apps), "apps");
   assert.equal(journeyNativeTool("powershell.exe", [...apps.slice(0, 2), apps[2] + "; private-value"]), null);

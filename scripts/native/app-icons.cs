@@ -7,14 +7,106 @@
 // read through shell:AppsFolder) or a program's full path (C:\...\x.exe).
 // stdout: one line per target, in order: its icon as base64 PNG, square,
 // <size> pixels (16 to 256), or an empty line when Windows has none.
+//
+//   app-icons.exe apps
+// stdout: AppsFolder's launchable items, one base64 UTF-8 AppID, tab and
+// base64 UTF-8 name per line. The ID is the same shell identity Start uses.
+//   app-icons.exe types <type...>
+// stdout: Explorer's 48 px file type icons, one base64 PNG per argument.
+//   app-icons.exe open <AppID>
+// One ShellExecute request for an ID the server validated in its catalog.
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 static class AppIcons {
+  static object Member(object value, string name, BindingFlags action, params object[] args) {
+    return value.GetType().InvokeMember(name, action, null, value, args);
+  }
+  static void Release(object value) {
+    if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+  }
+  static void Apps(TextWriter output) {
+    object shell = null, folder = null, items = null;
+    try {
+      shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application", true));
+      folder = Member(shell, "NameSpace", BindingFlags.InvokeMethod, "shell:AppsFolder");
+      if (folder == null) throw new InvalidOperationException("AppsFolder is unavailable.");
+      items = Member(folder, "Items", BindingFlags.InvokeMethod);
+      int count = Convert.ToInt32(Member(items, "Count", BindingFlags.GetProperty));
+      for (int i = 0; i < count; i++) {
+        object item = null;
+        try {
+          item = Member(items, "Item", BindingFlags.InvokeMethod, i);
+          string name = Convert.ToString(Member(item, "Name", BindingFlags.GetProperty));
+          string id = Convert.ToString(Member(item, "ExtendedProperty", BindingFlags.InvokeMethod, "System.AppUserModel.ID"));
+          // Unpackaged Start items can expose their stable shell identity as
+          // Path instead. This remains AppsFolder's ID, never a name-derived
+          // command or an identity guessed from a different installation.
+          if (String.IsNullOrEmpty(id)) id = Convert.ToString(Member(item, "Path", BindingFlags.GetProperty));
+          if (String.IsNullOrEmpty(id) || String.IsNullOrEmpty(name)) continue;
+          output.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(id)) + "\t" + Convert.ToBase64String(Encoding.UTF8.GetBytes(name)));
+        } finally { Release(item); }
+      }
+    } finally {
+      Release(items); Release(folder); Release(shell);
+    }
+  }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct FileInfo {
+    public IntPtr icon;
+    public int index;
+    public uint attributes;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string displayName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string typeName;
+  }
+  [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IImageList {
+    [PreserveSig] int Add(IntPtr image, IntPtr mask, ref int index);
+    [PreserveSig] int ReplaceIcon(int i, IntPtr icon, ref int index);
+    [PreserveSig] int SetOverlayImage(int image, int overlay);
+    [PreserveSig] int Replace(int i, IntPtr image, int overlay);
+    [PreserveSig] int AddMasked(IntPtr image, int mask, ref int index);
+    [PreserveSig] int Draw(IntPtr parameters);
+    [PreserveSig] int Remove(int i);
+    [PreserveSig] int GetIcon(int i, int flags, ref IntPtr icon);
+  }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  static extern IntPtr SHGetFileInfo(string path, uint attributes, ref FileInfo info, uint size, uint flags);
+  [DllImport("shell32.dll", EntryPoint = "#727")]
+  static extern int SHGetImageList(int list, ref Guid id, out IImageList images);
+  [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr icon);
+  static string FileTypePng(string type) {
+    var info = new FileInfo();
+    bool folder = type == "folder";
+    // SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES: Explorer's icon for the
+    // type, with no real file to read. SHIL_EXTRALARGE is 48 px.
+    if (SHGetFileInfo(folder ? "folder" : type == "file" ? "file" : "file." + type,
+        folder ? 0x10u : 0x80u, ref info, (uint)Marshal.SizeOf(info), 0x4010u) == IntPtr.Zero) return "";
+    var id = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+    IImageList images;
+    if (SHGetImageList(2, ref id, out images) != 0 || images == null) return "";
+    IntPtr handle = IntPtr.Zero;
+    try {
+      if (images.GetIcon(info.index, 1, ref handle) != 0 || handle == IntPtr.Zero) return "";
+      using (var icon = Icon.FromHandle(handle))
+      using (var bitmap = icon.ToBitmap())
+      using (var stream = new MemoryStream()) {
+        bitmap.Save(stream, ImageFormat.Png);
+        return Convert.ToBase64String(stream.ToArray());
+      }
+    } finally {
+      if (handle != IntPtr.Zero) DestroyIcon(handle);
+      Release(images);
+    }
+  }
   [StructLayout(LayoutKind.Sequential)] struct SIZE { public int cx, cy; }
   [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
   interface IShellItemImageFactory { [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr bitmap); }
@@ -88,11 +180,31 @@ static class AppIcons {
 
   [STAThread]
   static int Main(string[] args) {
+    var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+    output.NewLine = "\n";
+    if (args.Length == 1 && args[0] == "apps") {
+      try { Apps(output); output.Flush(); return 0; }
+      catch { return 1; }
+    }
+    if (args.Length == 2 && args[0] == "open" && args[1].Length > 0 && args[1].IndexOf('\0') < 0) {
+      try {
+        Process.Start(new ProcessStartInfo("shell:AppsFolder\\" + args[1]) { UseShellExecute = true, ErrorDialog = false });
+        return 0;
+      } catch { return 1; }
+    }
+    if (args.Length >= 2 && args.Length <= 65 && args[0] == "types") {
+      for (int i = 1; i < args.Length; i++)
+        if (!Regex.IsMatch(args[i], "\\A(?:folder|file|[a-z0-9]{1,16})\\z")) return 2;
+      for (int i = 1; i < args.Length; i++) {
+        try { output.WriteLine(FileTypePng(args[i])); }
+        catch { output.WriteLine(""); }
+      }
+      output.Flush();
+      return 0;
+    }
     int size;
     if (args.Length != 1 || !int.TryParse(args[0], out size) || size < 16 || size > 256) return 2;
     var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
-    var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
-    output.NewLine = "\n";
     string line;
     while ((line = input.ReadLine()) != null) {
       string target = line.Trim();

@@ -188,9 +188,11 @@ test("Windows Files: what's inside still works, short names, streams and Windows
   assert.equal(fs.existsSync("C:\\escaped.txt"), false);
 });
 
-test("Windows Files: Explorer's own icons, a distinct picture per kind", onWindows, async () => {
+test("Windows Files: Explorer's own icons, a distinct picture per kind", onWindows, async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-file-type-icons-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const kinds = ["folder", "file", "txt", "pdf", "zip", "exe"];
-  const icons = await readFileIcons(kinds);
+  const icons = await readFileIcons(kinds, { windows: { dataDir } });
   for (const [i, icon] of icons.entries()) {
     assert.match(icon || "", /^data:image\/png;base64,iVBORw0KGgo/, kinds[i]);
     const png = Buffer.from(icon.split(",")[1], "base64");

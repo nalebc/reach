@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const TOOLS = new Set(["apps", "file-icons"]);
+const TOOLS = new Set(["apps", "file-icons", "app-open"]);
 const CODES = new Set(["PENDING", "OK", "EXIT_NONZERO", "ETIMEDOUT", "ENOENT", "EACCES", "EPERM", "ENOBUFS", "ABORT_ERR", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "CHILD_FAILED"]);
 const SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT", "SIGBREAK"]);
 const EVENTS = 24, BYTES = 8192;
@@ -11,7 +11,15 @@ const finite = value => Number.isFinite(value) ? value : null;
 // Classification reads trusted command text in memory. None of that text,
 // its arguments, environment, output, or filesystem paths enter the record.
 export function journeyNativeTool(file, args) {
-  if (typeof file !== "string" || file.replaceAll("\\", "/").split("/").at(-1).toLowerCase() !== "powershell.exe" || !Array.isArray(args)) return null;
+  if (typeof file !== "string" || !Array.isArray(args)) return null;
+  const name = file.replaceAll("\\", "/").split("/").at(-1).toLowerCase();
+  if (/^reach-app-icons-[0-9a-f]{12}(?:-[0-9a-f]{8})?\.exe$/.test(name)) {
+    if (args.length === 1 && args[0] === "apps") return "apps";
+    if (args.length >= 2 && args.length <= 65 && args[0] === "types" && args.slice(1).every(value => typeof value === "string" && /^(?:folder|file|[a-z0-9]{1,16})$/.test(value))) return "file-icons";
+    if (args.length === 2 && args[0] === "open" && typeof args[1] === "string" && args[1] && !args[1].includes("\0")) return "app-open";
+    return null;
+  }
+  if (name !== "powershell.exe") return null;
   const command = args.findIndex(value => String(value).toLowerCase() === "-command");
   if (command >= 0 && args[command + 1] === "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress") return "apps";
   const encoded = args.findIndex(value => String(value).toLowerCase() === "-encodedcommand");
