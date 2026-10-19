@@ -394,6 +394,90 @@ test("unsaved edits ask before closing, and come back when the preview closed an
   await view.unmount();
 });
 
+for (const outcome of ["success", "confirmed after conflict"])
+  test(`a late save ${outcome} cannot erase a newer draft kept by a reopened preview`, async (t) => {
+    const token = `editor-late-save-${++sequence}`;
+    let finish, view;
+    t.after(async () => {
+      finish?.();
+      await settle();
+      await view?.unmount();
+    });
+    view = await open("late-save.txt", "original\n", { token });
+    const first = await startEditing(view);
+    await replaceText(first, "first save\n");
+    answer = {
+      write(body) {
+        disk = body.text;
+        const sha256 = hash(disk);
+        return new Promise((resolve) => {
+          finish = () =>
+            resolve(
+              outcome === "success"
+                ? { ok: true, sha256 }
+                : json(409, {
+                    error: "This file changed. Read it again before writing.",
+                  }),
+            );
+        });
+      },
+    };
+    tap(button(view, "Save"));
+    await dom.waitFor(() => puts.length === 1 && finish);
+    await view.unmount();
+    view = await open("late-save.txt", undefined, { token });
+    const reopened = await dom.waitFor(() => $(view, "textarea.file-editor"));
+    assert.equal(reopened.value, "first save\n");
+    await replaceText(reopened, "newer unsaved draft\n");
+    await view.unmount();
+    view = undefined;
+    finish();
+    await dom.waitFor(() => toasts.includes("Saved late-save.txt"));
+    view = await open("late-save.txt", undefined, { token });
+    assert.equal(
+      $(view, "textarea.file-editor")?.value,
+      "newer unsaved draft\n",
+      "the earlier completed save does not own the reopened preview's newer draft",
+    );
+    assert.equal(disk, "first save\n", "the newer draft has not been sent");
+    assert.equal(puts.length, 1, "no unknown write is retried");
+  });
+
+test("a confirmed save clears its own closed preview's draft", async (t) => {
+  const token = `editor-own-save-${++sequence}`;
+  let finish, view;
+  t.after(async () => {
+    finish?.();
+    await settle();
+    await view?.unmount();
+  });
+  view = await open("own-save.txt", "original\n", { token });
+  const field = await startEditing(view);
+  await replaceText(field, "saved while closed\n");
+  answer = {
+    write(body) {
+      disk = body.text;
+      const sha256 = hash(disk);
+      return new Promise((resolve) => {
+        finish = () => resolve({ ok: true, sha256 });
+      });
+    },
+  };
+  tap(button(view, "Save"));
+  await dom.waitFor(() => puts.length === 1 && finish);
+  await view.unmount();
+  view = undefined;
+  finish();
+  await dom.waitFor(() => toasts.includes("Saved own-save.txt"));
+  view = await open("own-save.txt", undefined, { token });
+  assert.equal($(view, "textarea.file-editor"), null);
+  assert.equal(
+    $(view, ".file-viewer-body pre").textContent,
+    "saved while closed\n",
+  );
+  assert.equal(puts.length, 1);
+});
+
 test("after a save, Share and Download use a fresh copy, not the one fetched before the edit", async () => {
   const shared = [];
   const navigator = dom.window.navigator;

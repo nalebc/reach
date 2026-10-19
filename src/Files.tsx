@@ -1798,7 +1798,9 @@ function Viewer({
       );
     const where = `/api/files/text?${new URLSearchParams({ root: String(root), path: file.path })}`;
     const done = (hash: string) => {
-      unsaved.delete(draftKey);
+      // This preview may have closed while its save was in flight. A reopened
+      // preview can already have kept a newer draft under the same key.
+      if (unsaved.get(draftKey) === edit) unsaved.delete(draftKey);
       editing.current = null;
       setText(sent);
       setSha256(hash);

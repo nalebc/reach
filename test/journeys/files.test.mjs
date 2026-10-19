@@ -113,3 +113,56 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
     assert.deepEqual(hidden.filter((name) => listed.includes(name)), []);
   });
 });
+
+test("Files: a late save acknowledgement preserves a newer draft after the preview reopens", { skip, timeout: 240000 }, async (t) => {
+  const computer = await startComputer(t);
+  const name = "Journey late save.txt";
+  const file = path.join(computer.reach.home, name);
+  fs.writeFileSync(file, "original\r\n");
+  t.after(() => fs.rmSync(file, { force: true }));
+  const page = await phone(t, computer);
+  await page.skipIntro();
+  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
+  await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files");
+  await page.tap({ selector: "button.file-main", text: name }, "the draft file");
+  await page.tap(`button[aria-label="Edit ${name}"]`, "Edit");
+  await page.fill("textarea.file-editor", "first save\n");
+  // The request and disk write are real. Hold only delivery of its completed
+  // response to the app, so another preview can be opened before it settles.
+  // dialog.close() below models the browser closing a modal without Cancel;
+  // this is real Chrome, not a physical phone's back gesture or real Tailscale.
+  await page.evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    window.__lateFileSave = { calls: 0, ready: false, delivered: false };
+    window.fetch = async (...args) => {
+      const response = await fetch(...args);
+      if (new URL(typeof args[0] === "string" ? args[0] : args[0].url, location.href).pathname === "/api/files/text"
+          && args[1]?.method === "PUT") {
+        const held = window.__lateFileSave;
+        held.calls++;
+        held.ready = true;
+        await new Promise(resolve => { held.release = resolve; });
+        held.delivered = true;
+      }
+      return response;
+    };
+  })()`);
+  t.after(() => page.evaluate("window.__lateFileSave?.release?.()").catch(() => {}));
+  await page.tap({ selector: "dialog.file-viewer header button", text: "Save" }, "Save");
+  await page.see(() => window.__lateFileSave.ready, "the real write completed, its response held", 30000);
+  assert.equal(fs.readFileSync(file, "utf8"), "first save\r\n");
+  await page.tap(`button[aria-label="Close preview"]`, "close while saving");
+  await page.tap({ selector: "button.file-main", text: name }, "reopen the draft file");
+  await page.see(() => document.querySelector("textarea.file-editor")?.value === "first save\n", "the pending draft is restored");
+  await page.fill("textarea.file-editor", "newer unsaved draft\n");
+  await page.evaluate('document.querySelector("dialog.file-viewer").close()');
+  await page.see(() => !document.querySelector("dialog.file-viewer"), "the browser closed the newer preview");
+  await page.evaluate("window.__lateFileSave.release()");
+  await page.see(() => window.__lateFileSave.delivered, "the first response is released");
+  await page.see(() => document.body.innerText.includes("Saved Journey late save.txt"), "the original save is acknowledged");
+  await page.tap({ selector: "button.file-main", text: name }, "reopen after the old acknowledgement");
+  await page.see(() => document.querySelector("textarea.file-editor")?.value === "newer unsaved draft\n", "the newer draft is still present");
+  assert.equal(await page.evaluate("window.__lateFileSave.calls"), 1, "only the original save was sent");
+  assert.equal(fs.readFileSync(file, "utf8"), "first save\r\n", "the newer draft remains unsent");
+  await page.shot("late-save-newer-draft-preserved");
+});
