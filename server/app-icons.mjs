@@ -2,6 +2,8 @@ import { spawn as spawnChild } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { exec } from "./platform.mjs";
 import { windowsBinary } from "./desktop-native.mjs";
+import { windowsShellFolder } from "./windows-shell-data.mjs";
+export { useWindowsShellFolder as useAppIconFolder } from "./windows-shell-data.mjs";
 
 export const valid = (data) =>
   data.startsWith("iVBORw0KGgo") && /^[A-Za-z0-9+/=]+$/.test(data)
@@ -31,11 +33,7 @@ export async function readMacIcons(targets, run = exec) {
 // Windows: the image the shell draws for each app (Start's app id) or
 // program (its full path), from scripts/native/app-icons.cs, built into
 // Reach's data folder as every Windows helper is (desktop-native.mjs).
-let iconFolder = null;
-export const useAppIconFolder = (dir) => {
-  iconFolder = dir || null;
-};
-export async function readWindowsIcons(targets, { size = 64, dataDir = iconFolder, build = windowsBinary, spawn = spawnChild } = {}) {
+export async function readWindowsIcons(targets, { size = 64, dataDir = windowsShellFolder(), build = windowsBinary, spawn = spawnChild } = {}) {
   if (!targets.length) return [];
   if (!dataDir) return targets.map(() => null);
   const file = await build({ dataDir }, "app-icons");

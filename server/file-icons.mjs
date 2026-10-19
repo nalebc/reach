@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { exec } from "./platform.mjs";
 import { readMacIcons, valid } from "./app-icons.mjs";
+import { readWindowsFileTypeIcons } from "./windows-shell-data.mjs";
 
 // The icon each platform's own file manager shows for a file type: Finder on a
 // Mac, Explorer on Windows, the desktop icon theme on Linux. Containers and
@@ -17,39 +17,14 @@ export const inContainer = (exists = existsSync) =>
 
 export async function readFileIcons(
   types,
-  { platform = process.platform, run = exec, linux = {} } = {},
+  { platform = process.platform, run = exec, linux = {}, windows = {} } = {},
 ) {
   if (!types.length) return [];
   if (platform === "darwin") return readMacIcons(types, run);
-  if (platform === "win32") return readWindowsIcons(types, run);
+  if (platform === "win32") return (await readWindowsFileTypeIcons(types, { run, ...windows })).map(valid);
   if (platform === "linux" && !inContainer())
     return readLinuxIcons(types, linux);
   return types.map(() => null);
-}
-
-async function readWindowsIcons(types, run) {
-  const script = await fs.readFile(
-    fileURLToPath(new URL("../scripts/native/file-icons.ps1", import.meta.url)),
-    "utf8",
-  );
-  // Types are validated to [a-z0-9]; nothing user-controlled reaches the script.
-  const command = `$types = @(${types.map((t) => `'${t}'`).join(",")})\n${script}`;
-  const { stdout } = await run(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(command, "utf16le").toString("base64"),
-    ],
-    {
-      timeout: 20000 + types.length * 250,
-      maxBuffer: types.length * 64 * 1024,
-      windowsHide: true,
-    },
-  );
-  const lines = String(stdout).split(/\r?\n/);
-  return types.map((_, i) => valid((lines[i] || "").trim()));
 }
 
 // freedesktop.org: extension → MIME type (shared-mime-info) → icon name →

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fail } from "./core.mjs";
 import { SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 import { tailscaleCli } from "../scripts/tailscale.mjs";
+import { readWindowsApps, openWindowsApp } from "./windows-shell-data.mjs";
 export const exec = promisify(execFile);
 const options = {
   timeout: 12000,
@@ -47,20 +48,7 @@ async function scanApps() {
     }
     appCache = found.sort((a, b) => a.name.localeCompare(b.name));
   } else if (process.platform === "win32") {
-    const { stdout } = await exec(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress",
-      ],
-      options,
-    );
-    const data = JSON.parse(stdout || "[]");
-    appCache = (Array.isArray(data) ? data : [data]).map((a) => ({
-      id: a.AppID,
-      name: a.Name,
-    }));
+    appCache = await readWindowsApps();
   } else {
     appCache = [];
   }
@@ -89,14 +77,9 @@ export async function launchApp(appId) {
   if (process.platform === "darwin")
     await exec("/usr/bin/open", ["-a", app.id], options);
   else if (process.platform === "win32")
-    // Not explorer.exe: it exits with 1 even when the app opened, so every
-    // launch looked failed. Start-Process says when one really fails; the id
-    // (from Get-StartApps above) travels as data, never as script text.
-    await exec(
-      "powershell.exe",
-      ["-NoProfile", "-Command", 'Start-Process -FilePath ("shell:AppsFolder\\" + $env:REACH_APP_ID)'],
-      { ...options, env: { ...process.env, REACH_APP_ID: app.id } },
-    );
+    // The same ShellExecute operation as Start-Process, without paying
+    // Windows PowerShell's cold start. The validated ID remains data.
+    await openWindowsApp(app.id);
   else throw fail(501, "App launching is supported on Mac and Windows.");
   return { name: app.name };
 }
