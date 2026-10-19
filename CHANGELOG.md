@@ -42,6 +42,8 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 - Read Windows' app catalog and file icons through the existing native shell
   helper, and launch validated app IDs directly, avoiding PowerShell cold-start
   failures while preserving operation deadlines and unknown-action handling.
+- Recheck access and pause state after app discovery or helper preparation,
+  immediately before opening an app on either Mac or Windows.
 - Validate macOS runtime library inspection before granting isolated scripts
   access to their runtime files; a confirmed read-only inspection timeout has
   one bounded retry for the whole dependency graph.
