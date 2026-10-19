@@ -1,0 +1,100 @@
+import fs from "node:fs";
+import path from "node:path";
+
+const TOOLS = new Set(["apps", "file-icons"]);
+const CODES = new Set(["PENDING", "OK", "EXIT_NONZERO", "ETIMEDOUT", "ENOENT", "EACCES", "EPERM", "ENOBUFS", "ABORT_ERR", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "CHILD_FAILED"]);
+const SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT", "SIGBREAK"]);
+const EVENTS = 24, BYTES = 8192;
+export const fixedSignal = value => SIGNALS.has(value) ? value : null;
+const finite = value => Number.isFinite(value) ? value : null;
+
+// Classification reads trusted command text in memory. None of that text,
+// its arguments, environment, output, or filesystem paths enter the record.
+export function journeyNativeTool(file, args) {
+  if (typeof file !== "string" || file.replaceAll("\\", "/").split("/").at(-1).toLowerCase() !== "powershell.exe" || !Array.isArray(args)) return null;
+  const command = args.findIndex(value => String(value).toLowerCase() === "-command");
+  if (command >= 0 && args[command + 1] === "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress") return "apps";
+  const encoded = args.findIndex(value => String(value).toLowerCase() === "-encodedcommand");
+  if (encoded < 0 || typeof args[encoded + 1] !== "string" || args[encoded + 1].length > 32768) return null;
+  const text = Buffer.from(args[encoded + 1], "base64").toString("utf16le");
+  const newline = text.indexOf("\n");
+  if (newline < 0 || !/^\$types = @\((?:'(?:folder|file|[a-z0-9]{1,16})'(?:,'(?:folder|file|[a-z0-9]{1,16})')*)?\)$/.test(text.slice(0, newline))) return null;
+  const source = fs.readFileSync(new URL("../../scripts/native/file-icons.ps1", import.meta.url), "utf8");
+  return text.slice(newline + 1) === source ? "file-icons" : null;
+}
+
+export function safeNativeCall(value) {
+  if (!value || !TOOLS.has(value.tool) || !["started", "settled"].includes(value.phase) || !CODES.has(value.code)) return null;
+  return { tool: value.tool, phase: value.phase, elapsedMs: finite(value.elapsedMs), code: value.code,
+    exitCode: Number.isInteger(value.exitCode) ? value.exitCode : null,
+    signal: fixedSignal(value.signal), killed: value.killed === true };
+}
+
+// Keep the real custom promisifier's exact Promise and .child. Observers do
+// not alter its arguments, callback, output, errors, cancellation or deadline.
+export function observeJourneyNativeExec(original, record, { classify = journeyNativeTool, now = () => performance.now() } = {}) {
+  const clock = () => { try { const value = now(); return Number.isFinite(value) ? value : 0; } catch { return 0; } };
+  return function (file, ...args) {
+    let tool;
+    try { tool = classify(file, args[0]); } catch { /* Diagnostics never prevent a real call. */ }
+    if (!TOOLS.has(tool)) return Reflect.apply(original, this, [file, ...args]);
+    const started = clock();
+    const emit = value => { try { record(safeNativeCall(value)); } catch { /* Preserve the original result. */ } };
+    emit({ tool, phase: "started", elapsedMs: 0, code: "PENDING" });
+    let pending;
+    const settled = error => {
+      try {
+        const nativeCode = error?.code;
+        const code = !error ? "OK" : typeof nativeCode === "number" ? "EXIT_NONZERO" : CODES.has(nativeCode) ? nativeCode : "CHILD_FAILED";
+        emit({ tool, phase: "settled", elapsedMs: Math.max(0, Math.round(clock() - started)), code,
+          exitCode: typeof nativeCode === "number" ? nativeCode : pending?.child?.exitCode,
+          signal: error?.signal || pending?.child?.signalCode, killed: error?.killed || pending?.child?.killed });
+      } catch { /* Even an unreadable diagnostic property cannot change delivery. */ }
+    };
+    try { pending = Reflect.apply(original, this, [file, ...args]); }
+    catch (error) { settled(error); throw error; }
+    // Both handlers return normally; the diagnostic branch cannot create an
+    // unhandled rejection or replace the Promise returned to the real caller.
+    pending.then(() => settled(null), settled);
+    return pending;
+  };
+}
+
+export function createNativeCallRecorder(file) {
+  const events = [];
+  return value => {
+    const safe = safeNativeCall(value);
+    if (!safe || events.length >= EVENTS) return;
+    events.push(safe);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const body = JSON.stringify(events) + "\n";
+      if (Buffer.byteLength(body) <= BYTES) fs.writeFileSync(file, body);
+    } catch { /* Evidence is optional; the actual operation is unchanged. */ }
+  };
+}
+
+export function readNativeCallReports(prefix) {
+  if (!prefix) return [];
+  try {
+    const directory = path.dirname(prefix), name = path.basename(prefix);
+    return fs.readdirSync(directory).filter(file => file.startsWith(name + "-") && /^\d+\.json$/.test(file.slice(name.length + 1))).sort().slice(0, 4).flatMap(file => {
+      try {
+        const full = path.join(directory, file);
+        if (fs.statSync(full).size > BYTES) return [];
+        const values = JSON.parse(fs.readFileSync(full, "utf8"));
+        return Array.isArray(values) ? values.slice(0, EVENTS).map(safeNativeCall).filter(Boolean) : [];
+      } catch { return []; }
+    }).slice(0, 32);
+  } catch { return []; }
+}
+
+export function safeFailureExtra(extra = {}) {
+  const sample = extra.sample ? Object.fromEntries(["x", "y", "width", "height", "r", "g", "b"].map(key => [key, finite(extra.sample[key])])) : null;
+  const target = extra.target ? {
+    ageMs: finite(extra.target.ageMs), alive: typeof extra.target.alive === "boolean" ? extra.target.alive : null,
+    exitCode: finite(extra.target.exitCode), signalCode: fixedSignal(extra.target.signalCode),
+    clicks: finite(extra.target.clicks), lifetimeMs: finite(extra.target.lifetimeMs),
+  } : null;
+  return { sample, target };
+}

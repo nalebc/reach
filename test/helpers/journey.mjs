@@ -13,6 +13,7 @@ import { firstInstall, setupMenu } from "./first-install.mjs";
 import { HOST } from "./fake-tailscale.mjs";
 import { findChrome, launchChrome, openTab, testCertificate } from "./headless-chrome.mjs";
 import { computerWord } from "../../server/computer-word.mjs";
+import { safeNativeCall, safeFailureExtra } from "./journey-native-diagnostics.mjs";
 
 // The user journeys (test/journeys): the actual phone interface, in a real
 // browser, against a real Reach on this computer, page by page, exactly as
@@ -409,14 +410,21 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
   });
   // What the page asked the computer, for a failed step's message.
   await tab.send("Network.enable");
-  const asked = new Map();
+  const asked = new Map(), failed = new Map();
+  const failedRequest = (requestId, request) => {
+    failed.set(requestId, request);
+    if (failed.size > 20) failed.delete(failed.keys().next().value);
+  };
   browser.on("Network.requestWillBeSent", ({ requestId, request }, from) => {
     if (from !== tab.sessionId || !/\/(api|ws)\//.test(request.url)) return;
     asked.set(requestId, { at: Date.now(), method: request.method, path: new URL(request.url).pathname });
     if (asked.size > 60) asked.delete(asked.keys().next().value);
   });
   browser.on("Network.responseReceived", ({ requestId, response }, from) => {
-    if (from === tab.sessionId && asked.has(requestId)) asked.get(requestId).status = response.status;
+    if (from !== tab.sessionId || !asked.has(requestId)) return;
+    const request = asked.get(requestId);
+    request.status = response.status;
+    if (response.status >= 400) failedRequest(requestId, request);
   });
   browser.on("Network.loadingFailed", ({ requestId, errorText, canceled, blockedReason }, from) => {
     if (from !== tab.sessionId || !asked.has(requestId)) return;
@@ -424,8 +432,11 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     request.failed = /^net::ERR_[A-Z0-9_]{1,48}$/.test(errorText || "") ? errorText : "request failed";
     request.cancelled = !!canceled;
     if (/^[a-zA-Z-]{1,64}$/.test(blockedReason || "")) request.blockedReason = blockedReason;
+    failedRequest(requestId, request);
   });
   page.requests = () => [...asked.values()];
+  page.failedRequests = () => [...failed.values()];
+  page.nativeCalls = computer.reach.nativeCalls;
   // What the phone downloads lands in a folder of this test's own:
   // [{ name, state, file }], `state` "completed" once all of it is there.
   const downloads = fs.mkdtempSync(path.join(computer.reach.temp, "downloads-"));
@@ -560,6 +571,50 @@ function phonePage(t, tab, { name, origin }) {
     }
   };
   const text = () => tab.evaluate("document.body?.innerText || ''");
+  // Shared by text/DOM waits and screenshot-colour waits. Persist the same
+  // bounded evidence before either kind of assertion can be buffered.
+  const recordFailure = async (description, file, extra = {}) => {
+    const observed = await tab.evaluate(`(() => {
+      let trace = []; try { trace = JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch {}
+      const input = document.querySelector("input.pair-code");
+      const button = input?.closest("form")?.querySelector("button");
+      const viewport = visualViewport;
+      return { trace, state: { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
+        pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
+        submitDisabled: button?.disabled ?? null,
+        activeTag: document.activeElement?.tagName?.slice(0, 48) || null,
+        viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null } };
+    })()`).catch(() => ({ trace: [], state: null }));
+    const did = Array.isArray(observed?.trace) ? observed.trace : [];
+    const bounded = (value, max) => typeof value === "string" ? value.slice(0, max) : null;
+    const numbers = (values, max) => Array.isArray(values) ? values.slice(0, max).map((value) => Number.isFinite(value) ? value : null) : null;
+    const request = value => ({
+      at: value.at, method: bounded(value.method, 16), path: bounded(value.path, 240),
+      status: value.status, failed: bounded(value.failed, 64), cancelled: !!value.cancelled,
+      blockedReason: bounded(value.blockedReason, 64),
+    });
+    let nativeCalls = [];
+    try { const values = page.nativeCalls?.(); if (Array.isArray(values)) nativeCalls = values.slice(0, 32).map(safeNativeCall).filter(Boolean); } catch {}
+    // API paths/statuses and input length only: no bodies, headers, field
+    // values, URL queries, raw native/browser errors, or arbitrary extras.
+    try {
+      fs.mkdirSync(reports, { recursive: true });
+      fs.writeFileSync(file ? file.replace(/\.png$/, ".json") : path.join(reports, `${label}-failed-step.json`), JSON.stringify({
+        step: bounded(description, 160), state: observed?.state ?? null,
+        requests: (page.requests?.() || []).slice(-15).map(request),
+        // Retained separately: later successful health polls cannot evict
+        // the HTTP failure that caused an earlier Apps or icon lookup error.
+        failedRequests: (page.failedRequests?.() || []).slice(-20).map(request),
+        gestures: did.filter((entry) => typeof entry === "string" && /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30).map((entry) => entry.slice(0, 256)),
+        taps: tapped.slice(-6).map((tap) => ({
+          meant: bounded(tap.meant, 160), x: tap.x, y: tap.y,
+          hit: bounded(tap.hit, 40), viewport: numbers(tap.viewport, 8), observationFailed: !!tap.error,
+        })),
+        nativeCalls, ...safeFailureExtra(extra),
+      }, null, 2) + "\n");
+    } catch { /* Preserve the original assertion if evidence cannot be written. */ }
+    return did;
+  };
   // Until the page shows `what` (a pattern in its text, or a page function
   // that returns something); then that. Otherwise the step failed: what the
   // page showed and said, and its screenshot.
@@ -586,40 +641,7 @@ function phonePage(t, tab, { name, origin }) {
         const shown = await text().catch(() => "");
         const found = await why().catch(() => "");
         const requests = (page.requests?.() || []).slice(-15).map((r) => `${r.method} ${r.path} ${r.status ?? "…"}`);
-        const observed = await tab.evaluate(`(() => {
-          let trace = []; try { trace = JSON.parse(sessionStorage.getItem("journey.trace") || "[]"); } catch {}
-          const input = document.querySelector("input.pair-code");
-          const button = input?.closest("form")?.querySelector("button");
-          const viewport = visualViewport;
-          return { trace, state: { connectVisible: !!document.querySelector(".connect-flow, .welcome, input.pair-code"),
-            pairingLength: input?.value?.length ?? null, pairingValid: input?.validity?.valid ?? null,
-            submitDisabled: button?.disabled ?? null,
-            activeTag: document.activeElement?.tagName?.slice(0, 48) || null,
-            viewport: viewport ? [viewport.offsetLeft, viewport.offsetTop, viewport.scale, viewport.width, viewport.height] : null } };
-        })()`).catch(() => ({ trace: [], state: null }));
-        const did = Array.isArray(observed?.trace) ? observed.trace : [];
-        // Node's reporter can buffer the assertion until this file ends. Keep
-        // bounded evidence beside the screenshot even if the job ends first.
-        // Record API paths/statuses and input length, never bodies, headers,
-        // field values, URL queries or full browser diagnostics.
-        const bounded = (value, max) => typeof value === "string" ? value.slice(0, max) : null;
-        const numbers = (values, max) => Array.isArray(values) ? values.slice(0, max).map((value) => Number.isFinite(value) ? value : null) : null;
-        try {
-          fs.mkdirSync(reports, { recursive: true });
-          fs.writeFileSync(file ? file.replace(/\.png$/, ".json") : path.join(reports, `${label}-failed-step.json`), JSON.stringify({
-            step: description.slice(0, 160), state: observed.state,
-            requests: (page.requests?.() || []).slice(-15).map((request) => ({
-              at: request.at, method: bounded(request.method, 16), path: bounded(request.path, 240),
-              status: request.status, failed: bounded(request.failed, 64), cancelled: !!request.cancelled,
-              blockedReason: bounded(request.blockedReason, 64),
-            })),
-            gestures: did.filter((entry) => typeof entry === "string" && /^\d+ (click|pointerdown|pointerup|touchstart|touchend) /.test(entry)).slice(-30).map((entry) => entry.slice(0, 256)),
-            taps: tapped.slice(-6).map((tap) => ({
-              meant: bounded(tap.meant, 160), x: tap.x, y: tap.y,
-              hit: bounded(tap.hit, 40), viewport: numbers(tap.viewport, 8), observationFailed: !!tap.error,
-            })),
-          }, null, 2) + "\n");
-        } catch { /* Preserve the original assertion if evidence cannot be written. */ }
+        const did = await recordFailure(description, file);
         assert.fail(
           `The phone never showed ${description}${last ? ` (${last.message})` : ""}.${found ? `\nLooked at: ${found}` : ""}\nIt shows: ${shown.slice(-2500)}\nIt said: ${JSON.stringify(tab.problems.slice(-12))}\nIt asked: ${JSON.stringify(requests)}\nIt did: ${JSON.stringify(did)}\nTapped: ${JSON.stringify(tapped.slice(-6))}\nScreenshot: ${file}`,
         );
@@ -697,6 +719,7 @@ function phonePage(t, tab, { name, origin }) {
     text,
     see,
     shot,
+    recordFailure,
     tap,
     touch,
     hold,
