@@ -98,7 +98,7 @@ test("Windows CI retains the atomic JSON sharing regression beside installed pai
   assert.ok(testFiles("windows").includes(path.join("test", "private-artifact.test.mjs")), "fresh artifact copy controls must execute on Windows too");
 });
 
-test("the CI runner passes a long file vector to guarded Node and aggregates failures and skips", t => {
+test("the CI runner passes a long file vector to guarded Node and aggregates failures and skips", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-runner-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "test"));
@@ -128,18 +128,45 @@ test("the CI runner passes a long file vector to guarded Node and aggregates fai
   const file = path.join(root, "test", "tail.test.mjs");
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT; // The nested runner needs its own reporters.
-  const run = () => spawnSync(process.execPath, [process.env.npm_execpath, "run", "test:ci"], { cwd: root, env, encoding: "utf8", timeout: 20000 });
+  if (process.platform === "darwin") {
+    // Full CI already supplies this build. A focused test:file invocation may
+    // be cold: prepare the real helper before timing the launcher, and share
+    // it across both children. Only a cache inside this fixture is removed.
+    const inherited = env.REACH_TEST_NATIVE_DIR;
+    const shared = inherited && fs.statSync(inherited, { throwIfNoEntry: false })?.isDirectory();
+    const nativeDir = shared ? inherited : fs.mkdtempSync(path.join(root, "native-builds-"));
+    const before = process.env.REACH_TEST_NATIVE_DIR;
+    const started = performance.now();
+    try {
+      process.env.REACH_TEST_NATIVE_DIR = nativeDir;
+      const { desktopBinary } = await import("../server/desktop-native.mjs");
+      await desktopBinary({ dataDir: nativeDir }, "browser-files");
+    } finally {
+      if (before === undefined) delete process.env.REACH_TEST_NATIVE_DIR;
+      else process.env.REACH_TEST_NATIVE_DIR = before;
+    }
+    env.REACH_TEST_NATIVE_DIR = nativeDir;
+    t.diagnostic(`Launcher native cache prepared before timed spawn: ${JSON.stringify({ shared: Boolean(shared), elapsedMs: Math.round(performance.now() - started) })}`);
+  }
+  const run = () => {
+    const started = performance.now();
+    const result = spawnSync(process.execPath, [process.env.npm_execpath, "run", "test:ci"], { cwd: root, env, encoding: "utf8", timeout: 20000 });
+    return { ...result, elapsedMs: Math.round(performance.now() - started) };
+  };
+  const diagnosis = result => JSON.stringify({ status: result.status, signal: result.signal, elapsedMs: result.elapsedMs,
+    error: result.error ? { code: result.error.code ?? null, message: result.error.message.slice(0, 1024) } : null,
+    stdout: (result.stdout || "").slice(-4096), stderr: (result.stderr || "").slice(-4096) });
   const report = name => fs.readFileSync(path.join(root, "reports", `windows.${name}`), "utf8");
   fs.writeFileSync(file, "import test from 'node:test'; test('tail fixture', () => {}); test.skip('expected fixture skip', () => {});\n");
   let result = run();
-  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.equal(result.status, 0, diagnosis(result));
   assert.match(report("xml"), /testcase/);
   assert.match(report("tap"), /ok \d+ - tail fixture/);
   assert.match(report("tap"), /# tests 3\n/);
   assert.match(report("tap"), /# pass 2\n# fail 0\n# cancelled 0\n# skipped 1\n/);
   fs.writeFileSync(file, "import test from 'node:test'; test('tail fixture', () => { throw Error('expected fixture failure'); }); test.skip('expected fixture skip', () => {});\n");
   result = run();
-  assert.notEqual(result.status, 0);
+  assert.equal(result.status, 1, diagnosis(result));
   assert.match(report("xml"), /expected fixture failure/);
   assert.match(report("tap"), /not ok \d+ - tail fixture/);
   assert.match(report("tap"), /# tests 3\n/);
