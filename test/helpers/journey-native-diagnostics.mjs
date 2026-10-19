@@ -74,15 +74,41 @@ export function createNativeCallRecorder(file) {
   };
 }
 
+// Pin one regular file before inspecting it. The extra sentinel byte caps
+// memory even if it grows after fstat; path replacement cannot change the
+// opened object. The caller gets no data from a changing/oversized report.
+export function readBoundedDiagnosticFile(file, maxBytes = BYTES) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 16384) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    const before = fs.fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(maxBytes)) return null;
+    const bytes = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
+      if (!count) break;
+      length += count;
+    }
+    if (length > maxBytes) return null;
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (!after.isFile() || after.size > BigInt(maxBytes) || BigInt(length) !== after.size ||
+        !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every(key => before[key] === after[key])) return null;
+    return bytes.subarray(0, length);
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 export function readNativeCallReports(prefix) {
   if (!prefix) return [];
   try {
     const directory = path.dirname(prefix), name = path.basename(prefix);
     return fs.readdirSync(directory).filter(file => file.startsWith(name + "-") && /^\d+\.json$/.test(file.slice(name.length + 1))).sort().slice(0, 4).flatMap(file => {
       try {
-        const full = path.join(directory, file);
-        if (fs.statSync(full).size > BYTES) return [];
-        const values = JSON.parse(fs.readFileSync(full, "utf8"));
+        const bytes = readBoundedDiagnosticFile(path.join(directory, file));
+        if (!bytes) return [];
+        const values = JSON.parse(bytes.toString("utf8"));
         return Array.isArray(values) ? values.slice(0, EVENTS).map(safeNativeCall).filter(Boolean) : [];
       } catch { return []; }
     }).slice(0, 32);
