@@ -20,7 +20,7 @@ const until = async (check, ms = 15000) => {
 // The source assertions and delivery behavior below remain the AA5 baseline.
 function burstTrace() {
   const start = performance.now(), startWallMs = Date.now(), limit = 128;
-  const events = [], counters = Object.fromEntries(["stage", "append", "native-enter", "native-exit", "news"].map(kind => [kind, { count: 0, maxGapMs: 0, lastMs: null }]));
+  const events = [], counters = Object.fromEntries(["stage", "append", "native-enter", "native-exit", "news", "fixture"].map(kind => [kind, { count: 0, maxGapMs: 0, lastMs: null }]));
   let overwritten = 0;
   return {
     record(kind, values = {}, at = performance.now()) {
@@ -87,7 +87,7 @@ async function nativeBurst(t, mode = "native") {
       if (String(file || "") === probe) registered.add(dir);
       listener(event, file);
     } finally {
-      trace.record("native-exit", { ...metadata, ...(dir === codexHome && name === "queue_1.sqlite-wal" ? queueMetadata() : {}) });
+      trace.record("native-exit", metadata);
       activeDeliveryID = previousDeliveryID;
     }
   });
@@ -109,7 +109,10 @@ async function nativeBurst(t, mode = "native") {
   // after() retains the trace before the original cleanup, even on assertion
   // failure. This is evidence collection; it never repeats a measured write.
   t.after(() => {
-    try { retainBurst(t, { schema: 1, mode, stage, debounceMs: 40, node: process.versions.node, ...trace.report() }); }
+    try {
+      trace.record("fixture", { stage: 2, ...queueMetadata() });
+      retainBurst(t, { schema: 1, mode, stage, debounceMs: 40, node: process.versions.node, ...trace.report() });
+    }
     finally {
       fs.watch = nativeWatch;
       watch.close();
@@ -133,8 +136,10 @@ async function nativeBurst(t, mode = "native") {
     for (let i = 0; i < 3; i++) {
       fs.appendFileSync(path.join(codexHome, "queue_1.sqlite-wal"), "x");
       const completedAt = performance.now();
-      trace.record("append", { write: i, ...queueMetadata() }, completedAt);
+      trace.record("append", { write: i }, completedAt);
     }
+    // Metadata sampling is outside the three writes and native callback path.
+    trace.record("fixture", { stage: 1, ...queueMetadata() });
     trace.record("stage", { stage: ++stage });
     assert.ok(await until(() => news.some((n) => n.kind === "queue"), Math.max(0, queueDeadline - Date.now())), "queue news");
     trace.record("stage", { stage: ++stage });
