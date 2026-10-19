@@ -475,7 +475,13 @@ async function signIn(page, computer) {
     await page.fill("input.pair-code", computer.pairing);
     await page.tap("Connect computer");
   }
-  await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code"), "signed in, past the connect page", 60000);
+  // Leaving Connect can precede the first authenticated /api/device response.
+  // These journeys approve an owner: Chat appears only once those details are
+  // loaded. Measure navigation after that, so the bar cannot expand between
+  // measuring a button and dispatching touchStart to its old coordinate.
+  // MobileNav's separate native-touch test exercises changes during a press.
+  await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code") &&
+    document.querySelector('nav.mobile-nav button[aria-label="Chat"]'), "signed in, with the approved computer's details", 60000);
 }
 
 // The colour a PNG shows at its middle: { r, g, b } (8-bit RGB or RGBA,
