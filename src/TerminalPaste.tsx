@@ -9,7 +9,7 @@ import { X } from "lucide-react";
 export function usePhonePaste(
   clipboardTarget: readonly unknown[],
   draftTarget: readonly unknown[],
-  deliver: (text: string) => void,
+  deliver: (text: string) => void | false,
   say: (message: string) => void,
 ) {
   // A clipboard prompt can outlive this terminal. Each committed target
@@ -54,8 +54,9 @@ export function usePhonePaste(
     <PasteBox
       onPaste={(text) => {
         if (open !== draftLifetime.current) return;
-        setOpen(null);
-        deliver(text);
+        // false means nothing was sent. Keep that known-unsent text for a
+        // fresh tap; an attempted dispatch is never queued or retried here.
+        if (deliver(text) !== false) setOpen(null);
       }}
       onClose={() => setOpen(null)}
     />

@@ -443,13 +443,15 @@ export function TerminalView({
     peer.id, peer.computerId, currentKey,
   ], (text) => {
     const term = terminal.current;
-    if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN)
-      return toast("This terminal isn't connected. Paste again once it is.");
+    if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN) {
+      toast("This terminal isn't connected. Paste again once it is.");
+      return false;
+    }
     const clean = pastable(text);
     // A program that takes pastes whole (bracketed paste: shells, Codex,
     // Claude Code) runs nothing as it arrives.
     const question = term.modes.bracketedPasteMode ? null : pasteQuestion(clean);
-    if (question && !confirm(question)) return;
+    if (question && !confirm(question)) return false;
     // Sticky ctrl is for the next key typed, never a pasted letter (ctrl-D).
     ctrlArmed.current = false;
     setCtrl(false);

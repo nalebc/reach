@@ -426,6 +426,71 @@ test("a terminal not connected says so, and the paste isn't kept for later", asy
   await view.unmount();
 });
 
+test("reach: a manual draft remains after a known no-send while offline, until explicit resubmit", async (t) => {
+  clipboard = undefined;
+  const { view, socket } = await reachTerminal({ connect: false });
+  t.after(() => view.unmount());
+  tap(pasteKey(view));
+  const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+  const draft = "keep until connected";
+  dom.update(() => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, draft);
+    box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+  await settle();
+  assert.equal(socket.input, "");
+  assert.deepEqual(toasts, ["This terminal isn't connected. Paste again once it is."]);
+  assert.equal(view.container.querySelector(".terminal-paste textarea"), box, "known no-send keeps the mounted draft");
+  assert.equal(box.value, draft);
+  socket.receive({ type: "snapshot", data: "$ ", status: "running", heartbeat: true });
+  await settle();
+  assert.equal(socket.input, "", "becoming ready never sends the retained draft");
+  assert.equal(box.value, draft);
+  tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+  await dom.waitFor(() => socket.input);
+  assert.equal(socket.input, draft);
+  assert.equal(socket.sent.filter((m) => m.type === "input").length, 1);
+  assert.equal(view.container.querySelector(".terminal-paste"), null);
+});
+
+for (const mode of ["reach", "desktop"]) test(`${mode}: a manual draft remains after a known no-send from declined multiline confirmation`, async (t) => {
+  clipboard = undefined;
+  const { view } = await (mode === "reach" ? reachTerminal() : desktopTerminal());
+  t.after(() => view.unmount());
+  tap(pasteKey(view));
+  const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+  const draft = "keep this command\n";
+  dom.update(() => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, draft);
+    box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  answer = false;
+  tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+  await settle();
+  assert.equal(asked.length, 1);
+  assert.equal(Socket.all.map((s) => s.input).join(""), "");
+  assert.deepEqual(desktopSends, []);
+  assert.equal(view.container.querySelector(".terminal-paste textarea"), box, "declining keeps the mounted draft");
+  assert.equal(box.value, draft);
+  answer = true;
+  await settle();
+  assert.equal(Socket.all.map((s) => s.input).join(""), "", "approval alone never sends anything");
+  assert.deepEqual(desktopSends, []);
+  tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+  await dom.waitFor(() => mode === "reach" ? Socket.all.at(-1).input : desktopSends.length);
+  assert.equal(asked.length, 2, "a fresh explicit submit asks again");
+  assert.equal(view.container.querySelector(".terminal-paste"), null);
+  if (mode === "reach") {
+    assert.equal(Socket.all.at(-1).input, "keep this command\r");
+    assert.equal(Socket.all.at(-1).sent.filter((m) => m.type === "input").length, 1);
+  } else {
+    assert.deepEqual(desktopSends, [{ id: "t1", origin: peer.url, token: `Bearer ${peer.token}`, text: "keep this command" }]);
+  }
+  await settle();
+  assert.equal(desktopSends.length, mode === "desktop" ? 1 : 0, "no automatic desktop retry follows the explicit submit");
+});
+
 test("a phone that won't hand over its clipboard gets a box for its own paste", async () => {
   for (const refusing of [
     undefined, // no clipboard access in this browser

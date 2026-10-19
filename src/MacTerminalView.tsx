@@ -262,7 +262,7 @@ export default function MacTerminalView({
   ], (text) => {
     const clean = pastable(text);
     const question = pasteQuestion(clean);
-    if (question && !confirm(question)) return;
+    if (question && !confirm(question)) return false;
     pasteText.current(clean);
   }, setHint);
   useEffect(() => {
