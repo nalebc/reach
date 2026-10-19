@@ -258,7 +258,7 @@ export default function MacTerminalView({
     peer.id, peer.computerId, peer.url, peer.token, peer.transport, peer.sessionId, tab.id,
   ], [
     peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]),
-    peer.id, peer.computerId, tab.id,
+    peer.id, tab.id,
   ], (text) => {
     const clean = pastable(text);
     const question = pasteQuestion(clean);

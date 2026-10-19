@@ -440,7 +440,7 @@ export function TerminalView({
     peer.id, peer.computerId, peer.url, peer.token, peer.transport, peer.sessionId, currentKey,
   ], [
     peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]),
-    peer.id, peer.computerId, currentKey,
+    peer.id, currentKey,
   ], (text) => {
     const term = terminal.current;
     if (!term || !connected || socket.current?.readyState !== WebSocket.OPEN) {

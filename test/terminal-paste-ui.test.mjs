@@ -147,11 +147,13 @@ const targets = [
   { name: "terminal", reach: { selected: "s2" }, desktop: { tab: { id: "t2", name: "zsh", provider: "terminal" } } },
   ...[
     ["device identity", { id: "another-device" }],
-    ["computer identity", { computerId: "another-computer" }],
+    ["computer identity", { id: "another-authenticated-computer" }],
+    ["computer metadata", { computerId: "learned-computer" }],
     ["credential", { token: "replacement-credential" }],
     ["address", { url: "https://other-reach.test" }],
     ["transport", { transport: "funnel" }],
     ["grant session", { sessionId: "another-grant" }],
+    ["workspace identity", { workspaceKey: "replacement-workspace" }],
   ].map(([name, change]) => ({ name, reach: { peer: { ...peer, ...change } }, desktop: { peer: { ...peer, ...change } } })),
 ];
 
@@ -215,7 +217,9 @@ for (const mode of ["reach", "desktop"]) {
       assert.equal(dom.document.querySelector(".terminal-paste"), null);
     });
   }
-  for (const target of targets) test(`${mode}: an open manual fallback is cleared after changing ${target.name}`, async (t) => {
+  // Optional computerId can be learned after mount; authenticated peer.id is
+  // the identity boundary. Metadata still invalidates pending clipboard reads.
+  for (const target of targets.filter((target) => target.name !== "computer metadata")) test(`${mode}: an open manual fallback is cleared after changing ${target.name}`, async (t) => {
     clipboard = undefined;
     const { view, change } = await start();
     t.after(() => view.unmount());
@@ -272,6 +276,49 @@ for (const mode of ["reach", "desktop"]) {
     assert.equal(fresh.value, "");
     assert.equal(Socket.all.map((s) => s.input).join(""), "");
     assert.deepEqual(desktopSends, []);
+  });
+
+  test(`${mode}: delayed optional computer metadata enrichment preserves the same authenticated peer's manual draft`, async (t) => {
+    clipboard = undefined;
+    const { view, change } = await start();
+    t.after(() => view.unmount());
+    const { reconcilePeers } = await dom.load("/src/api.ts");
+    const offline = { ...peer, id: "offline-saved-peer", url: "https://offline.test", token: "offline-credential" };
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    // Exercise the actual reconciler: a modeled offline saved peer holds the
+    // Promise.all while the selected peer's authenticated metadata is ready.
+    const reconciliation = reconcilePeers([peer, offline], async (candidate) => {
+      if (candidate.id === offline.id) {
+        await held;
+        throw Error("saved peer is offline");
+      }
+      return { id: peer.id, name: peer.name, platform: peer.platform, computerId: "learned-computer" };
+    });
+    tap(pasteKey(view));
+    const box = await dom.waitFor(() => view.container.querySelector(".terminal-paste textarea"));
+    const draft = mode === "reach" ? "keep metadata draft" : "keep metadata draft\n";
+    dom.update(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(box, draft);
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    release();
+    const enriched = (await reconciliation).find((candidate) => candidate.id === peer.id);
+    assert.equal(enriched.id, peer.id);
+    assert.equal(enriched.url, peer.url);
+    assert.equal(enriched.token, peer.token);
+    assert.equal(enriched.computerId, "learned-computer");
+    await change({ peer: enriched });
+    assert.equal(view.container.querySelector(".terminal-paste textarea"), box, "optional metadata cannot discard the mounted draft");
+    assert.equal(box.value, draft);
+    assert.equal(Socket.all.map((s) => s.input).join(""), "");
+    assert.deepEqual(desktopSends, []);
+    assert.deepEqual(asked, []);
+    tap(view.container.querySelector('.terminal-paste button[type="submit"]'));
+    await dom.waitFor(() => mode === "reach" ? Socket.all.at(-1).input : desktopSends.length);
+    assert.equal(view.container.querySelector(".terminal-paste"), null);
+    if (mode === "reach") assert.equal(Socket.all.at(-1).input, draft);
+    else assert.deepEqual(desktopSends, [{ id: "t1", origin: peer.url, token: `Bearer ${peer.token}`, text: "keep metadata draft" }]);
   });
 
   for (const destination of ["browser", "native"]) for (const result of ["fulfilled", "rejected"]) {
