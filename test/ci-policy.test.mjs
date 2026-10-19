@@ -235,6 +235,17 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
   assert.match(ci, /test\/windows-file-boundary-e2e\.test\.mjs/);
 });
 
+test("Windows CI runs both terminal journey files in the serial native lane", () => {
+  const native = workflow("ci").jobs.verify.steps.find(step => step.run?.includes("test/journeys/terminals.test.mjs"));
+  assert.ok(native, "the actual native lane must retain the original terminal journeys");
+  for (const name of ["journeys/terminals", "journeys/terminal-paste-target"]) {
+    assert.ok(suites.windows.includes(name), `${name} must remain in the Windows selection`);
+    assert.ok(native.run.includes(`test/${name}.test.mjs`), `${name} must execute in the native lane`);
+  }
+  assert.equal(native.env.REACH_TEST_WINDOWS_DESKTOP, "1");
+  assert.match(native.run, /(?:^|\s)--test-concurrency=1(?:\s|$)/, "native files stay serial");
+});
+
 test("Windows CI covers shared phone navigation, agent workspace privacy, updates, gesture accuracy, accelerated scrolling and native input sequences", () => {
   for (const name of ["back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui", "touch-scroll", "screen-scroll-momentum-ui", "screen-scroll-ui", "screen-touch-accuracy-ui",
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",

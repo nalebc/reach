@@ -52,9 +52,9 @@ export const suites = {
     // Chrome against a real first install of Reach, page by page, ending in
     // the same visible result as on a Mac. What needs the PC's desktop (its
     // screen, input, windows) runs with REACH_TEST_WINDOWS_DESKTOP only.
-    // On Windows CI all eight run once in the serial native step, including
+    // On Windows CI all journey files run once in the serial native step, including
     // their real browser startup; the concurrent contract lane defers them.
-    "journeys/home", "journeys/terminals", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
+    "journeys/home", "journeys/terminals", "journeys/terminal-paste-target", "journeys/files", "journeys/chat", "journeys/screen", "journeys/apps",
     "journeys/access", "journeys/pause", "headless-chrome-lifecycle", "journey-native-diagnostics", "windows-ci-desktop-preflight",
     // Mascots for invited agents and people: the shared deck and faces (Oct 13).
     "mascot-deck", "mascots-ui",
