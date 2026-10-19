@@ -604,6 +604,47 @@ test("a handoff keeps the draft's original hash when the computer file changed m
   assert.match($(view, ".file-editor-note").textContent, /changed/);
 });
 
+test("learning a legacy computer's metadata cannot strand its open draft", async (t) => {
+  const control = {};
+  const view = await open("legacy.txt", "on disk\n", { control });
+  t.after(() => view.unmount());
+  await replaceText(await startEditing(view), "keep the legacy draft\n");
+  // Reconciliation can finish after /api/device already made Files usable.
+  // Its authenticated computer ID, URL and credential have not changed.
+  control.peer({ computerId: "newly-learned-machine-metadata" });
+  await settle();
+  assert.equal(
+    $(view, "textarea.file-editor")?.value,
+    "keep the legacy draft\n",
+  );
+  assert.equal(puts.length, 0);
+  await save(view);
+  assert.equal(puts.length, 1);
+  assert.equal(disk, "keep the legacy draft\n");
+});
+
+test("a different computer ID cannot inherit an open file draft through a copied workspace label", async (t) => {
+  const token = `editor-computer-${++sequence}`;
+  const control = {};
+  const view = await open("computer.txt", "on disk\n", { token, control });
+  t.after(() => view.unmount());
+  await replaceText(await startEditing(view), "only the original computer\n");
+  const workspaceKey = JSON.stringify([
+    "editor-fixture",
+    "https://editor.test",
+    token,
+    undefined,
+    undefined,
+  ]);
+  const before = reads.length;
+  control.peer({ id: "different-computer", workspaceKey });
+  await dom.waitFor(() => reads.length > before);
+  await settle();
+  assert.equal($(view, "textarea.file-editor"), null);
+  assert.equal($(view, ".file-viewer-body pre")?.textContent, "on disk\n");
+  assert.equal(puts.length, 0);
+});
+
 test("after a save, Share and Download use a fresh copy, not the one fetched before the edit", async () => {
   const shared = [];
   const navigator = dom.window.navigator;

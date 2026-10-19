@@ -1538,10 +1538,11 @@ type Edit = {
 const unsaved = new Map<string, Edit>();
 // Only a verified, already approved private handoff carries workspaceKey.
 // Keep drafts on that workspace; a replacement credential starts a new one.
+// Optional computerId metadata can arrive later during reconciliation; peer.id
+// is the authenticated computer identity and remains stable during enrichment.
 const editWorkspace = (peer: Peer) =>
   JSON.stringify([
     peer.id,
-    peer.computerId,
     peer.workspaceKey ||
       JSON.stringify([
         peer.id,
