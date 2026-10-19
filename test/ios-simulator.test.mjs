@@ -407,6 +407,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       await Promise.race([downloadResponded, result]);
       reached("download answered");
       await new Promise(resolve => setTimeout(resolve, 1500));
+      assert.equal(lifecycle.snapshot().activeAfterBackground, false, "the app stays backgrounded until the explicit reopen");
       await simulatorStep("reopen the app", ["launch", device, bundle], {
         attempts: 2, progress: lifecycle.active, requireProgress: true,
         observation: "native App active after backgrounding",
