@@ -144,11 +144,19 @@ export async function clickTarget(t, dir) {
   for (const end = Date.now() + 60000; !fs.existsSync(`${out}.ready`); await sleep(100))
     if (Date.now() > end || child.exitCode !== null) throw Error("The click target didn't open.");
   const [x, y, width, height, w, h] = fs.readFileSync(`${out}.ready`, "utf8").split(",").map(Number);
+  const readyAt = Date.now();
+  const clicks = () => (fs.existsSync(`${out}.clicks`) ? Number(fs.readFileSync(`${out}.clicks`, "utf8")) : 0);
   return {
     at: { x: x / width, y: y / height },
     // Inside it, away from its middle (where the pointer ends up).
     aside: { x: (x + w / 4) / width, y: (y + h / 4) / height },
-    clicks: () => (fs.existsSync(`${out}.clicks`) ? Number(fs.readFileSync(`${out}.clicks`, "utf8")) : 0),
+    clicks,
+    snapshot: () => {
+      let count = null;
+      try { const value = clicks(); if (Number.isFinite(value)) count = value; } catch {}
+      return { ageMs: Date.now() - readyAt, alive: child.exitCode === null && child.signalCode === null,
+        exitCode: child.exitCode, signalCode: child.signalCode, clicks: count, lifetimeMs: 120000 };
+    },
   };
 }
 
