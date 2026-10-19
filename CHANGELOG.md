@@ -38,6 +38,10 @@ Early access: file editing, clipboard paste and Windows setup improvements.
 - Keep a pending clipboard read bound to its original terminal and access.
   Switching terminals or computers, changing access, or closing the view drops
   the old read, including a switch away and back.
+- Parse a terminal's saved output before enabling input after connecting.
+  Old device-query replies no longer reach the live shell, and terminal queries
+  leave the phone's Ctrl key armed for the next typed character. Live queries
+  still receive their normal replies.
 - Preserve a newer unsaved file draft when an earlier preview's save completes
   after it closes. A confirmed save clears only the draft it saved.
 - Keep unsent file and manual-paste drafts across verified, already approved
