@@ -6,11 +6,12 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanPreload } from "./clean-machine.mjs";
 import { fakeTailscale, tailnetPreload, HOST } from "./fake-tailscale.mjs";
 import { privateWindowsInstall } from "./private-windows-install.mjs";
 import { copyPrivateAcceptanceArtifact } from "../acceptance/private-artifact.mjs";
+import { readNativeCallReports } from "./journey-native-diagnostics.mjs";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const identity = (name, user = 42) => ({
@@ -110,11 +111,26 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
   await fs.writeFile(shell, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   const osPreload = path.join(temp, "fresh-os.mjs");
   const bootstrapPid = path.join(temp, "bootstrap.pid");
+  // Observe the actual first native lookup in these two journeys. Never
+  // prime the provider: a successful cold first call remains part of proof.
+  const nativeCalls = windows && real && /^(Apps|Files):/.test(t.name)
+    ? path.resolve("reports", "journeys", `native-${path.basename(temp)}`) : null;
+  let nativeObserver = null;
+  if (nativeCalls) {
+    const diagnostics = path.join(temp, "diagnostics");
+    await fs.mkdir(diagnostics, { mode: 0o700 });
+    // The native fixture imports only fresh bytes below its private parent,
+    // never executable observer code from the writable Actions checkout.
+    copyPrivateAcceptanceArtifact({ source: fileURLToPath(new URL("../../", import.meta.url)), destination: diagnostics,
+      members: ["test/helpers/journey-native-diagnostics.mjs", "scripts/native/file-icons.ps1"] });
+    nativeObserver = pathToFileURL(path.join(diagnostics, "test", "helpers", "journey-native-diagnostics.mjs")).href;
+  }
   await fs.writeFile(osPreload, `
     import cp from 'node:child_process';
     import fs from 'node:fs';
     import { promisify } from 'node:util';
     import { syncBuiltinESMExports } from 'node:module';
+    ${nativeObserver ? `import { observeJourneyNativeExec, createNativeCallRecorder } from ${JSON.stringify(nativeObserver)};` : ""}
     const exec = cp.execFile, sync = cp.execFileSync;
     const exists = fs.existsSync;
     fs.existsSync = file => ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'].includes(file) ? false : exists(file);
@@ -130,7 +146,9 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
         return exec(process.execPath, ['-e', ''], args.find(value => typeof value === 'function'));
       return exec.call(this, file, ...args);
     };
-    cp.execFile[promisify.custom] = exec[promisify.custom];
+    cp.execFile[promisify.custom] = ${nativeCalls
+      ? `observeJourneyNativeExec(exec[promisify.custom], createNativeCallRecorder(${JSON.stringify(nativeCalls)} + "-" + process.pid + ".json"))`
+      : "exec[promisify.custom]"};
     // This simulated computer has no other Reach; never inspect or touch the
     // developer's live Reach, Terminal windows, service, or Tailscale daemon.
     cp.execFileSync = function(file, ...args) {
@@ -278,6 +296,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     // The computer's home as Reach sees it (a real PC's own profile, `real`).
     app, home: real && windows ? os.homedir() : home, state, shared, fake, until, request, stop, temp, env,
     output: () => output, answer: text => child.stdin.write(text + "\n"),
+    nativeCalls: () => readNativeCallReports(nativeCalls),
     installTailscale: () => fs.rename(fake.cli + ".uninstalled", fake.cli),
     cli: args => new Promise((resolve, reject) => {
       const command = spawn(process.execPath, [...entry, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
