@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 // `progress` is independent evidence that the requested operation happened,
 // such as the copied app requesting its isolated test page. It stops only
 // this launcher; the test must still check the operation's actual result.
-export function boundedCommand(command, args, limit, { progress } = {}) {
+export function boundedCommand(command, args, limit, { progress, requireProgress = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", settled = false, force;
@@ -35,6 +35,9 @@ export function boundedCommand(command, args, limit, { progress } = {}) {
     child.on("error", error => finish(error));
     child.on("close", (code, signal) => {
       clearTimeout(force);
+      // A launcher exiting successfully does not prove a required native
+      // transition. Keep the same deadline until its own evidence arrives.
+      if (code === 0 && requireProgress) return;
       finish(code === 0 ? null : Error(`exited with ${signal || code}${stderr.trim() ? `: ${stderr.trim().slice(-400)}` : ""}`));
     });
     if (progress) Promise.resolve(progress).then(() => {
