@@ -6397,7 +6397,7 @@ export async function createReach(overrides = {}) {
       clearInterval(agentSweep);
       agentApps.shutdown();
       const apps = appThreads.shutdown();
-      macTerminalWatch.end();
+      const terminalWatchExit = macTerminalWatch.close();
       closeInput();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
@@ -6414,7 +6414,7 @@ export async function createReach(overrides = {}) {
       const terminalExit = terminals.dispose();
       codex.dispose();
       const jobExit = jobs.dispose();
-      await Promise.all([apps, closed, terminalExit, jobExit]);
+      await Promise.all([apps, closed, terminalExit, jobExit, terminalWatchExit]);
       clearTimeout(cutoff);
       // The last agent timings still on their way to disk land before Reach
       // says it stopped (a test removing the data folder raced them).

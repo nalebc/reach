@@ -46,6 +46,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 - Keep agent desktop tools responsive during concurrent startup, refuse work
   after its grant changes, bound pending native input and report helper
   failures as structured tool errors. Screenshot results must remain fresh.
+- Wait for the terminal watcher's process to close before Reach finishes
+  shutting down, and prevent queued refreshes or delayed terminal reads from
+  starting another helper after shutdown.
 - Reject non-web site filters for tab cleanup before taking control or sending
   a close. Closing tabs is advertised as a write that can lose unsaved state.
 - "Find Gmail message" no longer stops at "The browser has not reached the

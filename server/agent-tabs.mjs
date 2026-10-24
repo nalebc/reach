@@ -23,12 +23,14 @@ const pageOf = (url) => {
 };
 const readSavedTabs = (file) => {
   const limit = 256 * 1024;
-  const checked = fs.lstatSync(file, { bigint: true });
-  if (!checked.isFile() || checked.isSymbolicLink() || checked.size > limit) return [];
   const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
-    if (!opened.isFile() || opened.size > limit || opened.dev !== checked.dev || opened.ino !== checked.ino) return [];
+    if (!opened.isFile() || opened.size > limit) return [];
+    // The descriptor is the read authority. On platforms without O_NOFOLLOW,
+    // also reject a symlink or a pathname no longer naming this regular file.
+    const linked = fs.lstatSync(file, { bigint: true });
+    if (!linked.isFile() || linked.isSymbolicLink() || linked.size > limit || opened.dev !== linked.dev || opened.ino !== linked.ino) return [];
     // A concurrently growing file cannot turn the size check into an
     // unbounded read. Read only this descriptor, never the pathname again.
     const bytes = Buffer.alloc(limit + 1);

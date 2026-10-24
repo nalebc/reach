@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createAgentTools, sameToolPage } from "../server/agent-tools.mjs";
 import {
   validateToolDefinition,
@@ -24,19 +25,32 @@ import {
 import {
   toolBrowserFixture,
   toolApps,
+  toolAppsFor,
+  toolPrivateStateParent,
   exampleTool,
 } from "./helpers/tool-browser-fixture.mjs";
+import { windowsAcl, othersAllowed } from "./helpers/windows-acl.mjs";
+
+const privateStateParent = toolPrivateStateParent(test);
+
+async function assertPrivateFile(target) {
+  // The modeled browser platform is independent of the actual filesystem.
+  if (process.platform === "win32") assert.deepEqual(othersAllowed(await windowsAcl("file", target)), []);
+  else assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+}
 
 function setup(t, extra = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tool-test-")),
-    driver = toolBrowserFixture();
+  const { platform = "darwin", ...optionsExtra } = extra;
+  const apps = toolAppsFor(platform);
+  const dataDir = fs.mkdtempSync(path.join(privateStateParent(), "reach-tool-test-")),
+    driver = toolBrowserFixture({ platform });
   let client = {
     id: "agent",
     name: "Test agent",
     kind: "agent",
     status: "accepted",
     expiresAt: Date.now() + 600000,
-    policy: { browser: true, preset: "apps", apps: toolApps, roots: [] },
+    policy: { browser: true, preset: "apps", apps, roots: [] },
     scopes: [
       "browser:read",
       "browser:open",
@@ -48,7 +62,7 @@ function setup(t, extra = {}) {
   const desktop = {
     catalog: async (auth) => {
       auth();
-      return toolApps;
+      return apps;
     },
     withBrowser: async (_client, _app, auth, work) =>
       work(
@@ -62,10 +76,11 @@ function setup(t, extra = {}) {
     options = {
       desktop,
       driver,
+      platform,
       waitMs: 250,
       runMs: 5000,
       pdf: async () => Buffer.from("%PDF-1.4 test snapshot").toString("base64"),
-      ...extra,
+      ...optionsExtra,
     };
   let tools = createAgentTools(config, options);
   t.after(() => {
@@ -100,6 +115,28 @@ function setup(t, extra = {}) {
     },
   };
 }
+
+// Native browser operations are modeled. Keep the app inventory, driver and
+// production allowlist on the same explicit platform on every CI host.
+const modeledBrowsers = [
+  { platform: "darwin", browser: "Chrome", label: "Chrome" },
+  { platform: "darwin", browser: "Safari", label: "Safari" },
+  { platform: "win32", browser: "Chrome", label: "win32 Chrome" },
+  { platform: "win32", browser: "Edge", label: "win32 Edge" },
+];
+
+test("Windows tool-state privacy rejects an inherited Everyone read grant", { skip: process.platform !== "win32" }, async (t) => {
+  // Only dummy fixture bytes receive the deliberately broad inherited grant.
+  const parent = fs.mkdtempSync(path.join(privateStateParent(), "inherited-acl-control-"));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  await promisify(execFile)(path.win32.join(system, "icacls.exe"), [parent, "/grant", "*S-1-1-0:(OI)(CI)R", "/Q"], { windowsHide: true, timeout: 10000 });
+  const target = path.join(parent, "dummy-ledger.json");
+  fs.writeFileSync(target, "[]", { mode: 0o600 });
+  const acl = await windowsAcl("file", target);
+  assert.ok(othersAllowed(acl).some((rule) => rule.sid === "S-1-1-0" && rule.inherited), "The control must actually inherit the Everyone read ACE.");
+  await assert.rejects(() => assertPrivateFile(target), { code: "ERR_ASSERTION" });
+});
 
 test("every prebuilt tool and the protocol example use the identical definition validator", () => {
   for (const tool of PREBUILT_TOOLS)
@@ -142,9 +179,9 @@ test("every prebuilt tool and the protocol example use the identical definition 
   );
 });
 
-for (const browser of ["Chrome", "Safari"])
-  test(`${browser}: Gmail search → exact message → attachment → one saved draft, with idempotent replay`, async (t) => {
-    const f = setup(t);
+for (const { platform, browser, label } of modeledBrowsers)
+  test(`${label}: Gmail search → exact message → attachment → one saved draft, with idempotent replay`, async (t) => {
+    const f = setup(t, { platform });
     const search = await f.run(
       "builtin_gmail_find",
       { query: "invoice October" },
@@ -205,15 +242,12 @@ for (const browser of ["Chrome", "Safari"])
         !persisted.includes(values.body) &&
         !persisted.includes(values.to),
     );
-    assert.equal(
-      fs.statSync(path.join(f.dataDir, "agent-tool-runs.json")).mode & 0o777,
-      0o600,
-    );
+    await assertPrivateFile(path.join(f.dataDir, "agent-tool-runs.json"));
   });
 
-for (const browser of ["Chrome", "Safari"])
-  test(`${browser}: order handles produce a receipt snapshot and verified tracking`, async (t) => {
-    const f = setup(t);
+for (const { platform, browser, label } of modeledBrowsers)
+  test(`${label}: order handles produce a receipt snapshot and verified tracking`, async (t) => {
+    const f = setup(t, { platform });
     const orders = await f.run(
       "builtin_walmart_find",
       { query: "chair" },
@@ -229,12 +263,7 @@ for (const browser of ["Chrome", "Safari"])
     );
     assert.equal(receipt.status, "completed", JSON.stringify(receipt));
     assert.equal(receipt.data.file.mime, "application/pdf");
-    assert.equal(
-      fs.statSync(
-        path.join(f.dataDir, "agent-tool-files", receipt.data.file.handle),
-      ).mode & 0o777,
-      0o600,
-    );
+    await assertPrivateFile(path.join(f.dataDir, "agent-tool-files", receipt.data.file.handle));
     const refreshed = await f.run(
       "builtin_walmart_find",
       { query: "ORDER-123" },
@@ -249,11 +278,17 @@ for (const browser of ["Chrome", "Safari"])
     assert.match(tracking.data.tracking, /Delivered/);
   });
 
+test("the modeled win32 tool allowlist rejects Safari before browser traffic", async t => {
+  const f = setup(t, { platform: "win32" });
+  await assert.rejects(f.run("builtin_gmail_find", { query: "invoice" }, "Safari"), error => error.status === 400);
+  assert.equal(f.driver.calls.length, 0);
+});
+
 test(
   "agents create, discover and execute a custom tool using the same catalog, browser bridge and MCP contract",
   privateIngressTest,
   async (t) => {
-    const driver = toolBrowserFixture();
+    const driver = toolBrowserFixture({ platform: "darwin" });
     t.after(() => driver.close());
     const f = await presetFixture(t, {
       desktopExtras: {
@@ -264,7 +299,7 @@ test(
         withBrowser: async (_client, _app, auth, work) =>
           work(async () => auth()),
       },
-      browserToolOptions: { driver, waitMs: 250 },
+      browserToolOptions: { driver, platform: "darwin", waitMs: 250 },
     });
     const agent = await f.join({
       preset: "apps",

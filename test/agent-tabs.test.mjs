@@ -374,6 +374,29 @@ test("state loading cannot read a different leaf swapped after inspection", t =>
   } finally { tabs?.stop(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a state pathname removed after opening cannot leak its read descriptor", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-unlinked-")), file = path.join(dir, "agent-tabs.json");
+  fs.writeFileSync(file, "[]");
+  const open = fs.openSync, close = fs.closeSync;
+  let descriptor, closed = 0, tabs;
+  t.mock.method(fs, "openSync", function (name, ...args) {
+    const fd = open.call(this, name, ...args);
+    if (name === file) { descriptor = fd; fs.unlinkSync(file); }
+    return fd;
+  });
+  t.mock.method(fs, "closeSync", function (fd, ...args) {
+    if (fd === descriptor) closed++;
+    return close.call(this, fd, ...args);
+  });
+  try {
+    tabs = createAgentTabs({ dataDir: dir, driver: browser().driver });
+    assert.deepEqual(tabs.list(), []);
+    assert.ok(Number.isInteger(descriptor));
+    assert.equal(closed, 1, "an opened state descriptor closes even if its pathname disappears");
+    assert.throws(() => fs.fstatSync(descriptor), { code: "EBADF" });
+  } finally { tabs?.stop(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("independently numbered Chrome and Edge tabs retain separate ownership", async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-browsers-"));
   const live = { Chrome: [], Edge: [] }, closed = [];

@@ -6,17 +6,17 @@ const mime = { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "tex
   ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".wasm": "application/wasm",
   ".html": "text/html", ".webmanifest": "application/manifest+json", ".bcmap": "application/octet-stream", ".pfb": "application/octet-stream" };
 const digest = value => crypto.createHash("sha256").update(value).digest("hex");
-// Read one bounded build input from the descriptor whose regular-file identity
-// was checked. A concurrent replacement or write aborts this generation.
+// Open first, then validate the descriptor and its leaf before any read. The
+// leaf check also refuses symlinks where O_NOFOLLOW is unavailable (Windows).
 const readInput = file => {
   const max = 8 * 1024 * 1024, invalid = () => Error("Invalid offline interface asset.");
-  const checked = fs.lstatSync(file, { bigint: true });
-  if (!checked.isFile() || checked.size > BigInt(max)) throw invalid();
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0)); }
+  catch { throw invalid(); }
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
     const same = (a, b) => b.isFile() && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
-    if (!same(checked, opened)) throw invalid();
+    if (!opened.isFile() || opened.size > BigInt(max) || !same(opened, fs.lstatSync(file, { bigint: true }))) throw invalid();
     const body = Buffer.alloc(Number(opened.size) + 1);
     let length = 0;
     while (length < body.length) {
@@ -24,7 +24,8 @@ const readInput = file => {
       if (!count) break;
       length += count;
     }
-    if (length !== Number(opened.size) || !same(opened, fs.fstatSync(fd, { bigint: true }))) throw invalid();
+    if (length !== Number(opened.size) || !same(opened, fs.fstatSync(fd, { bigint: true })) ||
+        !same(opened, fs.lstatSync(file, { bigint: true }))) throw invalid();
     return body.subarray(0, length);
   } finally { fs.closeSync(fd); }
 };

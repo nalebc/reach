@@ -1,6 +1,38 @@
 import { JSDOM } from "jsdom";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { toolPageOperation } from "../../server/tool-page-runtime.mjs";
 import { toolBrowsersFor } from "../../server/tool-protocol.mjs";
+
+// These models write private tool state just as the bootstrapped server does.
+// Windows ignores mode 0600, and the runner's TEMP may inherit broad ACLs.
+// Create only an owned private stage; never repair TEMP or the checkout.
+// Other fixture users opt in explicitly, so importing this module adds no hooks.
+export function toolPrivateStateParent(test) {
+  let directory = process.platform === "win32" ? null : os.tmpdir();
+  let stage;
+  test.before(async () => {
+    if (process.platform !== "win32") return;
+    const [{ accountSid }, { createWindowsPrivateStage }] = await Promise.all([
+      import("../../server/windows-private-folder.mjs"),
+      import("../../server/windows-private-stage.mjs"),
+    ]);
+    const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
+    const { stdout } = await promisify(execFile)(path.win32.join(system, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { windowsHide: true, timeout: 10000 });
+    stage = await createWindowsPrivateStage({ sid: accountSid(stdout) });
+    directory = stage.dir;
+  });
+  test.after(async () => {
+    if (stage) await fs.rm(stage.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  });
+  return () => {
+    if (!directory) throw Error("The tool fixture's private state stage is not ready.");
+    return directory;
+  };
+}
 
 export const toolApps = [
   {

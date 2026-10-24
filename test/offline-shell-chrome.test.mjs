@@ -27,9 +27,11 @@ test("actual built Reach cold-opens its original private origin through a comple
   fs.writeFileSync(path.join(root, "proof.txt"), "COLD-FILE-BYTES");
   const cert = await testCertificate(root, host), servers = [], calls = [], frontSockets = new Set();
   let browser, tab, reach, front, frontOrigin, browserOrigin, publicOrigin, nativeToken, ingressPort, ingressKey, cors = true;
-  const report = { sourceHead: "d303ae0", os: process.platform, arch: process.arch,
+  const report = { sourceHead: process.env.GITHUB_SHA || "local (see recorded source receipt)",
+    buildId: JSON.parse(fs.readFileSync(path.join(dist, "offline-shell.json"), "utf8")).build,
+    os: process.platform, arch: process.arch,
     actual: "Production Vite-built React/worker/manifest; Chrome HTTPS/CacheStorage/service-worker/CORS; real Reach device approval and file/API authentication; closed private listener and fresh document with cleared HTTP cache; automatic private handoffs.",
-    controlled: "Tailscale account/WhoIs and packet transport use owned loopback gateways; minimal fixture WASM/Go facade and explicit fixture sign-in completion. Peripheral host features return503; only device/auth/files/health and presence reach the real backend.",
+    controlled: "Tailscale account/WhoIs and packet transport use owned loopback gateways; minimal fixture WASM/Go facade and explicit fixture sign-in completion; per-target UA suffix labels document attribution. Peripheral host features return503; terminal watch/list are inert; only device/auth/files/health and presence reach the real backend.",
     productionTailnetRuntime: false, physicalDevice: false };
   const closeServer = async server => { server.closeAllConnections(); if (server.listening) await new Promise(resolve => server.close(resolve)); };
   t.after(async () => {
@@ -44,8 +46,9 @@ test("actual built Reach cold-opens its original private origin through a comple
   const listen = async server => { servers.push(server); await new Promise(resolve => server.listen(0, "127.0.0.1", resolve)); return `https://${host}:${server.address().port}`; };
   const proxy = (kind, req, res) => {
     const token = req.headers.authorization?.replace(/^Bearer /, "");
+    const realm = Number(/ ReachColdRealm\/([1-9][0-9]*)$/.exec(req.headers["user-agent"] || "")?.[1]) || null;
     const item = { kind, path: new URL(req.url, "https://fixture").pathname, method: req.method,
-      credential: !token ? "none" : token === nativeToken ? "native" : "browser-or-other" }; calls.push(item);
+      realm, credential: !token ? "none" : token === nativeToken ? "native" : "browser-or-other" }; calls.push(item);
     if (kind !== "public" && !/^\/api\/(?:device(?:[/?]|$)|health(?:[/?]|$)|auth\/|files(?:[/?]|$))/.test(req.url)) { res.writeHead(503); return res.end(); }
     const headers = { ...req.headers, host: new URL(frontOrigin).host, "X-Forwarded-Host": new URL(frontOrigin).host,
       "X-Forwarded-For": kind === "native" ? "100.101.0.1" : kind === "browser" ? "100.101.0.2" : "203.0.113.5" };
@@ -83,6 +86,8 @@ test("actual built Reach cold-opens its original private origin through a comple
   const publicServer = https.createServer(cert, (req, res) => proxy("public", req, res)); publicServer.on("upgrade", upgrade("public")); publicOrigin = await listen(publicServer);
   reach = await createReach({ roots: [root], dataDir: path.join(root, "state"), agentPolicyFile: path.join(root, "no-policy.json"),
     name: "Cold fixture", publicOrigin: frontOrigin, sweepScreenHelpers() {},
+    terminalWatch: async () => { throw Error("Native terminal watching is outside this files/auth fixture."); },
+    desktopTerminals: { run: async () => ({ sessions: [], providers: [], running: false }) },
     tailscaleOwner: { userId: "42", login: "owner@example.test" },
     tailscaleIdentity: { lookup: async ip => ({ Node: { StableID: ip === "100.101.0.1" ? "native-node" : "browser-node", User: 42, ComputedName: "fixture" }, UserProfile: { ID: 42, LoginName: "owner@example.test" } }) } });
   nativeToken = reach.auth.issue("Native fixture", ALL_SCOPES, "device", { tailscale: { nodeId: "native-node", userId: "42" } }).token;
@@ -98,17 +103,35 @@ test("actual built Reach cold-opens its original private origin through a comple
     globalThis.reachTailnet = config => { runtime.registrations++;let callbacks,state=config.stateStorage.getState('_machinekey')?'Running':'NeedsLogin';
       runtime.completeSignIn=()=>{for(const [k,v]of Object.entries(fixtureIdentity))config.stateStorage.setState(k,v);state='Running';callbacks.state(state);};
       return {start(cb){runtime.starts++;callbacks=cb;cb.state(state);},status(){return {self:{state},peers:[]};},login(){runtime.logins++;callbacks.authURL('https://login.tailscale.com/a/fixture');},wake(){},logout(){throw Error('No logout authorized');},
-      fetch(request){const halt=new AbortController();const u=new URL(request.url);return {abort:()=>halt.abort(),response:fixtureNativeFetch(${JSON.stringify(browserOrigin)}+u.pathname+u.search,{method:request.method,headers:Array.from({length:request.headers.length/2},(_,i)=>request.headers.slice(i*2,i*2+2)),body:request.body,credentials:'omit',redirect:request.redirect,signal:halt.signal}).then(async r=>{const body=new Uint8Array(await r.arrayBuffer());let used=false;return {status:r.status,statusText:r.statusText,headers:[...r.headers].flat(),read:async()=>used?null:(used=true,body),cancel(){}};})};},
-      websocket(url,cb){const u=new URL(url);u.host=new URL(${JSON.stringify(browserOrigin)}).host;const ws=new fixtureSocket(u.href,cb.protocols);ws.binaryType='arraybuffer';ws.onopen=()=>cb.open(ws.protocol);ws.onmessage=e=>cb.message(typeof e.data==='string'?e.data:new Uint8Array(e.data));ws.onclose=e=>cb.close(e.code,e.reason,e.wasClean);return {send:v=>ws.send(v),close:(c,r)=>ws.close(c,r),buffered:()=>ws.bufferedAmount};}};
+      fetch(request){const halt=new AbortController();const u=new URL(request.url);u.host=new URL(fixtureGateway).host;return {abort:()=>halt.abort(),response:fixtureNativeFetch(u.href,{method:request.method,headers:Array.from({length:request.headers.length/2},(_,i)=>request.headers.slice(i*2,i*2+2)),body:request.body,credentials:'omit',redirect:request.redirect,signal:halt.signal}).then(async r=>{const body=new Uint8Array(await r.arrayBuffer());let used=false;return {status:r.status,statusText:r.statusText,headers:[...r.headers].flat(),read:async()=>used?null:(used=true,body),cancel(){}};})};},
+      websocket(url,cb){const u=new URL(url);u.host=new URL(fixtureGateway).host;const ws=new fixtureSocket(u.href,cb.protocols);ws.binaryType='arraybuffer';ws.onopen=()=>cb.open(ws.protocol);ws.onmessage=e=>cb.message(typeof e.data==='string'?e.data:new Uint8Array(e.data));ws.onclose=e=>cb.close(e.code,e.reason,e.wasClean);return {send:v=>ws.send(v),close:(c,r)=>ws.close(c,r),buffered:()=>ws.bufferedAmount};}};
     };`);
   const digest = value => crypto.createHash("sha256").update(value).digest("hex");
   const client = { wasm: `reach-tailnet.${digest(wasm).slice(0, 12)}.wasm`, exec: `wasm_exec.${digest(glue).slice(0, 12)}.js` };
   fs.writeFileSync(path.join(tailnet, client.wasm), wasm); fs.writeFileSync(path.join(tailnet, client.exec), glue); fs.writeFileSync(path.join(tailnet, "tailnet.json"), JSON.stringify(client));
   browser = await launchChrome(t, { binary, hosts: [host], spki: cert.spki });
+  const userAgent = (await browser.send("Browser.getVersion")).userAgent; let realm = 0;
   const freshTab = async () => {
     const value = await openTab(browser);
-    await value.send("Page.addScriptToEvaluateOnNewDocument", { source: `globalThis.fixtureNativeFetch=fetch.bind(globalThis);globalThis.fixtureSocket=WebSocket;globalThis.fixtureIdentity=${JSON.stringify(identity)};` });
+    value.fixtureRealm = ++realm;
+    // CDP's structured per-target UA preserves Chrome's UA and labels the
+    // request's original document even when its socket outlives target close.
+    await value.send("Network.setUserAgentOverride", { userAgent: userAgent + " ReachColdRealm/" + value.fixtureRealm });
+    await value.send("Page.addScriptToEvaluateOnNewDocument", { source: `globalThis.fixtureNativeFetch=fetch.bind(globalThis);globalThis.fixtureSocket=WebSocket;
+      const savedGateway=localStorage.getItem('reach.fixture.gateway');
+      if(savedGateway){const gateway=new URL(savedGateway);if(gateway.protocol!=='https:'||gateway.hostname!==location.hostname||gateway.pathname!=='/'||gateway.username||gateway.password||gateway.search||gateway.hash)throw Error('Invalid owned fixture gateway');globalThis.fixtureGateway=gateway.origin;}` });
     return value;
+  };
+  // Runtime values cross CDP as structured arguments, never JavaScript source.
+  const inPage = async (fn, value) => {
+    const global = await tab.send("Runtime.evaluate", { expression: "globalThis", returnByValue: false });
+    const objectId = global.result.objectId; assert.ok(objectId);
+    try {
+      const answer = await tab.send("Runtime.callFunctionOn", { objectId, functionDeclaration: fn.toString(),
+        arguments: [{ value }], awaitPromise: true, returnByValue: true });
+      if (answer.exceptionDetails) throw Error(answer.exceptionDetails.exception?.description || answer.exceptionDetails.text);
+      return answer.result.value;
+    } finally { await tab.send("Runtime.releaseObject", { objectId }).catch(() => {}); }
   };
   const replaceTab = async () => {
     const target = await tab.send("Target.getTargetInfo");
@@ -116,22 +139,32 @@ test("actual built Reach cold-opens its original private origin through a comple
     tab = await freshTab();
     const result = await tab.send("Page.navigate", { url: frontOrigin + "/?page=files" });
     assert.equal(result.errorText, undefined, "the saved private-origin interface opens in a genuinely fresh document");
+    return tab.fixtureRealm;
   };
   const wait = async (expression, limit = 8000) => {
     try { return await tab.evaluate(`new Promise((resolve,reject)=>{const until=Date.now()+${limit};const check=()=>${expression}?resolve(true):Date.now()>until?reject(Error('Cold test stage unavailable')):setTimeout(check,20);check();})`); }
     catch (error) { error.message += JSON.stringify({ expression, problems: tab.problems.slice(-8), lastCalls: calls.slice(-8) }); throw error; }
   };
   tab = await freshTab(); await tab.navigate(frontOrigin);
-  const nativeAnswer = await tab.evaluate(`fixtureNativeFetch('/api/device',{headers:{Authorization:'Bearer ${nativeToken}'}}).then(async r=>({device:await r.json(),csp:r.headers.get('Content-Security-Policy')}))`);
+  const nativeAnswer = await inPage(async function (token) {
+    const response = await fixtureNativeFetch("/api/device", { headers: { Authorization: "Bearer " + token } });
+    return { device: await response.json(), csp: response.headers.get("Content-Security-Policy") };
+  }, nativeToken);
   assert.equal(nativeAnswer.csp, PUBLIC_CSP, "the fixture policy is the actual private Reach middleware policy");
   const device = nativeAnswer.device;
   const peer = { id: device.id, computerId: device.computerId, name: device.name, platform: device.platform, url: frontOrigin, token: nativeToken };
-  await tab.evaluate(`localStorage.setItem('reach.devices',${JSON.stringify(JSON.stringify([peer]))});localStorage.setItem('reach.active',${JSON.stringify(peer.id)});location.reload()`);
+  await inPage(function (data) {
+    localStorage.setItem("reach.devices", JSON.stringify([data.peer])); localStorage.setItem("reach.active", data.peer.id);
+    localStorage.setItem("reach.fixture.gateway", data.gateway);
+  }, { peer, gateway: new URL(browserOrigin).origin });
+  await tab.navigate(frontOrigin);
   await wait("document.querySelector('.settings-nav')"); await tab.evaluate("document.querySelector('.settings-nav').click()");
   await wait("[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Set up fallback'))");
   await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Set up fallback')).click()");
   await wait("document.querySelector('a[href^=\"https://login.tailscale.com/\"]')");
-  cors = false; await tab.evaluate("runtime.completeSignIn()"); await wait("document.querySelector('dialog [role=alert]')");
+  cors = false;
+  await inPage(function (value) { globalThis.fixtureIdentity = value; runtime.completeSignIn(); }, identity);
+  await wait("document.querySelector('dialog [role=alert]')");
   assert.equal(reach.approvals.list().length, 0, "real cross-port CORS refusal cannot submit a request");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')"), null);
   await tab.evaluate("[...document.querySelectorAll('dialog button')].find(b=>b.textContent==='Close setup').click()"); cors = true;
@@ -142,6 +175,10 @@ test("actual built Reach cold-opens its original private origin through a comple
   await wait("document.body.textContent.includes('Fallback is ready.')");
   await wait("localStorage.getItem('reach.offline-shell.enabled')==='v1'||document.body.textContent.includes('approval is kept')", 18000);
   const approved = await tab.evaluate("JSON.parse(localStorage.getItem('reach.browser.devices'))");
+  assert.ok(Array.isArray(approved) && approved.length === 1);
+  assert.equal(approved[0].id, peer.id); assert.equal(approved[0].computerId, peer.computerId);
+  assert.equal(new URL(approved[0].url).origin, frontOrigin);
+  assert.equal(typeof approved[0].token, "string"); assert.ok(approved[0].token.length > 0);
   assert.notEqual(approved[0].token, nativeToken);
   const nativeSaved = await tab.evaluate("localStorage.getItem('reach.devices')");
   const ownMachineKey = await tab.evaluate("localStorage.getItem('reach.tailnet:_machinekey')");
@@ -149,7 +186,17 @@ test("actual built Reach cold-opens its original private origin through a comple
   const coldPrepared = await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')==='v1'"); report.coldPrepared = coldPrepared;
   report.publicUp = publicServer.listening;
   const forbidden = [nativeToken, approved[0].token, identity._machinekey, identity.profile];
-  const foundSecret = await tab.evaluate(`(async()=>{for(const name of await caches.keys()){if(!name.startsWith('reach-static-'))continue;const cache=await caches.open(name);for(const key of await cache.keys()){const body=await(await cache.match(key)).text();if(${JSON.stringify(forbidden)}.some(secret=>body.includes(secret)))return true;}}return false;})()`);
+  const foundSecret = await inPage(async function (secrets) {
+    for (const name of await caches.keys()) {
+      if (!name.startsWith("reach-static-")) continue;
+      const cache = await caches.open(name);
+      for (const key of await cache.keys()) {
+        const body = await (await cache.match(key)).text();
+        if (secrets.some(secret => body.includes(secret))) return true;
+      }
+    }
+    return false;
+  }, forbidden);
   assert.equal(foundSecret, false, "no approval, token or persisted identity enters the code cache");
   await tab.send("Network.enable"); await tab.send("Network.clearBrowserCache");
   const target = await tab.send("Target.getTargetInfo"); await browser.send("Target.closeTarget", { targetId: target.targetInfo.targetId });
@@ -160,47 +207,68 @@ test("actual built Reach cold-opens its original private origin through a comple
   await wait("document.querySelector('#root')?.childElementCount&&document.documentElement.dataset.connection==='browser'", 12000);
   assert.equal(coldPrepared, true, "cold readiness requires the complete committed cohort");
   await wait("document.body.textContent.includes('proof.txt')");
+  assert.ok(calls.some(call => call.realm === tab.fixtureRealm && call.kind === "browser" && call.path === "/api/files" &&
+    call.method === "GET" && call.credential === "browser-or-other" && call.status === 200),
+    "a real authenticated file read positively verifies fresh-document wire attribution");
   const canary = `https://127.0.0.1:${publicServer.address().port}/csp-probe`;
-  const reachable = await new Promise((resolve, reject) => {
-    const request = https.get(canary, { rejectUnauthorized: false, agent: false }, response => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+  const probe = options => new Promise((resolve, reject) => {
+    const request = https.get(canary, { ...options, agent: false }, response => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
     request.on("error", reject);
   });
+  await assert.rejects(probe({ servername: host }), error => error.code === "DEPTH_ZERO_SELF_SIGNED_CERT");
+  await assert.rejects(probe({ ca: cert.cert, servername: "other.cold.ts.net" }), error => error.code === "ERR_TLS_CERT_ALTNAME_INVALID");
+  const reachable = await probe({ ca: cert.cert, servername: host });
   assert.equal(reachable, 404, "the prohibited destination is an actually reachable owned HTTPS listener");
+  assert.ok(calls.some(call => call.realm === null && call.kind === "public" && call.path === "/csp-probe" && call.status === 404),
+    "unmarked Node probe traffic is retained alongside attributed browser requests");
+  report.tlsValidation = { untrustedCaBlocked: true, wrongHostnameBlocked: true, ownedCaMatched: true };
   const beforeCanary = calls.filter(call => call.path === "/csp-probe").length;
   await tab.evaluate("globalThis.policyViolations=[];addEventListener('securitypolicyviolation',e=>policyViolations.push(e.effectiveDirective))");
-  assert.equal(await tab.evaluate(`fixtureNativeFetch(${JSON.stringify(canary)},{mode:'no-cors'}).then(()=>false,()=>true)`), true,
+  assert.equal(await inPage(function (url) { return fixtureNativeFetch(url, { mode: "no-cors" }).then(() => false, () => true); }, canary), true,
     "the cached private page retains enforced connect-src restrictions");
   await wait("policyViolations.includes('connect-src')");
   assert.equal(calls.filter(call => call.path === "/csp-probe").length, beforeCanary, "CSP blocks before the wire");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.devices')") === nativeSaved, true,
     "cold browser recovery preserves the authenticated native record byte-for-byte");
   assert.equal(await tab.evaluate("runtime.logins"), 0, "cold recovery never enrolls or signs in a new device");
-  const count = calls.length;
-  await tab.evaluate("localStorage.removeItem('reach.browser.devices')"); await replaceTab();
+  await tab.evaluate("localStorage.removeItem('reach.browser.devices')"); const missingApprovalRealm = await replaceTab();
   await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
-  assert.equal(calls.slice(count).some(call => call.kind === "browser" && call.credential === "browser-or-other"), false);
-  const identityCount = calls.length;
-  await tab.evaluate(`localStorage.setItem('reach.browser.devices',${JSON.stringify(JSON.stringify(approved))});localStorage.removeItem('reach.tailnet:_machinekey')`);
-  await replaceTab(); await wait("document.querySelector('#root')?.childElementCount");
+  assert.equal(calls.some(call => call.realm === missingApprovalRealm && call.kind === "browser" && call.credential === "browser-or-other"), false);
+  await inPage(function (peers) {
+    localStorage.setItem("reach.browser.devices", JSON.stringify(peers)); localStorage.removeItem("reach.tailnet:_machinekey");
+  }, approved);
+  const missingIdentityRealm = await replaceTab(); await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
   assert.equal(await tab.evaluate("typeof runtime==='undefined'"), true, "missing saved identity cannot construct, sign in or substitute a recovery device");
-  assert.equal(calls.slice(identityCount).some(call => call.kind === "browser" && call.credential !== "none"), false,
+  assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.kind === "browser" && call.credential !== "none"), false,
     "the retained approval never travels through a missing/replacement browser identity");
-  assert.equal(calls.slice(identityCount).some(call => call.path === "/api/auth/requests" && call.method === "POST"), false);
+  assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.path === "/api/auth/requests" && call.method === "POST"), false);
   assert.equal(await tab.evaluate("localStorage.getItem('reach.devices')") === nativeSaved, true);
-  await tab.evaluate(`localStorage.setItem('reach.tailnet:_machinekey',${JSON.stringify(ownMachineKey)})`); await replaceTab();
+  await inPage(function (key) { localStorage.setItem("reach.tailnet:_machinekey", key); }, ownMachineKey); await replaceTab();
   await wait("document.documentElement.dataset.connection==='browser'");
   await new Promise(resolve => front.listen(frontPort, "127.0.0.1", resolve));
   await tab.evaluate("dispatchEvent(new Event('online'))"); await wait("document.documentElement.dataset.connection!=='browser'");
-  const denied = await tab.evaluate(`fixtureNativeFetch(${JSON.stringify(publicOrigin + "/api/device")},{headers:{Authorization:'Bearer ${nativeToken}'}}).then(()=>false,()=>true)`);
+  const denied = await inPage(function (data) {
+    return fixtureNativeFetch(data.url, { headers: { Authorization: "Bearer " + data.token } }).then(() => false, () => true);
+  }, { url: new URL("/api/device", publicOrigin).href, token: nativeToken });
   assert.equal(denied, true, "the browser cannot read owner APIs from the public door");
   assert.ok(calls.some(call => call.kind === "public" && call.path === "/api/device" && call.method === "OPTIONS" && call.status === 404));
-  assert.equal(await tab.evaluate(`new Promise(resolve=>{const ws=new fixtureSocket(${JSON.stringify(publicOrigin.replace("https:", "wss:") + "/ws/presence")});ws.onopen=()=>{ws.close();resolve(true)};ws.onerror=()=>resolve(false);setTimeout(()=>{ws.close();resolve(false)},1500)})`), false);
+  const publicSocket = new URL("/ws/presence", publicOrigin); publicSocket.protocol = "wss:";
+  assert.equal(await inPage(function (url) {
+    return new Promise(resolve => {
+      const ws = new fixtureSocket(url); ws.onopen = () => { ws.close(); resolve(true); }; ws.onerror = () => resolve(false);
+      setTimeout(() => { ws.close(); resolve(false); }, 1500);
+    });
+  }, publicSocket.href), false);
   assert.equal(calls.filter(call => call.path === "/api/auth/requests" && call.method === "POST").length, 1, "cold/retry/handoffs never replay approval creation");
   assert.ok(calls.filter(call => call.kind === "browser").every(call => call.credential !== "native"));
+  assert.ok(calls.filter(call => call.kind === "browser" && call.credential !== "none").every(call => Number.isSafeInteger(call.realm) && call.realm > 0),
+    "all credential-bearing browser requests have positively tracked document attribution");
+  assert.equal(fs.readdirSync(path.join(root, "state")).some(name => /^reach-windows-terminals-.*\.exe$/.test(name)), false,
+    "the files/auth-only fixture never builds a native terminal helper");
   report.coldRestored = true; report.missingApprovalBlocked = true; report.missingIdentityBlocked = true;
   report.returnedToNative = true; report.noSecretsCached = true; report.ownApprovalCreates = 1;
   report.cachedPrivateCspEnforced = true;

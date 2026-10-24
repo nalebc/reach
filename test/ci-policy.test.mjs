@@ -280,6 +280,8 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
   for (const name of ["agent-tabs", "browser-worker", "browser-extension-bridge"])
     assert.ok(suites.windows.includes(name), `${name} must retain tab ownership, queued dispatch and cleanup retirement regressions on Windows`);
+  for (const name of ["agent-tools", "tool-page-runtime", "mac-terminal-watch"])
+    assert.ok(suites.windows.includes(name), `${name} must retain explicit browser platform and watcher shutdown regressions on Windows`);
   // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
   // real-Windows step as a standard user (docs/parity/C-sandbox.md §9.3).
   for (const name of ["windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e"])

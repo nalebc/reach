@@ -264,7 +264,7 @@ test("the build manifest follows only the current dependency graph and refuses p
 
 for (const replacement of [Buffer.from("a distinct longer build generation"), Buffer.alloc(8 * 1024 * 1024 + 1)])
   test(`a renamed build input (${replacement.length} bytes) cannot publish checked metadata from the previous file`, () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-offline-build-race-")), original = fs.lstatSync;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-offline-build-race-")), original = fs.openSync;
     let replaced = false;
     try {
       fs.mkdirSync(path.join(dir, ".vite")); fs.mkdirSync(path.join(dir, "assets")); fs.mkdirSync(path.join(dir, "pdfjs"));
@@ -274,17 +274,17 @@ for (const replacement of [Buffer.from("a distinct longer build generation"), Bu
       for (const name of ["jbig2_nowasm_fallback", "openjpeg_nowasm_fallback"]) fs.writeFileSync(path.join(dir, "pdfjs", name + ".js"), "/* fixed */");
       const file = path.join(dir, "assets/current.js"), next = path.join(dir, "replacement.tmp");
       fs.writeFileSync(file, "current"); fs.writeFileSync(next, replacement);
-      // Deterministically schedule a real filesystem rename in the exact
-      // production check/read window, without replacing its read operation.
-      fs.lstatSync = function (...args) {
-        const checked = original.apply(this, args);
+      // Replace the actual opened file before production validates its
+      // descriptor/leaf identity. Its read operation remains unchanged.
+      fs.openSync = function (...args) {
+        const fd = original.apply(this, args);
         if (!replaced && args[0] === file) { fs.renameSync(next, file); replaced = true; }
-        return checked;
+        return fd;
       };
       assert.throws(() => writeOfflineShell(dir), /Invalid offline interface asset/);
       assert.equal(replaced, true);
       assert.equal(fs.existsSync(path.join(dir, "offline-shell.json")), false, "a mixed generation is never published");
-    } finally { fs.lstatSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.openSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
 // Real client/controller modules with a modeled worker command channel and
