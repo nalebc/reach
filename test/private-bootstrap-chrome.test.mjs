@@ -79,7 +79,15 @@ test("actual browser watcher bootstraps only its existing approval through real 
   const front = https.createServer(certificate, (req, res) => {
     const item = { route: nativeMode, path: req.url, method: req.method, cookiePresent: /(?:^|;\s*)reach-door=/.test(req.headers.cookie || ""), credential: tokenKind(req.headers.authorization) };
     calls.push(item); res.once("finish", () => { item.status = res.statusCode; });
-    if (nativeMode === "native") app(req, res); else relay(req, res);
+    res.once("close", () => { item.responseClosed = true; });
+    if (nativeMode.startsWith("native-hung-") && req.url === "/api/health") {
+      if (nativeMode === "native-hung-body") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.flushHeaders(); res.write('{"product":');
+      }
+      return; // Real native HTTP remains open until Chrome's probe aborts it.
+    }
+    if (nativeMode.startsWith("native")) app(req, res); else relay(req, res);
   });
   front.on("upgrade", (req, socket, head) => {
     upgrades.push({ route: nativeMode, path: req.url });
@@ -108,7 +116,8 @@ test("actual browser watcher bootstraps only its existing approval through real 
   fs.writeFileSync(path.join(tailnet, "tailnet.json"), JSON.stringify(manifest));
   fs.writeFileSync(path.join(tailnet, manifest.wasm), Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
   fs.writeFileSync(path.join(tailnet, manifest.exec), `
-    globalThis.runtime = { registrations: 0, starts: 0, logins: 0, wakes: 0, hasAuthKey: false, settled: 0, errors: 0 };
+    globalThis.runtime = { registrations: 0, starts: 0, logins: 0, wakes: 0, hasAuthKey: false, settled: 0, errors: 0, reconnectMs: 0, readyAt: 0 };
+    const openRequests = new Set();
     globalThis.Go = class { importObject = {}; run() { return new Promise(() => {}); } };
     globalThis.reachTailnet = configuration => {
       runtime.registrations++; runtime.hasAuthKey = !!configuration.authKey;
@@ -116,17 +125,31 @@ test("actual browser watcher bootstraps only its existing approval through real 
       return {
         start(cb) { runtime.starts++; cb.state("Running"); },
         status() { return { self: { state: "Running" }, peers: [] }; },
-        wake() { runtime.wakes++; }, login() { runtime.logins++; throw Error("No new login is authorized"); }, logout() {},
+        wake() {
+          runtime.wakes++;
+          // Production Go wake sets NetworkUp(false/true), closing all DERP
+          // connections. Model that packet-layer effect, not a real relay.
+          if (runtime.reconnectMs) {
+            for (const request of openRequests) request.abort();
+            runtime.readyAt = performance.now() + runtime.reconnectMs;
+          }
+        }, login() { runtime.logins++; throw Error("No new login is authorized"); }, logout() {},
         websocket() { throw Error("Bootstrap cannot create an action socket"); },
         fetch(request) {
           const abort = new AbortController();
-          return { abort: () => abort.abort(), response: fixtureNativeFetch(fixturePrivateOrigin + new URL(request.url).pathname, {
+          openRequests.add(abort);
+          const connected = new Promise((resolve, reject) => {
+            const stop = () => { clearTimeout(timer); reject(abort.signal.reason); };
+            const timer = setTimeout(() => { abort.signal.removeEventListener("abort", stop); resolve(); }, Math.max(0, runtime.readyAt - performance.now()));
+            abort.signal.addEventListener("abort", stop, { once: true });
+          });
+          return { abort: () => abort.abort(), response: connected.then(() => fixtureNativeFetch(fixturePrivateOrigin + new URL(request.url).pathname, {
             method: request.method, headers: Array.from({ length: request.headers.length / 2 }, (_, i) => request.headers.slice(i * 2, i * 2 + 2)),
             body: request.body, credentials: "omit", redirect: request.redirect, signal: abort.signal,
-          }).then(async response => {
+          })).then(async response => {
             const bytes = new Uint8Array(await response.arrayBuffer()); let read = false;
             return { status: response.status, statusText: response.statusText, headers: [...response.headers].flat(), read: async () => read ? null : (read = true, bytes), cancel() {} };
-          }).catch(error => { runtime.errors++; throw error; }).finally(() => { runtime.settled++; }) };
+          }).catch(error => { runtime.errors++; throw error; }).finally(() => { openRequests.delete(abort); runtime.settled++; }) };
         },
       };
     };
@@ -163,7 +186,7 @@ test("actual browser watcher bootstraps only its existing approval through real 
     globalThis.stopWatch = BootstrapFixture.watchPrivateRecovery({ current: () => { f.currentReads++; return f.current; }, selected: () => peer,
       handoff(change) { f.changes.push(change.mode); f.current = { peer: change.peer, device: change.device }; } });
   })()`);
-  const wait = async expression => tab.evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const poll = () => { if (${expression}) resolve(true); else if (Date.now() >= until) reject(Error("Bounded bootstrap state missing")); else setTimeout(poll, 10); }; poll(); })`);
+  const wait = async (expression, timeoutMs = 5000) => tab.evaluate(`new Promise((resolve, reject) => { const until = Date.now() + ${timeoutMs}; const poll = () => { if (${expression}) resolve(true); else if (Date.now() >= until) reject(Error("Bounded bootstrap state missing")); else setTimeout(poll, 10); }; poll(); })`);
   const discoverySince = async before => {
     for (const until = Date.now() + 3000; !calls.slice(before).some(call => call.path === "/reach-start.json" && call.status); ) {
       assert.ok(Date.now() < until, "the watcher discovery must cross actual HTTP"); await new Promise(resolve => setTimeout(resolve, 10));
@@ -187,6 +210,73 @@ test("actual browser watcher bootstraps only its existing approval through real 
     assert.equal(calls.some(call => call.path === "/tailnet/" + manifest.exec && call.status === 200), true);
     receipt.cases.push({ name: "native metadata and warm recovery", changes: ["browser", "native"], fixedFixtureAssetsDelivered: true, productionTailnetRuntime: false, enrollment: false });
     await tab.evaluate("stopWatch()");
+  });
+  await t.test("a resumed slow relay settles once instead of being disconnected by every recovery poll", async () => {
+    nativeMode = "native";
+    await navigate("/?slow-relay=1");
+    try {
+      await start(false); await wait("globalThis.runtime?.starts === 1");
+      await tab.evaluate("runtime.reconnectMs = 2300");
+      nativeMode = "public-closed";
+      await tab.evaluate('dispatchEvent(new Event("online"))');
+      // A new timing case, within the unchanged45s parent bound: one1.8s
+      // refused probe, then the existing5s polling interval can use the relay.
+      await wait('f.changes.join(",") === "browser"', 8500);
+      assert.deepEqual(await tab.evaluate("({ changes: f.changes, wakes: runtime.wakes, registrations: runtime.registrations, logins: runtime.logins, authKey: runtime.hasAuthKey })"),
+        { changes: ["browser"], wakes: 1, registrations: 1, logins: 0, authKey: false });
+      nativeMode = "native";
+      await tab.evaluate('dispatchEvent(new Event("online"))');
+      await wait('f.changes.join(",") === "browser,native"');
+      receipt.cases.push({ name: "slow relay resume", reconnectMs: 2300, controlledRelayTiming: true, productionTailnetRuntime: false, changes: ["browser", "native"], oneWakePerNetworkGeneration: true });
+    } finally {
+      await tab.evaluate("stopWatch(); if (globalThis.runtime) runtime.reconnectMs = 0");
+      nativeMode = "native";
+    }
+  });
+  for (const stalled of ["headers", "body"]) {
+    await t.test(`a native health probe stalled in ${stalled} aborts and recovers through its approved browser`, async () => {
+      nativeMode = "native";
+      await navigate("/?native-stalled=" + stalled);
+      try {
+        await start(false); await wait("globalThis.runtime?.starts === 1");
+        const before = calls.length, began = Date.now();
+        nativeMode = "native-hung-" + stalled;
+        await tab.evaluate('dispatchEvent(new Event("online"))');
+        await wait('f.changes.join(",") === "browser"');
+        const recoveryMs = Date.now() - began;
+        assert.ok(calls.slice(before).some(call => call.route === "native-hung-" + stalled && call.path === "/api/health" && call.responseClosed), "the browser's actual timed abort closes the held native response");
+        assert.deepEqual(await tab.evaluate("({ registrations: runtime.registrations, logins: runtime.logins, authKey: runtime.hasAuthKey })"), { registrations: 1, logins: 0, authKey: false });
+        nativeMode = "native";
+        await tab.evaluate('dispatchEvent(new Event("online"))');
+        await wait('f.changes.join(",") === "browser,native"');
+        receipt.cases.push({ name: "native stalled " + stalled, actualHeldHttpResponse: true, recoveryMs, changes: ["browser", "native"], enrollment: false });
+      } finally {
+        await tab.evaluate("stopWatch()");
+        nativeMode = "native";
+      }
+    });
+  }
+  await t.test("metadata with a temporarily absent client manifest cannot permanently disable standby recovery", async () => {
+    nativeMode = "native";
+    fs.unlinkSync(path.join(tailnet, "tailnet.json"));
+    await navigate("/?manifest-pending=1");
+    try {
+      assert.equal(await tab.evaluate('fixtureNativeFetch("/reach-start.json").then(response => response.json()).then(info => info.tailnet)'), null);
+      const before = calls.length;
+      await start(false); await discoverySince(before);
+      // Fixed assets become available after the initial valid native metadata.
+      fs.writeFileSync(path.join(tailnet, "tailnet.json"), JSON.stringify(manifest));
+      nativeMode = "public-closed";
+      await tab.evaluate('dispatchEvent(new Event("online"))');
+      await wait('f.changes.join(",") === "browser"');
+      assert.ok(calls.slice(before).filter(call => call.path === "/reach-start.json").length >= 2, "metadata must be refreshed after a null manifest");
+      assert.deepEqual(await tab.evaluate("({ registrations: runtime.registrations, logins: runtime.logins, authKey: runtime.hasAuthKey })"), { registrations: 1, logins: 0, authKey: false });
+      receipt.cases.push({ name: "late manifest", initialManifest: null, laterManifest: manifest, reload: false });
+    } finally {
+      fs.writeFileSync(path.join(tailnet, "tailnet.json"), JSON.stringify(manifest));
+      await tab.evaluate("stopWatch()");
+      nativeMode = "native";
+    }
   });
   nativeMode = "public-closed";
   await navigate("/?cold=1");

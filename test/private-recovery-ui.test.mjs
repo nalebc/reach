@@ -104,7 +104,7 @@ async function fixture(mode = "browser") {
     handoff(change) { changes.push(change); current = { peer: change.peer, device: change.device }; },
   };
   const recovery = createPrivateRecovery(config, options);
-  return { dom, transport, recovery, traffic, changes, network, saved, sockets, node,
+  return { dom, transport, recovery, traffic, changes, network, saved, sockets, node, options,
     current: () => current, setCurrent: value => { current = value; }, setSelected: value => { selected = value; },
     close: async () => { recovery.stop(); globalThis.EventTarget = oldEventTarget; await dom.close(); },
   };
@@ -666,6 +666,151 @@ test("no approved alternate means no browser startup or new authorization", asyn
   } finally { await f.close(); }
 });
 
+test("slow standby retries share one wake per generation and concurrent checks retain one probe", async () => {
+  const f = await fixture("native");
+  let available = false, wakes = 0, recovery;
+  try {
+    f.network.native = false;
+    const { createPrivateRecovery } = await f.dom.load("/src/app-watch.ts");
+    recovery = createPrivateRecovery(config, { ...f.options, browser: async wake => {
+      if (wake) wakes++;
+      return available ? f.options.browser() : null;
+    } });
+    const first = recovery.check();
+    assert.equal(recovery.check(), first, "concurrent callers share the same check");
+    await first;
+    await recovery.check(); await recovery.check();
+    assert.equal(wakes, 1, "failed or slow startup is not reset by polling");
+    await recovery.resume();
+    assert.equal(wakes, 2, "a real resume permits one new network repair");
+    available = true;
+    await recovery.check();
+    assert.deepEqual(f.changes.map(change => change.mode), ["browser"]);
+    assert.equal(wakes, 2, "a late ready node is reused without another reset");
+    assert.ok(f.traffic.filter(call => call.token).every(call => call.token === `Bearer ${call.route === "native" ? "APP" : "BROWSER"}`));
+  } finally { recovery?.stop(); await f.close(); }
+});
+
+test("confirmed native return permits one repair on the next loss without waiting for a healthy poll", async () => {
+  const f = await fixture("native");
+  let wakes = 0, recovery;
+  try {
+    const { createPrivateRecovery } = await f.dom.load("/src/app-watch.ts");
+    recovery = createPrivateRecovery(config, { ...f.options, browser: async wake => {
+      if (wake) wakes++;
+      return f.options.browser();
+    } });
+    f.network.native = false; f.network.browser = false;
+    await recovery.check();
+    assert.equal(wakes, 1);
+    f.network.browser = true;
+    await recovery.check();
+    f.network.native = true;
+    await recovery.check();
+    assert.deepEqual(f.changes.map(change => change.mode), ["browser", "native"]);
+    f.network.native = false; f.network.browser = false;
+    await recovery.check(); await recovery.check();
+    assert.equal(wakes, 2, "each confirmed native return opens one later repair generation");
+  } finally { recovery?.stop(); await f.close(); }
+});
+
+test("resume events deduplicate one background transition and stop removes their listeners", async () => {
+  const f = await fixture("native");
+  let hidden = false, wakes = 0, stop;
+  Object.defineProperty(f.dom.document, "hidden", { configurable: true, get: () => hidden });
+  try {
+    f.network.native = false;
+    const { watchForApp } = await f.dom.load("/src/app-watch.ts");
+    stop = watchForApp(config, 5, { ...f.options, browser: async wake => { if (wake) wakes++; return null; } });
+    await f.dom.waitFor(() => wakes === 1);
+    await f.dom.waitFor(() => f.traffic.length >= 4);
+    assert.equal(wakes, 1);
+    hidden = true;
+    f.dom.document.dispatchEvent(new f.dom.window.Event("visibilitychange"));
+    f.dom.window.dispatchEvent(new f.dom.window.Event("pagehide"));
+    hidden = false;
+    f.dom.document.dispatchEvent(new f.dom.window.Event("visibilitychange"));
+    f.dom.window.dispatchEvent(new f.dom.window.Event("pageshow"));
+    f.dom.window.dispatchEvent(new f.dom.window.Event("focus"));
+    await f.dom.waitFor(() => wakes === 2);
+    assert.equal(wakes, 2, "visible/pageshow/focus share the same background generation");
+    f.dom.window.dispatchEvent(new f.dom.window.Event("online"));
+    await f.dom.waitFor(() => wakes === 3);
+    stop();
+    f.dom.window.dispatchEvent(new f.dom.window.Event("online"));
+    f.dom.window.dispatchEvent(new f.dom.window.Event("pageshow"));
+    assert.equal(wakes, 3, "a stopped watcher cannot wake a retained identity");
+  } finally { stop?.(); await f.close(); }
+});
+
+test("stopping while a resumed node returns cannot dispatch a late probe or hand off", async () => {
+  const f = await fixture("native");
+  let release, entered = false, recovery;
+  const delayed = new Promise(resolve => { release = resolve; });
+  try {
+    f.network.native = false;
+    const { createPrivateRecovery } = await f.dom.load("/src/app-watch.ts");
+    recovery = createPrivateRecovery(config, { ...f.options, browser: async () => { entered = true; return delayed; } });
+    const checking = recovery.resume();
+    await f.dom.waitFor(() => entered);
+    recovery.stop();
+    release(await f.options.browser());
+    await checking;
+    assert.deepEqual(f.changes, []);
+    assert.equal(f.traffic.some(call => call.route === "browser"), false);
+  } finally { release(null); recovery?.stop(); await f.close(); }
+});
+
+test("a late failed browser probe cannot wake another selected or restricted workspace", async () => {
+  for (const changed of ["selection", "selected-peer", "identity", "computer", "guest", "scope", "approval"]) {
+    const f = await fixture("native");
+    let wakes = 0, recovery;
+    try {
+      f.network.native = false;
+      const { createPrivateRecovery } = await f.dom.load("/src/app-watch.ts");
+      recovery = createPrivateRecovery(config, { ...f.options, browser: async wake => {
+        if (wake) wakes++;
+        return { node: f.node, fetch: async () => {
+          if (changed === "selection") f.setCurrent({ peer: peer("OTHER"), device });
+          if (changed === "selected-peer") f.setSelected(peer("OTHER"));
+          if (changed === "identity") f.setCurrent({ peer: peer("APP"), device: { ...device, id: "other-device" } });
+          if (changed === "computer") f.setCurrent({ peer: peer("APP"), device: { ...device, computerId: "other-computer" } });
+          if (changed === "guest") f.setCurrent({ peer: peer("APP"), device: { ...device, access: { ...device.access, kind: "guest" } } });
+          if (changed === "scope") f.setCurrent({ peer: peer("APP"), device: { ...device, access: { ...device.access, scopes: ["admin"] } } });
+          if (changed === "approval") f.saved.browser.length = 0;
+          throw TypeError("held old probe failed");
+        } };
+      } });
+      await recovery.check();
+      assert.equal(wakes, 0, changed);
+      assert.deepEqual(f.changes, []);
+    } finally { recovery?.stop(); await f.close(); }
+  }
+});
+
+test("fresh restoration cannot repair after its saved approval or selected workspace changes", async () => {
+  for (const changed of ["selection", "approval", "mounted"]) {
+    const f = await fixture("native");
+    let wakes = 0, recovery;
+    try {
+      f.network.native = false; f.setCurrent(null);
+      const { createPrivateRecovery } = await f.dom.load("/src/app-watch.ts");
+      recovery = createPrivateRecovery(config, { ...f.options, browser: async wake => {
+        if (wake) wakes++;
+        return { node: f.node, fetch: async () => {
+          if (changed === "selection") f.setSelected(peer("OTHER"));
+          if (changed === "approval") f.saved.browser.length = 0;
+          if (changed === "mounted") f.setCurrent({ peer: peer("APP"), device });
+          throw TypeError("held fresh probe failed");
+        } };
+      } });
+      await recovery.check();
+      assert.equal(wakes, 0, changed);
+      assert.deepEqual(f.changes, []);
+    } finally { recovery?.stop(); await f.close(); }
+  }
+});
+
 test("a delayed preferred-route probe cannot switch a stopped or newly restricted workspace", async () => {
   for (const change of ["stop", "guest", "scope-change"]) {
     const f = await fixture();
@@ -732,12 +877,13 @@ test("standby startup restores only a saved browser profile and never asks it to
 test("standby startup timeout retains the same node and can observe late recovery without re-enrollment", async t => {
   const dom = await startDom({ url: origin });
   const originalInstantiate = WebAssembly.instantiateStreaming;
-  let state = "Starting", starts = 0, registrations = 0, report, started;
+  let state = "Starting", starts = 0, registrations = 0, wakes = 0, report, started;
   const starting = new Promise(resolve => { started = resolve; });
-  const node = { status: () => ({ self: { state } }), start(cb) { starts++; report = cb; started(); }, login() { assert.fail("no recovery login"); } };
+  const node = { status: () => ({ self: { state } }), start(cb) { starts++; report = cb; started(); },
+    wake() { wakes++; state = "Running"; report.state(state); }, login() { assert.fail("no recovery login"); } };
   try {
     saveBrowserState(savedState());
-    const { existingBrowserNode } = await dom.load("/src/browser-node.ts");
+    const { existingBrowserNode, browserRecoveryStatus } = await dom.load("/src/browser-node.ts");
     const { privateWay } = await dom.load("/src/tailnet-transport.ts");
     const append = dom.document.head.append.bind(dom.document.head);
     dom.document.head.append = (...nodes) => {
@@ -754,15 +900,23 @@ test("standby startup timeout retains the same node and can observe late recover
     t.mock.timers.tick(8000);
     assert.equal(await restoring, null);
     assert.equal(await existingBrowserNode(configWithClient), null);
+    assert.deepEqual(browserRecoveryStatus(), { phase: "unavailable", retained: true, nodeState: "Starting" });
     assert.equal(privateWay(), "native");
     state = "NeedsLogin";
     report.state(state);
     assert.equal(await existingBrowserNode(configWithClient), null);
+    state = "Starting";
+    assert.equal(await existingBrowserNode(configWithClient, { wake: true }), node, "a retained node can be woken before it reports Running");
+    assert.equal(wakes, 1);
     state = "Running";
     report.state(state);
     assert.equal(await existingBrowserNode(configWithClient), node);
     assert.equal(starts, 1);
     assert.equal(registrations, 1);
+    assert.deepEqual(browserRecoveryStatus(), { phase: "running", retained: true, nodeState: "Running" });
+    state = "PRIVATE-node-state-profile-key";
+    assert.deepEqual(browserRecoveryStatus(), { phase: "running", retained: true, nodeState: "Unknown" });
+    assert.equal(JSON.stringify(browserRecoveryStatus()).includes("PRIVATE"), false);
   } finally {
     t.mock.timers.reset();
     WebAssembly.instantiateStreaming = originalInstantiate;
