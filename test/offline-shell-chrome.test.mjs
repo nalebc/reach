@@ -31,7 +31,7 @@ test("actual built Reach cold-opens its original private origin through a comple
     buildId: JSON.parse(fs.readFileSync(path.join(dist, "offline-shell.json"), "utf8")).build,
     os: process.platform, arch: process.arch,
     actual: "Production Vite-built React/worker/manifest; Chrome HTTPS/CacheStorage/service-worker/CORS; real Reach device approval and file/API authentication; closed private listener and fresh document with cleared HTTP cache; automatic private handoffs.",
-    controlled: "Tailscale account/WhoIs and packet transport use owned loopback gateways; minimal fixture WASM/Go facade and explicit fixture sign-in completion; per-target UA suffix labels document attribution. Peripheral host features return503; terminal watch/list are inert; only device/auth/files/health and presence reach the real backend.",
+    controlled: "Tailscale account/WhoIs and packet transport use owned loopback gateways; minimal fixture WASM/Go facade and explicit fixture sign-in completion; per-target UA suffix labels document attribution. A scriptless same-origin document seeds the approved native peer before App first boots. Peripheral host features return503; terminal watch/list are inert; only device/auth/files/health and presence reach the real backend.",
     productionTailnetRuntime: false, physicalDevice: false };
   const closeServer = async server => { server.closeAllConnections(); if (server.listening) await new Promise(resolve => server.close(resolve)); };
   t.after(async () => {
@@ -77,6 +77,10 @@ test("actual built Reach cold-opens its original private origin through a comple
       "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "Strict-Transport-Security": "max-age=31536000" })) res.setHeader(name, value);
     next();
   });
+  // Seed the existing native approval before App boots. Loading App without
+  // it starts genuine native onboarding, whose request can outlive navigation
+  // and contaminate the later browser-CORS refusal check.
+  app.get("/fixture-seed", (_req, res) => res.type("html").send("<!doctype html><title>Fixture state preparation</title>"));
   app.use("/api", (req, res) => { req.url = req.originalUrl; proxy("native", req, res); });
   serveBuild(app, express, dist, { tailnetDir: tailnet });
   front = https.createServer(cert, app); front.on("upgrade", upgrade("native"));
@@ -145,7 +149,7 @@ test("actual built Reach cold-opens its original private origin through a comple
     try { return await tab.evaluate(`new Promise((resolve,reject)=>{const until=Date.now()+${limit};const check=()=>${expression}?resolve(true):Date.now()>until?reject(Error('Cold test stage unavailable')):setTimeout(check,20);check();})`); }
     catch (error) { error.message += JSON.stringify({ expression, problems: tab.problems.slice(-8), lastCalls: calls.slice(-8) }); throw error; }
   };
-  tab = await freshTab(); await tab.navigate(frontOrigin);
+  tab = await freshTab(); await tab.navigate(frontOrigin + "/fixture-seed");
   const nativeAnswer = await inPage(async function (token) {
     const response = await fixtureNativeFetch("/api/device", { headers: { Authorization: "Bearer " + token } });
     return { device: await response.json(), csp: response.headers.get("Content-Security-Policy") };
@@ -157,6 +161,9 @@ test("actual built Reach cold-opens its original private origin through a comple
     localStorage.setItem("reach.devices", JSON.stringify([data.peer])); localStorage.setItem("reach.active", data.peer.id);
     localStorage.setItem("reach.fixture.gateway", data.gateway);
   }, { peer, gateway: new URL(browserOrigin).origin });
+  assert.equal(reach.approvals.list().length, 0, "state preparation cannot start unpaired native onboarding");
+  assert.equal(calls.some(call => call.method === "POST" && call.path === "/api/auth/requests"), false,
+    "no approval request precedes the first approved App launch");
   await tab.navigate(frontOrigin);
   await wait("document.querySelector('.settings-nav')"); await tab.evaluate("document.querySelector('.settings-nav').click()");
   await wait("[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Set up fallback'))");
@@ -248,9 +255,12 @@ test("actual built Reach cold-opens its original private origin through a comple
   assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.path === "/api/auth/requests" && call.method === "POST"), false);
   assert.equal(await tab.evaluate("localStorage.getItem('reach.devices')") === nativeSaved, true);
   await inPage(function (key) { localStorage.setItem("reach.tailnet:_machinekey", key); }, ownMachineKey); await replaceTab();
-  await wait("document.documentElement.dataset.connection==='browser'");
+  // A newly committed cold document may not have its root element yet.
+  // Readiness requires its mounted interface and actual selected route.
+  await wait("document.querySelector('#root')?.childElementCount&&document.documentElement.dataset.connection==='browser'");
   await new Promise(resolve => front.listen(frontPort, "127.0.0.1", resolve));
-  await tab.evaluate("dispatchEvent(new Event('online'))"); await wait("document.documentElement.dataset.connection!=='browser'");
+  await tab.evaluate("dispatchEvent(new Event('online'))");
+  await wait("document.querySelector('#root')?.childElementCount&&document.documentElement.dataset.connection!=='browser'");
   const denied = await inPage(function (data) {
     return fixtureNativeFetch(data.url, { headers: { Authorization: "Bearer " + data.token } }).then(() => false, () => true);
   }, { url: new URL("/api/device", publicOrigin).href, token: nativeToken });
