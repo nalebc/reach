@@ -396,6 +396,22 @@ test("independently numbered Chrome and Edge tabs retain separate ownership", as
   assert.deepEqual(closed.sort(), ["Chrome", "Edge"]);
 });
 
+for (const platform of ["darwin", "win32"]) for (const url of ["mailto:help@example.com", "data:text/plain,all", "javascript:alert(1)", "file:///tmp/a", "ftp://example.com/"]) test(`${platform} invalid tab cleanup selector ${url} cannot become close-all`, async t => {
+  const w = world();
+  const client = { id: "grok", kind: "agent", name: "Grok", expiresAt: Date.now() + 600000,
+    policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [] } };
+  client.scopes = presetScopes(client.policy);
+  const desktop = createAgentDesktop({ screen: true }, { platform, available: () => true,
+    pauses: createAgentPauses(), verifyClient: () => client, tabs: () => w.tabs });
+  t.after(() => { desktop.close(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens(client.id, "https://example.com/keep");
+  const original = w.b.urls();
+  await assert.rejects(desktop.closeTabs(client, url, () => client), error => error.status === 400);
+  assert.deepEqual(w.b.urls(), original, "invalid selection preserves every tracked and preexisting tab");
+  assert.equal(w.b.closes().length, 0, "invalid selection dispatches no close");
+  assert.equal(desktop.activity().holder, null, "invalid selection does not take the computer");
+});
+
 for (const change of ["revoked", "paused", "owner-takeover"]) test(`explicit cleanup holds queued work and refuses a late ${change}`, async t => {
   const w = world();
   const client = { id: "grok", kind: "agent", name: "Grok", expiresAt: Date.now() + 600000,

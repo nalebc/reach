@@ -1061,7 +1061,12 @@ export function createAgentDesktop(config, {
       const grant = fingerprint(latest);
       const tracker = tabs();
       if (!tracker) throw fail(503, `Reach can't close tabs on this ${word}.`);
-      if (url !== undefined && (typeof url !== "string" || url.length > 2048 || !URL.canParse(url))) throw fail(400, "Give the web address of the site whose tabs close, or nothing for all of them.");
+      if (url !== undefined) {
+        let parsed;
+        try { parsed = typeof url === "string" ? new URL(url) : null; } catch { parsed = null; }
+        if (typeof url !== "string" || url.length > 2048 || !parsed || !["http:", "https:"].includes(parsed.protocol) || /[\u0000-\u001f\u007f\s]/.test(url))
+          throw fail(400, "Give the http:// or https:// web address of the site, or omit it to close your tabs.");
+      }
       take(latest);
       const result = await trackTabInput(latest, ({ signal, retirement }) => tracker.closeOwn(latest.id, {
         url, signal, retirement, guard() {
