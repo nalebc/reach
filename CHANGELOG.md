@@ -8,6 +8,14 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Fixed
+
+- "Find Gmail message" no longer stops at "The browser has not reached the
+  exact requested page." Gmail writes a search's spaces back as `+`, so the
+  tool's exact address match never came. A page whose address fragment says
+  the same text another way is now the page asked for. The site, account and
+  path must still match exactly, and another search still stops.
+
 ## [0.4.2] — 2026-10-24
 
 Early-access candidate including the file editing, terminal clipboard paste

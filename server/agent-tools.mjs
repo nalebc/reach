@@ -57,6 +57,30 @@ const scrypt = (...args) => {
 const INPUTS = /^s1:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$/;
 export const inputsFingerprint = async (inputs, salt = crypto.randomBytes(16)) =>
   `s1:${salt.toString("base64url")}:${(await scrypt(inputs, salt, 32)).toString("base64url")}`;
+// The page a tool asked for, as the site wrote its address back: the same
+// address, or one whose #fragment spells the same text another way. Gmail
+// writes a search's spaces as + (#search/unpaid+invoice), never %20, so an
+// exact match never came and every search stopped as "loading".
+export const sameToolPage = (actual, wanted) => {
+  if (actual === wanted) return true;
+  let a, w;
+  try {
+    a = new URL(actual);
+    w = new URL(wanted);
+  } catch {
+    return false;
+  }
+  if (a.origin !== w.origin || a.pathname !== w.pathname || a.search !== w.search || !w.hash) return false;
+  const text = (hash) => {
+    try {
+      return decodeURIComponent(hash.slice(1).replace(/\+/g, " "));
+    } catch {
+      return null;
+    }
+  };
+  const said = text(a.hash);
+  return said !== null && said === text(w.hash);
+};
 export const sameInputs = async (fingerprint, inputs) => {
   const parts = INPUTS.exec(fingerprint);
   // Saved before Reach salted them (at most a day old): those inputs can't
@@ -916,11 +940,13 @@ export function createAgentTools(
                     "This browser page is protected.",
                     403,
                   );
-                if (info.url !== url)
+                if (!sameToolPage(info.url, url))
                   throw problem(
                     "loading",
                     "The browser has not reached the exact requested page.",
                   );
+                // From here on, the page as the browser names it.
+                const reached = info.url;
                 target = { ...info };
                 await guard();
                 const bound = await driver.page(
@@ -931,7 +957,7 @@ export function createAgentTools(
                     origins: definition.origins,
                     protectedTitles: client.policy.preset === "full" ? [] : privateTitles,
                     fullControl: client.policy.preset === "full",
-                    expectedURL: url,
+                    expectedURL: reached,
                     document: crypto.randomUUID(),
                   },
                   {
@@ -941,7 +967,7 @@ export function createAgentTools(
                   },
                 );
                 if (bound?.error) throw problem(bound.code, bound.error);
-                if (!TOOL_UUID.test(bound?.document || "") || bound.url !== url)
+                if (!TOOL_UUID.test(bound?.document || "") || bound.url !== reached)
                   throw problem(
                     "stale",
                     "Could not bind the requested browser document.",
