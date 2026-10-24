@@ -170,41 +170,73 @@ function savedBrowserState() {
 export const savedBrowserProfile = () => savedBrowserState()?.profile || "";
 
 let standby: { profile: string; node?: TailnetNode; ready: Promise<TailnetNode | null> } | undefined;
+type RestorationPhase = "idle" | "identity-unavailable" | "client-unavailable" | "loading-assets" | "starting" | "running" | "needs-login" | "unavailable" | "failed";
+type RecoveryNodeState = "none" | "NoState" | "NeedsLogin" | "NeedsMachineAuth" | "Stopped" | "Starting" | "Running" | "InUseOtherUser" | "Unknown" | "Unavailable";
+let restorationPhase: RestorationPhase = "idle";
+const recoveryNodeState = (node?: TailnetNode | null): RecoveryNodeState => {
+  if (!node) return "none";
+  try {
+    const state = node.status().self.state;
+    return ["NoState", "NeedsLogin", "NeedsMachineAuth", "Stopped", "Starting", "Running", "InUseOtherUser"].includes(state)
+      ? state as RecoveryNodeState : "Unknown";
+  } catch { return "Unavailable"; }
+};
+// Connection diagnostics never expose the profile, node identity, key, URL or
+// free-form native errors. This getter cannot start or approve a connection.
+export function browserRecoveryStatus(): { phase: RestorationPhase; retained: boolean; nodeState: RecoveryNodeState } {
+  const node = tailnetNode() || standby?.node;
+  return { phase: restorationPhase, retained: !!node, nodeState: recoveryNodeState(node) };
+}
 // Only restore an existing approved browser's node. Recovery never calls
 // login, redeems an invitation, or registers a new device on the user's behalf.
-export function existingBrowserNode(config: StartConfig): Promise<TailnetNode | null> {
+export function existingBrowserNode(config: StartConfig, { wake = false } = {}): Promise<TailnetNode | null> {
   const running = (node?: TailnetNode | null) => {
-    try { return node?.status().self.state === "Running" ? node : null; }
-    catch { return null; }
+    const state = recoveryNodeState(node);
+    if (state === "Running") { restorationPhase = "running"; return node!; }
+    return null;
   };
   const active = tailnetNode();
-  if (active) return Promise.resolve(running(active));
+  if (active) {
+    // A suspended retained node may need its network restored before it can
+    // report Running. Waking never signs in or substitutes another identity.
+    if (wake) active.wake();
+    return Promise.resolve(running(active));
+  }
   const saved = savedBrowserState();
-  if (!saved || !config.tailnet) return Promise.resolve(null);
+  if (!saved) { restorationPhase = "identity-unavailable"; return Promise.resolve(null); }
+  if (!config.tailnet) { restorationPhase = "client-unavailable"; return Promise.resolve(null); }
   const { profile } = saved;
   if (standby?.profile === profile) {
+    if (wake && standby.node) standby.node.wake();
     if (running(standby.node)) return Promise.resolve(standby.node!);
     return standby.ready.then(running);
   }
   const restoring: NonNullable<typeof standby> = { profile, ready: Promise.resolve(null) };
+  restorationPhase = "loading-assets";
   const preload = new AbortController();
   const deadline = setTimeout(() => preload.abort(new DOMException("The browser connection assets did not answer in time.", "TimeoutError")), 8000);
   restoring.ready = createBrowserNode(config, { stateStorage: saved.state, beforeStart: saved.unchanged, signal: preload.signal })
     .finally(() => clearTimeout(deadline)).then(node => {
     restoring.node = node;
+    if (standby === restoring) restorationPhase = "starting";
     return new Promise<TailnetNode | null>(resolve => {
-      const timer = setTimeout(() => resolve(null), 8000);
-      const unavailable = () => { clearTimeout(timer); resolve(null); };
+      const timer = setTimeout(() => { if (standby === restoring) restorationPhase = "unavailable"; resolve(null); }, 8000);
+      const unavailable = (phase: RestorationPhase = "unavailable") => {
+        clearTimeout(timer);
+        if (standby === restoring) restorationPhase = phase;
+        resolve(null);
+      };
       node.start({
         state: state => {
-          if (state === "Running") { clearTimeout(timer); resolve(node); }
-          else if (state === "NeedsLogin") unavailable();
+          if (state === "Running") { clearTimeout(timer); if (standby === restoring) restorationPhase = "running"; resolve(node); }
+          else if (state === "NeedsLogin") unavailable("needs-login");
         },
-        authURL: unavailable,
-        error: unavailable,
+        authURL: () => unavailable("needs-login"),
+        error: () => unavailable(),
       });
     });
   }).catch(() => {
+    if (standby === restoring) restorationPhase = preload.signal.aborted ? "unavailable" : "failed";
     // Loading assets can fail before a node exists. A later recovery check
     // may retry those reads, but must retain any identity already constructed.
     if (!restoring.node && standby === restoring) standby = undefined;
