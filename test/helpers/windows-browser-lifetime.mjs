@@ -5,12 +5,15 @@ import { windowsFixture } from "./windows-fixtures.mjs";
 // PID tree cannot provide that after the parent exits with inherited pipes open.
 // The broker assigns a suspended browser to its own kernel job before resuming
 // it. Only the broker inherits fd 5; Chrome keeps the existing CDP fd 3/4 pair.
-export async function windowsBrowserProcess(binary, flags) {
-  const broker = await windowsFixture("browser-job");
+export async function windowsBrowserProcess(binary, flags, { onStage } = {}) {
+  const mark = (stage, details = {}) => { try { onStage?.(stage, details); } catch {} };
+  const broker = await windowsFixture("browser-job", [], { onStage: mark });
+  mark("broker-spawn-begin");
   const child = spawn(broker, [binary, ...flags], {
     stdio: ["pipe", "ignore", "pipe", "pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+  mark("broker-spawn-returned", { pid: Number.isInteger(child.pid) ? child.pid : null });
   const events = [];
   let buffered = "", protocolError, empty, settleEmpty;
   const stopped = new Promise(resolve => { settleEmpty = resolve; });

@@ -168,7 +168,7 @@ test("failed browser startup releases protocol calls and exits naturally after c
     const options = { binary: process.execPath };
     if (process.platform === "win32") options.launchProcess = async (binary, flags) => {
       mark("native-owner-setup-begin");
-      owner = await windowsBrowserProcess(binary, flags);
+      owner = await windowsBrowserProcess(binary, flags, { onStage: mark });
       mark("native-owner-setup-returned", snapshot());
       owner.child.once("exit", () => mark("child-exit", snapshot()));
       owner.child.once("close", () => mark("child-close", snapshot()));
