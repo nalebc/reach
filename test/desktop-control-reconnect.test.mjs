@@ -29,7 +29,9 @@ const socket = () =>
       this.closedWith = { code, reason };
     },
   });
-const phone = { id: "phone", name: "Phone", scopes: ["admin", "screen"] };
+// This is an approved owner device on every host. An unclassified admin
+// fixture is correctly refused by Windows' private guest screen protection.
+const phone = { id: "phone", kind: "device", name: "Phone", scopes: ["admin", "screen"] };
 
 // holdFor: how long Tailscale's word may come late before the connection
 // ends (held meanwhile: desktop-identity-hold.test.mjs). Short here.

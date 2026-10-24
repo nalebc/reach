@@ -165,6 +165,10 @@ test("real Chrome owner recovery crosses a public start 404 using only its separ
     return fetch(location.origin + "/api/action", { method: "POST", headers: { Authorization: "Bearer APP" }, body: "once" }).then(response => response.json()).then(() => false, () => true);
   })()`);
   assert.equal(calls.filter(call => call.path === "/api/action").length, 1, "the disposable HTTP fixture delivers the action only once before handoff");
+  // Starting fetch in the browser does not prove it reached the old route.
+  // Keep that route up until the server has actually accepted the held read.
+  for (let waiting = 0; !held.length && waiting < 100; waiting++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(held.length, 1, "the old private server must accept the held read before handoff");
   nativeMode = "funnel";
   assert.deepEqual(await tab.evaluate("publicBoundaries()"), { status: 404, ws: "refused" }, "Funnel keeps owner API and WebSocket private");
   const concurrent = await tab.evaluate("Promise.all([f.recovery.check(), f.recovery.check(), f.recovery.check()]).then(() => ({ modes: f.changes.map(change => change.mode), token: f.current.peer.token, starts: f.browserStarts }))");

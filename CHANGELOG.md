@@ -55,6 +55,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   accepted unmatched key-down, then stop the uncertain typing sequence.
 - Request video keyframes when a viewer actually missed frames and disable
   unsupported long-term references in the Mac encoder.
+- Update request parsing, uploads and development HTTP dependencies for current
+  security fixes. Build the browser's private Tailscale client with Go 1.27.3,
+  including its certificate-verification security update.
 
 ### Validation
 
@@ -66,6 +69,8 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 - Hosted tests, browser profiles and the iOS simulator do not establish physical
   iPhone/iPad/Android behavior, live authenticated private/public handoffs or
   signed-in provider tasks. Those qualifications remain incomplete.
+- Resolve the current Node 24 release for the official OpenClaw compatibility
+  check, so an older runner cache cannot violate the vendor's runtime minimum.
 
 ## [0.4.1] — 2026-10-19 (unpublished)
 

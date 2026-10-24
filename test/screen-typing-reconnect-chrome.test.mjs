@@ -52,6 +52,42 @@ window.__typing = { toasts: [] };
 window.__typing.requests = [];
 window.__typing.releases = [];
 window.__typing.enables = [];
+window.__typing.inputEvents = [];
+for (const kind of ["pointerdown", "pointerup", "touchstart", "touchend", "click"])
+  document.addEventListener(kind, event => {
+    const item = { kind, trusted: event.isTrusted, target: event.target?.tagName,
+      className: typeof event.target?.className === "string" ? event.target.className : "",
+      onSurface: !!event.target?.closest?.(".remote-stage") };
+    if ("clientX" in event) { item.x = event.clientX; item.y = event.clientY; }
+    window.__typing.inputEvents.push(item);
+    if (window.__typing.inputEvents.length > 24) window.__typing.inputEvents.shift();
+  }, { capture: true, passive: true });
+window.__typing.sampleTouch = () => {
+  const canvas = document.querySelector(".remote-stage canvas"), stage = canvas?.closest(".remote-stage");
+  const box = element => { const r = element?.getBoundingClientRect(); return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; };
+  const rect = box(canvas), surface = box(stage), visual = window.visualViewport;
+  const viewport = { width: innerWidth, height: innerHeight, visual: visual ? {
+    x: visual.offsetLeft, y: visual.offsetTop, width: visual.width, height: visual.height, scale: visual.scale,
+  } : null };
+  let candidate = null, hit = null;
+  if (rect && surface) {
+    const left = Math.max(0, rect.x, surface.x, visual?.offsetLeft || 0);
+    const top = Math.max(0, rect.y, surface.y, visual?.offsetTop || 0);
+    const right = Math.min(innerWidth, rect.x + rect.width, surface.x + surface.width,
+      visual ? visual.offsetLeft + visual.width : innerWidth);
+    const bottom = Math.min(innerHeight, rect.y + rect.height, surface.y + surface.height,
+      visual ? visual.offsetTop + visual.height : innerHeight);
+    if (right - left > 2 && bottom - top > 2) {
+      candidate = { x: (left + right) / 2, y: (top + bottom) / 2 };
+      hit = document.elementFromPoint(candidate.x, candidate.y);
+    }
+  }
+  const eligible = !!candidate && !!hit && (hit === stage || stage.contains(hit)) &&
+    !hit.closest("button, input, textarea, select, a");
+  return { point: eligible ? candidate : null, candidate, rect, surface, viewport,
+    hit: hit ? { tag: hit.tagName, className: typeof hit.className === "string" ? hit.className : "", onSurface: hit === stage || stage.contains(hit) } : null,
+    eligible, now: performance.now() };
+};
 const fetchActual = window.fetch.bind(window);
 window.fetch = (url, init = {}) => {
   window.__typing.requests.push({ url: String(url), method: init.method || "GET", body: init.body });
@@ -215,12 +251,33 @@ export function useRemoteScreen(peer, enabled, live, display) {
     await until(() => tab.evaluate(`!!${button("Control")}`), "Control button");
   };
   const initiatedOff = () => tab.evaluate('window.__typing.requests.filter(r => r.body === \'{"enabled":false}\')');
-  const ready = () => until(() => tab.evaluate(`(() => { const b = ${button("Dismiss phone keyboard")} || ${button("Open phone keyboard")}; return b && !b.disabled; })()`), "ready control");
+  const ready = () => until(() => tab.evaluate(`(() => {
+    const b = document.querySelector('button[aria-label="Dismiss phone keyboard"]') ||
+      document.querySelector('button[aria-label="Open phone keyboard"]');
+    return b && !b.disabled;
+  })()`), "ready control");
   // A controlled visibility flag drives the actual DOM handler; this is not
   // physical phone backgrounding or a browser permission qualification.
   const visibility = (hidden) => tab.evaluate(`Object.defineProperty(document, "hidden", { configurable: true, value: ${hidden} }); document.dispatchEvent(new Event("visibilitychange"));`);
   const restoreVisibility = () => tab.evaluate('delete document.hidden; document.dispatchEvent(new Event("visibilitychange"));');
   const joinEnables = () => tab.evaluate('(async () => { await Promise.allSettled(window.__typing.enables); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })()');
+  const touchPoint = async (setup) => {
+    let signature = "", since = 0, selected;
+    await until(async () => {
+      const sample = await tab.evaluate("window.__typing.sampleTouch()");
+      setup.samples.push(sample);
+      if (setup.samples.length > 12) setup.samples.shift();
+      if (!sample.eligible) { signature = ""; return false; }
+      const next = JSON.stringify([sample.rect, sample.surface, sample.viewport, sample.point, sample.hit]);
+      if (signature !== next) { signature = next; since = sample.now; return false; }
+      // Wait across rendered-frame opportunities, rather than sampling a
+      // canvas while its ResizeObserver/viewport layout is still changing.
+      if (sample.now - since < 32) return false;
+      selected = sample.point;
+      return true;
+    }, "stable visible desktop touch point");
+    return selected;
+  };
   const fresh = async (initialOrigin = origins[0], window = 1) => {
     await pageOnly();
     windowSize = window;
@@ -234,13 +291,48 @@ export function useRemoteScreen(peer, enabled, live, display) {
       await until(() => connections.length > before && connections.at(-1).received.some(m => m.type === "auth"), "initial alternate route");
       await ready();
     }
-    const point = await tab.evaluate('(() => { const r = document.querySelector(".remote-stage canvas").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()');
-    await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
-    await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    await until(() => connections.at(-1).received.some(m => m.type === "input" && m.action.type === "focus"), "field confirmation");
-    await until(() => tab.evaluate(`document.activeElement === ${sink}`), "real browser typing sink");
-    return connections.at(-1);
+    const setup = { boundary: "fresh-touch-setup", connection: connections.length - 1, samples: [] };
+    outcomes.push(setup);
+    try {
+      const point = await touchPoint(setup);
+      setup.point = point;
+      // Exactly one touch. No tap is retried if its delivery is unknown.
+      await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await until(() => connections.at(-1).received.some(m => m.type === "input" && m.action.type === "focus"), "field confirmation");
+      await until(() => tab.evaluate(`document.activeElement === ${sink}`), "real browser typing sink");
+      return connections.at(-1);
+    } finally {
+      setup.inputEvents = await tab.evaluate("window.__typing.inputEvents");
+    }
   };
+  await t.test("touch setup refuses an offscreen or obstructed surface without dispatching input", async () => {
+    await pageOnly();
+    await tab.evaluate(`${button("Control")}.click()`);
+    await ready();
+    const setup = { samples: [] };
+    await touchPoint(setup);
+    const before = await tab.evaluate("window.__typing.inputEvents.length");
+    const observed = await tab.evaluate(`(() => {
+      const surface = document.querySelector(".remote-stage");
+      const transform = surface.style.transform;
+      surface.style.transform = "translateX(-10000px)";
+      const offscreen = window.__typing.sampleTouch();
+      surface.style.transform = transform;
+      const cover = document.createElement("div");
+      cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:auto";
+      document.body.append(cover);
+      const obstructed = window.__typing.sampleTouch();
+      cover.remove();
+      return { offscreen, obstructed };
+    })()`);
+    outcomes.push({ boundary: "touch-setup-negative", observed });
+    assert.equal(observed.offscreen.eligible, false);
+    assert.equal(observed.offscreen.point, null);
+    assert.equal(observed.obstructed.eligible, false);
+    assert.equal(observed.obstructed.point, null);
+    assert.equal(await tab.evaluate("window.__typing.inputEvents.length"), before, "readiness checks never dispatch an exploratory touch");
+  });
   for (const boundary of ["retryable-error", "socket-close"]) await t.test(boundary, async () => {
     const old = await fresh();
     holdTyping = true;

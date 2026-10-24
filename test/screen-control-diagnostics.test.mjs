@@ -69,11 +69,27 @@ test("the exact standalone browser bootstrap preserves the same privacy and clos
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_CANARY|token/);
 });
 
+function traceAssignment(source) {
+  // Git's normal Windows checkout uses CRLF. Match source boundaries on a
+  // normalized copy; never evaluate the rest of the journey by accident.
+  source = source.replace(/\r\n/g, "\n");
+  const start = source.indexOf("const TRACE = ");
+  const end = source.indexOf("\n\nconst place = ", start);
+  assert.ok(start >= 0 && end > start, "the bounded TRACE assignment must be present");
+  return source.slice(start, end);
+}
+
+test("missing journey trace boundaries fail before unrelated journey source can execute", () => {
+  for (const source of ["const KINDS = [];", "const TRACE = `value`;", "const place = () => {};\nconst TRACE = `value`;"])
+    assert.throws(() => traceAssignment(source), /bounded TRACE assignment/);
+});
+
 // Inert WebSocket events verify the journey observer preserves delivery;
 // this is not native input, an operating-system run or a physical client.
-test("the installed journey trace observes socket replacement and heartbeats without changing delivery", () => {
-  const source = fs.readFileSync(new URL("./journeys/screen-control.test.mjs", import.meta.url), "utf8");
-  const assignment = source.slice(source.indexOf("const TRACE = "), source.indexOf("\n\nconst place = "));
+for (const ending of ["LF", "CRLF"]) test(`the installed ${ending} journey trace observes socket replacement and heartbeats without changing delivery`, () => {
+  const raw = fs.readFileSync(new URL("./journeys/screen-control.test.mjs", import.meta.url), "utf8");
+  const source = raw.replace(/\r?\n/g, ending === "CRLF" ? "\r\n" : "\n");
+  const assignment = traceAssignment(source);
   const script = vm.runInNewContext(assignment + "; TRACE", { SCREEN_CONTROL_DIAGNOSTICS });
   class Socket {
     constructor() { this.url = "wss://private.test/ws/screen-input"; this.sent = []; this.handlers = {}; }
