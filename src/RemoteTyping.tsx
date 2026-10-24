@@ -5,6 +5,7 @@ import KeyRow, { type RowKey } from "./KeyRow";
 import "./typing-keys.css";
 import {
   mergeTyping,
+  isInputReconnect,
   type DesktopAction,
   type InputResult,
   type TextTarget,
@@ -44,6 +45,8 @@ export default function RemoteTyping({
   const beforeInput = useRef<(e: InputEvent) => void>(() => {});
   const queued = useRef<DesktopAction[]>([]);
   const generation = useRef(0);
+  const revision = useRef(target.editRevision);
+  revision.current = target.editRevision;
   const wasReconnectPaused = useRef(false);
   if (reconnectPaused && !wasReconnectPaused.current) generation.current++;
   wasReconnectPaused.current = reconnectPaused;
@@ -85,26 +88,35 @@ export default function RemoteTyping({
     onError(error.message);
     onClose();
   };
-  const dispatch = (action: DesktopAction) => {
+  const hold = (action: DesktopAction) => {
     if (!valid.current) return;
-    if (target.pending) {
-      // Waiting letters go as one edit (the queue never fills while a slow
-      // computer confirms the field).
-      const last = queued.current.at(-1);
-      const merged = last && mergeTyping(last, action);
-      if (merged) {
-        queued.current[queued.current.length - 1] = merged;
-        return;
-      }
-      if (queued.current.length >= 32) return fail(Error("Field confirmation took too long. Tap the field again."));
-      queued.current.push(action);
+    // Waiting letters go as one edit (the queue never fills while a slow
+    // computer confirms the field).
+    const last = queued.current.at(-1);
+    const merged = last && mergeTyping(last, action);
+    if (merged) {
+      queued.current[queued.current.length - 1] = merged;
       return;
     }
+    if (queued.current.length >= 32) return fail(Error("Field confirmation took too long. Tap the field again."));
+    queued.current.push(action);
+  };
+  const dispatch = (action: DesktopAction) => {
+    if (!valid.current) return;
+    if (target.pending) return hold(action);
     const sentIn = generation.current;
+    const sentRevision = revision.current;
     void send({
       ...action,
       ...(target.focus ? { focus: target.focus } : {}),
     }).catch((error: Error) => {
+      // The socket rejects before React can render the reconnect pause.
+      // Keep only input the real queue proves never left; a sent chunk's
+      // unknown outcome is never placed back into this local queue.
+      if (isInputReconnect(error)) {
+        if (error.notSent && sentRevision === revision.current) hold(action);
+        return;
+      }
       // An old, dispatched chunk is not part of the known-unsent queue.
       if (sentIn === generation.current) fail(error);
     });

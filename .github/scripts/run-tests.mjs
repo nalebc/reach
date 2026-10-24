@@ -26,14 +26,14 @@ export const suites = {
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle",
     // The app-in-front read beside the input queue, on the scanner, and a
     // phone's new control connection taking over from its old one (Oct 18).
-    "desktop-context-scanner", "desktop-control-takeover",
+    "desktop-context-scanner", "desktop-control-takeover", "desktop-control-reconnect",
     "windows-desktop-input-native", "windows-desktop-input",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
     // Oct 18 screen control fixes: iOS's late taps, drags, typing bursts and reconnects.
-    "screen-control-fixes-ui", "screen-typing-reconnect-ui",
+    "screen-control-fixes-ui", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
@@ -47,7 +47,7 @@ export const suites = {
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-gateway",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",

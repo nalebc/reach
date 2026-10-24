@@ -251,11 +251,11 @@ test(
           const out = path.resolve("reports", "journeys", `ios-simulator-${String(body.name).replace(/[^a-z0-9-]/gi, "-")}.png`);
           fs.mkdirSync(path.dirname(out), { recursive: true });
           fs.writeFileSync(out, Buffer.from(String(body.png || ""), "base64"));
-          console.log(`SHOT ${out}`);
+          console.log(`SHOT ${JSON.stringify(out)}`);
           return reply({});
         }
         if (route === "/done") {
-          if (body.tree) console.log(`TREE ${body.tree}`);
+          if (body.tree) console.log(`TREE ${JSON.stringify(body.tree)}`);
           done = body.problems !== -1;
           return reply({});
         }

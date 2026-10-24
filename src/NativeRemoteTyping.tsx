@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { typingEdit, typingTail } from "./typing-edit";
 import {
   mergeTyping,
+  isInputReconnect,
   type DesktopAction,
   type InputResult,
   type TextTarget,
@@ -39,26 +40,33 @@ export default function NativeRemoteTyping({
   wasReconnectPaused.current = reconnectPaused;
   const revision = useRef(target.editRevision);
   const secure = !!target.secure;
+  const hold = (action: DesktopAction) => {
+    if (!active.current) return;
+    const current = latest.current;
+    const last = queued.current.at(-1);
+    const merged = last && mergeTyping(last, action);
+    if (merged) {
+      queued.current[queued.current.length - 1] = merged;
+      return;
+    }
+    if (queued.current.length >= 32) {
+      active.current = false;
+      current.onError("Field confirmation took too long. Tap the field again.");
+      current.onClose();
+    } else queued.current.push(action);
+  };
   const dispatch = (action: DesktopAction) => {
     if (!active.current) return;
     const current = latest.current;
+    if (current.target.pending) return hold(action);
     const sentIn = generation.current;
-    if (current.target.pending) {
-      const last = queued.current.at(-1);
-      const merged = last && mergeTyping(last, action);
-      if (merged) {
-        queued.current[queued.current.length - 1] = merged;
-        return;
-      }
-      if (queued.current.length >= 32) {
-        active.current = false;
-        current.onError("Field confirmation took too long. Tap the field again.");
-        current.onClose();
-      } else queued.current.push(action);
-      return;
-    }
+    const sentRevision = current.target.editRevision;
     void current.send({ ...action, ...(current.target.focus ? { focus: current.target.focus } : {}) })
       .catch((error: Error) => {
+        if (isInputReconnect(error)) {
+          if (error.notSent && sentRevision === latest.current.target.editRevision) hold(action);
+          return;
+        }
         if (!active.current || sentIn !== generation.current) return;
         active.current = false;
         latest.current.onError(error.message);

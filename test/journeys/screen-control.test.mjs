@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { startComputer, phone, skip, needsDesktop, macInUse, markInput, desktopTurn, windows } from "../helpers/journey.mjs";
 import { recorder, rawTerminal } from "../helpers/input-recorder.mjs";
+import { SCREEN_CONTROL_DIAGNOSTICS } from "../helpers/screen-control-diagnostics.mjs";
 
 // Screen control, hard: many taps, double-taps, holds, drags, scrolls and
 // typing through Reach's live screen into windows on this Mac, each checked
@@ -27,6 +28,14 @@ const TRACE = `(() => {
   if (window.__sc) return;
   const log = (window.__sc = []);
   const now = () => Math.round(performance.now());
+  const diagnostics = window.__scDiagnostics = ${SCREEN_CONTROL_DIAGNOSTICS};
+  const sockets = new WeakMap();
+  let nextSocket = 0;
+  const socketId = (ws) => {
+    if (!sockets.has(ws)) sockets.set(ws, ++nextSocket);
+    return sockets.get(ws);
+  };
+  const record = (ws, value) => diagnostics.record({ t: now(), socket: socketId(ws), ...value });
   const P = WebSocket.prototype;
   const input = (ws) => /screen-input/.test(ws.url || "");
   const send = P.send;
@@ -34,12 +43,13 @@ const TRACE = `(() => {
     if (input(this)) {
       try {
         const m = JSON.parse(data);
+        record(this, { dir: "out", m });
         if (m.type !== "auth" && m.action?.type !== "heartbeat") log.push({ t: now(), dir: "out", m });
       } catch {}
     }
     return send.call(this, data);
   };
-  for (const name of ["onmessage", "onclose", "onopen"]) {
+  for (const name of ["onmessage", "onclose", "onopen", "onerror"]) {
     const d = Object.getOwnPropertyDescriptor(P, name);
     Object.defineProperty(P, name, {
       configurable: true,
@@ -52,9 +62,13 @@ const TRACE = `(() => {
             if (name === "onmessage") {
               try {
                 const m = JSON.parse(e.data);
+                record(ws, { dir: "in", m });
                 if (!(m.type === "ack" && m.id && heartbeats.has(m.id))) log.push({ t: now(), dir: "in", m: m.type === "fields" ? { type: "fields", n: m.fields.length, after: m.after } : m });
               } catch {}
-            } else log.push({ t: now(), dir: name.slice(2), code: e.code, reason: e.reason });
+            } else {
+              record(ws, { dir: name.slice(2), code: e.code, reason: e.reason });
+              log.push({ t: now(), dir: name.slice(2), code: e.code, reason: e.reason });
+            }
           }
           return fn.call(this, e);
         });
@@ -117,6 +131,13 @@ async function stressRun(t, kind) {
     await sleep(1500);
 
     const trace = () => page.evaluate("window.__sc.splice(0)");
+    // A separate bounded, sanitized trace survives the detailed trace's
+    // scenario-local drains. Keep the error before a retryable close, the
+    // socket it belongs to, and heartbeat timing in the archived report.
+    const recordScenario = async (detail) => report.scenarios.push({
+      ...detail,
+      protocol: await page.evaluate("window.__scDiagnostics.drain()"),
+    });
     // Every point on the picture this test touches: inside its own window,
     // and only while nobody is at the Mac.
     const where = async (at) => {
@@ -262,7 +283,7 @@ async function stressRun(t, kind) {
         }
       }
       const errs = results.filter((r) => r.dx !== null).map((r) => Math.hypot(r.dx, r.dy));
-      report.scenarios.push({ name, taps: results.length, maxError: Math.max(...errs), meanError: errs.reduce((a, b) => a + b, 0) / errs.length, acks: ackStats(await trace()) });
+      await recordScenario({ name, taps: results.length, maxError: Math.max(...errs), meanError: errs.reduce((a, b) => a + b, 0) / errs.length, acks: ackStats(await trace()) });
     }
 
     // 2. Fast taps across cells, 150 ms apart.
@@ -280,7 +301,7 @@ async function stressRun(t, kind) {
       const landed = downs.map((d) => d.cell);
       if (JSON.stringify(landed) !== JSON.stringify(order)) problem(name, "fast taps landed differently", { expected: order, landed, counts: downs.map((d) => d.count) });
       if (downs.some((d) => d.count !== 1)) problem(name, "fast taps on different cells became multi-clicks", { counts: downs.map((d) => d.count) });
-      report.scenarios.push({ name, expected: order, landed, acks: ackStats(await trace()) });
+      await recordScenario({ name, expected: order, landed, acks: ackStats(await trace()) });
     }
 
     // 3. Double-tap a word: one double-click selecting it.
@@ -304,7 +325,7 @@ async function stressRun(t, kind) {
         if (JSON.stringify(downs) !== "[1,2]") problem(name, "double-tap didn't arrive as click then double-click", { round, downs });
         if (!selection || !/^\w+ ?$/.test(selection.selected || "") || selection.length === 0) problem(name, "double-tap didn't select a word", { round, selection });
       }
-      report.scenarios.push({ name, outcomes, acks: ackStats(await trace()) });
+      await recordScenario({ name, outcomes, acks: ackStats(await trace()) });
     }
 
     // 3b. A real finger's double-tap: the second tap a few pixels from the
@@ -339,7 +360,7 @@ async function stressRun(t, kind) {
         outcomes.push({ drift, downs, selected, clicks });
         if (JSON.stringify(downs) !== "[1,2]") problem(name, `a double-tap ${drift} px apart didn't arrive as a double-click`, { drift, downs, selected, clicks });
       }
-      report.scenarios.push({ name, outcomes, acks: ackStats(await trace()) });
+      await recordScenario({ name, outcomes, acks: ackStats(await trace()) });
     }
 
     // 3c. Slow taps: a finger resting 300 to 700 ms, still or wobbling a
@@ -388,7 +409,7 @@ async function stressRun(t, kind) {
         if (sel && sel.length > 0) problem(name, `a ${hold} ms tap${wobble ? ` wobbling ${wobble} px` : ""} on text selected "${sel.selected}" instead of placing the caret`, { hold, wobble });
         if (!sel) problem(name, `a ${hold} ms tap${wobble ? ` wobbling ${wobble} px` : ""} on text did nothing`, { hold, wobble, shown: (await status()).shown });
       }
-      report.scenarios.push({ name, outcomes });
+      await recordScenario({ name, outcomes });
     }
 
     // 3d. Touch and hold, still, on plain content: never a right-click
@@ -408,7 +429,7 @@ async function stressRun(t, kind) {
       const rights = ev.filter((e) => e.kind === "right" || (e.kind === "mouse" && e.type === 3));
       const downs = ev.filter((e) => e.kind === "down");
       if (rights.length) problem(name, "a long press sent a right-click", { rights: rights.length, downs: downs.length });
-      report.scenarios.push({ name, rights: rights.length, downs: downs.length });
+      await recordScenario({ name, rights: rights.length, downs: downs.length });
     }
 
     // 4. Tap a text field: does the keyboard open on that tap, and would
@@ -454,7 +475,7 @@ async function stressRun(t, kind) {
           if (!typed?.ok) problem(name, "letter typed after the keyboard opened didn't arrive", { round, before: beforeField, now: typed?.now });
         }
       }
-      report.scenarios.push({ name, outcomes });
+      await recordScenario({ name, outcomes });
     }
 
     // 5. Typing exactly: words, corrections, accents, dashes, quotes,
@@ -503,7 +524,7 @@ async function stressRun(t, kind) {
       let log = await trace();
       const drops = log.filter((e) => e.dir === "in" && e.m?.type === "ack" && e.m.ok === false);
       if (drops.length) problem(name, "actions turned down while typing", { errors: [...new Set(drops.map((d) => d.m.error))], n: drops.length });
-      report.scenarios.push({ name, ok: !!got?.ok, acks: ackStats(log), closes: log.filter((e) => e.dir === "close") });
+      await recordScenario({ name, ok: !!got?.ok, acks: ackStats(log), closes: log.filter((e) => e.dir === "close") });
     }
 
     // 5b. A burst: 40 letters as fast as the page takes them (a held key,
@@ -523,7 +544,7 @@ async function stressRun(t, kind) {
       const drops = log.filter((e) => e.dir === "in" && e.m?.type === "ack" && e.m.ok === false);
       const phone = await status();
       if (!got?.ok) problem(name, "burst differs from what reached the Mac", { got: got?.now.slice(start.length), phone, turnedDown: drops.length, errors: [...new Set(drops.map((d) => d.m.error))], closes: log.filter((e) => e.dir === "close") });
-      report.scenarios.push({ name, ok: !!got?.ok, acks: ackStats(log), phone });
+      await recordScenario({ name, ok: !!got?.ok, acks: ackStats(log), phone });
     }
 
     // 5b2. Pasting two lines from the phone's keyboard: a line break, never
@@ -545,7 +566,7 @@ async function stressRun(t, kind) {
       const shortcuts = keys.filter((e) => (windows ? (e.mods & 0x20000) !== 0 : (e.mods & (1 << 18)) !== 0 || (e.mods & (1 << 20)) !== 0));
       if (!got?.ok) problem(name, "pasted lines differ from what reached the computer", { expected: expected.slice(start.length), got: got?.now.slice(start.length) });
       if (shortcuts.length) problem(name, "the paste's line break arrived as a shortcut", { keys: shortcuts.slice(0, 4) });
-      report.scenarios.push({ name, ok: !!got?.ok, keys: keys.length });
+      await recordScenario({ name, ok: !!got?.ok, keys: keys.length });
     }
 
     // 5c. Typing as Android's keyboard does: each word composed letter by
@@ -576,7 +597,7 @@ async function stressRun(t, kind) {
       const got = await until(async () => ({ ok: rec.text() === expected, now: rec.text() }), 10000);
       const log = await trace();
       if (!got?.ok) problem(name, "composed words differ from what reached the Mac", { expected: expected.slice(start.length), got: got?.now.slice(start.length), sent: log.filter((e) => e.dir === "out").map((e) => e.m.action).slice(-40) });
-      report.scenarios.push({ name, ok: !!got?.ok });
+      await recordScenario({ name, ok: !!got?.ok });
     }
 
     // 6. Keyboard reopened again and again: each time, one letter arrives once.
@@ -604,7 +625,7 @@ async function stressRun(t, kind) {
           problem(name, "letter didn't arrive exactly once", { round, before, now: got?.now });
         }
       }
-      report.scenarios.push({ name, rounds: ROUNDS * 3, failures });
+      await recordScenario({ name, rounds: ROUNDS * 3, failures });
     }
 
     // 7. Touch and hold, then drag across words: a selection.
@@ -639,7 +660,7 @@ async function stressRun(t, kind) {
         const sent = (await trace()).filter((e) => e.dir === "out" || (e.dir === "in" && e.m?.type === "ack")).map((e) => e.dir === "out" ? `${e.t}:${e.m.action?.type}#${e.m.id}` : `${e.t}:ack#${e.m.id}${e.m.skipped ? "(skipped)" : ""}${e.m.ok === false ? "(" + e.m.error + ")" : ""}`);
         if (!selection || (selection.selected || "").length < 5) problem(name, "hold and drag didn't select text", { round, selection, events: ev.slice(-6), sent: sent.slice(-30), phone: await status() });
       }
-      report.scenarios.push({ name, outcomes });
+      await recordScenario({ name, outcomes });
     }
 
     // 8. Two-finger scroll on a cell.
@@ -661,7 +682,7 @@ async function stressRun(t, kind) {
       const clicks = ev.filter((e) => e.kind === "down" || (e.kind === "mouse" && e.type === 1));
       if (!scrolls.length) problem(name, "two-finger swipe didn't scroll", { events: ev.slice(0, 8) });
       if (clicks.length) problem(name, "two-finger swipe also clicked", { clicks });
-      report.scenarios.push({ name, scrolls: scrolls.length, clicks: clicks.length });
+      await recordScenario({ name, scrolls: scrolls.length, clicks: clicks.length });
     }
 
     // 10. More letters at once than the input queue holds (a held key, an
@@ -693,7 +714,7 @@ async function stressRun(t, kind) {
       if (got !== burst) problem(name, `${burst.length} letters typed at once: the computer got ${got.length}`, { got, closes, refused: [...new Set(refused)], sentCount: sent.length, sent: sent.slice(0, 80), acks, fieldNow: rec.field(), timeline: [...new Set(timeline.map((l) => l.replace(/^\d+ms /, "")))] });
       const after = await status();
       if (!after.control) problem(name, "control ended after the burst", { after, timeline });
-      report.scenarios.push({ name, got, timeline });
+      await recordScenario({ name, got, timeline });
     }
 
     // 9. A real Terminal: tap into it, the keyboard opens, typing and keys arrive as bytes.
@@ -756,7 +777,7 @@ async function stressRun(t, kind) {
         return { ok: b.equals(want), now: JSON.stringify(b.toString("latin1")) };
       }, 10000);
       if (!got?.ok) problem(name, "bytes Terminal received differ", { want: JSON.stringify(want.toString("latin1")), got: got?.now });
-      report.scenarios.push({ name, outcomes, bytesOk: !!got?.ok });
+      await recordScenario({ name, outcomes, bytesOk: !!got?.ok });
     }
 
     fs.mkdirSync(path.resolve("reports", "journeys"), { recursive: true });

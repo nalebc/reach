@@ -90,7 +90,10 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
         return;
       } catch (error) {
         const status = (error as { status?: number }).status;
-        if (status && ![401, 403].includes(status)) return;
+        if (status && ![401, 403, 404, 503].includes(status)) return;
+        // On a fresh page the public start/closed door answers device 404,
+        // just as a running owner's health probe does after native loss.
+        // Only the saved browser's own approval below can restore access.
       }
     }
     if (!unchanged()) return;
@@ -122,9 +125,11 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
         if ((await read(direct, current.peer.url + "/api/health")).product === "Reach") return;
       } catch (error) {
         const status = (error as { status?: number }).status;
-        if (status && status !== 503) return;
-        // Only network loss or the explicit availability pause permits trying
-        // the other already-approved private device.
+        if (status && status !== 404 && status !== 503) return;
+        // Without the OS route, this same address reaches the public start
+        // page (or its closed door), which deliberately returns health 404.
+        // That is availability loss, never approval: the other private device
+        // must still authenticate its own saved credential and matching scope.
       }
     }
     const next: PrivateWay = from === "browser" ? "native" : "browser";

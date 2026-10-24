@@ -8,10 +8,21 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.2] — 2026-10-19
+## [0.4.2] — 2026-10-24
 
-Early-access candidate recovering screen-control work omitted from the
-unpublished 0.4.1 candidate. The earlier tags remain unchanged.
+Early-access candidate including the file editing, terminal clipboard paste
+and Windows setup fixes prepared for the unpublished 0.4.0 and 0.4.1 candidates.
+It also recovers local screen-control work omitted from those candidates.
+The earlier tags remain unchanged; their detailed changes are recorded below.
+
+### Added
+
+- Edit UTF-8 text files from Files, preserving Windows line endings and checking
+  the original file hash before saving. Unsaved drafts survive closing a preview
+  and verified private handoffs; a save still requires an explicit action.
+- Paste the phone's clipboard into Reach terminals and the computer's terminal
+  tabs. Manual paste stays available when clipboard access is unavailable;
+  command-running line breaks require confirmation.
 
 ### Fixed
 
@@ -27,6 +38,13 @@ unpublished 0.4.1 candidate. The earlier tags remain unchanged.
   the current field. Never replay typing whose delivery is unknown or send
   a waiting draft automatically into a replacement field. Keep native secure
   keyboard context synchronized with the phone after Return.
+- Keep known-unsent typing across verified private handoffs and media gaps.
+  A different approved device credential requires Control again, and delayed
+  replies from an old grant cannot enable or release its replacement.
+- When the native Tailscale route disappears and its address reaches the public
+  start page instead, try the browser's separately approved private connection.
+  Return to the preferred native route automatically when it is available.
+  Owner APIs and WebSockets remain private.
 - Read foreground-app context beside the input queue so a slow accessibility
   scan cannot block clicks or keys. A newer authorized control connection can
   replace its predecessor without taking control back from the new window.
@@ -45,8 +63,11 @@ unpublished 0.4.1 candidate. The earlier tags remain unchanged.
   input checks and screen-control journeys with iPhone, iPad and Android
   browser profiles. These profiles simulate clients; they are not physical
   device validation.
+- Hosted tests, browser profiles and the iOS simulator do not establish physical
+  iPhone/iPad/Android behavior, live authenticated private/public handoffs or
+  signed-in provider tasks. Those qualifications remain incomplete.
 
-## [0.4.1] — 2026-10-19
+## [0.4.1] — 2026-10-19 (unpublished)
 
 Early access: file editing, clipboard paste and Windows setup improvements.
 Includes the changes prepared for the unpublished 0.4.0 candidate, whose tag

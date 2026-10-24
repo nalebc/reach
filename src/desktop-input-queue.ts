@@ -24,6 +24,18 @@ export type InputResult = {
   clickState?: number;
   retargeted?: boolean;
 };
+type InputReconnectError = Error & { inputReconnect: true; notSent?: true };
+// A local connection lifetime marker, never copied from a host's refusal.
+// Only notSent actions may be retained for a later explicit user decision.
+export function inputEnded(reconnecting = false, notSent = false, message = "Desktop control ended.") {
+  return Object.assign(Error(message), {
+    ...(reconnecting ? { inputReconnect: true as const } : {}),
+    ...(notSent ? { notSent: true as const } : {}),
+  });
+}
+export function isInputReconnect(error: unknown): error is InputReconnectError {
+  return !!error && typeof error === "object" && (error as InputReconnectError).inputReconnect === true;
+}
 type Pending = {
   action: DesktopAction;
   resolve: (r: InputResult) => void;
@@ -60,6 +72,7 @@ export class DesktopInputQueue {
   private lastMotion = -Infinity;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private reconnecting = false;
   constructor(
     private transmit: (id: number, action: DesktopAction) => void,
     private fail: (message: string) => void,
@@ -71,7 +84,7 @@ export class DesktopInputQueue {
   }
   enqueue(action: DesktopAction): Promise<InputResult> {
     return new Promise((resolve, reject) => {
-      if (this.stopped) return reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
+      if (this.stopped) return reject(inputEnded(this.reconnecting, true));
       // A touch stopping a fling discards unsent scrolling even on a slow
       // link. Keep clicks, keys and pointer releases in their original order.
       if (action.type === "scroll" && action.phase === "cancelled" && action.dx === 0 && action.dy === 0)
@@ -115,7 +128,7 @@ export class DesktopInputQueue {
         return;
       }
       if (this.queued.length >= 32) {
-        reject(Error("Too many pending actions."));
+        reject(inputEnded(true, true, "Too many pending actions."));
         this.fail("Desktop input queue filled. Reconnect.");
         return;
       }
@@ -159,7 +172,7 @@ export class DesktopInputQueue {
       try {
         this.transmit(id, item.action);
       } catch {
-        this.close();
+        this.close(true);
         this.fail(
           "Desktop input disconnected. No pending actions were replayed.",
         );
@@ -183,15 +196,16 @@ export class DesktopInputQueue {
     if ([...this.pending.values()].some((p) => this.now() - p.sent > 6000))
       this.fail("Desktop input timed out.");
   }
-  close() {
+  close(reconnecting = false, message = "Desktop control ended.") {
     this.stopped = true;
+    this.reconnecting ||= reconnecting;
     clearTimeout(this.timer);
-    const error = Error("Desktop control ended.");
+    const error = inputEnded(this.reconnecting, false, message);
     for (const item of this.pending.values()) item.reject(error);
     // Never transmitted: the Mac can't have done these, so a tap among them
     // may go again once control is back (src/DesktopSurface.tsx, within 1 s).
     for (const item of this.queued)
-      item.reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
+      item.reject(inputEnded(this.reconnecting, true, message));
     this.pending.clear();
     this.queued = [];
   }

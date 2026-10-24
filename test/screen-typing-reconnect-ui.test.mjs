@@ -208,6 +208,76 @@ test("an older native shell without contextReset keeps its retained Return conte
   assert.equal(edits()[2].text, "c", "old native text ab remains the diff baseline");
 });
 
+test("native bridge: a same-turn queue close preserves only never-transmitted edits before React pauses", async (t) => {
+  let focus = "old-field";
+  await mount(() => ({ editable: true, focus, secure: false }), true);
+  await typingInField(true);
+  const { DesktopInputQueue } = await dom.load("/src/desktop-input-queue.ts");
+  const transmitted = [];
+  let queue = new DesktopInputQueue((id, action) => transmitted.push(action), () => {}, 1);
+  t.after(() => queue.close());
+  computer.replies["type-edit"] = action => queue.enqueue(action);
+  keyboard.emit("input", { value: "ab" });
+  await dom.waitFor(() => transmitted.length === 1);
+  keyboard.emit("input", { value: "abcd" });
+  await dom.waitFor(() => edits().length === 2);
+  keyboard.emit("input", { value: "abcdef" });
+  await dom.waitFor(() => edits().length === 3);
+  // Deliberately no settle between the readiness state update and promise
+  // rejection. This is a deterministic bridge/React model, not UIKit.
+  computer.blink(true);
+  queue.close(true);
+  await settle(60);
+  assert.equal(keyboard.visible, true);
+  focus = "replacement-field";
+  queue = new DesktopInputQueue((id, action) => {
+    transmitted.push(action);
+    queueMicrotask(() => queue.acknowledge(id, { ok: true }));
+  }, () => {}, 1);
+  computer.blink(false);
+  await settle(60);
+  assert.deepEqual(transmitted.map(a => a.text), ["ab"], "nothing automatically replays");
+  button("Send waiting typing to current field").click();
+  await dom.waitFor(() => transmitted.length === 2);
+  assert.deepEqual(transmitted, [
+    { type: "type-edit", delete: 0, text: "ab", focus: "old-field" },
+    { type: "type-edit", delete: 0, text: "cdef", focus: "replacement-field" },
+  ]);
+});
+
+test("native bridge: a real field refusal still ends typing with its reason", async () => {
+  await mount(() => ({ editable: true, focus: "field", secure: false }), true);
+  await typingInField(true);
+  computer.replies["type-edit"] = () => Promise.reject(Error("Fixture native field refused typing"));
+  keyboard.emit("input", { value: "refused" });
+  await dom.waitFor(() => !keyboard.visible);
+  assert.match(dom.document.body.textContent, /Fixture native field refused typing/);
+});
+
+test("a reconnect during an explicit Tab focus check still requires a new explicit send", async () => {
+  await mount(() => ({ editable: true, focus: "old-field", secure: false }));
+  await typingInField();
+  const { inputEnded } = await dom.load("/src/desktop-input-queue.ts");
+  let rejectFocus;
+  computer.replies.focus = () => new Promise((resolve, reject) => { rejectFocus = reject; });
+  press(sink(), "Tab");
+  await dom.waitFor(() => rejectFocus);
+  await typeInto(sink(), "waiting");
+  computer.blink(true);
+  rejectFocus(inputEnded(true));
+  await settle(50);
+  computer.replies.focus = () => ({ target: { editable: true, focus: "current-field", secure: false } });
+  const checks = focusChecks().length;
+  computer.blink(false);
+  await settle(60);
+  assert.equal(focusChecks().length, checks, "Tab's old rejoin cannot authorize a reconnect");
+  assert.deepEqual(edits().filter(a => a.type === "type-edit"), []);
+  button("Send waiting typing to current field").click();
+  await dom.waitFor(() => edits().some(a => a.type === "type-edit"));
+  assert.equal(edits().at(-1).text, "waiting");
+  assert.equal(edits().at(-1).focus, "current-field");
+});
+
 test("Tab and Esc reach the computer and typing goes on in the field that has its focus now", async () => {
   let token = "first";
   await mount(() => ({ editable: true, focus: token, secure: false }));

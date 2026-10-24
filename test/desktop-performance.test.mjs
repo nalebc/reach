@@ -8,7 +8,7 @@ const source = await fs.readFile(
   "utf8",
 );
 const outputText = transpile(source);
-const { DesktopInputQueue } = await import(
+const { DesktopInputQueue, isInputReconnect, mergeTyping } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -113,6 +113,55 @@ test("disconnect rejects queued and in-flight input without sending more actions
   assert.ok(
     (await Promise.all(results)).every((x) => x === "Desktop control ended."),
   );
+});
+test("only a transient connection end marks rejected input; only never-transmitted pieces are notSent", async () => {
+  for (const reconnecting of [false, true]) {
+    const sent = [];
+    const queue = new DesktopInputQueue((id, action) => sent.push({ id, action }), () => {}, 1);
+    const first = queue.enqueue({ type: "type-edit", delete: 0, text: "ab", focus: "old" }).catch(e => e);
+    const second = queue.enqueue({ type: "type-edit", delete: 0, text: "cd", focus: "old" }).catch(e => e);
+    queue.close(reconnecting);
+    const [unknown, unsent] = await Promise.all([first, second]);
+    assert.equal(isInputReconnect(unknown), reconnecting);
+    assert.equal(isInputReconnect(unsent), reconnecting);
+    assert.equal(unknown.notSent, undefined, "transmitted ab has an unknown delivery outcome");
+    assert.equal(unsent.notSent, true, "only cd remained wholly inside the queue");
+    const later = await queue.enqueue({ type: "text", text: "later" }).catch(e => e);
+    assert.equal(later.notSent, true);
+    assert.equal(isInputReconnect(later), reconnecting);
+    assert.deepEqual(sent.map(item => item.action.text), ["ab"]);
+  }
+});
+test("a host typing refusal cannot copy local reconnect or notSent markers", async () => {
+  const queue = new DesktopInputQueue(() => {}, () => {}, 1);
+  const refused = queue.enqueue({ type: "text", text: "refused" }).catch(e => e);
+  queue.acknowledge(1, { ok: false, error: "Field refused typing", inputReconnect: true, notSent: true });
+  const error = await refused;
+  assert.equal(error.message, "Field refused typing");
+  assert.equal(isInputReconnect(error), false);
+  assert.equal(error.notSent, undefined);
+  queue.close();
+});
+test("merged never-transmitted edits retain their producer order without retaining the unknown first chunk", async () => {
+  const transmitted = [], retained = [];
+  const queue = new DesktopInputQueue((id, action) => transmitted.push(action), () => {}, 1);
+  const produce = action => queue.enqueue(action).catch(error => {
+    if (isInputReconnect(error) && error.notSent) retained.push(action);
+  });
+  const actions = [
+    { type: "type-edit", delete: 0, text: "ab", focus: "old" },
+    { type: "type-edit", delete: 0, text: "cd", focus: "old" },
+    { type: "type-edit", delete: 0, text: "ef", focus: "old" },
+    { type: "type-edit", delete: 1, text: "g", focus: "old" },
+  ];
+  const pending = actions.map(produce);
+  queue.close(true);
+  await Promise.all(pending);
+  assert.deepEqual(transmitted, actions.slice(0, 1));
+  assert.deepEqual(retained, actions.slice(1));
+  assert.deepEqual(retained.slice(1).reduce(mergeTyping, retained[0]), {
+    type: "type-edit", delete: 0, text: "cdeg", focus: "old",
+  });
 });
 test("automatic video backs off congestion without reconnecting its source", async () => {
   let broadcaster;
