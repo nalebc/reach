@@ -274,7 +274,7 @@ for (const replacement of [Buffer.from("a distinct longer build generation"), Bu
       fs.writeFileSync(path.join(dir, "index.html"), "<html><head></head><body></body></html>");
       fs.writeFileSync(path.join(dir, "manifest.webmanifest"), '{"icons":[]}'); fs.writeFileSync(path.join(dir, "favicon.svg"), "<svg/>");
       for (const name of ["jbig2_nowasm_fallback", "openjpeg_nowasm_fallback"]) fs.writeFileSync(path.join(dir, "pdfjs", name + ".js"), "/* fixed */");
-      const file = path.join(dir, "assets/current.js"), next = path.join(dir, "replacement.tmp");
+      const file = path.join(dir, "assets/current.js"), next = path.join(dir, "replacement.tmp"), retired = path.join(dir, "opened-original.tmp");
       fs.writeFileSync(file, "current"); fs.writeFileSync(next, replacement);
       // Replace the actual opened file before production validates its
       // descriptor/leaf identity. Its read operation remains unchanged.
@@ -285,7 +285,19 @@ for (const replacement of [Buffer.from("a distinct longer build generation"), Bu
         catch (error) { observed.stage = "open failed"; observed.error = details(error); throw error; }
         if (!replaced && args[0] === file) {
           owned = fd; observed.stage = "rename after open";
-          try { fs.renameSync(next, file); replaced = true; observed.stage = "replacement complete"; }
+          try {
+            const opened = fs.fstatSync(fd, { bigint: true });
+            if (process.platform === "win32") {
+              observed.stage = "move opened source to unused sibling";
+              fs.renameSync(file, retired); observed.sourceMoved = true;
+              observed.stage = "move replacement to vacant original";
+            }
+            fs.renameSync(next, file); replaced = true; observed.stage = "replacement complete";
+            const held = fs.fstatSync(fd, { bigint: true }), leaf = fs.lstatSync(file, { bigint: true });
+            observed.originalDescriptorPreserved = held.dev === opened.dev && held.ino === opened.ino;
+            observed.replacementHasDistinctIdentity = held.dev !== leaf.dev || held.ino !== leaf.ino;
+            observed.replacementSize = Number(leaf.size);
+          }
           catch (error) {
             observed.error = details(error);
             // A hook that throws before returning the descriptor still owns
@@ -299,6 +311,9 @@ for (const replacement of [Buffer.from("a distinct longer build generation"), Bu
       };
       assert.throws(() => writeOfflineShell(dir), /Invalid offline interface asset/);
       assert.equal(replaced, true);
+      assert.equal(observed.originalDescriptorPreserved, true);
+      assert.equal(observed.replacementHasDistinctIdentity, true);
+      assert.equal(observed.replacementSize, replacement.length);
       assert.equal(fs.existsSync(path.join(dir, "offline-shell.json")), false, "a mixed generation is never published");
     } finally {
       fs.openSync = original;
