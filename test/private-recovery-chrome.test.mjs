@@ -23,6 +23,15 @@ test("real Chrome owner recovery crosses a public start 404 using only its separ
   const device = { id: "computer", computerId: "same-computer", name: "Disposable host", platform: "darwin",
     access: { kind: "device", scopes: ["admin", "files"], expiresAt: Date.now() + 60000 } };
   const browserDevice = structuredClone(device);
+  // Synthetic, complete Tailscale state for this controlled identity. The
+  // real recovery gate must validate persistence before sending its token.
+  const hex = value => Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString("hex");
+  const identity = {
+    _machinekey: hex(`privkey:${"1".repeat(64)}`),
+    _profiles: hex({ fixture: { Key: "profile", NodeID: "fixture-node" } }),
+    "_current-profile": hex("profile"),
+    profile: hex({ Config: { PrivateNodeKey: `privkey:${"2".repeat(64)}`, NodeID: "fixture-node" } }),
+  };
   t.after(async () => {
     const errors = [];
     for (const cleanup of [
@@ -129,6 +138,8 @@ test("real Chrome owner recovery crosses a public start 404 using only its separ
     };
     globalThis.makeRecovery = (options = {}) => {
       globalThis.f?.recovery.stop();
+      for (const [key, value] of Object.entries(${JSON.stringify(identity)})) localStorage.setItem("reach.tailnet:" + key, value);
+      if (options.noIdentity) localStorage.removeItem("reach.tailnet:_machinekey");
       RecoveryFixture.installTailnet(node, "fixture.ts.net", "native");
       const currentDevice = structuredClone(device);
       if (options.guest) currentDevice.access.kind = "guest";
@@ -196,6 +207,13 @@ test("real Chrome owner recovery crosses a public start 404 using only its separ
     assert.deepEqual(await tab.evaluate("({ modes: f.changes.map(change => change.mode), starts: f.browserStarts })"), { modes: [], starts: 0 }, `404 grants no authority to ${JSON.stringify(options)}`);
   }
   nativeMode = "funnel";
+  for (const fresh of [false, true]) {
+    const before = calls.filter(call => call.route === "browser-private" && call.token === "Bearer BROWSER").length;
+    await tab.evaluate(`makeRecovery({ fresh: ${fresh}, noIdentity: true }); f.recovery.check()`);
+    assert.deepEqual(await tab.evaluate("f.changes.map(change => change.mode)"), [], "an incomplete persisted identity cannot recover using a saved browser token");
+    assert.equal(calls.filter(call => call.route === "browser-private" && call.token === "Bearer BROWSER").length, before,
+      "the incomplete identity is refused before any browser-token dispatch");
+  }
   for (const status of [401, 403]) {
     browserStatus = status;
     await tab.evaluate("makeRecovery(); f.recovery.check()");
