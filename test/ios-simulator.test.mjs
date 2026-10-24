@@ -368,7 +368,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // report recorded Reach API requests during all three launch timeouts).
   // The copied app requesting this run's unique page proves launch too.
   // Only its simctl process is stopped; every native smoke check below remains.
-  try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached }); }
+  try { await launchIosSmokeApp({ sim, device, bundle, appPage, pageSeen: () => pageSeen, reached, outputDir: dir }); }
   catch (error) { failure = error.message; throw error; }
   reached("app launched");
   // The page's own time. A slow simulator opening Settings or reopening the

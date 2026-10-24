@@ -21,7 +21,8 @@ jobs:
             package: "@openai/codex@latest"
             node: 22
           # Starts a throwaway Gateway of its own (scripts/openclaw-canary.mjs).
-          # OpenClaw 2026.9 and later refuse Node older than 24.16.
+          # OpenClaw 2026.10.7 requires Node 24.22.1+ within 24.x. Refresh
+          # that major below: the runner cache can predate its current floor.
           - agent: openclaw
             package: "openclaw@latest"
             node: 24
@@ -32,6 +33,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+          check-latest: ${{ matrix.agent == 'openclaw' }}
           package-manager-cache: false
       - run: npm ci
       - name: Install published CLI in disposable runner

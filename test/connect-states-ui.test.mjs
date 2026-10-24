@@ -48,8 +48,11 @@ const render = async () => {
 };
 const button = (c, text) => [...c.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 const connect = async (c) => {
-  await settle(450);
-  button(c, "Connect to this computer")?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  const ready = await dom.waitFor(() => {
+    const found = button(c, "Connect to this computer");
+    return found && !found.disabled ? found : null;
+  });
+  ready.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await settle(150);
 };
 
@@ -138,11 +141,29 @@ test("expired while waiting on the phone: Tap Connect to ask again", async () =>
 });
 
 test("the connection drops while it waits: keeps the request and says it's reconnecting", async () => {
-  computer({ polls: ["network", { status: "pending" }] });
+  // Keep the outage until its state has actually rendered. With an automatic
+  // success on the next 1.5 s poll, a busy runner could observe only the
+  // recovered state and miss the interruption entirely.
+  const polls = ["network"];
+  const asked = computer({ polls });
   const { view, c } = await render();
   await connect(c);
   await dom.waitFor(() => /Connection interrupted\. Reconnecting to your pending request…/.test(c.textContent));
   assert.match(c.textContent, /1A2B3C4D/, "the code is still there");
+  const stored = () => JSON.parse(dom.window.sessionStorage.getItem("reach.pending:https://reach.t.ts.net:8443"));
+  const original = stored();
+  assert.equal(original.id, REQUEST);
+  assert.equal(original.secret, "s3cret");
+
+  const beforeRecovery = asked.filter((path) => path === `/api/auth/requests/${REQUEST}`).length;
+  polls[0] = { status: "pending" };
+  await dom.waitFor(() =>
+    asked.filter((path) => path === `/api/auth/requests/${REQUEST}`).length > beforeRecovery &&
+    !/Connection interrupted/.test(c.textContent),
+  );
+  assert.match(c.textContent, /1A2B3C4D/, "recovery keeps the same pending request");
+  assert.deepEqual(stored(), original, "the request secret and expiry are not replaced");
+  assert.equal(asked.filter((path) => path === "/api/auth/requests").length, 1, "recovery does not ask for another approval");
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });

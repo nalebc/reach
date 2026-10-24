@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -50,18 +51,39 @@ async function fixture(t, { legacy = false, stale = false, maxErrors, maxRequest
   });
   serveBuild(app, express, dir);
   const upstreamServer = http.createServer(app), upstream = await listen(upstreamServer);
+  const connections = new Map(), wire = { requests: [], selections: [], idleCloses: [] };
+  let nextConnection = 0;
+  upstreamServer.on("connection", socket => connections.set(socket, ++nextConnection));
+  upstreamServer.prependListener("request", req => {
+    if (req.url === "/assets/screen-test.js") wire.requests.push({ connection: connections.get(req.socket), path: req.url });
+  });
+  // Own the legacy pool instead of depending on a process-global agent's
+  // defaults or free sockets left by other tests.
+  const legacyAgent = legacy ? new http.Agent({ keepAlive: true, maxSockets: 1 }) : undefined;
+  const idle = legacy ? once(legacyAgent, "free").then(([socket]) => socket) : undefined;
+  const closeIdle = () => {
+    const open = [...connections].filter(([socket]) => !socket.destroyed);
+    upstreamServer.closeIdleConnections();
+    wire.idleCloses.push({ closed: open.filter(([socket]) => socket.destroyed).map(([, id]) => id) });
+  };
   const forwarder = createIosProxyForwarder(upstream, { maxErrors, maxRequests });
   let count = 0;
   const proxy = http.createServer((req, res) => {
     if (req.url.startsWith("/held-write")) res.once("close", noteClientClose);
-    // The server's idle close reaches the proxy after this synchronous
-    // handler. A pooled ClientRequest can therefore select the stale socket.
-    if (++count === 2 && stale) upstreamServer.closeIdleConnections();
-    if (!legacy) { forwarder.forward(req, res); return; }
-    const forwarded = http.request(upstream + req.url, { method: req.method, headers: { ...req.headers, host: new URL(upstream).host } }, response => {
+    const challenge = ++count === 2 && stale;
+    const forwarded = !legacy ? forwarder.forward(req, res) : http.request(upstream + req.url, { method: req.method, agent: legacyAgent, headers: { ...req.headers, host: new URL(upstream).host } }, response => {
       res.writeHead(response.statusCode, response.headers);
       response.pipe(res);
     });
+    if (challenge) forwarded.once("socket", () => {
+      // Select the upstream socket before closing idle server connections.
+      // This fixes the wire ordering without injecting a ClientRequest error:
+      // the pooled request has selected the old socket, but cannot send before
+      // this listener returns. The fresh forwarder selects a new connection.
+      wire.selections.push({ reusedSocket: forwarded.reusedSocket });
+      closeIdle();
+    });
+    if (!legacy) return;
     forwarded.on("error", error => {
       legacyErrors.push({ code: error.code, reusedSocket: forwarded.reusedSocket });
       res.writeHead(502).end();
@@ -71,25 +93,50 @@ async function fixture(t, { legacy = false, stale = false, maxErrors, maxRequest
   const origin = await listen(proxy);
   t.after(async () => {
     allowReply();
+    legacyAgent?.destroy();
     proxy.closeAllConnections(); upstreamServer.closeAllConnections();
     await Promise.all([new Promise(resolve => proxy.close(resolve)), new Promise(resolve => upstreamServer.close(resolve))]);
     await fs.rm(dir, { recursive: true, force: true });
   });
-  return { origin, upstream, forwarder, dispatched, legacyErrors, applied, allowReply, clientClosed };
+  return { origin, upstream, forwarder, dispatched, legacyErrors, applied, allowReply, clientClosed, wire, idle,
+    async closeBeforeSelection() {
+      const socket = await idle;
+      assert.equal(socket.destroyed, false, "the pooled connection is idle and open before the close");
+      const closed = once(socket, "close", { signal: AbortSignal.timeout(5000) });
+      closeIdle();
+      await closed;
+    },
+  };
 }
 
 test("the old pooled proxy turns an upstream idle close into502 although production serves the asset", async t => {
   const f = await fixture(t, { legacy: true, stale: true });
   assert.deepEqual(await request(f.origin + "/assets/screen-test.js"), { status: 200, body: bytes });
+  await f.idle;
   assert.equal((await request(f.origin + "/assets/screen-test.js")).status, 502);
   assert.deepEqual(f.legacyErrors, [{ code: "ECONNRESET", reusedSocket: true }]);
+  assert.deepEqual(f.wire.selections, [{ reusedSocket: true }]);
+  assert.deepEqual(f.wire.idleCloses, [{ closed: [1] }]);
+  assert.deepEqual(f.wire.requests, [{ connection: 1, path: "/assets/screen-test.js" }], "the selected stale socket never delivers a second asset request");
   assert.deepEqual(await request(f.upstream + "/assets/screen-test.js"), { status: 200, body: bytes });
+});
+
+test("an idle close observed before selection removes the old socket instead of proving a pooled failure", async t => {
+  const f = await fixture(t, { legacy: true });
+  assert.deepEqual(await request(f.origin + "/assets/screen-test.js"), { status: 200, body: bytes });
+  await f.closeBeforeSelection();
+  assert.deepEqual(await request(f.origin + "/assets/screen-test.js"), { status: 200, body: bytes });
+  assert.deepEqual(f.legacyErrors, []);
+  assert.deepEqual(f.wire.idleCloses, [{ closed: [1] }]);
+  assert.deepEqual(f.wire.requests.map(item => item.connection), [1, 2]);
 });
 
 test("the iOS fixture serves the same asset after an idle close using a fresh upstream connection", async t => {
   const f = await fixture(t, { stale: true });
   assert.deepEqual(await request(f.origin + "/assets/screen-test.js"), { status: 200, body: bytes });
   assert.deepEqual(await request(f.origin + "/assets/screen-test.js"), { status: 200, body: bytes });
+  assert.deepEqual(f.wire.selections, [{ reusedSocket: false }]);
+  assert.deepEqual(f.wire.requests.map(item => item.connection), [1, 2], "both assets actually reach production on separate upstream connections");
   const evidence = f.forwarder.snapshot();
   assert.deepEqual(evidence.errors, []);
   assert.equal(evidence.droppedErrors, 0);

@@ -29,9 +29,13 @@ const socket = () =>
       this.closedWith = { code, reason };
     },
   });
-const phone = { id: "phone", name: "Phone", scopes: ["admin", "screen"] };
+// This is an approved owner device on every host. An unclassified admin
+// fixture is correctly refused by Windows' private guest screen protection.
+const phone = { id: "phone", kind: "device", name: "Phone", scopes: ["admin", "screen"] };
 
-function mac({ grace = 400 } = {}) {
+// holdFor: how long Tailscale's word may come late before the connection
+// ends (held meanwhile: desktop-identity-hold.test.mjs). Short here.
+function mac({ grace = 400, holdFor = 100 } = {}) {
   const control = new ScreenControl();
   const connections = new Map();
   const state = { client: phone, interruption: "", creates: 0 };
@@ -55,6 +59,7 @@ function mac({ grace = 400 } = {}) {
         return true;
       },
       grace,
+      holdFor,
     });
     const send = (m) => ws.emit("message", Buffer.from(JSON.stringify(m)), false);
     send({ type: "auth", token: "T", display: "1" });
@@ -210,19 +215,34 @@ test("a transient denial closes control as retryable and keeps the lease for the
   assert.equal(control.holder(), null, "a clean close lets control go at once");
 });
 
-test("nobody back within the grace: the lease is released", async () => {
+test("nobody back within the grace: the lease is released", async (t) => {
+  // Exercise the real authorization sweep, identity hold and lease timer
+  // without racing two 500 ms sweeps against a 1.5 s wall-clock deadline.
+  // These are simulated time and sockets, not a native desktop journey.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
   const { control, state, connect } = mac({ grace: 100 });
   control.acquire(phone, true);
   const first = connect();
-  await until(() => first.ws.sent.some((m) => m.type === "ready"));
+  t.after(() => { first.ws.emit("close", 1000); control.clear(); });
+  // Only microtasks are involved in this helper's startup. setImmediate is
+  // outside the mocked clock and gives that startup a complete event turn.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(first.ws.sent.some((m) => m.type === "ready"));
   state.client = null;
   state.interruption = "Checking this Mac's connection. Reconnecting…";
-  await until(() => first.ws.closedWith, 1500);
-  assert.equal(first.ws.closedWith.code, 1012);
+  t.mock.timers.tick(500);
+  assert.equal(first.ws.closedWith, undefined, "the first sweep starts an identity hold");
+  t.mock.timers.tick(499);
+  assert.equal(first.ws.closedWith, undefined, "the next sweep has not run");
+  t.mock.timers.tick(1);
+  assert.equal(first.ws.closedWith.code, 1012, "the next sweep closes the expired hold as retryable");
   first.ws.emit("close", 1012);
-  assert.ok(control.holder());
-  await settle(150);
-  assert.equal(control.holder(), null);
+  assert.equal(control.holder()?.clientId, phone.id);
+  assert.equal(control.reconnecting(phone.id), true);
+  t.mock.timers.tick(99);
+  assert.equal(control.holder()?.clientId, phone.id, "the full reconnect grace is preserved");
+  t.mock.timers.tick(1);
+  assert.equal(control.holder(), null, "an absent phone loses its lease exactly when grace ends");
   assert.equal(control.reconnecting("phone"), false);
 });
 
@@ -319,17 +339,20 @@ async function control() {
   return { view, ended, seen, first };
 }
 
-test("a 1012 close shows reconnecting, keeps control on, and resumes on the next connection", async () => {
+test("a 1012 close shows reconnecting, keeps control on, and resumes on the next connection", async (t) => {
   const { view, ended, seen, first } = await control();
+  t.after(() => view.unmount());
   let rejected;
   seen.input
     .send({ type: "click", x: 0.5, y: 0.5, button: "left", count: 1 })
-    .catch((e) => (rejected = e.message));
+    .catch((e) => (rejected = e));
   await settle(5);
   first.push({ type: "error", error: "Checking this phone's connection. Reconnecting…", retryable: true });
   first.ends(1012, "Desktop control reconnecting");
   await settle(10);
-  assert.equal(rejected, "Desktop control ended.", "the click in flight is not kept");
+  assert.equal(rejected?.message, "Checking this phone's connection. Reconnecting…");
+  assert.equal(rejected?.inputReconnect, true, "the local failure is a connection interruption");
+  assert.equal(rejected?.notSent, undefined, "a transmitted click has an unknown result and cannot be replayed");
   assert.deepEqual(ended, [], "control is not over");
   assert.equal(seen.input.ready, false);
   assert.equal(seen.input.reconnecting, true);
@@ -345,19 +368,23 @@ test("a 1012 close shows reconnecting, keeps control on, and resumes on the next
   assert.deepEqual(ended, []);
   // Nothing from before the interruption is replayed.
   assert.equal(second.sent.some((m) => m.type === "input" && m.action.type === "click"), false);
-  await view.unmount();
 });
 
-test("a 4001 close, or a server error not marked retryable, still ends control", async () => {
-  const { view, ended, first } = await control();
+test("a 4001 close, or a server error not marked retryable, still ends control", async (t) => {
+  const { view, ended, seen, first } = await control();
+  t.after(() => view.unmount());
+  let rejected;
+  seen.input.send({ type: "click", x: 0.5, y: 0.5, button: "left", count: 1 }).catch((e) => (rejected = e));
   first.push({ type: "error", error: "Desktop control expired or was revoked." });
   first.ends(4001, "Desktop control ended");
   await settle(10);
   assert.deepEqual(ended, ["Desktop control expired or was revoked."]);
+  assert.equal(rejected?.message, "Desktop control expired or was revoked.");
+  assert.equal(rejected?.inputReconnect, undefined, "a refused grant must not be treated as a reconnect");
+  assert.equal(rejected?.notSent, undefined, "the dispatched click is not safe to repeat");
   const count = FakeSocket.all.length;
   await settle(400);
   assert.equal(FakeSocket.all.length, count, "no reconnect");
-  await view.unmount();
 });
 
 test("retries are bounded: too many in a row end control with the reason", async () => {
@@ -374,4 +401,49 @@ test("retries are bounded: too many in a row end control with the reason", async
   assert.deepEqual(ended, ["Desktop control disconnected. Try Control again."]);
   assert.equal(seen.input.reconnecting, false);
   await view.unmount();
+});
+
+test("another window of this phone taking control over: this one stops quietly, without ending that control", async () => {
+  const ended = [];
+  const seen = { input: null };
+  function Probe() {
+    seen.input = useDesktopInput({ url: "http://mac.test", token: "T" }, true, "primary", (m, elsewhere) => ended.push([m, elsewhere]));
+    return null;
+  }
+  const view = await dom.render(React.createElement(Probe));
+  await settle(10);
+  const first = FakeSocket.all.at(-1);
+  first.push({ type: "ready", window: 8, typing: true, probe: true });
+  await settle(10);
+  first.push({ type: "error", error: "Desktop control moved to a new connection.", retryable: true, superseded: true });
+  first.ends(1012, "Superseded");
+  await settle(10);
+  assert.deepEqual(ended, [["Control moved to your other window.", true]]);
+  assert.equal(seen.input.reconnecting, false);
+  const count = FakeSocket.all.length;
+  await settle(400);
+  assert.equal(FakeSocket.all.length, count, "no reconnect taking it back");
+  await view.unmount();
+});
+
+test("a replaced connection closes as reconnecting while control is on; turned off, it lets go", async () => {
+  const { view, first } = await control();
+  await view.unmount();
+  assert.deepEqual(first.closedWith, { code: 4002, reason: "Reconnecting" }, "never a code-less close (1005), read as letting go");
+  let turn;
+  function Toggle() {
+    const [on, set] = React.useState(true);
+    turn = set;
+    useDesktopInput({ url: "http://mac.test", token: "T" }, on, "primary", () => {}, on);
+    return null;
+  }
+  const toggle = await dom.render(React.createElement(Toggle));
+  await settle(10);
+  const live = FakeSocket.all.at(-1);
+  live.push({ type: "ready", window: 8, typing: true, probe: true });
+  await settle(10);
+  turn(false);
+  await settle(10);
+  assert.deepEqual(live.closedWith, { code: 1000, reason: "Control off" });
+  await toggle.unmount();
 });

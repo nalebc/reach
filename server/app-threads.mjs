@@ -679,9 +679,7 @@ export class AppScreenHub {
     group.add(ws, authorize);
   }
   ack(ws, id, keyframe = false) {
-    const group = this.viewers.get(ws);
-    group?.ack(ws, id);
-    if (keyframe && group?.viewers.get(ws)) group.viewers.get(ws).key = true;
+    this.viewers.get(ws)?.ack(ws, id, keyframe);
   }
   owns(ws) {
     return this.viewers.has(ws);

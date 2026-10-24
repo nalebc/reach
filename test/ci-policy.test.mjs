@@ -302,7 +302,8 @@ test("Windows CI covers shared phone navigation, agent workspace privacy, update
     "screen-pointer", "desktop-performance", "desktop-control-safety", "desktop-input-lifecycle", "windows-desktop-input-native",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
-    "tap-clicks", "screen-double-click-ui"])
+    "tap-clicks", "screen-double-click-ui", "desktop-control-reconnect", "screen-typing-reconnect-chrome",
+    "screen-control-diagnostics", "private-recovery-chrome"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 
@@ -493,7 +494,7 @@ test("publishing isolation covers multiline commands, script settings and same-r
 
 test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
   for (const name of [
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-gateway",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "private-gateway",
     "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command", "headless-chrome-lifecycle",

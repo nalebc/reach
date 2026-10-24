@@ -8,6 +8,7 @@ import { fail } from "./core.mjs";
 import { buildNative } from "./native-build.mjs";
 import { COLD_START_MS, SCRIPT_BLOCKED, scriptBlocked } from "./powershell.mjs";
 import { hostApp, outsideTerminal, processTable } from "../scripts/instances.mjs";
+import { gone } from "./identity-hold.mjs";
 import {
   PROTECTED_APP_IDS,
   PROTECTED_APP_NAMES,
@@ -321,7 +322,7 @@ export class ScreenBroadcast {
     try {
       const factory = await this.prepare();
       if (generation !== this.generation || !this.viewers.size) return;
-      for (const [ws, v] of this.viewers) if (!v.authorize()) this.remove(ws);
+      for (const [ws, v] of this.viewers) if (gone(v.authorize())) this.remove(ws);
       if (!this.viewers.size) return;
       this.source = factory();
       const tick = async () => {
@@ -330,10 +331,13 @@ export class ScreenBroadcast {
         try {
           let ready = false;
           for (const [ws, v] of this.viewers) {
-            if (!v.authorize() || ws.readyState !== 1) {
+            const allowed = v.authorize();
+            if (gone(allowed) || ws.readyState !== 1) {
               this.remove(ws);
               continue;
             }
+            // Held (Tailscale's word late): no picture until it's confirmed.
+            if (!allowed) continue;
             if (v.waiting && Date.now() - v.sentAt > 15000) {
               this.fail(
                 ws,
@@ -349,10 +353,12 @@ export class ScreenBroadcast {
             // One byte from the helper: nothing changed on screen.
             if (frame.length > 1)
               for (const [ws, v] of this.viewers) {
-                if (!v.authorize()) {
+                const allowed = v.authorize();
+                if (gone(allowed)) {
                   this.remove(ws);
                   continue;
                 }
+                if (!allowed) continue;
                 if (
                   ws.readyState === 1 &&
                   !v.waiting &&

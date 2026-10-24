@@ -87,11 +87,17 @@ export function createBrowserHostGuard({
   trusted = trustedRequest,
   now = Date.now,
   maxAgeMs = 5000,
+  // The guard's own timer (refresh ahead of expiry, try again after a
+  // failed lookup): injectable for tests.
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  retryMs = 500,
 } = {}) {
   if (!Number.isInteger(maxAgeMs) || maxAgeMs < 1 || maxAgeMs > 10000)
     throw Error("Choose a host identity cache lifetime from 1 to 10,000 ms.");
   const pending = new Map();
-  let self = null, peers = [], until = 0, flight = null, generation = 0;
+  let self = null, peers = [], until = 0, flight = null, generation = 0,
+    timer = null, stopped = false, failures = 0;
   const state = (excluding) => {
     try {
       const all = clients();
@@ -108,13 +114,27 @@ export function createBrowserHostGuard({
   const isActive = () => state().active;
   const fresh = () => !!self && until > now();
   const invalidate = () => { generation++; self = null; peers = []; until = 0; flight = null; };
-  // Open connections (a live screen, a terminal) are checked against this
-  // cache every second and refresh it every 2 s (trackIdentity, index.mjs).
-  // Refreshing with that much lead keeps the cache from lapsing between two
-  // refreshes, which read on the phone as its access being revoked (Oct 7).
-  const leadMs = Math.min(2500, Math.floor(maxAgeMs / 2));
-  const refresh = async ({ force = false } = {}) => {
-    if (!force && fresh() && until > now() + leadMs) return self;
+  // Open connections (a live screen, its control, sound, a terminal) are
+  // checked against this cache with every frame, input and second. A copy
+  // that lapses between two lookups reads on the phone as its access gone
+  // (Oct 7), and refreshing only when some check asked started lookups as
+  // little as 1 s before the copy lapsed, while `tailscale status` takes
+  // 0.2 s, 0.8 s one time in ten and up to 1.7 s on a busy Mac: every live
+  // connection reconnected at once, again and again (Oct 18). So the guard
+  // refreshes on its own timer while an agent has app access, starting 3 s
+  // before the copy lapses (the slowest lookup, and a retry, fit in it).
+  const leadMs = Math.min(3000, Math.floor(maxAgeMs * 0.6));
+  const schedule = (ms) => {
+    clearTimer(timer);
+    timer = null;
+    if (stopped || !isActive()) return;
+    timer = setTimer(() => {
+      timer = null;
+      if (!stopped && isActive()) lookupNow().catch(() => {});
+    }, Math.max(0, ms));
+    timer?.unref?.();
+  };
+  const lookupNow = () => {
     if (flight) return flight;
     // Stale identity cannot be used while the replacement lookup is pending;
     // one still within its lifetime serves until the answer arrives.
@@ -124,21 +144,57 @@ export function createBrowserHostGuard({
       until = 0;
     }
     const revision = generation, started = now();
+    let refused = false;
     const operation = Promise.resolve().then(lookup).then((status) => {
-      const node = browserHostNode(status, now());
+      let node;
+      try {
+        node = browserHostNode(status, now());
+      } catch (error) {
+        refused = true;
+        throw error;
+      }
       if (revision !== generation || started + maxAgeMs <= now())
         throw fail(503, "Reach's host identity changed or could not be verified in time.");
       self = node;
       peers = status.Peer && typeof status.Peer === "object" && !Array.isArray(status.Peer)
         ? Object.values(status.Peer) : [];
       until = started + maxAgeMs;
+      failures = 0;
+      schedule(until - leadMs - now());
       return node;
     }).catch(() => {
-      if (revision === generation) { self = null; peers = []; until = 0; }
+      // Tailscale's own answer that this Mac's identity is gone (stopped,
+      // logged out, its key expired): the copy goes at once. A lookup that
+      // failed or came late answered nothing: a copy still within its
+      // lifetime serves until it lapses, and the next try comes soon.
+      if (revision === generation && (refused || !fresh())) { self = null; peers = []; until = 0; }
+      schedule(++failures <= 10 ? retryMs : 2000);
       throw fail(503, "Reach cannot verify this Mac's Tailscale identity. App access stays locked.");
     }).finally(() => { if (flight === operation) flight = null; });
     flight = operation;
     return operation;
+  };
+  const refresh = async ({ force = false } = {}) => {
+    // A copy still within its lifetime serves at once (a request never
+    // waits on a slow lookup for it); one near its end is renewed meanwhile.
+    if (!force && fresh()) {
+      if (until <= now() + leadMs) lookupNow().catch(() => {});
+      return self;
+    }
+    try {
+      return await lookupNow();
+    } catch (error) {
+      // A copy still within its lifetime serves; never for an answer that
+      // must be new (an invitation being made: force).
+      if (!force && fresh()) return self;
+      throw error;
+    }
+  };
+  // Reach is stopping: no more lookups.
+  const stop = () => {
+    stopped = true;
+    clearTimer(timer);
+    timer = null;
   };
   const nativeRemote = (req) => {
     const identity = req?.reachIdentity;
@@ -247,5 +303,5 @@ export function createBrowserHostGuard({
       return release;
     } catch (error) { release(); throw error; }
   };
-  return { isActive, fresh, refresh, invalidate, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, beginInvitation };
+  return { isActive, fresh, refresh, invalidate, stop, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, beginInvitation };
 }

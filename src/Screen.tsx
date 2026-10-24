@@ -39,7 +39,7 @@ import RemoteTyping from "./RemoteTyping";
 import ScreenActions, { type ScreenAction } from "./ScreenActions";
 import { screenActionGroups, shortcutText } from "./screen-action-catalog";
 import { CLIPBOARD_BYTES, copyRemoteSelection, fitBytes } from "./remote-copy";
-import type { TextTarget } from "./desktop-input-queue";
+import { inputEnded, isInputReconnect, type TextTarget } from "./desktop-input-queue";
 import DesktopSurface from "./DesktopSurface";
 import { useScreenPresentation } from "./useScreenPresentation";
 import { useImmersiveChrome } from "./useImmersiveChrome";
@@ -67,6 +67,17 @@ type Display = {
   height: number;
   x: number;
   y: number;
+};
+type ControlGrant = {
+  key: string;
+  identity: string;
+  peer: Peer;
+  allowed: boolean;
+  access: string;
+  workspace: string;
+  intent: boolean;
+  epoch: number;
+  ended: "released" | "superseded" | null;
 };
 type Props = {
   peer: Peer;
@@ -123,9 +134,29 @@ export default function Screen({
     // each device update: the first one may be a saved copy without it.
     [showHere, setShowHere] = useState(false),
     [visible, setVisible] = useState(!document.hidden),
-    [control, setControl] = useState(false),
+    [controlState, setControlState] = useState({ key: "", on: false }),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const accessKey = JSON.stringify([device.access?.kind, [...(scopes || [])].sort(), device.access?.fullControlVersion]);
+  const controlIdentity = JSON.stringify([peer.id, peer.token, peer.transport, peer.sessionId]);
+  const authority = JSON.stringify([peer.id, peer.token, peer.transport, peer.sessionId, accessKey, canControl]);
+  // workspaceKey is assigned only by verified recovery. It preserves local
+  // text, never a control lease or a native field guard from another grant.
+  const grants = useRef<ControlGrant | null>(null);
+  if (!grants.current || grants.current.key !== authority) {
+    const prior = grants.current;
+    const previousKey = prior && JSON.stringify([prior.peer.id, prior.peer.url, prior.peer.token, prior.peer.transport, prior.peer.sessionId]);
+    const continuity = prior && prior.peer.id === peer.id && prior.access === accessKey && peer.workspaceKey &&
+      (peer.workspaceKey === prior.peer.workspaceKey || peer.workspaceKey === previousKey);
+    grants.current = { key: authority, identity: controlIdentity, peer: { ...peer }, allowed: canControl, access: accessKey,
+      workspace: continuity ? prior.workspace : JSON.stringify([peer.id, peer.workspaceKey || JSON.stringify([peer.id, peer.url, peer.token, peer.transport, peer.sessionId]), accessKey]),
+      intent: false, epoch: 0, ended: null };
+  }
+  else grants.current.peer = { ...peer };
+  const grant = grants.current;
+  const workspace = grant.workspace;
+  const control = controlState.key === authority && controlState.on;
+  const setControl = (on: boolean) => setControlState({ key: authority, on });
   // Someone else controls the screen (who, and whether this phone may take
   // over); cleared when control changes hands.
   const [holder, setHolder] = useState<{
@@ -148,14 +179,24 @@ export default function Screen({
   );
   const [helperBusy, setHelperBusy] = useState(false);
   const helperPending = useRef(false);
-  const [typingTarget, setTypingTarget] = useState<
+  const [storedTypingTarget, storeTypingTarget] = useState<
     | (TextTarget & {
         point?: { x: number; y: number };
         // Opened on the tap itself (the Mac said a field was there).
         opened?: boolean;
+        // A fresh helper cannot prove which old field received earlier input.
+        // Keep known-unsent input local until the user explicitly retargets it.
+        confirmAfterReconnect?: boolean;
+        authority?: string;
+        workspace?: string;
       })
     | null
   >(null);
+  const typingTarget = storedTypingTarget?.workspace === workspace
+    ? storedTypingTarget.authority === authority ? storedTypingTarget
+      : { ...storedTypingTarget, pending: true, rejoin: true as const, confirmAfterReconnect: true }
+    : null;
+  const setTypingTarget = (target: typeof storedTypingTarget) => storeTypingTarget(target && { ...target, authority, workspace });
   const typingRef = useRef(typingTarget);
   typingRef.current = typingTarget;
   const typingEpoch = useRef(0);
@@ -171,23 +212,31 @@ export default function Screen({
     // A new gesture makes an earlier click's focus reply obsolete, even
     // before finger-up. Keep a confirmed keyboard available for scrolling.
     typingCheck.current++;
-    if (typingRef.current?.pending) clearTyping();
+    if (typingRef.current?.pending && !typingRef.current.confirmAfterReconnect) clearTyping();
   };
   const viewer = useRef<HTMLElement>(null),
-    intent = useRef(false),
     mounted = useRef(true);
-  const release = useCallback(() => {
-    intent.current = false;
-    typingEpoch.current++;
-    setTypingTarget(null);
-    setControl(false);
-    setDrag(false);
-    setPanel(null);
-    if (canControl)
-      void post(peer, "/api/screen/control", { enabled: false }).catch(
+  // tell: say so to the computer too. Not when control went to this
+  // phone's other window: that would end its control.
+  const release = useCallback((tell = true) => {
+    const owned = grant.intent;
+    grant.intent = false;
+    grant.epoch++;
+    if (owned || grant.ended !== "superseded")
+      grant.ended = tell ? "released" : "superseded";
+    if (grants.current === grant && mounted.current) {
+      typingEpoch.current++;
+      storeTypingTarget(null);
+      setControlState({ key: grant.key, on: false });
+      setBusy(false);
+      setDrag(false);
+      setPanel(null);
+    }
+    if (grant.allowed && tell && owned)
+      void post({ ...grant.peer }, "/api/screen/control", { enabled: false }).catch(
         () => {},
       );
-  }, [peer.url, peer.token, canControl]);
+  }, [grant]);
   // Paused on the computer: no stream and no control until Resume, when
   // both come back (control only if it was on).
   const paused = pausedIn(changes, device);
@@ -206,10 +255,10 @@ export default function Screen({
   }, [controlKey]);
   const controlBeforePause = useRef(false);
   const ended = useCallback(
-    (message: string) => {
+    (message: string, elsewhere?: boolean) => {
       if (isPausedMessage(message)) controlBeforePause.current = true;
       else setError(message);
-      release();
+      release(!elsewhere);
     },
     [release],
   );
@@ -263,8 +312,15 @@ export default function Screen({
   const videoKind =
     stream.video || (stream.format === "h264" ? "H.264" : stream.format === "jpeg" ? "Still images" : "");
   const send = async (action: DesktopAction) => {
-    if (!usable && action.type !== "release")
+    if (!usable && action.type !== "release") {
+      const current = typingRef.current;
+      if (control && live && visible && current && ["key", "text", "type-edit"].includes(action.type) &&
+          (!input.ready && input.reconnecting || !stream.ready || Date.now() - stream.updated >= 10000)) {
+        setTypingTarget({ ...current, pending: true, rejoin: true, confirmAfterReconnect: true, session: current.session ?? current.focus });
+        throw inputEnded(true, true, "Wait for a fresh screen and confirm the field.");
+      }
       throw Object.assign(Error("Wait for a fresh screen and enable control."), { notSent: true });
+    }
     return input.send(action);
   };
   // Why a tap on the picture can't reach the computer now, in one line
@@ -290,12 +346,14 @@ export default function Screen({
   // Control is on and its connection is coming back: a tap waits a moment.
   const tapWaits = control && !input.ready && live && visible && stream.ready;
   const detectTyping = async (point: { x: number; y: number }) => {
+    if (typingRef.current?.confirmAfterReconnect) return;
     if (!input.typing) return;
     const epoch = typingEpoch.current;
     const check = ++typingCheck.current;
     const currentCheck = () =>
       epoch === typingEpoch.current &&
       check === typingCheck.current &&
+      grants.current === grant &&
       mounted.current;
     // Let the desktop process its click before querying focus. No polling on moves.
     await new Promise((resolve) => setTimeout(resolve, 35));
@@ -326,18 +384,72 @@ export default function Screen({
       /* Older hosts and unsupported apps retain the manual keyboard. */
     }
   };
+  // Tab/Esc intentionally moves focus. A reconnect does not prove the old
+  // field survived: sending its known-unsent input needs an explicit action.
+  const rejoinTyping = async (confirmed = false) => {
+    const current = typingRef.current;
+    if (!current?.rejoin || (current.confirmAfterReconnect && !confirmed)) return;
+    const epoch = typingEpoch.current;
+    const check = ++typingCheck.current;
+    const at = current.confirmAfterReconnect || current.rejoin === true ? {} : current.rejoin;
+    const still = () => epoch === typingEpoch.current && check === typingCheck.current && grants.current === grant && mounted.current && typingRef.current?.rejoin === current.rejoin;
+    try {
+      let result = await send({ type: "focus", ...at });
+      for (const delay of [80, 160, 320]) {
+        if (!still() || (result.target?.editable && result.target.focus)) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (still()) result = await send({ type: "focus", ...at });
+      }
+      if (!still()) return;
+      if (result.target?.editable && result.target.focus)
+        setTypingTarget({ ...typingRef.current!, ...result.target, pending: false, rejoin: undefined, confirmAfterReconnect: false, authority });
+      else if (current.confirmAfterReconnect)
+        setFeedback("Waiting typing kept on your phone · focus a text field, then send it");
+      else {
+        clearTyping();
+        setFeedback("The computer's text field changed · tap it to type");
+      }
+    } catch (error) {
+      if (isInputReconnect(error)) return;
+      if (still() && input.ready) {
+        if (current.confirmAfterReconnect) setFeedback("Waiting typing kept on your phone · confirm the field again");
+        else clearTyping();
+      }
+    }
+  };
+  const retarget = () => {
+    const t = typingRef.current;
+    if (!t?.focus || t.confirmAfterReconnect) return;
+    setTypingTarget({ ...t, pending: true, rejoin: true, session: t.session ?? t.focus });
+  };
   useEffect(() => {
     mounted.current = true;
+    // A different authority starts without control. Verified continuity may
+    // keep its local draft paused; an ordinary re-pair or scope change cannot.
+    typingCheck.current++;
+    controlBeforePause.current = false;
+    if (typingRef.current?.workspace !== workspace) clearTyping();
+    setControlState({ key: grant.key, on: false });
+    setBusy(false);
     const hide = () => {
       setVisible(!document.hidden);
       if (document.hidden) release();
     };
     const leave = () => {
-      intent.current = false;
-      void fetch(peer.url + "/api/screen/control", {
+      const owned = grant.intent;
+      if (!owned || !grant.allowed) return;
+      grant.intent = false;
+      grant.epoch++;
+      grant.ended = "released";
+      if (grants.current === grant && mounted.current) {
+        clearTyping();
+        setControlState({ key: grant.key, on: false });
+      }
+      const original = { ...grant.peer };
+      void fetch(original.url + "/api/screen/control", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${peer.token}`,
+          Authorization: `Bearer ${original.token}`,
           "Content-Type": "application/json",
         },
         body: '{"enabled":false}',
@@ -351,9 +463,9 @@ export default function Screen({
       mounted.current = false;
       document.removeEventListener("visibilitychange", hide);
       window.removeEventListener("pagehide", leave);
-      if (canControl) leave();
+      leave();
     };
-  }, [release, peer.url, peer.token, canControl]);
+  }, [grant, release]);
   useEffect(() => {
     if (!enabled) {
       release();
@@ -387,8 +499,22 @@ export default function Screen({
     const timer = setTimeout(() => setFeedback(""), 4000);
     return () => clearTimeout(timer);
   }, [feedback]);
-  // Typing doesn't unmount when the picture goes stale: queued edits stay.
-  const typingAllowed = control && input.ready && live && visible;
+  // Typing doesn't unmount when the picture goes stale or controls blink
+  // (reconnecting): queued edits stay, the keyboard stays open.
+  const typingAllowed = (control && (input.ready || input.reconnecting) || !!typingTarget?.confirmAfterReconnect) && live && visible;
+  // Controls dropped while typing: hold the keystrokes and confirm the same
+  // field on the new connection (each connection has its own typing guard).
+  useEffect(() => {
+    if (input.ready) return;
+    typingCheck.current++;
+    const t = typingRef.current;
+    if (t?.focus && !t.confirmAfterReconnect)
+      setTypingTarget({ ...t, pending: true, rejoin: t.point ?? true, session: t.session ?? t.focus, confirmAfterReconnect: true });
+  }, [input.ready]);
+  useEffect(() => {
+    if (input.ready && typingTarget?.rejoin && !typingTarget.confirmAfterReconnect) void rejoinTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input.ready, typingTarget?.rejoin]);
   const typing = !!typingTarget && typingAllowed && !panel;
   const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
@@ -454,21 +580,33 @@ export default function Screen({
       release();
       return;
     }
-    intent.current = true;
+    grant.intent = true;
+    grant.ended = null;
+    const epoch = ++grant.epoch;
+    const original = { ...grant.peer };
+    const current = () => grants.current === grant && epoch === grant.epoch && mounted.current;
     setBusy(true);
     setError("");
     try {
       // Someone else controls: Control becomes Take over (an explicit tap;
       // control never moves silently).
-      await post(peer, "/api/screen/control", {
+      await post(original, "/api/screen/control", {
         enabled: true,
         ...(holder?.canTakeOver ? { takeover: true } : {}),
       });
-      setHolder(null);
-      if (mounted.current && intent.current && !document.hidden)
+      const activeGrant = grants.current;
+      const renewed = activeGrant?.identity === grant.identity && activeGrant.intent && activeGrant.ended === null;
+      if (current() && grant.intent && !document.hidden) {
+        setHolder(null);
         setControl(true);
-      else release();
+      } else if (!renewed && grant.ended !== "superseded" && (grants.current !== grant || !grant.intent && grant.ended === "released")) {
+        // A late success belongs only to the request's original authority.
+        // A newer explicit request may own that same identity again, even
+        // after switching away and back. Do not revoke its new lease.
+        void post(original, "/api/screen/control", { enabled: false }).catch(() => {});
+      }
     } catch (e) {
+      if (!current()) return;
       const answer = e as {
         status?: number;
         body?: { holder?: { name?: string }; canTakeOver?: boolean };
@@ -478,9 +616,10 @@ export default function Screen({
           name: answer.body.holder.name || "Someone",
           canTakeOver: !!answer.body.canTakeOver,
         });
+      if (answer.status && answer.status >= 400 && answer.status < 500) grant.intent = false;
       setError((e as Error).message);
     } finally {
-      if (mounted.current) setBusy(false);
+      if (current()) setBusy(false);
     }
   };
   // Opened on a Mac dialog: its display, zoomed onto it, control on (the
@@ -527,7 +666,7 @@ export default function Screen({
   // it was on, so everything is where it was.
   useEffect(() => {
     if (paused) {
-      if (control || intent.current) controlBeforePause.current = true;
+      if (control || grant.intent) controlBeforePause.current = true;
       if (control) release();
       return;
     }
@@ -540,6 +679,7 @@ export default function Screen({
   // A tap on a text field opens the keyboard within that tap, no Type button:
   // the Mac said on touch-down that a field is there.
   const typeInField = (point: { x: number; y: number }, secure: boolean) => {
+    if (typingRef.current?.confirmAfterReconnect) return;
     flushSync(() => {
       typingEpoch.current++;
       setPanel(null);
@@ -894,6 +1034,7 @@ export default function Screen({
             blocked={tapBlocked}
             waitForControl={tapWaits}
             initialCursor={input.initialCursor}
+            hostCursor={input.hostCursor}
             mode={mode}
             drag={drag}
             clickMode={clickMode}
@@ -906,6 +1047,7 @@ export default function Screen({
               // Keep a confirmed editor for a repeat; every edit still
               // carries its native focus guard.
               const current = typingRef.current;
+              if (current?.confirmAfterReconnect) return true;
               if (repeat && current?.focus && !current.pending) {
                 flushSync(() => setTypingTarget({
                   ...current,
@@ -944,16 +1086,20 @@ export default function Screen({
             typingTarget &&
             (nativeKeyboard ? (
               <NativeRemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
                 send={send}
                 onClose={clearTyping}
                 onError={setError}
+                onRetarget={retarget}
+                reconnectPaused={typingTarget.confirmAfterReconnect}
               />
             ) : (
               <RemoteTyping
-                key={`${typingTarget.opened ? "tap" : typingTarget.focus}:${typingEpoch.current}`}
+                key={`${typingTarget.opened ? "tap" : typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 target={typingTarget}
+                onRetarget={retarget}
+                reconnectPaused={typingTarget.confirmAfterReconnect}
                 keyRow={mobile}
                 modifier={device.platform === "darwin" ? "meta" : "control"}
                 editorRef={typingEditor}
@@ -971,7 +1117,7 @@ export default function Screen({
               // duplicate the keyboard field and key row, and reset the field
               // between keystrokes (each next letter then deleted the last).
               <TapToType
-                key={`tap:${typingTarget.focus}:${typingEpoch.current}`}
+                key={`tap:${typingTarget.session ?? typingTarget.focus}:${typingEpoch.current}`}
                 onOpen={openKeyboard}
                 onPrepare={() => prepareKeyboard(typingEditor.current)}
               />
@@ -986,6 +1132,19 @@ export default function Screen({
             {caption && (
               <span className="simple-screen-caption" role="status">
                 {caption}
+              </span>
+            )}
+            {typingTarget?.confirmAfterReconnect && (
+              <span className="screen-agents-wait" role="status" data-immersive-keep>
+                <span>Typing paused · check what reached the computer</span>
+                <button
+                  type="button"
+                  disabled={!usable}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => void rejoinTyping(true)}
+                >
+                  Send waiting typing to current field
+                </button>
               </span>
             )}
             {/* One line at a time over the bar: the pill steps back while
@@ -1011,7 +1170,7 @@ export default function Screen({
               data-immersive-keep
               onPointerDown={(event) => event.preventDefault()}
             >
-              {canControl && !typing && !paused && (
+              {canControl && (!typing || !control) && !paused && (
                 <button
                   aria-label={control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
                   title={control ? "Stop controlling" : holder?.canTakeOver ? "Take over" : "Control your computer"}

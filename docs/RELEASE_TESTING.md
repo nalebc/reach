@@ -21,6 +21,35 @@ Run on a real iPhone with Safari and an Android phone with Chrome before calling
 
 Also repeat ordinary owner access with the separate Tailscale app enabled. On a Windows host, exercise its supported pairing path separately; passing the Windows CI job is not an iPhone-to-Windows device test.
 
+## Connection recovery acceptance record
+
+Track each requirement as **verified**, **failing** or **untested** against the
+exact installed commit or artifact checksum. Record the host OS/architecture,
+physical client and browser/app versions, actual route observations, steps and
+result. Keep controlled transport tests, real-browser tests, operating-system
+execution and physical-device results separate. A passing PR or an installed
+older version does not verify the candidate on that device.
+
+Run the following sequence on iPhone, iPad and Android with every supported host
+claimed for the release. Preserve the existing installation and approvals;
+never copy a native device credential into a browser identity.
+
+| Requirement | Evidence required |
+| --- | --- |
+| Prefer private access | With the native Tailscale app connected, observe the eligible native route being selected. A private encrypted relay remains preferable to a public agent gateway. |
+| Recover without a transport choice | With native and browser identities separately approved, leave a disposable terminal, file and unsent draft open. Turn the phone's Tailscale app off. The same page must recover through the browser's private connection without a new invitation, approval or manual transport selection. Repeat opening the existing bookmark while the app is off. The public start page may bootstrap the browser; owner APIs and WebSockets must still be refused on public ingress. |
+| Return automatically | Turn the native Tailscale app back on. Observe automatic return to the eligible preferred route. Confirm the same permissions, device binding, draft and open work remain. |
+| Preserve uncertain delivery | Interrupt a disposable action after sending it but before observing its result. Check the host's result and retained request identity: recovery must not submit it again. Keep known-unsent typing distinct from transmitted but unacknowledged input. |
+| Reject unavailable or unapproved alternatives | Repeat with the alternate absent, unreachable, expired, revoked and belonging to another device. It must never gain approval, inherit credentials or widen access. Record the expected loss of access when no eligible route remains. |
+| Recover after lifecycle changes | Repeat the round trip after backgrounding, phone lock/unlock, host sleep/wake and Wi-Fi/cellular changes. Check concurrent reads and a held reply from the previous route; a late reply must not replace newer state or revive revoked control. |
+| Recover agent access | For an invited signing-key agent, separately observe private → authenticated public gateway → private with its existing invitation, scopes and device binding. Test lost replies and revoked access without replaying actions. |
+
+Keep the release blocked when a required row is failing or untested. Record
+test-setup failures as failures until corrected and rerun on the exact source;
+do not count skipped assertions, successful compilation or a browser profile
+as physical-device verification. Retain the original failure and its regression
+evidence alongside the final result.
+
 ## Current security boundary
 
 Read [SECURITY.md](SECURITY.md). The public Funnel surface exists only while an invitation or a browser agent's session is live, and is limited to the start page's fixed files, Face ID admission and the signed agent gateway, which carries an invited browser agent's API requests under that invitation's allowlist; owner APIs and WebSockets require authenticated private ingress. A registered owner passkey is an owner credential, not a guest invitation. Tailnet grants are additive: unrelated broad rules can widen a tagged device's network access. Setup rejects detected broad policies, but limited stored credentials cannot continuously audit later policy changes.

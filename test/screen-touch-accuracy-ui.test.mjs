@@ -150,8 +150,14 @@ test("starting outside the picture or swiping without intermediate events cannot
   const s = await surface();
   await tap(s, 300, 200, { dx: 20 });
   assert.equal(s.clicks().length, 0);
-  await tap(s, -2, 200, { dx: 4 });
+  await tap(s, -12, 200, { dx: 4 });
   assert.equal(s.clicks().length, 0, "touch-down was outside the image");
+  // A finger aiming at the very edge (the menu bar, the Dock) and landing
+  // a few pixels into the border clicks the edge, never nothing.
+  await tap(s, -3, 200, { dx: 2 });
+  assert.equal(s.clicks().length, 1);
+  assert.equal(s.clicks()[0].x, 0);
+  assert.equal(s.clicks()[0].y, 0.4);
   await s.view.unmount();
 });
 

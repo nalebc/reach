@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -60,7 +61,7 @@ test("native lifecycle evidence requires download, pause and active in that orde
 
 // No simulator or app is started. Commands model the observed iOS behavior:
 // openurl exits successfully at an Open/Cancel prompt without loading a page.
-function fixture({ failures = 1, observed = false, springBoard = true, startLogs } = {}) {
+function fixture({ failures = 1, observed = false, springBoard = true, startLogs, outputDir } = {}) {
   const commands = [], phases = [];
   let seen = observed, confirmation = false, launches = 0, options;
   let observe;
@@ -96,7 +97,7 @@ function fixture({ failures = 1, observed = false, springBoard = true, startLogs
   };
   return {
     start: () => launchIosSmokeApp({ sim, device, bundle, appPage,
-      pageSeen: () => seen, reached: phase => phases.push(phase), ...(startLogs ? { startLogs } : {}) }),
+      pageSeen: () => seen, reached: phase => phases.push(phase), ...(startLogs ? { startLogs } : {}), ...(outputDir ? { outputDir } : {}) }),
     commands, phases, appPage,
     state: () => ({ seen, confirmation, launches, options }),
   };
@@ -193,6 +194,32 @@ test("each existing launch retry gets a fresh observer after recovery", async ()
   await f.start();
   assert.deepEqual(observers, [[{ retain: true }], [undefined]]);
   assert.equal(f.state().launches, 2);
+});
+
+test("each existing launch redirects child output without console attachment or changing recovery limits", async () => {
+  const outputDir = path.join(os.tmpdir(), "owned-ios-launch-output"), identities = [];
+  const f = fixture({ failures: 2, outputDir, startLogs: value => {
+    identities.push(value);
+    return { stop() {} };
+  } });
+  await f.start();
+  const launches = f.commands.filter(item => item.name === "launch");
+  assert.equal(launches.length, 3);
+  for (const [index, command] of launches.entries()) {
+    assert.deepEqual(command.args, ["launch", `--stdout=${path.join(outputDir, `launch-${index + 1}.stdout`)}`,
+      `--stderr=${path.join(outputDir, `launch-${index + 1}.stderr`)}`, ...(index ? ["--terminate-running-process"] : []), device, bundle]);
+    assert.ok(!command.args.some(arg => arg.startsWith("--console") || arg.includes("wait-for-debugger")));
+  }
+  assert.equal(f.state().options.limit, 75000);
+  assert.equal(f.state().options.attempts, 3);
+  assert.equal(f.state().options.progress, f.appPage, "diagnostics cannot become launch progress");
+  assert.equal(f.commands.filter(item => item.args[0] === "shutdown").length, 1);
+  for (const value of identities) {
+    assert.equal(value.device, device);
+    assert.equal(value.bundle, bundle);
+    assert.equal(new Set(value.outputFiles).size, 6);
+    assert.ok(value.outputFiles.every(file => file.startsWith(outputDir + path.sep)));
+  }
 });
 
 // Diagnostic checks use fake commands and disposable files only. They never
@@ -360,4 +387,85 @@ test("a live log observer stops at its own bound without changing launch limits"
   assert.deepEqual(child.signals, ["SIGTERM"]);
   const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
   assert.equal(result.liveLogs.timedOut, true);
+});
+
+test("in-attempt process evidence is device scoped and retains only app and core service rows", async () => {
+  const children = [], calls = [];
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, probeAfter: 1, start: (...args) => {
+    calls.push(args); const child = logProcess(); children.push(child); return child;
+  } });
+  for (let waiting = 0; children.length < 2 && waiting < 100; waiting++) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.equal(children.length, 2);
+  assert.deepEqual(calls[1], ["xcrun", ["simctl", "spawn", diagnosticDevice, "launchctl", "list"], { stdio: ["ignore", "pipe", "pipe"] }]);
+  children[1].stdout.write("x".repeat(70000) + `\n123\t0\tUIKitApplication:${bundle}[abc]\n456\t0\tcom.apple.SpringBoard\n789\t0\tunrelated.bundle\n`);
+  children[1].exitCode = 0;
+  children[1].emit("close", 0, null);
+  logs.stop({ retain: true });
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  const probes = result.liveLogs.processProbes;
+  assert.equal(probes.length, 1);
+  assert.deepEqual(probes[0].appJobs, [`123\t0\tUIKitApplication:${bundle}[abc]`]);
+  assert.deepEqual(probes[0].services, ["456\t0\tcom.apple.SpringBoard"]);
+  assert.equal(probes[0].ok, true);
+  assert.equal(probes[0].pending, false);
+  assert.equal(probes[0].truncated, true);
+  assert.doesNotMatch(JSON.stringify(probes), /unrelated\.bundle|x{100}/);
+});
+
+test("stopping launch evidence cancels its in-attempt probe without waiting or granting progress", async () => {
+  const children = [];
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, probeAfter: 1, start: () => {
+    const child = logProcess(); children.push(child); return child;
+  } });
+  for (let waiting = 0; children.length < 2 && waiting < 100; waiting++) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.equal(children.length, 2);
+  logs.stop({ retain: true });
+  logs.stop();
+  assert.deepEqual(children.map(child => child.signals), [["SIGTERM"], ["SIGTERM"]]);
+  const result = await collectIosFailureDiagnostics({ device: diagnosticDevice, bundle, deadline: Date.now() - 1 });
+  assert.equal(result.liveLogs.processProbes[0].pending, false);
+  assert.equal(result.liveLogs.processProbes[0].interrupted, true);
+  assert.equal(result.liveLogs.observed, undefined);
+});
+
+test("failed launch app output is bounded, plain-file only and collected inside the existing budget", async t => {
+  const home = await diagnosticHome(t);
+  const first = path.join(home, "launch-1.stdout"), missing = path.join(home, "launch-1.stderr"), link = path.join(home, "launch-2.stderr");
+  await fs.writeFile(first, "x".repeat(30000) + "native startup marker");
+  const outside = path.join(home, "unrelated.txt");
+  await fs.writeFile(outside, "UNRELATED OUTPUT");
+  const folder = path.join(home, "not-output");
+  await fs.mkdir(folder);
+  let linked = false;
+  try { await fs.symlink(outside, link); linked = true; }
+  catch (error) { if (process.platform !== "win32" || !["EPERM", "EACCES"].includes(error.code)) throw error; }
+  const outputFiles = [first, missing, folder, ...(linked ? [link] : [])], opened = [];
+  const safeFlags = !!constants.O_NOFOLLOW && !!constants.O_NONBLOCK, open = fs.open.bind(fs);
+  t.mock.method(fs, "open", async (file, flags, ...rest) => {
+    if (outputFiles.includes(file)) {
+      opened.push(file);
+      assert.equal(safeFlags, true, "unsupported hosts must never attempt a followable diagnostic open");
+      assert.ok(flags & constants.O_NOFOLLOW, "symlink refusal is part of the open itself");
+      assert.ok(flags & constants.O_NONBLOCK, "a replacement FIFO cannot block the diagnostic open");
+    }
+    return open(file, flags, ...rest);
+  });
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, outputFiles, start: () => logProcess() });
+  logs.stop({ retain: true });
+  const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 5000,
+    run: async () => ({ stdout: "" }) });
+  if (safeFlags) {
+    assert.equal(opened.length, outputFiles.length);
+    assert.equal(result.appOutput[0].content.length, 16384);
+    assert.match(result.appOutput[0].content, /native startup marker$/);
+    assert.equal(result.appOutput[0].truncated, true);
+    assert.match(result.appOutput[1].error, /ENOENT/);
+    assert.match(result.appOutput[2].error, /plain file/);
+    if (linked) assert.match(result.appOutput[3].error, /symlink/);
+  } else {
+    assert.deepEqual(opened, [], "no file was opened on a host without atomic no-follow support");
+    assert.ok(result.appOutput.every(item => /reads are unavailable/.test(item.error) && item.content === undefined));
+  }
+  assert.doesNotMatch(JSON.stringify(result), /UNRELATED OUTPUT/);
+  assert.equal(result.liveLogs.outputFiles, undefined, "only basenames are exposed with captured app output");
 });

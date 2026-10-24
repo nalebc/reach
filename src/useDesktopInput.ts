@@ -3,6 +3,7 @@ import type { Peer } from "./api";
 import { ReconnectTimer } from "./reconnect";
 import {
   DesktopInputQueue,
+  inputEnded,
   type DesktopAction,
   type InputResult,
 } from "./desktop-input-queue";
@@ -14,11 +15,16 @@ export function useDesktopInput(
   peer: Peer,
   enabled: boolean,
   display: string,
-  onEnd: (message: string) => void,
+  // elsewhere: another window of this phone took control over (the
+  // computer kept it for that one); this one only stops.
+  onEnd: (message: string, elsewhere?: boolean) => void,
   // While the screen is open, a stopped control keeps its connection a
   // minute, parked on the Mac: Control again resumes on it at once.
   open = enabled,
 ) {
+  const identity = JSON.stringify([peer.id, peer.token, peer.transport, peer.sessionId]);
+  const identityNow = useRef(identity);
+  identityNow.current = identity;
   const [typing, setTyping] = useState(false);
   // The computer can say whether a text field is under the finger.
   const [probe, setProbe] = useState(false);
@@ -36,6 +42,7 @@ export function useDesktopInput(
   const [attempt, setAttempt] = useState(0);
   const retry = useRef(new ReconnectTimer(Math.random, 4000, 250));
   const tries = useRef(0);
+  const wasReady = useRef(false);
   const dispatcher = useRef<(a: DesktopAction) => Promise<InputResult>>(() =>
     Promise.reject(Error("Enable screen control first.")),
   );
@@ -43,24 +50,27 @@ export function useDesktopInput(
   end.current = onEnd;
   const on = useRef(enabled);
   on.current = enabled;
-  const [held, setHeld] = useState(false);
-  const link = useRef<{ park(): void; resume(): void } | null>(null);
+  const [heldState, hold] = useState({ identity, on: false });
+  const held = heldState.identity === identity && heldState.on;
+  const setHeld = (on: boolean) => hold({ identity, on });
+  const link = useRef<{ identity: string; park(): void; resume(): void } | null>(null);
   useEffect(() => {
     if (!open) return setHeld(false);
     if (enabled) {
       setHeld(true);
-      link.current?.resume();
+      if (link.current?.identity === identity) link.current.resume();
       return;
     }
-    link.current?.park();
+    if (link.current?.identity === identity) link.current.park();
     const timer = setTimeout(() => setHeld(false), 60000);
     return () => clearTimeout(timer);
-  }, [enabled, open]);
+  }, [enabled, open, identity]);
   const connected = open && (enabled || held);
   // Where the computer's text fields are, pushed ahead of any tap, and the
   // last input sent that could have moved them.
   const fieldMap = useRef<{ after: number; fields: Field[] } | null>(null);
   const lastChange = useRef(0);
+  const hostCursor = useRef<{ x: number; y: number; at: number } | null>(null);
   useEffect(() => {
     setReady(false);
     setTyping(false);
@@ -70,26 +80,30 @@ export function useDesktopInput(
     fieldMap.current = null;
     lastChange.current = 0;
     if (!connected) {
+      wasReady.current = false;
       retry.current.reset();
       tries.current = 0;
       setReconnecting(false);
       return;
     }
+    setReconnecting(on.current && wasReady.current);
     const url = new URL("/ws/screen-input", peer.url);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
     let stopped = false,
       failed = false,
+      failedForReconnect = false,
       parked = false,
       queue: DesktopInputQueue | undefined,
       measured = 0;
     let deadline: ReturnType<typeof setTimeout>;
     const stop = (message: string, retryable = false) => {
-      if (stopped || failed) return;
+      if (stopped || failed || identityNow.current !== identity) return;
       failed = true;
+      failedForReconnect = retryable;
       clearTimeout(deadline);
       setReady(false);
-      queue?.close();
+      queue?.close(retryable, message);
       // Control is off: the parked connection ends quietly, nothing to say.
       if (parked || !on.current) {
         link.current = null;
@@ -97,7 +111,7 @@ export function useDesktopInput(
         tries.current = 0;
         setReconnecting(false);
         setHeld(false);
-        socket.close();
+        socket.close(1000);
         return;
       }
       if (retryable && tries.current < 6) {
@@ -113,8 +127,9 @@ export function useDesktopInput(
       }
       retry.current.reset();
       tries.current = 0;
+      wasReady.current = false;
       setReconnecting(false);
-      socket.close();
+      socket.close(1000);
       end.current(
         retryable
           ? `${message.replace(/\s*Reconnecting…$/u, "")} Try Control again.`
@@ -123,9 +138,11 @@ export function useDesktopInput(
     };
     const fail = (message: string) => stop(message);
     link.current = {
+      identity,
       park() {
         if (failed || parked) return;
         parked = true;
+        wasReady.current = false;
         clearTimeout(deadline);
         queue?.close();
         queue = undefined;
@@ -148,14 +165,14 @@ export function useDesktopInput(
     dispatcher.current = (a) =>
       queue && !failed
         ? queue.enqueue(a)
-        : Promise.reject(Object.assign(Error("Desktop input is not connected."), { notSent: true }));
+        : Promise.reject(inputEnded(failed ? failedForReconnect : !parked && on.current, true, "Desktop input is not connected."));
     deadline = setTimeout(
       () => stop("Desktop input connection timed out. Reconnecting…", true),
       12000,
     );
     socket.onopen = () => {
-      if (stopped || failed) {
-        socket.close();
+      if (stopped || failed || identityNow.current !== identity) {
+        socket.close(1000);
         return;
       }
       clearTimeout(deadline);
@@ -166,10 +183,25 @@ export function useDesktopInput(
       socket.send(JSON.stringify({ type: "auth", token: peer.token, display }));
     };
     socket.onmessage = (event) => {
-      if (stopped || failed) return;
+      if (stopped || failed || identityNow.current !== identity) return;
       try {
         const m = JSON.parse(event.data);
         if (m.type === "error") {
+          if (m.superseded === true) {
+            // Another window took this control over: let it be, quietly
+            // (no reconnect taking it back, nothing ending its control).
+            failed = true;
+            clearTimeout(deadline);
+            setReady(false);
+            setReconnecting(false);
+            queue?.close();
+            retry.current.reset();
+            tries.current = 0;
+            link.current = null;
+            socket.close(4002, "Superseded");
+            end.current("Control moved to your other window.", true);
+            return;
+          }
           // The Mac says whether this is the connection (back in a moment)
           // or the grant (over): older companions only ever meant the grant.
           stop(m.error, m.retryable === true);
@@ -177,6 +209,7 @@ export function useDesktopInput(
         }
         if (m.type === "parked") return link.current?.park();
         if (m.type === "ready" && !queue && !parked) {
+          wasReady.current = true;
           clearTimeout(deadline);
           retry.current.reset();
           tries.current = 0;
@@ -243,7 +276,13 @@ export function useDesktopInput(
       );
     const heartbeat = setInterval(() => {
       if (queue?.idle)
-        void queue.enqueue({ type: "heartbeat" }).catch(() => {});
+        void queue.enqueue({ type: "heartbeat" }).then((result) => {
+          // Where the pointer really is (the computer's own mouse or an
+          // agent may have moved it): trackpad mode starts from there.
+          const c = (result as { cursor?: { x?: unknown; y?: unknown } } | null)?.cursor;
+          if (typeof c?.x === "number" && typeof c.y === "number" && c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1)
+            hostCursor.current = { x: c.x, y: c.y, at: performance.now() };
+        }, () => {});
       queue?.checkTimeout();
     }, 500);
     // The network is back, or the page is: try now, not after the wait.
@@ -260,12 +299,15 @@ export function useDesktopInput(
       document.removeEventListener("visibilitychange", wake);
       clearTimeout(deadline);
       clearInterval(heartbeat);
-      queue?.close();
-      socket.close();
+      queue?.close(true);
+      // Replaced (another display, a new route, a retry) while control is
+      // on: 4002, the Mac keeps control for the next one. Off: let go.
+      if (on.current) socket.close(4002, "Reconnecting");
+      else socket.close(1000, "Control off");
       dispatcher.current = () =>
-        Promise.reject(Error("Enable screen control first."));
+        Promise.reject(inputEnded(true, true, "Enable screen control first."));
     };
-  }, [peer.url, peer.token, connected, display, attempt]);
+  }, [peer.url, identity, connected, display, attempt]);
   return {
     ready,
     // Between a dropped connection and the next: control is still on.
@@ -289,6 +331,8 @@ export function useDesktopInput(
       fieldMap.current = null;
     },
     initialCursor,
+    // The pointer where the computer last said it was, and when.
+    hostCursor: () => hostCursor.current,
     latency,
     send: (action: DesktopAction) => dispatcher.current(action),
   };

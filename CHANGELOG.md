@@ -8,7 +8,71 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.1] — 2026-10-19
+## [0.4.2] — 2026-10-24
+
+Early-access candidate including the file editing, terminal clipboard paste
+and Windows setup fixes prepared for the unpublished 0.4.0 and 0.4.1 candidates.
+It also recovers local screen-control work omitted from those candidates.
+The earlier tags remain unchanged; their detailed changes are recorded below.
+
+### Added
+
+- Edit UTF-8 text files from Files, preserving Windows line endings and checking
+  the original file hash before saving. Unsaved drafts survive closing a preview
+  and verified private handoffs; a save still requires an explicit action.
+- Paste the phone's clipboard into Reach terminals and the computer's terminal
+  tabs. Manual paste stays available when clipboard access is unavailable;
+  command-running line breaks require confirmation.
+
+### Fixed
+
+- Keep a terminal's last row and column inside its screen above the keys,
+  and keep following the newest output when its box is fitted again.
+- Recover live screen, sound, control and terminals through a brief identity
+  lookup interruption. Deliver nothing until access is confirmed again;
+  expiry, revocation and a closing connection still end delivery.
+- Keep touch double-clicks paired when a finger drifts or the picture moves,
+  prevent delayed synthetic taps from stealing the keyboard, and keep long
+  presses and typing ordered during reconnects.
+- Preserve known-unsent typing after reconnecting until the user confirms
+  the current field. Never replay typing whose delivery is unknown or send
+  a waiting draft automatically into a replacement field. Keep native secure
+  keyboard context synchronized with the phone after Return.
+- Keep known-unsent typing across verified private handoffs and media gaps.
+  A different approved device credential requires Control again, and delayed
+  replies from an old grant cannot enable or release its replacement.
+- When the native Tailscale route disappears and its address reaches the public
+  start page instead, try the browser's separately approved private connection.
+  Return to the preferred native route automatically when it is available.
+  Owner APIs and WebSockets remain private.
+- Read foreground-app context beside the input queue so a slow accessibility
+  scan cannot block clicks or keys. A newer authorized control connection can
+  replace its predecessor without taking control back from the new window.
+- Respect the current Mac keyboard layout for letter and digit keys. Improve
+  Windows Unicode typing, console field detection, elevation refusals, wheel
+  units and cold helper startup.
+- On partially accepted Windows keyboard input, release only the helper's
+  accepted unmatched key-down, then stop the uncertain typing sequence.
+- Request video keyframes when a viewer actually missed frames and disable
+  unsupported long-term references in the Mac encoder.
+- Update request parsing, uploads and development HTTP dependencies for current
+  security fixes. Build the browser's private Tailscale client with Go 1.27.3,
+  including its certificate-verification security update.
+
+### Validation
+
+- Restore the source branch's regression tests and include shared identity,
+  typing and terminal layout checks in Windows CI. Run the native Windows
+  input checks and screen-control journeys with iPhone, iPad and Android
+  browser profiles. These profiles simulate clients; they are not physical
+  device validation.
+- Hosted tests, browser profiles and the iOS simulator do not establish physical
+  iPhone/iPad/Android behavior, live authenticated private/public handoffs or
+  signed-in provider tasks. Those qualifications remain incomplete.
+- Resolve the current Node 24 release for the official OpenClaw compatibility
+  check, so an older runner cache cannot violate the vendor's runtime minimum.
+
+## [0.4.1] — 2026-10-19 (unpublished)
 
 Early access: file editing, clipboard paste and Windows setup improvements.
 Includes the changes prepared for the unpublished 0.4.0 candidate, whose tag

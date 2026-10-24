@@ -25,6 +25,8 @@ function fixture(options = {}) {
     clients: () => records ?? [owner(), owner("nOther"), owner("nWasm"), ...(active ? [grant()] : [])],
     lookup: async () => { calls++; if (reply instanceof Error) throw reply; return reply; },
     trusted: (req) => trusted.has(req), now: () => time,
+    // The guard's own timer stays still here (host-identity-hold.test.mjs).
+    setTimer: () => null, clearTimer: () => {},
     ...options,
   });
   const request = (nodeId = "nPhone", { trust = true, url = "/api/agents/browser-invitations", method = "POST" } = {}) => {
@@ -181,6 +183,9 @@ test("a host identity refreshed every 2 s never lapses for the checks between re
   for (let t = 1000; t <= 31000; t += 1000) {
     f.setTime(t);
     if ((t - 1000) % 2000 === 0) await f.guard.refresh();
+    // A copy near its end serves while its renewal is on the way: the
+    // lookup lands before the next second.
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(f.guard.fresh(), true, `fresh at ${t}`);
     assert.equal(f.guard.allows(f.request(), f.owner()), true, `allowed at ${t}`);
   }
@@ -195,7 +200,8 @@ test("a host identity refreshed every 2 s never lapses for the checks between re
   g.setTime(4000);
   const second = g.guard.refresh(); await started();
   assert.equal(g.guard.allows(g.request(), g.owner()), true, "kept during the refresh");
-  resolve(status()); await second;
+  // The renewal lands (refresh no longer waits for it: the copy served).
+  resolve(status()); await second; await started();
   assert.equal(g.guard.fresh(), true);
   g.setTime(20000);
   const third = g.guard.refresh(); await started();
