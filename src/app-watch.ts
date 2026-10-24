@@ -196,8 +196,10 @@ export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | 
     document.removeEventListener("visibilitychange", check);
   };
   const bootstrap = async () => {
+    // This fixed same-origin metadata may need the browser's existing asset
+    // door cookie after native loss. It never carries a device credential.
     const value = knownConfig || await nativeTailnetFetch("/reach-start.json", {
-      cache: "no-store", redirect: "error", credentials: "omit", signal: AbortSignal.timeout(5000),
+      cache: "no-store", redirect: "error", credentials: "same-origin", signal: AbortSignal.timeout(5000),
     }).then(response => response.ok ? response.json() : null);
     const config = parseStartConfig(value);
     if (stopped || !config || new URL(config.origin).hostname !== location.hostname) return;
