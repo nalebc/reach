@@ -338,3 +338,21 @@ test("Windows sheet: one button per browser, the store page opened on the PC, Re
   await settle(20);
   await view.unmount();
 });
+
+// The tabs agents open close through the same browser access, read without
+// asking anyone (agent-tabs.mjs): macOS's answer on a Mac, the extension's
+// connection on Windows.
+test("whether Reach may close an agent's tabs is read, never asked", async () => {
+  const f = fake({ "check:com.google.Chrome": { status: 0 }, "check:com.apple.Safari": { status: -1744 } });
+  const mac = createToolSetup(f.options);
+  assert.equal(await mac.allowed("Chrome"), true);
+  assert.equal(await mac.allowed("Safari"), false);
+  assert.equal(await mac.allowed("Firefox"), false);
+  assert.ok(f.runs.every(([mode]) => mode === "check"), "never macOS's prompt");
+  f.answer = () => ({ status: -1743 });
+  assert.equal(await mac.allowed("Chrome"), false, "turned off");
+  const pc = windowsSetup({ live: { Edge: { connected: true } } });
+  assert.equal(await pc.setup.allowed("Edge"), true);
+  assert.equal(await pc.setup.allowed("Chrome"), false);
+  assert.equal(await pc.setup.allowed("Safari"), false);
+});

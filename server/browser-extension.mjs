@@ -203,29 +203,43 @@ export function createBrowserExtensionBridge({
     socket.on("close", drop);
   }
 
-  function send(conn, request, { timeoutMs = 12000, signal } = {}) {
+  function send(conn, request, { timeoutMs = 12000, signal, beforeSend, retirement } = {}) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(problem("cancelled", true));
+      try { beforeSend?.(); }
+      catch (error) { error.uncertain = false; reject(error); return; }
+      const fence = request.op === "close" ? retirement?.hold() : null;
+      let interrupted = null;
       const id = `${++sequence}-${crypto.randomUUID()}`;
-      const finish = () => {
+      const finish = (keep = false) => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        conn.pending.delete(id);
+        if (!keep) conn.pending.delete(id);
       };
       const abort = () => {
+        // Cleanup alone retains an already sent effect until its response.
+        // The existing cancel protocol suppresses responses without stopping
+        // browser effects, so it cannot prove owner-control retirement.
+        if (fence) { interrupted = problem("cancelled", true); return; }
         finish();
         conn.send({ type: "cancel", id });
         reject(problem("cancelled", true));
       };
       const timer = setTimeout(() => {
+        if (fence) {
+          finish(true);
+          fence.fail();
+          reject(problem("uncertain", true));
+          return;
+        }
         finish();
         conn.send({ type: "cancel", id });
         reject(problem("uncertain", true));
       }, Math.max(1, timeoutMs));
       signal?.addEventListener("abort", abort, { once: true });
       conn.pending.set(id, {
-        resolve: (value) => { finish(); resolve(value); },
-        reject: (error) => { finish(); reject(error); },
+        resolve: (value) => { finish(); fence?.done(); interrupted ? reject(interrupted) : resolve(value); },
+        reject: (error) => { finish(); fence?.fail(); reject(error); },
       });
       conn.send({ type: "request", id, request });
     });

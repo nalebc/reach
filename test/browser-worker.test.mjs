@@ -51,3 +51,22 @@ test("driver reuses a worker, with each request retaining its exact browser targ
   await driver.transport("Chrome", { op: "info", target: { window: 1, tab: 2 } });
   assert.equal(workers, 1); assert.deepEqual(requests[1].target, { window: 1, tab: 2 }); driver.close();
 });
+
+for (const change of ["revoked", "paused", "owner-takeover"]) test(`queued cleanup rechecks ${change} immediately before the worker sends`, async () => {
+  const { worker, child, writes } = fake();
+  let allowed = true;
+  try {
+    const first = worker.request('{"op":"tabs"}');
+    const close = worker.request('{"op":"close"}', { beforeSend() {
+      if (!allowed) throw Object.assign(Error(change), { uncertain: false });
+    } });
+    const result = close.then(value => ({ value }), error => ({ error }));
+    allowed = false;
+    child.stdout.write('{}\n'); await first;
+    if (writes.length > 1) child.stdout.write('{}\n');
+    const outcome = await result;
+    assert.equal(outcome.error?.message, change);
+    assert.equal(outcome.error?.uncertain, false, "the refused queued close was never sent");
+    assert.equal(writes.length, 1);
+  } finally { worker.stop(); child.emit("close"); }
+});

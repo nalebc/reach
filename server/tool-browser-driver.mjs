@@ -55,13 +55,15 @@ export function nativeToolProcess(
   command,
   args,
   input,
-  { timeoutMs = 12000, maxBytes = 16 * 1024 * 1024, signal } = {},
+  { timeoutMs = 12000, maxBytes = 16 * 1024 * 1024, signal, beforeSend } = {},
 ) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(browserError("cancelled", true));
       return;
     }
+    try { beforeSend?.(); }
+    catch (error) { error.uncertain = false; reject(error); return; }
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     const output = [],
       errors = [];
@@ -177,12 +179,21 @@ export function createToolBrowserDriver({
           fail(503, "Deterministic browser tools require macOS."),
           { code: "setup_required" },
         );
-      let raw;
+      let raw, guardError;
+      if (options?.beforeSend) {
+        const beforeSend = options.beforeSend;
+        options = { ...options, beforeSend() {
+          try { beforeSend(); }
+          catch (error) { error.uncertain = false; guardError = error; throw error; }
+        } };
+      }
       const input = JSON.stringify({ browser, ...request, ...(options?.appPath ? { appPath: options.appPath } : {}) });
       try {
         if (windows) {
           if (options?.signal?.aborted) throw browserError("cancelled", true);
-          raw = await extension.request(browser, request, { timeoutMs: options?.timeoutMs ?? 12000, signal: options?.signal });
+          raw = await extension.request(browser, request, { timeoutMs: options?.timeoutMs ?? 12000, signal: options?.signal,
+            ...(options?.beforeSend ? { beforeSend: options.beforeSend } : {}),
+            ...(options?.retirement ? { retirement: options.retirement } : {}) });
         } else if (persistent) {
           const key = options?.appPath || browser;
           let worker = workers.get(key);
@@ -201,6 +212,7 @@ export function createToolBrowserDriver({
         input,
         options,
       ); } catch (error) {
+        if (guardError) throw guardError;
         const mapped = browserError(error?.code, error?.uncertain === true || !Object.hasOwn(ERRORS, error?.code || ""), "uncertain", platform);
         // Keep Reach's own fixed detail (e.g. "No action was taken"), never the browser's text.
         const detail = FIXED_DETAILS.find((text) => error?.message === text);

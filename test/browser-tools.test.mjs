@@ -183,6 +183,9 @@ test("navigation tools map to their routes with exact bodies", () => {
   assert.deepEqual(browserToolRequest("reach_act", { action: { type: "menu", path: ["File", "Print…"] } }, full).body, { action: { type: "menu", path: ["File", "Print…"] }, describe: true });
   assert.deepEqual(browserToolRequest("reach_act", { action: { type: "type", text: "long", paste: true }, describe: false }, full).body, { action: { type: "type", text: "long", paste: true } });
   assert.deepEqual(browserToolRequest("reach_open_url", { url: "https://example.test", describe: false }, full).body, { url: "https://example.test" });
+  // Closing the tabs it opened: all of them, or those on one site.
+  assert.deepEqual(browserToolRequest("reach_close_tabs", {}, full), { route: "/api/browser/desktop/close-tabs", method: "POST", body: {}, response: "json" });
+  assert.deepEqual(browserToolRequest("reach_close_tabs", { url: "https://www.ubereats.com" }, full).body, { url: "https://www.ubereats.com" });
   // No shared folder: no file to open.
   const apps = access({ preset: "apps", screen: true, control: true, open: true, roots: [] });
   assert.ok(!browserToolsFor(apps).some((tool) => tool.name === "reach_open_file"));

@@ -1067,6 +1067,16 @@ export function browserAccessRoutes(
     validateAfter(body);
     await answer(res, async () => observeAfter(req, await desktop.openUrl(client, body.url, browser, authorize), body, OPENED));
   });
+  // The tabs the agent opened with reach_open_url, closed once it no longer
+  // needs them (reach_close_tabs): all of them, or those on one site.
+  app.post("/api/browser/desktop/close-tabs", async (req, res) => {
+    const client = presetClient(req, "browser:open");
+    needDesktop();
+    const body = req.body ?? {};
+    if (!isPlainRecord(body) || Object.keys(body).some((key) => key !== "url") || (body.url !== undefined && typeof body.url !== "string"))
+      throw fail(400, "Give the web address of the site whose tabs close, or nothing for all of them.");
+    await answer(res, () => desktop.closeTabs(client, body.url, () => presetClient(req, "browser:open")));
+  });
   // Every window the agent may know of, and bringing one forward (reach_windows,
   // reach_focus_window): the right window or tab in one step, no guessing.
   app.get("/api/browser/desktop/windows", async (req, res) => {
