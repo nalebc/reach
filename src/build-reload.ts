@@ -7,6 +7,7 @@
 // which interface it serves (presence `changes.build`). Foreground checks also
 // cover restored pages and browsers whose connection uses a different port.
 import { reloadFromBase } from "./nav-history";
+import { offlineShellEnabled, prepareInterfaceReload } from "./offline-shell";
 let first: string | null = null;
 let waiting = false;
 let generation = 0;
@@ -38,6 +39,7 @@ type UpdateOptions = {
   busy?: () => boolean;
   wait?: (f: () => void) => unknown;
   currentPage?: () => Promise<boolean | null>;
+  prepare?: () => Promise<boolean>;
 };
 // The last touch, key, scroll or wheel on the page (its load counts).
 let touched = Date.now();
@@ -55,17 +57,31 @@ function queueUpdate({
   reload = () => reloadFromBase(() => location.replace(freshInterfaceUrl(location.href))),
   busy = () => busyHere() || inUse(),
   wait = (f) => setTimeout(f, 5000),
+  prepare = offlineShellEnabled() ? prepareInterfaceReload : undefined,
 }: UpdateOptions) {
   if (waiting) return;
   waiting = true;
   const seen = generation;
   let done = false;
+  let preparing = false, prepared = false;
   const attempt = () => {
     if (seen !== generation || done) return;
     if (busy()) {
       setUpdateState("waiting");
       wait(attempt);
     } else {
+      if (prepare && !prepared) {
+        if (preparing) return;
+        preparing = true;
+        void prepare().catch(() => false).then(ready => {
+          preparing = false;
+          if (seen !== generation || done) return;
+          prepared = ready;
+          if (ready) attempt();
+          else { setUpdateState("waiting"); wait(attempt); }
+        });
+        return;
+      }
       done = true;
       setUpdateState("reloading");
       reload();
@@ -133,6 +149,7 @@ export async function currentPageMatches(
       signal: controller.signal,
     });
     if (!response.ok) return null;
+    if (response.headers.get("X-Reach-Cached-Shell")) return null;
     const page = new DOMParser().parseFromString(
       await response.text(),
       "text/html",

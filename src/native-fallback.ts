@@ -1,13 +1,14 @@
 import { guestPeers, peerFromDevice, readPrivatePeers, sameComputer, upsertPeer, type Device, type Peer } from "./api";
 import { browserApprovalIdentity, browserNodeIdentityCurrent, observeBrowserNode, savedBrowserProfile, setupBrowserNode } from "./browser-node";
-import { parseStartConfig } from "./start-flow";
+import { parseStartConfig, type StartConfig } from "./start-flow";
+import { prepareOfflineShell } from "./offline-shell";
 import { nativeTailnetFetch, privatePeerWay, privateWay, tailnetFetch, type TailnetNode } from "./tailnet-transport";
 import { storageBlocked } from "./storage-fallback";
 
 type Current = { peer: Peer; device: Device };
 type Pending = { id: string; secret: string; expiresAt: number; verification: string };
 type Phase = "idle" | "connecting" | "sign-in" | "network-approval" | "approval" | "checking" | "ready" | "request-unknown" | "error";
-export type FallbackSetupState = { phase: Phase; signIn?: string; code?: string; message?: string };
+export type FallbackSetupState = { phase: Phase; signIn?: string; code?: string; message?: string; cold?: "preparing" | "ready" | "unavailable" };
 type Receipt = { node?: TailnetNode; pending?: Pending; creating?: Promise<void>; uncertain?: boolean; baseline: string | null;
   identity: ReturnType<typeof browserApprovalIdentity> };
 // Kept only in this page. Closing/reopening the sheet keeps the same pending
@@ -54,6 +55,7 @@ const parsePending = (value: Partial<Pending>): Pending => {
 export function createFallbackSetup(options: { current(): Current | null; changed(state: FallbackSetupState): void }) {
   let lifetime: AbortController | undefined, detach = () => {}, timer: ReturnType<typeof setTimeout> | undefined;
   let current: Current, receipt: Receipt, polling: Promise<void> | undefined, starting: Promise<void> | undefined;
+  let setupConfig: StartConfig | null = null;
   let invalidated = false, halted = false, loginAsked = false;
   let hiddenAt: number | undefined, networkPending = false;
   const live = () => !!lifetime && !lifetime.signal.aborted && !invalidated && options.current() !== null &&
@@ -113,7 +115,16 @@ export function createFallbackSetup(options: { current(): Current | null; change
     receipt.baseline = value;
     receipt.identity = identity;
     halted = true;
-    options.changed({ phase: "ready" });
+    return peer;
+  };
+  const ready = async (saved: Peer) => {
+    halted = true;
+    const eligible = () => live() && stillSaved(saved) && !!receipt.identity?.current() && browserNodeIdentityCurrent(receipt.node!);
+    if (!eligible()) return;
+    emit({ phase: "ready", cold: "preparing" });
+    const cold = await prepareOfflineShell(setupConfig, { signal: lifetime!.signal, current: eligible,
+      beforeCommit: async () => { await checkedBrowser(saved.token); await nativeGrant(); return eligible(); } });
+    if (eligible()) emit({ phase: "ready", cold: cold ? "ready" : "unavailable" });
   };
   const finish = async (token: string) => {
     emit({ phase: "checking" });
@@ -122,7 +133,7 @@ export function createFallbackSetup(options: { current(): Current | null; change
     if (!identity) throw Object.assign(Error("The browser connection could not be saved. Allow site data, then try again."), { terminal: true });
     const binding = await identity.binding();
     await nativeGrant();
-    try { save(token, device, identity, binding); }
+    try { await ready(save(token, device, identity, binding)); }
     catch (error) { throw Object.assign(error as Error, { terminal: true }); }
   };
   const poll = () => {
@@ -191,8 +202,7 @@ export function createFallbackSetup(options: { current(): Current | null; change
             if (!sameIdentity || !browserNodeIdentityCurrent(receipt.node!) || nativeCredential(saved.token, current.peer.token) ||
               !stillSaved(saved))
               throw Object.assign(Error("Your saved fallback changed. Close setup and check it before continuing."), { terminal: true });
-            halted = true;
-            emit({ phase: "ready" });
+            await ready(saved);
             return;
           } catch (error) { requireLive(); if ((error as { terminal?: boolean }).terminal) throw error; }
         }
@@ -292,6 +302,7 @@ export function createFallbackSetup(options: { current(): Current | null; change
           const config = response.ok ? parseStartConfig(await response.json()) : null;
           requireLive();
           if (!config || new URL(config.origin).hostname !== location.hostname) throw Error("This computer could not prepare fallback. Try again in a moment.");
+          setupConfig = config;
           receipt.node = await setupBrowserNode(config, lifetime!.signal);
           requireLive();
           detach = observeBrowserNode(receipt.node, {

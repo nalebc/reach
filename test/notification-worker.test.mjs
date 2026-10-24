@@ -31,7 +31,10 @@ function worker({ maxActions = 2 } = {}) {
   const self = {
     Notification: maxActions === undefined ? undefined : { maxActions },
     location: { origin: "https://reach.test" },
-    addEventListener: (name, callback) => (events[name] = callback),
+    addEventListener: (name, callback) => {
+      const previous = events[name];
+      events[name] = value => { previous?.(value); callback(value); };
+    },
     registration: {
       showNotification: async (title, options) =>
         shown.push({ title, ...options }),

@@ -1,7 +1,16 @@
 import { defineConfig } from "vite";
 import fs from "node:fs";
+import path from "node:path";
+import { writeOfflineShell } from "./scripts/offline-shell.mjs";
+function offlineShell() {
+  let dist;
+  return { name: "reach-offline-shell", apply: "build", enforce: "post",
+    configResolved(config) { dist = path.resolve(config.root, config.build.outDir); },
+    closeBundle() { writeOfflineShell(dist); } };
+}
 export default defineConfig({
   plugins: [
+    offlineShell(),
     {
       name: "reach-pdf-image-fallbacks",
       generateBundle() {

@@ -2,6 +2,7 @@ import { guestPeers, readPrivatePeers, peerFromDevice, type Device, type Peer } 
 import { browserPeerEligible, existingBrowserNode } from "./browser-node";
 import { setHomeOrigin } from "./home-origin";
 import { parseStartConfig, tailnetSuffix, type StartConfig } from "./start-flow";
+import { offlineBootstrap } from "./offline-shell";
 import {
   bindPrivatePeer, installPrivateRouting, installTailnet, nativeTailnetFetch,
   privatePeerWay, privateWay, tailnetFetch, usePrivateWay,
@@ -288,7 +289,7 @@ export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | 
   const bootstrap = async () => {
     // This fixed same-origin metadata may need the browser's existing asset
     // door cookie after native loss. It never carries a device credential.
-    const value = (knownConfig?.tailnet ? knownConfig : null) || await nativeTailnetFetch("/reach-start.json", {
+    const value = (knownConfig?.tailnet ? knownConfig : null) || await offlineBootstrap() || await nativeTailnetFetch("/reach-start.json", {
       cache: "no-store", redirect: "error", credentials: "same-origin", signal: AbortSignal.timeout(5000),
     }).then(response => response.ok ? response.json() : null);
     const config = parseStartConfig(value);

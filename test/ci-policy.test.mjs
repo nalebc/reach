@@ -496,7 +496,7 @@ test("publishing isolation covers multiline commands, script settings and same-r
 
 test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
   for (const name of [
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command", "headless-chrome-lifecycle",

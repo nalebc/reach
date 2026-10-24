@@ -485,6 +485,8 @@ test("a newly authenticated bound approval survives a full module reload without
     await first.make().start(); first.running();
     await first.dom.waitFor(() => first.states.at(-1)?.phase === "approval");
     first.status = "approved"; first.state("Running"); await first.ready();
+    await first.dom.waitFor(() => first.states.at(-1)?.cold === "unavailable");
+    assert.equal(first.creates, 1, "unsupported/failed cold preparation keeps the separately approved warm fallback");
     const saved = JSON.parse(localStorage.getItem("reach.browser.devices"))[0];
     assert.match(saved.browserIdentity, /^[a-f0-9]{64}$/);
     assert.equal(localStorage.getItem("reach.browser.identity-lineage"), "setup-v1");
@@ -497,6 +499,7 @@ test("a newly authenticated bound approval survives a full module reload without
   try {
     for (const [key, value] of Object.entries(snapshot)) localStorage.setItem(key, value);
     await reloaded.make().start(); reloaded.running(); await reloaded.ready();
+    await reloaded.dom.waitFor(() => reloaded.states.at(-1)?.cold === "unavailable");
     assert.equal(reloaded.creates, 0);
     assert.equal(await reloaded.browserModule.browserPeerEligible(JSON.parse(localStorage.getItem("reach.browser.devices"))[0]), true);
     assert.ok(reloaded.traffic.some(call => call.route === "browser" && call.token === "Bearer BROWSER"));
@@ -659,13 +662,14 @@ test("Settings setup labels the missing prerequisite and preserves mounted work 
     assert.equal(draft.value, unsent);
     f.status = "approved"; f.state("Running");
     await f.dom.waitFor(() => view.container.textContent.includes("Fallback is ready."), 2500);
+    await f.dom.waitFor(() => view.container.textContent.includes("approval is kept"));
     [...view.container.querySelectorAll("button")].find(value => value.textContent === "Done").click();
     await f.dom.waitFor(() => !view.container.querySelector("dialog"));
     assert.equal(view.container.querySelector("textarea"), draft);
     assert.equal(draft.value, unsent);
     assert.equal(f.transport.privateWay(), "native");
     assert.equal(localStorage.getItem("reach.devices"), f.nativeBytes);
-    assert.match(view.container.textContent, /Ready/);
+    assert.match(view.container.textContent, /Keep open/);
     assert.deepEqual(f.dom.errors, []);
   } finally { await view?.unmount(); await f.close(); }
 });
