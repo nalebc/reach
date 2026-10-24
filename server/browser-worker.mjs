@@ -30,12 +30,12 @@ export class BrowserWorker {
     this.child.on("error", () => { this.stop("unavailable"); if (!this.child.pid) this.exited(); });
     this.child.on("close", () => this.exited());
   }
-  request(input, { timeoutMs = 12000, maxBytes = 16 * 1024 * 1024, signal } = {}) {
+  request(input, { timeoutMs = 12000, maxBytes = 16 * 1024 * 1024, signal, beforeSend } = {}) {
     if (this.stopped) return Promise.reject(failure("unavailable", false));
     if (signal?.aborted) return Promise.reject(failure("cancelled", false));
     if (Buffer.byteLength(input) > 16 * 1024 * 1024 || this.queue.length >= 32) return Promise.reject(failure("limit", false));
     return new Promise((resolve, reject) => {
-      const item = { input, timeoutMs, maxBytes, signal, resolve, reject, sent: false };
+      const item = { input, timeoutMs, maxBytes, signal, beforeSend, resolve, reject, sent: false };
       item.abort = () => {
         if (this.current === item) this.stop("cancelled");
         else { this.queue = this.queue.filter(entry => entry !== item); this.finish(item, failure("cancelled", false)); }
@@ -55,6 +55,14 @@ export class BrowserWorker {
     const item = this.queue.shift();
     if (!item) { this.idle = setTimeout(() => this.stop("unavailable"), this.idleMs); this.idle.unref?.(); return; }
     this.current = item;
+    try { item.beforeSend?.(); }
+    catch (error) {
+      error.uncertain = false;
+      this.current = null;
+      this.finish(item, error);
+      this.next();
+      return;
+    }
     item.timer = setTimeout(() => this.stop("uncertain"), item.timeoutMs);
     item.sent = true;
     try { this.child.stdin.write(item.input + "\n"); } catch { this.stop("uncertain"); }

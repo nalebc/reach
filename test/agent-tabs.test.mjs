@@ -22,7 +22,9 @@ function browser() {
   };
   const driver = {
     off: false,
-    async transport(name, request) {
+    async transport(name, request, options = {}) {
+      if (options.signal?.aborted) throw Object.assign(Error("cancelled before send"), { code: "cancelled", uncertain: false });
+      options.beforeSend?.();
       requests.push({ browser: name, ...request });
       if (this.off) throw Object.assign(Error("The selected browser is not running."), { code: "browser_closed" });
       if (request.op === "tabs") return windows.flatMap((window) => window.tabs.map((tab, i) => ({ window: window.id, tab: tab.id, index: i + 1, url: tab.url, title: "" })));
@@ -57,7 +59,7 @@ function world({ dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-"))
   const seen = new Map();
   const tabs = createAgentTabs({ dataDir, driver: b.driver, platform: "darwin", now: () => clock,
     allowed: async (name) => allowed === true || allowed === name,
-    lastSeen: (id) => seen.get(id) ?? 0, holder: () => holder, ownerUsing: () => owner, idle: async () => idle });
+    lastSeen: (id) => seen.get(id) ?? 0, holder: () => holder, ownerUsing: () => owner, idle: async () => idle, ...options });
   const opens = async (clientId, url, { bundle = "com.google.Chrome", browserPath } = {}) => {
     const token = await tabs.before(clientId, browserPath);
     const tab = b.open(url);
@@ -192,18 +194,20 @@ test("a tab taken to another site, or closed already, is left alone", async (t) 
   await w.tabs.sweep();
   assert.equal(w.b.closes().length, 0);
   assert.deepEqual(w.tabs.list(), []);
-  assert.ok(w.b.urls().includes("https://www.wikipedia.org/"));
+  assert.ok(w.b.urls().some(url => url === "https://www.wikipedia.org/"));
 });
 
-test("pages the agent went on to are still its own: its activity says where its tabs are", async (t) => {
+test("an owner-navigated tab is relinquished before explicit cleanup can relabel it", async (t) => {
   const w = world();
   t.after(() => w.tabs.stop());
   const tab = await w.opens("grok", "https://www.google.com/");
   tab.url = "https://en.wikipedia.org/wiki/Tab";
-  // The agent's own click took it there; a moment later Reach looks.
+  // There is no proof this navigation was the agent's. A refresh cannot
+  // adopt the owner's new page merely because the old tab id is the same.
   const result = await w.tabs.closeOwn("grok");
-  assert.deepEqual(result, { closed: 1, open: 0 });
-  assert.ok(!w.b.urls().includes("https://en.wikipedia.org/wiki/Tab"));
+  assert.equal(result.closed, 0);
+  assert.equal(w.tabs.list().length, 0);
+  assert.ok(w.b.urls().some(url => url === "https://en.wikipedia.org/wiki/Tab"));
 });
 
 test("an agent closes its own tabs when it's done: all, or one site's", async (t) => {
@@ -214,7 +218,7 @@ test("an agent closes its own tabs when it's done: all, or one site's", async (t
   await w.opens("muse", "https://www.amazon.com/");
   assert.deepEqual(await w.tabs.closeOwn("grok", { url: "https://ubereats.com" }), { closed: 1, open: 1 });
   assert.deepEqual(await w.tabs.closeOwn("grok"), { closed: 1, open: 0 });
-  assert.ok(w.b.urls().includes("https://www.amazon.com/"), "another agent's tab stays");
+  assert.ok(w.b.urls().some(url => url === "https://www.amazon.com/"), "another agent's tab stays");
   const none = await w.tabs.closeOwn("grok");
   assert.equal(none.closed, 0);
   assert.match(none.note, /close them yourself/);
@@ -226,7 +230,7 @@ test("past its own limit, an agent's oldest tab closes behind", async (t) => {
   for (let i = 0; i <= AGENT_TABS_EACH; i++) await w.opens("grok", `https://site${i}.example.com/`);
   await settle(w);
   assert.equal(w.tabs.list().length, AGENT_TABS_EACH);
-  assert.ok(!w.b.urls().includes("https://site0.example.com/"));
+  assert.ok(!w.b.urls().some(url => url === "https://site0.example.com/"));
   assert.ok(w.b.closes().every((request) => request.behind === true));
 });
 
@@ -285,4 +289,318 @@ test("reach_open_url lists the tabs first, keeps the new one, and the agent's cl
   assert.equal(b.urls().length, 2);
   assert.ok(desktop.lastSeen("grok") > 0);
   await assert.rejects(() => desktop.closeTabs(client, "not a url", () => client), /web address/);
+});
+
+test("owner control beginning during an awaited cleanup read prevents the close", async t => {
+  for (const automatic of [false, true]) {
+    const w = world();
+    let release, entered = false;
+    const held = new Promise(resolve => { release = resolve; });
+    const original = w.b.driver.transport;
+    try {
+      await w.opens("grok", "https://www.ubereats.com/");
+      // A different front tab means a stale behind-only close is unsafe too.
+      w.b.open("https://owner.example/");
+      w.b.driver.transport = async function (name, request, options) {
+        if (request.op === "tabs" && !entered) { entered = true; await held; }
+        return original.call(this, name, request, options);
+      };
+      w.tick(AGENT_TAB_IDLE_MS + 1);
+      const pending = automatic ? w.tabs.sweep() : w.tabs.closeOwn("grok");
+      const result = pending.then(value => ({ value }), error => ({ error }));
+      await settle(w);
+      assert.equal(entered, true);
+      w.owner(true); release();
+      await result;
+      assert.equal(w.b.closes().length, 0, automatic ? "sweep" : "explicit close");
+      assert.ok(w.b.urls().some(url => url === "https://www.ubereats.com/"));
+    } finally { release?.(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); }
+  }
+});
+
+test("an uncertain close is visible and is never replayed by later cleanup", async t => {
+  const w = world();
+  t.after(() => { w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens("grok", "https://www.ubereats.com/");
+  const original = w.b.driver.transport;
+  let attempts = 0;
+  w.b.driver.transport = async function (name, request, options) {
+    if (request.op === "close") { attempts++; throw Object.assign(Error("lost close acknowledgement"), { code: "uncertain", uncertain: true }); }
+    return original.call(this, name, request, options);
+  };
+  await assert.rejects(w.tabs.closeOwn("grok"), error => error.code === "uncertain" && error.uncertain === true);
+  w.tick(AGENT_TAB_IDLE_MS + 1);
+  await w.tabs.sweep(); await w.tabs.closeOwn("grok");
+  assert.equal(attempts, 1, "a lost close answer cannot be treated as proof the close was unsent");
+  assert.deepEqual(w.tabs.list(), []);
+});
+
+test("a known unsent close failure stays visible and can be retried safely", async t => {
+  const w = world();
+  t.after(() => { w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens("grok", "https://www.ubereats.com/");
+  const original = w.b.driver.transport;
+  let refused = false;
+  w.b.driver.transport = async function (name, request, options) {
+    if (request.op === "close" && !refused) { refused = true; throw Object.assign(Error("not sent"), { code: "unavailable", uncertain: false }); }
+    return original.call(this, name, request, options);
+  };
+  await assert.rejects(w.tabs.closeOwn("grok"), error => error.code === "unavailable" && error.uncertain === false);
+  assert.equal(w.tabs.list().length, 1);
+  assert.equal((await w.tabs.closeOwn("grok")).closed, 1);
+});
+
+test("state loading cannot read a different leaf swapped after inspection", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-race-"));
+  const file = path.join(dir, "agent-tabs.json"), outside = path.join(dir, "untrusted.json");
+  fs.writeFileSync(file, "[]");
+  fs.writeFileSync(outside, JSON.stringify([{ clientId: "other", browser: "Chrome", window: 1, tab: 2, url: "https://owner.example/" }]));
+  const lstat = fs.lstatSync;
+  let swapped = false, tabs;
+  t.mock.method(fs, "lstatSync", function (name, ...args) {
+    const value = lstat.call(this, name, ...args);
+    if (name === file && !swapped) {
+      swapped = true; fs.renameSync(file, file + ".original");
+      // Symlink creation needs an extra Windows privilege. A regular-file
+      // replacement there exercises the same descriptor identity boundary.
+      if (process.platform === "win32") fs.renameSync(outside, file);
+      else fs.symlinkSync(outside, file);
+    }
+    return value;
+  });
+  try {
+    tabs = createAgentTabs({ dataDir: dir, driver: browser().driver });
+    assert.deepEqual(tabs.list(), [], "only bytes from the checked regular descriptor may become saved ownership");
+  } finally { tabs?.stop(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("independently numbered Chrome and Edge tabs retain separate ownership", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-browsers-"));
+  const live = { Chrome: [], Edge: [] }, closed = [];
+  const driver = { async transport(name, request, options = {}) {
+    options.beforeSend?.();
+    if (request.op === "tabs") return live[name].map(value => ({ ...value }));
+    if (request.op === "close") { closed.push(name); live[name] = []; return {}; }
+    assert.fail("unexpected operation");
+  } };
+  const tabs = createAgentTabs({ dataDir: dir, driver, platform: "win32", allowed: async () => true });
+  t.after(() => { tabs.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+  for (const name of ["Chrome", "Edge"]) {
+    const before = await tabs.before("grok", name === "Chrome" ? "exe:chrome.exe" : "exe:msedge.exe");
+    live[name] = [{ window: 1, tab: 100, url: "https://example.com/" }];
+    tabs.after(before, "https://example.com/", { bundle: name === "Chrome" ? "exe:chrome.exe" : "exe:msedge.exe" });
+    await settle();
+  }
+  assert.deepEqual(tabs.list().map(entry => entry.browser).sort(), ["Chrome", "Edge"]);
+  assert.equal((await tabs.closeOwn("grok")).closed, 2);
+  assert.deepEqual(closed.sort(), ["Chrome", "Edge"]);
+});
+
+for (const change of ["revoked", "paused", "owner-takeover"]) test(`explicit cleanup holds queued work and refuses a late ${change}`, async t => {
+  const w = world();
+  const client = { id: "grok", kind: "agent", name: "Grok", expiresAt: Date.now() + 600000,
+    policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [] } };
+  client.scopes = presetScopes(client.policy);
+  let authorized = true, owner = false, release, entered = false, barrier;
+  const held = new Promise(resolve => { release = resolve; });
+  const desktop = createAgentDesktop({ screen: true }, {
+    pauses: createAgentPauses(), verifyClient: () => authorized ? client : null, ownerUsing: () => owner,
+    tabs: () => w.tabs,
+  });
+  t.after(() => { release(); desktop.close(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens("grok", "https://www.ubereats.com/");
+  const original = w.b.driver.transport;
+  w.b.driver.transport = async function (name, request, options) {
+    if (request.op === "close") { entered = true; await held; }
+    return original.call(this, name, request, options);
+  };
+  const pending = desktop.closeTabs(client, undefined, () => authorized ? client : null);
+  const result = pending.then(value => ({ value }), error => ({ error }));
+  await settle(); assert.equal(entered, true);
+  if (change === "revoked") { authorized = false; desktop.cancelClient(client.id); }
+  if (change === "paused") desktop.setPaused(client.id, true);
+  if (change === "owner-takeover") {
+    owner = true; w.owner(true);
+    barrier = desktop.yieldForOwner();
+    assert.ok(barrier, "queued cleanup is part of the owner's input-retirement barrier");
+    let retired = false; barrier.then(() => { retired = true; });
+    await settle(); assert.equal(retired, false, "an awaited dispatch cannot be forgotten before it settles");
+  }
+  release(); const outcome = await result;
+  assert.ok(outcome.error);
+  await barrier;
+  assert.equal(w.b.closes().length, 0);
+  assert.equal(desktop.activity().holder, null, "the cancelled cleanup retires before a replacement writer");
+});
+
+test("an unconfirmed dispatched cleanup keeps owner takeover blocked until a late completion", async t => {
+  const client = { id: "grok", kind: "agent", name: "Grok", expiresAt: Date.now() + 600000,
+    policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [] } };
+  client.scopes = presetScopes(client.policy);
+  let fence;
+  const desktop = createAgentDesktop({ screen: true }, { pauses: createAgentPauses(), verifyClient: () => client,
+    tabs: () => ({ async closeOwn(_id, options) {
+      fence = options.retirement.hold();
+      fence.fail();
+      throw Object.assign(Error("close result unknown"), { code: "uncertain", uncertain: true });
+    } }) });
+  t.after(() => { fence?.done(); desktop.close(); });
+  await assert.rejects(desktop.closeTabs(client, undefined, () => client), error => error.uncertain === true);
+  assert.equal(desktop.activity().holder.clientId, client.id, "request rejection is not proof its effect ended");
+  await assert.rejects(desktop.yieldForOwner(), error => error.status === 503 && /could not confirm/.test(error.message));
+  fence.done(); await settle();
+  assert.equal(desktop.activity().holder, null);
+});
+
+test("automatic cleanup is included in owner takeover's dispatched-effect barrier", async t => {
+  let desktop, release, entered = false;
+  const w = world({ track: (id, work) => desktop.trackTabCleanup(id, work) });
+  const held = new Promise(resolve => { release = resolve; });
+  desktop = createAgentDesktop({ screen: true }, { pauses: createAgentPauses() });
+  t.after(() => { release(); w.tabs.stop(); desktop.close(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens("grok", "https://www.ubereats.com/");
+  const original = w.b.driver.transport;
+  w.b.driver.transport = async function (name, request, options) {
+    if (request.op !== "close") return original.call(this, name, request, options);
+    options.beforeSend();
+    const fence = options.retirement.hold();
+    entered = true; await held;
+    // Already sent: cancellation cannot undo this simulated browser effect.
+    const value = await original.call(this, name, request);
+    fence.done();
+    return value;
+  };
+  w.tick(AGENT_TAB_IDLE_MS + 1);
+  const cleanup = w.tabs.sweep();
+  await settle(); assert.equal(entered, true);
+  const barrier = desktop.yieldForOwner();
+  assert.ok(barrier);
+  let retired = false; barrier.then(() => { retired = true; });
+  await settle(); assert.equal(retired, false);
+  release(); await cleanup; await barrier;
+  assert.equal(retired, true);
+  assert.equal(w.b.closes().length, 1);
+  assert.equal(desktop.activity().holder, null);
+});
+
+test("automatic cleanup rechecks a global pause immediately before its queued send", async t => {
+  let desktop, release, entered = false, paused = false;
+  const w = world({ track: (id, work) => desktop.trackTabCleanup(id, work) });
+  const held = new Promise(resolve => { release = resolve; });
+  desktop = createAgentDesktop({ screen: true }, { pauses: createAgentPauses(), paused: () => paused });
+  t.after(() => { release(); w.tabs.stop(); desktop.close(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  await w.opens("grok", "https://www.ubereats.com/");
+  const original = w.b.driver.transport;
+  w.b.driver.transport = async function (name, request, options) {
+    if (request.op === "close") { entered = true; await held; }
+    return original.call(this, name, request, options);
+  };
+  w.tick(AGENT_TAB_IDLE_MS + 1);
+  const cleanup = w.tabs.sweep();
+  await settle(); assert.equal(entered, true);
+  paused = true; release(); await cleanup;
+  assert.equal(w.b.closes().length, 0);
+  assert.equal(w.tabs.list().length, 1, "the unsent paused close remains eligible only after control resumes");
+});
+
+test("a state file growing after descriptor inspection is read only within the existing cap", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tabs-growth-"));
+  const file = path.join(dir, "agent-tabs.json");
+  fs.writeFileSync(file, "[]");
+  const payload = JSON.stringify([{ clientId: "other", browser: "Chrome", window: 1, tab: 2,
+    url: "https://owner.example/" + "x".repeat(260 * 1024) }]);
+  let changed = false, tabs;
+  const grow = value => { if (!changed) { changed = true; fs.writeFileSync(file, payload); } return value; };
+  const stat = fs.statSync, fstat = fs.fstatSync;
+  t.mock.method(fs, "statSync", function (name, ...args) { const value = stat.call(this, name, ...args); return name === file ? grow(value) : value; });
+  t.mock.method(fs, "fstatSync", function (...args) { return grow(fstat.apply(this, args)); });
+  try {
+    tabs = createAgentTabs({ dataDir: dir, driver: browser().driver });
+    assert.equal(changed, true);
+    assert.deepEqual(tabs.list(), []);
+  } finally { tabs?.stop(); t.mock.restoreAll(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("activity relinquishes another origin and keeps an unchanged owned page eligible", async t => {
+  const w = world();
+  try {
+    const owner = await w.opens("grok", "https://agent.github.io/");
+    owner.url = "https://owner.github.io/";
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    w.tabs.activity("grok", { bundle: "com.google.Chrome" });
+    t.mock.timers.tick(2000); await settle();
+    assert.deepEqual(w.tabs.list(), [], "different tenants sharing a public suffix are still different origins");
+    assert.ok(w.b.urls().some(url => url === "https://owner.github.io/"));
+    t.mock.timers.reset();
+    await w.opens("grok", "https://www.ubereats.com/");
+    assert.equal((await w.tabs.closeOwn("grok")).closed, 1);
+    assert.ok(w.b.urls().some(url => url === "https://owner.github.io/"));
+  } finally { t.mock.timers.reset(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); }
+});
+
+for (const [change, nextURL] of [
+  ["path", "https://www.ubereats.com/orders"],
+  ["query", "https://www.ubereats.com/?owner=taken"],
+  ["fragment", "https://www.ubereats.com/#owner-taken"],
+]) for (const cleanup of ["explicit", "activity", "automatic"]) test(`same-origin owner ${change} navigation is relinquished before ${cleanup} cleanup`, async t => {
+  const w = world();
+  try {
+    const tab = await w.opens("grok", "https://www.ubereats.com/");
+    tab.url = nextURL;
+    if (cleanup === "activity") {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      w.tabs.activity("grok", { bundle: "com.google.Chrome" });
+      t.mock.timers.tick(2000); await settle();
+      assert.deepEqual(w.tabs.list(), [], "later agent activity cannot adopt the owner's changed page");
+    } else if (cleanup === "automatic") {
+      w.tick(AGENT_TAB_IDLE_MS + 1);
+      await w.tabs.sweep();
+    } else assert.equal((await w.tabs.closeOwn("grok")).closed, 0);
+    assert.deepEqual(w.tabs.list(), []);
+    assert.equal(w.b.closes().length, 0, "a changed same-origin page has no close authority");
+    assert.ok(w.b.urls().some(url => url === nextURL));
+  } finally { t.mock.timers.reset(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); }
+});
+
+for (const discovery of ["redirect", "concurrent open"]) test(`tab discovery does not claim an ambiguous ${discovery}`, async t => {
+  const w = world();
+  t.after(() => { w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  const token = await w.tabs.before("grok");
+  w.b.open(discovery === "redirect" ? "https://example.com/owner-page" : "https://example.com/");
+  if (discovery === "concurrent open") w.b.open("https://owner.example/");
+  w.tabs.after(token, "https://example.com/", { bundle: "com.google.Chrome" });
+  assert.equal((await w.tabs.closeOwn("grok")).closed, 0);
+  assert.deepEqual(w.tabs.list(), []);
+  assert.equal(w.b.closes().length, 0);
+});
+
+test("tab discovery matches the canonical requested URL without adopting navigation", async t => {
+  const w = world();
+  t.after(() => { w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); });
+  const token = await w.tabs.before("grok");
+  w.b.open("https://example.com/");
+  w.tabs.after(token, "https://EXAMPLE.com:443", { bundle: "com.google.Chrome" });
+  assert.equal((await w.tabs.closeOwn("grok")).closed, 1);
+  assert.deepEqual(w.tabs.list(), []);
+});
+
+for (const change of ["revoked", "stopped"]) test(`a pending tab-discovery response cannot claim ownership after cleanup is ${change}`, async t => {
+  const w = world();
+  let release, entered = false;
+  const held = new Promise(resolve => { release = resolve; });
+  try {
+    const before = await w.tabs.before("grok");
+    w.b.open("https://www.ubereats.com/");
+    const original = w.b.driver.transport;
+    w.b.driver.transport = async function (name, request, options) {
+      if (request.op === "tabs" && !entered) { entered = true; await held; }
+      return original.call(this, name, request, options);
+    };
+    w.tabs.after(before, "https://www.ubereats.com/", { bundle: "com.google.Chrome" });
+    await settle(); assert.equal(entered, true);
+    if (change === "revoked") w.tabs.endClient("grok"); else w.tabs.stop();
+    release(); await settle();
+    assert.deepEqual(w.tabs.list(), []);
+    assert.equal(w.b.closes().length, 0);
+  } finally { release(); w.tabs.stop(); fs.rmSync(w.dataDir, { recursive: true, force: true }); }
 });

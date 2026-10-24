@@ -22,6 +22,9 @@ import { createBrowserExtensionBridge } from "../server/browser-extension.mjs";
 import { registerExtensionHost, registeredManifest, HOST_KEYS } from "../server/browser-extension-host.mjs";
 import { createToolBrowserDriver } from "../server/tool-browser-driver.mjs";
 import { createAgentTools } from "../server/agent-tools.mjs";
+import { createAgentTabs, AGENT_TAB_IDLE_MS } from "../server/agent-tabs.mjs";
+import { createAgentDesktop } from "../server/agent-desktop.mjs";
+import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { REPO_EXTENSION_ID } from "../server/browser-extension-ids.mjs";
 import { launchWithExtension } from "./helpers/extension-browser.mjs";
 
@@ -42,7 +45,7 @@ const until = async (check, what, ms = 60000) => {
     if (Date.now() > end) throw Error(`timed out waiting: ${what}`);
   }
 };
-const HOST = "tools.reach-test.example", OTHER = "other.reach-test.example";
+const HOST = "tools.reach-test.example", OTHER = "other.reach-other.example";
 const programFiles = process.env.ProgramFiles || "C:\\Program Files", programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
 const LOCAL = process.env.LOCALAPPDATA || "";
 const installed = (...candidates) => candidates.find((file) => file && fs.existsSync(file));
@@ -224,5 +227,105 @@ for (const name of ["Chrome", "Edge"])
     await driver.transport(name, { op: "focus", target: shown, expectedURL: shown.url });
     await assert.rejects(driver.transport(name, { op: "close", target: shown, expectedURL: shown.url, behind: true }), (e) => e.code === "owner_tab");
     seen.ownerTab = "kept";
+    note();
+
+    // Actual owned-profile open→track→cleanup on Windows, through the real
+    // extension/native-host pipe and production desktop/tracker hooks. The
+    // clock, agent identity, idle observation and native-open admission are
+    // controlled: the helper adapter opens via this fixture's real bridge
+    // so a native OS open cannot escape into an uninstrumented default
+    // browser profile. This does not qualify native helper input or a phone.
+    const cleanupSeen = seen.agentCleanup = { nativeOpenAdmission: "controlled adapter", identity: "synthetic agent",
+      clock: "controlled", browserOperations: "actual extension/native bridge", physicalDevice: false, cases: {} };
+    let clock = Date.now(), ownerControl = false, cleanupDesktop;
+    const cleanupClient = { ...client, id: `${client.id}-cleanup`, name: "Tab lifecycle agent", expiresAt: clock + 20 * 60000 };
+    const cleanupAuthorize = () => cleanupClient;
+    const tracker = createAgentTabs({ dataDir: path.join(toolsDir, "agent-tabs"), driver, platform: "win32", now: () => clock,
+      allowed: async browserName => browserName === name && bridge.status()[name].connected,
+      lastSeen: id => cleanupDesktop.lastSeen(id), holder: () => cleanupDesktop.activity().holder,
+      ownerUsing: () => ownerControl, idle: async () => null,
+      track: (id, work) => cleanupDesktop.trackTabCleanup(id, work),
+    });
+    cleanupDesktop = createAgentDesktop({ screen: true }, { platform: "win32", now: () => clock,
+      pauses: createAgentPauses(), available: () => true, hosts: () => [], titles: () => [], protectedPaths: () => [], home: work,
+      verifyClient: () => cleanupClient, ownerUsing: () => ownerControl ? { source: "phone", until: clock + 2000 } : null,
+      tabs: () => tracker, onActivity: (id, entry) => tracker.activity(id, entry),
+      spawnHelper: async () => ({ stopped: false, terminated: Promise.resolve(), stop() { this.stopped = true; },
+        async send(request, beforeSend) {
+          beforeSend?.();
+          assert.equal(request.op, "open-url", "only native-open admission is modeled in this cleanup lifecycle");
+          const opened = await driver.transport(name, { op: "create", url: request.url });
+          await until(async () => {
+            const info = await driver.transport(name, { op: "info", target: opened }).catch(error => {
+              if (error.code === "loading") return null;
+              throw error;
+            });
+            return info?.url === request.url;
+          }, "the cleanup adapter's actual new tab commits", 30000);
+          return { ok: true, app: app.name, bundle: app.bundleId };
+        },
+      }),
+    });
+    t.after(() => { tracker.stop(); cleanupDesktop.close(); });
+    const key = tab => `${tab.window}:${tab.tab}`;
+    const actualTabs = () => driver.transport(name, { op: "tabs" });
+    const present = async tab => (await actualTabs()).some(item => key(item) === key(tab));
+    const openOwned = async url => {
+      const previous = new Set(tracker.list().map(key));
+      await cleanupDesktop.openUrl(cleanupClient, url, exe, cleanupAuthorize);
+      return until(() => tracker.list().find(tab => !previous.has(key(tab))), "production tracker owns the actual new tab", 30000);
+    };
+    const preexisting = await driver.transport(name, { op: "create", url: `${origin}/shop?preexisting=1` });
+    const firstOwned = await openOwned(`${origin}/shop?agent=first`);
+    assert.equal((await cleanupDesktop.closeTabs(cleanupClient, undefined, cleanupAuthorize)).closed, 1);
+    assert.equal(await present(firstOwned), false);
+    assert.equal(await present(preexisting), true, "preexisting tabs are never adopted by the agent's before/after open");
+    cleanupSeen.cases.openTrackedClose = true;
+
+    const ownerNavigated = await openOwned(`${origin}/shop?agent=taken`);
+    const ownerURL = `${origin}/shop?owner=taken`;
+    await driver.transport(name, { op: "navigate", target: ownerNavigated, expectedURL: ownerNavigated.url, url: ownerURL });
+    await until(async () => (await driver.transport(name, { op: "info", target: ownerNavigated }).catch(error => {
+      if (error.code === "loading") return null;
+      throw error;
+    }))?.url === ownerURL,
+      "owner navigation commits in the actual browser", 30000);
+    tracker.activity(cleanupClient.id, { bundle: app.bundleId });
+    await until(() => !tracker.list().some(tab => key(tab) === key(ownerNavigated)), "later activity relinquishes the owner's changed same-origin query", 30000);
+    await cleanupDesktop.closeTabs(cleanupClient, undefined, cleanupAuthorize);
+    assert.equal(await present(ownerNavigated), true);
+    cleanupSeen.cases.ownerNavigationPreserved = true;
+
+    const heldForOwner = await openOwned(`${origin}/shop?agent=owner-hold`);
+    ownerControl = true;
+    await assert.rejects(cleanupDesktop.closeTabs(cleanupClient, undefined, cleanupAuthorize), error => error.status === 409);
+    assert.equal(await present(heldForOwner), true, "owner control refuses cleanup before a real close frame");
+    ownerControl = false;
+    assert.equal((await cleanupDesktop.closeTabs(cleanupClient, undefined, cleanupAuthorize)).closed, 1);
+    cleanupSeen.cases.ownerControlRefused = true;
+
+    const siteA = await openOwned(`${origin}/shop?agent=site-a`);
+    const siteB = await openOwned(`${other}/elsewhere?agent=site-b`);
+    assert.equal((await cleanupDesktop.closeTabs(cleanupClient, origin, cleanupAuthorize)).closed, 1);
+    assert.equal(await present(siteA), false);
+    assert.equal(await present(siteB), true, "one-site cleanup leaves the other owned site open");
+    cleanupSeen.cases.closeOwnSite = true;
+    await driver.transport(name, { op: "focus", target: preexisting });
+    clock += AGENT_TAB_IDLE_MS + 1;
+    await tracker.sweep();
+    assert.equal(await present(siteB), false, "the actual background tab closes after the modeled idle bound");
+    cleanupSeen.cases.idleCleanup = true;
+
+    const expired = await openOwned(`${origin}/shop?agent=expiry`);
+    await driver.transport(name, { op: "focus", target: preexisting });
+    cleanupClient.expiresAt = clock - 1;
+    tracker.endClient(cleanupClient.id); cleanupDesktop.cancelClient(cleanupClient.id);
+    await tracker.sweep();
+    await until(async () => !await present(expired), "ended access cleans its actual background tab", 30000);
+    assert.equal(await present(preexisting), true);
+    assert.equal(await present(ownerNavigated), true);
+    cleanupSeen.cases.expiredCleanup = true;
+    cleanupSeen.remainingTracked = tracker.list().length;
+    assert.equal(cleanupSeen.remainingTracked, 0);
     note();
   });

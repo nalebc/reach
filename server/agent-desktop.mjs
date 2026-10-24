@@ -596,6 +596,39 @@ export function createAgentDesktop(config, {
   };
   const extend = (client) => { if (lease.holder === client.id) lease.until = now() + leaseMs; };
   const release = (clientId) => { if (lease.holder === clientId) { lease.holder = null; lease.name = ""; lease.until = 0; } };
+  // A cleanup request may reject before the extension confirms its actual
+  // dispatched effect has ended. Keep desktop ownership until that proof,
+  // and fail owner takeover if the transport cannot provide it in time.
+  const trackTabInput = async (client, work) => {
+    const controller = new AbortController();
+    let finish, resolveRetired, rejectRetired, done = false, active = 0, failed = false;
+    const finished = new Promise(resolve => { finish = resolve; });
+    const terminated = new Promise((resolve, reject) => { resolveRetired = resolve; rejectRetired = reject; });
+    void terminated.catch(() => {});
+    const helper = { stopped: false, terminated, stop() { this.stopped = true; release(client.id); controller.abort(); } };
+    const pending = { client, helper, finished, sent: true };
+    const settle = () => {
+      if (!done || active) return;
+      pendingInputs.delete(pending);
+      finish();
+      if (!failed) resolveRetired();
+    };
+    const retirement = { hold() {
+      active++;
+      let retired = false;
+      return {
+        done() { if (!retired) { retired = true; active--; settle(); } },
+        fail() {
+          if (failed) return;
+          failed = true;
+          rejectRetired(fail(503, "Reach could not confirm that the previous tab cleanup ended. Computer control stays waiting."));
+        },
+      };
+    } };
+    pendingInputs.add(pending);
+    try { return await work({ signal: controller.signal, retirement }); }
+    finally { done = true; settle(); }
+  };
   // The owner paused this agent: it lets go of the Mac. A hold or slow drag
   // already sent lets go now (the helper releases what it holds on stop),
   // rather than seconds after the owner paused it. Queued input is refused by
@@ -983,15 +1016,37 @@ export function createAgentDesktop(config, {
     /** Close the tabs this agent opened with openUrl (all, or those on one site), holding the computer as any action does. */
     async closeTabs(client, url, authorize) {
       const latest = live(client, authorize, "browser:open");
+      const grant = fingerprint(latest);
       const tracker = tabs();
       if (!tracker) throw fail(503, `Reach can't close tabs on this ${word}.`);
       if (url !== undefined && (typeof url !== "string" || url.length > 2048 || !URL.canParse(url))) throw fail(400, "Give the web address of the site whose tabs close, or nothing for all of them.");
       take(latest);
-      const result = await tracker.closeOwn(latest.id, { url });
+      const result = await trackTabInput(latest, ({ signal, retirement }) => tracker.closeOwn(latest.id, {
+        url, signal, retirement, guard() {
+          const current = live(client, authorize, "browser:open");
+          if (fingerprint(current) !== grant) throw fail(403, `This agent's access changed. Refresh before using the ${word} again.`);
+          checkInputAllowed(current);
+          extend(current);
+        },
+      }));
       extend(latest);
       note(latest, "close-tabs", {});
       if (result.closed) actions(latest, { kind: "close-tabs", text: actionWords("close-tabs", {}, result) });
       return result;
+    },
+    // Internal automatic cleanup has no authority to open or adopt tabs. It
+    // only lends its already tracked close the same input-retirement barrier.
+    async trackTabCleanup(clientId, work) {
+      if (closed || paused() || ownerUsing()) throw fail(409, "Tab cleanup is waiting for the person using this computer.");
+      const previous = currentHolder();
+      const client = { id: clientId, name: "Reach tab cleanup" };
+      take(client);
+      const guard = () => {
+        if (closed || paused() || ownerUsing()) throw fail(409, "Tab cleanup is waiting for the person using this computer.");
+        checkInputAllowed(client);
+      };
+      try { return await trackTabInput(client, context => work({ ...context, guard })); }
+      finally { if (!previous) release(clientId); }
     },
     /** When this agent last acted or looked here (ms), or 0: its tabs close a while after. */
     lastSeen(clientId) {
@@ -1084,10 +1139,11 @@ export function createAgentDesktop(config, {
       shots.delete(id);
       capturing.delete(id);
       looks.delete(id);
-      release(id);
+      letGo(id);
     },
     close() {
       closed = true;
+      for (const entry of pendingInputs) entry.helper.stop();
       for (const state of sessions.values()) state.helper.stop();
       sessions.clear();
       looks.clear();

@@ -1252,6 +1252,7 @@ export async function createReach(overrides = {}) {
       lastSeen: (id) => agentDesktop.lastSeen?.(id) ?? 0,
       holder: () => agentDesktop.activity?.().holder ?? null,
       ownerUsing: () => !!ownerHold.active() || !!screenControl.holder() || screenControl.inputStopping(),
+      track: (id, work) => agentDesktop.trackTabCleanup(id, work),
       idle: () => idleSeconds(),
     }) : null;
   // An agent's ask for a Mac permission it lacks: the owner's one tap on the

@@ -173,7 +173,7 @@ export const suites = {
     // real-Windows step (windows-browser-tools-native).
     "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
     // The tabs agents open closing once they're done, Chrome and Edge alike.
-    "agent-tabs",
+    "agent-tabs", "browser-worker",
   ],
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",

@@ -5,7 +5,7 @@ import { atomicJson, isPlainRecord } from "./core.mjs";
 // Tabs agents opened with reach_open_url (and reach_open_bank), closed once
 // they're done with them, so the owner's browser doesn't fill up. Only a tab
 // Reach saw appear for that open is the agent's: its tab list before and after
-// show one new tab on the site asked for. Tabs that were there before, and
+// show one new tab at the exact address asked for. Tabs that were there before, and
 // tabs an agent opened some other way (a link, a keyboard shortcut), are
 // never touched. Chrome on a Mac (Apple Events, its tabs have stable ids);
 // Chrome and Edge on Windows (Reach's extension).
@@ -16,10 +16,35 @@ export const AGENT_TABS_EACH = 5;
 const AGENT_TABS = 40;
 const SWEEP_MS = 30_000;
 const tabKey = (tab) => `${tab.window}:${tab.tab}`;
+const ownedKey = (tab) => `${tab.browser}:${tabKey(tab)}`;
+const pageOf = (url) => {
+  try { const value = new URL(url); return ["http:", "https:"].includes(value.protocol) ? value.href : ""; }
+  catch { return ""; }
+};
+const readSavedTabs = (file) => {
+  const limit = 256 * 1024;
+  const checked = fs.lstatSync(file, { bigint: true });
+  if (!checked.isFile() || checked.isSymbolicLink() || checked.size > limit) return [];
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.size > limit || opened.dev !== checked.dev || opened.ino !== checked.ino) return [];
+    // A concurrently growing file cannot turn the size check into an
+    // unbounded read. Read only this descriptor, never the pathname again.
+    const bytes = Buffer.alloc(limit + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
+      if (!count) break;
+      length += count;
+    }
+    return length > limit ? [] : JSON.parse(bytes.subarray(0, length).toString("utf8"));
+  } finally { fs.closeSync(fd); }
+};
 
 // The site an address is on: its host without www., by its last two labels
-// (three for names like example.co.uk). Rough on purpose: it only decides
-// which new tab is the one asked for, and that a tab is still on its site.
+// (three for names like example.co.uk). Rough on purpose: this only filters
+// an explicit close request among tabs whose exact page is still owned.
 export const siteOf = (url) => {
   let host;
   try {
@@ -57,6 +82,7 @@ export function createAgentTabs({
   ownerUsing = () => false,
   // Seconds since this computer's own keyboard or mouse was used, or null.
   idle = async () => null,
+  track = async (_clientId, work) => work({}),
   now = Date.now,
   record = () => {},
   idleMs = AGENT_TAB_IDLE_MS,
@@ -66,18 +92,19 @@ export function createAgentTabs({
   const tabs = new Map();
   const pending = new Map();
   const refreshes = new Map();
+  const generations = new Map();
+  const lifetime = new AbortController();
   let timer = null,
     closed = false,
     sweeping = null;
   try {
-    const data = fs.existsSync(file) && !fs.lstatSync(file).isSymbolicLink() && fs.statSync(file).size <= 256 * 1024
-      ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+    const data = readSavedTabs(file);
     for (const entry of Array.isArray(data) ? data : [])
       if (isPlainRecord(entry) && typeof entry.clientId === "string" && ["Chrome", "Edge"].includes(entry.browser) &&
           Number.isInteger(entry.window) && Number.isInteger(entry.tab) && typeof entry.url === "string" && tabs.size < AGENT_TABS)
         // From before a restart: the browser may have restarted too and
         // handed the same id to another tab, so only the exact page closes.
-        tabs.set(tabKey(entry), { clientId: entry.clientId, browser: entry.browser, window: entry.window, tab: entry.tab,
+        tabs.set(ownedKey(entry), { clientId: entry.clientId, browser: entry.browser, window: entry.window, tab: entry.tab,
           url: entry.url, seenAt: now(), restored: true, attempts: 0 });
   } catch {
     /* unreadable: nothing to close */
@@ -89,12 +116,27 @@ export function createAgentTabs({
       /* they still close while Reach runs */
     }
   };
-  const transport = (browser, request, timeoutMs = 4000) => driver.transport(browser, request, { timeoutMs });
-  const list = async (browser, timeoutMs = 4000) => {
+  const check = (options = {}, entry) => {
+    if (closed || lifetime.signal.aborted || options.signal?.aborted || ownerUsing())
+      throw Object.assign(Error("Tab cleanup is waiting for the person using this computer."), { code: "tab_cleanup_blocked", status: 409, uncertain: false });
+    options.guard?.();
+    if (entry && tabs.get(ownedKey(entry)) !== entry)
+      throw Object.assign(Error("The tracked tab changed before cleanup."), { code: "tab_cleanup_blocked", status: 409, uncertain: false });
+  };
+  const transport = (browser, request, timeoutMs = 4000, options) => driver.transport(browser, request, {
+    timeoutMs, signal: options?.signal ? AbortSignal.any([lifetime.signal, options.signal]) : lifetime.signal,
+    ...(options?.retirement ? { retirement: options.retirement } : {}),
+    ...(options ? { beforeSend() {
+      try { check(options, options.entry); }
+      catch (error) { error.uncertain = false; throw error; }
+    } } : {}),
+  });
+  const list = async (browser, timeoutMs = 4000, options) => {
     try {
-      const answer = await transport(browser, { op: "tabs" }, timeoutMs);
+      const answer = await transport(browser, { op: "tabs" }, timeoutMs, options);
       return Array.isArray(answer) ? answer : null;
     } catch (error) {
+      if (options && error?.code !== "browser_closed") throw error;
       return error?.code === "browser_closed" ? [] : null;
     }
   };
@@ -133,48 +175,71 @@ export function createAgentTabs({
     return Number.isFinite(seconds) && seconds * 1000 + 1500 >= now() - lastSeen(clientId);
   };
   // Close one tab Reach opened for an agent. In front closes only when nobody
-  // else has used the computer since that agent's last action; a tab that left
-  // its site, or the page it was left on before a restart, is someone's now.
-  const closeOne = async (entry, live, { front, keepShown }) => {
+  // else has used the computer since that agent's last action. A changed
+  // address cannot be attributed to the agent, even within the same site.
+  const closeOne = async (entry, live, { front, keepShown, ...options }) => {
+    check(options, entry);
     const tab = live.find((item) => tabKey(item) === tabKey(entry));
-    if (!tab || (entry.restored ? tab.url !== entry.url : siteOf(tab.url) !== siteOf(entry.url))) {
-      tabs.delete(tabKey(entry));
+    if (!tab || tab.url !== entry.url) {
+      tabs.delete(ownedKey(entry));
       return false;
     }
     try {
-      await transport(entry.browser, { op: "close", target: { window: tab.window, tab: tab.tab }, expectedURL: tab.url, ...(front ? {} : { behind: true }) });
-      tabs.delete(tabKey(entry));
+      const effect = ({ signal = options.signal, retirement = options.retirement, guard = options.guard } = {}) => transport(entry.browser, {
+        op: "close", target: { window: tab.window, tab: tab.tab }, expectedURL: tab.url, ...(front ? {} : { behind: true }),
+      }, 4000, {
+        ...options, signal, retirement, entry, guard() {
+          guard?.();
+          const busy = holder()?.clientId;
+          if (front && busy && busy !== entry.clientId)
+            throw Object.assign(Error("Another agent is using this computer."), { code: "tab_cleanup_blocked", status: 409, uncertain: false });
+        },
+      });
+      await (options.retirement ? effect() : track(entry.clientId, effect));
+      tabs.delete(ownedKey(entry));
       return true;
     } catch (error) {
       // In front while someone else was at the computer: theirs now.
-      if ((error?.code === "owner_tab" && !keepShown) || ++entry.attempts >= 3) tabs.delete(tabKey(entry));
-      return false;
+      if (error?.code === "owner_tab") {
+        if (!keepShown) tabs.delete(ownedKey(entry));
+        return false;
+      }
+      // A lost acknowledgement does not prove the close was unsent. Retire
+      // this ownership record rather than replaying a potentially delivered
+      // command. Explicit callers still receive the original broker error.
+      if (error?.uncertain !== false) tabs.delete(ownedKey(entry));
+      throw error;
     }
   };
-  const closeAll = async (entries, front, { keepShown = false } = {}) => {
+  const closeAll = async (entries, front, { keepShown = false, ...options } = {}) => {
     let count = 0;
-    for (const browser of new Set(entries.map((entry) => entry.browser))) {
-      const live = await list(browser);
-      if (!live) continue;
-      for (const entry of entries.filter((item) => item.browser === browser))
-        if (await closeOne(entry, live, { front: await front(entry), keepShown })) count++;
-    }
-    save();
+    try {
+      for (const browser of new Set(entries.map((entry) => entry.browser))) {
+        check(options);
+        const live = await list(browser, 4000, options);
+        check(options);
+        if (!live) continue;
+        for (const entry of entries.filter((item) => item.browser === browser))
+          if (await closeOne(entry, live, { front: await front(entry), keepShown, ...options })) count++;
+      }
+    } finally { save(); }
     return count;
   };
-  // Where an agent's tabs are now, after it acted in their browser: a page it
-  // went on to is still its own. One closed meanwhile is dropped; from before
-  // a restart, only the exact page it was left on stays its own.
-  const refresh = async (clientId, browser) => {
+  // Later agent activity does not prove who navigated any tracked tab.
+  // Relinquish a changed address rather than adopting an owner's page,
+  // including another path, query or fragment on the same origin.
+  const refresh = async (clientId, browser, options) => {
     clearTimeout(refreshes.get(clientId));
     refreshes.delete(clientId);
-    const live = await list(browser);
+    const live = await list(browser, 4000, options);
+    if (closed) return;
+    if (options) check(options);
     if (!live) return;
     const byKey = new Map(live.map((tab) => [tabKey(tab), tab]));
     for (const item of mine(clientId).filter((value) => value.browser === browser)) {
       const tab = byKey.get(tabKey(item));
-      if (!tab || (item.restored && tab.url !== item.url)) tabs.delete(tabKey(item));
-      else Object.assign(item, { url: tab.url, seenAt: now(), restored: false });
+      if (!tab || tab.url !== item.url) tabs.delete(ownedKey(item));
+      else Object.assign(item, { seenAt: now(), restored: false });
     }
     save();
   };
@@ -203,7 +268,9 @@ export function createAgentTabs({
   };
   const sweep = () => {
     if (closed) return Promise.resolve();
-    sweeping ??= sweepOnce().catch(() => {}).finally(() => {
+    sweeping ??= sweepOnce().catch(error => {
+      if (!closed) record("agent", error?.uncertain ? "A tab close could not be confirmed; it will not be retried." : "Reach left agent tabs open because cleanup could not proceed.");
+    }).finally(() => {
       sweeping = null;
       schedule();
     });
@@ -220,24 +287,24 @@ export function createAgentTabs({
         const live = await list(browser, 1500);
         if (live) seen[browser] = new Set(live.map(tabKey));
       }
-      return Object.keys(seen).length ? { clientId, seen } : null;
+      return Object.keys(seen).length ? { clientId, seen, generation: generations.get(clientId) || 0 } : null;
     },
-    /** After the website opened: its tab is the agent's, when exactly one new tab is on that site. */
+    /** After the website opened: only a sole new tab at the requested address is attributed to it. */
     after(token, url, result) {
       const browser = tabBrowserOf(result?.bundle, platform);
-      if (closed || !token || !browser || !token.seen[browser]) return false;
+      const expectedURL = pageOf(url);
+      if (closed || !token || !browser || !token.seen[browser] || !expectedURL) return false;
       const work = (async () => {
-        const site = siteOf(url);
         for (let attempt = 0; attempt < 3; attempt++) {
           if (attempt) await new Promise((resolve) => setTimeout(resolve, 400));
           const live = await list(browser);
-          if (!live) return;
+          if (!live || closed || token.generation !== (generations.get(token.clientId) || 0)) return;
           const fresh = live.filter((tab) => !token.seen[browser].has(tabKey(tab)));
-          const matching = fresh.filter((tab) => siteOf(tab.url) === site);
-          if (matching.length > 1) return;
-          if (matching.length === 1) {
-            const tab = matching[0];
-            tabs.set(tabKey(tab), { clientId: token.clientId, browser, window: tab.window, tab: tab.tab, url: tab.url, seenAt: now(), attempts: 0 });
+          if (fresh.length > 1) return;
+          if (fresh.length === 1 && fresh[0].url === expectedURL) {
+            const tab = fresh[0];
+            const entry = { clientId: token.clientId, browser, window: tab.window, tab: tab.tab, url: tab.url, seenAt: now(), attempts: 0 };
+            tabs.set(ownedKey(entry), entry);
             while (tabs.size > AGENT_TABS) tabs.delete(tabs.keys().next().value);
             // Over its own limit: the agent's oldest tab closes, behind only.
             const own = mine(token.clientId);
@@ -246,8 +313,8 @@ export function createAgentTabs({
             schedule();
             return;
           }
-          // Still nothing new on that site: the browser may not have it yet.
-          if (fresh.length > 1) return;
+          // The browser may still be loading the requested address. A page
+          // that redirects elsewhere is deliberately left unowned.
         }
       })().catch(() => {}).finally(() => { if (pending.get(token.clientId) === work) pending.delete(token.clientId); });
       pending.set(token.clientId, work);
@@ -263,19 +330,23 @@ export function createAgentTabs({
       refreshes.set(clientId, t);
     },
     /** The agent's own ask (reach_close_tabs): its tabs, or those on one site, the one in front too. */
-    async closeOwn(clientId, { url } = {}) {
+    async closeOwn(clientId, { url, guard, signal, retirement } = {}) {
+      const options = { guard, signal, retirement };
+      check(options);
       await pending.get(clientId);
+      check(options);
       const site = url ? siteOf(url) : "";
-      for (const browser of new Set(mine(clientId).map((entry) => entry.browser))) await refresh(clientId, browser);
+      for (const browser of new Set(mine(clientId).map((entry) => entry.browser))) await refresh(clientId, browser, options);
       const own = mine(clientId);
       if (!own.length) return { closed: 0, open: 0, note: "Reach has no tabs it opened for you still open. Tabs opened another way: close them yourself (Command+W or Ctrl+W with reach_act)." };
       const chosen = own.filter((entry) => !site || siteOf(entry.url) === site);
-      const count = await closeAll(chosen, async () => true);
+      const count = await closeAll(chosen, async () => true, options);
       schedule();
       return { closed: count, open: mine(clientId).length };
     },
     /** The agent's access ended: its tabs close at the next sweep. */
     endClient(clientId) {
+      generations.set(clientId, (generations.get(clientId) || 0) + 1);
       for (const entry of mine(clientId)) entry.ended = true;
       if (tabs.size) void sweep();
     },
@@ -284,6 +355,7 @@ export function createAgentTabs({
     list: () => [...tabs.values()].map(({ clientId, browser, window, tab, url }) => ({ clientId, browser, window, tab, url })),
     stop() {
       closed = true;
+      lifetime.abort();
       clearTimeout(timer);
       for (const t of refreshes.values()) clearTimeout(t);
       refreshes.clear();
