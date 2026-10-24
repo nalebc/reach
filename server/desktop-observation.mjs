@@ -76,7 +76,15 @@ export async function settleScreen({ read, changed, authorize, capMs, minMs = 0,
       // A helper that can't wait for changes (an older one, or one that
       // refuses): reads compared by what they show, as with no signal at
       // all. A read refused is said as any refusal is.
-      try { result = await watch(revision, Math.max(1, Math.min(quietMs, end - now()))); } catch { watch = null; continue; }
+      try { result = await watch(revision, Math.max(1, Math.min(quietMs, end - now()))); }
+      catch (error) {
+        // Unsupported observation can fall back to reads. A stopped helper,
+        // lost grant or occupied desktop cannot: another read would hide the
+        // cause and pay a second startup/timeout after the budget was spent.
+        if (error?.status && error.status !== 400) throw error;
+        watch = null;
+        continue;
+      }
       authorize();
       if (Number.isSafeInteger(result?.revision)) revision = result.revision;
       if (result?.changed) { moved = true; fresh = false; continue; }

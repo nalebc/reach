@@ -14,6 +14,8 @@ export const suites = {
   windows: [
     "agent-install", "agent-sign-in", "browser-mutations", "private-ingress-platform",
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
+    // Shared helper startup, queue deadlines, fresh captures and failed observations.
+    "agent-desktop", "agent-helper-diagnostics", "agent-speed", "desktop-observation",
     "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",

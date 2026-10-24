@@ -18,6 +18,17 @@ import { presetFixture, privateIngressTest, apps } from "./helpers/preset-fixtur
 
 const screenOf = (title, items = [], texts = []) => ({ snapshot: `s-${title}`, app: "Browser", title, items, texts, truncated: false });
 
+test("settling reports a failed helper without another slow read or startup", async () => {
+  let clock = 0, reads = 0;
+  const failure = Object.assign(Error("The helper timed out."), { status: 503, kind: "unavailable" });
+  await assert.rejects(settleScreen({
+    now: () => clock, capMs: SETTLE.actMs, authorize() {},
+    changed: async () => { clock += 15000; throw failure; },
+    read: async () => { reads++; return screenOf("unexpected restart"); },
+  }), error => error === failure);
+  assert.equal(reads, 0);
+});
+
 test("the screen settles after one still window, bounded, read once", async () => {
   let clock = 0, reads = 0, authorized = 0;
   const now = () => clock;

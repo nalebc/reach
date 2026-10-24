@@ -615,7 +615,7 @@ export function serveMcp({
       if (r.method === "tools/call" && ["reach_save_shortcut", "reach_define_tool"].includes(r.params?.name) && !result?.isError)
         write({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
     } catch (e) {
-      write({ id: r?.id ?? null, error: { code: -32603, message: e.message } });
+      write({ id: r?.id ?? null, error: { code: -32603, message: agentErrorDetails(e).error } });
     }
   }
   return new Promise((resolve) =>

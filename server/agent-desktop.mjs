@@ -243,6 +243,7 @@ export function normalizeAction(value) {
 }
 
 const HELPER_FAILURES = {
+  queue_timeout: "was busy too long before dispatch",
   timeout: "did not answer in time", process_exit: "exited", process_error: "could not stay connected",
   stdin_error: "lost its input connection", write_error: "could not send the request",
   invalid_reply: "returned an invalid reply", oversized_reply: "returned too much data",
@@ -311,12 +312,24 @@ export class AgentDesktopHelper {
   }
   send(request, beforeSend) {
     if (this.stopped) return Promise.reject(helperFailure(this.stopReason, request, false, this.platform));
-    return new Promise((resolve, reject) => { this.queue.push({ request, beforeSend, resolve, reject }); this.next(); });
+    if (this.queue.length >= 32) return Promise.reject(Object.assign(fail(409, "The agent helper is busy. This request was not sent. Wait for outstanding requests to finish."), { kind: "busy", retryInMs: 1000 }));
+    return new Promise((resolve, reject) => {
+      const item = { request, beforeSend, resolve, reject };
+      // Bound time spent waiting as well as execution. A stream of slow but
+      // successful reads must not leave old actions queued for minutes.
+      item.queueTimer = setTimeout(() => {
+        this.queue = this.queue.filter(waiting => waiting !== item);
+        reject(helperFailure("queue_timeout", request, false, this.platform));
+      }, !this.answered && this.coldStartMs ? this.coldStartMs : this.timeoutMs);
+      this.queue.push(item);
+      this.next();
+    });
   }
   next() {
     if (this.current || this.stopped) return;
     while (this.queue.length && !this.stopped) {
       const item = this.queue.shift();
+      clearTimeout(item.queueTimer);
       // Reads can occupy this helper while an input waits. Recheck the input
       // synchronously at its actual dispatch, not only when it was enqueued.
       try { item.beforeSend?.(); }
@@ -340,7 +353,7 @@ export class AgentDesktopHelper {
     this.stopReason = reason;
     const waiting = [this.current, ...this.queue].filter(Boolean);
     this.current = null; this.queue = [];
-    for (const item of waiting) { clearTimeout(item.timer); item.reject(helperFailure(reason, item.request, item.dispatched, this.platform)); }
+    for (const item of waiting) { clearTimeout(item.timer); clearTimeout(item.queueTimer); item.reject(helperFailure(reason, item.request, item.dispatched, this.platform)); }
     try { this.child.stdin.end(); } catch { /* already closed */ }
     const child = this.child;
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -425,6 +438,7 @@ export function createAgentDesktop(config, {
     ? windowsExePath(value) || windowsAppId(value)
     : typeof value === "string" && value.startsWith("/") && value.endsWith(".app") && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
   const sessions = new Map(); // clientId -> { helper, fingerprint, rules }
+  const starting = new Map(); // clientId -> one startup for this exact grant
   const activity = new Map(); // clientId -> { at, kind, app, bundle, name }
   // When each agent last looked at the screen. Looking never holds the Mac:
   // a live screen asks several times a second, and each look used to hold
@@ -432,6 +446,7 @@ export function createAgentDesktop(config, {
   const looks = new Map(); // clientId -> ms
   const shots = new Map();    // clientId -> recent screenshot times
   const capturing = new Map(); // clientId -> { width, promise } of the capture running now
+  let inputRevision = 0; // never share a pre-input capture with a post-input look
   const lease = { holder: null, name: "", until: 0 };
   const pendingInputs = new Set(); // native operations, including stopped helpers awaiting exit
   const pausedAgents = pauses || createAgentPauses({ file: pausesFile }); // by the owner, from the agent list
@@ -542,13 +557,24 @@ export function createAgentDesktop(config, {
     let state = sessions.get(client.id);
     if (state && (state.fingerprint !== fp || state.helper.stopped)) { state.helper.stop(); sessions.delete(client.id); state = null; }
     if (!state) {
+      const pending = starting.get(client.id);
+      if (pending?.fingerprint === fp) return pending.promise;
       const rules = nativeRules(client.policy, { hosts: hosts(), titles: titles(), protectedPaths: protectedPaths(), home, platform });
-      const helper = await start(rules);
-      state = { helper, fingerprint: fp, rules };
-      // The policy may have changed while the helper started.
-      const again = sessions.get(client.id);
-      if (again) { helper.stop(); return again; }
-      sessions.set(client.id, state);
+      const entry = { fingerprint: fp };
+      starting.set(client.id, entry);
+      entry.promise = (async () => {
+        const helper = await start(rules);
+        // Cancellation, shutdown or newer rules supersede this startup. An
+        // old request must never borrow the helper of a rejoined session.
+        if (closed || starting.get(client.id) !== entry) {
+          helper.stop();
+          throw Object.assign(fail(409, "This desktop session ended while its helper was starting. Look again before continuing."), { kind: "retry" });
+        }
+        const state = { helper, fingerprint: fp, rules };
+        sessions.set(client.id, state);
+        return state;
+      })().finally(() => { if (starting.get(client.id) === entry) starting.delete(client.id); });
+      return entry.promise;
     }
     return state;
   };
@@ -609,11 +635,13 @@ export function createAgentDesktop(config, {
         checkState(client, authorize, scope, state);
         checkInputAllowed(client);
         pending.sent = true;
+        inputRevision++;
       });
     } finally {
       // Revoking a client releases its idle lease immediately, but a dying
       // native helper must not overlap a replacement agent's input.
       if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
+      if (pending.sent) inputRevision++;
       pendingInputs.delete(pending);
     }
   };
@@ -688,10 +716,16 @@ export function createAgentDesktop(config, {
       // requests used to queue behind each other and swamp macOS's capture
       // service until no picture came back at all.
       const running = capturing.get(latest.id);
-      // The look counts from when the picture was asked for, not when it came back.
-      let askedAt = running && running.width >= width && running.displayId === displayId ? running.askedAt : now();
+      const revision = inputRevision, changedAt = screenChangedAt(), grant = fingerprint(latest);
+      const shared = running && running.width >= width && running.displayId === displayId &&
+        running.grant === grant && (!running.started || running.revision === revision && running.changedAt === changedAt);
+      // Keep at most one active and one pending capture. A pending capture is
+      // still fresh for later callers: it has not sampled the screen yet.
+      if (!shared && running?.waiting)
+        throw Object.assign(fail(409, "Another screenshot is pending. This capture was not queued. Wait for the pending screenshot before looking again."), { kind: "busy", retryInMs: 1000 });
+      let entry = shared ? running : { width, displayId, askedAt: now(), revision, changedAt, grant, started: false, waiting: !!running };
       let result;
-      if (running && running.width >= width && running.displayId === displayId) result = await running.promise;
+      if (shared) result = await running.promise;
       else {
         const recent = (shots.get(latest.id) || []).filter((time) => time > now() - 1000);
         if (recent.length >= SHOTS_PER_SECOND) throw fail(429, "Wait a moment between screenshots.");
@@ -699,13 +733,19 @@ export function createAgentDesktop(config, {
         // Recorded before any await, so a request arriving now shares it.
         const promise = (async () => {
           if (running) await running.promise.catch(() => {});
+          entry.waiting = false;
+          live(client, authorize, "browser:screen");
           const state = await session(latest);
           checkState(client, authorize, "browser:screen", state);
+          entry.started = true;
+          entry.askedAt = now();
+          entry.revision = inputRevision;
+          entry.changedAt = screenChangedAt();
           const value = answer(await state.helper.send({ op: "shot", maxWidth: width, ...(displayId ? { displayId } : {}) }));
           checkState(client, authorize, "browser:screen", state);
           return value;
         })();
-        const entry = { width, displayId, promise, askedAt };
+        entry.promise = promise;
         capturing.set(latest.id, entry);
         try { result = await promise; } finally { if (capturing.get(latest.id) === entry) capturing.delete(latest.id); }
       }
@@ -713,7 +753,9 @@ export function createAgentDesktop(config, {
       if (typeof result.jpeg !== "string" || result.jpeg.length > 12 * 1024 * 1024) throw fail(503, "The screen image could not be verified.");
       const jpeg = Buffer.from(result.jpeg, "base64");
       if (jpeg.length < 2 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw fail(503, "The screen image is unavailable.");
-      observe(latest, askedAt);
+      // Count from capture submission, never delayed delivery or the older request
+      // that originally reserved a pending capture.
+      observe(latest, entry.askedAt);
       return { jpeg, displayId: result.displayId, width: result.width, height: result.height, hidden: result.hidden || 0 };
     },
     /** What is in front: the app, its window title, whether it takes commands or a password, and why it is closed to the agent if it is. */
@@ -987,6 +1029,7 @@ export function createAgentDesktop(config, {
       const finished = new Promise(resolve => { finish = resolve; });
       const pending = { client: latest, helper: state.helper, finished };
       pendingInputs.add(pending);
+      inputRevision++;
       const guard = async () => {
         checkState(client, authorize, "browser:control", state);
         checkState(client, authorize, "browser:open", state);
@@ -1015,6 +1058,7 @@ export function createAgentDesktop(config, {
         return result;
       } finally {
         if (state.helper.stopped && state.helper.terminated) await state.helper.terminated;
+        inputRevision++;
         pendingInputs.delete(pending);
         finish();
       }
@@ -1054,6 +1098,7 @@ export function createAgentDesktop(config, {
     // The session's work ends; the owner's pause stays until they resume it
     // or the agent's access ends (a Reopen or an access change never resumes it).
     cancelClient(id) {
+      starting.delete(id);
       sessions.get(id)?.helper.stop();
       sessions.delete(id);
       activity.delete(id);
@@ -1064,6 +1109,7 @@ export function createAgentDesktop(config, {
     },
     close() {
       closed = true;
+      starting.clear();
       for (const state of sessions.values()) state.helper.stop();
       sessions.clear();
       looks.clear();
