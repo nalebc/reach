@@ -23,7 +23,7 @@ test("connection reports reveal only allowed metadata and leave identities uncha
     const text = connectionReport(peer), report = JSON.parse(text);
     assert.equal(report.interface.module, "index-AbCd1234.js");
     assert.equal(report.page.port, "443");
-    assert.deepEqual(report.connection, { mode: "native", nativeSavedPeers: 1, browserSavedPeers: 1, browserIdentityComplete: false, browserStateKeys: 2, installedBrowserNode: "not-installed" });
+    assert.deepEqual(report.connection, { mode: "native", nativeSavedPeers: 1, browserSavedPeers: 1, browserIdentityComplete: false, browserStateKeys: 2, installedBrowserNode: "not-installed", recovery: { phase: "idle", retained: false, nodeState: "none" } });
     assert.doesNotMatch(text, /SECRET|Bearer|privkey|invite=|#|token|nodeId/i);
     assert.equal(JSON.stringify({ ...localStorage }), before, "reporting never rewrites an identity or approval");
     script.src = "/assets/index-AbCd1234.js?SECRET-QUERY";
@@ -92,6 +92,7 @@ test("report defaults and node metadata cannot leak a complete stored identity",
     assert.equal(report.page.port, "80");
     assert.equal(report.connection.browserIdentityComplete, true);
     assert.equal(report.connection.installedBrowserNode, "unknown");
+    assert.deepEqual(report.connection.recovery, { phase: "idle", retained: true, nodeState: "Unknown" });
     assert.doesNotMatch(text, /SECRET|privkey|11111111|22222222|534543524554|login|token|nodeId/i);
     assert.equal(networkCalls, 0);
   } finally { await dom.close(); }

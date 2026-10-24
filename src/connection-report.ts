@@ -1,5 +1,5 @@
 import { readPrivatePeers, type Peer } from "./api";
-import { savedBrowserProfile } from "./browser-node";
+import { browserRecoveryStatus, savedBrowserProfile } from "./browser-node";
 import { getUpdateState } from "./build-reload";
 import { privateWay, tailnetNode } from "./tailnet-transport";
 
@@ -21,11 +21,13 @@ export function connectionReport(peer: Pick<Peer, "url">) {
     for (let i = 0; i < localStorage.length; i++)
       if (localStorage.key(i)?.startsWith("reach.tailnet:")) storedKeys++;
   } catch { /* Refused storage contains no usable saved identity. */ }
+  const recovery = browserRecoveryStatus();
   return JSON.stringify({
     report: "reach-connection-v1",
     capturedAt: new Date().toISOString(),
     page: { hostname: location.hostname, port: location.port || (location.protocol === "https:" ? "443" : location.protocol === "http:" ? "80" : "none"), standalone: window.matchMedia?.("(display-mode: standalone)").matches === true || (navigator as Navigator & { standalone?: boolean }).standalone === true },
     interface: { state: getUpdateState(), module: /^\/assets\/[\w.-]+\.js$/.test(asset) ? asset.slice("/assets/".length) : "unavailable" },
-    connection: { mode: privateWay(), nativeSavedPeers: count("native"), browserSavedPeers: count("browser"), browserIdentityComplete: !!savedBrowserProfile(), browserStateKeys: storedKeys, installedBrowserNode: state },
+    connection: { mode: privateWay(), nativeSavedPeers: count("native"), browserSavedPeers: count("browser"), browserIdentityComplete: !!savedBrowserProfile(), browserStateKeys: storedKeys, installedBrowserNode: state,
+      recovery: { phase: recovery.phase, retained: recovery.retained, nodeState: recovery.nodeState } },
   }, null, 2);
 }
