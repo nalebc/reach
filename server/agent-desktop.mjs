@@ -378,6 +378,9 @@ export function createAgentDesktop(config, {
   screenChangedAt = () => 0,
   paused = () => false,
   onActivity = () => {},
+  // The tabs agents open with reach_open_url, closed once they're done
+  // (agent-tabs.mjs); null when this computer can't tell its tabs apart.
+  tabs = () => null,
   record = () => {},
   // The owner's log of what each agent did (agent-actions.mjs add).
   actions = () => {},
@@ -964,14 +967,35 @@ export function createAgentDesktop(config, {
       if (reason) throw Object.assign(fail(403, reason), { kind: "blocked" });
       const state = await session(latest);
       checkState(client, authorize, "browser:open", state);
+      // The tabs already open, so the one this opens is known as the agent's.
+      const seen = await tabs()?.before(latest.id, browserPath).catch(() => null);
+      checkState(client, authorize, "browser:open", state);
       take(latest);
       const result = answer(await dispatchInput(latest, state, { op: "open-url", url, ...(browserPath ? { app: browserPath } : {}) }, authorize, "browser:open"));
       checkState(client, authorize, "browser:open", state);
       extend(latest);
       observe(latest);
+      tabs()?.after(seen, url, result);
       note(latest, "open", result);
       actions(latest, { kind: "open-url", text: actionWords("open-url", { url }, result), app: result.app });
       return { ok: true, app: String(result.app || ""), bundle: String(result.bundle || ""), ...(result.front === false ? { front: false } : {}) };
+    },
+    /** Close the tabs this agent opened with openUrl (all, or those on one site), holding the computer as any action does. */
+    async closeTabs(client, url, authorize) {
+      const latest = live(client, authorize, "browser:open");
+      const tracker = tabs();
+      if (!tracker) throw fail(503, `Reach can't close tabs on this ${word}.`);
+      if (url !== undefined && (typeof url !== "string" || url.length > 2048 || !URL.canParse(url))) throw fail(400, "Give the web address of the site whose tabs close, or nothing for all of them.");
+      take(latest);
+      const result = await tracker.closeOwn(latest.id, { url });
+      extend(latest);
+      note(latest, "close-tabs", {});
+      if (result.closed) actions(latest, { kind: "close-tabs", text: actionWords("close-tabs", {}, result) });
+      return result;
+    },
+    /** When this agent last acted or looked here (ms), or 0: its tabs close a while after. */
+    lastSeen(clientId) {
+      return Math.max(activity.get(clientId)?.at ?? 0, looks.get(clientId) ?? 0);
     },
     /** Keep the Mac's input lease for a whole declarative browser operation. */
     async withBrowser(client, appPath, authorize, work) {

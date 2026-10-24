@@ -8,6 +8,21 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Agents' browser tabs close once they're done. A tab an agent opened with
+  `reach_open_url` or `reach_open_bank` closes 5 minutes after the agent last
+  used the computer, as soon as its access ends, or when the agent calls the
+  new `reach_close_tabs`. An agent keeps at most 5 such tabs; opening another
+  closes its oldest one behind. Reach closes only tabs it saw appear for that
+  agent's open: tabs already there, and tabs opened by a link or a keyboard
+  shortcut, are never touched. A tab stays open while someone uses the
+  computer through Reach, when it's in front and the computer was used since
+  the agent's last action, or when it's on another site than the agent left
+  it. Chrome on a Mac (once Reach may control it), and Chrome and Edge on
+  Windows (with Reach's extension connected). Safari and other browsers aren't
+  covered: their tabs have no stable id, so agents close those themselves.
+
 ## [0.4.2] — 2026-10-24
 
 Early-access candidate including the file editing, terminal clipboard paste
