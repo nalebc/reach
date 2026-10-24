@@ -1,5 +1,5 @@
 import { guestPeers, readPrivatePeers, peerFromDevice, type Device, type Peer } from "./api";
-import { existingBrowserNode } from "./browser-node";
+import { browserPeerEligible, existingBrowserNode } from "./browser-node";
 import { setHomeOrigin } from "./home-origin";
 import { parseStartConfig, tailnetSuffix, type StartConfig } from "./start-flow";
 import {
@@ -78,7 +78,8 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
   };
   const candidatesFor = (next: PrivateWay, hostname: string) => peers(next).filter(peer => peer.transport !== "funnel" &&
     privateOrigin(peer)?.hostname === hostname && (!privatePeerWay(peer) || privatePeerWay(peer) === next));
-  const stillSaved = (next: PrivateWay, candidate: Peer) => peers(next).some(saved => peerKey(saved) === peerKey(candidate));
+  const stillSaved = (next: PrivateWay, candidate: Peer) => peers(next).some(saved => peerKey(saved) === peerKey(candidate) &&
+    (next !== "browser" || saved.browserIdentity === candidate.browserIdentity));
   function activate(next: PrivateWay, candidate: Peer, device: Device,
     browser: { node: TailnetNode; fetch: typeof fetch } | null, workspaceKey?: string) {
     const peer = { ...peerFromDevice(candidate, device), ...(workspaceKey ? { workspaceKey } : {}) };
@@ -131,9 +132,12 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
     for (const candidate of candidates) {
       try {
         if ((await read(browser.fetch, candidate.url + "/api/health")).product !== "Reach") continue;
+        if (!await browserPeerEligible(candidate)) continue;
+        if (!unchanged() || !stillSaved("browser", candidate)) return;
         const device: Device = await read(browser.fetch, candidate.url + "/api/device", candidate.token);
         if (!owner(device) || device.id !== candidate.id ||
           (candidate.computerId && device.computerId !== candidate.computerId)) continue;
+        if (!await browserPeerEligible(candidate)) continue;
         if (!unchanged() || !stillSaved("browser", candidate)) return;
         activate("browser", candidate, device, browser);
         return;
@@ -189,9 +193,12 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
     let repair = false;
     for (const candidate of candidates) {
       try {
+        if (next === "browser" && !await browserPeerEligible(candidate)) continue;
+        if (!unchanged() || !stillSaved(next, candidate)) return;
         const device: Device = await read(fetcher, candidate.url + "/api/device", candidate.token);
         if (!owner(device) || device.id !== current.device.id || scopes(device) !== scopes(current.device) ||
           (current.device.computerId && device.computerId !== current.device.computerId)) continue;
+        if (next === "browser" && !await browserPeerEligible(candidate)) continue;
         if (!unchanged() || !stillSaved(next, candidate)) return;
         // Keep the old tokens bound before changing the default route. Late
         // callbacks continue on their own device; no token is translated.
