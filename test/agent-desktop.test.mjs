@@ -832,7 +832,7 @@ for (const op of ["act", "open"]) {
 }
 
 
-test("helper timeout drains queued work and retains termination until a forced native exit", async t => {
+for (const [platform, graceMs] of [["darwin", 300], ["win32", 1500]]) test(`${platform} helper timeout drains queued work and retains termination until a forced native exit`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // No child process is launched: an inert process ignores graceful shutdown.
   const child = new EventEmitter(), events = [];
@@ -845,7 +845,7 @@ test("helper timeout drains queued work and retains termination until a forced n
     if (signal === "SIGKILL") { child.signalCode = signal; child.emit("exit", null, signal); }
     return true;
   };
-  const helper = new AgentDesktopHelper(child);
+  const helper = new AgentDesktopHelper(child, { platform });
   let terminated = false;
   helper.terminated.then(() => { terminated = true; });
   const active = outcome(helper.send({ op: "act" }));
@@ -861,7 +861,7 @@ test("helper timeout drains queued work and retains termination until a forced n
   assert.equal(helper.queue.length, 0);
   assert.equal(terminated, false, "rejecting send is not proof the native process stopped");
   await assert.rejects(helper.send({ op: "act" }), { status: 503 });
-  t.mock.timers.tick(299);
+  t.mock.timers.tick(graceMs - 1);
   assert.deepEqual(events, ["write:act", "stdin-end"]);
   t.mock.timers.tick(1);
   assert.deepEqual(events, ["write:act", "stdin-end", "SIGTERM"]);
