@@ -85,6 +85,7 @@ import { startTidying } from "./tidy.mjs";
 import { createDesktopAutomation } from "./desktop-automation.mjs";
 import { createAgentShortcuts, agentShortcutRoutes } from "./agent-shortcuts.mjs";
 import { createAgentTools, agentToolRoutes } from "./agent-tools.mjs";
+import { createAgentTabs } from "./agent-tabs.mjs";
 import { createAgentServices, agentServiceRoutes } from "./agent-services.mjs";
 import { createPermissionRequests, macAccess, permissionRoutes } from "./permission-requests.mjs";
 import { createServiceConnectors } from "./service-connectors.mjs";
@@ -516,7 +517,7 @@ export async function createReach(overrides = {}) {
   // included, until 2 minutes after your last input (server/screen.mjs).
   // Never part of blocked() below: chats' Claude app messages don't wait on it.
   const ownerHold = overrides.ownerHold || new OwnerHold();
-  let agentDesktop = null, inputInFlight = false;
+  let agentDesktop = null, agentTabs = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
     // Why chats' Claude app work waits, named on the waiting message.
     blocked: () => {
@@ -1117,6 +1118,8 @@ export async function createReach(overrides = {}) {
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
     screenChangedAt: () => desktopAutomation.changedAt?.() ?? 0, paused: () => paused, record, actions: logAction,
     pauses: agentPauses,
+    // The tabs agents open close once they're done (agent-tabs.mjs, below).
+    tabs: () => agentTabs, onActivity: (id, entry) => agentTabs?.activity(id, entry),
   }) : null);
   // Agents that can see or use this Mac (Full control, Apps, Read-only).
   const screenAgentIds = () => auth.list()
@@ -1238,6 +1241,19 @@ export async function createReach(overrides = {}) {
       notify({ category: "access", title: `${pushLine(agentName, 48)}'s tool needs ${browser}`, body: "Allow it once: Agents → Browser tools → Allow.", icon: "agent", tag: `tool-setup-${browser}`, actions: [{ action: "open", title: "Allow" }] });
     },
     ...(overrides.browserToolOptions || {}) });
+  // A tab an agent opened with reach_open_url closes once it's done with the
+  // computer (5 minutes on), its access ends, or it asks: never one that was
+  // there before, nor one the owner is using. Chrome on a Mac (Apple Events
+  // allowed), Chrome and Edge on Windows (Reach's extension connected).
+  agentTabs = overrides.agentTabs !== undefined ? overrides.agentTabs
+    : agentDesktop && !process.env.NODE_TEST_CONTEXT ? createAgentTabs({
+      dataDir: config.dataDir, driver: agentTools.driver, platform: process.platform, record,
+      allowed: (browser) => toolSetup.allowed?.(browser) ?? false,
+      lastSeen: (id) => agentDesktop.lastSeen?.(id) ?? 0,
+      holder: () => agentDesktop.activity?.().holder ?? null,
+      ownerUsing: () => !!ownerHold.active() || !!screenControl.holder() || screenControl.inputStopping(),
+      idle: () => idleSeconds(),
+    }) : null;
   // An agent's ask for a Mac permission it lacks: the owner's one tap on the
   // phone (permission-requests.mjs).
   const permissionRequests = createPermissionRequests({ toolSetup, access: macAccess(config), notify, record, platform: process.platform, ...overrides.permissionRequests });
@@ -2823,6 +2839,7 @@ export async function createReach(overrides = {}) {
   // A session's work ends; its credential stays (Reopen link) or goes (revoke).
   const endSession = (id) => {
     void codingTasks.cancelClient(id).catch(() => {});
+    agentTabs?.endClient(id);
     agentShortcuts.cancelClient(id);
     agentTools.cancelClient(id);
     agentServices.cancelClient(id);
@@ -6350,6 +6367,7 @@ export async function createReach(overrides = {}) {
       browserAppAccess.close();
       await browserApprovals.flushChanges();
       agentDesktop?.close?.();
+      agentTabs?.stop();
       agentShortcuts.close();
       agentTools.close();
       browserExtension?.close?.();

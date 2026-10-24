@@ -56,6 +56,7 @@ export function actionWords(kind, action = {}, result = {}) {
       try { const url = new URL(a.url); shown = url.host + (url.pathname === "/" ? "" : url.pathname); } catch { /* as given */ }
       return `Opened ${shown.length > 80 ? shown.slice(0, 79) + "…" : shown}${r.app ? ` in ${clean(r.app, 80)}` : ""}`;
     }
+    case "close-tabs": return `Closed ${r.closed === 1 ? "a tab" : `${Number(r.closed) || 0} tabs`} it had opened`;
     case "focus": return `Switched to ${quote(r.title || a.title || "a window", 60)}${r.tab ? `, tab ${quote(r.tab, 40)}` : ""}${r.app ? ` in ${clean(r.app, 80)}` : ""}`;
     case "open-file": return a.reveal ? `Showed ${quote(tail(a.path), 60)} in the Finder` : `Opened ${quote(tail(a.path), 60)}${r.app ? ` in ${clean(r.app, 80)}` : ""}`;
     case "find": return `Looked for ${quote(a.text ?? a.name, 60)}${r.found === false ? ": not there" : r.scrolled ? " and scrolled to it" : ""}`;

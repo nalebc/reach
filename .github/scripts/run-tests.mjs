@@ -172,6 +172,8 @@ export const suites = {
     // tool runner and its safety. Real Chrome and Edge run in ci.yml's
     // real-Windows step (windows-browser-tools-native).
     "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
+    // The tabs agents open closing once they're done, Chrome and Edge alike.
+    "agent-tabs",
   ],
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",

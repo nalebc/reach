@@ -33,6 +33,7 @@ const KINDS = {
   "POST /api/browser/desktop/wait": "wait",
   "POST /api/browser/desktop/open": "open-app",
   "POST /api/browser/desktop/open-url": "open-url",
+  "POST /api/browser/desktop/close-tabs": "close-tabs",
   "POST /api/browser/desktop/open-file": "open-file",
   "POST /api/browser/desktop/focus": "focus",
   "POST /api/browser/desktop/find": "find",

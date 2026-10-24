@@ -168,6 +168,10 @@ function createWindowsToolSetup({
       told.set(id, now());
       return true;
     },
+    // Whether Reach's extension in this browser answers now.
+    async allowed(id) {
+      return Object.hasOwn(WINDOWS_BROWSERS, id) && !!extension && state(id) === "connected";
+    },
     async status() {
       try {
         await prepare();
@@ -250,6 +254,11 @@ function createMacToolSetup({
       if (now() - (told.get(id) || 0) < 3600_000) return false;
       told.set(id, now());
       return true;
+    },
+    // Whether macOS lets Reach control this browser now, never asking.
+    async allowed(id) {
+      if (platform !== "darwin" || !Object.hasOwn(TOOL_BROWSERS, id) || !exists(APPS[id])) return false;
+      return state(await run("check", TOOL_BROWSERS[id])) === "allowed";
     },
     async status() {
       if (platform !== "darwin") return { available: false, browsers: [] };
