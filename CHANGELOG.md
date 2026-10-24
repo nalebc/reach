@@ -8,33 +8,6 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-### Added
-
-- Agents' browser tabs close once they're done. A tab an agent opened with
-  `reach_open_url` or `reach_open_bank` closes 5 minutes after the agent last
-  used the computer, as soon as its access ends, or when the agent calls the
-  new `reach_close_tabs`. An agent keeps at most 5 such tabs; opening another
-  closes its oldest one behind. Reach closes only the sole new tab it saw at
-  the exact requested address: tabs already there, and tabs opened by a link or a keyboard
-  shortcut, are never touched. A tab stays open while someone uses the
-  computer through Reach, when it's in front and the computer was used since
-  the agent's last action, or when its address changed, including a path,
-  query or fragment on the same site; a later agent action never adopts that changed page. Unknown close
-  results are never retried. Chrome on a Mac (once Reach may control it), and
-  Chrome and Edge on
-  Windows (with Reach's extension connected). Safari and other browsers aren't
-  covered: their tabs have no stable id, so agents close those themselves.
-
-### Fixed
-
-- "Find Gmail message" no longer stops at "The browser has not reached the
-  exact requested page." Gmail writes a search's spaces back as `+`, so the
-  tool's exact address match never came. Equivalent spelling is accepted only
-  within Gmail's single search-query segment. The HTTPS site, account, path
-  and query string still match exactly; other pages and route boundaries
-  retain exact address matching. The browser document binds to the exact
-  reached address, and another search still stops.
-
 ## [0.4.2] — 2026-10-24
 
 Early-access candidate including the file editing, terminal clipboard paste
@@ -44,6 +17,19 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 
 ### Added
 
+- Set up a browser fallback from the existing private Reach link. The browser
+  keeps its own Tailscale identity and separate device approval with the same
+  access. Preparing this link also saves Reach's public interface files so it
+  can reopen when the native connection is unavailable; computer data and
+  credentials are never cached by that preparation.
+- Let agents close their tracked tabs with `reach_close_tabs`, or automatically
+  after five minutes without agent activity or when their access ends. Opening
+  a sixth tracked tab tries to close its oldest eligible background tab.
+  Supported browsers are Chrome on macOS and Chrome/Edge on Windows, with
+  their existing browser permissions. Pre-existing, ambiguous, redirected and
+  navigated pages are left open, including changed paths, queries or fragments.
+  Cleanup waits while the owner is using Reach; uncertain closes are never
+  retried automatically.
 - Edit UTF-8 text files from Files, preserving Windows line endings and checking
   the original file hash before saving. Unsaved drafts survive closing a preview
   and verified private handoffs; a save still requires an explicit action.
@@ -53,6 +39,22 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 
 ### Fixed
 
+- Reopen a prepared private-port link after the native route disappears,
+  authenticate through the browser's own saved approval, and return to native
+  automatically. Complete interface versions keep the normal browser security
+  policy; interrupted preparation keeps the previous complete version.
+- Keep agent desktop tools responsive during concurrent startup, refuse work
+  after its grant changes, bound pending native input and report helper
+  failures as structured tool errors. Screenshot results must remain fresh.
+- Reject non-web site filters for tab cleanup before taking control or sending
+  a close. Closing tabs is advertised as a write that can lose unsaved state.
+- "Find Gmail message" no longer stops at "The browser has not reached the
+  exact requested page." Gmail writes a search's spaces back as `+`, so the
+  tool's exact address match never came. Equivalent spelling is accepted only
+  within Gmail's single search-query segment. The HTTPS site, account, path
+  and query string still match exactly; other pages and route boundaries
+  retain exact address matching. The browser document binds to the exact
+  reached address, and another search still stops.
 - Keep a terminal's last row and column inside its screen above the keys,
   and keep following the newest output when its box is fitted again.
 - Recover live screen, sound, control and terminals through a brief identity
