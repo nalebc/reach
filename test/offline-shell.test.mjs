@@ -263,28 +263,72 @@ test("the build manifest follows only the current dependency graph and refuses p
 
 
 for (const replacement of [Buffer.from("a distinct longer build generation"), Buffer.alloc(8 * 1024 * 1024 + 1)])
-  test(`a renamed build input (${replacement.length} bytes) cannot publish checked metadata from the previous file`, () => {
+  test(`a renamed build input (${replacement.length} bytes) cannot publish checked metadata from the previous file`, t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-offline-build-race-")), original = fs.openSync;
-    let replaced = false;
+    let replaced = false, owned;
+    const observed = { platform: process.platform, arch: process.arch, replacementBytes: replacement.length, stage: "not reached", opens: [] };
+    const details = error => ({ code: error.code, errno: error.errno, syscall: error.syscall, message: error.message.replaceAll(dir, "<fixture>") });
     try {
       fs.mkdirSync(path.join(dir, ".vite")); fs.mkdirSync(path.join(dir, "assets")); fs.mkdirSync(path.join(dir, "pdfjs"));
       fs.writeFileSync(path.join(dir, ".vite/manifest.json"), JSON.stringify({ "index.html": { file: "assets/current.js" } }));
       fs.writeFileSync(path.join(dir, "index.html"), "<html><head></head><body></body></html>");
       fs.writeFileSync(path.join(dir, "manifest.webmanifest"), '{"icons":[]}'); fs.writeFileSync(path.join(dir, "favicon.svg"), "<svg/>");
       for (const name of ["jbig2_nowasm_fallback", "openjpeg_nowasm_fallback"]) fs.writeFileSync(path.join(dir, "pdfjs", name + ".js"), "/* fixed */");
-      const file = path.join(dir, "assets/current.js"), next = path.join(dir, "replacement.tmp");
+      const file = path.join(dir, "assets/current.js"), next = path.join(dir, "replacement.tmp"), retired = path.join(dir, "opened-original.tmp");
       fs.writeFileSync(file, "current"); fs.writeFileSync(next, replacement);
       // Replace the actual opened file before production validates its
       // descriptor/leaf identity. Its read operation remains unchanged.
       fs.openSync = function (...args) {
-        const fd = original.apply(this, args);
-        if (!replaced && args[0] === file) { fs.renameSync(next, file); replaced = true; }
+        if (observed.opens.length < 16) observed.opens.push(path.relative(dir, args[0]));
+        let fd;
+        try { fd = original.apply(this, args); }
+        catch (error) { observed.stage = "open failed"; observed.error = details(error); throw error; }
+        if (!replaced && args[0] === file) {
+          owned = fd; observed.stage = "rename after open";
+          try {
+            const opened = fs.fstatSync(fd, { bigint: true });
+            if (process.platform === "win32") {
+              observed.stage = "move opened source to unused sibling";
+              fs.renameSync(file, retired); observed.sourceMoved = true;
+              observed.stage = "move replacement to vacant original";
+            }
+            fs.renameSync(next, file); replaced = true; observed.stage = "replacement complete";
+            const held = fs.fstatSync(fd, { bigint: true }), leaf = fs.lstatSync(file, { bigint: true });
+            observed.originalDescriptorPreserved = held.dev === opened.dev && held.ino === opened.ino;
+            observed.replacementHasDistinctIdentity = held.dev !== leaf.dev || held.ino !== leaf.ino;
+            observed.replacementSize = Number(leaf.size);
+          }
+          catch (error) {
+            observed.error = details(error);
+            // A hook that throws before returning the descriptor still owns
+            // it; the production reader never receives that descriptor.
+            try { fs.closeSync(fd); observed.closedByHook = true; }
+            catch (closeError) { observed.closeError = details(closeError); }
+            throw error;
+          }
+        }
         return fd;
       };
       assert.throws(() => writeOfflineShell(dir), /Invalid offline interface asset/);
       assert.equal(replaced, true);
+      assert.equal(observed.originalDescriptorPreserved, true);
+      assert.equal(observed.replacementHasDistinctIdentity, true);
+      assert.equal(observed.replacementSize, replacement.length);
       assert.equal(fs.existsSync(path.join(dir, "offline-shell.json")), false, "a mixed generation is never published");
-    } finally { fs.openSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally {
+      fs.openSync = original;
+      if (owned !== undefined) {
+        try { fs.fstatSync(owned); observed.descriptorClosed = false; }
+        catch (error) { observed.descriptorClosed = error.code === "EBADF"; }
+        if (!observed.descriptorClosed) fs.closeSync(owned);
+      }
+      observed.replaced = replaced;
+      t.diagnostic(JSON.stringify(observed));
+      fs.mkdirSync("reports", { recursive: true });
+      fs.writeFileSync(path.join("reports", `offline-build-race-${replacement.length}.json`), JSON.stringify(observed, null, 2) + "\n");
+      fs.rmSync(dir, { recursive: true, force: true });
+      assert.equal(observed.descriptorClosed, true, "the real opened descriptor is closed before fixture removal");
+    }
   });
 
 // Real client/controller modules with a modeled worker command channel and
