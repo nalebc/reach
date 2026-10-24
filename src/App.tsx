@@ -3,6 +3,7 @@ import "./storage-fallback";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
+import ConnectionReport from "./ConnectionReport";
 import KeepInSync from "./KeepInSync";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
@@ -921,7 +922,10 @@ function ReachWorkspace() {
             onHome={() => navigate("overview")}
           >
             {loading && !device ? (
-              <Spinner />
+              <>
+                <Spinner />
+                <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
+              </>
             ) : error && !device ? (
               <>
                 {page === "overview" && (
@@ -959,6 +963,7 @@ function ReachWorkspace() {
                     Reach retries connection interruptions automatically. Keep
                     your computer awake and Tailscale connected on both devices.
                   </Empty>
+                  <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
                 </section>
               </>
             ) : device && peer && pageAccessible(page, features) ? (
@@ -1728,6 +1733,7 @@ export function SettingsPage({
           <ChevronRight className="gs-chevron" size={18} />
         </button>
         <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
+        <ConnectionReport peer={peer} toast={toast} />
       </div>
 
       {/* What Reach drives here, behind or too old: Update (KeepInSync.tsx). */}
