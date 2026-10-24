@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fail } from "./core.mjs";
 import { permissionHint } from "./screen-stream.mjs";
 import { screenTrouble } from "./remote-screen.mjs";
+import { gone } from "./identity-hold.mjs";
 
 // The computer's sound on the phones that listen beside its live screen
 // (Screen's speaker). What the computer plays, never its microphone: its
@@ -330,7 +331,7 @@ export class SoundHub {
     try {
       const factory = await this.prepare();
       if (generation !== this.generation || !this.listeners.size) return;
-      for (const [ws, l] of this.listeners) if (!l.authorize()) this.remove(ws);
+      for (const [ws, l] of this.listeners) if (gone(l.authorize())) this.remove(ws);
       if (!this.listeners.size || generation !== this.generation) return;
       this.source = factory({
         onInfo: () => {
@@ -421,11 +422,13 @@ export class SoundHub {
       if (quiet && packets[n]) packets[n][3] = QUIET;
     }
     for (const [ws, l] of this.listeners) {
-      if (!l.authorize() || ws.readyState !== 1) {
+      const allowed = l.authorize();
+      if (gone(allowed) || ws.readyState !== 1) {
         this.remove(ws);
         continue;
       }
-      if (!l.ready) continue;
+      // Held (Tailscale's word late): nothing plays until it's confirmed.
+      if (!allowed || !l.ready) continue;
       const oldest = l.inFlight.values().next().value;
       if (oldest !== undefined && now - oldest > STALLED_MS) {
         this.fail(ws, "Sound stopped reaching this phone. Reconnecting…");

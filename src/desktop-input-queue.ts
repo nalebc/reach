@@ -7,6 +7,11 @@ export type TextTarget = {
   pending?: boolean;
   // Reset phone-only draft context after a remote caret/selection change.
   editRevision?: number;
+  // The typing session, kept while its field is confirmed again (after a
+  // reconnect, Tab or Esc): its keyboard stays open meanwhile.
+  session?: string;
+  // Confirming the same field again on a new connection: its point.
+  rejoin?: { x: number; y: number } | true;
 };
 export type InputResult = {
   ok?: boolean;
@@ -19,6 +24,18 @@ export type InputResult = {
   clickState?: number;
   retargeted?: boolean;
 };
+type InputReconnectError = Error & { inputReconnect: true; notSent?: true };
+// A local connection lifetime marker, never copied from a host's refusal.
+// Only notSent actions may be retained for a later explicit user decision.
+export function inputEnded(reconnecting = false, notSent = false, message = "Desktop control ended.") {
+  return Object.assign(Error(message), {
+    ...(reconnecting ? { inputReconnect: true as const } : {}),
+    ...(notSent ? { notSent: true as const } : {}),
+  });
+}
+export function isInputReconnect(error: unknown): error is InputReconnectError {
+  return !!error && typeof error === "object" && (error as InputReconnectError).inputReconnect === true;
+}
 type Pending = {
   action: DesktopAction;
   resolve: (r: InputResult) => void;
@@ -28,6 +45,25 @@ type Pending = {
 };
 // Pointer moves and scrolls: the newest one stands for those before it.
 const isMotion = (action: DesktopAction) => action.type === "move" || action.type === "scroll";
+const graphemes = (text: string) =>
+  Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (s) => s.segment);
+const bytes = (text: string) => new TextEncoder().encode(text).length;
+// Typing that hasn't left yet goes as one edit with the next: a burst of
+// letters can't fill the queue, and the computer types exactly the same.
+// An edit deletes its count of characters before the caret, then types.
+export function mergeTyping(a: DesktopAction, b: DesktopAction): DesktopAction | null {
+  if (a.focus !== b.focus) return null;
+  if (a.type === "text" && b.type === "text") {
+    const text = String(a.text) + String(b.text);
+    return bytes(text) <= 4000 ? { ...b, text } : null;
+  }
+  if (a.type !== "type-edit" || b.type !== "type-edit") return null;
+  const typed = graphemes(String(a.text)), removed = Number(b.delete);
+  const merged = removed <= typed.length
+    ? { delete: Number(a.delete), text: typed.slice(0, typed.length - removed).join("") + String(b.text) }
+    : { delete: Number(a.delete) + removed - typed.length, text: String(b.text) };
+  return merged.delete <= 256 && bytes(merged.text) <= 4000 ? { ...b, ...merged } : null;
+}
 // A small ordered window hides network RTT; the host still dispatches serially.
 export class DesktopInputQueue {
   private pending = new Map<number, Pending>();
@@ -36,6 +72,7 @@ export class DesktopInputQueue {
   private lastMotion = -Infinity;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private reconnecting = false;
   constructor(
     private transmit: (id: number, action: DesktopAction) => void,
     private fail: (message: string) => void,
@@ -47,7 +84,7 @@ export class DesktopInputQueue {
   }
   enqueue(action: DesktopAction): Promise<InputResult> {
     return new Promise((resolve, reject) => {
-      if (this.stopped) return reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
+      if (this.stopped) return reject(inputEnded(this.reconnecting, true));
       // A touch stopping a fling discards unsent scrolling even on a slow
       // link. Keep clicks, keys and pointer releases in their original order.
       if (action.type === "scroll" && action.phase === "cancelled" && action.dx === 0 && action.dy === 0)
@@ -74,8 +111,24 @@ export class DesktopInputQueue {
           this.flush();
           return;
         }
+      const last = this.queued.at(-1);
+      const merged = last && mergeTyping(last.action, action);
+      if (last && merged) {
+        const { resolve: first, reject: firstFailed } = last;
+        last.action = merged;
+        last.resolve = (result) => {
+          first(result);
+          resolve(result);
+        };
+        last.reject = (error) => {
+          firstFailed(error);
+          reject(error);
+        };
+        this.flush();
+        return;
+      }
       if (this.queued.length >= 32) {
-        reject(Error("Too many pending actions."));
+        reject(inputEnded(true, true, "Too many pending actions."));
         this.fail("Desktop input queue filled. Reconnect.");
         return;
       }
@@ -119,7 +172,7 @@ export class DesktopInputQueue {
       try {
         this.transmit(id, item.action);
       } catch {
-        this.close();
+        this.close(true);
         this.fail(
           "Desktop input disconnected. No pending actions were replayed.",
         );
@@ -137,19 +190,22 @@ export class DesktopInputQueue {
     this.flush();
     return this.now() - item.sent;
   }
+  // Longer than the computer may hold input while it confirms this phone
+  // again (server/identity-hold.mjs, 5 s): a hold isn't a dead link.
   checkTimeout() {
-    if ([...this.pending.values()].some((p) => this.now() - p.sent > 3000))
+    if ([...this.pending.values()].some((p) => this.now() - p.sent > 6000))
       this.fail("Desktop input timed out.");
   }
-  close() {
+  close(reconnecting = false, message = "Desktop control ended.") {
     this.stopped = true;
+    this.reconnecting ||= reconnecting;
     clearTimeout(this.timer);
-    const error = Error("Desktop control ended.");
+    const error = inputEnded(this.reconnecting, false, message);
     for (const item of this.pending.values()) item.reject(error);
     // Never transmitted: the Mac can't have done these, so a tap among them
     // may go again once control is back (src/DesktopSurface.tsx, within 1 s).
     for (const item of this.queued)
-      item.reject(Object.assign(Error("Desktop control ended."), { notSent: true }));
+      item.reject(inputEnded(this.reconnecting, true, message));
     this.pending.clear();
     this.queued = [];
   }

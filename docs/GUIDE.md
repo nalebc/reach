@@ -97,12 +97,12 @@ See [Agent CLI setup](AGENT_CLI.md) for owner commands, restricted tailnet grant
 With Tailscale 1.104, use [macOS 13 or newer](https://tailscale.com/changelog#2026-10-07). Use a source checkout with Node.js 22.12 or newer and the Go version in `tailnet/go.mod` (Go builds the in-browser Tailscale client; without it, phones need the Tailscale app). On Linux, the terminal component builds from source: install `build-essential` and `python3` (Debian/Ubuntu) or `gcc-c++ make python3` (Fedora) first, and let your user manage Tailscale. If signed out, use `sudo tailscale up --operator=$USER`; if already signed in, use `sudo tailscale set --operator=$USER`.
 
 ```sh
-git clone --branch v0.4.1 https://github.com/nalebc/reach.git
+git clone --branch v0.4.2 https://github.com/nalebc/reach.git
 cd reach
 ./reach
 ```
 
-`--branch v0.4.1` installs this release. `main` carries changes that aren't released yet.
+`--branch v0.4.2` installs this release. `main` carries changes that aren't released yet.
 
 On Windows, use `.\reach.cmd` in place of `./reach`. The phone can sign in from its browser; a Tailscale app already connected to the PC’s network uses the private path (experimental; see [Supported platforms](#supported-platforms) and the [README's setup steps](../README.md#what-setup-walks-you-through)).
 

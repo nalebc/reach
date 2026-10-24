@@ -124,7 +124,10 @@ test("Annex B parser preserves split start codes and complete access units", () 
   assert.deepEqual(frames[0], first);
   assert.deepEqual(frames[1], second);
 });
-test("video backpressure stays bounded and recovers slow viewers with a keyframe", async () => {
+// Alone, a viewer waiting on its acks missed nothing: it resumes with the
+// next frame, no keyframe (one per stall cost ~31% of the bytes at a 120 ms
+// round trip). One that missed frames others got: remote-screen-hub.test.mjs.
+test("video backpressure stays bounded and a lone slow viewer resumes without a keyframe", async () => {
   const commands = [];
   let stopped = false;
   const broadcaster = new RemoteBroadcast(
@@ -156,7 +159,7 @@ test("video backpressure stays bounded and recovers slow viewers with a keyframe
   assert.throws(() => broadcaster.ack(ws, 999));
   broadcaster.ack(ws, seq);
   await until(() => packets.length > 6);
-  assert.equal(commands[6], "key");
+  assert.equal(commands[6], "frame");
   broadcaster.remove(ws);
   assert.equal(stopped, true);
 });
@@ -266,15 +269,20 @@ test(
         "persistent channel handles drag, modifiers and explicit clipboard and releases on close",
         async () => {
           await call("/api/screen/control", owner.token, { enabled: true });
-          const c = await connect(owner.token);
-          await until(() => c.messages.some((m) => m.type === "ready"));
-          assert.equal(c.messages.find((m) => m.type === "ready").window, 8);
-          assert.deepEqual(c.messages.find((m) => m.type === "ready").cursor, {
+          const first = await connect(owner.token);
+          await until(() => first.messages.some((m) => m.type === "ready"));
+          assert.equal(first.messages.find((m) => m.type === "ready").window, 8);
+          assert.deepEqual(first.messages.find((m) => m.type === "ready").cursor, {
             x: 0.2,
             y: 0.7,
           });
-          const duplicate = await connect(owner.token);
-          await until(() => duplicate.ws.readyState === 3);
+          // A second connection from the same phone takes over: the phone
+          // made it to replace the first, which ends as superseded (the
+          // lease stays, nothing it had is sent again).
+          const c = await connect(owner.token);
+          await until(() => first.ws.readyState === 3);
+          assert.ok(first.messages.some((m) => m.type === "error" && m.superseded === true && m.retryable === true));
+          await until(() => c.messages.some((m) => m.type === "ready"));
           assert.equal(c.ws.readyState, 1);
           let id = 0;
           for (const action of [
@@ -304,10 +312,13 @@ test(
           );
           assert(c.messages.some((m) => m.text === "Selected test text"));
           assert.equal(c.messages.find((m) => m.type === "ready").typing, true);
-          assert.equal(starts, 1);
+          assert.equal(starts, 2);
           assert.ok(c.messages.some((m) => m.text === "fixture clipboard"));
-          c.ws.close();
-          await until(() => stops > 0);
+          // Control off on the phone closes 1000: let go at once. (Without
+          // a code, 1005, it's a drop the lease waits for.)
+          const open = stops;
+          c.ws.close(1000);
+          await until(() => stops > open);
           assert.ok(actions.some((a) => a.type === "up")); // No real OS input in this fixture.
         },
       );
