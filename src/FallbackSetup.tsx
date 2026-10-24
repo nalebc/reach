@@ -29,11 +29,11 @@ export default function FallbackSetup({ peer, device }: { peer: Peer; device: De
     <button className="gs-row" onClick={() => setOpen(true)}>
       <ShieldCheck size={21} />
       <span className="gs-label">Set up fallback</span>
-      <span className="gs-value">{fallbackSetupNeeded(peer) ? "Setup needed" : state.phase === "ready" ? "Ready" : "Check"}</span>
+      <span className="gs-value">{fallbackSetupNeeded(peer) ? "Setup needed" : state.phase === "ready" ? state.cold === "ready" ? "Ready" : "Keep open" : "Check"}</span>
       <ChevronRight className="gs-chevron" size={18} />
     </button>
     {open && <ScreenPopup title="Fallback connection" className="gs-sheet" onClose={close}>
-      <p>Keep this Reach session working when the Tailscale app is off. Leave it on while you finish this one-time setup.</p>
+      <p>Keep using Reach when the Tailscale app is off, including after reopening it. Leave Tailscale on while you finish this one-time setup.</p>
       {["idle", "connecting"].includes(state.phase) && <p role="status">Preparing your fallback connection…</p>}
       {state.phase === "checking" && <p role="status">Checking your connection…</p>}
       {state.phase === "sign-in" && <>
@@ -49,6 +49,9 @@ export default function FallbackSetup({ peer, device }: { peer: Peer; device: De
       {state.phase === "ready" && <>
         <p role="status">Fallback is ready.</p>
         <p>Reach will use it when the Tailscale app is off and return automatically when the app is available.</p>
+        {state.cold === "preparing" && <p role="status">Saving Reach on this phone so it can reopen later…</p>}
+        {state.cold === "ready" && <p>You can close and reopen Reach with Tailscale off.</p>}
+        {state.cold === "unavailable" && <p role="status">Keep Reach open for now. Its connection is approved, but saving it for reopening did not finish. Open setup again to retry; your approval is kept.</p>}
         <button className="button" onClick={close}>Done</button>
       </>}
       {state.phase === "request-unknown" && <>

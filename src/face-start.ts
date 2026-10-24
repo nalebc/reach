@@ -1,3 +1,4 @@
+import { retireOfflineShell } from "./offline-shell";
 // Face ID sign-in, the browser's side (server/face-join.mjs): the start page
 // passes Face ID, joins your tailnet with the computer's one-time key, and
 // leaves the one-time ticket here for Connect to use once.
@@ -48,6 +49,7 @@ export function forgetSaved() {
     localStorage.removeItem("reach.browser.devices");
     localStorage.removeItem("reach.browser.active");
     localStorage.removeItem("reach.browser.identity-lineage");
+    retireOfflineShell();
     // Saved before the two ways were kept apart (src/api.ts, separateWays):
     // at this address, that was only ever the browser way's.
     if (!location.port && location.hostname.endsWith(".ts.net") && !localStorage.getItem("reach.ways")) {
