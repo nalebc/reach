@@ -29,7 +29,7 @@ export async function lookAtRunnerDesktop(x, y) {
   return JSON.parse(stdout.trim());
 }
 
-export function windowsFixture(name, references = [], { onStage } = {}) {
+export function windowsFixture(name, references = [], { onStage, signal } = {}) {
   if (process.platform !== "win32") throw Error("Windows fixtures are built on Windows.");
   // Optional test diagnostics cannot change compilation or disclose paths/output.
   const mark = (stage, details = {}) => { try { onStage?.(stage, details); } catch {} };
@@ -60,10 +60,11 @@ export function windowsFixture(name, references = [], { onStage } = {}) {
       const out = path.join(dir, `${name}.exe`);
       const framework = path.win32.dirname(csc);
       try {
+        signal?.throwIfAborted();
         mark("fixture-compile-begin");
         const compilation = exec(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", `/out:${out}`,
           ...["System.dll", ...references].map((file) => `/reference:${path.win32.join(framework, file)}`),
-          path.join(fixtures, `${name}.cs`)], { windowsHide: true, timeout: 120000 });
+          path.join(fixtures, `${name}.cs`)], { windowsHide: true, timeout: 120000, ...(signal ? { signal } : {}) });
         mark("fixture-compiler-spawned", { pid: Number.isInteger(compilation.child?.pid) ? compilation.child.pid : null });
         await compilation;
         mark("fixture-compile-complete", {

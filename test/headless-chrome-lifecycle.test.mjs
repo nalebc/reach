@@ -2,11 +2,27 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import crypto from "node:crypto";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
 import { launchChrome } from "./helpers/headless-chrome.mjs";
+import { prepareWindowsBrowserBroker, verifyPreparedBrowserBroker, windowsBrowserProcess } from "./helpers/windows-browser-lifetime.mjs";
+
+let preparedBroker, diagnosticRemaining = 16384;
+test.before(async t => {
+  if (process.platform !== "win32") return;
+  const began = performance.now();
+  preparedBroker = await prepareWindowsBrowserBroker({ signal: t.signal, onStage(stage, details) {
+    const line = JSON.stringify({ stage, phase: "preparation", elapsedMs: Math.round(performance.now() - began), ...details }) + "\n";
+    const bytes = Buffer.byteLength(line);
+    if (bytes > diagnosticRemaining) return;
+    diagnosticRemaining -= bytes;
+    process.stderr.write(line);
+  } });
+}, { timeout: 120000 });
 
 // Model a browser whose parent exits before its inherited protocol pipes
 // close. No real Chrome, process group or operating-system signal is used.
@@ -143,7 +159,7 @@ test("failed browser startup releases protocol calls and exits naturally after c
     import { windowsBrowserProcess } from ${JSON.stringify(windowsOwner)};
     const hooks = [];
     const began = performance.now();
-    let remaining = 16384, owner;
+    let remaining = ${diagnosticRemaining}, owner;
     const mark = (stage, details = {}) => {
       const base = { stage, elapsedMs: Math.round(performance.now() - began) };
       let line = JSON.stringify({ ...base, ...details });
@@ -166,14 +182,19 @@ test("failed browser startup releases protocol calls and exits naturally after c
     };
     mark("script-entered", { platform: process.platform, arch: process.arch });
     const options = { binary: process.execPath };
-    if (process.platform === "win32") options.launchProcess = async (binary, flags) => {
-      mark("native-owner-setup-begin");
-      owner = await windowsBrowserProcess(binary, flags, { onStage: mark });
-      mark("native-owner-setup-returned", snapshot());
-      owner.child.once("exit", () => mark("child-exit", snapshot()));
-      owner.child.once("close", () => mark("child-close", snapshot()));
-      return owner;
-    };
+    if (process.platform === "win32") {
+      const preparedBroker = JSON.parse(process.env.REACH_TEST_PREPARED_BROWSER_BROKER || "null");
+      delete process.env.REACH_TEST_PREPARED_BROWSER_BROKER;
+      if (!preparedBroker) throw Error("The parent did not prepare its Windows browser broker");
+      options.launchProcess = async (binary, flags) => {
+        mark("native-owner-setup-begin");
+        owner = await windowsBrowserProcess(binary, flags, { onStage: mark, preparedBroker });
+        mark("native-owner-setup-returned", snapshot());
+        owner.child.once("exit", () => mark("child-exit", snapshot()));
+        owner.child.once("close", () => mark("child-close", snapshot()));
+        return owner;
+      };
+    }
     let refused = false;
     try {
       mark("handshake-begin");
@@ -191,10 +212,75 @@ test("failed browser startup releases protocol calls and exits naturally after c
     mark("retired", snapshot());
     process.stdout.write("retired\\n");
   `;
-  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true }).catch(error => {
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true,
+    ...(preparedBroker ? { env: { ...process.env, REACH_TEST_PREPARED_BROWSER_BROKER: JSON.stringify(preparedBroker) } } : {}),
+  }).catch(error => {
     t.diagnostic(typeof error.stderr === "string" && error.stderr ? error.stderr : "No failed-start subprocess stderr markers were captured.");
     throw error;
   });
   t.diagnostic(stderr);
   assert.equal(stdout.trim(), "retired");
+});
+
+// These are descriptor-refusal models using guard-only bytes. They never run
+// that file; the Windows before hook/failed-start child runs the real C# build.
+function guardOnlyDescriptor(t) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "reach-fixtures-")));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "browser-job.exe"), bytes = Buffer.from("guard-only-record-A");
+  fs.writeFileSync(file, bytes);
+  return { schema: 1, file, bytes: bytes.length,
+    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    sourceSha256: crypto.createHash("sha256").update(fs.readFileSync(new URL("./fixtures/windows/browser-job.cs", import.meta.url))).digest("hex"),
+    creatorPid: process.ppid };
+}
+
+test("prepared broker guard refuses malformed provenance without logging descriptor data or compiling", async t => {
+  const base = guardOnlyDescriptor(t), events = [], secret = "guard-value-never-log";
+  for (const [value, reason] of [[null, "descriptor"], [{ ...base, token: secret }, "descriptor"],
+    [{ ...base, file: "relative/browser-job.exe" }, "descriptor"], [{ ...base, creatorPid: -1 }, "descriptor"],
+    [{ ...base, sourceSha256: "0".repeat(64) }, "source"], [{ ...base, bytes: base.bytes + 1 }, "file"],
+    [{ ...base, sha256: "0".repeat(64) }, "digest"]]) {
+    assert.throws(() => verifyPreparedBrowserBroker(value, { onStage: (stage, data) => events.push({ stage, ...data }) }),
+      { code: "ERR_PREPARED_BROWSER_BROKER", reason });
+  }
+  const log = JSON.stringify(events);
+  assert.equal(log.includes(secret), false);
+  assert.equal(log.includes(base.file), false);
+  assert.ok(events.every(event => Object.keys(event).every(key => ["stage", "reason"].includes(key))));
+  await assert.rejects(windowsBrowserProcess("must-never-start", [], { preparedBroker: null, onStage() { throw Error(secret); } }),
+    { code: "ERR_PREPARED_BROWSER_BROKER", reason: "descriptor" });
+});
+
+test("prepared broker guard refuses changed and missing files across a real child boundary", { timeout: 15000 }, async t => {
+  const base = { ...guardOnlyDescriptor(t), creatorPid: process.pid };
+  const helper = new URL("./helpers/windows-browser-lifetime.mjs", import.meta.url).href;
+  const guard = new URL("./helpers/runaway-guard.mjs", import.meta.url).href;
+  const script = `
+    import { verifyPreparedBrowserBroker } from ${JSON.stringify(helper)};
+    const prepared = JSON.parse(process.env.REACH_TEST_PREPARED_BROWSER_BROKER);
+    delete process.env.REACH_TEST_PREPARED_BROWSER_BROKER;
+    try { verifyPreparedBrowserBroker(prepared); process.stdout.write("accepted\\n"); }
+    catch (error) {
+      if (error.code !== "ERR_PREPARED_BROWSER_BROKER") throw error;
+      process.stdout.write("refused:" + error.reason + "\\n");
+    }
+  `;
+  const run = () => promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], {
+    timeout: 10000, windowsHide: true, env: { ...process.env, REACH_TEST_PREPARED_BROWSER_BROKER: JSON.stringify(base) },
+  });
+  fs.writeFileSync(base.file, "guard-only-record-B");
+  assert.equal((await run()).stdout.trim(), "refused:digest");
+  fs.rmSync(base.file);
+  assert.equal((await run()).stdout.trim(), "refused:unavailable");
+});
+
+test("prepared broker guard refuses a linked preparation directory", t => {
+  const base = guardOnlyDescriptor(t);
+  const links = fs.mkdtempSync(path.join(os.tmpdir(), "reach-guard-links-"));
+  t.after(() => fs.rmSync(links, { recursive: true, force: true }));
+  const link = path.join(links, "reach-fixtures-ABC123");
+  fs.symlinkSync(path.dirname(base.file), link, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => verifyPreparedBrowserBroker({ ...base, file: path.join(link, "browser-job.exe") }),
+    { code: "ERR_PREPARED_BROWSER_BROKER", reason: "file" });
 });
