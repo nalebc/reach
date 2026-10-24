@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { createAgentTools } from "../server/agent-tools.mjs";
+import { createAgentTools, sameToolPage } from "../server/agent-tools.mjs";
 import {
   validateToolDefinition,
   toolInputs,
@@ -665,6 +665,92 @@ test("existing drafts are preserved and missing or tampered file handles fail be
     /expired or belongs/,
   );
   assert.equal(f.driver.counters.drafts, 0);
+});
+
+test("Gmail search query spelling preserves the exact account, path, query and origin", () => {
+  const wanted = "https://mail.google.com/mail/u/0/#search/unpaid%20invoice%20from%3Aacme";
+  assert.equal(sameToolPage(wanted, wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice+from:acme", wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice", wanted), false, "another search");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/1/#search/unpaid+invoice+from:acme", wanted), false, "another account");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/?x=1#search/unpaid+invoice+from:acme", wanted), false, "another query string");
+  assert.equal(sameToolPage("https://evil.example/mail/u/0/#search/unpaid+invoice+from:acme", wanted), false, "another site");
+  // A literal plus asked for (%2B) is not a space written back as +.
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a+b", "https://mail.google.com/mail/u/0/#search/a%2Bb"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a%2Bb", "https://mail.google.com/mail/u/0/#search/a%2Bb"), true);
+  // Without a fragment asked for, only the exact address.
+  assert.equal(sameToolPage("https://example.com/a?b=c+d", "https://example.com/a?b=c%20d"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/%E0%A4%A", wanted), false, "unreadable");
+});
+
+for (const [boundary, actual, wanted] of [
+  ["another SPA's plus identifier", "https://example.com/#search/invoice+October", "https://example.com/#search/invoice%20October"],
+  ["another SPA's encoded route separator", "https://example.com/#item/invoice%2Fmessage", "https://example.com/#item/invoice/message"],
+  ["a Gmail non-search route", "https://mail.google.com/mail/u/0/#inbox/invoice+October", "https://mail.google.com/mail/u/0/#inbox/invoice%20October"],
+  ["an encoded Gmail search route separator", "https://mail.google.com/mail/u/0/#search%2Finvoice+October", "https://mail.google.com/mail/u/0/#search/invoice%20October"],
+  ["a raw slash in a Gmail route", "https://mail.google.com/mail/u/0/#search/invoice/message", "https://mail.google.com/mail/u/0/#search/invoice%2Fmessage"],
+  ["a raw hash in a Gmail route", "https://mail.google.com/mail/u/0/#search/invoice#message", "https://mail.google.com/mail/u/0/#search/invoice%23message"],
+  ["an unrelated Gmail-origin path", "https://mail.google.com/other/#search/invoice+October", "https://mail.google.com/other/#search/invoice%20October"],
+  ["an HTTP Gmail origin", "http://mail.google.com/mail/u/0/#search/invoice+October", "http://mail.google.com/mail/u/0/#search/invoice%20October"],
+]) test(`Gmail normalization never equates ${boundary}`, () => {
+  assert.equal(sameToolPage(actual, wanted), false);
+  assert.equal(sameToolPage(wanted, wanted), true, "unchanged addresses retain exact-match behavior");
+});
+
+test("an arbitrary SPA's changed fragment stops the saved tool before a click", async t => {
+  const f = setup(t), definition = exampleTool("exact_spa");
+  definition.steps[0].url = "https://example.com/#item/invoice%20October";
+  await f.tools.define(f.authorize, definition);
+  f.driver.rewrite = url => url.replace(/%20/g, "+");
+  const result = await f.run(definition.id);
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "loading");
+  assert.equal(f.driver.counters.clicks, 0, "different SPA page identifiers cannot authorize the tool's click");
+  assert.equal(f.driver.calls.some(call => call.op === "bind"), false);
+});
+
+for (const [encoded, raw] of [["%2F", "/"], ["%23", "#"]]) test(`a Gmail search cannot adopt a rewritten ${encoded} route boundary`, async t => {
+  const f = setup(t);
+  f.driver.rewrite = url => url.replace(encoded, raw);
+  const result = await f.run("builtin_gmail_find", { query: `invoice${raw}message` });
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "loading");
+  assert.equal(f.driver.calls.some(call => call.op === "bind"), false);
+});
+
+test("Gmail's own spelling of a search address is the page the search asked for", async (t) => {
+  const f = setup(t);
+  f.driver.rewrite = (url) => url.replace(/%20/g, "+");
+  const search = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(search.status, "completed");
+  assert.equal(search.data.messages.items.length, 1);
+  const binds = f.driver.calls.filter(call => call.op === "bind");
+  assert.ok(binds.length > 0);
+  assert.ok(binds.every(call => call.expectedURL === "https://mail.google.com/mail/u/0/#search/unpaid+invoice"),
+    "document binding uses the exact reached address, never the loosely equivalent requested spelling");
+  // A page that says something else is still not the one asked for.
+  f.driver.rewrite = (url) => url.replace(/#search\/.*/, "#search/other");
+  const other = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(other.status, "stopped");
+  assert.equal(other.code, "loading");
+});
+
+test("an equivalent Gmail spelling that changes before binding still loses the exact document", async t => {
+  const f = setup(t);
+  f.driver.rewrite = url => url.replace(/%20/g, "+");
+  let changed = false;
+  f.driver.before = (browser, request) => {
+    if (request.op !== "bind" || changed) return;
+    changed = true;
+    const tab = f.driver.browsers.get(browser)[0];
+    const next = tab.url.replace(/\+/g, "%20");
+    tab.dom.reconfigure({ url: next }); tab.url = next;
+  };
+  const result = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(changed, true);
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "stale");
+  assert.equal(f.driver.calls.some(call => call.op === "collect"), false);
 });
 
 test("declared empty results are distinguished from page drift, and hidden matches do not cause ambiguity", async (t) => {
