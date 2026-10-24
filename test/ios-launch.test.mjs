@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -438,16 +439,33 @@ test("failed launch app output is bounded, plain-file only and collected inside 
   let linked = false;
   try { await fs.symlink(outside, link); linked = true; }
   catch (error) { if (process.platform !== "win32" || !["EPERM", "EACCES"].includes(error.code)) throw error; }
-  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, outputFiles: [first, missing, folder, ...(linked ? [link] : [])], start: () => logProcess() });
+  const outputFiles = [first, missing, folder, ...(linked ? [link] : [])], opened = [];
+  const safeFlags = !!constants.O_NOFOLLOW && !!constants.O_NONBLOCK, open = fs.open.bind(fs);
+  t.mock.method(fs, "open", async (file, flags, ...rest) => {
+    if (outputFiles.includes(file)) {
+      opened.push(file);
+      assert.equal(safeFlags, true, "unsupported hosts must never attempt a followable diagnostic open");
+      assert.ok(flags & constants.O_NOFOLLOW, "symlink refusal is part of the open itself");
+      assert.ok(flags & constants.O_NONBLOCK, "a replacement FIFO cannot block the diagnostic open");
+    }
+    return open(file, flags, ...rest);
+  });
+  const logs = startIosLaunchLogs({ device: diagnosticDevice, bundle, outputFiles, start: () => logProcess() });
   logs.stop({ retain: true });
   const result = await collectIosFailureDiagnostics({ home, device: diagnosticDevice, bundle, deadline: Date.now() + 5000,
     run: async () => ({ stdout: "" }) });
-  assert.equal(result.appOutput[0].content.length, 16384);
-  assert.match(result.appOutput[0].content, /native startup marker$/);
-  assert.equal(result.appOutput[0].truncated, true);
-  assert.match(result.appOutput[1].error, /ENOENT/);
-  assert.match(result.appOutput[2].error, /plain file/);
-  if (linked) assert.match(result.appOutput[3].error, /symlink/);
+  if (safeFlags) {
+    assert.equal(opened.length, outputFiles.length);
+    assert.equal(result.appOutput[0].content.length, 16384);
+    assert.match(result.appOutput[0].content, /native startup marker$/);
+    assert.equal(result.appOutput[0].truncated, true);
+    assert.match(result.appOutput[1].error, /ENOENT/);
+    assert.match(result.appOutput[2].error, /plain file/);
+    if (linked) assert.match(result.appOutput[3].error, /symlink/);
+  } else {
+    assert.deepEqual(opened, [], "no file was opened on a host without atomic no-follow support");
+    assert.ok(result.appOutput.every(item => /reads are unavailable/.test(item.error) && item.content === undefined));
+  }
   assert.doesNotMatch(JSON.stringify(result), /UNRELATED OUTPUT/);
   assert.equal(result.liveLogs.outputFiles, undefined, "only basenames are exposed with captured app output");
 });

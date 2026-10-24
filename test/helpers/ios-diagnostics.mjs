@@ -116,16 +116,16 @@ async function appOutputEvidence(files, { until, now }) {
     if (now() >= until) { result.push({ file: path.basename(entry), skipped: "Diagnostic budget exhausted." }); continue; }
     let file;
     try {
-      const before = await fs.lstat(entry);
-      if (before.isSymbolicLink()) throw Error("App output is a symlink.");
-      if (!before.isFile()) throw Error("App output is not a plain file.");
-      file = await fs.open(entry, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+      // Open atomically before checking the descriptor. A path check can race
+      // a replacement; unsupported hosts must not fall back to following it.
+      if (!constants.O_NOFOLLOW || !constants.O_NONBLOCK) throw Error("Safe no-follow, nonblocking app output reads are unavailable.");
+      file = await fs.open(entry, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const stat = await file.stat();
       if (!stat.isFile()) throw Error("App output is not a plain file.");
       const length = Math.min(16384, stat.size), buffer = Buffer.alloc(length);
       const read = await file.read(buffer, 0, length, Math.max(0, stat.size - length));
       result.push({ file: path.basename(entry), bytes: stat.size, content: buffer.subarray(0, read.bytesRead).toString("utf8"), truncated: stat.size > length });
-    } catch (error) { result.push({ file: path.basename(entry), error: String(error.message).slice(0, 1000) }); }
+    } catch (error) { result.push({ file: path.basename(entry), error: error.code === "ELOOP" ? "App output is a symlink." : String(error.message).slice(0, 1000) }); }
     finally { await file?.close().catch(() => {}); }
   }
   return result;
