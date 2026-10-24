@@ -57,10 +57,10 @@ const scrypt = (...args) => {
 const INPUTS = /^s1:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{43})$/;
 export const inputsFingerprint = async (inputs, salt = crypto.randomBytes(16)) =>
   `s1:${salt.toString("base64url")}:${(await scrypt(inputs, salt, 32)).toString("base64url")}`;
-// The page a tool asked for, as the site wrote its address back: the same
-// address, or one whose #fragment spells the same text another way. Gmail
-// writes a search's spaces as + (#search/unpaid+invoice), never %20, so an
-// exact match never came and every search stopped as "loading".
+// Gmail writes a search query's spaces back as +, so that one query segment
+// may use an equivalent URI spelling. Other providers and Gmail routes keep
+// exact address matching: decoding a whole fragment can collapse distinct
+// SPA identifiers or a search route into a message route.
 export const sameToolPage = (actual, wanted) => {
   if (actual === wanted) return true;
   let a, w;
@@ -70,10 +70,17 @@ export const sameToolPage = (actual, wanted) => {
   } catch {
     return false;
   }
-  if (a.origin !== w.origin || a.pathname !== w.pathname || a.search !== w.search || !w.hash) return false;
+  if (a.origin !== "https://mail.google.com" || a.origin !== w.origin ||
+      a.username || a.password || w.username || w.password ||
+      !/^\/mail\/u\/[0-9]+\/$/.test(w.pathname) ||
+      a.pathname !== w.pathname || a.search !== w.search) return false;
   const text = (hash) => {
+    // Slashes and hashes outside the encoded query are structural route
+    // boundaries; never equate them with an encoded query character.
+    const search = /^#search\/([^/#]*)$/.exec(hash);
+    if (!search) return null;
     try {
-      return decodeURIComponent(hash.slice(1).replace(/\+/g, " "));
+      return decodeURIComponent(search[1].replace(/\+/g, " "));
     } catch {
       return null;
     }

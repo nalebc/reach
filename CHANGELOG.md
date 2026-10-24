@@ -12,9 +12,11 @@ release notes, so date the heading before tagging.
 
 - "Find Gmail message" no longer stops at "The browser has not reached the
   exact requested page." Gmail writes a search's spaces back as `+`, so the
-  tool's exact address match never came. A page whose address fragment says
-  the same text another way is now the page asked for. The site, account and
-  path must still match exactly, and another search still stops.
+  tool's exact address match never came. Equivalent spelling is accepted only
+  within Gmail's single search-query segment. The HTTPS site, account, path
+  and query string still match exactly; other pages and route boundaries
+  retain exact address matching. The browser document binds to the exact
+  reached address, and another search still stops.
 
 ## [0.4.2] — 2026-10-24
 
