@@ -134,19 +134,67 @@ test("a permanent profile cleanup error remains visible and shutdown is not repe
 
 // A real failed child launch must retire CDP timers and cleanup hooks. The
 // subprocess must exit naturally; an unanswered 20 s call used to retain it.
-test("failed browser startup releases protocol calls and exits naturally after cleanup", { timeout: 15000 }, async () => {
+test("failed browser startup releases protocol calls and exits naturally after cleanup", { timeout: 15000 }, async t => {
   const helper = new URL("./helpers/headless-chrome.mjs", import.meta.url).href;
+  const windowsOwner = new URL("./helpers/windows-browser-lifetime.mjs", import.meta.url).href;
   const guard = new URL("./helpers/runaway-guard.mjs", import.meta.url).href;
   const script = `
     import { launchChrome } from ${JSON.stringify(helper)};
+    import { windowsBrowserProcess } from ${JSON.stringify(windowsOwner)};
     const hooks = [];
+    const began = performance.now();
+    let remaining = 16384, owner;
+    const mark = (stage, details = {}) => {
+      const base = { stage, elapsedMs: Math.round(performance.now() - began) };
+      let line = JSON.stringify({ ...base, ...details });
+      if (line.length > 1500) line = JSON.stringify({ ...base, details: line.slice(0, 1000), truncated: true });
+      const bytes = Buffer.byteLength(line) + 1;
+      if (bytes > remaining) return;
+      remaining -= bytes;
+      process.stderr.write(line + "\\n");
+    };
+    const snapshot = () => {
+      if (!owner) return { ownerReturned: false };
+      const child = owner.child, tree = owner.snapshot?.();
+      return {
+        pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode,
+        pipes: [child.stderr, child.stdio[3], child.stdio[4]].map(pipe => ({
+          readableEnded: pipe?.readableEnded === true, writableEnded: pipe?.writableEnded === true, destroyed: pipe?.destroyed === true,
+        })),
+        ...(tree ? { ownedTree: { owner: tree.owner, protocolError: tree.protocolError, events: tree.events?.slice(-4) } } : {}),
+      };
+    };
+    mark("script-entered", { platform: process.platform, arch: process.arch });
+    const options = { binary: process.execPath };
+    if (process.platform === "win32") options.launchProcess = async (binary, flags) => {
+      mark("native-owner-setup-begin");
+      owner = await windowsBrowserProcess(binary, flags);
+      mark("native-owner-setup-returned", snapshot());
+      owner.child.once("exit", () => mark("child-exit", snapshot()));
+      owner.child.once("close", () => mark("child-close", snapshot()));
+      return owner;
+    };
     let refused = false;
-    try { await launchChrome({ after: (fn) => hooks.push(fn) }, { binary: process.execPath }); }
-    catch (error) { refused = error instanceof Error; }
-    for (const close of hooks) await close();
+    try {
+      mark("handshake-begin");
+      await launchChrome({ after: (fn) => hooks.push(fn) }, options);
+    } catch (error) {
+      refused = error instanceof Error;
+      mark("handshake-refused", { refused, name: error?.name, message: String(error?.message || "").slice(0, 400), ...snapshot() });
+    }
+    for (const [index, close] of hooks.entries()) {
+      mark("cleanup-hook-begin", { index, ...snapshot() });
+      await close();
+      mark("cleanup-hook-end", { index, ...snapshot() });
+    }
     if (!refused) throw Error("The non-browser must fail its handshake");
+    mark("retired", snapshot());
     process.stdout.write("retired\\n");
   `;
-  const { stdout } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true });
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true }).catch(error => {
+    t.diagnostic(typeof error.stderr === "string" && error.stderr ? error.stderr : "No failed-start subprocess stderr markers were captured.");
+    throw error;
+  });
+  t.diagnostic(stderr);
   assert.equal(stdout.trim(), "retired");
 });
